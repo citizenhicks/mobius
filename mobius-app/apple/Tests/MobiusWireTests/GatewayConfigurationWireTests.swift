@@ -2,7 +2,7 @@ import Foundation
 import XCTest
 
 extension GatewayWireTests {
-    func testExtensionLifecycleRequestsMatchV44() throws {
+    func testExtensionLifecycleRequestsMatchV45() throws {
         let install = try requestObject(.installExtension(
             requestID: "extension-1",
             source: "https://github.com/DietrichGebert/ponytail.git",
@@ -42,43 +42,6 @@ extension GatewayWireTests {
         ))
         XCTAssertEqual(untrust["type"] as? String, "revoke_extension_hooks_trust")
         XCTAssertEqual(untrust["expected_digest"] as? String, "abcdef0123456789")
-
-        let startConnection = try requestObject(.startExtensionConnection(
-            requestID: "extension-6",
-            id: "plugin:notion",
-            redirectURI: "mobius://extension-auth"
-        ))
-        XCTAssertEqual(startConnection["type"] as? String, "start_extension_connection")
-        XCTAssertEqual(startConnection["id"] as? String, "plugin:notion")
-        XCTAssertEqual(startConnection["redirect_uri"] as? String, "mobius://extension-auth")
-        XCTAssertNil(startConnection["callback_url"])
-
-        let finishConnection = try requestObject(.finishExtensionConnection(
-            requestID: "extension-7",
-            id: "plugin:notion",
-            callbackURL: "mobius://extension-auth?code=code&state=state"
-        ))
-        XCTAssertEqual(finishConnection["type"] as? String, "finish_extension_connection")
-        XCTAssertEqual(finishConnection["id"] as? String, "plugin:notion")
-        XCTAssertEqual(
-            finishConnection["callback_url"] as? String,
-            "mobius://extension-auth?code=code&state=state"
-        )
-
-        let setSecret = try requestObject(.setExtensionConnectionSecret(
-            requestID: "extension-8",
-            id: "plugin:google-maps",
-            secret: "maps-secret"
-        ))
-        XCTAssertEqual(setSecret["type"] as? String, "set_extension_connection_secret")
-        XCTAssertEqual(setSecret["secret"] as? String, "maps-secret")
-
-        let disconnect = try requestObject(.disconnectExtensionConnection(
-            requestID: "extension-9",
-            id: "plugin:notion"
-        ))
-        XCTAssertEqual(disconnect["type"] as? String, "disconnect_extension_connection")
-        XCTAssertEqual(disconnect["id"] as? String, "plugin:notion")
     }
 
     func testProviderAndUtilityRequestsMatchV28() throws {

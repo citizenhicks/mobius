@@ -1,9 +1,0 @@
-{
-  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
-  "mcpServers": {
-    "google-maps": {
-      "type": "streamable-http",
-      "url": "https://mapstools.googleapis.com/mcp"
-    }
-  }
-}

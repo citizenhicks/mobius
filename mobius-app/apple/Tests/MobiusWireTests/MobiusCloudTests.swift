@@ -845,7 +845,6 @@ final class MobiusCloudTests: XCTestCase {
             id: "ponytail",
             name: "Ponytail",
             description: "Prefer the smallest correct implementation.",
-            icon: nil,
             source: MobiusCloudExtensionSource(
                 url: "https://github.com/DietrichGebert/ponytail.git",
                 reference: "v4.9.0",

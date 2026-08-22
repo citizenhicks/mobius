@@ -66,24 +66,6 @@ struct ExtensionHookRecord: Decodable, Equatable, Hashable, Sendable {
     let timeoutSeconds: UInt64
 }
 
-enum ExtensionConnectionState: String, Decodable, Equatable, Sendable {
-    case disconnected
-    case connected
-    case needsAttention = "needs_attention"
-}
-
-enum ExtensionConnectionKind: String, Decodable, Equatable, Sendable {
-    case oauth
-    case apiKey = "api_key"
-}
-
-struct ExtensionConnectionRecord: Decodable, Equatable, Sendable {
-    let kind: ExtensionConnectionKind
-    let state: ExtensionConnectionState
-    let label: String
-    let message: String?
-}
-
 struct ExtensionRecord: Identifiable, Decodable, Equatable, Sendable {
     let id: String
     let capability: String
@@ -99,7 +81,6 @@ struct ExtensionRecord: Identifiable, Decodable, Equatable, Sendable {
     let skills: [String]
     let hooks: [ExtensionHookRecord]
     let hooksTrusted: Bool
-    let connection: ExtensionConnectionRecord?
 }
 
 struct ProviderConfig: Codable, Equatable, Sendable {

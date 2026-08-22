@@ -12,6 +12,7 @@ final class AppModel {
     var workspace: WorkspaceInfo?
     var gitStatus: GitStatus?
     var gitCredentialAvailable: Bool?
+    var gitCredentialUsername: String?
     var gitCredentialError: String?
     var isCheckingGitCredential = false
     var sshIdentities: [SshIdentityRecord]?
@@ -246,7 +247,6 @@ final class AppModel {
     var providerReasoningEffortsText = ""
     var providerActionState: ProviderActionState = .idle
     var extensionAction: ExtensionAction?
-    var extensionAuthorizationChallenge: ExtensionAuthorizationChallenge?
     var pairingCodeInfo: PairingCodeInfo?
 
     var showsPairing = false

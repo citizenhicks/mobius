@@ -30,16 +30,15 @@ struct ProvidersView: View {
                         statusDetail: status.detail,
                         statusColor: status.color
                     )
-                    .labelStyle(.iconOnly)
                     .groupedHeaderAction()
                 }
             }
         ) {
             Section("Configured") {
-                if model.providerInstances.isEmpty {
-                    Text("No provider configured yet.")
-                        .font(MobiusStyle.captionFont)
-                        .foregroundStyle(palette.muted)
+                if showsLoadingCatalog {
+                    loadingCatalog
+                } else if model.providerInstances.isEmpty {
+                    SettingsCaption("No provider configured yet.")
                 } else {
                     ForEach(model.providerInstances) { instance in
                         configuredRow(instance)
@@ -67,9 +66,36 @@ struct ProvidersView: View {
         }
     }
 
+    private var showsLoadingCatalog: Bool {
+        model.connectionState.isLoading && model.providerInstances.isEmpty
+    }
+
+    /// The rows this page is about to show, drawn from the same primitive so the wait
+    /// looks like the page rather than like a spinner.
+    private var loadingCatalog: some View {
+        SettingsLoadingRows(label: "Loading providers") {
+            ForEach(["Provider account", "Another account"], id: \.self) { name in
+                SettingsRowLabel(title: name, detail: "Model service") {
+                    MobiusIcon(.hardDrives, size: MobiusStyle.glyphLead, foreground: palette.muted)
+                        .unredacted()
+                }
+            }
+        }
+    }
+
+    private func providerLabel(_ instance: ProviderInstance) -> some View {
+        let definition = model.providerStatuses.first { $0.provider == instance.provider }
+        return SettingsRowLabel(
+            title: instance.label,
+            detail: definition?.label ?? instance.provider
+        ) {
+            ProviderMark(symbol: definition?.symbol, tint: instance.tint)
+        }
+    }
+
     private var pageDetail: String {
         model.connectionState.isReady
-            ? "Model services this gateway can reach. Add one setup per account or endpoint."
+            ? "Model services this gateway can reach. One setup per account or endpoint."
             : "Connect to a gateway to manage providers."
     }
 
@@ -94,28 +120,20 @@ struct ProvidersView: View {
     }
 
     private func configuredRow(_ instance: ProviderInstance) -> some View {
-        HStack(spacing: MobiusSpace.s) {
-            Button {
+        SettingsNavigationRow(
+            hint: "Shows provider settings",
+            open: {
                 model.editProviderInstance(instance)
                 model.navigationPath = [.settings(.provider(instance.instance))]
-            } label: {
-                ConfiguredProviderLabel(instance: instance)
-                    .contentShape(Rectangle())
+            },
+            marks: {
+                if !instance.configured {
+                    MobiusIcon(.key, size: MobiusStyle.glyphMark, foreground: palette.warning)
+                        .accessibilityLabel("\(instance.label) needs a credential")
+                }
             }
-            .buttonStyle(.plain)
-            .accessibilityHint("Shows provider settings")
-
-            if !instance.configured {
-                MobiusIcon(.key, size: MobiusStyle.glyphMark, foreground: palette.warning)
-                    .accessibilityLabel("\(instance.label) needs a credential")
-            }
-
-            MobiusIcon(
-                .caretRight,
-                size: MobiusStyle.glyphMark,
-                foreground: palette.muted
-            )
-            .accessibilityHidden(true)
+        ) {
+            providerLabel(instance)
         }
         .swipeActions(edge: .trailing) {
             Button {
@@ -127,32 +145,6 @@ struct ProvidersView: View {
             .disabled(model.isApplyingConfiguration || !model.connectionState.isReady)
             .accessibilityLabel("Remove \(instance.label)")
         }
-    }
-}
-
-private struct ConfiguredProviderLabel: View {
-    @Environment(AppModel.self) private var model
-    @Environment(\.mobiusPalette) private var palette
-    let instance: ProviderInstance
-
-    var body: some View {
-        HStack(spacing: MobiusSpace.s) {
-            ProviderMark(symbol: definition?.symbol, tint: instance.tint)
-            VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
-                Text(verbatim: instance.label)
-                    .lineLimit(1)
-                Text(verbatim: definition?.label ?? instance.provider)
-                    .font(MobiusStyle.captionFont)
-                    .foregroundStyle(palette.muted)
-                    .lineLimit(1)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .combine)
-    }
-
-    private var definition: ProviderStatus? {
-        model.providerStatuses.first { $0.provider == instance.provider }
     }
 }
 
@@ -191,7 +183,10 @@ private struct AddProviderSheet: View {
                                 model.addProviderInstance(status.provider)
                                 provider = status.provider
                             } label: {
-                                ProviderDefinitionLabel(status: status)
+                                SettingsRowLabel(
+                                    title: status.label,
+                                    detail: status.description
+                                )
                                     .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
@@ -223,24 +218,6 @@ private struct AddProviderSheet: View {
                 dismiss()
             }
         }
-    }
-}
-
-private struct ProviderDefinitionLabel: View {
-    @Environment(\.mobiusPalette) private var palette
-    let status: ProviderStatus
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
-            Text(verbatim: status.label)
-                .lineLimit(1)
-            Text(verbatim: status.description)
-                .font(MobiusStyle.captionFont)
-                .foregroundStyle(palette.muted)
-                .lineLimit(2)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .combine)
     }
 }
 
@@ -384,9 +361,7 @@ private struct ProviderFormSections: View {
                                 .truncationMode(.middle)
                         }
                     }
-                    Text("Every model above is available. Pick one per chat in the composer.")
-                        .font(MobiusStyle.captionFont)
-                        .foregroundStyle(palette.muted)
+                    SettingsCaption("Every model above is available. Pick one per chat in the composer.")
                 }
 
                 if status.defaultBaseUrl != nil {
@@ -497,7 +472,7 @@ private struct ProviderFormSections: View {
                     .font(MobiusStyle.bodyFont)
                     .foregroundStyle(palette.muted)
                 Text(code)
-                    .font(.system(.title, design: .monospaced, weight: .bold))
+                    .font(MobiusStyle.codeFont)
                     .tracking(3)
                     .textSelection(.enabled)
                     .padding(MobiusSpace.m)

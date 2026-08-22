@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use mobius::middleware::extensions::{
-    ExtensionConnection, ExtensionConnectionKind, ExtensionHook, ExtensionMcpServer,
-    ExtensionPackageKind, HookAuthorization, MANIFEST, inspect_package, valid_package_name,
+    ExtensionHook, ExtensionPackageKind, HookAuthorization, MANIFEST, inspect_package,
+    valid_package_name,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -51,26 +51,7 @@ pub(crate) struct InstalledExtension {
     pub(crate) digest: String,
     pub(crate) skills: Vec<String>,
     pub(crate) hooks: Vec<ExtensionHookRecord>,
-    #[serde(default)]
-    pub(crate) mcp_servers: Vec<InstalledMcpServer>,
     pub(crate) trusted_hook_digest: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct InstalledMcpServer {
-    pub(crate) name: String,
-    pub(crate) url: String,
-    pub(crate) headers: BTreeMap<String, String>,
-    pub(crate) connection: Option<InstalledConnection>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct InstalledConnection {
-    pub(crate) kind: crate::wire::ExtensionConnectionKind,
-    pub(crate) label: String,
-    pub(crate) secret_header: Option<String>,
 }
 
 pub(crate) struct StagedExtension {
@@ -83,14 +64,6 @@ pub(crate) struct StagedExtension {
 pub(crate) struct ResolvedExtensions {
     pub(crate) skill_roots: Vec<PathBuf>,
     pub(crate) plugins: Vec<ResolvedPlugin>,
-    pub(crate) mcp_servers: Vec<ResolvedMcpServer>,
-}
-
-#[derive(Clone)]
-pub(crate) struct ResolvedMcpServer {
-    pub(crate) extension_id: String,
-    pub(crate) plugin_name: String,
-    pub(crate) config: InstalledMcpServer,
 }
 
 pub(crate) struct ResolvedPlugin {
@@ -195,7 +168,6 @@ impl ExtensionStore {
                 digest,
                 skills: inspected.skills,
                 hooks: inspected.hooks.into_iter().map(Into::into).collect(),
-                mcp_servers: inspected.mcp_servers.into_iter().map(Into::into).collect(),
                 trusted_hook_digest: None,
             },
             snapshot_created: created,
@@ -229,19 +201,6 @@ impl ExtensionStore {
                         || installed.trusted_hook_digest.as_deref() == Some(&installed.digest),
                 }),
             }
-            resolved
-                .mcp_servers
-                .extend(
-                    installed
-                        .mcp_servers
-                        .iter()
-                        .cloned()
-                        .map(|config| ResolvedMcpServer {
-                            extension_id: id.clone(),
-                            plugin_name: installed.name.clone(),
-                            config,
-                        }),
-                );
         }
         Ok(resolved)
     }
@@ -405,7 +364,7 @@ impl ExtensionSource {
     }
 }
 
-pub(crate) fn records(config: &GatewayConfig, state_dir: &Path) -> Vec<ExtensionRecord> {
+pub(crate) fn records(config: &GatewayConfig) -> Vec<ExtensionRecord> {
     config
         .installed_extensions
         .iter()
@@ -425,11 +384,6 @@ pub(crate) fn records(config: &GatewayConfig, state_dir: &Path) -> Vec<Extension
             hooks: installed.hooks.clone(),
             hooks_trusted: installed.hooks.is_empty()
                 || installed.trusted_hook_digest.as_deref() == Some(&installed.digest),
-            connection: installed
-                .mcp_servers
-                .iter()
-                .find(|server| server.connection.is_some())
-                .map(|server| crate::remote_mcp::connection_record(state_dir, id, server)),
         })
         .collect()
 }
@@ -490,29 +444,6 @@ pub(crate) fn validate_installed(installed: &BTreeMap<String, InstalledExtension
                 .is_some_and(|value| value.len() > 128)
             || extension.skills.len() > 64
             || extension.hooks.len() > 64
-            || extension.mcp_servers.len() > 8
-            || extension.mcp_servers.iter().any(|server| {
-                server.name.is_empty()
-                    || server.name.len() > 128
-                    || server.name.trim() != server.name
-                    || server.name.chars().any(char::is_control)
-                    || server.url.len() > 4_096
-                    || server.headers.len() > 32
-                    || server
-                        .headers
-                        .iter()
-                        .any(|(name, value)| name.len() > 256 || value.len() > 8 * 1024)
-                    || server.connection.as_ref().is_some_and(|connection| {
-                        connection.label.is_empty()
-                            || connection.label.len() > 128
-                            || connection.label.trim() != connection.label
-                            || connection.label.chars().any(char::is_control)
-                            || matches!(
-                                connection.kind,
-                                crate::wire::ExtensionConnectionKind::OAuth
-                            ) != connection.secret_header.is_none()
-                    })
-            })
         {
             return Err(Error::Config(format!(
                 "extension `{id}` metadata is too large"
@@ -801,48 +732,18 @@ fn verify_installed_metadata(
         .into_iter()
         .map(Into::into)
         .collect::<Vec<_>>();
-    let mcp_servers = inspected
-        .mcp_servers
-        .into_iter()
-        .map(Into::into)
-        .collect::<Vec<_>>();
     if installed.kind != kind
         || installed.name != inspected.name
         || installed.description != inspected.description
         || installed.version != inspected.version
         || installed.skills != inspected.skills
         || installed.hooks != hooks
-        || installed.mcp_servers != mcp_servers
     {
         return Err(Error::Config(format!(
             "extension `{id}` metadata does not match its snapshot"
         )));
     }
     Ok(())
-}
-
-impl From<ExtensionMcpServer> for InstalledMcpServer {
-    fn from(server: ExtensionMcpServer) -> Self {
-        Self {
-            name: server.name,
-            url: server.url,
-            headers: server.headers,
-            connection: server.connection.map(Into::into),
-        }
-    }
-}
-
-impl From<ExtensionConnection> for InstalledConnection {
-    fn from(connection: ExtensionConnection) -> Self {
-        Self {
-            kind: match connection.kind {
-                ExtensionConnectionKind::OAuth => crate::wire::ExtensionConnectionKind::OAuth,
-                ExtensionConnectionKind::ApiKey => crate::wire::ExtensionConnectionKind::ApiKey,
-            },
-            label: connection.label,
-            secret_header: connection.secret_header,
-        }
-    }
 }
 
 fn verify_snapshot(root: &Path, expected: &str) -> Result<()> {
@@ -988,7 +889,6 @@ mod tests {
             digest,
             skills: Vec::new(),
             hooks,
-            mcp_servers: Vec::new(),
             trusted_hook_digest: None,
         }
     }

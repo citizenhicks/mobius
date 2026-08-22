@@ -446,6 +446,7 @@ extension AppModel {
         }
         let id = requestID("git-credential")
         gitCredentialAvailable = nil
+        gitCredentialUsername = nil
         gitCredentialError = nil
         gitCredentialRequestID = id
         isApprovingGitCredential = false

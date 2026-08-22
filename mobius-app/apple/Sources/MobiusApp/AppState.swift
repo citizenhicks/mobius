@@ -117,14 +117,6 @@ enum ExtensionAction: Equatable {
     case uninstalling(String)
     case trusting(String)
     case untrusting(String)
-    case connecting(id: String, name: String)
-    case disconnecting(String)
-}
-
-struct ExtensionAuthorizationChallenge: Identifiable, Equatable {
-    let id: String
-    let extensionID: String
-    let authorizationURL: URL
 }
 
 enum ToastTone: Equatable {

@@ -42,10 +42,6 @@ enum GatewayRequest: Encodable, Sendable {
     case uninstallExtension(requestID: String, id: String)
     case trustExtensionHooks(requestID: String, id: String, expectedDigest: String)
     case revokeExtensionHooksTrust(requestID: String, id: String, expectedDigest: String)
-    case startExtensionConnection(requestID: String, id: String, redirectURI: String)
-    case finishExtensionConnection(requestID: String, id: String, callbackURL: String)
-    case setExtensionConnectionSecret(requestID: String, id: String, secret: String)
-    case disconnectExtensionConnection(requestID: String, id: String)
     case probeGitCredential(requestID: String, target: String)
     case approveGitCredential(
         requestID: String,
@@ -212,25 +208,6 @@ enum GatewayRequest: Encodable, Sendable {
             try container.encode(requestID, forKey: "requestId")
             try container.encode(id, forKey: "id")
             try container.encode(expectedDigest, forKey: "expectedDigest")
-        case .startExtensionConnection(let requestID, let id, let redirectURI):
-            try container.encode("start_extension_connection", forKey: "type")
-            try container.encode(requestID, forKey: "requestId")
-            try container.encode(id, forKey: "id")
-            try container.encode(redirectURI, forKey: "redirectUri")
-        case .finishExtensionConnection(let requestID, let id, let callbackURL):
-            try container.encode("finish_extension_connection", forKey: "type")
-            try container.encode(requestID, forKey: "requestId")
-            try container.encode(id, forKey: "id")
-            try container.encode(callbackURL, forKey: "callbackUrl")
-        case .setExtensionConnectionSecret(let requestID, let id, let secret):
-            try container.encode("set_extension_connection_secret", forKey: "type")
-            try container.encode(requestID, forKey: "requestId")
-            try container.encode(id, forKey: "id")
-            try container.encode(secret, forKey: "secret")
-        case .disconnectExtensionConnection(let requestID, let id):
-            try container.encode("disconnect_extension_connection", forKey: "type")
-            try container.encode(requestID, forKey: "requestId")
-            try container.encode(id, forKey: "id")
         case .probeGitCredential(let requestID, let target):
             try container.encode("probe_git_credential", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
@@ -424,12 +401,7 @@ enum GatewayEnvelope: Decodable, Sendable {
         userCode: String
     )
     case providerLoginFinished(requestID: String, loginID: String, provider: String)
-    case extensionConnectionStarted(
-        requestID: String,
-        id: String,
-        authorizationURL: String
-    )
-    case gitCredentialStatus(requestID: String, available: Bool)
+    case gitCredentialStatus(requestID: String, available: Bool, username: String?)
     case sshIdentities(requestID: String, identities: [SshIdentityRecord])
     case sshIdentityGenerated(
         requestID: String,
@@ -581,16 +553,11 @@ enum GatewayEnvelope: Decodable, Sendable {
                 loginID: try container.decode(String.self, forKey: "loginId"),
                 provider: try container.decode(String.self, forKey: "provider")
             )
-        case "extension_connection_started":
-            self = .extensionConnectionStarted(
-                requestID: try container.decode(String.self, forKey: "requestId"),
-                id: try container.decode(String.self, forKey: "id"),
-                authorizationURL: try container.decode(String.self, forKey: "authorizationUrl")
-            )
         case "git_credential_status":
             self = .gitCredentialStatus(
                 requestID: try container.decode(String.self, forKey: "requestId"),
-                available: try container.decode(Bool.self, forKey: "available")
+                available: try container.decode(Bool.self, forKey: "available"),
+                username: try container.decodeIfPresent(String.self, forKey: "username")
             )
         case "ssh_identities":
             self = .sshIdentities(

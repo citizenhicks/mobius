@@ -1,7 +1,5 @@
 import Foundation
 
-private let extensionAuthorizationRedirectURI = "mobius://extension-auth"
-
 extension AppModel {
     /// One extension mutation is in flight at a time, and all of them need the gateway.
     var canMutateExtensions: Bool {
@@ -103,107 +101,6 @@ extension AppModel {
         }
     }
 
-    func startExtensionConnection(_ extensionRecord: ExtensionRecord) {
-        guard extensionRecord.connection?.kind == .oauth else { return }
-        beginExtensionAction(.connecting(
-            id: extensionRecord.id,
-            name: extensionRecord.name
-        )) { requestID in
-            .startExtensionConnection(
-                requestID: requestID,
-                id: extensionRecord.id,
-                redirectURI: extensionAuthorizationRedirectURI
-            )
-        }
-    }
-
-    func setExtensionConnectionSecret(_ extensionRecord: ExtensionRecord, secret: String) {
-        guard extensionRecord.connection?.kind == .apiKey,
-              !secret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        else { return }
-        beginExtensionAction(.connecting(
-            id: extensionRecord.id,
-            name: extensionRecord.name
-        )) { requestID in
-            .setExtensionConnectionSecret(
-                requestID: requestID,
-                id: extensionRecord.id,
-                secret: secret
-            )
-        }
-    }
-
-    func disconnectExtension(_ extensionRecord: ExtensionRecord) {
-        guard extensionRecord.connection?.state == .connected else { return }
-        beginExtensionAction(.disconnecting(extensionRecord.name)) { requestID in
-            .disconnectExtensionConnection(requestID: requestID, id: extensionRecord.id)
-        }
-    }
-
-    func receiveExtensionAuthorization(
-        requestID: String,
-        extensionID: String,
-        authorizationURL: String
-    ) {
-        guard requestID == extensionRequestID else { return }
-        guard case .connecting(let expectedID, _) = extensionAction,
-              extensionID == expectedID,
-              extensions.contains(where: { $0.id == extensionID }),
-              let url = URL(string: authorizationURL),
-              url.scheme?.lowercased() == "https",
-              url.host != nil,
-              url.user == nil,
-              url.password == nil
-        else {
-            rejectExtensionAction(requestID: requestID)
-            showToast("The extension returned an invalid sign-in address.", tone: .error)
-            return
-        }
-        extensionAuthorizationChallenge = ExtensionAuthorizationChallenge(
-            id: requestID,
-            extensionID: extensionID,
-            authorizationURL: url
-        )
-    }
-
-    func finishExtensionConnection(_ challenge: ExtensionAuthorizationChallenge, callbackURL: URL) {
-        guard challenge.id == extensionRequestID,
-              extensionAuthorizationChallenge == challenge,
-              callbackURL.scheme?.lowercased() == "mobius",
-              callbackURL.host?.lowercased() == "extension-auth",
-              callbackURL.user == nil,
-              callbackURL.password == nil,
-              callbackURL.port == nil,
-              callbackURL.path.isEmpty || callbackURL.path == "/",
-              connectionState.isReady
-        else {
-            failExtensionConnection(challenge.id)
-            return
-        }
-        extensionAuthorizationChallenge = nil
-        let id = requestID("extension-connection-finish")
-        extensionRequestID = id
-        transmit(.finishExtensionConnection(
-            requestID: id,
-            id: challenge.extensionID,
-            callbackURL: callbackURL.absoluteString
-        )) { [weak self] _ in
-            self?.rejectExtensionAction(requestID: id)
-        }
-    }
-
-    func cancelExtensionConnection(_ requestID: String) {
-        guard requestID == extensionRequestID else { return }
-        rejectExtensionAction(requestID: requestID)
-        showToast("Connection canceled.", tone: .info)
-    }
-
-    func failExtensionConnection(_ requestID: String) {
-        guard requestID == extensionRequestID else { return }
-        rejectExtensionAction(requestID: requestID)
-        showToast("The extension sign-in could not be completed.", tone: .error)
-    }
-
     func completeExtensionAction(requestID: String) {
         guard requestID == extensionRequestID, let action = extensionAction else { return }
         extensionRequestID = nil
@@ -215,9 +112,6 @@ extension AppModel {
 
     func rejectExtensionAction(requestID: String) {
         guard requestID == extensionRequestID else { return }
-        if extensionAuthorizationChallenge?.id == requestID {
-            extensionAuthorizationChallenge = nil
-        }
         extensionRequestID = nil
         extensionAction = nil
     }
@@ -249,15 +143,6 @@ extension AppModel {
             return ("\(name) hooks trusted.", .success)
         case .untrusting(let name):
             return ("\(name) hooks untrusted.", .success)
-        case .connecting(let id, let name):
-            guard let connection = extensions.first(where: { $0.id == id })?.connection,
-                  connection.state == .connected
-            else { return ("\(name) connection was not completed.", .info) }
-            return connection.kind == .apiKey
-                ? ("\(name) credential saved.", .success)
-                : ("\(name) connected.", .success)
-        case .disconnecting(let name):
-            return ("\(name) disconnected.", .success)
         }
     }
 }

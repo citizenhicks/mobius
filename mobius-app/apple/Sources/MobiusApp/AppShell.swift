@@ -1,6 +1,5 @@
 import SwiftUI
 import Accessibility
-import AuthenticationServices
 import QuickLook
 
 private let debugStartsOnDetail: Bool = {
@@ -15,7 +14,6 @@ struct AppShell: View {
     @Environment(AppModel.self) private var model
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    @Environment(\.webAuthenticationSession) private var webAuthenticationSession
     @State private var columnVisibility = NavigationSplitViewVisibility.all
     @State private var compactColumn = debugStartsOnDetail ? NavigationSplitViewColumn.detail : .sidebar
     @State private var sidebarIsOpen = !debugStartsOnDetail
@@ -100,25 +98,6 @@ struct AppShell: View {
         }
         .sheet(item: $model.sessionFileShareItem, onDismiss: model.discardFilePresentation) { file in
             SessionFileShareView(file: file)
-        }
-        .task(id: model.extensionAuthorizationChallenge?.id) {
-            guard let challenge = model.extensionAuthorizationChallenge else { return }
-            do {
-                let callbackURL = try await webAuthenticationSession.authenticate(
-                    using: challenge.authorizationURL,
-                    callback: .customScheme("mobius"),
-                    preferredBrowserSession: .shared,
-                    additionalHeaderFields: [:]
-                )
-                model.finishExtensionConnection(challenge, callbackURL: callbackURL)
-            } catch let error as ASWebAuthenticationSessionError
-                where error.code == .canceledLogin {
-                model.cancelExtensionConnection(challenge.id)
-            } catch is CancellationError {
-                return
-            } catch {
-                model.failExtensionConnection(challenge.id)
-            }
         }
         .onChange(of: model.previewURL) { oldValue, newValue in
             if oldValue != nil, newValue == nil { model.discardFilePresentation() }

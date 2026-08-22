@@ -84,7 +84,6 @@ pub enum ApprovalRequirement {
 pub struct ToolContext {
     pub sandbox: Arc<Sandbox>,
     pub permissions: ToolPermissions,
-    pub call_id: String,
     pub turn_id: String,
 }
 
@@ -350,7 +349,6 @@ async fn execute_call(
     let context = ToolContext {
         sandbox: Arc::clone(sandbox),
         permissions: permissions.for_call(&call.call_id),
-        call_id: call.call_id.clone(),
         turn_id: turn_id.into(),
     };
     let Some(tool) = catalog.get(&call.name).cloned() else {

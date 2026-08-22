@@ -177,6 +177,7 @@ extension AppModel {
         providerRegistrationRequestID = nil
         pendingProviderRemoval = nil
         gitCredentialAvailable = nil
+        gitCredentialUsername = nil
         gitCredentialError = nil
         sshIdentities = nil
         sshIdentityError = nil
@@ -195,7 +196,6 @@ extension AppModel {
 
     func cancelExtensionAndCredentialRequests() {
         extensionAction = nil
-        extensionAuthorizationChallenge = nil
         extensionRequestID = nil
         gitCredentialRequestID = nil
         isApprovingGitCredential = false

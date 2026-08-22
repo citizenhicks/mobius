@@ -38,8 +38,7 @@ pub(crate) use self::validation::{effective_reasoning_effort, model_route_id};
 use self::workspace::*;
 pub(crate) use self::workspace::{create_workspace_directory, local_user_name};
 
-const CONFIG_VERSION: u32 = 19;
-const MIGRATABLE_CONFIG_VERSION: u32 = 18;
+const CONFIG_VERSION: u32 = 20;
 const CHAT_SPEC_VERSION: u32 = 9;
 pub(crate) const CHAT_SPEC_METADATA_KEY: &str = "mobius_gateway.chat";
 const CONFIG_FILE: &str = "gateway.toml";

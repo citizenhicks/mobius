@@ -157,25 +157,6 @@ pub enum ClientMessage {
         id: String,
         expected_digest: String,
     },
-    StartExtensionConnection {
-        request_id: String,
-        id: String,
-        redirect_uri: String,
-    },
-    FinishExtensionConnection {
-        request_id: String,
-        id: String,
-        callback_url: String,
-    },
-    SetExtensionConnectionSecret {
-        request_id: String,
-        id: String,
-        secret: String,
-    },
-    DisconnectExtensionConnection {
-        request_id: String,
-        id: String,
-    },
     ProbeGitCredential {
         request_id: String,
         target: String,
@@ -427,14 +408,11 @@ pub enum ServerMessage {
         login_id: String,
         provider: String,
     },
-    ExtensionConnectionStarted {
-        request_id: String,
-        id: String,
-        authorization_url: String,
-    },
     GitCredentialStatus {
         request_id: String,
         available: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        username: Option<String>,
     },
     SshIdentities {
         request_id: String,

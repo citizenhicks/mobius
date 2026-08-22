@@ -1,6 +1,6 @@
 [package]
 name = "mobius-gateway"
-version = "0.9.11"
+version = "0.9.12"
 edition = "2024"
 rust-version = "1.89"
 description = "Headless authenticated gateway for möbius frontends"
@@ -17,15 +17,11 @@ path = "src/lib.rs"
 
 [dependencies]
 base64 = "0.22"
-async-trait = "0.1"
 chrono = "0.4"
 croner = "3"
 futures-util = { version = "0.3", features = ["sink"] }
-mobius = { version = "=0.9.7", path = "../.." }
+mobius = { version = "=0.9.8", path = "../.." }
 qrcode = { version = "0.14.1", default-features = false }
-http = "1"
-reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls-no-provider", "stream"] }
-rmcp = { version = "=3.1.4", default-features = false, features = ["auth", "client", "transport-streamable-http-client-reqwest"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pemfile = "2"
 serde = { version = "1", features = ["derive"] }

@@ -8,7 +8,6 @@ enum AgentSettingsScope: Equatable {
 struct AgentSettingsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var editingCapability: MiddlewareFeature?
     let scope: AgentSettingsScope
 
@@ -16,24 +15,18 @@ struct AgentSettingsView: View {
         PageScaffold(
             title: pageTitle,
             detail: pageDetail,
+            sharesHeaderBackground: true,
             headerAccessory: { agentStatusAccessory }
         ) {
             if draft != nil {
                 Section("System prompt") {
-                    // The same glass card the composer uses: this is the one field on the
-                    // page you write prose into, and it should feel like the other one.
                     TextField("System prompt", text: systemPrompt, axis: .vertical)
                         .font(MobiusStyle.bodyFont)
                         .lineLimit(3...8)
                         .textFieldStyle(.plain)
                         .labelsHidden()
                         .accessibilityLabel("System prompt")
-                        .padding(.horizontal, MobiusSpace.l)
-                        .padding(.vertical, MobiusSpace.m)
-                        .mobiusGlass(in: MobiusStyle.cardShape, interactive: true)
-                        .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
-                        .listRowBackground(Color.clear)
-                        .listRowSeparator(.hidden)
+                        .promptCard()
                 }
 
                 Section(modelSectionTitle) {
@@ -68,6 +61,8 @@ struct AgentSettingsView: View {
                     }
                 }
                 .toggleStyle(.switch)
+            } else if model.connectionState.isLoading {
+                loadingDraft
             } else {
                 MobiusUnavailable(
                     title: unavailableTitle,
@@ -76,9 +71,37 @@ struct AgentSettingsView: View {
                 )
             }
         }
-        .listSectionSpacing(.compact)
         .sheet(item: $editingCapability) { feature in
             capabilityEditor(feature)
+        }
+    }
+
+    /// The page this is about to become, so waiting for the gateway reads as loading
+    /// rather than as an agent that is missing.
+    private var loadingDraft: some View {
+        Group {
+            // Per section rather than around all three: a placeholder over the whole group
+            // redacts the headers too, and then the page cannot be read at all.
+            Section("System prompt") {
+                Text("A short brief the gateway sends with every turn of a chat.")
+                    .font(MobiusStyle.bodyFont)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .promptCard()
+                    .mobiusLoadingPlaceholder("Loading system prompt")
+            }
+            Section(modelSectionTitle) {
+                SettingsLoadingRows(label: "Loading model") {
+                    LabeledContent("Model", value: "Provider · model")
+                    Text("Maximum model steps: 500")
+                }
+            }
+            Section("Capabilities") {
+                SettingsLoadingRows(label: "Loading capabilities") {
+                    ForEach(["Web search", "File edits", "Shell commands"], id: \.self) { name in
+                        SettingsRowLabel(title: name, detail: "Tools this agent may call.")
+                    }
+                }
+            }
         }
     }
 
@@ -162,15 +185,10 @@ struct AgentSettingsView: View {
                     editingCapability = feature
                 } label: {
                     HStack(spacing: MobiusSpace.s) {
-                        VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
-                            Text(feature.label)
-                            Text(capabilitySummary(feature))
-                                .font(MobiusStyle.captionFont)
-                                .foregroundStyle(palette.muted)
-                                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        SettingsRowLabel(
+                            title: feature.label,
+                            detail: capabilitySummary(feature)
+                        )
                         MobiusIcon(
                             .caretRight,
                             size: MobiusStyle.glyphMark,
@@ -581,9 +599,9 @@ struct AgentSettingsView: View {
     private var pageDetail: String {
         switch scope {
         case .gatewayDefault:
-            "Set the prompt, model, capabilities, and execution policy inherited by new chats."
+            "The prompt, model, and capabilities new chats start from."
         case .currentChat:
-            "Change the prompt, model, capabilities, and execution policy for this chat only."
+            "The prompt, model, and capabilities for this chat only."
         }
     }
 
@@ -620,5 +638,18 @@ struct AgentSettingsView: View {
         scope == .gatewayDefault
             ? "The draft matches the gateway default."
             : "The draft matches this chat's saved agent configuration."
+    }
+}
+
+private extension View {
+    /// The same glass card the composer uses: the one place on this page you write prose
+    /// into should feel like the other one.
+    func promptCard() -> some View {
+        padding(.horizontal, MobiusSpace.l)
+            .padding(.vertical, MobiusSpace.m)
+            .mobiusGlass(in: MobiusStyle.cardShape, interactive: true)
+            .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
     }
 }

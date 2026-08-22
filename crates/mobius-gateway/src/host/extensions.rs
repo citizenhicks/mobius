@@ -1,115 +1,7 @@
 use super::*;
-use crate::extensions::{ExtensionStore, InstalledMcpServer};
-use crate::wire::ExtensionConnectionKind;
+use crate::extensions::ExtensionStore;
 
 impl GatewayHost {
-    pub(crate) async fn start_extension_connection(
-        &self,
-        id: String,
-        redirect_uri: String,
-    ) -> std::result::Result<String, Rejection> {
-        let (remote_mcp, server) = self
-            .extension_connection(&id, Some(ExtensionConnectionKind::OAuth))
-            .await?;
-        remote_mcp
-            .start_oauth(&id, &server, &redirect_uri)
-            .await
-            .map_err(connection_failed)
-    }
-
-    pub(crate) async fn finish_extension_connection(
-        &self,
-        id: String,
-        callback_url: String,
-    ) -> std::result::Result<ReadyPayload, Rejection> {
-        let (remote_mcp, _server) = self
-            .extension_connection(&id, Some(ExtensionConnectionKind::OAuth))
-            .await?;
-        remote_mcp
-            .finish_oauth(&id, &callback_url)
-            .await
-            .map_err(connection_failed)?;
-        self.refresh_extension_connection(&id).await
-    }
-
-    pub(crate) async fn set_extension_connection_secret(
-        &self,
-        id: String,
-        secret: String,
-    ) -> std::result::Result<ReadyPayload, Rejection> {
-        let (remote_mcp, server) = self
-            .extension_connection(&id, Some(ExtensionConnectionKind::ApiKey))
-            .await?;
-        remote_mcp
-            .set_secret(&id, &server, &secret)
-            .map_err(connection_failed)?;
-        self.refresh_extension_connection(&id).await
-    }
-
-    pub(crate) async fn disconnect_extension_connection(
-        &self,
-        id: String,
-    ) -> std::result::Result<ReadyPayload, Rejection> {
-        let (remote_mcp, _server) = self.extension_connection(&id, None).await?;
-        remote_mcp
-            .disconnect(&id)
-            .await
-            .map_err(connection_failed)?;
-        self.refresh_extension_connection(&id).await
-    }
-
-    async fn extension_connection(
-        &self,
-        id: &str,
-        expected: Option<ExtensionConnectionKind>,
-    ) -> std::result::Result<(Arc<crate::remote_mcp::RemoteMcp>, InstalledMcpServer), Rejection>
-    {
-        let state = self.state.lock().await;
-        let config = state
-            .config
-            .lock()
-            .map_err(|_| internal("gateway configuration lock is poisoned"))?;
-        let installed = config
-            .installed_extensions
-            .get(id)
-            .ok_or_else(|| unknown_extension(id))?;
-        let server = installed
-            .mcp_servers
-            .iter()
-            .find(|server| {
-                server.connection.as_ref().is_some_and(|connection| {
-                    expected.is_none_or(|expected| connection.kind == expected)
-                })
-            })
-            .cloned()
-            .ok_or_else(|| Rejection {
-                code: "extension_connection_unavailable",
-                message: format!("extension `{id}` does not declare that connection type"),
-                fatal: false,
-            })?;
-        Ok((Arc::clone(&state.remote_mcp), server))
-    }
-
-    async fn refresh_extension_connection(
-        &self,
-        id: &str,
-    ) -> std::result::Result<ReadyPayload, Rejection> {
-        let sessions = {
-            let state = self.state.lock().await;
-            if !state
-                .config
-                .lock()
-                .map_err(|_| internal("gateway configuration lock is poisoned"))?
-                .installed_extensions
-                .contains_key(id)
-            {
-                return Err(unknown_extension(id));
-            }
-            state.sessions.values().cloned().collect()
-        };
-        self.finish_extension_mutation(sessions, id).await
-    }
-
     pub(crate) async fn install_extension(
         &self,
         source: String,
@@ -206,16 +98,6 @@ impl GatewayHost {
         }
         let staged_digest = staged.installed.digest.clone();
         let snapshot_created = staged.snapshot_created;
-        let removes_connection = installed
-            .mcp_servers
-            .iter()
-            .any(|server| server.connection.is_some())
-            && !staged
-                .installed
-                .mcp_servers
-                .iter()
-                .any(|server| server.connection.is_some());
-
         let result = async {
             let state = self.state.lock().await;
             let gate = Arc::clone(&state.session_mutations);
@@ -237,13 +119,6 @@ impl GatewayHost {
                     .insert(id.clone(), staged.installed);
                 next
             };
-            if removes_connection {
-                state
-                    .remote_mcp
-                    .disconnect(&id)
-                    .await
-                    .map_err(connection_failed)?;
-            }
             self.commit_extensions(&state, next)?;
             let sessions = state.sessions.values().cloned().collect();
             drop(state);
@@ -269,29 +144,17 @@ impl GatewayHost {
         let state = self.state.lock().await;
         let gate = Arc::clone(&state.session_mutations);
         let _sessions = gate.write_owned().await;
-        let (next, had_connection) = {
+        let next = {
             let current = state
                 .config
                 .lock()
                 .map_err(|_| internal("gateway configuration lock is poisoned"))?;
             let mut next = current.clone();
-            let removed = next
-                .installed_extensions
+            next.installed_extensions
                 .remove(&id)
                 .ok_or_else(|| unknown_extension(&id))?;
-            let had_connection = removed
-                .mcp_servers
-                .into_iter()
-                .any(|server| server.connection.is_some());
-            (next, had_connection)
+            next
         };
-        let remote_mcp = Arc::clone(&state.remote_mcp);
-        if had_connection {
-            remote_mcp
-                .disconnect(&id)
-                .await
-                .map_err(connection_failed)?;
-        }
         self.commit_extensions(&state, next)?;
         let sessions = state.sessions.values().cloned().collect();
         drop(state);
@@ -408,14 +271,6 @@ fn unknown_extension(id: &str) -> Rejection {
     }
 }
 
-fn connection_failed(error: Error) -> Rejection {
-    Rejection {
-        code: "extension_connection_failed",
-        message: error.to_string(),
-        fatal: false,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -486,7 +341,6 @@ mod tests {
             digest: "b".repeat(64),
             skills: vec!["fixture".into()],
             hooks: Vec::new(),
-            mcp_servers: Vec::new(),
             trusted_hook_digest: None,
         }
     }
@@ -591,7 +445,6 @@ mod tests {
             digest: previous_digest.clone(),
             skills: Vec::new(),
             hooks: vec![hook.clone()],
-            mcp_servers: Vec::new(),
             trusted_hook_digest: Some(previous_digest),
         };
         let mut next = InstalledExtension {

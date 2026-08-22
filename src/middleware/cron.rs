@@ -213,7 +213,6 @@ mod tests {
                 ToolContext {
                     sandbox,
                     permissions,
-                    call_id: "call".into(),
                     turn_id: "turn".into(),
                 },
                 serde_json::json!({

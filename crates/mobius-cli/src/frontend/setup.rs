@@ -333,7 +333,6 @@ mod tests {
             skills: vec!["plugin-a".into()],
             hooks: Vec::new(),
             hooks_trusted: false,
-            connection: None,
         }
     }
 

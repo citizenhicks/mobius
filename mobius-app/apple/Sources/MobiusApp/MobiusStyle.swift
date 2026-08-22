@@ -34,6 +34,8 @@ enum MobiusStyle {
     static let bodyFont: Font = .body
     static let controlFont: Font = .body.weight(.medium)
     static let metadataFont: Font = .footnote.monospaced()
+    /// A code someone reads off this screen and types on another device.
+    static let codeFont: Font = .system(.title2, design: .monospaced, weight: .bold)
     static let badgeFont: Font = .footnote.weight(.medium)
     /// The title of a section or a card.
     static let titleFont: Font = .headline
@@ -139,7 +141,6 @@ struct MobiusGlyph: Hashable {
     static let gitBranch = Self("hi.gitBranch")
     static let globe02 = Self("hi.globe02")
     static let go = Self("hi.go")
-    static let googleMaps = Self("hi.googleMaps")
     static let group01 = Self("hi.group01")
     static let hardDrives = Self("hi.hardDrives")
     static let image01 = Self("hi.image01")
@@ -159,7 +160,6 @@ struct MobiusGlyph: Hashable {
     static let note01 = Self("hi.note01")
     static let notePencil = Self("hi.notePencil")
     static let notificationSquare = Self("hi.notificationSquare")
-    static let notion01 = Self("hi.notion01")
     static let path = Self("hi.path")
     static let pencilSimple = Self("hi.pencilSimple")
     static let playFill = Self("hi.playFill")
@@ -196,13 +196,6 @@ struct MobiusGlyph: Hashable {
     static let x = Self("hi.x")
     static let xCircle = Self("hi.xCircle")
 
-    static func catalog(named name: String?) -> Self {
-        switch name {
-        case "GoogleMapsIcon": .googleMaps
-        case "Notion01Icon": .notion01
-        default: .squaresFour
-        }
-    }
 }
 
 extension MobiusGlyph {

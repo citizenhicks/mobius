@@ -245,22 +245,17 @@ extension GatewayWireTests {
         XCTAssertEqual(finishedLoginID, "device-1")
         XCTAssertEqual(finishedProvider, "openai_codex")
 
-        guard case .extensionConnectionStarted(
-            let extensionRequestID,
-            let extensionID,
-            let authorizationURL
-        ) = try decodeEnvelope(#"{"version":44,"type":"extension_connection_started","request_id":"extension-1","id":"plugin:notion","authorization_url":"https://mcp.notion.com/authorize?state=state"}"#) else {
-            return XCTFail("Expected extension connection started envelope")
-        }
-        XCTAssertEqual(extensionRequestID, "extension-1")
-        XCTAssertEqual(extensionID, "plugin:notion")
-        XCTAssertEqual(authorizationURL, "https://mcp.notion.com/authorize?state=state")
-
-        guard case .gitCredentialStatus(let gitCredentialID, let available) = try decodeEnvelope(#"{"version":42,"type":"git_credential_status","request_id":"git-credential-1","available":true}"#) else {
+        guard case .gitCredentialStatus(let gitCredentialID, let available, let legacyUsername) = try decodeEnvelope(#"{"version":42,"type":"git_credential_status","request_id":"git-credential-1","available":true}"#) else {
             return XCTFail("Expected Git credential status")
         }
         XCTAssertEqual(gitCredentialID, "git-credential-1")
         XCTAssertTrue(available)
+        XCTAssertNil(legacyUsername)
+
+        guard case .gitCredentialStatus(_, _, let username) = try decodeEnvelope(#"{"version":44,"type":"git_credential_status","request_id":"git-credential-2","available":true,"username":"octo"}"#) else {
+            return XCTFail("Expected Git credential username")
+        }
+        XCTAssertEqual(username, "octo")
 
         guard case .sshIdentities(let sshListID, let identities) = try decodeEnvelope(#"{"version":44,"type":"ssh_identities","request_id":"ssh-list-1","identities":[{"label":"id_ed25519","algorithm":"ssh-ed25519","fingerprint":"SHA256:safe"}]}"#) else {
             return XCTFail("Expected SSH identities")

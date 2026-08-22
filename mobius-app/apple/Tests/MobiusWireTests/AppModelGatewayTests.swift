@@ -126,6 +126,7 @@ extension AppModelTests {
         model.providerActionState = .credentialSaved("Gateway A")
         model.pairingCodeInfo = PairingCodeInfo(code: "1234", expiresAt: .distantFuture)
         model.gitCredentialAvailable = true
+        model.gitCredentialUsername = "octo"
         let sshIdentity = SshIdentityRecord(
             label: "id_ed25519",
             algorithm: "ssh-ed25519",
@@ -146,6 +147,7 @@ extension AppModelTests {
         XCTAssertEqual(model.providerActionState, .idle)
         XCTAssertNil(model.pairingCodeInfo)
         XCTAssertNil(model.gitCredentialAvailable)
+        XCTAssertNil(model.gitCredentialUsername)
         XCTAssertNil(model.sshIdentities)
         XCTAssertNil(model.generatedSshIdentity)
     }
@@ -153,13 +155,8 @@ extension AppModelTests {
     func testConnectionEndCancelsExtensionAndCredentialRequests() throws {
         let model = try model()
         model.connectionState = .ready
-        model.extensionAction = .connecting(id: "notion", name: "Notion")
+        model.extensionAction = .installing
         model.extensionRequestID = "extension-request"
-        model.extensionAuthorizationChallenge = ExtensionAuthorizationChallenge(
-            id: "extension-request",
-            extensionID: "notion",
-            authorizationURL: try XCTUnwrap(URL(string: "https://mcp.notion.com/authorize"))
-        )
         model.gitCredentialRequestID = "git-request"
         model.isApprovingGitCredential = true
         model.isCheckingGitCredential = true
@@ -174,7 +171,6 @@ extension AppModelTests {
 
         XCTAssertNil(model.extensionAction)
         XCTAssertNil(model.extensionRequestID)
-        XCTAssertNil(model.extensionAuthorizationChallenge)
         XCTAssertNil(model.gitCredentialRequestID)
         XCTAssertFalse(model.isApprovingGitCredential)
         XCTAssertFalse(model.isCheckingGitCredential)
@@ -360,6 +356,22 @@ extension AppModelTests {
 
         XCTAssertEqual(model.pendingApproval, approval)
         XCTAssertEqual(model.toast?.tone, .error)
+    }
+
+    func testGatewaySendFailureEndsTheStaleConnection() async throws {
+        let model = try model { _ in throw POSIXError(.ENOTCONN) }
+        model.connectionState = .ready
+        model.extensionInstallSource = "https://github.com/DietrichGebert/ponytail.git"
+
+        model.installExtension()
+
+        let disconnected = await eventually {
+            model.connectionState == .failed("The gateway disconnected.")
+        }
+        XCTAssertTrue(disconnected)
+        XCTAssertNil(model.extensionAction)
+        XCTAssertNil(model.extensionRequestID)
+        XCTAssertEqual(model.toast?.message, "The gateway disconnected.")
     }
 
     func testSshIdentitySetupReturnsOnlyTheNewPublicKeyForSharing() async throws {

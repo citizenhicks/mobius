@@ -56,7 +56,6 @@ struct MobiusCloudExtensionCatalogItem: Decodable, Equatable, Identifiable, Send
     let id: String
     let name: String
     let description: String
-    let icon: String?
     let source: MobiusCloudExtensionSource
 }
 
@@ -489,10 +488,6 @@ final class MobiusCloudClient {
                 && !item.name.isEmpty
                 && item.name.utf8.count <= 100
                 && item.description.utf8.count <= 1_000
-                && (item.icon?.range(
-                    of: #"^[A-Za-z][A-Za-z0-9]{0,63}Icon$"#,
-                    options: .regularExpression
-                ) != nil || item.icon == nil)
                 && Self.isValidExtensionSource(item.source)
         }) else {
             throw MobiusCloudError.invalidExtensionCatalog

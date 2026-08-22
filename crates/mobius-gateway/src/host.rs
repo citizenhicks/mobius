@@ -102,7 +102,6 @@ struct GatewayState {
     catalog_lock: Arc<Mutex<()>>,
     session_mutations: Arc<RwLock<()>>,
     extension_mutations: Arc<Mutex<()>>,
-    remote_mcp: Arc<crate::remote_mcp::RemoteMcp>,
     provider_epoch: Arc<AtomicU64>,
     activities: SessionActivities,
     provider_login: Arc<StdMutex<Option<String>>>,
@@ -133,7 +132,6 @@ impl GatewayHost {
         credentials: Arc<CredentialStore>,
         cron: Arc<CronStore>,
     ) -> Result<Self> {
-        let remote_mcp = Arc::new(crate::remote_mcp::RemoteMcp::new(store.state_dir()));
         let extensions = ExtensionStore::new(&store);
         extensions.prune(&config)?;
         extensions.verify_installed_snapshots(&config)?;
@@ -157,7 +155,6 @@ impl GatewayHost {
                 catalog_lock: Arc::new(Mutex::new(())),
                 session_mutations: Arc::new(RwLock::new(())),
                 extension_mutations: Arc::new(Mutex::new(())),
-                remote_mcp,
                 provider_epoch: Arc::new(AtomicU64::new(0)),
                 activities: Arc::new(StdMutex::new(HashMap::new())),
                 provider_login: Arc::new(StdMutex::new(None)),
@@ -190,7 +187,7 @@ impl GatewayHost {
     pub(crate) async fn probe_git_credential(
         &self,
         target: &str,
-    ) -> std::result::Result<bool, Rejection> {
+    ) -> std::result::Result<Option<String>, Rejection> {
         probe_git_credential_on_host(target).await
     }
 
@@ -199,7 +196,7 @@ impl GatewayHost {
         target: &str,
         username: &str,
         token: &str,
-    ) -> std::result::Result<(), Rejection> {
+    ) -> std::result::Result<String, Rejection> {
         approve_git_credential_on_host(target, username, token).await
     }
 

@@ -541,7 +541,7 @@ fn git_diff_query_has_a_correlated_unified_diff_response() {
 }
 
 #[test]
-fn git_credential_status_never_returns_credential_material() {
+fn git_credential_status_returns_only_safe_metadata() {
     let request = serde_json::to_value(ClientFrame::new(ClientMessage::ApproveGitCredential {
         request_id: "request-credential".into(),
         target: "https://git.example.com".into(),
@@ -552,6 +552,7 @@ fn git_credential_status_never_returns_credential_material() {
     let response = serde_json::to_value(ServerFrame::new(ServerMessage::GitCredentialStatus {
         request_id: "request-credential".into(),
         available: true,
+        username: Some("octo".into()),
     }))
     .expect("encode Git credential status");
 
@@ -559,8 +560,8 @@ fn git_credential_status_never_returns_credential_material() {
     assert_eq!(request["token"], "secret");
     assert_eq!(response["type"], "git_credential_status");
     assert_eq!(response["available"], true);
+    assert_eq!(response["username"], "octo");
     assert!(response.get("target").is_none());
-    assert!(response.get("username").is_none());
     assert!(response.get("token").is_none());
 }
 
@@ -784,25 +785,6 @@ fn extension_lifecycle_requests_are_gateway_scoped() {
             request_id: "revoke-trust".into(),
             id: "plugin:ponytail".into(),
             expected_digest: "a".repeat(64),
-        },
-        ClientMessage::StartExtensionConnection {
-            request_id: "connect".into(),
-            id: "plugin:notion".into(),
-            redirect_uri: "mobius://extension-auth".into(),
-        },
-        ClientMessage::FinishExtensionConnection {
-            request_id: "finish-connection".into(),
-            id: "plugin:notion".into(),
-            callback_url: "mobius://extension-auth?code=code&state=state".into(),
-        },
-        ClientMessage::SetExtensionConnectionSecret {
-            request_id: "set-secret".into(),
-            id: "plugin:google-maps".into(),
-            secret: "key".into(),
-        },
-        ClientMessage::DisconnectExtensionConnection {
-            request_id: "disconnect".into(),
-            id: "plugin:notion".into(),
         },
     ];
 

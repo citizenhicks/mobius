@@ -88,9 +88,9 @@ extension AppModel {
                 try await self.requestSender(request)
             } catch {
                 guard generation == self.connectionGeneration else { return }
-                let message = error.localizedDescription
-                self.showToast(message, tone: .error)
+                let message = GatewayWireError.disconnected.localizedDescription
                 onFailure?(message)
+                self.connectionEnded(generation: generation, message: message)
             }
         }
     }
@@ -204,19 +204,14 @@ extension AppModel {
             where providerInstances[index].provider == provider {
                 providerInstances[index].configured = true
             }
-        case .extensionConnectionStarted(let requestID, let id, let authorizationURL):
-            receiveExtensionAuthorization(
-                requestID: requestID,
-                extensionID: id,
-                authorizationURL: authorizationURL
-            )
-        case .gitCredentialStatus(let requestID, let available):
+        case .gitCredentialStatus(let requestID, let available, let username):
             guard requestID == gitCredentialRequestID else { break }
             let approved = isApprovingGitCredential
             gitCredentialRequestID = nil
             isApprovingGitCredential = false
             isCheckingGitCredential = false
             gitCredentialAvailable = available
+            gitCredentialUsername = available ? username : nil
             gitCredentialError = nil
             if approved, available {
                 showToast("Git credential saved by the gateway host.", tone: .success)

@@ -238,8 +238,7 @@ final class AppModelTests: XCTestCase {
     }
 
     func extensionRecord(
-        hooksTrusted: Bool = true,
-        connection: ExtensionConnectionRecord? = nil
+        hooksTrusted: Bool = true
     ) -> ExtensionRecord {
         ExtensionRecord(
             id: "plugin:ponytail",
@@ -260,8 +259,7 @@ final class AppModelTests: XCTestCase {
                 command: "bin/review",
                 timeoutSeconds: 10
             )],
-            hooksTrusted: hooksTrusted,
-            connection: connection
+            hooksTrusted: hooksTrusted
         )
     }
 

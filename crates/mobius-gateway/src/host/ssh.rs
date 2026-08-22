@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::io::{Read as _, Write as _};
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -14,7 +14,6 @@ use crate::wire::SshIdentityRecord;
 use super::Rejection;
 
 const GENERATED_KEY_LABEL: &str = "id_ed25519";
-const HEADLESS_SSH_CONFIG: &[u8] = b"Host *\n    StrictHostKeyChecking accept-new\n";
 const KEYGEN_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_IDENTITIES: usize = 64;
 const MAX_PUBLIC_KEY_BYTES: usize = 16 * 1024;
@@ -84,7 +83,6 @@ async fn generate_in(
     protect_directory(directory)?;
     let destination = directory.join(GENERATED_KEY_LABEL);
     ensure_destination_available(&destination)?;
-    prepare_headless_host_verification(directory)?;
 
     let temporary = tempfile::Builder::new()
         .prefix(".mobius-keygen-")
@@ -144,32 +142,6 @@ fn ensure_destination_available(destination: &Path) -> std::result::Result<(), R
         });
     }
     Ok(())
-}
-
-fn prepare_headless_host_verification(directory: &Path) -> std::result::Result<(), Rejection> {
-    let path = directory.join("config");
-    match fs::symlink_metadata(&path) {
-        Ok(_) => return Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(_) => return Err(ssh_error("failed to inspect the host SSH configuration")),
-    }
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
-    }
-    match options.open(path) {
-        Ok(mut file) => file
-            .write_all(HEADLESS_SSH_CONFIG)
-            .and_then(|()| file.sync_all())
-            .map_err(|_| ssh_error("failed to configure headless SSH host verification")),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
-        Err(_) => Err(ssh_error(
-            "failed to configure headless SSH host verification",
-        )),
-    }
 }
 
 fn install_keypair(
@@ -344,49 +316,17 @@ mod tests {
         assert!(!serialized.contains(&directory.path().display().to_string()));
     }
 
-    #[test]
-    fn headless_host_verification_never_replaces_user_configuration() {
-        let directory = tempfile::tempdir().expect("SSH directory");
-        let path = directory.path().join("config");
-
-        prepare_headless_host_verification(directory.path()).expect("headless configuration");
-        assert_eq!(
-            fs::read(&path).expect("read configuration"),
-            HEADLESS_SSH_CONFIG
-        );
-        fs::write(&path, b"Host github.com\n    StrictHostKeyChecking yes\n")
-            .expect("user configuration");
-        prepare_headless_host_verification(directory.path()).expect("preserve configuration");
-
-        assert_eq!(
-            fs::read(&path).expect("read user configuration"),
-            b"Host github.com\n    StrictHostKeyChecking yes\n"
-        );
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            assert_eq!(
-                fs::metadata(path)
-                    .expect("configuration metadata")
-                    .permissions()
-                    .mode()
-                    & 0o777,
-                0o600
-            );
-        }
-    }
-
     #[tokio::test]
-    async fn existing_identity_is_rejected_before_headless_policy_changes() {
+    async fn existing_identity_is_rejected_without_overwrite() {
         let directory = tempfile::tempdir().expect("SSH directory");
-        fs::write(
-            directory.path().join(GENERATED_KEY_LABEL),
-            "PRIVATE MATERIAL",
-        )
-        .expect("existing identity");
+        let path = directory.path().join(GENERATED_KEY_LABEL);
+        fs::write(&path, "PRIVATE MATERIAL").expect("existing identity");
 
         assert!(generate_in(directory.path()).await.is_err());
-        assert!(!directory.path().join("config").exists());
+        assert_eq!(
+            fs::read_to_string(path).expect("existing identity"),
+            "PRIVATE MATERIAL"
+        );
     }
 
     #[cfg(unix)]

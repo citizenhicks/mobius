@@ -247,6 +247,7 @@ private struct ChatOptionsMenu: View {
                 }
             }
         }
+        .groupedHeaderAction()
     }
 
     private func activate(_ widget: MountedWidget) {

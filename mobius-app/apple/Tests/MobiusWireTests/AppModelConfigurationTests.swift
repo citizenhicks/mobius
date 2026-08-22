@@ -880,14 +880,13 @@ extension AppModelTests {
         let model = try model { request in await recorder.record(request) }
         model.connectionState = .ready
         let item = MobiusCloudExtensionCatalogItem(
-            id: "notion",
-            name: "Notion",
-            description: "Search, read, and update your Notion workspace.",
-            icon: "Notion01Icon",
+            id: "ponytail",
+            name: "Ponytail",
+            description: "Prefer the smallest correct implementation.",
             source: MobiusCloudExtensionSource(
-                url: "https://github.com/citizenhicks/mobius.git",
-                reference: "mobius-gateway-v0.9.10",
-                subdirectory: "plugins/notion"
+                url: "https://github.com/DietrichGebert/ponytail.git",
+                reference: "v4.9.0",
+                subdirectory: nil
             )
         )
         model.availableExtensions = [item]
@@ -953,184 +952,6 @@ extension AppModelTests {
         XCTAssertEqual(untrustID, trusted.id)
         XCTAssertEqual(untrustDigest, trusted.digest)
         XCTAssertEqual(model.extensionAction, .untrusting(trusted.name))
-    }
-
-    func testOAuthExtensionConnectionForwardsTheNativeCallback() async throws {
-        let recorder = GatewayRequestRecorder()
-        let model = try model { request in await recorder.record(request) }
-        model.connectionState = .ready
-        let disconnected = extensionRecord(connection: ExtensionConnectionRecord(
-            kind: .oauth,
-            state: .disconnected,
-            label: "Notion",
-            message: nil
-        ))
-        model.extensions = [disconnected]
-
-        model.startExtensionConnection(disconnected)
-
-        let start = await recorder.firstRequest(after: 0) {
-            if case .startExtensionConnection = $0 { return true }
-            return false
-        }
-        guard case .startExtensionConnection(
-            let startRequestID,
-            let extensionID,
-            let redirectURI
-        ) = try XCTUnwrap(start) else {
-            return XCTFail("Expected an extension connection request")
-        }
-        XCTAssertEqual(extensionID, disconnected.id)
-        XCTAssertEqual(redirectURI, "mobius://extension-auth")
-
-        model.handle(.extensionConnectionStarted(
-            requestID: startRequestID,
-            id: disconnected.id,
-            authorizationURL: "https://mcp.notion.com/authorize?state=state"
-        ))
-        let challenge = try XCTUnwrap(model.extensionAuthorizationChallenge)
-        XCTAssertEqual(challenge.extensionID, disconnected.id)
-        XCTAssertEqual(challenge.authorizationURL.host, "mcp.notion.com")
-
-        model.finishExtensionConnection(
-            challenge,
-            callbackURL: try XCTUnwrap(URL(string: "mobius://extension-auth?code=code&state=state"))
-        )
-
-        let finish = await recorder.firstRequest(after: 1) {
-            if case .finishExtensionConnection = $0 { return true }
-            return false
-        }
-        guard case .finishExtensionConnection(
-            let finishRequestID,
-            let finishedExtensionID,
-            let callbackURL
-        ) = try XCTUnwrap(finish) else {
-            return XCTFail("Expected an extension connection callback")
-        }
-        XCTAssertEqual(finishedExtensionID, disconnected.id)
-        XCTAssertEqual(callbackURL, "mobius://extension-auth?code=code&state=state")
-
-        let connected = extensionRecord(connection: ExtensionConnectionRecord(
-            kind: .oauth,
-            state: .connected,
-            label: "Notion",
-            message: nil
-        ))
-        model.handle(.gatewayConfigured(
-            requestID: finishRequestID,
-            payload: ready(
-                defaultConfig: VersionedAgentConfig(revision: 1, config: composition()),
-                extensions: [connected]
-            )
-        ))
-
-        XCTAssertNil(model.extensionAction)
-        XCTAssertEqual(model.toast?.message, "\(connected.name) connected.")
-        XCTAssertEqual(model.toast?.tone, .success)
-
-        model.extensions = [disconnected]
-        model.extensionAction = .connecting(id: disconnected.id, name: disconnected.name)
-        model.extensionRequestID = "extension-not-connected"
-        model.completeExtensionAction(requestID: "extension-not-connected")
-        XCTAssertEqual(
-            model.toast?.message,
-            "\(disconnected.name) connection was not completed."
-        )
-        XCTAssertEqual(model.toast?.tone, .info)
-    }
-
-    func testExtensionConnectionRejectsAnInsecureAuthorizationURL() async throws {
-        let recorder = GatewayRequestRecorder()
-        let model = try model { request in await recorder.record(request) }
-        model.connectionState = .ready
-        let disconnected = extensionRecord(connection: ExtensionConnectionRecord(
-            kind: .oauth,
-            state: .disconnected,
-            label: "Notion",
-            message: nil
-        ))
-        model.extensions = [disconnected]
-        model.startExtensionConnection(disconnected)
-        let requestID = try XCTUnwrap(model.extensionRequestID)
-        model.receiveExtensionAuthorization(
-            requestID: requestID,
-            extensionID: disconnected.id,
-            authorizationURL: "http://mcp.notion.com/authorize"
-        )
-        XCTAssertNil(model.extensionAuthorizationChallenge)
-        XCTAssertNil(model.extensionRequestID)
-        XCTAssertNil(model.extensionAction)
-        XCTAssertEqual(model.toast?.message, "The extension returned an invalid sign-in address.")
-        XCTAssertEqual(model.toast?.tone, .error)
-    }
-
-    func testAPIKeyExtensionCanConnectAndDisconnect() async throws {
-        let recorder = GatewayRequestRecorder()
-        let model = try model { request in await recorder.record(request) }
-        model.connectionState = .ready
-        let disconnected = extensionRecord(connection: ExtensionConnectionRecord(
-            kind: .apiKey,
-            state: .disconnected,
-            label: "Google Maps API key",
-            message: nil
-        ))
-        model.extensions = [disconnected]
-
-        model.setExtensionConnectionSecret(disconnected, secret: "maps-secret")
-
-        let setSecret = await recorder.firstRequest(after: 0) {
-            if case .setExtensionConnectionSecret = $0 { return true }
-            return false
-        }
-        guard case .setExtensionConnectionSecret(
-            let setRequestID,
-            let extensionID,
-            let secret
-        ) = try XCTUnwrap(setSecret) else {
-            return XCTFail("Expected an extension secret request")
-        }
-        XCTAssertEqual(extensionID, disconnected.id)
-        XCTAssertEqual(secret, "maps-secret")
-
-        let connected = extensionRecord(connection: ExtensionConnectionRecord(
-            kind: .apiKey,
-            state: .connected,
-            label: "Google Maps API key",
-            message: nil
-        ))
-        model.handle(.gatewayConfigured(
-            requestID: setRequestID,
-            payload: ready(
-                defaultConfig: VersionedAgentConfig(revision: 1, config: composition()),
-                extensions: [connected]
-            )
-        ))
-        XCTAssertEqual(model.toast?.message, "\(connected.name) credential saved.")
-        XCTAssertEqual(model.toast?.tone, .success)
-        model.disconnectExtension(connected)
-
-        let disconnect = await recorder.firstRequest(after: 1) {
-            if case .disconnectExtensionConnection = $0 { return true }
-            return false
-        }
-        guard case .disconnectExtensionConnection(
-            let disconnectRequestID,
-            let disconnectedExtensionID
-        ) = try XCTUnwrap(disconnect) else {
-            return XCTFail("Expected an extension disconnect request")
-        }
-        XCTAssertEqual(disconnectedExtensionID, connected.id)
-
-        model.handle(.gatewayConfigured(
-            requestID: disconnectRequestID,
-            payload: ready(
-                defaultConfig: VersionedAgentConfig(revision: 1, config: composition()),
-                extensions: [disconnected]
-            )
-        ))
-        XCTAssertEqual(model.toast?.message, "\(connected.name) disconnected.")
-        XCTAssertEqual(model.toast?.tone, .success)
     }
 
     func testCatalogRefreshPreservesStableMissingExtensionReferences() throws {

@@ -225,10 +225,12 @@ struct HeaderOptionsMenu<Content: View>: View {
     }
 
     var body: some View {
+        // No target padded out here: the system's glass hugs the label, and a 44pt square
+        // draws as a wide pill rather than the circle a lone action should be. Inside a
+        // `HeaderActionGroup` the call site adds `groupedHeaderAction()` for the target it
+        // needs to fill its half of the shared surface.
         Menu { content } label: {
             MobiusIcon(.dotsThree, foreground: .primary)
-                .frame(width: MobiusStyle.iconButtonSize, height: MobiusStyle.iconButtonSize)
-                .contentShape(Rectangle())
         }
         .labelStyle(.titleAndIcon)
         .menuIndicator(.hidden)

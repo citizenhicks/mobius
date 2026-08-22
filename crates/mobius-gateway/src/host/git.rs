@@ -3,7 +3,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use mobius::backend::sandbox::CommandOutput;
-use tokio::io::AsyncWriteExt as _;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::process::Command;
 use url::Url;
 
@@ -19,8 +19,11 @@ const GIT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_CREDENTIAL_TARGET_BYTES: usize = 2 * 1024;
 const MAX_CREDENTIAL_USERNAME_BYTES: usize = 512;
 const MAX_CREDENTIAL_TOKEN_BYTES: usize = 16 * 1024;
+const MAX_CREDENTIAL_OUTPUT_BYTES: usize = 32 * 1024;
 
-pub(super) async fn probe_credential(target: &str) -> std::result::Result<bool, Rejection> {
+pub(super) async fn probe_credential(
+    target: &str,
+) -> std::result::Result<Option<String>, Rejection> {
     let target = credential_target(target)?;
     credential_fill(&target, None).await
 }
@@ -29,7 +32,7 @@ pub(super) async fn approve_credential(
     target: &str,
     username: &str,
     token: &str,
-) -> std::result::Result<(), Rejection> {
+) -> std::result::Result<String, Rejection> {
     let target = credential_target(target)?;
     let username = credential_field(username, MAX_CREDENTIAL_USERNAME_BYTES, "username")?;
     let token = credential_field(token, MAX_CREDENTIAL_TOKEN_BYTES, "token")?;
@@ -39,22 +42,87 @@ pub(super) async fn approve_credential(
             "the host Git credential helper rejected the credential",
         ));
     }
-    if !credential_fill(&target, Some(username)).await? {
-        return Err(credential_error(
-            "the host has no usable Git credential helper for this HTTPS target",
-        ));
-    }
-    Ok(())
+    credential_fill(&target, Some(username))
+        .await?
+        .ok_or_else(|| {
+            credential_error("the host has no usable Git credential helper for this HTTPS target")
+        })
 }
 
 async fn credential_fill(
     target: &str,
     username: Option<&str>,
-) -> std::result::Result<bool, Rejection> {
-    run_credential("fill", &credential_input(target, username, None)).await
+) -> std::result::Result<Option<String>, Rejection> {
+    let mut command = credential_command("fill");
+    command.stdout(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|_| credential_error("the host Git command is unavailable"))?;
+    let result = tokio::time::timeout(GIT_TIMEOUT, async {
+        write_credential_input(&mut child, &credential_input(target, username, None)).await?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| credential_error("failed to read the host Git credential response"))?;
+        let mut output = Vec::with_capacity(MAX_CREDENTIAL_OUTPUT_BYTES + 1);
+        stdout
+            .take((MAX_CREDENTIAL_OUTPUT_BYTES + 1) as u64)
+            .read_to_end(&mut output)
+            .await
+            .map_err(|_| credential_error("failed to read the host Git credential response"))?;
+        if output.len() > MAX_CREDENTIAL_OUTPUT_BYTES {
+            output.fill(0);
+            let _ = child.kill().await;
+            return Err(credential_error(
+                "the host Git credential helper returned invalid data",
+            ));
+        }
+        let status = child
+            .wait()
+            .await
+            .map_err(|_| credential_error("the host Git credential command failed"))?;
+        if !status.success() {
+            output.fill(0);
+            return Ok(None);
+        }
+        let username = parse_credential_username(target, &output);
+        output.fill(0);
+        username.map(Some)
+    })
+    .await;
+    match result {
+        Ok(result) => result,
+        Err(_) => {
+            let _ = child.kill().await;
+            Err(timeout())
+        }
+    }
 }
 
 async fn run_credential(operation: &str, input: &[u8]) -> std::result::Result<bool, Rejection> {
+    let mut command = credential_command(operation);
+    command.stdout(Stdio::null());
+    let mut child = command
+        .spawn()
+        .map_err(|_| credential_error("the host Git command is unavailable"))?;
+    let result = tokio::time::timeout(GIT_TIMEOUT, async {
+        write_credential_input(&mut child, input).await?;
+        child
+            .wait()
+            .await
+            .map_err(|_| credential_error("the host Git credential command failed"))
+    })
+    .await;
+    match result {
+        Ok(status) => Ok(status?.success()),
+        Err(_) => {
+            let _ = child.kill().await;
+            Err(timeout())
+        }
+    }
+}
+
+fn credential_command(operation: &str) -> Command {
     let mut command = Command::new("git");
     command
         .args([
@@ -77,45 +145,35 @@ async fn run_credential(operation: &str, input: &[u8]) -> std::result::Result<bo
         .env("GCM_INTERACTIVE", "Never")
         .env("LC_ALL", "C")
         .stdin(Stdio::piped())
-        .stdout(Stdio::null())
         .stderr(Stdio::null())
         .kill_on_drop(true);
     for name in REPOSITORY_LOCAL_GIT_ENVIRONMENT {
         command.env_remove(name);
     }
-    let mut child = command
-        .spawn()
-        .map_err(|_| credential_error("the host Git command is unavailable"))?;
-    let result = tokio::time::timeout(GIT_TIMEOUT, async {
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| credential_error("failed to open the host Git credential input"))?;
-        stdin
-            .write_all(input)
-            .await
-            .map_err(|_| credential_error("failed to send the credential to host Git"))?;
-        drop(stdin);
-        child
-            .wait()
-            .await
-            .map_err(|_| credential_error("the host Git credential command failed"))
-    })
-    .await;
-    match result {
-        Ok(status) => Ok(status?.success()),
-        Err(_) => {
-            let _ = child.kill().await;
-            Err(timeout())
-        }
-    }
+    command
+}
+
+async fn write_credential_input(
+    child: &mut tokio::process::Child,
+    input: &[u8],
+) -> std::result::Result<(), Rejection> {
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| credential_error("failed to open the host Git credential input"))?;
+    stdin
+        .write_all(input)
+        .await
+        .map_err(|_| credential_error("failed to send the credential to host Git"))?;
+    drop(stdin);
+    Ok(())
 }
 
 fn credential_target(value: &str) -> std::result::Result<String, Rejection> {
     let value = value.trim();
     if value.is_empty()
         || value.len() > MAX_CREDENTIAL_TARGET_BYTES
-        || value.contains(['\r', '\n', '\0'])
+        || value.chars().any(char::is_control)
     {
         return Err(invalid_credential("enter a valid HTTPS Git host or URL"));
     }
@@ -145,7 +203,7 @@ fn credential_field<'a>(
     max_bytes: usize,
     label: &str,
 ) -> std::result::Result<&'a str, Rejection> {
-    if value.is_empty() || value.len() > max_bytes || value.contains(['\r', '\n', '\0']) {
+    if value.is_empty() || value.len() > max_bytes || value.chars().any(char::is_control) {
         return Err(invalid_credential(format!("enter a valid Git {label}")));
     }
     Ok(value)
@@ -165,6 +223,86 @@ fn credential_input(target: &str, username: Option<&str>, token: Option<&str>) -
     }
     input.push(b'\n');
     input
+}
+
+fn parse_credential_username(
+    target: &str,
+    output: &[u8],
+) -> std::result::Result<String, Rejection> {
+    if output.is_empty() || output.contains(&b'\0') || output.contains(&b'\r') {
+        return Err(invalid_credential_output());
+    }
+    let record = if let Some(end) = output.windows(2).position(|bytes| bytes == b"\n\n") {
+        if end + 2 != output.len() {
+            return Err(invalid_credential_output());
+        }
+        &output[..end]
+    } else {
+        output.strip_suffix(b"\n").unwrap_or(output)
+    };
+    let target = Url::parse(target).map_err(|_| invalid_credential_output())?;
+    let expected_host = match target.port() {
+        Some(port) => format!(
+            "{}:{port}",
+            target.host_str().ok_or_else(invalid_credential_output)?
+        ),
+        None => target
+            .host_str()
+            .ok_or_else(invalid_credential_output)?
+            .to_owned(),
+    };
+    let expected_path = target.path().trim_start_matches('/').as_bytes();
+    let mut protocol = None;
+    let mut host = None;
+    let mut path = None;
+    let mut username = None;
+    let mut password = None;
+    for line in record.split(|byte| *byte == b'\n') {
+        let Some(separator) = line.iter().position(|byte| *byte == b'=') else {
+            return Err(invalid_credential_output());
+        };
+        let (key, value) = (&line[..separator], &line[separator + 1..]);
+        if key.is_empty() {
+            return Err(invalid_credential_output());
+        }
+        match key {
+            b"protocol" => set_credential_field(&mut protocol, value)?,
+            b"host" => set_credential_field(&mut host, value)?,
+            b"path" => set_credential_field(&mut path, value)?,
+            b"username" => set_credential_field(&mut username, value)?,
+            b"password" => set_credential_field(&mut password, value)?,
+            b"url" | b"credential" => return Err(invalid_credential_output()),
+            _ => {}
+        }
+    }
+    if protocol != Some(b"https".as_slice())
+        || host != Some(expected_host.as_bytes())
+        || path.is_some_and(|path| path.strip_prefix(b"/").unwrap_or(path) != expected_path)
+        || password.is_none_or(|password| {
+            password.is_empty() || password.len() > MAX_CREDENTIAL_TOKEN_BYTES
+        })
+    {
+        return Err(invalid_credential_output());
+    }
+    let username = username.ok_or_else(invalid_credential_output)?;
+    if username.is_empty() || username.len() > MAX_CREDENTIAL_USERNAME_BYTES {
+        return Err(invalid_credential_output());
+    }
+    let username = std::str::from_utf8(username).map_err(|_| invalid_credential_output())?;
+    if username.chars().any(char::is_control) {
+        return Err(invalid_credential_output());
+    }
+    Ok(username.to_owned())
+}
+
+fn set_credential_field<'a>(
+    field: &mut Option<&'a [u8]>,
+    value: &'a [u8],
+) -> std::result::Result<(), Rejection> {
+    if field.replace(value).is_some() {
+        return Err(invalid_credential_output());
+    }
+    Ok(())
 }
 
 pub(super) async fn status(sandbox: &GatewaySandbox) -> Option<GitStatus> {
@@ -480,6 +618,10 @@ fn credential_error(message: impl Into<String>) -> Rejection {
     }
 }
 
+fn invalid_credential_output() -> Rejection {
+    credential_error("the host Git credential helper returned invalid data")
+}
+
 fn unknown_branch() -> Rejection {
     Rejection {
         code: "unknown_git_branch",
@@ -518,11 +660,26 @@ mod tests {
         assert!(credential_target("https://user:token@git.example.com").is_err());
         assert!(credential_target("git.example.com\npassword=leak").is_err());
         assert!(credential_field("name\npassword=leak", 512, "username").is_err());
+        assert!(credential_field("name\twith-control", 512, "username").is_err());
 
         let input = credential_input("https://git.example.com/", Some("octo"), Some("token"));
         assert_eq!(
             input,
             b"url=https://git.example.com/\nusername=octo\npassword=token\n\n"
+        );
+
+        let mut output =
+            b"protocol=https\nhost=git.example.com\nusername=octo\npassword=x\n\n".to_vec();
+        let username = parse_credential_username("https://git.example.com/", &output)
+            .expect("credential username");
+        output.fill(0);
+        assert_eq!(username, "octo");
+        assert!(
+            parse_credential_username(
+                "https://git.example.com/",
+                b"protocol=https\nhost=other.example.com\nusername=octo\npassword=x\n\n"
+            )
+            .is_err()
         );
     }
 
