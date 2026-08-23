@@ -602,6 +602,7 @@ private struct GitCredentialSheet: View {
                         .foregroundStyle(palette.danger)
                 }
             }
+            .scrollContentBackground(.hidden)
             .navigationTitle("GitHub credentials")
             .toolbarTitleDisplayMode(.inline)
             .toolbar {
@@ -704,6 +705,7 @@ private struct SshCredentialSheet: View {
                         .foregroundStyle(palette.danger)
                 }
             }
+            .scrollContentBackground(.hidden)
             .navigationTitle("SSH credentials")
             .toolbarTitleDisplayMode(.inline)
             .toolbar {

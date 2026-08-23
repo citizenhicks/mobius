@@ -345,7 +345,6 @@ private struct MobiusCloudAccountDeletionSheet: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                MobiusBackdrop()
                 ScrollView {
                     VStack(alignment: .leading, spacing: MobiusSpace.l) {
                         MobiusIcon(

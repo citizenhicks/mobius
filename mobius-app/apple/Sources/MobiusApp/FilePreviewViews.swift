@@ -393,7 +393,6 @@ struct PreviewTranscriptSheet: View {
                 }
             }
         }
-        .background(MobiusBackdrop())
         .presentationDetents([.medium, .large], selection: $selectedDetent)
     }
 

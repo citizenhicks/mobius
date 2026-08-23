@@ -17,7 +17,6 @@ struct FilesView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .background(MobiusBackdrop())
             .navigationTitle(navigationTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -42,7 +41,7 @@ struct FilesView: View {
                 }
             }
         }
-        .presentationDetents([.medium])
+        .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
         .interactiveDismissDisabled(model.isLoadingFilePresentation)
     }

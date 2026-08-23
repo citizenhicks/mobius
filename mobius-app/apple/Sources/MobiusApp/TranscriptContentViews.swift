@@ -134,7 +134,6 @@ struct TurnDiffCard: View {
         .sheet(isPresented: $showsDetails) {
             NavigationStack {
                 ZStack {
-                    MobiusBackdrop()
                     WorkspaceDiffView(
                         source: source,
                         revision: 0,
@@ -352,6 +351,7 @@ private struct SessionFileCardLabel: View {
 /// glyph, name, and one line of detail.
 struct FileCard<Trailing: View>: View {
     @Environment(\.mobiusPalette) private var palette
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let name: String
     let detail: Text
     let detailColor: Color
@@ -392,31 +392,41 @@ struct FileCard<Trailing: View>: View {
                 .padding(MobiusSpace.xs)
         }
         .contentShape(MobiusStyle.tileShape)
+        .animation(reduceMotion ? nil : .spring(duration: 0.4, bounce: 0.18), value: thumbnail != nil)
     }
 
-    @ViewBuilder
     private var content: some View {
-        if let thumbnail {
-            Image(thumbnail, scale: 1, label: Text(name))
-                .resizable()
-                .scaledToFill()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .clipped()
-        } else {
-            VStack(spacing: 0) {
-                MobiusIcon(.fileText, size: 26, foreground: palette.accent)
+        // The placeholder stays put and the thumbnail dissolves over it, so only one
+        // thing fades while the tile springs into the image's aspect ratio.
+        ZStack {
+            placeholder
+            if let thumbnail {
+                Image(thumbnail, scale: 1, label: Text(name))
+                    .resizable()
+                    .scaledToFill()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                Text(name)
-                    .font(MobiusStyle.badgeFont)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                detail
-                    .font(MobiusStyle.badgeFont)
-                    .foregroundStyle(detailColor)
-                    .lineLimit(1)
+                    .background(palette.raised)
+                    .clipped()
+                    .accessibilityHidden(true)
+                    .transition(.opacity)
             }
-            .padding(MobiusSpace.m)
         }
+    }
+
+    private var placeholder: some View {
+        VStack(spacing: 0) {
+            MobiusIcon(.fileText, size: 26, foreground: palette.accent)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            Text(name)
+                .font(MobiusStyle.badgeFont)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            detail
+                .font(MobiusStyle.badgeFont)
+                .foregroundStyle(detailColor)
+                .lineLimit(1)
+        }
+        .padding(MobiusSpace.m)
     }
 }
 

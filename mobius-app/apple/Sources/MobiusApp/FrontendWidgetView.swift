@@ -335,7 +335,6 @@ struct FrontendWidgetSheet: View {
             .scrollContentBackground(.hidden)
             .navigationTitle(currentWidget?.title ?? widget.title)
             .toolbarTitleDisplayMode(.inline)
-            .background(MobiusBackdrop())
         }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
