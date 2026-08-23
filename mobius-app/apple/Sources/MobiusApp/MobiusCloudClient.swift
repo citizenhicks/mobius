@@ -87,6 +87,7 @@ struct MobiusCloudAppleNonce: Equatable, Sendable {
 }
 
 enum MobiusCloudError: LocalizedError {
+    case activeSubscription
     case authenticationRequired
     case invalidAccountResponse
     case invalidAuthenticationResponse
@@ -106,6 +107,7 @@ enum MobiusCloudError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
+        case .activeSubscription: "Cancel your Cloud subscription before deleting your account."
         case .authenticationRequired: "Sign in with Apple to continue."
         case .invalidAccountResponse: "möbius Cloud returned invalid account information."
         case .invalidAuthenticationResponse: "möbius Cloud returned an invalid sign-in response."
@@ -327,19 +329,10 @@ final class MobiusCloudClient {
     }
 
     func authenticate(authorizationCode: String, nonce: String) async throws -> MobiusCloudSession {
-        guard !authorizationCode.isEmpty,
-              authorizationCode.utf8.count <= 2_048,
-              !authorizationCode.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
-              nonce.range(of: #"^[A-Za-z0-9_-]{43}$"#, options: .regularExpression) != nil
-        else { throw MobiusCloudError.invalidAuthorization }
-
         let data = try await send(
             url: Self.authenticationURL,
             method: "POST",
-            body: try encoder.encode(AppleAuthenticationRequest(
-                authorizationCode: authorizationCode,
-                nonce: nonce
-            ))
+            body: try appleAuthenticationBody(authorizationCode: authorizationCode, nonce: nonce)
         )
         let response: AppleAuthenticationResponse
         do {
@@ -361,6 +354,25 @@ final class MobiusCloudClient {
         }
         try store.save(credential)
         return credential.session
+    }
+
+    func deleteAccount(authorizationCode: String, nonce: String) async throws {
+        do {
+            _ = try await send(
+                url: Self.accountURL,
+                method: "DELETE",
+                body: try appleAuthenticationBody(
+                    authorizationCode: authorizationCode,
+                    nonce: nonce
+                ),
+                authenticated: true,
+                forgetAuthenticationOnSuccess: true
+            )
+        } catch MobiusCloudError.server(409) {
+            throw MobiusCloudError.activeSubscription
+        } catch MobiusCloudError.server(403) {
+            throw MobiusCloudError.invalidAuthorization
+        }
     }
 
     func account() async throws -> MobiusCloudAccount {
@@ -499,7 +511,8 @@ final class MobiusCloudClient {
         url: URL,
         method: String,
         body: Data? = nil,
-        authenticated: Bool = false
+        authenticated: Bool = false,
+        forgetAuthenticationOnSuccess: Bool = false
     ) async throws -> Data {
         var request = URLRequest(url: url)
         var bearer: String?
@@ -530,7 +543,27 @@ final class MobiusCloudClient {
             }
             throw MobiusCloudError.server(response.statusCode)
         }
+        if forgetAuthenticationOnSuccess, let bearer {
+            // The server revoked every session; a newer local sign-in must still survive a
+            // stale response from this request.
+            try? store.remove(ifTokenMatches: bearer)
+        }
         return data
+    }
+
+    private func appleAuthenticationBody(
+        authorizationCode: String,
+        nonce: String
+    ) throws -> Data {
+        guard !authorizationCode.isEmpty,
+              authorizationCode.utf8.count <= 2_048,
+              !authorizationCode.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
+              nonce.range(of: #"^[A-Za-z0-9_-]{43}$"#, options: .regularExpression) != nil
+        else { throw MobiusCloudError.invalidAuthorization }
+        return try encoder.encode(AppleAuthenticationRequest(
+            authorizationCode: authorizationCode,
+            nonce: nonce
+        ))
     }
 
     private static func cloudURL(_ path: String) -> URL {

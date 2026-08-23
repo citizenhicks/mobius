@@ -68,22 +68,36 @@ final class MobiusCloudTests: XCTestCase {
             #"{"accepted":true}"#,
             #"{"status":"ready"}"#,
             #"{"endpoint":"wss://gateway.example","pairingCode":"0123456789abcdef","expiresAt":"2099-01-01T00:00:00Z"}"#,
+            #"{}"#,
         ]
         let client = MobiusCloudClient(store: store) { request in
             requests.append(request)
             let index = requests.count - 1
-            return try self.response(for: request, json: responses[index])
+            return try self.response(
+                for: request,
+                status: index == responses.count - 1 ? 202 : 200,
+                json: responses[index]
+            )
         }
 
         let session = try await client.authenticate(
             authorizationCode: "apple-code",
             nonce: String(repeating: "n", count: 43)
         )
+        let attributes = try keychainAttributes(service: service)
+        XCTAssertEqual(
+            attributes[kSecAttrAccessible as String] as? String,
+            kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String
+        )
         let account = try await client.account()
         try await client.updateSharesDiagnostics(false)
         try await client.submitSubscription(signedTransaction: "header.payload.signature")
         let status = try await client.gatewayStatus()
         let grant = try await client.createPairingGrant()
+        try await client.deleteAccount(
+            authorizationCode: "delete-code",
+            nonce: String(repeating: "d", count: 43)
+        )
 
         XCTAssertEqual(session.userID, userID)
         XCTAssertEqual(
@@ -110,10 +124,11 @@ final class MobiusCloudTests: XCTestCase {
             "/api/mobile/subscription",
             "/api/mobile/gateway",
             "/api/mobile/gateway",
+            "/api/mobile/account",
         ])
         XCTAssertEqual(
             requests.map(\.httpMethod),
-            ["POST", "GET", "PUT", "PUT", "GET", "POST"]
+            ["POST", "GET", "PUT", "PUT", "GET", "POST", "DELETE"]
         )
         XCTAssertNil(requests[0].value(forHTTPHeaderField: "Authorization"))
         for request in requests.dropFirst() {
@@ -127,17 +142,189 @@ final class MobiusCloudTests: XCTestCase {
             "authorizationCode": "apple-code",
             "nonce": String(repeating: "n", count: 43),
         ])
+        let deletionBody = try XCTUnwrap(requests[6].httpBody)
+        let deletionJSON = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: deletionBody) as? [String: String]
+        )
+        XCTAssertEqual(deletionJSON, [
+            "authorizationCode": "delete-code",
+            "nonce": String(repeating: "d", count: 43),
+        ])
+        XCTAssertNil(try client.loadSession())
         let accountUpdateBody = try XCTUnwrap(requests[2].httpBody)
         let accountUpdateJSON = try XCTUnwrap(
             JSONSerialization.jsonObject(with: accountUpdateBody) as? [String: Bool]
         )
         XCTAssertEqual(accountUpdateJSON, ["sharesDiagnostics": false])
 
-        let attributes = try keychainAttributes(service: service)
-        XCTAssertEqual(
-            attributes[kSecAttrAccessible as String] as? String,
-            kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String
+    }
+
+    func testRejectedAccountDeletionDoesNotClearSession() async throws {
+        let service = "app.mobius.cloud.tests.\(UUID())"
+        let store = MobiusCloudSessionStore(service: service)
+        defer { try? store.remove() }
+        var requestCount = 0
+        var deletionStatus = 409
+        let client = MobiusCloudClient(store: store) { request in
+            requestCount += 1
+            if requestCount == 1 {
+                return try self.response(
+                    for: request,
+                    json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
+                )
+            }
+            return try self.response(for: request, status: deletionStatus, json: #"{}"#)
+        }
+        _ = try await client.authenticate(
+            authorizationCode: "apple-code",
+            nonce: String(repeating: "n", count: 43)
         )
+
+        do {
+            try await client.deleteAccount(
+                authorizationCode: "delete-code",
+                nonce: String(repeating: "d", count: 43)
+            )
+            XCTFail("Expected an active subscription to block deletion")
+        } catch let error as MobiusCloudError {
+            guard case .activeSubscription = error else {
+                return XCTFail("Expected activeSubscription, got \(error)")
+            }
+        }
+        XCTAssertNotNil(try client.loadSession())
+
+        deletionStatus = 403
+        do {
+            try await client.deleteAccount(
+                authorizationCode: "expired-code",
+                nonce: String(repeating: "e", count: 43)
+            )
+            XCTFail("Expected rejected Apple authorization")
+        } catch let error as MobiusCloudError {
+            guard case .invalidAuthorization = error else {
+                return XCTFail("Expected invalidAuthorization, got \(error)")
+            }
+        }
+        XCTAssertNotNil(try client.loadSession())
+    }
+
+    func testUnauthorizedAccountDeletionClearsCloudSession() async throws {
+        let service = "app.mobius.cloud.tests.\(UUID())"
+        let store = MobiusCloudSessionStore(service: service)
+        defer { try? store.remove() }
+        var requestCount = 0
+        let client = MobiusCloudClient(store: store) { request in
+            requestCount += 1
+            if requestCount == 1 {
+                return try self.response(
+                    for: request,
+                    json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
+                )
+            }
+            return try self.response(for: request, status: 401, json: #"{}"#)
+        }
+        _ = try await client.authenticate(
+            authorizationCode: "apple-code",
+            nonce: String(repeating: "n", count: 43)
+        )
+        let suiteName = "app.mobius.cloud.tests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let model = AppModel(
+            store: GatewayStore(defaults: defaults),
+            settingsDefaults: defaults,
+            cloudClient: client
+        )
+        model.cloudAccount = MobiusCloudAccount(
+            email: nil,
+            subscribed: false,
+            sharesDiagnostics: false
+        )
+
+        let deleted = await model.deleteCloudAccount(
+            authorizationCode: "delete-code",
+            nonce: String(repeating: "d", count: 43)
+        )
+        XCTAssertFalse(deleted)
+        XCTAssertNil(model.cloudSession)
+        XCTAssertNil(model.cloudAccount)
+        XCTAssertNil(try client.loadSession())
+    }
+
+    func testAcceptedAccountDeletionClearsLocalCloudState() async throws {
+        let currentUserID = try XCTUnwrap(UUID(
+            uuidString: "00000000-0000-0000-0000-000000000001"
+        ))
+        let service = "app.mobius.cloud.tests.\(UUID())"
+        let store = MobiusCloudSessionStore(service: service)
+        defer { try? store.remove() }
+        var requestCount = 0
+        let client = MobiusCloudClient(store: store) { request in
+            requestCount += 1
+            if requestCount == 1 {
+                return try self.response(
+                    for: request,
+                    json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"\#(currentUserID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                )
+            }
+            return try self.response(for: request, status: 202, json: "")
+        }
+        _ = try await client.authenticate(
+            authorizationCode: "apple-code",
+            nonce: String(repeating: "n", count: 43)
+        )
+        let suiteName = "app.mobius.cloud.tests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let gatewayStore = GatewayStore(
+            defaults: defaults,
+            transcriptDirectory: root.appendingPathComponent("Transcripts"),
+            draftDirectory: root.appendingPathComponent("Drafts")
+        )
+        let retainedGateway = GatewayAccount(
+            endpoint: try GatewayEndpoint("wss://retained.sprites.app"),
+            cloudUserID: UUID()
+        )
+        let deletedGateway = GatewayAccount(
+            endpoint: try GatewayEndpoint("wss://deleted.sprites.app"),
+            cloudUserID: currentUserID
+        )
+        try gatewayStore.save(retainedGateway, token: "retained-token")
+        try gatewayStore.save(deletedGateway, token: "deleted-token")
+        let model = AppModel(
+            store: gatewayStore,
+            settingsDefaults: defaults,
+            requestSender: { _ in },
+            connectionOpener: { _ in AsyncThrowingStream { _ in } },
+            cloudClient: client
+        )
+        model.cloudAccount = MobiusCloudAccount(
+            email: "private@privaterelay.appleid.com",
+            subscribed: false,
+            sharesDiagnostics: false
+        )
+        XCTAssertEqual(model.mobiusCloudGateway?.id, deletedGateway.id)
+
+        let deleted = await model.deleteCloudAccount(
+            authorizationCode: "delete-code",
+            nonce: String(repeating: "d", count: 43)
+        )
+        XCTAssertTrue(deleted)
+        XCTAssertNil(model.cloudSession)
+        XCTAssertNil(model.cloudAccount)
+        XCTAssertNil(try client.loadSession())
+        XCTAssertEqual(model.cloudAction, .idle)
+        XCTAssertEqual(model.accounts.map(\.id), [retainedGateway.id])
+        XCTAssertEqual(gatewayStore.loadAccounts().map(\.id), [retainedGateway.id])
+        XCTAssertNoThrow(try gatewayStore.token(for: retainedGateway))
+        XCTAssertThrowsError(try gatewayStore.token(for: deletedGateway))
+        try await gatewayStore.remove(retainedGateway)
     }
 
     func testCloudAccountRejectsInvalidEmail() async throws {
@@ -531,6 +718,7 @@ final class MobiusCloudTests: XCTestCase {
 
         XCTAssertTrue(restored)
         XCTAssertTrue(synchronized)
+        XCTAssertEqual(model.accounts.first?.cloudUserID, userID)
         XCTAssertEqual(requests.map { $0.url?.path }, [
             "/api/mobile/auth/apple",
             "/api/mobile/account",
@@ -610,7 +798,7 @@ final class MobiusCloudTests: XCTestCase {
         }
         XCTAssertEqual(firstCode, "fresh-code-1")
         XCTAssertEqual(openedEndpoints.map(\.rawValue), ["wss://fresh.example"])
-        XCTAssertEqual(model.cloudAction, .provisioning)
+        XCTAssertEqual(model.cloudAction, .connecting)
 
         model.handle(.error(GatewayFailure(
             code: "unauthorized",
@@ -634,7 +822,7 @@ final class MobiusCloudTests: XCTestCase {
             return XCTFail("Expected the replacement pairing request")
         }
         XCTAssertEqual(secondCode, "fresh-code-2")
-        XCTAssertEqual(model.cloudAction, .provisioning)
+        XCTAssertEqual(model.cloudAction, .connecting)
 
         model.resetGatewayState(preservingDrafts: false)
         let cancelled = await cancelledConnection.value
@@ -655,7 +843,7 @@ final class MobiusCloudTests: XCTestCase {
             return XCTFail("Expected the post-reset pairing request")
         }
         XCTAssertEqual(thirdCode, "fresh-code-3")
-        XCTAssertEqual(model.cloudAction, .provisioning)
+        XCTAssertEqual(model.cloudAction, .connecting)
 
         taskCancelledConnection.cancel()
         let taskCancelled = await taskCancelledConnection.value
@@ -676,7 +864,7 @@ final class MobiusCloudTests: XCTestCase {
             return XCTFail("Expected the post-cancellation pairing request")
         }
         XCTAssertEqual(fourthCode, "fresh-code-4")
-        XCTAssertEqual(model.cloudAction, .provisioning)
+        XCTAssertEqual(model.cloudAction, .connecting)
 
         model.handle(.paired(clientID: "cloud-client", token: "gateway-token"))
         let succeeded = await successfulConnection.value

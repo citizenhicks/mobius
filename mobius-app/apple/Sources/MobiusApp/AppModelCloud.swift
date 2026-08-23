@@ -13,18 +13,10 @@ enum MobiusCloudAction: Equatable {
     case purchasing
     case restoring
     case provisioning
+    case connecting
+    case deleting
 
     var isRunning: Bool { self != .idle }
-
-    var label: String {
-        switch self {
-        case .idle: ""
-        case .signingIn: "Signing in…"
-        case .purchasing: "Confirming purchase…"
-        case .restoring: "Restoring purchases…"
-        case .provisioning: "Setting up your gateway…"
-        }
-    }
 }
 
 extension AppModel {
@@ -297,9 +289,11 @@ extension AppModel {
                 try await Task.sleep(for: .seconds(2))
             case .ready:
                 let grant = try await cloudClient.createPairingGrant()
+                cloudAction = .connecting
                 applyPairingSetup(grant.setup)
                 pair()
                 pendingPairingAccount?.displayName = mobiusCloudGatewayDisplayName
+                pendingPairingAccount?.cloudUserID = cloudSession?.userID
                 try await withTaskCancellationHandler {
                     try await withCheckedThrowingContinuation {
                         (continuation: CheckedContinuation<Void, Error>) in
@@ -331,33 +325,57 @@ extension AppModel {
     }
 
     func signOutOfCloud() async {
-        let cloudGateway = (selectedGatewayIsMobiusCloud ? selectedAccount : nil)
-            ?? accounts.first { $0.machineName == mobiusCloudGatewayDisplayName }
+        let cloudGateway = mobiusCloudGateway
         do {
             try cloudClient.signOut()
         } catch {
             showToast(error.localizedDescription, tone: .error)
             return
         }
-        cloudSession = nil
-        cloudAccount = nil
-        cloudError = nil
-        availableExtensions = []
-        extensionCatalogError = nil
-        isLoadingExtensionCatalog = false
+        clearCloudAccountState()
         if let cloudGateway, !(await removeGateway(cloudGateway)) { return }
         showToast("Signed out of möbius Cloud.", tone: .info)
+    }
+
+    func deleteCloudAccount(authorizationCode: String, nonce: String) async -> Bool {
+        guard cloudAction == .idle else { return false }
+        guard cloudSession != nil else {
+            reportCloud(MobiusCloudError.authenticationRequired)
+            return false
+        }
+        let cloudGateway = mobiusCloudGateway
+        cloudAction = .deleting
+        cloudError = nil
+        defer { cloudAction = .idle }
+
+        do {
+            try await cloudClient.deleteAccount(
+                authorizationCode: authorizationCode,
+                nonce: nonce
+            )
+            clearCloudAccountState()
+            if let cloudGateway, !(await removeGateway(cloudGateway)) {
+                showToast(
+                    "Account deletion started, but this device couldn’t remove its local Cloud gateway.",
+                    tone: .error
+                )
+                return true
+            }
+            showToast("Your möbius Cloud account is being deleted.", tone: .success)
+            return true
+        } catch is CancellationError {
+            return false
+        } catch {
+            reportCloud(error)
+            return false
+        }
     }
 
     func reportCloud(_ error: Error) {
         if let cloudError = error as? MobiusCloudError {
             switch cloudError {
             case .authenticationRequired, .sessionExpired, .server(401):
-                cloudSession = nil
-                cloudAccount = nil
-                availableExtensions = []
-                extensionCatalogError = nil
-                isLoadingExtensionCatalog = false
+                clearCloudAccountState()
             default:
                 break
             }
@@ -366,5 +384,14 @@ extension AppModel {
             ?? "Couldn’t connect to möbius Cloud. Try again."
         cloudError = message
         showToast(message, tone: .error)
+    }
+
+    private func clearCloudAccountState() {
+        cloudSession = nil
+        cloudAccount = nil
+        cloudError = nil
+        availableExtensions = []
+        extensionCatalogError = nil
+        isLoadingExtensionCatalog = false
     }
 }

@@ -47,9 +47,10 @@ private struct MobiusCloudOfferSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @Environment(\.mobiusPalette) private var palette
-    @State private var appleNonce: MobiusCloudAppleNonce?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var product: Product?
     @State private var productLoadFailed = false
+    @State private var stageIsSlow = false
 
     var body: some View {
         NavigationStack {
@@ -58,9 +59,14 @@ private struct MobiusCloudOfferSheet: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: MobiusSpace.xl) {
                         hero
-                        offerDetails
-                        controlNote
+                        if let setupStage {
+                            setupSteps(current: setupStage)
+                        } else {
+                            offerDetails
+                            controlNote
+                        }
                     }
+                    .animation(reduceMotion ? nil : .smooth(duration: 0.28), value: setupStage)
                     .frame(maxWidth: 680, alignment: .leading)
                     .padding(.horizontal, MobiusSpace.l)
                     .padding(.top, MobiusSpace.l)
@@ -74,6 +80,7 @@ private struct MobiusCloudOfferSheet: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Close") { dismiss() }
+                        .disabled(model.cloudAction.isRunning)
                 }
             }
             .safeAreaInset(edge: .bottom) { signupBoundary }
@@ -83,23 +90,60 @@ private struct MobiusCloudOfferSheet: View {
         .task { await model.refreshCloudAccount() }
     }
 
-    /// One voice per line: a mark, the promise, and the shape of the offer.
+    /// The offer hero becomes setup status while a Cloud action is running.
     private var hero: some View {
-        VStack(alignment: .leading, spacing: MobiusSpace.l) {
+        let running = setupStage != nil
+        return VStack(alignment: .leading, spacing: MobiusSpace.l) {
             // The app's own mark, not a stock globe.
             MobiusComposingOrb()
                 .frame(width: 64, height: 64)
                 .frame(maxWidth: .infinity)
                 .accessibilityHidden(true)
-            Text("Your private gateway, managed by möbius.")
+            Text(
+                running
+                    ? "Setting up your möbius Cloud."
+                    : "Your private gateway, managed by möbius."
+            )
                 .font(.largeTitle.weight(.bold))
                 .fixedSize(horizontal: false, vertical: true)
             Text(
-                "Skip server setup without giving up control. We provision, secure, and maintain a gateway scoped to your account."
+                running
+                    ? "Keep this screen open. Nothing here needs your attention until it finishes."
+                    : "Skip server setup without giving up control. We provision, secure, and maintain a gateway scoped to your account."
             )
                 .font(MobiusStyle.bodyFont)
                 .foregroundStyle(palette.muted)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// The stage the flow is on, or nil when nothing is running.
+    private var setupStage: CloudSetupStage? {
+        switch model.cloudAction {
+        case .idle, .deleting: nil
+        case .signingIn: .signIn
+        case .purchasing, .restoring: .subscription
+        case .provisioning: .gateway
+        case .connecting: .connect
+        }
+    }
+
+    private func setupSteps(current: CloudSetupStage) -> some View {
+        MobiusCard {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(CloudSetupStage.allCases) { stage in
+                    if stage != .signIn {
+                        Divider().padding(.leading, MobiusStyle.glyphGutter + MobiusSpace.m)
+                    }
+                    CloudSetupRow(stage: stage, current: current, slow: stageIsSlow)
+                }
+            }
+        }
+        // Explain unusually slow provisioning without declaring failure.
+        .task(id: current) {
+            stageIsSlow = false
+            guard current == .gateway else { return }
+            if (try? await Task.sleep(for: .seconds(30))) != nil { stageIsSlow = true }
         }
     }
 
@@ -162,13 +206,7 @@ private struct MobiusCloudOfferSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             if model.cloudAction.isRunning {
-                HStack(spacing: MobiusSpace.s) {
-                    ProgressView()
-                    Text(model.cloudAction.label)
-                }
-                .font(MobiusStyle.controlFont)
-                .frame(maxWidth: .infinity, minHeight: 50)
-                .accessibilityElement(children: .combine)
+                EmptyView()
             } else if model.cloudAccount?.subscribed == true {
                 Button("Connect gateway") {
                     Task {
@@ -179,20 +217,23 @@ private struct MobiusCloudOfferSheet: View {
                 .controlSize(.extraLarge)
                 .frame(maxWidth: .infinity)
             } else if !model.hasCloudAccount {
-                SignInWithAppleButton(.continue) { request in
-                    configureAppleRequest(request)
-                } onCompletion: { result in
-                    completeAppleSignIn(result, product: product)
+                MobiusCloudAppleAuthorizationButton(label: .continue) {
+                    authorizationCode, nonce in
+                    Task {
+                        if await model.signInAndPurchaseCloud(
+                            authorizationCode: authorizationCode,
+                            nonce: nonce,
+                            product: product
+                        ) {
+                            dismiss()
+                        }
+                    }
+                } onFailure: {
+                    model.reportCloudSignInFailure()
                 }
-                .signInWithAppleButtonStyle(.white)
-                .frame(maxWidth: .infinity, minHeight: 50, maxHeight: 50)
             } else if model.hasCloudAccount, model.cloudAccount == nil {
                 if model.cloudError == nil {
-                    Button("Checking subscription…") {}
-                        .buttonStyle(.bordered)
-                        .controlSize(.extraLarge)
-                        .disabled(true)
-                        .frame(maxWidth: .infinity)
+                    waitingButton("Checking subscription…")
                 } else {
                     Button("Retry subscription check") {
                         Task { await model.refreshCloudAccount() }
@@ -223,11 +264,7 @@ private struct MobiusCloudOfferSheet: View {
                 }
                 .frame(maxWidth: .infinity, minHeight: 50)
             } else {
-                Button("Connecting to the App Store…") {}
-                    .buttonStyle(.bordered)
-                    .controlSize(.extraLarge)
-                    .disabled(true)
-                    .frame(maxWidth: .infinity)
+                waitingButton("Connecting to the App Store…")
             }
         }
         .frame(maxWidth: 680)
@@ -244,6 +281,20 @@ private struct MobiusCloudOfferSheet: View {
             .ignoresSafeArea()
             .allowsHitTesting(false)
         }
+    }
+
+    private func waitingButton(_ title: String) -> some View {
+        Button {} label: {
+            HStack(spacing: MobiusSpace.s) {
+                MobiusSpinner(size: MobiusStyle.glyphInline)
+                Text(title)
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.extraLarge)
+        .disabled(true)
+        .frame(maxWidth: .infinity)
     }
 
     private var billingDescription: Text {
@@ -268,51 +319,132 @@ private struct MobiusCloudOfferSheet: View {
         }
     }
 
-    private func configureAppleRequest(_ request: ASAuthorizationAppleIDRequest) {
-        do {
-            let nonce = try MobiusCloudAppleNonce.make()
-            appleNonce = nonce
-            request.requestedScopes = [.email]
-            request.nonce = nonce.requestValue
-        } catch {
-            appleNonce = nil
-            model.reportCloudSignInFailure()
+}
+
+struct MobiusCloudAppleAuthorizationButton: View {
+    let label: SignInWithAppleButton.Label
+    let onAuthorization: @MainActor (String, String) -> Void
+    let onFailure: @MainActor () -> Void
+    @State private var nonce: MobiusCloudAppleNonce?
+
+    var body: some View {
+        SignInWithAppleButton(label) { request in
+            do {
+                let nonce = try MobiusCloudAppleNonce.make()
+                self.nonce = nonce
+                request.requestedScopes = [.email]
+                request.nonce = nonce.requestValue
+            } catch {
+                nonce = nil
+                onFailure()
+            }
+        } onCompletion: { result in
+            switch result {
+            case .failure(let error):
+                nonce = nil
+                if let authorizationError = error as? ASAuthorizationError,
+                   authorizationError.code == .canceled {
+                    return
+                }
+                onFailure()
+            case .success(let authorization):
+                guard let nonce,
+                      let credential = authorization.credential as? ASAuthorizationAppleIDCredential,
+                      let data = credential.authorizationCode,
+                      let authorizationCode = String(data: data, encoding: .utf8)
+                else {
+                    self.nonce = nil
+                    onFailure()
+                    return
+                }
+                self.nonce = nil
+                onAuthorization(authorizationCode, nonce.rawValue)
+            }
+        }
+        .signInWithAppleButtonStyle(.white)
+        .frame(maxWidth: .infinity, minHeight: 50, maxHeight: 50)
+    }
+}
+
+/// Ordered stages shown while Cloud setup is running.
+private enum CloudSetupStage: Int, CaseIterable, Identifiable {
+    case signIn
+    case subscription
+    case gateway
+    case connect
+
+    var id: Int { rawValue }
+
+    var title: String {
+        switch self {
+        case .signIn: "Account"
+        case .subscription: "Subscription"
+        case .gateway: "Private gateway"
+        case .connect: "Connection"
         }
     }
 
-    private func completeAppleSignIn(
-        _ result: Result<ASAuthorization, Error>,
-        product: Product?
-    ) {
-        switch result {
-        case .failure(let error):
-            appleNonce = nil
-            if let authorizationError = error as? ASAuthorizationError,
-               authorizationError.code == .canceled {
-                return
-            }
-            model.reportCloudSignInFailure()
-        case .success(let authorization):
-            guard let nonce = appleNonce,
-                  let credential = authorization.credential as? ASAuthorizationAppleIDCredential,
-                  let data = credential.authorizationCode,
-                  let authorizationCode = String(data: data, encoding: .utf8)
-            else {
-                appleNonce = nil
-                model.reportCloudSignInFailure()
-                return
-            }
-            appleNonce = nil
-            Task {
-                if await model.signInAndPurchaseCloud(
-                    authorizationCode: authorizationCode,
-                    nonce: nonce.rawValue,
-                    product: product
-                ) {
-                    dismiss()
+    func detail(slow: Bool) -> String {
+        switch self {
+        case .signIn: "Verifying your Apple account."
+        case .subscription: "Confirming your App Store purchase."
+        case .gateway:
+            slow
+                ? "Still provisioning. This one is taking longer than usual; the screen moves on by itself as soon as the gateway answers."
+                : "möbius is provisioning a gateway for your account. This usually takes about fifteen seconds."
+        case .connect: "Pairing this device with your gateway."
+        }
+    }
+}
+
+private struct CloudSetupRow: View {
+    @Environment(\.mobiusPalette) private var palette
+    let stage: CloudSetupStage
+    let current: CloudSetupStage
+    var slow = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: MobiusSpace.m) {
+            mark
+                .frame(width: MobiusStyle.glyphLead, height: MobiusStyle.glyphLead)
+            VStack(alignment: .leading, spacing: MobiusSpace.xs) {
+                Text(stage.title)
+                    .font(MobiusStyle.controlFont)
+                    .foregroundStyle(isPending ? palette.muted : .primary)
+                if stage == current {
+                    Text(stage.detail(slow: slow))
+                        .font(MobiusStyle.bodyFont)
+                        .foregroundStyle(palette.muted)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
+        .padding(.vertical, MobiusSpace.m)
+        .accessibilityElement(children: .combine)
+        .accessibilityValue(accessibilityStatus)
+    }
+
+    private var isPending: Bool { stage.rawValue > current.rawValue }
+
+    @ViewBuilder
+    private var mark: some View {
+        if stage.rawValue < current.rawValue {
+            MobiusIcon(
+                .checkCircle,
+                size: MobiusStyle.glyphLead,
+                foreground: palette.signal,
+                gutter: false
+            )
+        } else if stage == current {
+            MobiusSpinner(size: MobiusStyle.glyphLead)
+        } else {
+            Circle().strokeBorder(palette.line, lineWidth: MobiusStyle.borderWidth)
+        }
+    }
+
+    private var accessibilityStatus: String {
+        if isPending { return "Waiting" }
+        return stage == current ? "In progress" : "Done"
     }
 }
 

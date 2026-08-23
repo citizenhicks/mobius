@@ -171,16 +171,19 @@ struct GatewayAccount: Identifiable, Hashable, Codable, Sendable {
     var endpoint: GatewayEndpoint
     var displayName: String
     var machineName: String
+    var cloudUserID: UUID?
 
     init(
         id: UUID = UUID(),
         endpoint: GatewayEndpoint,
         displayName: String? = nil,
-        machineName: String? = nil
+        machineName: String? = nil,
+        cloudUserID: UUID? = nil
     ) {
         self.id = id
         self.endpoint = endpoint
         self.displayName = displayName ?? endpoint.displayName
         self.machineName = machineName ?? endpoint.displayName
+        self.cloudUserID = cloudUserID
     }
 }

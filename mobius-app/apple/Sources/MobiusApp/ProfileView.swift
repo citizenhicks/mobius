@@ -190,6 +190,9 @@ private struct CloudAccountSettings: View {
     @Environment(\.mobiusPalette) private var palette
     @State private var showsSubscriptionManagement = false
     @State private var confirmsSignOut = false
+    @State private var confirmsAccountDeletion = false
+    @State private var showsActiveSubscriptionWarning = false
+    @State private var showsAccountDeletionAuthentication = false
 
     /// Signed out, this is an offer; signed in, it is an account. Account actions stay absent
     /// until there is a Cloud session to authenticate them.
@@ -276,6 +279,18 @@ private struct CloudAccountSettings: View {
                 .foregroundStyle(.white)
                 .disabled(model.cloudAction.isRunning)
                 .accessibilityHint("Forgets this Cloud sign-in and its paired gateway")
+                Button("Delete account", glyph: .trash, role: .destructive) {
+                    if model.cloudAccount?.subscribed == true {
+                        showsActiveSubscriptionWarning = true
+                    } else {
+                        confirmsAccountDeletion = true
+                    }
+                }
+                .buttonStyle(.mobiusGlassProminent)
+                .tint(palette.danger)
+                .foregroundStyle(.white)
+                .disabled(model.cloudAction.isRunning || model.cloudAccount == nil)
+                .accessibilityHint("Permanently deletes your Cloud account and its data")
             }
             .buttonBorderShape(.capsule)
             .buttonSizing(.flexible)
@@ -288,6 +303,30 @@ private struct CloudAccountSettings: View {
             } message: {
                 Text("This device forgets the Cloud sign-in and removes its paired gateway. Your subscription is unaffected.")
             }
+            .alert("Cancel your subscription first", isPresented: $showsActiveSubscriptionWarning) {
+                Button("Manage subscription") {
+                    showsSubscriptionManagement = true
+                }
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("An active möbius Cloud subscription cannot be deleted. Cancel it in the App Store, then delete your account after the subscription expires.")
+            }
+            .alert("Delete your möbius Cloud account?", isPresented: $confirmsAccountDeletion) {
+                Button("Continue", role: .destructive) {
+                    showsAccountDeletionAuthentication = true
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This permanently deletes your Cloud account, gateway, chats, credentials, and other Cloud data. It cannot be undone.")
+            }
+            .sheet(isPresented: $showsAccountDeletionAuthentication) {
+                MobiusCloudAccountDeletionSheet()
+                    .presentationDragIndicator(.visible)
+            }
+            .onChange(of: showsSubscriptionManagement) { wasPresented, isPresented in
+                guard wasPresented, !isPresented else { return }
+                Task { await model.refreshCloudAccount() }
+            }
         } else {
             Text("möbius works on its own with a gateway you run. Connect möbius Cloud to have one provisioned and managed for you.")
                 .font(MobiusStyle.bodyFont)
@@ -295,6 +334,83 @@ private struct CloudAccountSettings: View {
                 .fixedSize(horizontal: false, vertical: true)
             MobiusCloudOfferButton()
         }
+    }
+}
+
+private struct MobiusCloudAccountDeletionSheet: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.mobiusPalette) private var palette
+    @State private var didAttemptDeletion = false
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                MobiusBackdrop()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: MobiusSpace.l) {
+                        MobiusIcon(
+                            .trash,
+                            size: 48,
+                            foreground: palette.danger,
+                            gutter: false
+                        )
+                        .accessibilityHidden(true)
+                        Text("Confirm with Apple")
+                            .font(.title.bold())
+                        Text("Sign in again to confirm permanent account deletion. This verifies that the request belongs to you.")
+                            .font(MobiusStyle.bodyFont)
+                            .foregroundStyle(palette.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if didAttemptDeletion, let cloudError = model.cloudError {
+                            Text(cloudError)
+                                .font(MobiusStyle.captionFont)
+                                .foregroundStyle(palette.danger)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        if model.cloudAction == .deleting {
+                            HStack(spacing: MobiusSpace.s) {
+                                MobiusSpinner(size: MobiusStyle.glyphInline)
+                                Text("Deleting account…")
+                            }
+                            .font(MobiusStyle.controlFont)
+                            .frame(maxWidth: .infinity, minHeight: 50)
+                            .accessibilityElement(children: .combine)
+                        } else {
+                            MobiusCloudAppleAuthorizationButton(label: .continue) {
+                                authorizationCode, nonce in
+                                didAttemptDeletion = true
+                                Task {
+                                    if await model.deleteCloudAccount(
+                                        authorizationCode: authorizationCode,
+                                        nonce: nonce
+                                    ) {
+                                        dismiss()
+                                    }
+                                }
+                            } onFailure: {
+                                didAttemptDeletion = true
+                                model.reportCloudSignInFailure()
+                            }
+                        }
+                    }
+                    .frame(maxWidth: 680, alignment: .leading)
+                    .padding(MobiusSpace.l)
+                    .frame(maxWidth: .infinity)
+                }
+                .scrollIndicators(.hidden)
+            }
+            .navigationTitle("Delete account")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                        .disabled(model.cloudAction == .deleting)
+                }
+            }
+        }
+        .interactiveDismissDisabled(model.cloudAction == .deleting)
+        .presentationDetents([.medium, .large])
     }
 }
 

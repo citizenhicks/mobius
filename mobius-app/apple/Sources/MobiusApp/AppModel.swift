@@ -460,11 +460,17 @@ final class AppModel {
     }
 
     var mobiusCloudGateway: GatewayAccount? {
-        guard hasCloudAccount else { return nil }
-        return accounts.first {
-            $0.displayName == mobiusCloudGatewayDisplayName
-                || isMobiusCloudSpriteEndpoint($0.endpoint)
+        guard let userID = cloudSession?.userID else { return nil }
+        if let exact = accounts.first(where: { $0.cloudUserID == userID }) {
+            return exact
         }
+        let legacy = accounts.filter {
+            $0.cloudUserID == nil
+                && ($0.displayName == mobiusCloudGatewayDisplayName
+                    || $0.machineName == mobiusCloudGatewayDisplayName
+                    || isMobiusCloudSpriteEndpoint($0.endpoint))
+        }
+        return legacy.count == 1 ? legacy[0] : nil
     }
 
     var selectedGatewayIsMobiusCloud: Bool {
