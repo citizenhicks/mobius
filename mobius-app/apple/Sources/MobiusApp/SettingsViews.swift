@@ -7,6 +7,9 @@ struct SettingsInfoButton: View {
     let detail: String
     var glyph: MobiusGlyph = .info
     var accessibilityHint = "Shows setting guidance"
+    /// Beside a section header or a stacked label, where a full 44pt target would push the
+    /// rows under it down and leave that section sitting lower than every other one.
+    var compact = false
 
     var body: some View {
         Button {
@@ -15,7 +18,7 @@ struct SettingsInfoButton: View {
             MobiusIcon(glyph, size: MobiusStyle.glyphInline, foreground: palette.muted)
                 .frame(
                     minWidth: MobiusStyle.iconButtonSize,
-                    minHeight: MobiusStyle.iconButtonSize
+                    minHeight: compact ? MobiusStyle.iconSize : MobiusStyle.iconButtonSize
                 )
                 .contentShape(Rectangle())
         }
@@ -376,7 +379,7 @@ struct GatewayDetailView: View {
     private func detail(_ account: GatewayAccount) -> some View {
         let isActive = account.id == model.selectedAccountID
         return PageScaffold(
-            title: account.displayName,
+            title: account.machineName,
             detail: "",
             sharesHeaderBackground: true,
             headerAccessory: {
@@ -422,7 +425,7 @@ struct GatewayDetailView: View {
                         .textSelection(.enabled)
                 }
                 LabeledContent("Transport", value: transportName(account))
-                LabeledContent("Machine", value: account.machineName)
+                LabeledContent("Name", value: account.displayName)
                 LabeledContent("Wire protocol", value: "v\(gatewayProtocolVersion)")
             }
 
@@ -874,6 +877,33 @@ struct SettingsLoadingRows<Content: View>: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .mobiusLoadingPlaceholder(label)
+    }
+}
+
+/// A field whose value outgrows a trailing column: the label sits over it, so a list of
+/// model ids, an endpoint, or anything else long keeps the full width of the row — while
+/// reading and while being edited.
+struct SettingsStackedField<Content: View>: View {
+    @Environment(\.mobiusPalette) private var palette
+    let title: String
+    var info: String?
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
+            HStack(spacing: MobiusSpace.xs) {
+                Text(title)
+                if let info {
+                    SettingsInfoButton(title: title, detail: info, compact: true)
+                }
+            }
+            // Muted however short the value is, and always on its own line: under a label
+            // rather than beside one, colour is what tells the two apart.
+            content
+                .font(MobiusStyle.bodyFont)
+                .foregroundStyle(palette.muted)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 }
 

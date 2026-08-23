@@ -25,7 +25,7 @@ struct ModelRoutePicker: View {
                     }
                     ForEach(distinctModels, id: \.route) { choice in
                         optionLabel(
-                            choice.group,
+                            model.modelGroupLabel(for: choice),
                             symbol: model.providerSymbol(for: choice),
                             tint: model.providerTint(for: choice)
                         )

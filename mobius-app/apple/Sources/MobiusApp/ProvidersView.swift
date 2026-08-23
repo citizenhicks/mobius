@@ -326,51 +326,53 @@ private struct ProviderFormSections: View {
             }
 
             Section("Model") {
-                if status.modelIdsConfigurable {
-                    LabeledContent {
-                        TextField("model-a, model-b", text: providerModelIDs)
-                            .settingsField()
-                    } label: {
-                        HStack(spacing: MobiusSpace.xs) {
-                            Text("Model ID(s)")
-                            SettingsInfoButton(
-                                title: "Model ID(s)",
-                                detail: "Enter one or more exact provider model IDs separated by commas. Whitespace, empty entries, and duplicates are ignored."
-                            )
-                        }
+                SettingsStackedField(
+                    title: "Model ID(s)",
+                    info: status.modelIdsConfigurable
+                        ? "Enter one or more exact provider model IDs separated by commas. Whitespace, empty entries, and duplicates are ignored. Pick one per chat in the composer."
+                        : "Every model above is available. Pick one per chat in the composer."
+                ) {
+                    if status.modelIdsConfigurable {
+                        TextField(
+                            "model-a, model-b",
+                            text: providerModelIDs,
+                            axis: .vertical
+                        )
+                        .lineLimit(1...4)
+                    } else {
+                        readOnlyValue(status.models.map(\.id).joined(separator: ", "))
                     }
-                    LabeledContent {
-                        TextField("low, medium, high", text: providerReasoningEfforts)
-                            .settingsField()
-                    } label: {
-                        HStack(spacing: MobiusSpace.xs) {
-                            Text("Reasoning effort(s)")
-                            SettingsInfoButton(
-                                title: "Reasoning effort(s)",
-                                detail: "Enter the exact reasoning efforts supported by these models, separated by commas. Leave empty to use the provider default."
-                            )
-                        }
-                    }
-                } else {
-                    ForEach(status.models) { entry in
-                        LabeledContent(entry.label) {
-                            Text(verbatim: entry.id)
-                                .font(MobiusStyle.captionFont)
-                                .foregroundStyle(palette.muted)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                        }
-                    }
-                    SettingsCaption("Every model above is available. Pick one per chat in the composer.")
                 }
-
-                if status.defaultBaseUrl != nil {
-                    LabeledContent("Base URL") {
-                        TextField("Provider endpoint", text: providerBaseURL)
-                            .textContentType(.URL)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .settingsField()
+                SettingsStackedField(
+                    title: "Reasoning effort(s)",
+                    info: status.modelIdsConfigurable
+                        ? "Enter the exact reasoning efforts supported by these models, separated by commas. Leave empty to use the provider default."
+                        : "Available reasoning efforts across the listed models."
+                ) {
+                    if status.modelIdsConfigurable {
+                        TextField(
+                            "low, medium, high",
+                            text: providerReasoningEfforts,
+                            axis: .vertical
+                        )
+                        .lineLimit(1...4)
+                    } else {
+                        readOnlyValue(reasoningEfforts(for: status))
+                    }
+                }
+                SettingsStackedField(title: "Base URL") {
+                    if status.defaultBaseUrl != nil {
+                        TextField(
+                            "Provider endpoint",
+                            text: providerBaseURL,
+                            axis: .vertical
+                        )
+                        .textContentType(.URL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .lineLimit(1...4)
+                    } else {
+                        readOnlyValue("Provider managed")
                     }
                 }
 
@@ -397,6 +399,23 @@ private struct ProviderFormSections: View {
         model.providerStatuses.first { $0.provider == provider }
     }
 
+    private func reasoningEfforts(for status: ProviderStatus) -> String {
+        let values = status.models
+            .flatMap(\.reasoning)
+            .map(\.id)
+            .reduce(into: [String]()) { values, value in
+                if !values.contains(value) { values.append(value) }
+            }
+        return values.isEmpty ? "Provider default" : values.joined(separator: ", ")
+    }
+
+    /// Under a stacked label, so a long list wraps down the row rather than truncating in
+    /// a trailing column. Font and colour come from the field.
+    private func readOnlyValue(_ value: String) -> some View {
+        Text(value)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
     @ViewBuilder
     private func credentialControls(_ status: ProviderStatus) -> some View {
         @Bindable var model = model
@@ -408,18 +427,12 @@ private struct ProviderFormSections: View {
             }
         }
         if status.auth == .apiKey {
-            LabeledContent {
+            SettingsStackedField(
+                title: "API key",
+                info: "Sent once to the gateway and never returned to this app. Sending a new one replaces the stored key for this setup."
+            ) {
                 SecureField("API key", text: $model.providerAPIKey)
                     .textContentType(.password)
-                    .settingsField()
-            } label: {
-                HStack(spacing: MobiusSpace.xs) {
-                    Text("API key")
-                    SettingsInfoButton(
-                        title: "API key",
-                        detail: "Sent once to the gateway and never returned to this app. Sending a new one replaces the stored key for this setup."
-                    )
-                }
             }
         }
     }

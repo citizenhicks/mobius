@@ -56,10 +56,25 @@ extension AppModel {
     }
 
     func modelLabel(provider: String?, modelID: String) -> String {
-        guard let instance = provider else { return modelID }
-        return providerStatus(forInstance: instance)?
-            .models.first { $0.id == modelID }?
-            .label ?? modelID
+        if let instance = provider,
+           let model = providerStatus(forInstance: instance)?
+            .models.first(where: { $0.id == modelID }) {
+            return model.label
+        }
+        guard let separator = modelID.lastIndex(of: "/") else { return modelID }
+        let shortID = String(modelID[modelID.index(after: separator)...])
+        guard !shortID.isEmpty else { return modelID }
+        return providerStatuses.lazy
+            .compactMap { status in status.models.first { $0.id == shortID }?.label }
+            .first ?? modelID
+    }
+
+    func modelGroupLabel(for choice: ModelChoice) -> String {
+        let label = modelLabel(for: choice)
+        guard label != choice.model, choice.group.hasSuffix(choice.model) else {
+            return choice.group
+        }
+        return "\(choice.group.dropLast(choice.model.count))\(label)"
     }
 
     /// The user-facing name of one setup, so two setups of a provider stay distinguishable.

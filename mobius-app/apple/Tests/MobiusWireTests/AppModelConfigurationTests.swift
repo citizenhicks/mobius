@@ -483,11 +483,29 @@ extension AppModelTests {
             contextWindow: 128_000,
             supportsImageInput: true
         )
-        model.modelProviders = [choice.route: config.instance]
+        let canonicalChoice = ModelChoice(
+            route: "openrouter-route",
+            group: "OpenRouter · openai/gpt-5.6-luna",
+            model: "openai/gpt-5.6-luna",
+            reasoningEffort: "high",
+            contextWindow: 128_000,
+            supportsImageInput: true
+        )
+        model.modelProviders = [
+            choice.route: config.instance,
+            canonicalChoice.route: config.instance,
+        ]
         model.providerStatuses = [providerStatus(for: config, models: [ProviderModel(
             id: config.model,
             label: "Sol",
             description: "Coding model",
+            contextWindow: 128_000,
+            reasoning: [],
+            defaultReasoning: "high"
+        ), ProviderModel(
+            id: "gpt-5.6-luna",
+            label: "Luna",
+            description: "Fast coding model",
             contextWindow: 128_000,
             reasoning: [],
             defaultReasoning: "high"
@@ -502,6 +520,13 @@ extension AppModelTests {
         )]
 
         XCTAssertEqual(model.modelLabel(for: choice), "Sol")
+        XCTAssertEqual(model.modelLabel(for: canonicalChoice), "Luna")
+        XCTAssertEqual(model.modelGroupLabel(for: canonicalChoice), "OpenRouter · Luna")
+        XCTAssertEqual(canonicalChoice.model, "openai/gpt-5.6-luna")
+        XCTAssertEqual(
+            model.modelLabel(provider: config.instance, modelID: "acme/custom-model"),
+            "acme/custom-model"
+        )
         XCTAssertEqual(model.modelLabel(
             for: ModelChoice(
                 route: "custom-route",

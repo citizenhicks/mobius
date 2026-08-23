@@ -36,13 +36,6 @@ struct ExtensionsView: View {
                 Section("Available") {
                     availableCatalog
                 }
-
-                MobiusActionRow {
-                    Button("Install from GitHub", glyph: .plus, action: openInstaller)
-                        .mobiusProminentButton()
-                        .disabled(!model.canMutateExtensions)
-                }
-                .settingsStandaloneRow()
             }
 
             Section("Installed") {
@@ -53,6 +46,23 @@ struct ExtensionsView: View {
                 } else {
                     ForEach(model.extensions) { record in
                         installedRow(record)
+                    }
+                }
+            }
+
+            if !model.extensionSkillReferences.isEmpty {
+                Section {
+                    ForEach(model.extensionSkillReferences, id: \.value) { skill in
+                        SettingsRowLabel(title: skill.value, detail: skill.description)
+                    }
+                } header: {
+                    HStack(spacing: MobiusSpace.xs) {
+                        Text("Discovered")
+                        SettingsInfoButton(
+                            title: "Discovered",
+                            detail: "Skills found in the gateway and workspace skill directories. They are always available and are not managed here.",
+                            compact: true
+                        )
                     }
                 }
             }
@@ -180,7 +190,7 @@ struct ExtensionsView: View {
         case .ready:
             return (
                 "Catalog up to date",
-                "\(model.extensions.count) installed",
+                "\(model.extensions.count) installed · \(model.extensionSkillReferences.count) discovered",
                 palette.signal
             )
         case .failed(let message):
