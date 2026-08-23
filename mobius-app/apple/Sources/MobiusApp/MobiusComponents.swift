@@ -198,10 +198,15 @@ struct MobiusToolbarIconButton: View {
     let action: () -> Void
 
     var body: some View {
-        Button(label, glyph: glyph, action: action)
-            .mobiusIconButton()
-            .accessibilityLabel(label)
-            .help(label)
+        // Bare: the system's toolbar glass hugs the glyph into the same circle every other
+        // lone header action is. Drawing our own circle on top leaves two stacked surfaces
+        // — a lighter blob inside the system's wider pill.
+        Button(action: action) {
+            MobiusIcon(glyph, foreground: .primary)
+        }
+        .tint(.primary)
+        .accessibilityLabel(label)
+        .help(label)
     }
 }
 

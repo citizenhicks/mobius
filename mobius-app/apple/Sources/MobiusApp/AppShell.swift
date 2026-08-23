@@ -197,7 +197,6 @@ struct AppShell: View {
                                 }
                             }
                         }
-                        .sharedBackgroundVisibility(.hidden)
                     }
                 }
         }
