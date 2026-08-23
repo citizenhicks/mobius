@@ -91,11 +91,14 @@ struct ExtensionsView: View {
     @ViewBuilder
     private var availableCatalog: some View {
         if model.isLoadingExtensionCatalog {
-            availableCatalogLabel(
-                name: "Portable plugin",
-                description: "Install a portable plugin from the catalog."
-            )
-            .mobiusLoadingPlaceholder("Loading available extensions")
+            SettingsLoadingRows(label: "Loading available extensions") {
+                ForEach(0..<3, id: \.self) { _ in
+                    availableCatalogLabel(
+                        name: "Portable plugin",
+                        description: "Install a portable plugin from the catalog."
+                    )
+                }
+            }
         } else if let error = model.extensionCatalogError {
             VStack(alignment: .leading, spacing: MobiusSpace.s) {
                 SettingsCaption(error)
@@ -145,10 +148,11 @@ struct ExtensionsView: View {
     }
 
     private var loadingInstalled: some View {
-        ForEach(["Extension name", "Another extension"], id: \.self) { name in
-            SettingsRowLabel(title: name, detail: "github.com/owner/repo · main")
+        SettingsLoadingRows(label: "Loading installed extensions") {
+            ForEach(["Extension name", "Another extension"], id: \.self) { name in
+                SettingsRowLabel(title: name, detail: "github.com/owner/repo · main")
+            }
         }
-        .mobiusLoadingPlaceholder("Loading installed extensions")
     }
 
     private func openInstaller() {

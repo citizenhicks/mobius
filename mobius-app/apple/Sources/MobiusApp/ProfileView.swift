@@ -198,12 +198,11 @@ private struct CloudAccountSettings: View {
     /// until there is a Cloud session to authenticate them.
     var body: some View {
         if model.isLoadingCloudAccount {
-            Group {
+            SettingsLoadingRows(label: "Loading Cloud account") {
                 LabeledContent("Email") { Text("account@example.com") }
                 Toggle("Help improve möbius", isOn: .constant(false))
                 LabeledContent("Subscriber since") { Text("August 2026") }
             }
-            .mobiusLoadingPlaceholder("Loading Cloud account")
         } else if model.hasCloudAccount {
             if let cloudError = model.cloudError {
                 StatusBanner(

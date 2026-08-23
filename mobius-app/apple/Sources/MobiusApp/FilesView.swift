@@ -503,20 +503,24 @@ private struct InspectorFileLoadingRows: View {
     let title: String
 
     var body: some View {
-        ForEach(0..<2, id: \.self) { index in
-            HStack(spacing: 0) {
-                InspectorFileRow(
-                    name: index == 0 ? "conversation.txt" : "attachment.pdf",
-                    detail: index == 0 ? "text/plain" : "application/pdf",
-                    size: index == 0 ? 2_048 : 8_192,
-                    showsDisclosure: false
-                )
-                Color.clear
-                    .frame(width: MobiusStyle.iconButtonSize, height: MobiusStyle.iconButtonSize)
+        // One row holding both, so the shimmer sweeps the block: applied per row, the band
+        // is masked by each row on its own and only one of them ever lights.
+        VStack(spacing: 0) {
+            ForEach(0..<2, id: \.self) { index in
+                HStack(spacing: 0) {
+                    InspectorFileRow(
+                        name: index == 0 ? "conversation.txt" : "attachment.pdf",
+                        detail: index == 0 ? "text/plain" : "application/pdf",
+                        size: index == 0 ? 2_048 : 8_192,
+                        showsDisclosure: false
+                    )
+                    Color.clear
+                        .frame(width: MobiusStyle.iconButtonSize, height: MobiusStyle.iconButtonSize)
+                }
             }
-            .inspectorFileListRow()
         }
         .mobiusLoadingPlaceholder(title)
+        .inspectorFileListRow()
     }
 }
 

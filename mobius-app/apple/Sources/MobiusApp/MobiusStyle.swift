@@ -322,6 +322,10 @@ extension View {
         modifier(MobiusRunningShimmer(active: active))
     }
 
+    /// Apply this to ONE view holding the whole skeleton, never to a `ForEach` or `Group`
+    /// of list rows: the shimmer band is masked by the view it is attached to, and a list
+    /// composites that mask into a single row, so only one line of the block ever lights.
+    /// `SettingsLoadingRows` is the wrapper for form sections.
     func mobiusLoadingPlaceholder(_ accessibilityLabel: String) -> some View {
         redacted(reason: .placeholder)
             .mobiusRunningShimmer(active: true)
