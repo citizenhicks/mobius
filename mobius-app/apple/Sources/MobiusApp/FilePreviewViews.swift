@@ -85,7 +85,10 @@ struct TextFilePreviewView: View {
                     .padding(MobiusSpace.m)
                 Divider()
             }
-            TextEditor(text: contentsBinding)
+            HighlightedSourceEditor(
+                source: contentsBinding,
+                language: draftPath.sourceHighlightLanguage
+            )
                 .font(MobiusStyle.bodyFont.monospaced())
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
@@ -127,6 +130,76 @@ struct TextFilePreviewView: View {
     }
 }
 
+private struct HighlightedSourceEditor: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @Binding var source: String
+    let language: HighlightLanguage?
+    @State private var attributedSource: AttributedString
+    @State private var selection = AttributedTextSelection()
+
+    init(source: Binding<String>, language: HighlightLanguage?) {
+        _source = source
+        self.language = language
+        _attributedSource = State(initialValue: AttributedString(source.wrappedValue))
+    }
+
+    var body: some View {
+        TextEditor(text: attributedBinding, selection: $selection)
+            .scrollContentBackground(.hidden)
+            .task(id: renderRequest) {
+                await render(renderRequest)
+            }
+    }
+
+    private var attributedBinding: Binding<AttributedString> {
+        Binding(
+            get: { attributedSource },
+            set: { value in
+                attributedSource = value
+                let updatedSource = String(value.characters)
+                guard updatedSource != source else { return }
+                source = updatedSource
+            }
+        )
+    }
+
+    private var renderRequest: SourceHighlightRequest {
+        SourceHighlightRequest(
+            source: source,
+            language: language,
+            isDark: colorScheme == .dark
+        )
+    }
+
+    private func render(_ request: SourceHighlightRequest) async {
+        if String(attributedSource.characters) != request.source {
+            attributedSource.transform(updating: &selection) {
+                $0 = AttributedString(request.source)
+            }
+        }
+        guard !request.source.isEmpty else { return }
+
+        try? await Task.sleep(for: .milliseconds(180))
+        guard !Task.isCancelled else { return }
+
+        let highlightTask = Task.detached(priority: .userInitiated) {
+            await request.highlightedText()
+        }
+        let highlighted = await withTaskCancellationHandler {
+            await highlightTask.value
+        } onCancel: {
+            highlightTask.cancel()
+        }
+        guard let highlighted,
+              !Task.isCancelled,
+              source == request.source,
+              String(attributedSource.characters) == request.source,
+              attributedSource != highlighted
+        else { return }
+        attributedSource.transform(updating: &selection) { $0 = highlighted }
+    }
+}
+
 struct SessionFileShareView: UIViewControllerRepresentable {
     let file: SessionFileShareItem
 
@@ -142,10 +215,22 @@ struct NumberedSourceLine: Identifiable, Sendable {
     let text: AttributedString
 }
 
-private struct NumberedSourceRenderRequest: Equatable, Sendable {
+private struct SourceHighlightRequest: Equatable, Sendable {
     let source: String
     let language: HighlightLanguage?
     let isDark: Bool
+}
+
+private extension SourceHighlightRequest {
+    func highlightedText() async -> AttributedString? {
+        guard !Task.isCancelled else { return nil }
+        let colors: HighlightColors = isDark ? .dark(.xcode) : .light(.xcode)
+        let mode = language.map(HighlightMode.language) ?? .automatic
+        guard let result = try? await Highlight().request(source, mode: mode, colors: colors),
+              !Task.isCancelled
+        else { return nil }
+        return NumberedSourceText.restoringWhitespace(result.attributedText, in: source)
+    }
 }
 
 struct NumberedSourceText: View {
@@ -199,15 +284,9 @@ struct NumberedSourceText: View {
             lines = plainLines
 
             let highlightTask = Task.detached(priority: .userInitiated) {
-                guard !Task.isCancelled else { return Optional<[NumberedSourceLine]>.none }
-                let colors: HighlightColors = request.isDark ? .dark(.xcode) : .light(.xcode)
-                let mode = request.language.map(HighlightMode.language) ?? .automatic
-                guard let result = try? await Highlight().request(
-                    request.source,
-                    mode: mode,
-                    colors: colors
-                ), !Task.isCancelled else { return nil }
-                let text = Self.restoringWhitespace(result.attributedText, in: request.source)
+                guard let text = await request.highlightedText() else {
+                    return Optional<[NumberedSourceLine]>.none
+                }
                 return Self.lines(from: text)
             }
             let highlightedLines = await withTaskCancellationHandler {
@@ -220,8 +299,8 @@ struct NumberedSourceText: View {
         }
     }
 
-    private var renderRequest: NumberedSourceRenderRequest {
-        NumberedSourceRenderRequest(
+    private var renderRequest: SourceHighlightRequest {
+        SourceHighlightRequest(
             source: source,
             language: language,
             isDark: colorScheme == .dark
