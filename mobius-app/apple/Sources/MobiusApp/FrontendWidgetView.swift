@@ -140,7 +140,7 @@ private struct FrontendActionListRow: View {
     let actionsEnabled: Bool
 
     var body: some View {
-        HStack(alignment: .top, spacing: MobiusSpace.s) {
+        HStack(spacing: MobiusSpace.s) {
             if let statusGlyph {
                 MobiusIcon(statusGlyph, size: MobiusStyle.glyphInline, foreground: statusColor)
                     .frame(height: MobiusStyle.rowTouch)
