@@ -380,6 +380,30 @@ fn session_file_block_renders_download_metadata_as_plain_text() {
 }
 
 #[test]
+fn sent_attachment_only_message_is_visible_in_the_transcript() {
+    let mut state = state();
+    state.transcript.clear();
+    state.handle_agent_event(
+        EventMsg::UserMessage(mobius::protocol::UserMessageEvent {
+            message: String::new(),
+            attachments: vec![mobius::protocol::SessionFileReference {
+                id: "3d46beff-7e84-46ea-859a-e66b4614a79b".into(),
+                name: "photo.png".into(),
+                size: 42,
+                media_type: "image/png".into(),
+            }],
+            message_target: None,
+        }),
+        Vec::new(),
+    );
+
+    assert_eq!(
+        state.transcript.front().map(|entry| entry.text.as_str()),
+        Some("› [file] photo.png · 42 bytes")
+    );
+}
+
+#[test]
 fn transcript_text_strips_terminal_control_characters() {
     let mut state = state();
     state.push("unsafe \u{1b}[31mred\u{1b}[0m", TranscriptTone::Warning);

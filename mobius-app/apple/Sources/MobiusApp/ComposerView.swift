@@ -443,7 +443,12 @@ private struct ComposerAttachmentRow: View {
     let attachment: ComposerAttachment
 
     var body: some View {
-        FileCard(name: attachment.name, detail: status, detailColor: statusColor) {
+        FileCard(
+            name: attachment.name,
+            detail: status,
+            detailColor: statusColor,
+            thumbnail: model.fileThumbnail(for: attachment)
+        ) {
             // A tile has no room for a row of controls, so the state sits in the corner and
             // the glyph keeps saying which file this is.
             HStack(spacing: MobiusSpace.xxs) {

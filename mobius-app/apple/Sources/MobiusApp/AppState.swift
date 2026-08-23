@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 import LocalAuthentication
 
 enum AppDestination: Hashable {
@@ -204,6 +205,18 @@ struct SessionFileDownload {
     var requestID: String
 }
 
+enum FileThumbnailKey: Hashable, Sendable {
+    case composer(UUID)
+    case session(sessionID: String, fileID: String)
+}
+
+struct SessionFileThumbnailDownload {
+    let file: SessionFileReference
+    let sessionID: String
+    var data: Data
+    var requestID: String
+}
+
 enum SessionFileDownloadPurpose: Equatable {
     case preview
     case share
@@ -221,6 +234,7 @@ struct ImportedAttachmentData: Sendable {
     let name: String
     let mediaType: String
     let data: Data
+    let thumbnail: CGImage?
 }
 
 struct TemporarySessionFile: Sendable {
@@ -231,7 +245,27 @@ struct TemporarySessionFile: Sendable {
 struct TextFilePreview: Identifiable {
     let id: UUID
     let name: String
-    let contents: String
+    let originalContents: String
+    var contents: String
+    let workspaceSessionID: String?
+    let originalWorkspacePath: String?
+    var workspacePath: String?
+
+    init(
+        id: UUID,
+        name: String,
+        contents: String,
+        workspaceSessionID: String? = nil,
+        workspacePath: String? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.originalContents = contents
+        self.contents = contents
+        self.workspaceSessionID = workspaceSessionID
+        self.originalWorkspacePath = workspacePath
+        self.workspacePath = workspacePath
+    }
 }
 
 struct SessionFileShareItem: Identifiable {
@@ -439,6 +473,7 @@ let appLockEnabledKey = "app-lock-enabled"
 let maximumAttachmentBytes = 50 * 1024 * 1024
 let maximumComposerAttachmentBytes: Int64 = 100 * 1024 * 1024
 let maximumPresentedFileBytes = 50 * 1024 * 1024
+let maximumWorkspaceTextFileBytes = 1024 * 1024
 let maximumHighlightedPreviewBytes = 1024 * 1024
 let transcriptTurnsPerPage = 1
 

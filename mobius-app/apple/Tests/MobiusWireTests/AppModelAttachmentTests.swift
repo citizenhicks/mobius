@@ -176,6 +176,30 @@ extension AppModelTests {
         XCTAssertEqual(model.transcript.last?.files, [attachment])
     }
 
+    func testImageImportCreatesComposerThumbnailFromLocalBytes() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model(requestSender: { request in
+            await recorder.record(request)
+        })
+        model.connectionState = .ready
+        model.selectedSessionID = "chat-1"
+        model.contributions = [fileAttachmentContribution()]
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fileURL = directory.appendingPathComponent("pixel.png")
+        try tinyPNGData().write(to: fileURL)
+
+        await model.importAttachments([fileURL])
+
+        let attachment = try XCTUnwrap(model.composerAttachments.first)
+        let thumbnail = try XCTUnwrap(model.fileThumbnail(for: attachment))
+        XCTAssertEqual(thumbnail.width, 1)
+        XCTAssertEqual(thumbnail.height, 1)
+    }
+
     func testNonImageAttachmentSubmitsWithoutImageModelSupport() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model(requestSender: { request in

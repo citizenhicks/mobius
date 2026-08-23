@@ -60,6 +60,12 @@ enum GatewayRequest: Encodable, Sendable {
         offset: UInt64,
         maxBytes: Int
     )
+    case writeWorkspaceFile(
+        requestID: String,
+        sessionID: String,
+        path: String,
+        content: String
+    )
     case beginSessionFileUpload(
         requestID: String,
         sessionID: String,
@@ -241,6 +247,12 @@ enum GatewayRequest: Encodable, Sendable {
             try container.encode(path, forKey: "path")
             try container.encode(offset, forKey: "offset")
             try container.encode(maxBytes, forKey: "maxBytes")
+        case .writeWorkspaceFile(let requestID, let sessionID, let path, let content):
+            try container.encode("write_workspace_file", forKey: "type")
+            try container.encode(requestID, forKey: "requestId")
+            try container.encode(sessionID, forKey: "sessionId")
+            try container.encode(path, forKey: "path")
+            try container.encode(content, forKey: "content")
         case .beginSessionFileUpload(let requestID, let sessionID, let name, let size, let mediaType):
             try container.encode("begin_session_file_upload", forKey: "type")
             try container.encode(requestID, forKey: "requestId")

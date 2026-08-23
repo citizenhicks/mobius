@@ -1,5 +1,6 @@
 //! Minimal state-driven Sora terminal frontend.
 
+mod clipboard;
 mod events;
 mod highlight;
 mod input;
@@ -35,6 +36,7 @@ use mobius::protocol::FrontendWidget;
 use mobius::protocol::ModelStepContentPhase;
 use mobius::protocol::Op;
 use mobius::protocol::RenderedBlock;
+use mobius::protocol::SessionFileReference;
 use mobius::protocol::SessionResumeRequestedEvent;
 
 const MAX_ENTRY_BYTES: usize = 40_000;
@@ -42,6 +44,10 @@ const MAX_COMPOSER_HISTORY_ENTRIES: usize = 100;
 const MAX_TITLE_BYTES: usize = 160;
 const MAX_STREAM_BYTES: usize = 64 * 1024;
 const MAX_TRANSCRIPT_ENTRIES: usize = 512;
+
+fn attachment_label(file: &SessionFileReference) -> String {
+    format!("[file] {} · {} bytes", file.name, file.size)
+}
 
 #[derive(Clone, Copy)]
 enum TranscriptTone {
@@ -253,6 +259,7 @@ struct InputDraft {
     text: String,
     cursor: usize,
     pastes: BTreeMap<char, String>,
+    attachments: Vec<SessionFileReference>,
 }
 
 #[derive(Default)]
@@ -268,7 +275,9 @@ struct TuiState {
     input: String,
     cursor: usize,
     pastes: BTreeMap<char, String>,
+    attachments: Vec<SessionFileReference>,
     input_limit_reached: bool,
+    upload_in_progress: bool,
     composer_history: VecDeque<String>,
     composer_history_index: Option<usize>,
     composer_history_draft: Option<InputDraft>,
@@ -316,7 +325,9 @@ impl TuiState {
             input: String::new(),
             cursor: 0,
             pastes: BTreeMap::new(),
+            attachments: Vec::new(),
             input_limit_reached: false,
+            upload_in_progress: false,
             composer_history: VecDeque::new(),
             composer_history_index: None,
             composer_history_draft: None,
@@ -370,15 +381,26 @@ impl TuiState {
             text: std::mem::take(&mut self.input),
             cursor: self.cursor,
             pastes: std::mem::take(&mut self.pastes),
+            attachments: std::mem::take(&mut self.attachments),
         };
         self.cursor = 0;
         draft
     }
 
-    fn restore_input_draft(&mut self, draft: InputDraft) {
+    fn restore_input_draft(&mut self, mut draft: InputDraft) {
+        for attachment in std::mem::take(&mut self.attachments) {
+            if !draft
+                .attachments
+                .iter()
+                .any(|existing| existing.id == attachment.id)
+            {
+                draft.attachments.push(attachment);
+            }
+        }
         self.input = draft.text;
         self.cursor = draft.cursor.min(self.input.len());
         self.pastes = draft.pastes;
+        self.attachments = draft.attachments;
     }
 
     fn remember_composer_input(&mut self, input: String) {
@@ -400,7 +422,9 @@ impl TuiState {
         let index = match self.composer_history_index {
             Some(index) => index.saturating_sub(1),
             None => {
-                self.composer_history_draft = Some(self.take_input_draft());
+                let draft = self.take_input_draft();
+                self.attachments.clone_from(&draft.attachments);
+                self.composer_history_draft = Some(draft);
                 self.composer_history.len() - 1
             }
         };

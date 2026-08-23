@@ -214,9 +214,11 @@ fn arrow_up_recalls_composer_history_and_ctrl_t_toggles_transcript() {
     let catalog = default_catalog();
     let mut state = state();
     state.remember_composer_input("previous prompt".into());
+    state.attachments.push(attachment("draft.png"));
 
     state.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), &catalog);
     assert_eq!(state.input, "previous prompt");
+    assert_eq!(state.attachments, vec![attachment("draft.png")]);
     assert!(state.preview.is_none());
 
     state.handle_key(
@@ -240,6 +242,7 @@ fn approval_preserves_an_in_progress_draft() {
     let mut state = state();
     state.input = "steer after approval".into();
     state.cursor = state.input.len();
+    state.attachments.push(attachment("draft.png"));
 
     state.handle_agent_event(
         EventMsg::ExecApprovalRequest(mobius::protocol::ExecApprovalRequestEvent {
@@ -250,6 +253,9 @@ fn approval_preserves_an_in_progress_draft() {
         }),
         Vec::new(),
     );
+    let mut finished_upload = attachment("finished-upload.png");
+    finished_upload.id = "471f43e6-6886-483c-bfe4-771db52614c8".into();
+    state.attachments.push(finished_upload.clone());
 
     assert_eq!(
         state.handle_key(
@@ -273,5 +279,103 @@ fn approval_preserves_an_in_progress_draft() {
         })
     );
     assert_eq!(state.input, "steer after approval");
+    assert_eq!(
+        state.attachments,
+        vec![attachment("draft.png"), finished_upload]
+    );
     assert!(state.is_working());
+}
+
+#[test]
+fn ctrl_or_alt_v_requests_native_clipboard_paste() {
+    let catalog = default_catalog();
+    for modifiers in [
+        KeyModifiers::CONTROL,
+        KeyModifiers::ALT,
+        KeyModifiers::CONTROL | KeyModifiers::ALT,
+    ] {
+        let mut state = state();
+        assert_eq!(
+            state.handle_key(KeyEvent::new(KeyCode::Char('v'), modifiers), &catalog),
+            UiAction::PasteClipboard
+        );
+    }
+}
+
+#[test]
+fn attachment_only_submission_is_a_user_turn() {
+    let mut state = state();
+    state.attachments.push(attachment("photo.png"));
+
+    assert_eq!(
+        state.submit_input(&default_catalog()),
+        UiAction::Submit(Op::UserInput {
+            text: String::new(),
+            attachments: vec![attachment("photo.png")],
+        })
+    );
+    assert!(state.attachments.is_empty());
+}
+
+#[test]
+fn active_turn_preserves_attachment_draft_instead_of_steering() {
+    let mut state = state();
+    state.active_turn = Some("turn".into());
+    state.input = "next request".into();
+    state.cursor = state.input.len();
+    state.attachments.push(attachment("report.pdf"));
+
+    assert_eq!(state.submit_input(&default_catalog()), UiAction::None);
+    assert_eq!(state.input, "next request");
+    assert_eq!(state.attachments, vec![attachment("report.pdf")]);
+}
+
+#[test]
+fn upload_in_progress_preserves_the_whole_draft() {
+    let mut state = state();
+    state.input = "describe these".into();
+    state.cursor = state.input.len();
+    state.attachments.push(attachment("ready.png"));
+    state.upload_in_progress = true;
+
+    assert_eq!(state.submit_input(&default_catalog()), UiAction::None);
+    assert_eq!(state.input, "describe these");
+    assert_eq!(state.attachments, vec![attachment("ready.png")]);
+}
+
+#[test]
+fn backspace_removes_the_last_attachment_from_an_empty_composer() {
+    let mut state = state();
+    state.attachments.push(attachment("first.png"));
+    state.attachments.push(attachment("second.png"));
+
+    state.handle_key(
+        KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+        &default_catalog(),
+    );
+
+    assert_eq!(state.attachments, vec![attachment("first.png")]);
+}
+
+#[test]
+fn normal_pasted_paths_remain_text() {
+    let mut state = state();
+    state.insert_paste("/tmp/photo.png");
+
+    assert_eq!(state.input, "/tmp/photo.png");
+    assert!(state.attachments.is_empty());
+}
+
+fn attachment(name: &str) -> mobius::protocol::SessionFileReference {
+    mobius::protocol::SessionFileReference {
+        id: "3d46beff-7e84-46ea-859a-e66b4614a79b".into(),
+        name: name.into(),
+        size: 4,
+        media_type: if name.ends_with(".pdf") {
+            "application/pdf"
+        } else {
+            "image/png"
+        }
+        .into(),
+    }
 }

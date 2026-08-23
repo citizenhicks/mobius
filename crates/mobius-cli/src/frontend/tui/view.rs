@@ -18,6 +18,7 @@ use super::PreviewContent;
 use super::TranscriptEntry;
 use super::TranscriptTone;
 use super::TuiState;
+use super::attachment_label;
 use super::highlight;
 use super::markdown;
 use super::shimmer;
@@ -590,10 +591,19 @@ fn tone_role(tone: FrontendTone) -> Role {
 fn marked_input(state: &TuiState) -> (String, usize) {
     let (mut input, cursor) = state.visible_input();
     input.insert(cursor, '█');
-    (
-        format!("{COMPOSER_PROMPT}{input}"),
-        COMPOSER_PROMPT.len() + cursor + '█'.len_utf8(),
-    )
+    let mut marked = state
+        .attachments
+        .iter()
+        .map(attachment_label)
+        .collect::<Vec<_>>()
+        .join(" · ");
+    if !marked.is_empty() {
+        marked.push('\n');
+    }
+    marked.push_str(COMPOSER_PROMPT);
+    let cursor_end = marked.len() + cursor + '█'.len_utf8();
+    marked.push_str(&input);
+    (marked, cursor_end)
 }
 
 fn input_cursor_row(input_through_cursor: &str, width: u16) -> u16 {

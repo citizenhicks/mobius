@@ -249,6 +249,19 @@ impl HostState {
                         .await,
                 );
             }
+            HostCommand::WriteWorkspaceFile {
+                path,
+                content,
+                reply,
+            } => {
+                let result = async {
+                    self.require_idle()?;
+                    let _mutation = self.begin_session_mutation()?;
+                    write_workspace_file(&self.running.gateway_sandbox, &path, &content).await
+                }
+                .await;
+                let _ = reply.send(result);
+            }
             HostCommand::SwitchGitBranch { branch, reply } => {
                 let result = async {
                     let _mutation = self.begin_session_mutation()?;

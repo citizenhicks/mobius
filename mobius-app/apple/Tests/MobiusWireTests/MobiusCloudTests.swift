@@ -730,6 +730,48 @@ final class MobiusCloudTests: XCTestCase {
         try await gatewayStore.remove(try XCTUnwrap(model.accounts.first))
     }
 
+    func testExpiredGatewayStopsCloudProvisioning() async throws {
+        let userID = UUID()
+        let token = String(repeating: "t", count: 43)
+        let service = "app.mobius.cloud.tests.\(UUID())"
+        let sessionStore = MobiusCloudSessionStore(service: service)
+        defer { try? sessionStore.remove() }
+        var requests: [URLRequest] = []
+        let responses = [
+            #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#,
+            #"{"email":"private@privaterelay.appleid.com","subscribed":true,"sharesDiagnostics":false}"#,
+            #"{"status":"expired"}"#,
+        ]
+        let client = MobiusCloudClient(store: sessionStore) { request in
+            requests.append(request)
+            return try self.response(for: request, json: responses[requests.count - 1])
+        }
+        _ = try await client.authenticate(
+            authorizationCode: "apple-code",
+            nonce: String(repeating: "n", count: 43)
+        )
+
+        let suiteName = "app.mobius.cloud.tests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let model = AppModel(
+            store: GatewayStore(defaults: defaults),
+            settingsDefaults: defaults,
+            cloudClient: client
+        )
+
+        let connected = await model.connectCloudGateway()
+
+        XCTAssertFalse(connected)
+        XCTAssertEqual(model.cloudAction, .idle)
+        XCTAssertEqual(model.cloudError, MobiusCloudError.subscriptionRequired.localizedDescription)
+        XCTAssertEqual(requests.map { $0.url?.path }, [
+            "/api/mobile/auth/apple",
+            "/api/mobile/account",
+            "/api/mobile/gateway",
+        ])
+    }
+
     func testCloudPairingRetriesWithFreshGrantAfterFailureResetOrCancellation() async throws {
         let userID = UUID()
         let token = String(repeating: "t", count: 43)

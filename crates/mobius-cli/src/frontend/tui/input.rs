@@ -31,6 +31,7 @@ const WORD_SEPARATORS: &str = "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?";
 #[derive(Debug, PartialEq)]
 pub(super) enum UiAction {
     None,
+    PasteClipboard,
     Submit(Op),
     Gateway(GatewayAction),
     GatewaySettings,
@@ -88,6 +89,14 @@ impl TuiState {
                 id,
                 decision: approval_decision(&choice.to_string()),
             });
+        }
+        if key.kind == KeyEventKind::Press
+            && key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            && matches!(key.code, KeyCode::Char(character) if character.eq_ignore_ascii_case(&'v'))
+        {
+            return UiAction::PasteClipboard;
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             return match key.code {
@@ -151,6 +160,10 @@ impl TuiState {
             }
             KeyCode::Esc => UiAction::None,
             KeyCode::Backspace => {
+                if self.input.is_empty() {
+                    self.attachments.pop();
+                    return UiAction::None;
+                }
                 let previous = if key.modifiers.contains(KeyModifiers::ALT) {
                     previous_word_boundary(&self.input, self.cursor)
                 } else {
@@ -540,17 +553,32 @@ impl TuiState {
             self.input_limit_reached = true;
             return UiAction::None;
         }
-        self.input.clear();
-        self.pastes.clear();
-        self.cursor = 0;
-        self.slash_input_changed();
+        if self.upload_in_progress {
+            self.push(
+                "wait for attachment uploads to finish before sending",
+                TranscriptTone::Warning,
+            );
+            return UiAction::None;
+        }
         let line = if had_pastes {
             line.as_str()
         } else {
             line.trim()
         };
+        if !self.attachments.is_empty() && self.active_turn.is_some() {
+            self.push(
+                "attachments can be sent when the agent is idle",
+                TranscriptTone::Warning,
+            );
+            return UiAction::None;
+        }
+        self.input.clear();
+        self.pastes.clear();
+        self.cursor = 0;
+        self.slash_input_changed();
         let status = self.status();
         if !had_pastes
+            && self.attachments.is_empty()
             && let Some(action) = catalog.dispatch(
                 line,
                 CommandContext {
@@ -593,24 +621,31 @@ impl TuiState {
             self.restore_draft();
             return UiAction::Submit(Op::ExecApproval { id, decision });
         }
-        if line.is_empty() {
+        if line.is_empty() && self.attachments.is_empty() {
             return UiAction::None;
         }
-        let op = self
-            .active_turn
-            .clone()
-            .zip(catalog.active_input())
-            .map_or_else(
-                || Op::UserInput {
-                    text: line.into(),
-                    attachments: Vec::new(),
-                },
-                |(turn_id, active)| Op::ActiveInput {
-                    operation: active.operation.clone(),
-                    turn_id,
-                    text: line.into(),
-                },
-            );
+        let attachments = std::mem::take(&mut self.attachments);
+        let op = if attachments.is_empty() {
+            self.active_turn
+                .clone()
+                .zip(catalog.active_input())
+                .map_or_else(
+                    || Op::UserInput {
+                        text: line.into(),
+                        attachments,
+                    },
+                    |(turn_id, active)| Op::ActiveInput {
+                        operation: active.operation.clone(),
+                        turn_id,
+                        text: line.into(),
+                    },
+                )
+        } else {
+            Op::UserInput {
+                text: line.into(),
+                attachments,
+            }
+        };
         UiAction::Submit(op)
     }
 

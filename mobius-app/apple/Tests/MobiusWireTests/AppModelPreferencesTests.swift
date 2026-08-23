@@ -3,12 +3,12 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
-    func testAppLockAuthenticatesBeforePersistingAndRelocks() async throws {
+    func testAppLockAuthenticatesBeforePersistingAndKeepsWorkspaceDraftInMemory() async throws {
         let suiteName = UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
         var method = AppLockAuthenticationMethod.unavailable
-        var results = [false, true, true]
+        var results = [false, true, true, true]
         let authenticator = AppLockAuthenticator(
             method: { method },
             authenticate: { _ in results.removeFirst() }
@@ -44,10 +44,31 @@ extension AppModelTests {
         XCTAssertTrue(relaunched.isAppLocked)
         await relaunched.appDidBecomeActive()
         XCTAssertFalse(relaunched.isAppLocked)
-        relaunched.textFilePreview = TextFilePreview(id: UUID(), name: "secret.swift", contents: "secret")
+        let draftID = UUID()
+        relaunched.textFilePreview = TextFilePreview(
+            id: draftID,
+            name: "New File",
+            contents: "",
+            workspaceSessionID: "chat-1",
+            workspacePath: ""
+        )
+        relaunched.updateWorkspaceFileDraft(id: draftID, path: ".env")
+        relaunched.updateWorkspaceFileDraft(id: draftID, contents: "TOKEN=unsaved\n")
         relaunched.appDidEnterBackground()
         XCTAssertTrue(relaunched.isAppLocked)
-        XCTAssertNil(relaunched.textFilePreview)
+        XCTAssertEqual(relaunched.textFilePreview?.workspacePath, ".env")
+        XCTAssertEqual(relaunched.textFilePreview?.contents, "TOKEN=unsaved\n")
+        await relaunched.appDidBecomeActive()
+        XCTAssertFalse(relaunched.isAppLocked)
+        XCTAssertEqual(relaunched.textFilePreview?.contents, "TOKEN=unsaved\n")
+
+        let freshLaunch = AppModel(
+            client: GatewayClient(),
+            store: GatewayStore(defaults: defaults),
+            settingsDefaults: defaults,
+            appLockAuthenticator: authenticator
+        )
+        XCTAssertNil(freshLaunch.textFilePreview)
         XCTAssertTrue(results.isEmpty)
     }
 

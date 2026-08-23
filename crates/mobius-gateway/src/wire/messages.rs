@@ -200,6 +200,12 @@ pub enum ClientMessage {
         offset: u64,
         max_bytes: usize,
     },
+    WriteWorkspaceFile {
+        request_id: String,
+        session_id: String,
+        path: String,
+        content: String,
+    },
     SetProviderCredential {
         request_id: String,
         instance: String,

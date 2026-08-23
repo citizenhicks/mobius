@@ -772,6 +772,13 @@ extension AppModel {
             showToast("Git branch changed.", tone: .success)
             refreshWorkspaceChanges()
         }
+        if requestID == workspaceFileWriteRequestID {
+            workspaceFileWriteRequestID = nil
+            isSavingWorkspaceFile = false
+            textFilePreview = nil
+            showToast("File saved.", tone: .success)
+            refreshWorkspaceFiles()
+        }
         if cronRequestIDs.remove(requestID) != nil {
             cronTaskDraft = ""
             refreshCron()
@@ -779,6 +786,13 @@ extension AppModel {
     }
 
     private func handleRejected(_ rejection: GatewayRejection) {
+        let rejectedFileThumbnailDownload = sessionFileThumbnailDownload.flatMap { download in
+            download.requestID == rejection.requestId ? download : nil
+        }
+        let rejectedDiscardedFileThumbnail =
+            discardedSessionFileThumbnailRequestIDs.remove(rejection.requestId) != nil
+        let rejectedFileThumbnail = rejectedFileThumbnailDownload != nil
+            || rejectedDiscardedFileThumbnail
         let deletedPresentedSessionID = rejection.requestId == sessionMutationRequestID
             ? pendingDeletedPresentedSessionID
             : nil
@@ -825,9 +839,19 @@ extension AppModel {
             sessionFileDownload = nil
             isLoadingFilePresentation = false
         }
+        if let rejectedFileThumbnailDownload {
+            finishSessionFileThumbnailAttempt(
+                rejectedFileThumbnailDownload,
+                startsNext: !rejection.fatal
+            )
+        }
         if rejection.requestId == workspaceFilePreviewDownload?.requestID {
             workspaceFilePreviewDownload = nil
             isLoadingFilePresentation = false
+        }
+        if rejection.requestId == workspaceFileWriteRequestID {
+            workspaceFileWriteRequestID = nil
+            isSavingWorkspaceFile = false
         }
         if pendingDrafts[rejection.requestId] != nil {
             restoreDraft(id: rejection.requestId)
@@ -927,12 +951,14 @@ extension AppModel {
         if cronRequestIDs.remove(rejection.requestId) != nil {
             cronError = rejection.message
         }
-        showToast(
-            rejection.message,
-            tone: rejection.code == "revision_conflict" || rejection.code == "agent_busy"
-                ? .warning
-                : .error
-        )
+        if !rejectedFileThumbnail || rejection.fatal {
+            showToast(
+                rejection.message,
+                tone: rejection.code == "revision_conflict" || rejection.code == "agent_busy"
+                    ? .warning
+                    : .error
+            )
+        }
         if rejection.fatal {
             automaticReconnectBlocked = true
             cancelReconnect()

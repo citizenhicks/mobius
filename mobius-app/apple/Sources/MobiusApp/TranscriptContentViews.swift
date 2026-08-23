@@ -1,26 +1,6 @@
 import Foundation
 import SwiftUI
 
-/// Files sit above the bubble rather than inside it: nesting a bordered card in a
-/// filled bubble reads as a box in a box, and the pill carries the same fill so the pair
-/// still reads as one message.
-struct UserMessageContent: View {
-    @Environment(\.mobiusPalette) private var palette
-    let entry: TranscriptEntry
-
-    var body: some View {
-        VStack(alignment: .trailing, spacing: MobiusSpace.s) {
-            TranscriptFileCards(files: entry.files)
-            if !entry.text.isEmpty {
-                CollapsibleText(text: entry.text)
-                    .padding(.horizontal, MobiusSpace.l)
-                    .padding(.vertical, MobiusSpace.m)
-                    .background(palette.accentSoft, in: MobiusStyle.cardShape)
-            }
-        }
-    }
-}
-
 private struct CollapsibleTextEndAttribute: TextAttribute {}
 
 struct CollapsibleText: View {
@@ -268,33 +248,31 @@ struct SessionFileCard: View {
     let file: SessionFileReference
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
-            Button {
+        let thumbnail = model.fileThumbnail(for: file)
+        Button {
+            model.previewSessionFile(file)
+        } label: {
+            SessionFileCardLabel(file: file, thumbnail: thumbnail)
+        }
+        .buttonStyle(.mobiusPlain)
+        .accessibilityLabel("Open file \(file.name)")
+        .accessibilityHint("Downloads and opens a preview")
+        .frame(
+            minWidth: MobiusStyle.iconButtonSize,
+            minHeight: MobiusStyle.iconButtonSize
+        )
+        .contentShape(Rectangle())
+        .contextMenu {
+            Button("Preview", glyph: file.name.fileGlyph) {
                 model.previewSessionFile(file)
-            } label: {
-                SessionFileCardLabel(file: file)
             }
-            .buttonStyle(.mobiusPlain)
-            .disabled(model.isLoadingFilePresentation)
-            .accessibilityLabel("Open file \(file.name)")
-            .accessibilityHint("Downloads and opens a preview")
-
-            Menu {
-                Button("Preview", glyph: file.name.fileGlyph) {
-                    model.previewSessionFile(file)
-                }
-                Button("Share or Save…", glyph: .arrowUpRight01) {
-                    model.saveOrShareSessionFile(file)
-                }
-            } label: {
-                MobiusIcon(.dotsThree, size: MobiusStyle.glyphInline)
-                    .frame(width: MobiusStyle.iconButtonSize, height: MobiusStyle.iconButtonSize)
-                    .contentShape(Rectangle())
+            Button("Share or Save…", glyph: .arrowUpRight01) {
+                model.saveOrShareSessionFile(file)
             }
-            .buttonStyle(.mobiusPlain)
-            .disabled(model.isLoadingFilePresentation)
-            .accessibilityLabel("File actions for \(file.name)")
-            .help("File actions")
+        }
+        .disabled(model.isLoadingFilePresentation)
+        .task(id: model.connectionState.isReady) {
+            model.requestSessionFileThumbnail(file)
         }
     }
 }
@@ -349,55 +327,96 @@ struct QueuedMessageView: View {
 private struct SessionFileCardLabel: View {
     @Environment(\.mobiusPalette) private var palette
     let file: SessionFileReference
+    let thumbnail: CGImage?
 
     var body: some View {
         FileCard(
             name: file.name,
             detail: Text("\(Text(fileKind(name: file.name, mediaType: file.mediaType))) · \(Text(file.size, format: .byteCount(style: .file)))"),
-            detailColor: palette.muted
+            detailColor: palette.muted,
+            thumbnail: thumbnail,
+            size: cardSize
         )
+    }
+
+    private var cardSize: CGSize {
+        guard let thumbnail else { return CGSize(width: 136, height: 112) }
+        let width = CGFloat(thumbnail.width)
+        let height = CGFloat(thumbnail.height)
+        let scale = min(136 / width, 112 / height)
+        return CGSize(width: width * scale, height: height * scale)
     }
 }
 
-/// The shared shape for a file in the transcript and in the composer: a glyph tile, the
-/// name, and one line under it. No thumbnail — the tile carries the weight instead.
+/// The shared file tile: raster thumbnails run edge to edge; other files retain their
+/// glyph, name, and one line of detail.
 struct FileCard<Trailing: View>: View {
     @Environment(\.mobiusPalette) private var palette
     let name: String
     let detail: Text
     let detailColor: Color
+    let thumbnail: CGImage?
+    let size: CGSize
     let trailing: Trailing
 
     init(
         name: String,
         detail: Text,
         detailColor: Color,
+        thumbnail: CGImage? = nil,
+        size: CGSize = CGSize(width: 136, height: 112),
         @ViewBuilder trailing: () -> Trailing
     ) {
         self.name = name
         self.detail = detail
         self.detailColor = detailColor
+        self.thumbnail = thumbnail
+        self.size = size
         self.trailing = trailing()
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            MobiusIcon(.fileText, size: 26, foreground: palette.accent)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            Text(name)
-                .font(MobiusStyle.badgeFont)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            detail
-                .font(MobiusStyle.badgeFont)
-                .foregroundStyle(detailColor)
-                .lineLimit(1)
+        content
+        .frame(width: size.width, height: size.height)
+        .background(palette.raised)
+        .compositingGroup()
+        .clipShape(MobiusStyle.tileShape)
+        .overlay(alignment: .topTrailing) {
+            trailing
+                .foregroundStyle(thumbnail == nil ? Color.primary : Color.white)
+                .shadow(
+                    color: thumbnail == nil ? .clear : .black.opacity(0.85),
+                    radius: 1,
+                    y: 1
+                )
+                .padding(MobiusSpace.xs)
         }
-        .padding(MobiusSpace.m)
-        .frame(width: 136, height: 112)
-        .background(palette.raised, in: MobiusStyle.tileShape)
-        .overlay(alignment: .topTrailing) { trailing.padding(MobiusSpace.xs) }
         .contentShape(MobiusStyle.tileShape)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if let thumbnail {
+            Image(thumbnail, scale: 1, label: Text(name))
+                .resizable()
+                .scaledToFill()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
+        } else {
+            VStack(spacing: 0) {
+                MobiusIcon(.fileText, size: 26, foreground: palette.accent)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                Text(name)
+                    .font(MobiusStyle.badgeFont)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                detail
+                    .font(MobiusStyle.badgeFont)
+                    .foregroundStyle(detailColor)
+                    .lineLimit(1)
+            }
+            .padding(MobiusSpace.m)
+        }
     }
 }
 
@@ -409,8 +428,20 @@ private func fileKind(name: String, mediaType: String) -> String {
 }
 
 extension FileCard where Trailing == EmptyView {
-    init(name: String, detail: Text, detailColor: Color) {
-        self.init(name: name, detail: detail, detailColor: detailColor) { EmptyView() }
+    init(
+        name: String,
+        detail: Text,
+        detailColor: Color,
+        thumbnail: CGImage? = nil,
+        size: CGSize = CGSize(width: 136, height: 112)
+    ) {
+        self.init(
+            name: name,
+            detail: detail,
+            detailColor: detailColor,
+            thumbnail: thumbnail,
+            size: size
+        ) { EmptyView() }
     }
 }
 

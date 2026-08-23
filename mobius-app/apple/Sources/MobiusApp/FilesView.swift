@@ -25,11 +25,26 @@ struct FilesView: View {
                     FilesNavigationTitle()
                 }
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { model.showsInspector = false }
+                    Button("Done") {
+                        model.discardFilePresentation()
+                        model.showsInspector = false
+                    }
+                }
+                if model.filesInspectorTab == .allFiles {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button(action: model.createWorkspaceFile) {
+                            MobiusIcon(.plus, gutter: false)
+                        }
+                        .disabled(!model.canModifySelectedSession || !model.connectionState.isReady)
+                        .accessibilityLabel("Create file")
+                        .help("Create a workspace text file")
+                    }
                 }
             }
         }
+        .presentationDetents([.medium])
         .presentationDragIndicator(.visible)
+        .interactiveDismissDisabled(model.isLoadingFilePresentation)
     }
 
     private var navigationTitle: String {

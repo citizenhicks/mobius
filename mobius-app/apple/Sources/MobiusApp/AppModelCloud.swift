@@ -30,7 +30,7 @@ extension AppModel {
         do {
             var account = try await cloudClient.account()
             if let verification = try await currentCloudEntitlement() {
-                let transaction = try cloudTransaction(from: verification)
+                let transaction = try verifiedCloudTransaction(from: verification)
                 if !account.subscribed {
                     try await cloudClient.submitSubscription(
                         signedTransaction: verification.jwsRepresentation
@@ -230,7 +230,7 @@ extension AppModel {
     }
 
     private func acknowledge(_ verification: VerificationResult<Transaction>) async throws {
-        let transaction = try cloudTransaction(from: verification)
+        let transaction = try verifiedCloudTransaction(from: verification)
 
         try await cloudClient.submitSubscription(
             signedTransaction: verification.jwsRepresentation
@@ -252,7 +252,7 @@ extension AppModel {
         ) {
             switch verification {
             case .verified:
-                _ = try cloudTransaction(from: verification)
+                _ = try verifiedCloudTransaction(from: verification)
                 return verification
             case .unverified:
                 sawUnverifiedTransaction = true
@@ -262,13 +262,12 @@ extension AppModel {
         return nil
     }
 
-    private func cloudTransaction(
+    private func verifiedCloudTransaction(
         from verification: VerificationResult<Transaction>
     ) throws -> Transaction {
+        // Cloud owns account-token verification because only it can safely relink a transaction.
         guard case .verified(let transaction) = verification,
-              let session = cloudSession,
               transaction.productID == mobiusCloudMonthlyProductID,
-              transaction.appAccountToken == session.userID,
               transaction.revocationDate == nil
         else { throw MobiusCloudError.unverifiedTransaction }
         return transaction
@@ -306,6 +305,8 @@ extension AppModel {
                     }
                 }
                 return
+            case .expired:
+                throw MobiusCloudError.subscriptionRequired
             case .error:
                 throw MobiusCloudError.provisioningFailed
             }

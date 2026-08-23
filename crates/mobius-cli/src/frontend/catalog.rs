@@ -31,6 +31,7 @@ pub(crate) struct UiCatalog {
     widgets: Vec<(String, FrontendWidget)>,
     model_choices: Vec<ModelChoice>,
     active_input: Option<FrontendActiveInput>,
+    accepts_file_attachments: bool,
     workspace: PathBuf,
     workspace_references: Arc<OnceLock<Vec<UiReference>>>,
 }
@@ -161,6 +162,9 @@ impl UiCatalog {
             active_input: contributions
                 .iter()
                 .find_map(|contribution| contribution.active_input.clone()),
+            accepts_file_attachments: contributions
+                .iter()
+                .any(|contribution| contribution.accepts_file_attachments),
             workspace: workspace.to_path_buf(),
             workspace_references: Arc::new(OnceLock::new()),
         })
@@ -211,6 +215,10 @@ impl UiCatalog {
 
     pub(crate) fn active_input(&self) -> Option<&FrontendActiveInput> {
         self.active_input.as_ref()
+    }
+
+    pub(crate) const fn accepts_file_attachments(&self) -> bool {
+        self.accepts_file_attachments
     }
 
     pub(crate) fn command_suggestions(&self, input: &str, cursor: usize) -> Option<Vec<MenuItem>> {
@@ -775,6 +783,17 @@ mod tests {
             catalog.dispatch("/agent {}", context),
             Some(CommandAction::Print("usage: /agent".into()))
         );
+    }
+
+    #[test]
+    fn retains_file_attachment_capability() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let mut attachments = contribution("attach");
+        attachments.accepts_file_attachments = true;
+
+        let catalog = UiCatalog::build(&[attachments], &[], workspace.path()).expect("catalog");
+
+        assert!(catalog.accepts_file_attachments());
     }
 
     #[test]

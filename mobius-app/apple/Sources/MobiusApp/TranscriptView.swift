@@ -359,15 +359,8 @@ private struct TranscriptRow: View {
     let turnDiff: String
     var collapsesLongMessages = false
 
-    @ViewBuilder
     var body: some View {
-        if isUser {
-            rowContent
-                .contentShape(Rectangle())
-                .contextMenu { transcriptActions }
-        } else {
-            rowContent
-        }
+        rowContent
     }
 
     private var rowContent: some View {
@@ -389,7 +382,17 @@ private struct TranscriptRow: View {
         if isUser {
             HStack {
                 Spacer(minLength: 42)
-                UserMessageContent(entry: entry)
+                VStack(alignment: .trailing, spacing: MobiusSpace.s) {
+                    TranscriptFileCards(files: entry.files)
+                    if !entry.text.isEmpty {
+                        CollapsibleText(text: entry.text)
+                            .padding(.horizontal, MobiusSpace.l)
+                            .padding(.vertical, MobiusSpace.m)
+                            .background(palette.accentSoft, in: MobiusStyle.cardShape)
+                            .contentShape(MobiusStyle.cardShape)
+                            .contextMenu { transcriptActions }
+                    }
+                }
             }
         } else {
             VStack(alignment: .leading, spacing: MobiusSpace.s) {

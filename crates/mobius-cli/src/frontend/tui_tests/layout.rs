@@ -84,3 +84,27 @@ fn capped_composer_keeps_a_wide_wrapped_cursor_visible() {
 
     assert!(terminal.backend().to_string().contains('█'));
 }
+
+#[test]
+fn composer_shows_attached_file_metadata_compactly() {
+    let catalog = default_catalog();
+    let mut state = state();
+    state.transcript.clear();
+    state
+        .attachments
+        .push(mobius::protocol::SessionFileReference {
+            id: "3d46beff-7e84-46ea-859a-e66b4614a79b".into(),
+            name: "photo.png".into(),
+            size: 42,
+            media_type: "image/png".into(),
+        });
+    let mut terminal = Terminal::new(TestBackend::new(50, 12)).expect("terminal");
+
+    terminal
+        .draw(|frame| view::render(frame, &mut state, &catalog))
+        .expect("draw");
+    let rendered = terminal.backend().to_string();
+
+    assert!(rendered.contains("[file] photo.png · 42 bytes"));
+    assert!(rendered.contains("» █"));
+}

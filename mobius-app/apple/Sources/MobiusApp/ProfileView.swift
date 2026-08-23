@@ -354,9 +354,11 @@ private struct MobiusCloudAccountDeletionSheet: View {
                             foreground: palette.danger,
                             gutter: false
                         )
+                        .frame(maxWidth: .infinity)
                         .accessibilityHidden(true)
                         Text("Confirm with Apple")
                             .font(.title.bold())
+                            .frame(maxWidth: .infinity, alignment: .center)
                         Text("Sign in again to confirm permanent account deletion. This verifies that the request belongs to you.")
                             .font(MobiusStyle.bodyFont)
                             .foregroundStyle(palette.muted)
@@ -391,6 +393,7 @@ private struct MobiusCloudAccountDeletionSheet: View {
                                 didAttemptDeletion = true
                                 model.reportCloudSignInFailure()
                             }
+                            .frame(maxWidth: .infinity, alignment: .center)
                         }
                     }
                     .frame(maxWidth: 680, alignment: .leading)

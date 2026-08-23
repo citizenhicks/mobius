@@ -172,6 +172,12 @@ final class AppModelTests: XCTestCase {
         return await predicate()
     }
 
+    func tinyPNGData() throws -> Data {
+        try XCTUnwrap(Data(base64Encoded:
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        ))
+    }
+
     func composition(systemPrompt: String = "Test") -> AgentComposition {
         AgentComposition(
             provider: ProviderConfig(

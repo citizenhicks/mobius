@@ -93,14 +93,19 @@ struct AppShell: View {
             Text("This removes the chat from the gateway history.")
         }
         .quickLookPreview($model.previewURL)
-        .sheet(item: $model.textFilePreview, onDismiss: model.discardFilePresentation) { preview in
+        .sheet(item: presentedTextFilePreview, onDismiss: {
+            // App lock hides the sheet through the presentation binding while retaining its
+            // in-memory workspace draft. A user dismissal clears the bound item first.
+            guard model.textFilePreview == nil else { return }
+            model.closeFilePresentation()
+        }) { preview in
             TextFilePreviewView(preview: preview)
         }
-        .sheet(item: $model.sessionFileShareItem, onDismiss: model.discardFilePresentation) { file in
+        .sheet(item: $model.sessionFileShareItem, onDismiss: model.closeFilePresentation) { file in
             SessionFileShareView(file: file)
         }
         .onChange(of: model.previewURL) { oldValue, newValue in
-            if oldValue != nil, newValue == nil { model.discardFilePresentation() }
+            if oldValue != nil, newValue == nil { model.closeFilePresentation() }
         }
         .preferredColorScheme(preferredColorScheme)
         .onChange(of: chatIsVisible, initial: true) { _, visible in
@@ -132,6 +137,20 @@ struct AppShell: View {
             model.start()
             if scenePhase == .active { await model.appDidBecomeActive() }
         }
+    }
+
+    private var filePresentationsAreSuppressed: Bool {
+        model.isAppLocked || model.appLockEnabled && scenePhase != .active
+    }
+
+    private var presentedTextFilePreview: Binding<TextFilePreview?> {
+        Binding(
+            get: { filePresentationsAreSuppressed ? nil : model.textFilePreview },
+            set: { preview in
+                guard !filePresentationsAreSuppressed else { return }
+                model.textFilePreview = preview
+            }
+        )
     }
 
     /// Compact iOS reveals the sidebar under the detail; everything else keeps the split view,

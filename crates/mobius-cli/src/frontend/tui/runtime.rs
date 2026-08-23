@@ -12,6 +12,8 @@ use tokio::time::MissedTickBehavior;
 
 use super::TranscriptTone;
 use super::TuiState;
+use super::clipboard::ClipboardUploads;
+use super::clipboard::read_clipboard;
 use super::events::{handle_gateway_event, handle_gateway_history};
 use super::input::UiAction;
 use super::view::render_preview;
@@ -107,6 +109,7 @@ pub(in crate::frontend) async fn run(
         model_route,
         agent_summary(gateway, session),
     );
+    let mut uploads = ClipboardUploads::default();
     state.context_limit = session.context_limit_tokens;
     let mut tick = tokio::time::interval(INPUT_POLL);
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -137,7 +140,24 @@ pub(in crate::frontend) async fn run(
                 match event {
                     Ok(Some(frame)) => {
                         replay_hydration.observe(&frame.message, &session_id);
-                        match frame.message {
+                        if let Some(result) = uploads.handle(&frame.message, &session_id).await {
+                            match result {
+                                Ok(advance) => {
+                                    if let Some(attachment) = advance.attachment {
+                                        state.attachments.push(attachment);
+                                    }
+                                    if let Some(message) = advance.message
+                                        && let Err(error) = sender.send(message).await
+                                    {
+                                        uploads.abort();
+                                        state.push(error.to_string(), TranscriptTone::Error);
+                                    }
+                                }
+                                Err(error) => state.push(error, TranscriptTone::Error),
+                            }
+                            state.upload_in_progress = uploads.is_active();
+                        } else {
+                            match frame.message {
                             ServerMessage::AgentEvent {
                                 session_id: actual,
                                 record,
@@ -186,6 +206,7 @@ pub(in crate::frontend) async fn run(
                                     state.push(message, TranscriptTone::Neutral);
                                 }
                             }
+                            }
                         }
                         if let Some(request) = state.requested_resume.take() {
                             clear_on_exit = true;
@@ -194,6 +215,8 @@ pub(in crate::frontend) async fn run(
                         }
                     }
                     Ok(None) => {
+                        uploads.abort();
+                        state.upload_in_progress = false;
                         replay_hydration.finish();
                         events_open = false;
                         state.disconnected = true;
@@ -201,6 +224,8 @@ pub(in crate::frontend) async fn run(
                         state.push("gateway disconnected · press q to exit", TranscriptTone::Error);
                     }
                     Err(error) => {
+                        uploads.abort();
+                        state.upload_in_progress = false;
                         replay_hydration.finish();
                         events_open = false;
                         state.disconnected = true;
@@ -242,6 +267,40 @@ pub(in crate::frontend) async fn run(
                     };
                     match action {
                         UiAction::None => {}
+                        UiAction::PasteClipboard => {
+                            if !catalog.accepts_file_attachments() {
+                                state.push(
+                                    "file attachments are not enabled for this chat",
+                                    TranscriptTone::Warning,
+                                );
+                            } else if state.active_turn.is_some() {
+                                state.push(
+                                    "files can be pasted when the agent is idle",
+                                    TranscriptTone::Warning,
+                                );
+                            } else if state.disconnected {
+                                state.push("gateway is disconnected", TranscriptTone::Error);
+                            } else if uploads.is_active() {
+                                state.push(
+                                    "an attachment upload is already in progress",
+                                    TranscriptTone::Warning,
+                                );
+                            } else {
+                                match read_clipboard(&state.attachments)
+                                    .and_then(|candidates| uploads.start(candidates, &session_id))
+                                {
+                                    Ok(message) => {
+                                        state.upload_in_progress = true;
+                                        if let Err(error) = sender.send(message).await {
+                                            uploads.abort();
+                                            state.upload_in_progress = false;
+                                            state.push(error.to_string(), TranscriptTone::Error);
+                                        }
+                                    }
+                                    Err(error) => state.push(error, TranscriptTone::Error),
+                                }
+                            }
+                        }
                         UiAction::Exit => {
                             if let Some(turn_id) = state.active_turn.clone() {
                                 let _ = send_op(&sender, &session_id, Op::Interrupt { turn_id }).await;

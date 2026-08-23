@@ -589,6 +589,29 @@ fn workspace_file_query_carries_its_scope() {
 }
 
 #[test]
+fn workspace_file_write_carries_utf8_content() {
+    let request = serde_json::to_value(ClientFrame::new(ClientMessage::WriteWorkspaceFile {
+        request_id: "write-file".into(),
+        session_id: "session-a".into(),
+        path: ".env".into(),
+        content: "TOKEN=secret\n".into(),
+    }))
+    .expect("encode workspace file write");
+
+    assert_eq!(
+        request,
+        serde_json::json!({
+            "version": PROTOCOL_VERSION,
+            "type": "write_workspace_file",
+            "request_id": "write-file",
+            "session_id": "session-a",
+            "path": ".env",
+            "content": "TOKEN=secret\n"
+        })
+    );
+}
+
+#[test]
 fn git_branch_switch_is_an_explicit_session_request() {
     let request = serde_json::to_value(ClientFrame::new(ClientMessage::SwitchGitBranch {
         request_id: "request-branch".into(),

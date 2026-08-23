@@ -628,7 +628,7 @@ extension AppModel {
         reconnectsOnActivation = true
         flushComposerDraft()
         guard appLockEnabled else { return }
-        discardFilePresentation()
+        discardFilePresentation(preservingWorkspaceTextDraft: true)
         isAppLocked = true
         appLockError = nil
     }

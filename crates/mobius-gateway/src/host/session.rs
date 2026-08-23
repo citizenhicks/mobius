@@ -137,6 +137,11 @@ pub(super) enum HostCommand {
         max_bytes: usize,
         reply: oneshot::Sender<std::result::Result<WorkspaceRead, Rejection>>,
     },
+    WriteWorkspaceFile {
+        path: String,
+        content: String,
+        reply: oneshot::Sender<std::result::Result<(), Rejection>>,
+    },
     SwitchGitBranch {
         branch: String,
         reply: oneshot::Sender<std::result::Result<(), Rejection>>,
@@ -434,6 +439,21 @@ impl HostHandle {
         })
         .await?;
         receiver.await.map_err(|_| stopped())?
+    }
+
+    pub(crate) async fn write_workspace_file(
+        &self,
+        path: String,
+        content: String,
+    ) -> std::result::Result<(), Rejection> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(HostCommand::WriteWorkspaceFile {
+            path,
+            content,
+            reply,
+        })
+        .await?;
+        receive(receiver).await
     }
 
     pub(crate) async fn switch_git_branch(

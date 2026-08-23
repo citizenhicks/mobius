@@ -347,6 +347,7 @@ extension AppModel {
         if sessionID != selectedSessionID {
             discardComposerAttachments()
             discardFilePresentation()
+            cancelSessionFileThumbnailDownloads()
         }
         sessionToRestoreID = nil
         sessionOpeningID = sessionID
@@ -588,6 +589,9 @@ extension AppModel {
                 }
                 let id = UUID()
                 sessionFileData[id] = imported.data
+                if let thumbnail = imported.thumbnail {
+                    cacheFileThumbnail(thumbnail, for: .composer(id))
+                }
                 composerAttachments.append(ComposerAttachment(
                     id: id,
                     name: imported.name,
@@ -608,6 +612,7 @@ extension AppModel {
     func removeComposerAttachment(_ id: UUID) {
         guard activeSessionFileUpload?.localID != id else { return }
         sessionFileData[id] = nil
+        removeFileThumbnail(for: .composer(id))
         composerAttachments.removeAll { $0.id == id }
     }
 
@@ -650,6 +655,7 @@ extension AppModel {
             return
         }
         discardFilePresentation()
+        returnsToFilesAfterFilePresentation = showsInspector
         let id = requestID("session-file-read")
         let generation = UUID()
         filePresentationGeneration = generation
@@ -683,6 +689,7 @@ extension AppModel {
             return
         }
         discardFilePresentation()
+        returnsToFilesAfterFilePresentation = showsInspector
         let id = requestID("workspace-file-read")
         let generation = UUID()
         filePresentationGeneration = generation
@@ -708,7 +715,67 @@ extension AppModel {
         }
     }
 
-    func discardFilePresentation() {
+    func createWorkspaceFile() {
+        guard canModifySelectedSession, let sessionID = selectedSessionID else { return }
+        discardFilePresentation()
+        returnsToFilesAfterFilePresentation = showsInspector
+        revealFilePresentation()
+        let id = UUID()
+        filePresentationGeneration = id
+        textFilePreview = TextFilePreview(
+            id: id,
+            name: "New File",
+            contents: "",
+            workspaceSessionID: sessionID,
+            workspacePath: ""
+        )
+    }
+
+    func saveWorkspaceFile(sessionID: String, path: String, content: String) {
+        guard canModifySelectedSession,
+              selectedSessionID == sessionID,
+              workspaceFileWriteRequestID == nil,
+              path.utf8.count <= 4_096,
+              !path.isEmpty,
+              content.utf8.count <= maximumWorkspaceTextFileBytes
+        else { return }
+        let id = requestID("workspace-file-write")
+        workspaceFileWriteRequestID = id
+        isSavingWorkspaceFile = true
+        transmit(.writeWorkspaceFile(
+            requestID: id,
+            sessionID: sessionID,
+            path: path,
+            content: content
+        )) { [weak self] message in
+            guard self?.workspaceFileWriteRequestID == id else { return }
+            self?.workspaceFileWriteRequestID = nil
+            self?.isSavingWorkspaceFile = false
+            self?.showToast(message, tone: .error)
+        }
+    }
+
+    func updateWorkspaceFileDraft(id: UUID, path: String) {
+        guard var draft = textFilePreview,
+              draft.id == id,
+              draft.workspaceSessionID != nil,
+              draft.workspacePath != nil
+        else { return }
+        draft.workspacePath = path
+        textFilePreview = draft
+    }
+
+    func updateWorkspaceFileDraft(id: UUID, contents: String) {
+        guard var draft = textFilePreview,
+              draft.id == id,
+              draft.workspaceSessionID != nil,
+              draft.workspacePath != nil
+        else { return }
+        draft.contents = contents
+        textFilePreview = draft
+    }
+
+    func discardFilePresentation(preservingWorkspaceTextDraft: Bool = false) {
         filePresentationGeneration = UUID()
         sessionFileDownload = nil
         workspaceFilePreviewDownload = nil
@@ -720,8 +787,21 @@ extension AppModel {
         }
         previewTemporaryDirectory = nil
         previewURL = nil
-        textFilePreview = nil
+        if !preservingWorkspaceTextDraft || textFilePreview?.workspaceSessionID == nil {
+            textFilePreview = nil
+        }
         sessionFileShareItem = nil
+        if textFilePreview == nil { returnsToFilesAfterFilePresentation = false }
+    }
+
+    func closeFilePresentation() {
+        let returnsToFiles = returnsToFilesAfterFilePresentation
+        discardFilePresentation()
+        if returnsToFiles { showsInspector = true }
+    }
+
+    func revealFilePresentation() {
+        if returnsToFilesAfterFilePresentation { showsInspector = false }
     }
 
     func sendMessage() {

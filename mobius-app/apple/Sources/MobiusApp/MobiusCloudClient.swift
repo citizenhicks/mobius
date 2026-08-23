@@ -62,6 +62,7 @@ struct MobiusCloudExtensionCatalogItem: Decodable, Equatable, Identifiable, Send
 enum MobiusCloudGatewayStatus: String, Decodable, Sendable {
     case waiting
     case ready
+    case expired
     case error
 }
 

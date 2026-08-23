@@ -202,6 +202,17 @@ extension GatewayWireTests {
         XCTAssertEqual(read["type"] as? String, "read_workspace_file")
         XCTAssertEqual(read["path"] as? String, "Sources/App.swift")
         XCTAssertEqual(read["offset"] as? Int, 4)
+
+        let write = try requestObject(.writeWorkspaceFile(
+            requestID: "write-1",
+            sessionID: "chat-1",
+            path: ".env",
+            content: "TOKEN=secret\n"
+        ))
+        XCTAssertEqual(write["type"] as? String, "write_workspace_file")
+        XCTAssertEqual(write["session_id"] as? String, "chat-1")
+        XCTAssertEqual(write["path"] as? String, ".env")
+        XCTAssertEqual(write["content"] as? String, "TOKEN=secret\n")
     }
 
 }

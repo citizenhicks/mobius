@@ -330,7 +330,7 @@ extension AppModelTests {
         XCTAssertNotNil(openRequest)
     }
 
-    func testDeleteSendFailureRestoresPresentedChatWhileOpeningIsBlocked() async throws {
+    func testDeleteSendFailureRestoresPresentedChatForReconnect() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in
             await recorder.record(request)
@@ -359,12 +359,17 @@ extension AppModelTests {
 
         XCTAssertNil(model.selectedSessionID)
         XCTAssertTrue(model.navigationPath.isEmpty)
-        let openRequest = await recorder.firstRequest(after: requestCount) { request in
-            guard case .openSession(_, "chat-1", _) = request else { return false }
-            return true
+        let disconnected = await eventually {
+            if case .failed = model.connectionState { return true }
+            return false
         }
+        XCTAssertTrue(disconnected)
 
-        XCTAssertNotNil(openRequest)
+        let requests = await recorder.requests()
+        XCTAssertFalse(requests.dropFirst(requestCount).contains { request in
+            if case .openSession(_, "chat-1", _) = request { return true }
+            return false
+        })
         XCTAssertEqual(model.destination, .chats)
         XCTAssertEqual(model.navigationPath, [.chat(.session("chat-1"))])
     }

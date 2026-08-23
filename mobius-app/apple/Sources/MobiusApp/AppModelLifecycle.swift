@@ -20,9 +20,12 @@ extension AppModel {
         isLoadingCommittedGitDiff = false
         cancelExtensionAndCredentialRequests()
         workspaceFilesRequestID = nil
+        workspaceFileWriteRequestID = nil
         isLoadingWorkspaceFiles = false
+        isSavingWorkspaceFile = false
         discardPendingComposerAttachments()
-        discardFilePresentation()
+        discardFilePresentation(preservingWorkspaceTextDraft: true)
+        cancelSessionFileThumbnailDownloads()
         restorePendingDrafts()
         if pendingPairingAccount != nil { pairingError = message }
         if cloudPairingContinuation != nil {
@@ -141,7 +144,8 @@ extension AppModel {
             isLoadingSessionFiles = false
             sessionFileUploadRequests.removeAll()
             activeSessionFileUpload = nil
-            discardFilePresentation()
+            discardFilePresentation(preservingWorkspaceTextDraft: true)
+            cancelSessionFileThumbnailDownloads()
         }
         if !preservingSession {
             chatTitleTasks.values.forEach { $0.cancel() }
@@ -220,11 +224,14 @@ extension AppModel {
         workspaceFiles = []
         workspaceFilesTruncated = false
         workspaceFilesRequestID = nil
+        workspaceFileWriteRequestID = nil
         isLoadingWorkspaceFiles = false
+        isSavingWorkspaceFile = false
         filesInspectorTab = .modified
         modifiedFilesScope = .unstaged
         gitBranchRequestID = nil
         discardComposerAttachments()
+        discardFileThumbnails()
         sessionFiles = []
         sessionFilesRequestID = nil
         isLoadingSessionFiles = false

@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 import Observation
 
 @MainActor
@@ -138,12 +139,15 @@ final class AppModel {
     /// outside it that needs the keyboard gone asks rather than reaching in.
     private(set) var composerBlurRequest = 0
     var composerAttachments: [ComposerAttachment] = []
+    var fileThumbnails: [FileThumbnailKey: CGImage] = [:]
     var sessionFiles: [SessionFileRecord] = []
     var isLoadingSessionFiles = false
     var previewURL: URL?
     var textFilePreview: TextFilePreview?
     var sessionFileShareItem: SessionFileShareItem?
     var isLoadingFilePresentation = false
+    var isSavingWorkspaceFile = false
+    var returnsToFilesAfterFilePresentation = false
     var toast: AppToast?
     var activeTurnID: String?
     var activeOperation: String?
@@ -327,6 +331,7 @@ final class AppModel {
     @ObservationIgnored var isApprovingGitCredential = false
     @ObservationIgnored var sshIdentityRequestID: String?
     @ObservationIgnored var workspaceFilesRequestID: String?
+    @ObservationIgnored var workspaceFileWriteRequestID: String?
     @ObservationIgnored var sessionFilesRequestID: String?
     @ObservationIgnored var sessionFileUploadRequests: [String: SessionFileUploadRequest] = [:]
     @ObservationIgnored var sessionFileData: [UUID: Data] = [:]
@@ -334,6 +339,11 @@ final class AppModel {
     @ObservationIgnored var attachmentImportGeneration = UUID()
     @ObservationIgnored var activeSessionFileUpload: ActiveSessionFileUpload?
     @ObservationIgnored var sessionFileDownload: SessionFileDownload?
+    @ObservationIgnored var fileThumbnailOrder: [FileThumbnailKey] = []
+    @ObservationIgnored var requestedSessionFileThumbnailIDs: Set<String> = []
+    @ObservationIgnored var discardedSessionFileThumbnailRequestIDs: Set<String> = []
+    @ObservationIgnored var queuedSessionFileThumbnails: [SessionFileReference] = []
+    @ObservationIgnored var sessionFileThumbnailDownload: SessionFileThumbnailDownload?
     @ObservationIgnored var workspaceFilePreviewDownload: WorkspaceFilePreviewDownload?
     @ObservationIgnored var filePresentationGeneration = UUID()
     @ObservationIgnored var previewTemporaryDirectory: URL?

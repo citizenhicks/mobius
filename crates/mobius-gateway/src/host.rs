@@ -59,6 +59,7 @@ use self::catalog::{
 };
 use self::files::{
     WorkspaceFiles, WorkspaceRead, list as list_workspace_files, read as read_workspace_file,
+    write as write_workspace_file,
 };
 use self::git::{
     approve_credential as approve_git_credential_on_host, diff as workspace_git_diff,

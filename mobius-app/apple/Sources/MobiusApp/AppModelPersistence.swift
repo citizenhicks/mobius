@@ -1,5 +1,11 @@
 import Foundation
+import ImageIO
 import UniformTypeIdentifiers
+
+private let maximumFileThumbnailSourceBytes: Int64 = 10 * 1024 * 1024
+private let maximumCachedFileThumbnails = 32
+private let maximumDiscardedFileThumbnailRequestIDs = 32
+private let maximumFileThumbnailPixelDimension = 384
 
 extension AppModel {
     nonisolated static func loadImportedAttachment(
@@ -26,12 +32,168 @@ extension AppModel {
             let mediaType = values.contentType?.preferredMIMEType
                 ?? UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
                 ?? "application/octet-stream"
+            let thumbnail = Self.isFileThumbnailCandidate(
+                mediaType: mediaType,
+                size: Int64(data.count)
+            ) ? await Self.downsampledFileThumbnail(from: data) : nil
             return ImportedAttachmentData(
                 name: url.lastPathComponent,
                 mediaType: mediaType,
-                data: data
+                data: data,
+                thumbnail: thumbnail
             )
         }.value
+    }
+
+    nonisolated static func isFileThumbnailCandidate(mediaType: String, size: Int64) -> Bool {
+        size >= 0
+            && size <= maximumFileThumbnailSourceBytes
+            && mediaType.lowercased().hasPrefix("image/")
+    }
+
+    nonisolated static func downsampledFileThumbnail(from data: Data) async -> CGImage? {
+        guard Int64(data.count) <= maximumFileThumbnailSourceBytes else { return nil }
+        return await Task.detached(priority: .utility) {
+            let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+            guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions) else {
+                return nil
+            }
+            let thumbnailOptions: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: maximumFileThumbnailPixelDimension,
+                kCGImageSourceShouldCacheImmediately: true,
+            ]
+            return CGImageSourceCreateThumbnailAtIndex(
+                source,
+                0,
+                thumbnailOptions as CFDictionary
+            )
+        }.value
+    }
+
+    func fileThumbnail(for file: SessionFileReference) -> CGImage? {
+        guard let sessionID = selectedSessionID else { return nil }
+        return fileThumbnails[.session(sessionID: sessionID, fileID: file.id)]
+    }
+
+    func fileThumbnail(for attachment: ComposerAttachment) -> CGImage? {
+        if case .uploaded(let file) = attachment.state {
+            return fileThumbnail(for: file)
+        }
+        return fileThumbnails[.composer(attachment.id)]
+    }
+
+    func cacheFileThumbnail(_ thumbnail: CGImage, for key: FileThumbnailKey) {
+        if fileThumbnails[key] == nil {
+            while fileThumbnailOrder.count >= maximumCachedFileThumbnails,
+                  let oldest = fileThumbnailOrder.first {
+                removeFileThumbnail(for: oldest)
+            }
+            fileThumbnailOrder.append(key)
+        }
+        fileThumbnails[key] = thumbnail
+    }
+
+    func removeFileThumbnail(for key: FileThumbnailKey) {
+        fileThumbnails[key] = nil
+        fileThumbnailOrder.removeAll { $0 == key }
+    }
+
+    func promoteFileThumbnail(
+        localID: UUID,
+        sessionID: String,
+        fileID: String
+    ) {
+        let localKey = FileThumbnailKey.composer(localID)
+        guard let thumbnail = fileThumbnails[localKey] else { return }
+        removeFileThumbnail(for: localKey)
+        cacheFileThumbnail(
+            thumbnail,
+            for: .session(sessionID: sessionID, fileID: fileID)
+        )
+    }
+
+    func requestSessionFileThumbnail(_ file: SessionFileReference) {
+        guard let sessionID = selectedSessionID,
+              Self.isFileThumbnailCandidate(mediaType: file.mediaType, size: file.size),
+              fileThumbnails[.session(sessionID: sessionID, fileID: file.id)] == nil
+        else { return }
+        if requestedSessionFileThumbnailIDs.insert(file.id).inserted {
+            queuedSessionFileThumbnails.append(file)
+        }
+        startNextSessionFileThumbnailDownload()
+    }
+
+    func startNextSessionFileThumbnailDownload() {
+        guard connectionState.isReady,
+              sessionFileThumbnailDownload == nil,
+              let sessionID = selectedSessionID
+        else { return }
+
+        while !queuedSessionFileThumbnails.isEmpty {
+            let file = queuedSessionFileThumbnails.removeFirst()
+            let key = FileThumbnailKey.session(sessionID: sessionID, fileID: file.id)
+            guard fileThumbnails[key] == nil else {
+                requestedSessionFileThumbnailIDs.remove(file.id)
+                continue
+            }
+            let id = requestID("session-file-thumbnail")
+            sessionFileThumbnailDownload = SessionFileThumbnailDownload(
+                file: file,
+                sessionID: sessionID,
+                data: Data(),
+                requestID: id
+            )
+            transmit(.readSessionFile(
+                requestID: id,
+                sessionID: sessionID,
+                fileID: file.id,
+                offset: 0,
+                maxBytes: 256 * 1024
+            )) { [weak self] _ in
+                guard let self,
+                      let download = self.sessionFileThumbnailDownload,
+                      download.requestID == id
+                else { return }
+                self.finishSessionFileThumbnailAttempt(download, startsNext: false)
+            }
+            return
+        }
+    }
+
+    func cancelSessionFileThumbnailDownloads() {
+        if let requestID = sessionFileThumbnailDownload?.requestID {
+            rememberDiscardedSessionFileThumbnailRequest(requestID)
+        }
+        queuedSessionFileThumbnails.removeAll()
+        requestedSessionFileThumbnailIDs.removeAll()
+        sessionFileThumbnailDownload = nil
+    }
+
+    func finishSessionFileThumbnailAttempt(
+        _ download: SessionFileThumbnailDownload,
+        startsNext: Bool = true
+    ) {
+        requestedSessionFileThumbnailIDs.remove(download.file.id)
+        if sessionFileThumbnailDownload?.requestID == download.requestID {
+            sessionFileThumbnailDownload = nil
+        }
+        if startsNext { startNextSessionFileThumbnailDownload() }
+    }
+
+    func rememberDiscardedSessionFileThumbnailRequest(_ requestID: String) {
+        if discardedSessionFileThumbnailRequestIDs.count >= maximumDiscardedFileThumbnailRequestIDs,
+           let requestID = discardedSessionFileThumbnailRequestIDs.first {
+            discardedSessionFileThumbnailRequestIDs.remove(requestID)
+        }
+        discardedSessionFileThumbnailRequestIDs.insert(requestID)
+    }
+
+    func discardFileThumbnails() {
+        cancelSessionFileThumbnailDownloads()
+        fileThumbnails.removeAll()
+        fileThumbnailOrder.removeAll()
     }
 
     func startNextSessionFileUpload() {
@@ -171,6 +333,7 @@ extension AppModel {
             return failAttachment(localID, message: "The gateway returned an invalid file.")
         }
         sessionFileUploadRequests.removeValue(forKey: requestID)
+        promoteFileThumbnail(localID: localID, sessionID: sessionID, fileID: file.id)
         composerAttachments[index].state = .uploaded(file)
         sessionFileData[localID] = nil
         activeSessionFileUpload = nil
@@ -217,12 +380,19 @@ extension AppModel {
 
     func discardComposerAttachments() {
         attachmentImportGeneration = UUID()
+        for attachment in composerAttachments {
+            removeFileThumbnail(for: .composer(attachment.id))
+        }
         composerAttachments.removeAll()
         sessionFileData.removeAll()
     }
 
     func discardPendingComposerAttachments() {
         attachmentImportGeneration = UUID()
+        for attachment in composerAttachments {
+            if case .uploaded = attachment.state { continue }
+            removeFileThumbnail(for: .composer(attachment.id))
+        }
         composerAttachments.removeAll { item in
             if case .uploaded = item.state { return false }
             return true
@@ -238,6 +408,18 @@ extension AppModel {
         data: Data,
         nextOffset: Int64?
     ) {
+        if discardedSessionFileThumbnailRequestIDs.remove(requestID) != nil { return }
+        guard sessionFileDownload?.requestID == requestID else {
+            handleSessionFileThumbnailChunk(
+                requestID: requestID,
+                sessionID: sessionID,
+                fileID: fileID,
+                offset: offset,
+                data: data,
+                nextOffset: nextOffset
+            )
+            return
+        }
         guard var download = sessionFileDownload,
               download.requestID == requestID
         else { return }
@@ -289,6 +471,76 @@ extension AppModel {
             purpose: download.purpose,
             allowsTextPreview: !download.file.mediaType.lowercased().hasPrefix("image/")
         )
+    }
+
+    private func handleSessionFileThumbnailChunk(
+        requestID: String,
+        sessionID: String,
+        fileID: String,
+        offset: Int64,
+        data: Data,
+        nextOffset: Int64?
+    ) {
+        guard var download = sessionFileThumbnailDownload,
+              download.requestID == requestID
+        else { return }
+        sessionFileThumbnailDownload = nil
+        guard download.sessionID == sessionID,
+              sessionID == selectedSessionID,
+              download.file.id == fileID,
+              offset == Int64(download.data.count),
+              data.count <= 256 * 1024,
+              Int64(download.data.count + data.count) <= download.file.size,
+              Int64(download.data.count + data.count) <= maximumFileThumbnailSourceBytes
+        else {
+            finishSessionFileThumbnailAttempt(download)
+            return
+        }
+        download.data.append(data)
+        if let nextOffset {
+            guard nextOffset == Int64(download.data.count), nextOffset > offset else {
+                finishSessionFileThumbnailAttempt(download)
+                return
+            }
+            let id = self.requestID("session-file-thumbnail")
+            download.requestID = id
+            sessionFileThumbnailDownload = download
+            transmit(.readSessionFile(
+                requestID: id,
+                sessionID: sessionID,
+                fileID: fileID,
+                offset: nextOffset,
+                maxBytes: 256 * 1024
+            )) { [weak self] _ in
+                guard let self,
+                      let download = self.sessionFileThumbnailDownload,
+                      download.requestID == id
+                else { return }
+                self.finishSessionFileThumbnailAttempt(download, startsNext: false)
+            }
+            return
+        }
+
+        guard Int64(download.data.count) == download.file.size else {
+            finishSessionFileThumbnailAttempt(download)
+            return
+        }
+        sessionFileThumbnailDownload = download
+        Task { [weak self] in
+            let thumbnail = await Self.downsampledFileThumbnail(from: download.data)
+            guard let self,
+                  self.sessionFileThumbnailDownload?.requestID == download.requestID,
+                  self.selectedSessionID == sessionID
+            else { return }
+            self.sessionFileThumbnailDownload = nil
+            if let thumbnail {
+                self.cacheFileThumbnail(
+                    thumbnail,
+                    for: .session(sessionID: sessionID, fileID: fileID)
+                )
+            }
+            self.finishSessionFileThumbnailAttempt(download)
+        }
     }
 
     func handleWorkspaceFileChunk(
@@ -349,7 +601,9 @@ extension AppModel {
             name: URL(fileURLWithPath: download.file.path).lastPathComponent,
             generation: download.generation,
             purpose: .preview,
-            allowsTextPreview: true
+            allowsTextPreview: true,
+            workspaceSessionID: download.sessionID,
+            workspacePath: download.file.path
         )
     }
 
@@ -358,17 +612,22 @@ extension AppModel {
         name: String,
         generation: UUID,
         purpose: SessionFileDownloadPurpose,
-        allowsTextPreview: Bool
+        allowsTextPreview: Bool,
+        workspaceSessionID: String? = nil,
+        workspacePath: String? = nil
     ) {
         Task { [weak self] in
             if purpose == .preview, allowsTextPreview {
                 let contents = await Self.utf8Text(in: data)
                 guard let self, self.filePresentationGeneration == generation else { return }
                 if let contents {
+                    self.revealFilePresentation()
                     self.textFilePreview = TextFilePreview(
                         id: generation,
                         name: name,
-                        contents: contents
+                        contents: contents,
+                        workspaceSessionID: workspaceSessionID,
+                        workspacePath: workspacePath
                     )
                     self.isLoadingFilePresentation = false
                     return
@@ -386,6 +645,7 @@ extension AppModel {
                 }
                 let previousDirectory = self.previewTemporaryDirectory
                 self.previewTemporaryDirectory = file.directory
+                self.revealFilePresentation()
                 if purpose == .share {
                     self.sessionFileShareItem = SessionFileShareItem(
                         id: generation,

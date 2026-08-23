@@ -14,26 +14,116 @@ struct InspectorLoadingView: View {
 }
 
 struct TextFilePreviewView: View {
+    @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @Environment(\.mobiusPalette) private var palette
     let preview: TextFilePreview
 
     var body: some View {
         NavigationStack {
-            NumberedSourceText(
-                preview.contents,
-                language: preview.name.sourceHighlightLanguage
-            )
+            Group {
+                if isWorkspaceFile {
+                    workspaceEditor
+                } else {
+                    NumberedSourceText(
+                        preview.contents,
+                        language: preview.name.sourceHighlightLanguage
+                    )
+                }
+            }
                 .background(palette.canvas)
-                .navigationTitle(preview.name)
+                .navigationTitle(navigationTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done", action: dismiss.callAsFunction)
+                ToolbarItem(placement: isWorkspaceFile ? .cancellationAction : .confirmationAction) {
+                    Button(isWorkspaceFile ? "Cancel" : "Done", action: dismiss.callAsFunction)
+                        .disabled(model.isSavingWorkspaceFile)
+                }
+                if isWorkspaceFile {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Save", action: save)
+                            .disabled(!canSave)
+                    }
                 }
             }
         }
         .presentationDetents([.large])
+        .interactiveDismissDisabled(model.isSavingWorkspaceFile)
+    }
+
+    private var isWorkspaceFile: Bool {
+        preview.workspaceSessionID != nil && preview.workspacePath != nil
+    }
+
+    private var isNewFile: Bool {
+        draft.originalWorkspacePath?.isEmpty == true
+    }
+
+    private var navigationTitle: String {
+        guard isNewFile, !draftPath.isEmpty else { return preview.name }
+        return URL(fileURLWithPath: draftPath).lastPathComponent
+    }
+
+    private var canSave: Bool {
+        guard isWorkspaceFile,
+              model.canModifySelectedSession,
+              !model.isSavingWorkspaceFile,
+              !draftPath.isEmpty,
+              draftPath.utf8.count <= 4_096,
+              draftContents.utf8.count <= maximumWorkspaceTextFileBytes
+        else { return false }
+        return isNewFile || draftContents != draft.originalContents
+    }
+
+    private var workspaceEditor: some View {
+        VStack(spacing: 0) {
+            if isNewFile {
+                TextField("Relative file path", text: pathBinding)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .font(MobiusStyle.bodyFont.monospaced())
+                    .padding(MobiusSpace.m)
+                Divider()
+            }
+            TextEditor(text: contentsBinding)
+                .font(MobiusStyle.bodyFont.monospaced())
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .padding(MobiusSpace.s)
+                .privacySensitive()
+        }
+    }
+
+    private func save() {
+        guard let sessionID = preview.workspaceSessionID else { return }
+        model.saveWorkspaceFile(
+            sessionID: sessionID,
+            path: draftPath,
+            content: draftContents
+        )
+    }
+
+    private var draft: TextFilePreview {
+        guard let draft = model.textFilePreview, draft.id == preview.id else { return preview }
+        return draft
+    }
+
+    private var draftPath: String { draft.workspacePath ?? "" }
+
+    private var draftContents: String { draft.contents }
+
+    private var pathBinding: Binding<String> {
+        Binding(
+            get: { draftPath },
+            set: { model.updateWorkspaceFileDraft(id: preview.id, path: $0) }
+        )
+    }
+
+    private var contentsBinding: Binding<String> {
+        Binding(
+            get: { draftContents },
+            set: { model.updateWorkspaceFileDraft(id: preview.id, contents: $0) }
+        )
     }
 }
 

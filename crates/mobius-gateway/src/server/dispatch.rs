@@ -653,6 +653,23 @@ pub(super) async fn handle_message(
                 Err(rejection) => write_rejection(writer, request_id, rejection).await,
             }
         }
+        ClientMessage::WriteWorkspaceFile {
+            request_id,
+            session_id,
+            path,
+            content,
+        } => {
+            let host = match require_selected(selected, &session_id) {
+                Ok(host) => host,
+                Err(rejection) => return write_rejection(writer, request_id, rejection).await,
+            };
+            write_result(
+                writer,
+                request_id,
+                host.write_workspace_file(path, content).await,
+            )
+            .await
+        }
         ClientMessage::ListDirectories {
             request_id,
             path,

@@ -2,12 +2,15 @@ use std::collections::BTreeSet;
 use std::path::{Component, Path};
 use std::time::Duration;
 
+use mobius::backend::sandbox::SandboxBackend as _;
+
 use crate::sandbox::GatewaySandbox;
 use crate::wire::{WorkspaceFileRecord, WorkspaceFileScope};
 
 use super::Rejection;
 
 pub(super) const MAX_WORKSPACE_READ_BYTES: usize = 256 * 1024;
+const MAX_WORKSPACE_WRITE_BYTES: usize = 1024 * 1024;
 const MAX_WORKSPACE_FILES: usize = 20_000;
 const MAX_WORKSPACE_PATH_BYTES: usize = 1024 * 1024;
 const FILE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -49,6 +52,20 @@ pub(super) async fn read(
         .await
         .map_err(error_rejection)?;
     Ok(WorkspaceRead { data, next_offset })
+}
+
+pub(super) async fn write(
+    sandbox: &GatewaySandbox,
+    path: &str,
+    content: &str,
+) -> std::result::Result<(), Rejection> {
+    validate_relative(path)?;
+    if content.len() > MAX_WORKSPACE_WRITE_BYTES {
+        return Err(invalid(format!(
+            "workspace text files are limited to {MAX_WORKSPACE_WRITE_BYTES} bytes"
+        )));
+    }
+    sandbox.write(path, content).await.map_err(error_rejection)
 }
 
 async fn list_inner(
@@ -100,6 +117,16 @@ async fn list_inner(
             }
             truncated |= retain_complete_git_paths(&mut staged.stdout, staged.stdout_truncated)?;
             output.stdout.push_str(&staged.stdout);
+        }
+        if scope == WorkspaceFileScope::All
+            && !output
+                .stdout
+                .split_terminator('\0')
+                .any(|path| path == ".env")
+            && std::fs::symlink_metadata(workspace.join(".env"))
+                .is_ok_and(|metadata| metadata.is_file() && !metadata.is_symlink())
+        {
+            output.stdout.push_str(".env\0");
         }
         let workspace = workspace.to_path_buf();
         return tokio::task::spawn_blocking(move || {
@@ -253,14 +280,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn write_creates_and_atomically_replaces_workspace_text() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let (_state, sandbox) = sandbox(workspace.path());
+
+        write(&sandbox, ".env", "TOKEN=first\n")
+            .await
+            .expect("create workspace file");
+        write(&sandbox, ".env", "TOKEN=second\n")
+            .await
+            .expect("replace workspace file");
+
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join(".env")).expect("read workspace file"),
+            "TOKEN=second\n"
+        );
+        assert!(write(&sandbox, "../outside", "secret").await.is_err());
+    }
+
+    #[tokio::test]
     async fn git_catalog_excludes_ignored_directories_and_git_internals() {
         let workspace = tempfile::tempdir().expect("workspace");
         git(workspace.path(), &["init", "--quiet"]);
-        std::fs::write(workspace.path().join(".gitignore"), b"ignored/\n").expect("ignore rules");
+        std::fs::write(workspace.path().join(".gitignore"), b"ignored/\n.env\n")
+            .expect("ignore rules");
         std::fs::create_dir(workspace.path().join("ignored")).expect("ignored directory");
         std::fs::write(workspace.path().join("ignored/generated.txt"), b"ignored")
             .expect("ignored file");
         std::fs::write(workspace.path().join("included.txt"), b"included").expect("included file");
+        std::fs::write(workspace.path().join(".env"), b"TOKEN=secret\n").expect("environment file");
         let (_state, sandbox) = sandbox(workspace.path());
 
         let catalog = list(&sandbox, workspace.path(), WorkspaceFileScope::All)
@@ -268,6 +316,7 @@ mod tests {
             .expect("workspace files");
 
         assert!(!catalog.truncated);
+        assert!(catalog.files.iter().any(|file| file.path == ".env"));
         assert!(catalog.files.iter().any(|file| file.path == ".gitignore"));
         assert!(catalog.files.iter().any(|file| file.path == "included.txt"));
         assert!(

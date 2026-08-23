@@ -6,6 +6,7 @@ use super::PreviewContent;
 use super::PreviewState;
 use super::TranscriptTone;
 use super::TuiState;
+use super::attachment_label;
 use super::view::bounded_terminal_text;
 use super::view::terminal_text;
 use mobius::protocol::AgentMessagePhase;
@@ -52,7 +53,16 @@ impl TuiState {
             }
             EventMsg::UserMessage(message) => {
                 self.remember_composer_input(message.message.clone());
-                self.push(format!("› {}", message.message), TranscriptTone::User);
+                let mut text = if message.message.is_empty() {
+                    "›".to_string()
+                } else {
+                    format!("› {}", message.message)
+                };
+                for attachment in &message.attachments {
+                    text.push_str(if text == "›" { " " } else { "\n  " });
+                    text.push_str(&attachment_label(attachment));
+                }
+                self.push(text, TranscriptTone::User);
             }
             EventMsg::AgentMessageContentDelta(delta) => {
                 self.remember_streamed_phase(
