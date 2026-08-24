@@ -1,4 +1,20 @@
-use super::*;
+use std::collections::BTreeSet;
+
+use mobius::backend::model::provider::HostedWebSearch;
+use mobius::protocol::{
+    FrontendSettingKind, FrontendSettingOption, FrontendSettingValue, MiddlewareFeature,
+};
+use mobius::{Error, Result};
+use mobius_gateway::wire::{
+    AgentComposition, ExtensionRecord, MiddlewareConfig, ProviderAuthKind, ProviderConfig,
+    ProviderEndpointAuth, ProviderInstance, ProviderStatus, ReadyPayload,
+};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use uuid::Uuid;
+
+use super::{
+    MAX_API_KEY_BYTES, MAX_ENDPOINT_BYTES, MAX_MODEL_IDS_BYTES, MAX_PROVIDER_LABEL_BYTES, SetupMode,
+};
 
 pub(super) struct ProviderEntry {
     pub(super) status: ProviderStatus,
@@ -829,7 +845,7 @@ impl SetupState {
             definition
                 .web_search
                 .iter()
-                .position(|search| *search == current.web_search)
+                .position(|search| search.value == current.web_search.id())
                 .expect("active provider search mode was validated")
         } else {
             0
@@ -958,8 +974,9 @@ impl SetupState {
         let web_search = definition
             .web_search
             .get(self.web_search)
-            .copied()
-            .ok_or_else(|| Error::Config("Hosted web-search selection is invalid".into()))?;
+            .ok_or_else(|| Error::Config("Hosted web-search selection is invalid".into()))?
+            .value
+            .parse::<HostedWebSearch>()?;
         let base_url = self.selected_base_url();
         let endpoint_auth = if current.provider.instance == self.target_instance()
             && current.provider.base_url.as_deref() == base_url.as_deref()
@@ -1023,7 +1040,7 @@ pub(super) fn validated_providers(
             }
             if status.label.trim().is_empty()
                 || status.description.trim().is_empty()
-                || status.web_search.first() != Some(&HostedWebSearch::Off)
+                || !valid_web_search_options(&status.web_search)
                 || status.model_ids_configurable != status.models.is_empty()
             {
                 return Err(Error::Config(format!(
@@ -1073,7 +1090,11 @@ pub(super) fn validate_active_provider(
     instance: Option<&ProviderInstance>,
     config: &ProviderConfig,
 ) -> Result<()> {
-    if !status.web_search.contains(&config.web_search) {
+    if !status
+        .web_search
+        .iter()
+        .any(|search| search.value == config.web_search.id())
+    {
         return Err(Error::Config(format!(
             "gateway active provider `{}` has an unadvertised web-search mode",
             status.provider
@@ -1123,6 +1144,20 @@ pub(super) fn validate_active_provider(
         )));
     }
     Ok(())
+}
+
+fn valid_web_search_options(options: &[FrontendSettingOption]) -> bool {
+    let mut values = BTreeSet::new();
+    options
+        .first()
+        .is_some_and(|option| option.value == HostedWebSearch::Off.id())
+        && options.iter().all(|option| {
+            !option.value.trim().is_empty()
+                && !option.label.trim().is_empty()
+                && !option.description.trim().is_empty()
+                && option.value.parse::<HostedWebSearch>().is_ok()
+                && values.insert(option.value.as_str())
+        })
 }
 
 pub(super) fn take_trimmed(value: &mut String) -> String {

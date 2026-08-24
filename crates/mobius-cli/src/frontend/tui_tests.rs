@@ -7,11 +7,10 @@ use ratatui::style::Color;
 use super::*;
 use crate::frontend::catalog::UiCatalog;
 use crate::frontend::theme::{Role, current};
-use mobius::backend::model::ModelChoice;
 use mobius::protocol::{
     Event, FrontendActiveInput, FrontendBlock, FrontendBlockFormat, FrontendBlockRole,
     FrontendBlockState, FrontendBlockUpdate, FrontendContribution, FrontendEvent,
-    FrontendPreviewUpdate, FrontendSlot, FrontendTone, FrontendWidget, RenderedBlock,
+    FrontendPreviewUpdate, FrontendSlot, FrontendTone, FrontendWidget, ModelChoice, RenderedBlock,
     ReviewDecision,
 };
 use mobius_gateway::wire::{RecordedEvent, RenderedEvent, RenderedPreview};

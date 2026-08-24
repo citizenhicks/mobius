@@ -168,6 +168,7 @@ extension AppModel {
             gatewayContributions = []
             providerStatuses = []
             providerInstances = []
+            sessionFileLimits = nil
             defaultAgentSnapshot = nil
             defaultAgentDraft = nil
             providerDraft = nil

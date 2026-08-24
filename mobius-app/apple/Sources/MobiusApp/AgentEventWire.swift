@@ -100,7 +100,7 @@ extension AgentEventRecord {
 
         func validateAttachments() throws {
             guard let attachments = msg["attachments"]?.arrayValue,
-                  attachments.count <= maximumSessionFileReferences
+                  attachments.count <= maximumWireSessionFileReferences
             else {
                 throw GatewayWireError.invalidFrame("\(type) has invalid attachments")
             }

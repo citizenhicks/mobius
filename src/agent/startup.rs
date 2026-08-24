@@ -167,7 +167,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
     };
     let choice = config.select_model(&route)?;
     let route = choice.route.clone();
-    let model = crate::backend::model::ModelInfo {
+    let model = crate::protocol::ModelInfo {
         model: choice.model,
         reasoning_effort: choice.reasoning_effort,
     };

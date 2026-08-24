@@ -14,6 +14,7 @@ pub struct ReadyPayload {
     pub extensions: Vec<ExtensionRecord>,
     pub contributions: Vec<FrontendContribution>,
     pub max_active_sessions: usize,
+    pub session_file_limits: SessionFileLimits,
 }
 
 /// Frontend-safe state for one opened session.
@@ -43,11 +44,18 @@ pub struct SessionWidget {
 /// One visible session with gateway-owned catalog presentation metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionRecord {
-    #[serde(flatten)]
-    pub summary: SessionSummary,
+    pub session_id: String,
+    pub session_context: mobius::protocol::SessionContext,
+    pub parent_session_id: Option<String>,
+    pub parent_sequence: Option<u64>,
+    pub sequence: u64,
+    pub first_user_message: Option<String>,
+    pub execution_stats: mobius::backend::checkpoint::ExecutionStats,
     pub title: Option<String>,
     pub pinned: bool,
     pub activity: SessionActivity,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 /// Gateway-observed lifecycle state for one session.
@@ -247,7 +255,7 @@ pub struct ProviderStatus {
     pub default_base_url: Option<String>,
     pub default_api_key_env: Option<String>,
     pub models: Vec<ProviderModel>,
-    pub web_search: Vec<HostedWebSearch>,
+    pub web_search: Vec<FrontendSettingOption>,
 }
 
 /// User-chosen accent for distinguishing provider instances in model selectors.

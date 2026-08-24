@@ -248,6 +248,7 @@ final class AppModel {
     var defaultAgentApplyState: ApplyState = .idle
     var providerStatuses: [ProviderStatus] = []
     var providerInstances: [ProviderInstance] = []
+    var sessionFileLimits: SessionFileLimits?
     var providerAPIKey = ""
     var providerLabelDraft = ""
     var providerTintDraft: ProviderTint = .blue
@@ -551,7 +552,36 @@ final class AppModel {
         attachmentsEnabled
             && connectionState.isReady
             && selectedSessionID != nil
+            && sessionFileLimits != nil
             && pendingWidgetEdit == nil
+    }
+
+    var attachmentReferenceLimit: Int {
+        min(
+            sessionFileLimits?.maxAttachmentReferences ?? 0,
+            maximumWireSessionFileReferences
+        )
+    }
+
+    var attachmentFileByteLimit: Int {
+        Int(min(
+            sessionFileLimits?.maxFileBytes ?? 0,
+            UInt64(maximumClientAttachmentBytes)
+        ))
+    }
+
+    var attachmentDraftByteLimit: Int64 {
+        Int64(min(
+            sessionFileLimits?.maxSessionBytes ?? 0,
+            UInt64(maximumClientComposerAttachmentBytes)
+        ))
+    }
+
+    var uploadChunkByteLimit: Int {
+        min(
+            sessionFileLimits?.maxUploadChunkBytes ?? 0,
+            maximumClientUploadChunkBytes
+        )
     }
 
     var canSendComposer: Bool {

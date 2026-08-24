@@ -67,14 +67,23 @@ pub(super) async fn session_catalog(
         .into_iter()
         .filter_map(|summary| {
             let metadata = metadata.get(&summary.session_id);
+            let activity = activities
+                .get(&summary.session_id)
+                .cloned()
+                .unwrap_or_default();
             (!metadata.is_some_and(|metadata| metadata.hidden)).then(|| SessionRecord {
+                session_id: summary.session_id,
+                session_context: summary.session_context,
+                parent_session_id: summary.parent_session_id,
+                parent_sequence: summary.parent_sequence,
+                sequence: summary.sequence,
+                first_user_message: summary.first_user_message,
+                execution_stats: summary.execution_stats,
                 title: metadata.and_then(|metadata| metadata.title.clone()),
                 pinned: metadata.is_some_and(|metadata| metadata.pinned),
-                activity: activities
-                    .get(&summary.session_id)
-                    .cloned()
-                    .unwrap_or_default(),
-                summary,
+                activity,
+                created_at: summary.created_at,
+                updated_at: summary.updated_at,
             })
         })
         .collect::<Vec<_>>();
@@ -82,9 +91,9 @@ pub(super) async fn session_catalog(
         right
             .pinned
             .cmp(&left.pinned)
-            .then_with(|| right.summary.updated_at.cmp(&left.summary.updated_at))
-            .then_with(|| right.summary.sequence.cmp(&left.summary.sequence))
-            .then_with(|| left.summary.session_id.cmp(&right.summary.session_id))
+            .then_with(|| right.updated_at.cmp(&left.updated_at))
+            .then_with(|| right.sequence.cmp(&left.sequence))
+            .then_with(|| left.session_id.cmp(&right.session_id))
     });
     Ok(sessions)
 }
@@ -170,7 +179,7 @@ mod tests {
             .await
             .expect("session catalog")
             .into_iter()
-            .map(|record| (record.summary.session_id, record.summary.parent_session_id))
+            .map(|record| (record.session_id, record.parent_session_id))
             .collect::<Vec<_>>();
         sessions.sort();
 
@@ -211,16 +220,12 @@ mod tests {
             .expect("session catalog");
         let preview = sessions
             .iter()
-            .find(|session| session.summary.session_id == "100")
-            .and_then(|session| session.summary.first_user_message.as_deref())
+            .find(|session| session.session_id == "100")
+            .and_then(|session| session.first_user_message.as_deref())
             .expect("UTF-8 preview");
 
         assert_eq!(sessions.len(), SESSION_PAGE_SIZE);
-        assert!(
-            sessions
-                .iter()
-                .all(|session| session.summary.session_id != "000")
-        );
+        assert!(sessions.iter().all(|session| session.session_id != "000"));
         assert_eq!(
             preview,
             "€".repeat(MAX_SESSION_PREVIEW_BYTES / '€'.len_utf8())

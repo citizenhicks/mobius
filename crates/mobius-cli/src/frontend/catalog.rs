@@ -7,12 +7,12 @@ use std::sync::OnceLock;
 
 use mobius::Error;
 use mobius::Result;
-use mobius::backend::model::ModelChoice;
 use mobius::protocol::FrontendActiveInput;
 use mobius::protocol::FrontendContribution;
 use mobius::protocol::FrontendEvent;
 use mobius::protocol::FrontendPickerOption;
 use mobius::protocol::FrontendWidget;
+use mobius::protocol::ModelChoice;
 use mobius::protocol::Op;
 
 use super::setup::SetupMode;

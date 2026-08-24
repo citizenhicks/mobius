@@ -113,7 +113,7 @@ enum AgentOperation: Codable, Sendable {
         switch type {
         case "user_input":
             guard let values = value["attachments"]?.arrayValue,
-                  values.count <= maximumSessionFileReferences
+                  values.count <= maximumWireSessionFileReferences
             else {
                 throw GatewayWireError.invalidFrame("user_input has invalid attachments")
             }
@@ -176,7 +176,7 @@ enum AgentOperation: Codable, Sendable {
         var container = encoder.container(keyedBy: DynamicCodingKey.self)
         switch self {
         case .userInput(let text, let attachments):
-            guard attachments.count <= maximumSessionFileReferences else {
+            guard attachments.count <= maximumWireSessionFileReferences else {
                 throw GatewayWireError.invalidFrame("user_input has too many attachments")
             }
             try container.encode("user_input", forKey: "type")

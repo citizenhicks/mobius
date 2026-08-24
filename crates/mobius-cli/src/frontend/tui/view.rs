@@ -24,6 +24,7 @@ use super::markdown;
 use super::shimmer;
 use crate::frontend::catalog::MenuItem;
 use crate::frontend::catalog::UiCatalog;
+use crate::frontend::terminal::terminal_text;
 use crate::frontend::theme::Role;
 use crate::frontend::theme::current;
 use mobius::protocol::FrontendBlockFormat;
@@ -868,13 +869,6 @@ fn render_menu(frame: &mut Frame<'_>, area: Rect, items: &[MenuItem], selected: 
         })
         .collect::<Vec<_>>();
     frame.render_widget(Paragraph::new(lines), area);
-}
-
-pub fn terminal_text(value: &str) -> String {
-    value
-        .chars()
-        .filter(|character| matches!(character, '\n' | '\t') || !character.is_control())
-        .collect()
 }
 
 pub(super) fn bounded_terminal_text(value: &str, limit: usize) -> String {

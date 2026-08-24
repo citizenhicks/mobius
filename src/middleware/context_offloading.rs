@@ -5,8 +5,7 @@ use serde_json::Value;
 use super::manifest::{MiddlewareManifest, MiddlewareSettingManifest};
 use super::{Middleware, ModelContext, approximate_item_tokens};
 use crate::backend::checkpoint::ContextRewriteReason;
-use crate::backend::model::tool_complete_boundaries;
-use crate::protocol::{TOOL_ERROR_FIELD, is_internal_message};
+use crate::protocol::{TOOL_ERROR_FIELD, is_internal_message, tool_complete_boundaries};
 use crate::{BoxFuture, Error, Result};
 
 mod text {

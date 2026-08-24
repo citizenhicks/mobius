@@ -99,20 +99,10 @@ enum ProviderEndpointAuth: String, Codable, Sendable {
     case credentialless
 }
 
-enum HostedWebSearch: String, Codable, CaseIterable, Identifiable, Sendable {
+enum HostedWebSearch: String, Codable, Sendable {
     case off
     case cached
     case live
-
-    var id: Self { self }
-
-    var label: String {
-        switch self {
-        case .off: "Off"
-        case .cached: "Cached"
-        case .live: "Live"
-        }
-    }
 }
 
 struct MiddlewareConfig: Codable, Equatable, Sendable {
@@ -254,6 +244,20 @@ struct FrontendSettingOption: Identifiable, Decodable, Equatable, Sendable {
         case value, label, description, symbol, tone
     }
 
+    init(
+        value: String,
+        label: String,
+        description: String,
+        symbol: String? = nil,
+        tone: String = "neutral"
+    ) {
+        self.value = value
+        self.label = label
+        self.description = description
+        self.symbol = symbol
+        self.tone = tone
+    }
+
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         value = try container.decode(String.self, forKey: .value)
@@ -268,7 +272,7 @@ struct FrontendSettingOption: Identifiable, Decodable, Equatable, Sendable {
 }
 
 /// One provider the gateway can be set up with. Several setups may share one.
-struct ProviderStatus: Identifiable, Codable, Equatable, Sendable {
+struct ProviderStatus: Identifiable, Decodable, Equatable, Sendable {
     var id: String { provider }
 
     let provider: String
@@ -280,7 +284,7 @@ struct ProviderStatus: Identifiable, Codable, Equatable, Sendable {
     let defaultApiKeyEnv: String?
     let models: [ProviderModel]
     let modelIdsConfigurable: Bool
-    let webSearch: [HostedWebSearch]
+    let webSearch: [FrontendSettingOption]
 
 }
 

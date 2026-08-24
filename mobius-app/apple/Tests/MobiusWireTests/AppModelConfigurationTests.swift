@@ -30,7 +30,7 @@ extension AppModelTests {
                     defaultReasoning: "high"
                 )],
                 modelIdsConfigurable: false,
-                webSearch: [.off, .cached, .live]
+                webSearch: webSearchOptions(.off, .cached, .live)
             )],
             providerInstances: [],
             defaultConfig: nil,
@@ -39,7 +39,8 @@ extension AppModelTests {
             middlewareFeatures: [],
             extensions: [],
             contributions: [],
-            maxActiveSessions: 4
+            maxActiveSessions: 4,
+            sessionFileLimits: testSessionFileLimits()
         ))
 
         XCTAssertNil(model.selectedSessionID)
@@ -225,7 +226,8 @@ extension AppModelTests {
                 middlewareFeatures: [],
                 extensions: [],
                 contributions: [],
-                maxActiveSessions: 4
+                maxActiveSessions: 4,
+                sessionFileLimits: testSessionFileLimits()
             )
         ))
 
@@ -288,7 +290,7 @@ extension AppModelTests {
                 )
             ],
             modelIdsConfigurable: false,
-            webSearch: [.off]
+            webSearch: webSearchOptions(.off)
         )]
 
         model.addProviderInstance("kimi")
@@ -319,7 +321,7 @@ extension AppModelTests {
             defaultApiKeyEnv: nil,
             models: [],
             modelIdsConfigurable: true,
-            webSearch: [.off]
+            webSearch: webSearchOptions(.off)
         )]
         model.providerDraft = selection
         model.providerLabelDraft = "Local"
@@ -628,7 +630,8 @@ extension AppModelTests {
             middlewareFeatures: [],
             extensions: [],
             contributions: [],
-            maxActiveSessions: 4
+            maxActiveSessions: 4,
+            sessionFileLimits: testSessionFileLimits()
         ))
 
         XCTAssertEqual(model.agentSnapshot, VersionedAgentConfig(revision: 3, config: active))

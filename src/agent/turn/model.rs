@@ -13,7 +13,7 @@ use crate::backend::checkpoint::{
 };
 use crate::backend::model::{
     ModelEventSink, ModelOutput, ModelRequest, PromptCacheIdentity, STREAM_RETRY_LIMIT, ToolCall,
-    internal_user_message, prompt_cache_key, tool_complete_boundaries,
+    internal_user_message, prompt_cache_key,
 };
 use crate::backend::sandbox::SandboxAuthorization;
 use crate::middleware::tools::ToolResult;
@@ -23,7 +23,7 @@ use crate::middleware::{
 use crate::protocol::{
     AgentMessageEvent, AgentMessagePhase, Event, EventMsg, MessageTarget, ModelStepCompletedEvent,
     ModelStepDiagnostics, ModelStepOutcome, ModelStepStartedEvent, Submission, WebSearchAction,
-    WebSearchEndEvent,
+    WebSearchEndEvent, tool_complete_boundaries,
 };
 use crate::{Error, Result};
 

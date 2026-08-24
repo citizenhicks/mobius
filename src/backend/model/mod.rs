@@ -32,10 +32,9 @@ pub mod provider;
 mod router;
 mod transport;
 
-pub use self::router::ModelChoice;
-pub use self::router::ModelInfo;
 pub use self::router::ModelRouter;
 
+use crate::protocol::ModelInfo;
 use crate::protocol::{ATTACHMENTS_FIELD, INTERNAL_MESSAGE_FIELD, SessionFileReference};
 pub(crate) use crate::protocol::{REPLAY_REASONING_FIELD, TOOL_ERROR_FIELD};
 // Leaves room for typed lifecycle metadata inside the frontend envelope.
@@ -46,36 +45,6 @@ const MAX_TOOL_CALL_ID_BYTES: usize = 4 * 1024;
 const MAX_TOOL_NAME_BYTES: usize = 256;
 pub(crate) const PROMPT_CACHE_BREAKPOINT_FIELD: &str = "_mobius_prompt_cache_breakpoint";
 pub(crate) const STREAM_RETRY_LIMIT: usize = 5;
-
-/// Returns one-based context boundaries with no unfinished tool calls.
-pub(crate) fn tool_complete_boundaries<'a>(
-    input: impl IntoIterator<Item = &'a Value>,
-) -> Vec<usize> {
-    let mut open_calls = BTreeSet::new();
-    let mut complete = Vec::new();
-    for (index, item) in input.into_iter().enumerate() {
-        match item.get("type").and_then(Value::as_str) {
-            Some("function_call") => {
-                let call_id = item
-                    .get("call_id")
-                    .and_then(Value::as_str)
-                    .filter(|call_id| !call_id.is_empty())
-                    .map_or_else(|| format!("missing-{index}"), str::to_string);
-                open_calls.insert(call_id);
-            }
-            Some("function_call_output") => {
-                if let Some(call_id) = item.get("call_id").and_then(Value::as_str) {
-                    open_calls.remove(call_id);
-                }
-            }
-            Some(_) | None => {}
-        }
-        if open_calls.is_empty() {
-            complete.push(index + 1);
-        }
-    }
-    complete
-}
 
 /// A function tool definition sent to a model provider.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

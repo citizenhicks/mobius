@@ -353,7 +353,7 @@ extension FrontendBlock {
               let tone = json["tone"]?.stringValue,
               ["neutral", "success", "warning", "error"].contains(tone),
               let files = json["files"]?.arrayValue,
-              files.count <= maximumSessionFileReferences
+              files.count <= maximumWireSessionFileReferences
         else {
             throw GatewayWireError.invalidFrame("frontend block is missing a required field")
         }

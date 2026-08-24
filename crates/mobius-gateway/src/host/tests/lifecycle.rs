@@ -1,6 +1,38 @@
 use super::*;
 
 #[tokio::test]
+async fn cron_commands_fail_fast_while_the_gateway_is_mutating() {
+    let root = tempfile::tempdir().expect("root");
+    let listen = "127.0.0.1:8741".parse().expect("listen address");
+    let (store, config) =
+        ConfigStore::initialize(root.path().join("state"), listen, None).expect("config");
+    let credentials =
+        Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
+    let cron = Arc::new(CronStore::open(store.state_dir()).expect("cron"));
+    let gateway = GatewayHost::start(store, config, credentials, cron).expect("gateway");
+    let _state = gateway.state.lock().await;
+
+    for command in [
+        CronCommand::List,
+        CronCommand::New { task: None },
+        CronCommand::Run { id: "task".into() },
+    ] {
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            gateway.execute_cron_command("session".into(), command),
+        )
+        .await
+        .expect("cron command must not wait for gateway state");
+
+        assert!(matches!(
+            result,
+            Err(MobiusError::Busy(message))
+                if message == "retry after the gateway update finishes"
+        ));
+    }
+}
+
+#[tokio::test]
 async fn ready_reuses_the_startup_contributions() {
     let root = tempfile::tempdir().expect("root");
     let listen = "127.0.0.1:8741".parse().expect("listen address");
@@ -996,7 +1028,7 @@ async fn delete_session_stops_the_host_and_removes_its_durable_tree() {
             .await
             .expect("remaining sessions")
             .into_iter()
-            .map(|session| session.summary.session_id)
+            .map(|session| session.session_id)
             .collect::<Vec<_>>(),
         [retained_id]
     );

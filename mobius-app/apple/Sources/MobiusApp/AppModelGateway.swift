@@ -512,6 +512,7 @@ extension AppModel {
         }
         providerStatuses = payload.providers
         providerInstances = payload.providerInstances
+        sessionFileLimits = payload.sessionFileLimits
         modelChoices = payload.models
         modelProviders = payload.modelProviders
         middlewareFeatures = payload.middlewareFeatures
@@ -638,17 +639,16 @@ extension AppModel {
     }
 
     func applySessions(_ records: [SessionRecord]) {
-        let visibleSessions = records.filter(\.catalogVisible)
-        guard Set(visibleSessions.map(\.sessionId)).count == visibleSessions.count else {
+        guard Set(records.map(\.sessionId)).count == records.count else {
             showToast("The gateway returned duplicate chat identifiers.", tone: .error)
             return
         }
-        if sessions != visibleSessions {
+        if sessions != records {
             let previous = Dictionary(
                 sessions.map { ($0.sessionId, $0.activity) },
                 uniquingKeysWith: { _, latest in latest }
             )
-            sessions = visibleSessions
+            sessions = records
             for session in sessions {
                 applyActivityTransition(
                     from: previous[session.sessionId],

@@ -142,7 +142,7 @@ final class AppModelTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        return AppModel(
+        let model = AppModel(
             client: GatewayClient(),
             store: GatewayStore(
                 defaults: defaults,
@@ -157,6 +157,8 @@ final class AppModelTests: XCTestCase {
             requestSender: requestSender,
             titleWriter: titleWriter
         )
+        model.sessionFileLimits = testSessionFileLimits()
+        return model
     }
 
     func eventually(
@@ -218,7 +220,32 @@ final class AppModelTests: XCTestCase {
             defaultApiKeyEnv: "OPENAI_API_KEY",
             models: models,
             modelIdsConfigurable: false,
-            webSearch: [config.webSearch]
+            webSearch: webSearchOptions(config.webSearch)
+        )
+    }
+
+    func webSearchOptions(_ values: HostedWebSearch...) -> [FrontendSettingOption] {
+        values.map { value in
+            let metadata = switch value {
+            case .off: ("Off", "Do not use provider-hosted web search")
+            case .cached: ("Cached", "Allow cached provider-hosted search")
+            case .live: ("Live", "Allow live provider-hosted search")
+            }
+            return FrontendSettingOption(
+                value: value.rawValue,
+                label: metadata.0,
+                description: metadata.1
+            )
+        }
+    }
+
+    func testSessionFileLimits() -> SessionFileLimits {
+        SessionFileLimits(
+            maxAttachmentReferences: 16,
+            maxFileBytes: 50 * 1024 * 1024,
+            maxSessionFiles: 128,
+            maxSessionBytes: 250 * 1024 * 1024,
+            maxUploadChunkBytes: 256 * 1024
         )
     }
 
@@ -239,7 +266,8 @@ final class AppModelTests: XCTestCase {
             middlewareFeatures: [],
             extensions: extensions,
             contributions: contributions,
-            maxActiveSessions: 4
+            maxActiveSessions: 4,
+            sessionFileLimits: testSessionFileLimits()
         )
     }
 
@@ -522,7 +550,6 @@ final class AppModelTests: XCTestCase {
             parentSessionId: nil,
             parentSequence: nil,
             sequence: 1,
-            catalogVisible: true,
             firstUserMessage: firstUserMessage,
             executionStats: executionStats,
             title: title,

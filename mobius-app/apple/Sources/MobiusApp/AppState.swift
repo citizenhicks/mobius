@@ -276,15 +276,23 @@ struct SessionFileShareItem: Identifiable {
 
 enum AttachmentImportError: LocalizedError {
     case notAFile
-    case tooLarge
-    case totalTooLarge
+    case tooLarge(Int64)
+    case totalTooLarge(Int64)
     case changedWhileReading
 
     var errorDescription: String? {
-        switch self {
+        let byteLimit: (Int64) -> String = { bytes in
+            let mebibyte: Int64 = 1024 * 1024
+            return bytes.isMultiple(of: mebibyte)
+                ? "\(bytes / mebibyte) MiB"
+                : "\(bytes) bytes"
+        }
+        return switch self {
         case .notAFile: "Choose a regular file."
-        case .tooLarge: "Attachments are limited to 50 MiB each."
-        case .totalTooLarge: "Attachments in one message are limited to 100 MiB total."
+        case .tooLarge(let bytes):
+            "Attachments are limited to \(byteLimit(bytes)) each."
+        case .totalTooLarge(let bytes):
+            "Attachments in one message are limited to \(byteLimit(bytes)) total."
         case .changedWhileReading: "The file changed while möbius was reading it. Try again."
         }
     }
@@ -470,8 +478,9 @@ struct AppLockAuthenticator {
 }
 
 let appLockEnabledKey = "app-lock-enabled"
-let maximumAttachmentBytes = 50 * 1024 * 1024
-let maximumComposerAttachmentBytes: Int64 = 100 * 1024 * 1024
+let maximumClientAttachmentBytes = 50 * 1024 * 1024
+let maximumClientComposerAttachmentBytes: Int64 = 100 * 1024 * 1024
+let maximumClientUploadChunkBytes = 256 * 1024
 let maximumPresentedFileBytes = 50 * 1024 * 1024
 let maximumWorkspaceTextFileBytes = 1024 * 1024
 let maximumHighlightedPreviewBytes = 1024 * 1024

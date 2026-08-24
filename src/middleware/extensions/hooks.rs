@@ -119,42 +119,59 @@ pub(crate) struct HookSet {
     hooks: BTreeMap<HookEvent, Vec<CommandHook>>,
 }
 
+pub(super) struct HookDefinitions {
+    hooks: BTreeMap<HookEvent, Vec<CommandHook>>,
+}
+
+impl HookDefinitions {
+    pub(super) fn load(plugin_root: &Path, manifest_hooks: Option<&Value>) -> Result<Self> {
+        Ok(Self {
+            hooks: load_hooks(plugin_root, manifest_hooks)?,
+        })
+    }
+
+    pub(super) fn inspect(&self) -> Vec<super::ExtensionHook> {
+        self.hooks
+            .iter()
+            .flat_map(|(event, hooks)| {
+                hooks.iter().map(move |hook| super::ExtensionHook {
+                    event: event.as_str().into(),
+                    matcher: hook.matcher_text.clone(),
+                    command: hook.command.clone(),
+                    timeout_seconds: hook.timeout.as_secs(),
+                })
+            })
+            .collect()
+    }
+}
+
 impl HookSet {
+    pub(super) fn new(
+        plugin_root: PathBuf,
+        data_dir: PathBuf,
+        definitions: HookDefinitions,
+    ) -> Result<Self> {
+        let data_dir = canonical_directory(data_dir, "plugin data directory")?;
+        Ok(Self {
+            plugin_root,
+            data_dir,
+            hooks: definitions.hooks,
+        })
+    }
+
+    #[cfg(test)]
     pub(crate) fn load(
         plugin_root: PathBuf,
         data_dir: PathBuf,
         manifest_hooks: Option<&Value>,
     ) -> Result<Self> {
-        let data_dir = canonical_directory(data_dir, "plugin data directory")?;
-        let hooks = load_hooks(&plugin_root, manifest_hooks)?;
-
-        Ok(Self {
-            plugin_root,
-            data_dir,
-            hooks,
-        })
+        let definitions = HookDefinitions::load(&plugin_root, manifest_hooks)?;
+        Self::new(plugin_root, data_dir, definitions)
     }
 
     pub(crate) fn is_empty(&self) -> bool {
         self.hooks.values().all(Vec::is_empty)
     }
-}
-
-pub(super) fn inspect(
-    plugin_root: &Path,
-    manifest_hooks: Option<&Value>,
-) -> Result<Vec<super::ExtensionHook>> {
-    Ok(load_hooks(plugin_root, manifest_hooks)?
-        .into_iter()
-        .flat_map(|(event, hooks)| {
-            hooks.into_iter().map(move |hook| super::ExtensionHook {
-                event: event.as_str().into(),
-                matcher: hook.matcher_text,
-                command: hook.command,
-                timeout_seconds: hook.timeout.as_secs(),
-            })
-        })
-        .collect())
 }
 
 fn load_hooks(

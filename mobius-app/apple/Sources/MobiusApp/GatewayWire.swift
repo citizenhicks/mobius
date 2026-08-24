@@ -1,10 +1,10 @@
 import Foundation
 import UIKit
 
-let gatewayProtocolVersion = 46
+let gatewayProtocolVersion = 47
 let maximumGatewayFrameBytes = 50 * 1024 * 1024
 let maximumComposerBytes = 1024 * 1024
-let maximumSessionFileReferences = 16
+let maximumWireSessionFileReferences = 16
 
 enum GatewayWireError: LocalizedError, Equatable {
     case invalidEndpoint(String)

@@ -8,7 +8,7 @@ use super::TranscriptTone;
 use super::TuiState;
 use super::attachment_label;
 use super::view::bounded_terminal_text;
-use super::view::terminal_text;
+use crate::frontend::terminal::terminal_text;
 use mobius::protocol::AgentMessagePhase;
 use mobius::protocol::EventMsg;
 use mobius::protocol::FrontendEvent;

@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
 use chrono::Utc;
+use mobius::Error as MobiusError;
 use mobius::agent::{AgentConfig, AgentSender};
 use mobius::backend::checkpoint::{
     ActiveExecution, Checkpoint, CheckpointStore, EventPageRequest, ExecutionOutcome,
@@ -23,6 +24,10 @@ use mobius::backend::checkpoint::{
     event_turn_page, sqlite::SqliteCheckpoint,
 };
 use mobius::backend::model::ModelRouter;
+use mobius::middleware::cron::{
+    CronCommand, CronCommandHandler, CronCommandResult, CronRun as CronRunRecord,
+    CronTask as CronTaskRecord,
+};
 use mobius::middleware::scratchpad::ScratchpadStore;
 use mobius::middleware::session_files::SessionFileStore;
 use mobius::middleware::{FrontendExtensions, Middleware as _};
@@ -33,16 +38,17 @@ use mobius::protocol::{
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc, oneshot};
 use uuid::Uuid;
 
-use crate::assembly::{
-    BuiltAgent, assemble, configured_model_choices, configured_model_providers,
-    configured_provider_for_route, provider_instances, provider_statuses,
-};
+use crate::assembly::{BuiltAgent, assemble};
 use crate::config::{
     ChatSpec, ConfigStore, CredentialStore, GatewayConfig,
     create_workspace_directory as create_workspace_directory_on_disk,
 };
 use crate::cron::{ActiveCronRun, BeginRun, CronStore};
 use crate::extensions::ExtensionStore;
+use crate::provider_catalog::{
+    configured_model_choices, configured_model_routes, configured_provider_for_route,
+    provider_instances, provider_statuses,
+};
 use crate::sandbox::GatewaySandbox;
 use crate::wire::{
     AgentComposition, CronRunStatus, GitDiffScope, MAX_FRAME_BYTES, ProfileSnapshot,
@@ -169,6 +175,100 @@ impl GatewayHost {
         self.events.subscribe()
     }
 
+    fn cron_command_handler(&self) -> CronCommandHandler {
+        let state = Arc::downgrade(&self.state);
+        let events = self.events.clone();
+        Arc::new(move |session_id, command| {
+            let state = state.clone();
+            let events = events.clone();
+            Box::pin(async move {
+                let state = state
+                    .upgrade()
+                    .ok_or_else(|| MobiusError::Stopped("gateway stopped".into()))?;
+                GatewayHost { state, events }
+                    .execute_cron_command(session_id, command)
+                    .await
+            })
+        })
+    }
+
+    fn try_command_state(&self) -> mobius::Result<tokio::sync::MutexGuard<'_, GatewayState>> {
+        self.state
+            .try_lock()
+            .map_err(|_| MobiusError::Busy("retry after the gateway update finishes".into()))
+    }
+
+    async fn execute_cron_command(
+        &self,
+        session_id: String,
+        command: CronCommand,
+    ) -> mobius::Result<CronCommandResult> {
+        let cron = {
+            let state = self.try_command_state()?;
+            Arc::clone(&state.cron)
+        };
+        let config_error = |error: crate::Error| MobiusError::Config(error.to_string());
+        match command {
+            CronCommand::List => cron
+                .list(&session_id)
+                .map(|tasks| {
+                    CronCommandResult::Tasks(
+                        tasks
+                            .into_iter()
+                            .map(|task| CronTaskRecord {
+                                id: task.id,
+                                schedule: task.schedule,
+                                task: task.task.display().to_string(),
+                            })
+                            .collect(),
+                    )
+                })
+                .map_err(config_error),
+            CronCommand::New { task } => {
+                let host = self
+                    .try_command_state()?
+                    .sessions
+                    .get(&session_id)
+                    .cloned()
+                    .ok_or_else(|| MobiusError::Config("unknown cron session".into()))?;
+                host.start_cron_setup(task)
+                    .await
+                    .map_err(|rejection| MobiusError::Config(rejection.message))?;
+                Ok(CronCommandResult::None)
+            }
+            CronCommand::Reschedule { id, schedule } => cron
+                .reschedule(&session_id, &id, &schedule)
+                .map(|_| CronCommandResult::None)
+                .map_err(config_error),
+            CronCommand::Delete { id } => cron
+                .delete(&session_id, &id)
+                .map(|_| CronCommandResult::None)
+                .map_err(config_error),
+            CronCommand::Run { id } => {
+                let state = self.try_command_state()?;
+                self.run_cron_with_state(state, session_id, id)
+                    .await
+                    .map_err(|rejection| MobiusError::Config(rejection.message))?;
+                Ok(CronCommandResult::None)
+            }
+            CronCommand::History { id } => cron
+                .history(&session_id, id.as_deref())
+                .map(|runs| {
+                    CronCommandResult::History(
+                        runs.into_iter()
+                            .map(|run| CronRunRecord {
+                                id: run.id,
+                                task_id: run.task_id,
+                                status: format!("{:?}", run.status),
+                                started_at: run.started_at,
+                            })
+                            .collect(),
+                    )
+                })
+                .map_err(config_error),
+        }
+    }
+
     pub(crate) async fn session_file_store(&self) -> SessionFileStore {
         self.state.lock().await.session_files.clone()
     }
@@ -219,6 +319,7 @@ impl GatewayHost {
         &self,
         workspace: &Path,
     ) -> std::result::Result<HostHandle, Rejection> {
+        let cron_commands = self.cron_command_handler();
         let mut state = self.state.lock().await;
         state.ensure_capacity().await?;
         let (default_agent, tls) = {
@@ -248,6 +349,7 @@ impl GatewayHost {
             spec,
             Arc::clone(&state.credentials),
             Arc::clone(&state.cron),
+            cron_commands,
             Arc::clone(&state.checkpoints),
             state.scratchpad.clone(),
             state.session_files.clone(),
@@ -295,6 +397,7 @@ impl GatewayHost {
         session_id: &str,
     ) -> std::result::Result<HostHandle, Rejection> {
         validate_session_id(session_id).map_err(|_| invalid_session_id())?;
+        let cron_commands = self.cron_command_handler();
         let mut state = self.state.lock().await;
         if let Some(host) = state.sessions.get(session_id)
             && host.is_alive()
@@ -332,6 +435,7 @@ impl GatewayHost {
             spec,
             Arc::clone(&state.credentials),
             Arc::clone(&state.cron),
+            cron_commands,
             Arc::clone(&state.checkpoints),
             state.scratchpad.clone(),
             state.session_files.clone(),
@@ -418,7 +522,18 @@ impl GatewayHost {
         source_session_id: String,
         task_id: String,
     ) -> std::result::Result<(), Rejection> {
-        let mut state = self.state.lock().await;
+        let state = self.state.lock().await;
+        self.run_cron_with_state(state, source_session_id, task_id)
+            .await
+    }
+
+    async fn run_cron_with_state(
+        &self,
+        mut state: tokio::sync::MutexGuard<'_, GatewayState>,
+        source_session_id: String,
+        task_id: String,
+    ) -> std::result::Result<(), Rejection> {
+        let cron_commands = self.cron_command_handler();
         let task = state
             .cron
             .task(&source_session_id, &task_id)
@@ -497,6 +612,7 @@ impl GatewayHost {
             spec,
             Arc::clone(&state.credentials),
             Arc::clone(&state.cron),
+            cron_commands,
             Arc::clone(&state.checkpoints),
             state.scratchpad.clone(),
             state.session_files.clone(),

@@ -1,4 +1,8 @@
-use super::*;
+use mobius::protocol::{
+    FrontendActionListItem, FrontendEvent, FrontendSlot, FrontendWidget, FrontendWidgetContent, Op,
+};
+use mobius_gateway::wire::{ClientStatus, ProfileSnapshot, ReadyPayload, SessionReadyPayload};
+use ratatui::widgets::ListState;
 
 pub(super) struct DashboardState {
     pub(super) endpoint: String,

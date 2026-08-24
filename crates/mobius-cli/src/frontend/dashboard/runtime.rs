@@ -1,10 +1,34 @@
-use super::*;
+use std::io;
+use std::path::PathBuf;
+
+use mobius::protocol::{EventMsg, FrontendWidgetContent, MAX_USER_INPUT_BYTES, Op, Submission};
+use mobius::{Error, Result};
+use mobius_gateway::client::{GatewayClient, GatewayEvents, GatewaySender};
+use mobius_gateway::wire::{
+    ClientKind, ClientMessage, ClientStatus, ReadyPayload, ServerMessage, SessionActivityState,
+    SessionRecord,
+};
+use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
+use ratatui::crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+};
+use ratatui::layout::Rect;
+use ratatui::widgets::ListState;
+use tokio::time::MissedTickBehavior;
+use uuid::Uuid;
+
+use super::REFRESH_INTERVAL;
+use super::state::{ActionInput, CapabilityOverlay, DashboardFocus, DashboardState};
+use super::view::{dashboard_areas, render};
+use crate::frontend::setup::{self, SetupMode};
+use crate::frontend::terminal::{INPUT_POLL, MAX_INPUT_BATCH, poll_event, terminal_text};
+use crate::gateway_accounts::{configured_token, dashboard_gateway_endpoint};
 
 pub(super) async fn connect(
     state_dir: PathBuf,
 ) -> Result<(GatewaySender, GatewayEvents, DashboardState)> {
-    let (_, config) = ConfigStore::open(state_dir.clone()).map_err(gateway_error)?;
-    let endpoint = dashboard_endpoint(&config)?;
+    let endpoint = dashboard_gateway_endpoint(&state_dir).map_err(gateway_error)?;
     mobius_gateway::command::ensure_background_gateway(state_dir)
         .await
         .map_err(gateway_error)?;
@@ -40,21 +64,6 @@ pub(super) async fn connect(
             error: None,
         },
     ))
-}
-
-pub(super) fn dashboard_endpoint(config: &GatewayConfig) -> Result<Endpoint> {
-    if config.tls.is_some() {
-        if env::var_os("MOBIUS_GATEWAY_ENDPOINT").is_none() {
-            return Err(Error::Config(
-                "TLS dashboards require MOBIUS_GATEWAY_ENDPOINT with the certificate hostname"
-                    .into(),
-            ));
-        }
-        return Endpoint::from_env().map_err(gateway_error);
-    }
-    format!("tcp://{}", config.listen)
-        .parse()
-        .map_err(gateway_error)
 }
 
 pub(super) async fn wait_ready(events: &mut GatewayEvents) -> Result<ReadyPayload> {
@@ -547,14 +556,12 @@ pub(super) fn move_selection(state: &mut DashboardState, delta: isize) {
         }
         DashboardFocus::Chats => {
             let ordered = ordered_sessions(&state.gateway.sessions);
-            let current = state.selected_session_id.as_deref().and_then(|id| {
-                ordered
-                    .iter()
-                    .position(|session| session.summary.session_id == id)
-            });
+            let current = state
+                .selected_session_id
+                .as_deref()
+                .and_then(|id| ordered.iter().position(|session| session.session_id == id));
             let selected = moved_index(current, ordered.len(), delta);
-            state.selected_session_id =
-                selected.map(|index| ordered[index].summary.session_id.clone());
+            state.selected_session_id = selected.map(|index| ordered[index].session_id.clone());
             state.chat_list.select(selected);
         }
     }
@@ -579,7 +586,7 @@ pub(super) fn select_edge(state: &mut DashboardState, last: bool) {
         }
         DashboardFocus::Chats => {
             let ordered = ordered_sessions(&state.gateway.sessions);
-            state.selected_session_id = Some(ordered[selected].summary.session_id.clone());
+            state.selected_session_id = Some(ordered[selected].session_id.clone());
             state.chat_list.select(Some(selected));
         }
     }
@@ -734,13 +741,9 @@ pub(super) fn sync_chat_selection(state: &mut DashboardState) {
     let selected = state
         .selected_session_id
         .as_deref()
-        .and_then(|id| {
-            ordered
-                .iter()
-                .position(|session| session.summary.session_id == id)
-        })
+        .and_then(|id| ordered.iter().position(|session| session.session_id == id))
         .or_else(|| (!ordered.is_empty()).then_some(0));
-    state.selected_session_id = selected.map(|index| ordered[index].summary.session_id.clone());
+    state.selected_session_id = selected.map(|index| ordered[index].session_id.clone());
     state.chat_list.select(selected);
 }
 

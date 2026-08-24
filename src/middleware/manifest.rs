@@ -1,6 +1,6 @@
 //! Core-owned middleware configuration manifests.
 
-use crate::backend::model::ModelChoice;
+use crate::protocol::ModelChoice;
 use crate::protocol::{
     FrontendSetting, FrontendSettingKind, FrontendSettingOption, FrontendSettingValue,
     FrontendSymbol, FrontendTone, MiddlewareFeature,

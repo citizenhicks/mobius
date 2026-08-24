@@ -12,7 +12,6 @@ use std::sync::Arc;
 
 use cap_std::ambient_authority;
 use cap_std::fs::Dir;
-use serde::Deserialize;
 use serde_json::Value;
 
 use super::CompactContext;
@@ -46,6 +45,7 @@ use crate::protocol::internal_message_kind;
 use crate::truncate_utf8;
 
 mod hooks;
+mod package;
 
 mod text {
     include!(concat!(
@@ -57,16 +57,10 @@ mod text {
 const MAX_SKILLS: usize = 64;
 const MAX_SKILL_BYTES: u64 = 40_000;
 const MAX_PLUGINS: usize = 32;
-const MAX_PLUGIN_MANIFEST_BYTES: u64 = 64 * 1024;
 const MAX_PLUGIN_ID_BYTES: usize = 128;
-const MAX_PLUGIN_VERSION_BYTES: usize = 128;
 const MAX_HOOK_CONTEXT_BYTES: usize = 40_000;
 const MAX_HOOK_NOTICES: usize = 32;
 const SKILL_FILE: &str = "SKILL.md";
-const LEGACY_PLUGIN_MANIFEST: &str = ".codex-plugin/plugin.json";
-const AGENT_PLUGIN_MANIFEST: &str = "plugin.json";
-const MCP_COMPONENTS: [&str; 2] = [".mcp.json", "mcp.json"];
-const AGENT_PLUGIN_SCHEMA: &str = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json";
 const SESSION_HOOK_CONTEXT_KIND: &str = "extension_session_hook";
 
 /// Fail-closed authorization checked immediately before each plugin hook command starts.
@@ -111,78 +105,8 @@ pub struct ExtensionHook {
 
 /// Validates and inspects one standalone Agent Skill or Agent Plugin package.
 pub fn inspect_package(root: impl AsRef<Path>) -> Result<ExtensionPackage> {
-    let root = canonical_plugin_root(root.as_ref())?;
-    match agent_plugin_schema(&root)? {
-        Some(schema) if schema == AGENT_PLUGIN_SCHEMA => inspect_agent_plugin(&root),
-        Some(schema) => Err(Error::Config(format!(
-            "unsupported Agent Plugin schema `{schema}`"
-        ))),
-        None if root.join(LEGACY_PLUGIN_MANIFEST).exists() => inspect_legacy_plugin(&root),
-        None => inspect_skill(&root),
-    }
-}
-
-fn inspect_legacy_plugin(root: &Path) -> Result<ExtensionPackage> {
-    let manifest = load_legacy_plugin_manifest(root)?;
-    reject_mcp_components(root, &manifest.name)?;
-    let mut skills = BTreeMap::new();
-    discover_plugin_skills(root, &manifest, &mut skills)?;
-    let hooks = hooks::inspect(root, manifest.hooks.as_ref())?;
-    if skills.is_empty() && hooks.is_empty() {
-        return Err(Error::Config(format!(
-            "plugin `{}` has no supported contributions",
-            manifest.name
-        )));
-    }
-    Ok(ExtensionPackage {
-        kind: ExtensionPackageKind::Plugin,
-        name: manifest.name,
-        version: manifest.version,
-        description: manifest.description.unwrap_or_default(),
-        skills: skills.into_keys().collect(),
-        hooks,
-    })
-}
-
-fn inspect_agent_plugin(root: &Path) -> Result<ExtensionPackage> {
-    let manifest = load_agent_plugin_manifest(root)?;
-    reject_mcp_components(root, &manifest.name)?;
-    let mut skills = BTreeMap::new();
-    discover_agent_plugin_skills(root, &manifest.name, &mut skills)?;
-    if skills.is_empty() {
-        return Err(Error::Config(format!(
-            "plugin `{}` has no supported contributions",
-            manifest.name
-        )));
-    }
-    Ok(ExtensionPackage {
-        kind: ExtensionPackageKind::Plugin,
-        name: manifest.name,
-        version: manifest.version,
-        description: manifest.description.unwrap_or_default(),
-        skills: skills.into_keys().collect(),
-        hooks: Vec::new(),
-    })
-}
-
-fn inspect_skill(root: &Path) -> Result<ExtensionPackage> {
-    let path = root.join(SKILL_FILE);
-    let content = String::from_utf8(read_bounded_file(&path, MAX_SKILL_BYTES, "skill manifest")?)
-        .map_err(|_| Error::Config("skill manifest is not valid UTF-8".into()))?;
-    let (name, description) = skill_metadata(&path, &content);
-    if !valid_legacy_package_name(&name) {
-        return Err(Error::Config(format!(
-            "skill name `{name}` must be kebab-case"
-        )));
-    }
-    Ok(ExtensionPackage {
-        kind: ExtensionPackageKind::Skill,
-        skills: vec![name.clone()],
-        name,
-        version: None,
-        description,
-        hooks: Vec::new(),
-    })
+    let root = package::canonical_root(root.as_ref())?;
+    Ok(package::load(root)?.metadata)
 }
 
 #[derive(Clone)]
@@ -267,20 +191,24 @@ impl Extensions {
             if self.plugins.len() == MAX_PLUGINS {
                 return Err(Error::Config(format!("plugin count exceeds {MAX_PLUGINS}")));
             }
-            let root = canonical_plugin_root(&root)?;
+            let root = package::canonical_root(&root)?;
             if root.starts_with(&workspace) || workspace.starts_with(&root) {
                 return Err(Error::Config(
                     "plugin snapshot and writable workspace must not overlap".into(),
                 ));
             }
-            let package = inspect_package(&root)?;
+            let package::LoadedPackage {
+                root,
+                metadata: package,
+                skills,
+                hooks,
+            } = package::load(root)?;
             if package.kind != ExtensionPackageKind::Plugin {
                 return Err(Error::Config("activated extension is not a plugin".into()));
             }
             if !self.plugins.insert(package.name.clone()) {
                 return Err(Error::Duplicate(format!("plugin `{}`", package.name)));
             }
-            let skill_count = self.skills.len();
             let data = data_root.join(&package.name);
             data_root_dir.create_dir_all(&package.name)?;
             let data = canonical_directory(&data, "plugin data directory")?;
@@ -290,22 +218,18 @@ impl Extensions {
                     package.name
                 )));
             }
-            let hooks = if agent_plugin_schema(&root)?.as_deref() == Some(AGENT_PLUGIN_SCHEMA) {
-                discover_agent_plugin_skills(&root, &package.name, &mut self.skills)?;
-                None
-            } else {
-                let manifest = load_legacy_plugin_manifest(&root)?;
-                discover_plugin_skills(&root, &manifest, &mut self.skills)?;
-                Some(hooks::HookSet::load(root, data, manifest.hooks.as_ref())?)
-            };
-            if self.skills.len() == skill_count
-                && hooks.as_ref().is_none_or(hooks::HookSet::is_empty)
-            {
-                return Err(Error::Config(format!(
-                    "plugin `{}` has no supported contributions",
-                    package.name
-                )));
+            for (name, skill) in skills {
+                if self.skills.contains_key(&name) {
+                    return Err(Error::Duplicate(format!("skill `{name}`")));
+                }
+                if self.skills.len() == MAX_SKILLS {
+                    return Err(Error::Config(format!("skill count exceeds {MAX_SKILLS}")));
+                }
+                self.skills.insert(name, skill);
             }
+            let hooks = hooks
+                .map(|definitions| hooks::HookSet::new(root, data, definitions))
+                .transpose()?;
             if let (Some(authorization), Some(hooks)) = (authorization, hooks)
                 && !hooks.is_empty()
             {
@@ -407,258 +331,6 @@ impl Extensions {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LegacyPluginManifest {
-    name: String,
-    #[serde(default)]
-    version: Option<String>,
-    #[serde(default)]
-    description: Option<String>,
-    #[serde(default)]
-    skills: Option<String>,
-    #[serde(default)]
-    hooks: Option<Value>,
-    #[serde(default)]
-    mcp_servers: Option<Value>,
-    #[serde(default)]
-    apps: Option<Value>,
-    #[serde(flatten)]
-    metadata: BTreeMap<String, Value>,
-}
-
-impl LegacyPluginManifest {
-    fn validate(&self) -> Result<()> {
-        if !valid_legacy_package_name(&self.name) {
-            return Err(Error::Config(format!(
-                "plugin name `{}` must be kebab-case",
-                self.name
-            )));
-        }
-        if self.version.as_ref().is_some_and(|version| {
-            version.is_empty()
-                || version.len() > MAX_PLUGIN_VERSION_BYTES
-                || !version.bytes().all(|byte| byte.is_ascii_graphic())
-        }) {
-            return Err(Error::Config(format!(
-                "plugin `{}` has an invalid version",
-                self.name
-            )));
-        }
-        if self
-            .description
-            .as_ref()
-            .is_some_and(|description| description.is_empty() || description.len() > 4_096)
-        {
-            return Err(Error::Config(format!(
-                "plugin `{}` has an invalid description",
-                self.name
-            )));
-        }
-        const METADATA: [&str; 8] = [
-            "author",
-            "homepage",
-            "repository",
-            "license",
-            "keywords",
-            "interface",
-            "bundledContentVariant",
-            "$schema",
-        ];
-        if let Some(field) = self
-            .metadata
-            .keys()
-            .find(|field| !METADATA.contains(&field.as_str()))
-        {
-            return Err(Error::Config(format!(
-                "plugin `{}` has unknown manifest field `{field}`",
-                self.name
-            )));
-        }
-        Ok(())
-    }
-}
-
-fn load_legacy_plugin_manifest(root: &Path) -> Result<LegacyPluginManifest> {
-    let manifest_path = confined_path(root, LEGACY_PLUGIN_MANIFEST, false)?;
-    let manifest: LegacyPluginManifest = serde_json::from_slice(&read_bounded_file(
-        &manifest_path,
-        MAX_PLUGIN_MANIFEST_BYTES,
-        "plugin manifest",
-    )?)?;
-    manifest.validate()?;
-    if manifest.mcp_servers.is_some() || manifest.apps.is_some() {
-        return Err(Error::Config(format!(
-            "legacy plugin `{}` declares an unsupported remote contribution",
-            manifest.name
-        )));
-    }
-    Ok(manifest)
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AgentPluginManifest {
-    #[serde(rename = "$schema")]
-    schema: String,
-    name: String,
-    #[serde(default)]
-    version: Option<String>,
-    #[serde(default)]
-    description: Option<String>,
-    #[serde(default)]
-    author: Option<AgentPluginAuthor>,
-    #[serde(default)]
-    homepage: Option<String>,
-    #[serde(default)]
-    repository: Option<String>,
-    #[serde(default)]
-    license: Option<String>,
-    #[serde(default)]
-    keywords: Option<Vec<String>>,
-    #[serde(default)]
-    extensions: BTreeMap<String, Value>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AgentPluginAuthor {
-    #[serde(default)]
-    name: Option<String>,
-    #[serde(default)]
-    email: Option<String>,
-    #[serde(default)]
-    url: Option<String>,
-}
-
-fn agent_plugin_schema(root: &Path) -> Result<Option<String>> {
-    let path = root.join(AGENT_PLUGIN_MANIFEST);
-    match path.symlink_metadata() {
-        Ok(metadata) if metadata.file_type().is_file() => {}
-        Ok(_) => return Ok(Some(String::new())),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
-    }
-    let value = match serde_json::from_slice::<Value>(&read_bounded_file(
-        &path,
-        MAX_PLUGIN_MANIFEST_BYTES,
-        "Agent Plugin manifest",
-    )?) {
-        Ok(value) => value,
-        Err(_) => return Ok(Some(String::new())),
-    };
-    Ok(Some(
-        value
-            .get("$schema")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned(),
-    ))
-}
-
-fn load_agent_plugin_manifest(root: &Path) -> Result<AgentPluginManifest> {
-    let path = confined_path(root, AGENT_PLUGIN_MANIFEST, false)?;
-    let manifest: AgentPluginManifest = serde_json::from_slice(&read_bounded_file(
-        &path,
-        MAX_PLUGIN_MANIFEST_BYTES,
-        "Agent Plugin manifest",
-    )?)?;
-    if manifest.schema != AGENT_PLUGIN_SCHEMA
-        || manifest.name.len() > 64
-        || !valid_package_name(&manifest.name)
-        || manifest
-            .version
-            .as_ref()
-            .is_some_and(|value| value.len() > MAX_PLUGIN_VERSION_BYTES)
-        || manifest
-            .description
-            .as_ref()
-            .is_some_and(|value| value.len() > 4_096)
-        || manifest.extensions.values().any(|value| !value.is_object())
-        || manifest
-            .author
-            .as_ref()
-            .is_some_and(AgentPluginAuthor::is_too_large)
-        || manifest
-            .homepage
-            .as_ref()
-            .into_iter()
-            .chain(manifest.repository.as_ref())
-            .chain(manifest.license.as_ref())
-            .any(|value| value.len() > 4_096)
-        || manifest
-            .keywords
-            .as_ref()
-            .is_some_and(|values| values.len() > 64 || values.iter().any(|value| value.len() > 256))
-    {
-        return Err(Error::Config(format!(
-            "plugin `{}` has an invalid Agent Plugins v1 manifest",
-            manifest.name
-        )));
-    }
-    Ok(manifest)
-}
-
-impl AgentPluginAuthor {
-    fn is_too_large(&self) -> bool {
-        self.name
-            .as_ref()
-            .into_iter()
-            .chain(self.email.as_ref())
-            .chain(self.url.as_ref())
-            .any(|value| value.len() > 4_096)
-    }
-}
-
-fn reject_mcp_components(root: &Path, plugin_name: &str) -> Result<()> {
-    for component in MCP_COMPONENTS {
-        match root.join(component).symlink_metadata() {
-            Ok(_) => {
-                return Err(Error::Config(format!(
-                    "plugin `{plugin_name}` declares an unsupported MCP contribution"
-                )));
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Ok(())
-}
-
-fn discover_plugin_skills(
-    root: &Path,
-    manifest: &LegacyPluginManifest,
-    skills: &mut BTreeMap<String, Skill>,
-) -> Result<()> {
-    let Some(path) = manifest.skills.as_deref() else {
-        return Ok(());
-    };
-    let root = confined_path(root, path, true)?;
-    if !root.is_dir() {
-        return Err(Error::Config(format!(
-            "plugin `{}` skills path is not a directory",
-            manifest.name
-        )));
-    }
-    discover_roots([root], skills, Some(&manifest.name), false)
-}
-
-fn discover_agent_plugin_skills(
-    root: &Path,
-    plugin_name: &str,
-    skills: &mut BTreeMap<String, Skill>,
-) -> Result<()> {
-    let root = root.join("skills");
-    match root.symlink_metadata() {
-        Ok(metadata) if metadata.file_type().is_dir() => {
-            discover_roots([root], skills, Some(plugin_name), false)
-        }
-        Ok(_) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.into()),
-    }
-}
-
 /// Returns whether a package name is canonical for the supported extension formats.
 #[must_use]
 pub fn valid_package_name(name: &str) -> bool {
@@ -677,27 +349,6 @@ pub fn valid_package_name(name: &str) -> bool {
             .is_some_and(u8::is_ascii_alphanumeric)
         && !name.contains("--")
         && !name.contains("..")
-}
-
-fn valid_legacy_package_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= MAX_PLUGIN_ID_BYTES
-        && name.split('-').all(|part| {
-            !part.is_empty()
-                && part
-                    .bytes()
-                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
-        })
-}
-
-fn canonical_plugin_root(path: &Path) -> Result<PathBuf> {
-    if std::fs::symlink_metadata(path)?.file_type().is_symlink() {
-        return Err(Error::Config(format!(
-            "plugin root cannot be a symlink: {}",
-            path.display()
-        )));
-    }
-    canonical_directory(path, "plugin root")
 }
 
 fn canonical_directory(path: &Path, name: &str) -> Result<PathBuf> {
@@ -1736,89 +1387,6 @@ printf '%s\n' '{"systemMessage":"PONYTAIL:FULL","hookSpecificOutput":{"hookEvent
     }
 
     #[test]
-    fn agent_plugin_rejects_mcp_even_with_a_portable_skill() {
-        let temporary = tempfile::tempdir().expect("temporary extensions");
-        let plugin = temporary.path().join("remote");
-        std::fs::create_dir(&plugin).expect("plugin directory");
-        std::fs::write(
-            plugin.join("plugin.json"),
-            r#"{"$schema":"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json","name":"remote"}"#,
-        )
-        .expect("plugin manifest");
-        write_skill(&plugin, "skills/portable", "portable", "Portable skill");
-        std::fs::write(plugin.join("mcp.json"), b"{}").expect("MCP component");
-
-        let error = inspect_package(plugin).expect_err("MCP must be unsupported");
-
-        assert!(error.to_string().contains("unsupported MCP contribution"));
-    }
-
-    #[test]
-    fn codex_plugin_rejects_a_root_mcp_component() {
-        let temporary = tempfile::tempdir().expect("temporary extensions");
-        let plugin = temporary.path().join("remote");
-        std::fs::create_dir_all(plugin.join(".codex-plugin")).expect("plugin manifest directory");
-        std::fs::write(
-            plugin.join(".codex-plugin/plugin.json"),
-            r#"{"name":"remote","skills":"./skills"}"#,
-        )
-        .expect("plugin manifest");
-        write_skill(&plugin, "skills/portable", "portable", "Portable skill");
-        std::fs::write(plugin.join(".mcp.json"), b"{}").expect("MCP component");
-
-        let error = inspect_package(plugin).expect_err("MCP must be unsupported");
-
-        assert!(error.to_string().contains("unsupported MCP contribution"));
-    }
-
-    #[test]
-    fn schema_declared_agent_plugin_wins_over_legacy_manifest() {
-        let temporary = tempfile::tempdir().expect("temporary extensions");
-        let plugin = temporary.path().join("remote");
-        std::fs::create_dir_all(plugin.join(".codex-plugin")).expect("plugin manifest directory");
-        std::fs::write(
-            plugin.join(".codex-plugin/plugin.json"),
-            r#"{"name":"legacy","skills":"./skills"}"#,
-        )
-        .expect("legacy manifest");
-        std::fs::write(
-            plugin.join("plugin.json"),
-            r#"{"$schema":"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json","name":"remote"}"#,
-        )
-        .expect("Agent Plugin manifest");
-        write_skill(&plugin, "skills/portable", "portable", "Portable skill");
-
-        let package = inspect_package(plugin).expect("Agent Plugin package");
-        assert_eq!(package.name, "remote");
-    }
-
-    #[test]
-    fn unsupported_agent_manifest_never_falls_back_to_legacy() {
-        let temporary = tempfile::tempdir().expect("temporary extensions");
-        let plugin = temporary.path().join("remote");
-        std::fs::create_dir_all(plugin.join(".codex-plugin")).expect("plugin manifest directory");
-        std::fs::write(
-            plugin.join(".codex-plugin/plugin.json"),
-            r#"{"name":"legacy","skills":"./skills"}"#,
-        )
-        .expect("legacy manifest");
-        std::fs::write(
-            plugin.join("plugin.json"),
-            r#"{"$schema":"https://example.com/unsupported.json","name":"remote"}"#,
-        )
-        .expect("unsupported Agent Plugin manifest");
-        write_skill(&plugin, "skills/portable", "portable", "Portable skill");
-
-        let error = inspect_package(plugin).expect_err("unsupported schema must fail closed");
-
-        assert!(
-            error
-                .to_string()
-                .contains("unsupported Agent Plugin schema")
-        );
-    }
-
-    #[test]
     fn plugin_snapshot_cannot_share_the_writable_workspace() {
         use crate::backend::sandbox::local::LocalSandbox;
 
@@ -1913,28 +1481,6 @@ printf '%s\n' '{"systemMessage":"PONYTAIL:FULL","hookSpecificOutput":{"hookEvent
         symlink(outside.join("escaped"), root.join("escaped")).expect("create escape");
 
         assert!(Extensions::discover([root]).is_err());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn package_inspection_rejects_symlinked_manifest_directory() {
-        use std::os::unix::fs::symlink;
-
-        let temporary = tempfile::tempdir().expect("temporary plugin");
-        let plugin = temporary.path().join("plugin");
-        let outside = temporary.path().join("outside");
-        std::fs::create_dir(&plugin).expect("plugin directory");
-        std::fs::create_dir(&outside).expect("outside directory");
-        std::fs::write(
-            outside.join("plugin.json"),
-            r#"{"name":"escaped","hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"true"}]}]}}"#,
-        )
-        .expect("outside manifest");
-        symlink(&outside, plugin.join(".codex-plugin")).expect("manifest symlink");
-
-        let error = inspect_package(&plugin).expect_err("manifest symlink must be rejected");
-
-        assert!(error.to_string().contains("contains a symlink"));
     }
 
     fn write_skill(root: &std::path::Path, directory: &str, name: &str, description: &str) {

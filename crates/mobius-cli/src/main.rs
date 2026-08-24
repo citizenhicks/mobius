@@ -12,11 +12,14 @@ use std::time::Duration;
 
 use mobius::{Error, Result};
 use mobius_cli::frontend::{self, FrontendExit};
-use mobius_cli::gateway_accounts::{GatewayAccounts, configured_endpoint, configured_token};
+use mobius_cli::gateway_accounts::{
+    GatewayAccounts, configured_endpoint, configured_token, missing_local_token,
+    validate_local_gateway_config,
+};
 use mobius_gateway::client::{
     Endpoint, GatewayClient, GatewayEvents, GatewaySender, MAX_PENDING_FRAMES,
 };
-use mobius_gateway::config::{ConfigStore, state_dir};
+use mobius_gateway::config::state_dir;
 use mobius_gateway::wire::{
     ClientKind, ClientMessage, ReadyPayload, ServerFrame, ServerMessage, SessionReadyPayload,
 };
@@ -205,7 +208,7 @@ async fn connect(
             let session_id = gateway
                 .sessions
                 .first()
-                .map(|session| session.summary.session_id.clone())
+                .map(|session| session.session_id.clone())
                 .ok_or_else(|| {
                     Error::Stopped(
                         "the remote gateway has no chats; create a workspace chat from a local frontend first"
@@ -304,20 +307,7 @@ async fn start_local_gateway(endpoint: &Endpoint) -> mobius_gateway::Result<Gate
     }
     let binary = gateway_binary()?;
     if configured_state_dir.try_exists()? {
-        let (_, config) = ConfigStore::open(configured_state_dir.clone())?;
-        let configured_endpoint = format!(
-            "{}://{}",
-            if config.tls.is_some() { "tls" } else { "tcp" },
-            config.listen
-        );
-        if endpoint.to_string() != configured_endpoint {
-            return Err(mobius_gateway::Error::Config(format!(
-                "saved endpoint {endpoint} is not the local gateway configured at {configured_endpoint}; start it separately or select the configured endpoint"
-            )));
-        }
-        if saved_token.is_none() && config.cloudflare.is_none() {
-            return Err(missing_local_token(endpoint));
-        }
+        validate_local_gateway_config(&configured_state_dir, endpoint, saved_token.is_some())?;
         let (child, log) = spawn_gateway(&binary, &configured_state_dir)?;
         return connect_started_gateway(endpoint, child, log).await;
     }
@@ -562,12 +552,6 @@ fn startup_error(
     })
 }
 
-fn missing_local_token(endpoint: &Endpoint) -> mobius_gateway::Error {
-    mobius_gateway::Error::Config(format!(
-        "local gateway state exists but mobius-cli is not paired; stop the gateway, run `mobius-gateway connect` in another terminal, then run `mobius pair {endpoint} <one-time-code>`"
-    ))
-}
-
 async fn open_session(
     sender: &GatewaySender,
     events: &mut GatewayEvents,
@@ -719,6 +703,8 @@ fn gateway_error(error: mobius_gateway::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use std::io::Write as _;
+
+    use mobius_gateway::config::ConfigStore;
 
     use super::*;
 

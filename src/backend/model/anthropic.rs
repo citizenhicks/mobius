@@ -1,16 +1,17 @@
 //! Native Anthropic Messages API provider.
 
-use reqwest::Client;
-use serde::Deserialize;
-use serde_json::Value;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
+
+use reqwest::Client;
+use serde::Deserialize;
+use serde_json::Value;
 
 use super::Model;
 use super::ModelEventSink;
-use super::ModelInfo;
 use super::ModelOutput;
 use super::ModelPricing;
 use super::ModelRequest;
@@ -35,9 +36,13 @@ use super::usage_i64;
 use crate::BoxFuture;
 use crate::Error;
 use crate::Result;
+use crate::protocol::ModelEvent;
+use crate::protocol::ModelInfo;
 use crate::protocol::ModelStepAnnotation;
 use crate::protocol::ModelStepContent;
 use crate::protocol::ModelStepContentPhase;
+use crate::protocol::TokenUsage;
+use crate::protocol::WebSearchAction;
 
 mod manifest {
     include!(concat!(
@@ -45,9 +50,6 @@ mod manifest {
         "/src_backend_model_anthropic_manifest.rs"
     ));
 }
-use crate::protocol::ModelEvent;
-use crate::protocol::TokenUsage;
-use crate::protocol::WebSearchAction;
 
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com/v1";
 const API_VERSION: &str = "2023-06-01";

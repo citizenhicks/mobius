@@ -1,4 +1,5 @@
 use super::*;
+use mobius::middleware::session_files::session_file_limits;
 
 pub(super) async fn gateway_session_summaries(
     checkpoints: &Arc<dyn CheckpointStore>,
@@ -241,10 +242,13 @@ pub(super) async fn gateway_ready(
         .lock()
         .map_err(|_| internal("gateway configuration lock is poisoned"))?
         .clone();
-    let models =
-        configured_model_choices(&config, &state.store, &state.credentials).map_err(internal)?;
-    let model_providers =
-        configured_model_providers(&config, &state.store, &state.credentials).map_err(internal)?;
+    let routes =
+        configured_model_routes(&config, &state.store, &state.credentials).map_err(internal)?;
+    let models: Vec<_> = routes.iter().map(|route| route.choice.clone()).collect();
+    let model_providers = routes
+        .into_iter()
+        .map(|route| (route.choice.route, route.provider.instance))
+        .collect();
     let middleware_features = crate::middleware_manifest::features(&models);
     let extensions = crate::extensions::records(&config);
     Ok(ReadyPayload {
@@ -262,6 +266,7 @@ pub(super) async fn gateway_ready(
         extensions,
         contributions: state.contributions.clone(),
         max_active_sessions: MAX_ACTIVE_SESSIONS,
+        session_file_limits: session_file_limits(),
     })
 }
 

@@ -290,7 +290,8 @@ extension AppModel {
     /// Starts a new setup of `provider` with the identity used by credentials and registration.
     func addProviderInstance(_ provider: String) {
         guard let status = providerStatuses.first(where: { $0.provider == provider }),
-              let webSearch = status.webSearch.first
+              let search = status.webSearch.first,
+              let webSearch = HostedWebSearch(rawValue: search.value)
         else { return }
         let selectedModel = status.models.first
         providerLabelDraft = status.label

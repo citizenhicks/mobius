@@ -44,6 +44,7 @@ pub(crate) const CHAT_SPEC_METADATA_KEY: &str = "mobius_gateway.chat";
 const CONFIG_FILE: &str = "gateway.toml";
 const CLOUDFLARE_TOKEN_FILE: &str = "cloudflare-token";
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
+const MAX_CREDENTIAL_STATE_BYTES: usize = 256 * 1024;
 const MAX_SYSTEM_PROMPT_BYTES: usize = 64 * 1024;
 const MAX_API_KEY_BYTES: usize = 16 * 1024;
 const MAX_PROVIDER_CATALOG_ENTRIES: usize = 64;
@@ -404,7 +405,7 @@ impl GatewayConfig {
             for (middleware, setting, route) in
                 crate::middleware_manifest::configured_model_routes(&default.config.middleware)
             {
-                if !crate::assembly::configured_route_exists(self, route)? {
+                if !crate::provider_catalog::configured_route_exists(self, route)? {
                     return Err(Error::Config(format!(
                         "gateway default middleware setting `{middleware}.{setting}` is not a configured model route"
                     )));
@@ -587,7 +588,7 @@ fn clear_missing_model_routes(
         .collect::<Vec<_>>();
     let mut changed = false;
     for (middleware, setting, route) in routes {
-        if !crate::assembly::configured_route_exists(gateway, &route)? {
+        if !crate::provider_catalog::configured_route_exists(gateway, &route)? {
             composition
                 .middleware
                 .set_setting(middleware, setting, None);

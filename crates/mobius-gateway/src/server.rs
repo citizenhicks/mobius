@@ -15,9 +15,7 @@ use std::time::Duration;
 
 use futures_util::StreamExt as _;
 use mobius::agent::validate_submission;
-use mobius::middleware::session_files::{
-    MAX_UPLOAD_CHUNK_BYTES, PendingSessionFileWrite, SessionFileStore,
-};
+use mobius::middleware::session_files::{PendingSessionFileWrite, SessionFileStore};
 use mobius::protocol::Op;
 use rustls::ServerConfig;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};

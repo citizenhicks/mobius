@@ -1,12 +1,21 @@
 //! Native Kimi Chat Completions provider.
 
-use reqwest::Client;
-use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use reqwest::Client;
+use serde_json::Value;
+
 use super::MAX_TOOL_CALLS;
+use super::Model;
+use super::ModelEventSink;
+use super::ModelOutput;
+use super::ModelRequest;
+use super::PromptCacheCapability;
 use super::REPLAY_REASONING_FIELD;
+use super::ToolDefinition;
+use super::image_data_url;
+use super::image_input;
 use super::provider::{ProviderAuth, ProviderBuildConfig, ProviderDefinition, validate_base_url};
 use super::transport::MAX_SSE_FRAME_BYTES;
 use super::transport::frame_data;
@@ -15,11 +24,12 @@ use super::transport::status_error;
 use super::transport::streaming_client;
 use super::transport::take_sse_frame;
 use super::usage_i64;
-use super::{
-    Model, ModelEventSink, ModelInfo, ModelOutput, ModelRequest, PromptCacheCapability,
-    ToolDefinition,
-};
-use super::{image_data_url, image_input};
+use crate::BoxFuture;
+use crate::Error;
+use crate::Result;
+use crate::protocol::ModelEvent;
+use crate::protocol::ModelInfo;
+use crate::protocol::TokenUsage;
 
 mod manifest {
     include!(concat!(
@@ -27,9 +37,6 @@ mod manifest {
         "/src_backend_model_kimi_manifest.rs"
     ));
 }
-use crate::protocol::ModelEvent;
-use crate::protocol::TokenUsage;
-use crate::{BoxFuture, Error, Result};
 
 const DEFAULT_BASE_URL: &str = "https://api.moonshot.ai/v1";
 

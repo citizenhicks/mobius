@@ -1,6 +1,6 @@
 # möbius for iPhone and iPad
 
-One SwiftUI client target builds for iOS and iPadOS 26+. Both device families use the same `AppModel`, `GatewayClient`, pairing flow, and versioned möbius gateway protocol. The next TestFlight release is version 0.9.3.
+One SwiftUI client target builds for iOS and iPadOS 26+. Both device families use the same `AppModel`, `GatewayClient`, pairing flow, and versioned möbius gateway protocol. The next TestFlight release is version 0.9.4.
 
 Open `MobiusApp.xcodeproj` and run the shared `MobiusApp` scheme on an iPhone or iPad destination. Command-line builds use:
 

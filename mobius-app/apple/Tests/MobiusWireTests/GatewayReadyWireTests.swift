@@ -27,7 +27,11 @@ extension GatewayWireTests {
         XCTAssertEqual(payload.providerInstances.first?.tint, .blue)
         XCTAssertEqual(payload.providerInstances.first?.reasoningEfforts, [])
         XCTAssertEqual(payload.providers.first?.models.first?.reasoning.first?.description, "Balanced reasoning and latency")
-        XCTAssertEqual(payload.providers.first?.webSearch, [.off, .cached, .live])
+        XCTAssertEqual(payload.providers.first?.webSearch.map(\.value), ["off", "cached", "live"])
+        XCTAssertEqual(
+            payload.providers.first?.webSearch.first?.description,
+            "Do not use provider-hosted web search"
+        )
         XCTAssertEqual(payload.defaultConfig?.revision, 4)
         XCTAssertEqual(payload.defaultConfig?.config.maxModelSteps, 256)
         XCTAssertEqual(payload.models.first?.route, "openai_socket/gpt-5.6-sol")
@@ -41,6 +45,11 @@ extension GatewayWireTests {
         XCTAssertEqual(payload.contributions.first?.references.first?.value, "planning")
         XCTAssertEqual(payload.defaultConfig?.config.extensions, ["plugin:ponytail"])
         XCTAssertEqual(payload.maxActiveSessions, 4)
+        XCTAssertEqual(payload.sessionFileLimits.maxAttachmentReferences, 16)
+        XCTAssertEqual(payload.sessionFileLimits.maxFileBytes, 50 * 1024 * 1024)
+        XCTAssertEqual(payload.sessionFileLimits.maxSessionFiles, 128)
+        XCTAssertEqual(payload.sessionFileLimits.maxSessionBytes, 250 * 1024 * 1024)
+        XCTAssertEqual(payload.sessionFileLimits.maxUploadChunkBytes, 256 * 1024)
         XCTAssertEqual(payload.machineName, "snowwhite.local")
         let settings = try XCTUnwrap(payload.middlewareFeatures.first?.settings)
         guard case .integer(let minimum, let maximum, let step) = settings[0].kind else {
@@ -74,6 +83,24 @@ extension GatewayWireTests {
         )
         XCTAssertThrowsError(try decodeEnvelope(
             #"{"version":28,"type":"ready","payload":\#(payload)}"#
+        ))
+    }
+
+    func testReadyRejectsInvalidSearchOptionsAndSessionFileLimits() {
+        let invalidSearch = readyPayloadJSON.replacingOccurrences(
+            of: #""value":"off""#,
+            with: #""value":"unknown""#
+        )
+        XCTAssertThrowsError(try decodeEnvelope(
+            #"{"version":28,"type":"ready","payload":\#(invalidSearch)}"#
+        ))
+
+        let invalidLimits = readyPayloadJSON.replacingOccurrences(
+            of: #""max_upload_chunk_bytes":262144"#,
+            with: #""max_upload_chunk_bytes":0"#
+        )
+        XCTAssertThrowsError(try decodeEnvelope(
+            #"{"version":28,"type":"ready","payload":\#(invalidLimits)}"#
         ))
     }
 
@@ -175,7 +202,7 @@ extension GatewayWireTests {
     }
 
     func testV28RequiresSessionActivityAndToolCount() {
-        let sessionWithoutActivity = #"{"version":28,"type":"sessions","sessions":[{"session_id":"chat-1","session_context":{},"parent_session_id":null,"parent_sequence":null,"sequence":0,"catalog_visible":true,"first_user_message":null,"created_at":100,"updated_at":100,"title":null,"pinned":false}]}"#
+        let sessionWithoutActivity = #"{"version":28,"type":"sessions","sessions":[{"session_id":"chat-1","session_context":{},"parent_session_id":null,"parent_sequence":null,"sequence":0,"first_user_message":null,"created_at":100,"updated_at":100,"title":null,"pinned":false}]}"#
         XCTAssertThrowsError(try decodeEnvelope(sessionWithoutActivity))
 
         let payloadWithoutToolCount = sessionReadyPayloadJSON.replacingOccurrences(

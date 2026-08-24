@@ -9,13 +9,13 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use futures_util::{Sink, SinkExt as _, Stream, StreamExt as _};
-use mobius::backend::checkpoint::{SessionSummary, StreamMetrics};
-use mobius::backend::model::ModelChoice;
+use mobius::backend::checkpoint::StreamMetrics;
 use mobius::backend::model::provider::HostedWebSearch;
 use mobius::protocol::{
-    Event, EventMsg, FrontendContribution, FrontendPreviewUpdate, FrontendSettingValue,
-    FrontendSymbol, FrontendWidget, MiddlewareFeature, Op, RenderedBlock, SessionConfiguredEvent,
-    SessionFileRecord, SessionFileReference, Submission, TokenUsage,
+    Event, EventMsg, FrontendContribution, FrontendPreviewUpdate, FrontendSettingOption,
+    FrontendSettingValue, FrontendSymbol, FrontendWidget, MiddlewareFeature, ModelChoice, Op,
+    RenderedBlock, SessionConfiguredEvent, SessionFileLimits, SessionFileRecord,
+    SessionFileReference, Submission, TokenUsage,
 };
 use serde::de::{DeserializeOwned, Error as _};
 use serde::{Deserialize, Serialize};
@@ -57,7 +57,7 @@ mod base64_bytes {
 }
 
 /// Current gateway protocol version.
-pub const PROTOCOL_VERSION: u16 = 46;
+pub const PROTOCOL_VERSION: u16 = 47;
 /// Maximum encoded JSON payload accepted in one frame.
 pub const MAX_FRAME_BYTES: usize = 50 * 1024 * 1024;
 const WEBSOCKET_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);

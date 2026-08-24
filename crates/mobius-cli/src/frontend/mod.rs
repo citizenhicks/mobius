@@ -19,7 +19,7 @@ mod theme;
 mod tui;
 
 pub use headless::run as run_headless;
-pub use tui::terminal_text;
+pub use terminal::terminal_text;
 
 pub use cloudflare_setup::{CloudflareInit, run as run_cloudflare_setup};
 pub use dashboard::{run as run_gateway_dashboard, run_provider as run_gateway_provider};

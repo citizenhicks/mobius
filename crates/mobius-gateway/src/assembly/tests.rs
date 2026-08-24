@@ -1,43 +1,12 @@
 use mobius::backend::checkpoint::{Checkpoint, sqlite::SqliteCheckpoint};
 use mobius::backend::model::provider::HostedWebSearch;
-use mobius::protocol::FrontendSymbol;
+
+use crate::provider_catalog::*;
 
 use super::*;
 
-#[test]
-fn provider_status_uses_manifest_defaults() {
-    let status = provider_status(provider("openai_socket").expect("provider"));
-
-    assert_eq!(status.provider, "openai_socket");
-    assert_eq!(status.label, "OpenAI");
-    assert_eq!(status.symbol, FrontendSymbol::Custom("chat_gpt".into()));
-    assert_eq!(status.models[0].id, "gpt-5.6-sol");
-    assert_eq!(
-        status.default_api_key_env.as_deref(),
-        Some("OPENAI_API_KEY")
-    );
-    assert_eq!(
-        status.models[0].default_reasoning.as_deref(),
-        Some("medium")
-    );
-    assert_eq!(status.web_search[0], HostedWebSearch::Off);
-
-    let custom = provider_status(provider("responses").expect("provider"));
-    assert!(custom.models.is_empty());
-    assert!(custom.model_ids_configurable);
-    assert_eq!(
-        custom.default_base_url.as_deref(),
-        Some("https://api.openai.com/v1")
-    );
-    assert_eq!(custom.default_api_key_env, None);
-
-    let openrouter = provider_status(provider("openrouter").expect("provider"));
-    assert!(openrouter.models.is_empty());
-    assert!(openrouter.model_ids_configurable);
-    assert_eq!(
-        openrouter.default_base_url.as_deref(),
-        Some("https://openrouter.ai/api/v1")
-    );
+fn cron_command_handler() -> CronCommandHandler {
+    Arc::new(|_, _| Box::pin(async { Ok(mobius::middleware::cron::CronCommandResult::None) }))
 }
 
 #[test]
@@ -440,6 +409,7 @@ async fn updating_the_chat_recipe_preserves_capability_metadata() {
         &store,
         credentials,
         cron,
+        cron_command_handler(),
         Arc::clone(&checkpoints),
         ScratchpadStore::new(Arc::clone(&checkpoints)),
         SessionFileStore::new(store.state_dir()),
@@ -594,6 +564,7 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
         &workspace,
         Arc::clone(&gateway),
         Arc::clone(&cron),
+        cron_command_handler(),
         scratchpad.clone(),
         session_files.clone(),
         Arc::clone(&backend),
@@ -606,6 +577,7 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
         &workspace,
         gateway,
         cron,
+        cron_command_handler(),
         scratchpad,
         session_files,
         backend,

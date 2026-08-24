@@ -1,4 +1,18 @@
-use super::*;
+use mobius::Result;
+use mobius::protocol::{FrontendSetting, FrontendSettingKind, FrontendSettingValue};
+use mobius_gateway::wire::{ExtensionKind, MiddlewareConfig, ProviderAuthKind};
+use ratatui::layout::Rect;
+use ratatui::style::Modifier;
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Paragraph, Wrap};
+
+use super::state::{AuthField, MiddlewareRow, Page, Progress, SetupState};
+use super::{
+    CHANGE_CHAT_DESCRIPTION, CHANGE_CHAT_LABEL, MIN_INLINE_DESCRIPTION_WIDTH,
+    SAVE_DEFAULT_DESCRIPTION, SAVE_DEFAULT_LABEL, SetupMode, SetupTerminal,
+};
+use crate::frontend::terminal::terminal_text;
+use crate::frontend::theme::{Role, current};
 
 #[derive(Clone, Copy)]
 pub(super) struct AgentLayout {
@@ -322,24 +336,15 @@ pub(super) fn render_page(lines: &mut Vec<Line<'static>>, state: &SetupState, wi
                 theme.style(Role::Muted),
             ));
             if state.definition().web_search.len() == 1 {
-                choice(
-                    lines,
-                    state.definition().web_search[0].label(),
-                    "This provider does not expose another hosted-search mode",
-                    false,
-                    "[fixed]",
-                );
+                let search = &state.definition().web_search[0];
+                choice(lines, &search.label, &search.description, false, "[fixed]");
             } else {
                 let search_start = state.model_choice_count() + state.reasoning_choice_count();
                 for (index, search) in state.definition().web_search.iter().enumerate() {
                     choice(
                         lines,
-                        search.label(),
-                        match search {
-                            HostedWebSearch::Off => "Do not use provider-hosted web search",
-                            HostedWebSearch::Cached => "Allow cached provider-hosted search",
-                            HostedWebSearch::Live => "Allow live provider-hosted search",
-                        },
+                        &search.label,
+                        &search.description,
                         state.row == search_start + index,
                         if state.web_search == index {
                             "●"

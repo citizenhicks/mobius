@@ -813,6 +813,8 @@ fn config_with_metadata_probe(
 mod active_input;
 #[path = "runtime_tests/configuration.rs"]
 mod configuration;
+#[path = "runtime_tests/input_validation.rs"]
+mod input_validation;
 #[path = "runtime_tests/model_steps.rs"]
 mod model_steps;
 #[path = "runtime_tests/recorder.rs"]

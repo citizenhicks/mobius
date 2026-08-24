@@ -118,7 +118,7 @@ async fn wait_session_activity(
             ServerMessage::Sessions { sessions, .. } => {
                 if let Some(activity) = sessions
                     .into_iter()
-                    .find(|session| session.summary.session_id == session_id)
+                    .find(|session| session.session_id == session_id)
                     .map(|session| session.activity)
                     .filter(|activity| activity.state == state)
                 {

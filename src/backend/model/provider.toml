@@ -1,8 +1,11 @@
 [search.off]
 label = "Off"
+description = "Do not use provider-hosted web search"
 
 [search.cached]
 label = "Cached"
+description = "Allow cached provider-hosted search"
 
 [search.live]
 label = "Live"
+description = "Allow live provider-hosted search"

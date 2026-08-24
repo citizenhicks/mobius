@@ -2,9 +2,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use mobius::backend::model::ModelChoice;
 use mobius::middleware::manifest::MiddlewareManifest;
-use mobius::protocol::{FrontendSettingValue, MiddlewareFeature};
+use mobius::protocol::{FrontendSettingValue, MiddlewareFeature, ModelChoice};
 
 use crate::wire::MiddlewareConfig;
 use crate::{Error, Result};

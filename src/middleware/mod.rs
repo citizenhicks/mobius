@@ -318,43 +318,6 @@ impl PromptSection {
     }
 }
 
-impl Middleware for Sandbox {
-    fn name(&self) -> &'static str {
-        crate::backend::sandbox::MANIFEST.id
-    }
-
-    fn frontend(&self) -> FrontendContribution {
-        Sandbox::frontend(self)
-    }
-
-    fn prompt_section(&self, _runtime: &RuntimeContext) -> Result<Option<PromptSection>> {
-        Ok(Some(PromptSection::new(Sandbox::platform_prompt())))
-    }
-
-    fn render(&self, event: &EventMsg, _session_id: &str) -> Option<FrontendBlock> {
-        Sandbox::render(self, event)
-    }
-
-    fn session_start<'a>(
-        &'a self,
-        context: &'a mut SessionStartContext<'_>,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            if context.source() == SessionStartSource::Compact {
-                return Ok(());
-            }
-            for event in Sandbox::session_start(self, &context.runtime.session_id)? {
-                (context.runtime.frontend)(event)?;
-            }
-            Ok(())
-        })
-    }
-
-    fn session_end<'a>(&'a self, runtime: &'a RuntimeContext) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move { Sandbox::session_end(self, &runtime.session_id).await })
-    }
-}
-
 /// A validated, declaration-ordered middleware pipeline.
 #[derive(Clone)]
 pub struct MiddlewareStack {

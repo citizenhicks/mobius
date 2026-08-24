@@ -1,9 +1,7 @@
 use std::path::PathBuf;
 
 use mobius::{Error, Result};
-use mobius_gateway::wire::{
-    ClientMessage, CronRun, CronTask, ProfileSnapshot, ProviderInstance, ServerMessage,
-};
+use mobius_gateway::wire::{ClientMessage, ProfileSnapshot, ProviderInstance, ServerMessage};
 use uuid::Uuid;
 
 use super::catalog::GatewayAction;
@@ -23,7 +21,6 @@ pub(super) fn prepare(action: GatewayAction) -> Result<PreparedAction> {
 
 pub(super) fn render_response(
     message: &ServerMessage,
-    selected_session_id: &str,
     provider_instances: &[ProviderInstance],
 ) -> Option<String> {
     match message {
@@ -49,12 +46,6 @@ pub(super) fn render_response(
             Some(format!("{provider} login complete"))
         }
         ServerMessage::Profile { profile, .. } => Some(render_profile(profile, provider_instances)),
-        ServerMessage::CronTasks {
-            session_id, tasks, ..
-        } if session_id == selected_session_id => Some(render_cron_tasks(tasks)),
-        ServerMessage::CronHistory {
-            session_id, runs, ..
-        } if session_id == selected_session_id => Some(render_cron_history(runs)),
         _ => None,
     }
 }
@@ -95,39 +86,6 @@ fn render_profile(profile: &ProfileSnapshot, provider_instances: &[ProviderInsta
         )
     }));
     lines.join("\n")
-}
-
-fn render_cron_tasks(tasks: &[CronTask]) -> String {
-    if tasks.is_empty() {
-        return "no scheduled tasks".into();
-    }
-    tasks
-        .iter()
-        .map(|task| {
-            format!(
-                "{}  {}\n  task: {}",
-                task.id,
-                task.schedule,
-                task.task.display()
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn render_cron_history(runs: &[CronRun]) -> String {
-    if runs.is_empty() {
-        return "no cron runs".into();
-    }
-    runs.iter()
-        .map(|run| {
-            format!(
-                "{} · {} · {:?} · started {}",
-                run.id, run.task_id, run.status, run.started_at
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 #[cfg(test)]
@@ -175,18 +133,7 @@ mod tests {
             request_id: "request".into(),
         };
 
-        assert!(render_response(&accepted, "session-a", &[]).is_none());
-    }
-
-    #[test]
-    fn scoped_responses_do_not_render_in_another_chat() {
-        let tasks = ServerMessage::CronTasks {
-            request_id: "request".into(),
-            session_id: "session-b".into(),
-            tasks: Vec::new(),
-        };
-
-        assert!(render_response(&tasks, "session-a", &[]).is_none());
+        assert!(render_response(&accepted, &[]).is_none());
     }
 
     #[test]

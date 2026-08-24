@@ -19,26 +19,6 @@ fn add_task(store: &CronStore, source_session_id: &str, task: &str, schedule: &s
         .expect("add managed task")
 }
 
-#[test]
-fn capability_command_parser_owns_the_cron_grammar() {
-    for arguments in [
-        "list",
-        "new",
-        "new review open pull requests",
-        "reschedule abc 0 4 * * *",
-        "delete abc",
-        "run abc",
-        "history",
-        "history abc",
-    ] {
-        assert!(
-            command_message("request".into(), "session-a".into(), arguments).is_ok(),
-            "{arguments}"
-        );
-    }
-    assert!(command_message("request".into(), "session-a".into(), "add task.md @daily").is_err());
-}
-
 #[cfg(unix)]
 #[test]
 fn managed_task_cannot_be_replaced_with_an_outside_symlink() {

@@ -8,7 +8,7 @@ pub use self::replay::events as replay_events;
 pub(crate) use self::replay::{
     ATTACHMENT_CONTEXT_MARKER, ATTACHMENTS_FIELD, CONTEXT_COMPACTED_MARKER, INTERNAL_MESSAGE_FIELD,
     REPLAY_REASONING_FIELD, TOOL_ERROR_FIELD, internal_message_kind, is_internal_message,
-    strip_attachment_references,
+    strip_attachment_references, tool_complete_boundaries,
 };
 
 mod events;
@@ -34,6 +34,17 @@ pub struct SessionFileReference {
     pub name: String,
     pub size: u64,
     pub media_type: String,
+}
+
+/// Session-file policy advertised to frontends by the owning runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionFileLimits {
+    pub max_attachment_references: usize,
+    pub max_file_bytes: u64,
+    pub max_session_files: usize,
+    pub max_session_bytes: u64,
+    pub max_upload_chunk_bytes: usize,
 }
 
 /// Which side of a session produced one stored file.
@@ -86,6 +97,24 @@ pub struct SessionContext {
     /// Optional label describing what created the session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_label: Option<String>,
+}
+
+/// Human-readable model settings exposed to frontends.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelInfo {
+    pub model: String,
+    pub reasoning_effort: Option<String>,
+}
+
+/// One selectable runtime model route.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelChoice {
+    pub route: String,
+    pub group: String,
+    pub model: String,
+    pub reasoning_effort: Option<String>,
+    pub context_window: Option<i64>,
+    pub supports_image_input: bool,
 }
 
 /// Commands supported by the agent.

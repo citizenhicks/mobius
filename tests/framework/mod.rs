@@ -25,7 +25,6 @@ use mobius::backend::checkpoint::sqlite::SqliteCheckpoint;
 use mobius::backend::model::CompactOutput;
 use mobius::backend::model::CompactRequest;
 use mobius::backend::model::Model;
-use mobius::backend::model::ModelChoice;
 use mobius::backend::model::ModelEventSink;
 use mobius::backend::model::ModelOutput;
 use mobius::backend::model::ModelRequest;
@@ -46,7 +45,7 @@ use mobius::middleware::attachments::Attachments;
 use mobius::middleware::compaction::Compaction;
 use mobius::middleware::cron::Cron;
 use mobius::middleware::extensions::Extensions;
-use mobius::middleware::session_files::{MAX_UPLOAD_CHUNK_BYTES, SessionFileStore};
+use mobius::middleware::session_files::{SessionFileStore, session_file_limits};
 use mobius::middleware::steering::Steering;
 use mobius::middleware::subagents::SubagentLaunch;
 use mobius::middleware::subagents::SubagentLauncher;
@@ -55,6 +54,7 @@ use mobius::middleware::tools::Tools;
 use mobius::protocol::Event;
 use mobius::protocol::EventMsg;
 use mobius::protocol::MessageTarget;
+use mobius::protocol::ModelChoice;
 use mobius::protocol::ModelEvent;
 use mobius::protocol::Op;
 use mobius::protocol::ReviewDecision;
@@ -428,7 +428,7 @@ async fn upload_attachment(
         .await
         .expect("begin attachment upload");
     let mut offset = 0_u64;
-    for chunk in bytes.chunks(MAX_UPLOAD_CHUNK_BYTES) {
+    for chunk in bytes.chunks(session_file_limits().max_upload_chunk_bytes) {
         offset = pending
             .append(offset, chunk)
             .await

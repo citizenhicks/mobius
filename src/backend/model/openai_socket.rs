@@ -37,7 +37,6 @@ use super::CompactOutput;
 use super::CompactRequest;
 use super::Model;
 use super::ModelEventSink;
-use super::ModelInfo;
 use super::ModelOutput;
 use super::ModelPricing;
 use super::ModelRequest;
@@ -59,6 +58,7 @@ use crate::BoxFuture;
 use crate::Error;
 use crate::ProviderError;
 use crate::Result;
+use crate::protocol::ModelInfo;
 
 mod connection;
 

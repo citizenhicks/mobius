@@ -168,16 +168,9 @@ pub(super) fn parse_register_provider(arguments: Vec<OsString>) -> Result<Regist
             let value = value
                 .into_string()
                 .map_err(|_| Error::Config("--web-search is not valid UTF-8".into()))?;
-            let value = match value.as_str() {
-                "off" => HostedWebSearch::Off,
-                "cached" => HostedWebSearch::Cached,
-                "live" => HostedWebSearch::Live,
-                _ => {
-                    return Err(Error::Config(
-                        "--web-search must be off, cached, or live".into(),
-                    ));
-                }
-            };
+            let value = value
+                .parse::<HostedWebSearch>()
+                .map_err(|_| Error::Config("--web-search must be off, cached, or live".into()))?;
             set_once(&mut web_search, value, "--web-search")?;
         } else if flag == "--base-url" {
             set_once(

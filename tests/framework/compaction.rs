@@ -30,7 +30,12 @@ async fn native_compaction_survives_recreation_with_current_prompt_and_tools() {
     let config = |base: &str, section: &'static str, scheduling: bool| {
         let mut middleware: Vec<Arc<dyn Middleware>> = vec![Arc::new(StaticPrompt(section))];
         if scheduling {
-            middleware.push(Arc::new(Cron::new(|_, _, _| Ok("unused".into()))));
+            middleware.push(Arc::new(Cron::new(
+                |_, _, _| Ok("unused".into()),
+                Arc::new(|_, _| {
+                    Box::pin(async { Ok(mobius::middleware::cron::CronCommandResult::None) })
+                }),
+            )));
         }
         middleware.push(Arc::new(
             Compaction::new(1_000).expect("compaction middleware"),

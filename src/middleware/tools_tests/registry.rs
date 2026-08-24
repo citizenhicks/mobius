@@ -41,6 +41,63 @@ impl Tool for InterruptibleTool {
     }
 }
 
+struct DefinitionTool(ToolDefinition);
+
+impl Tool for DefinitionTool {
+    fn definition(&self) -> ToolDefinition {
+        self.0.clone()
+    }
+
+    fn call<'a>(
+        &'a self,
+        _context: ToolContext,
+        _arguments: Value,
+    ) -> BoxFuture<'a, Result<String>> {
+        Box::pin(async { Ok(String::new()) })
+    }
+}
+
+fn register_definition(name: String, parameters: Value) -> Result<()> {
+    Catalog::default().register(Arc::new(DefinitionTool(ToolDefinition {
+        name,
+        description: String::new(),
+        parameters,
+    })))
+}
+
+#[test]
+fn blank_tool_names_are_rejected_at_registration() {
+    let error = register_definition(" \n".into(), serde_json::json!({}))
+        .expect_err("blank tool name must fail");
+
+    assert_eq!(
+        error.to_string(),
+        "configuration error: tool name cannot be empty"
+    );
+}
+
+#[test]
+fn oversized_tool_names_are_rejected_at_registration() {
+    let error = register_definition("a".repeat(MAX_TOOL_NAME_BYTES + 1), serde_json::json!({}))
+        .expect_err("oversized tool name must fail");
+
+    assert_eq!(
+        error.to_string(),
+        "configuration error: tool name exceeds 256 bytes"
+    );
+}
+
+#[test]
+fn non_object_tool_parameters_are_rejected_at_registration() {
+    let error = register_definition("invalid".into(), serde_json::json!([]))
+        .expect_err("non-object parameters must fail");
+
+    assert_eq!(
+        error.to_string(),
+        "configuration error: tool `invalid` parameters must be a JSON object"
+    );
+}
+
 #[test]
 fn only_wholly_interruptible_batches_stop_for_active_input() {
     let mut catalog = Catalog::default();

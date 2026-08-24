@@ -1,4 +1,5 @@
 use super::*;
+use mobius::middleware::session_files::session_file_limits;
 
 pub(super) struct SelectedChat {
     pub(super) host: HostHandle,
@@ -41,12 +42,6 @@ pub(super) async fn handle_message(
         session_files,
         uploads,
     } = connection;
-    let message = match normalize_capability_command(message, selected) {
-        Ok(message) => message,
-        Err((request_id, rejection)) => {
-            return write_rejection(writer, request_id, rejection).await;
-        }
-    };
     match message {
         ClientMessage::Pair { .. } | ClientMessage::Authenticate { .. } => {
             write_server_error(
@@ -274,7 +269,7 @@ pub(super) async fn handle_message(
                             request_id,
                             session_id,
                             upload_id,
-                            max_chunk_bytes: MAX_UPLOAD_CHUNK_BYTES,
+                            max_chunk_bytes: session_file_limits().max_upload_chunk_bytes,
                         }),
                     )
                     .await
@@ -889,63 +884,4 @@ pub(super) async fn handle_message(
             Err(error) => write_rejection(writer, request_id, cron_rejection(error)).await,
         },
     }
-}
-
-fn normalize_capability_command(
-    message: ClientMessage,
-    selected: &Option<SelectedChat>,
-) -> std::result::Result<ClientMessage, (String, Rejection)> {
-    let (session_id, submission) = match message {
-        ClientMessage::Submit {
-            session_id,
-            submission,
-        } => (session_id, submission),
-        message => return Ok(message),
-    };
-    let Op::CapabilityCommand {
-        capability,
-        command,
-        arguments,
-        input,
-        target,
-    } = &submission.op
-    else {
-        return Ok(ClientMessage::Submit {
-            session_id,
-            submission,
-        });
-    };
-    let request_id = submission.id.clone();
-    if capability != mobius::middleware::cron::MANIFEST.id
-        || command != mobius::middleware::cron::MANIFEST.id
-    {
-        return Ok(ClientMessage::Submit {
-            session_id,
-            submission,
-        });
-    }
-    validate_submission(&submission).map_err(|error| {
-        (
-            request_id.clone(),
-            Rejection {
-                code: "invalid_submission",
-                message: error.to_string(),
-                fatal: false,
-            },
-        )
-    })?;
-    require_selected(selected, &session_id).map_err(|rejection| (request_id.clone(), rejection))?;
-    if input.is_some() || target.is_some() {
-        return Err((
-            request_id,
-            Rejection {
-                code: "invalid_submission",
-                message: "gateway capability commands do not accept input or a message target"
-                    .into(),
-                fatal: false,
-            },
-        ));
-    }
-    crate::cron::command_message(request_id.clone(), session_id, arguments)
-        .map_err(|error| (request_id, cron_rejection(error)))
 }

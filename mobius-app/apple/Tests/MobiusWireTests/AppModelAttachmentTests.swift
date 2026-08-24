@@ -3,6 +3,22 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testAttachmentComposerUsesAdvertisedPolicyWithinClientSafetyCaps() throws {
+        let model = try model()
+        model.sessionFileLimits = SessionFileLimits(
+            maxAttachmentReferences: 3,
+            maxFileBytes: 4 * 1024 * 1024,
+            maxSessionFiles: 8,
+            maxSessionBytes: 6 * 1024 * 1024,
+            maxUploadChunkBytes: 64 * 1024
+        )
+
+        XCTAssertEqual(model.attachmentReferenceLimit, 3)
+        XCTAssertEqual(model.attachmentFileByteLimit, 4 * 1024 * 1024)
+        XCTAssertEqual(model.attachmentDraftByteLimit, 6 * 1024 * 1024)
+        XCTAssertEqual(model.uploadChunkByteLimit, 64 * 1024)
+    }
+
     func testSessionFileUploadUsesAcknowledgedChunksAndSendsNativeReferences() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model(requestSender: { request in

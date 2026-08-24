@@ -1,4 +1,17 @@
-use super::*;
+use mobius::{Error, Result};
+use mobius_gateway::client::{GatewayEvents, GatewaySender, MAX_PENDING_FRAMES};
+use mobius_gateway::wire::{
+    AgentComposition, ClientMessage, ProviderConfig, ReadyPayload, ServerFrame, ServerMessage,
+    SessionReadyPayload,
+};
+use ratatui::crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
+use tokio::time::MissedTickBehavior;
+use uuid::Uuid;
+
+use super::state::{ApplyTarget, Authentication, Flow, SetupState};
+use super::view::draw;
+use super::{SetupMode, SetupTerminal};
+use crate::frontend::terminal::{INPUT_POLL, MAX_INPUT_BATCH, poll_event};
 
 pub(super) async fn edit(
     terminal: &mut SetupTerminal,

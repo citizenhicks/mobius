@@ -683,6 +683,14 @@ struct GatewayFailure: Decodable, Sendable {
     let fatal: Bool
 }
 
+struct SessionFileLimits: Decodable, Equatable, Sendable {
+    let maxAttachmentReferences: Int
+    let maxFileBytes: UInt64
+    let maxSessionFiles: Int
+    let maxSessionBytes: UInt64
+    let maxUploadChunkBytes: Int
+}
+
 struct ReadyPayload: Decodable, Sendable {
     let machineName: String
     let sessions: [SessionRecord]
@@ -695,6 +703,7 @@ struct ReadyPayload: Decodable, Sendable {
     let extensions: [ExtensionRecord]
     let contributions: [FrontendContribution]
     let maxActiveSessions: Int
+    let sessionFileLimits: SessionFileLimits
 }
 
 private extension ReadyPayload {
@@ -707,6 +716,29 @@ private extension ReadyPayload {
               })
         else {
             throw GatewayWireError.invalidFrame("gateway machine name is invalid")
+        }
+        for provider in providers {
+            var values = Set<String>()
+            guard provider.webSearch.first?.value == HostedWebSearch.off.rawValue,
+                  provider.webSearch.allSatisfy({ option in
+                      option.value == option.value.trimmingCharacters(in: .whitespacesAndNewlines)
+                          && HostedWebSearch(rawValue: option.value) != nil
+                          && !option.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                          && !option.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                          && values.insert(option.value).inserted
+                  })
+            else {
+                throw GatewayWireError.invalidFrame("provider web search options are invalid")
+            }
+        }
+        guard sessionFileLimits.maxAttachmentReferences > 0,
+              sessionFileLimits.maxFileBytes > 0,
+              sessionFileLimits.maxSessionFiles >= sessionFileLimits.maxAttachmentReferences,
+              sessionFileLimits.maxSessionBytes >= sessionFileLimits.maxFileBytes,
+              sessionFileLimits.maxUploadChunkBytes > 0,
+              UInt64(sessionFileLimits.maxUploadChunkBytes) <= sessionFileLimits.maxFileBytes
+        else {
+            throw GatewayWireError.invalidFrame("gateway session file limits are invalid")
         }
         return self
     }
@@ -815,7 +847,7 @@ struct ModelChanged: Codable, Hashable, Sendable {
     let modelContextWindow: Int64?
 }
 
-struct SessionRecord: Identifiable, Codable, Hashable, Sendable {
+struct SessionRecord: Identifiable, Decodable, Hashable, Sendable {
     var id: String { sessionId }
 
     let sessionId: String
@@ -823,7 +855,6 @@ struct SessionRecord: Identifiable, Codable, Hashable, Sendable {
     let parentSessionId: String?
     let parentSequence: UInt64?
     let sequence: UInt64
-    let catalogVisible: Bool
     let firstUserMessage: String?
     let executionStats: ExecutionStats
     let title: String?

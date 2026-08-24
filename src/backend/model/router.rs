@@ -2,9 +2,6 @@
 
 use std::sync::Arc;
 
-use serde::Deserialize;
-use serde::Serialize;
-
 use super::CompactOutput;
 use super::CompactRequest;
 use super::Model;
@@ -15,27 +12,10 @@ use super::ModelRequest;
 use super::PromptCacheCapability;
 use crate::Error;
 use crate::Result;
+use crate::protocol::ModelChoice;
 use crate::protocol::ModelStepDiagnostics;
 use crate::protocol::PromptCacheDiagnostics;
 use crate::protocol::TokenUsage;
-
-/// Human-readable settings exposed to frontends.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ModelInfo {
-    pub model: String,
-    pub reasoning_effort: Option<String>,
-}
-
-/// One selectable runtime model route.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ModelChoice {
-    pub route: String,
-    pub group: String,
-    pub model: String,
-    pub reasoning_effort: Option<String>,
-    pub context_window: Option<i64>,
-    pub supports_image_input: bool,
-}
 
 /// Selects a model Adapter by a stable provider ID.
 pub struct ModelRouter {

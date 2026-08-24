@@ -15,6 +15,13 @@ use ratatui::crossterm::terminal::{
 pub(super) const INPUT_POLL: Duration = Duration::from_millis(16);
 pub(super) const MAX_INPUT_BATCH: usize = 64;
 
+pub fn terminal_text(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| matches!(character, '\n' | '\t') || !character.is_control())
+        .collect()
+}
+
 pub(super) fn poll_event() -> Result<Option<Event>> {
     event::poll(Duration::ZERO)?
         .then(event::read)

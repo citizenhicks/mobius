@@ -22,7 +22,6 @@ use crate::backend::model::PromptCacheIdentity;
 use crate::backend::model::internal_user_message;
 use crate::backend::model::prompt_cache_key;
 use crate::backend::model::reset_prompt_cache_breakpoint;
-use crate::backend::model::tool_complete_boundaries;
 use crate::backend::model::user_message;
 use crate::protocol::CONTEXT_COMPACTED_MARKER;
 use crate::protocol::EventMsg;
@@ -30,6 +29,7 @@ use crate::protocol::FrontendBlock;
 use crate::protocol::FrontendTone;
 use crate::protocol::internal_message_kind;
 use crate::protocol::is_internal_message;
+use crate::protocol::tool_complete_boundaries;
 
 mod text {
     include!(concat!(

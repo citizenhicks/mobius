@@ -558,11 +558,14 @@ extension AppModel {
         let generation = attachmentImportGeneration
         let available = max(
             0,
-            maximumSessionFileReferences - composerAttachments.count - attachmentImportReservations
+            attachmentReferenceLimit - composerAttachments.count - attachmentImportReservations
         )
         let selectedURLs = Array(urls.prefix(available))
         if urls.count > selectedURLs.count {
-            showToast("You can attach up to 16 files to a message.", tone: .warning)
+            showToast(
+                "You can attach up to \(attachmentReferenceLimit) files to a message.",
+                tone: .warning
+            )
         }
         guard !selectedURLs.isEmpty else { return }
 
@@ -572,7 +575,10 @@ extension AppModel {
         for url in selectedURLs {
             guard generation == attachmentImportGeneration else { return }
             do {
-                let imported = try await Self.loadImportedAttachment(url)
+                let imported = try await Self.loadImportedAttachment(
+                    url,
+                    maximumBytes: attachmentFileByteLimit
+                )
                 attachmentImportReservations -= 1
                 reservedCount -= 1
                 guard generation == attachmentImportGeneration,
@@ -583,8 +589,12 @@ extension AppModel {
                     let (sum, overflow) = total.addingReportingOverflow(attachment.size)
                     return overflow || attachment.size < 0 ? .max : sum
                 }
-                if currentBytes > maximumComposerAttachmentBytes - Int64(imported.data.count) {
-                    showToast(AttachmentImportError.totalTooLarge.localizedDescription, tone: .error)
+                if currentBytes > attachmentDraftByteLimit - Int64(imported.data.count) {
+                    showToast(
+                        AttachmentImportError.totalTooLarge(attachmentDraftByteLimit)
+                            .localizedDescription,
+                        tone: .error
+                    )
                     continue
                 }
                 let id = UUID()
@@ -811,7 +821,7 @@ extension AppModel {
         else { return }
         let text = composer.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = uploadedComposerAttachments
-        guard attachments.count <= maximumSessionFileReferences else { return }
+        guard attachments.count <= attachmentReferenceLimit else { return }
         guard !text.isEmpty || !attachments.isEmpty else { return }
         guard attachments.isEmpty || canSubmitAttachments else {
             showToast(attachmentSubmissionUnavailableMessage, tone: .warning)

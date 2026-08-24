@@ -73,6 +73,31 @@ impl HostedWebSearch {
             Self::Live => text::SEARCH_LIVE_LABEL,
         }
     }
+
+    /// Returns the user-facing setup description.
+    #[must_use]
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::Off => text::SEARCH_OFF_DESCRIPTION,
+            Self::Cached => text::SEARCH_CACHED_DESCRIPTION,
+            Self::Live => text::SEARCH_LIVE_DESCRIPTION,
+        }
+    }
+}
+
+impl std::str::FromStr for HostedWebSearch {
+    type Err = Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "off" => Ok(Self::Off),
+            "cached" => Ok(Self::Cached),
+            "live" => Ok(Self::Live),
+            _ => Err(Error::Config(format!(
+                "unknown hosted web-search mode `{value}`"
+            ))),
+        }
+    }
 }
 
 /// Fully resolved settings passed to one provider constructor.
@@ -571,6 +596,11 @@ mod tests {
             assert!(!provider.symbol().as_str().trim().is_empty());
             assert!(!provider.description().trim().is_empty());
             assert_eq!(provider.web_search().first(), Some(&HostedWebSearch::Off));
+            for search in provider.web_search() {
+                assert!(!search.label().trim().is_empty());
+                assert!(!search.description().trim().is_empty());
+                assert_eq!(search.id().parse::<HostedWebSearch>().ok(), Some(*search));
+            }
             assert!(
                 !provider.supports_credentialless_endpoints() || provider.configurable_base_url(),
                 "provider `{}` allows credentialless endpoints without a configurable base URL",

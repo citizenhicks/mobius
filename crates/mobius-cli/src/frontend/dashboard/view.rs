@@ -1,4 +1,21 @@
-use super::*;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use mobius::protocol::{
+    FrontendActionListItem, FrontendBlock, FrontendListItemState, FrontendTone,
+    FrontendWidgetContent,
+};
+use mobius_gateway::wire::{ClientKind, DailyUsage, ProfileSnapshot, SessionActivityState};
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Clear, HighlightSpacing, List, ListState, Paragraph, Wrap};
+
+use super::runtime::{ordered_clients, ordered_sessions};
+use super::state::{ActionInput, CapabilityOverlay, DashboardFocus, DashboardState};
+use crate::frontend::block_text;
+use crate::frontend::provider_instance_label;
+use crate::frontend::terminal::terminal_text;
+use crate::frontend::theme::{Role, current};
 
 pub(super) struct DashboardAreas {
     pub(super) header: Rect,
@@ -186,7 +203,7 @@ pub(super) fn render_blocks(
             lines.push(Line::default());
         }
         lines.extend(
-            terminal_text(&super::super::block_text(block))
+            terminal_text(&block_text(block))
                 .lines()
                 .map(|line| Line::styled(line.to_owned(), theme.style(tone_role(block.tone)))),
         );
@@ -498,8 +515,8 @@ pub(super) fn render_chats(frame: &mut ratatui::Frame<'_>, area: Rect, state: &m
                 let title = session
                     .title
                     .as_deref()
-                    .or(session.summary.first_user_message.as_deref())
-                    .unwrap_or(&session.summary.session_id);
+                    .or(session.first_user_message.as_deref())
+                    .unwrap_or(&session.session_id);
                 let (symbol, role) = match session.activity.state {
                     SessionActivityState::Idle => ("○", Role::Muted),
                     SessionActivityState::Running => ("●", Role::Success),

@@ -15,7 +15,7 @@ use mobius::protocol::MAX_USER_INPUT_BYTES;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::wire::{ClientMessage, CronRun, CronRunStatus, CronTask};
+use crate::wire::{CronRun, CronRunStatus, CronTask};
 use crate::{Error, Result};
 
 const STATE_VERSION: u32 = 2;
@@ -562,89 +562,6 @@ impl CronStore {
         self.setup_sessions
             .lock()
             .map_err(|_| Error::Config("cron setup lock is poisoned".into()))
-    }
-}
-
-pub(crate) fn command_message(
-    request_id: String,
-    session_id: String,
-    arguments: &str,
-) -> Result<ClientMessage> {
-    let arguments = arguments.trim();
-    if arguments.is_empty() || arguments == "list" {
-        return Ok(ClientMessage::ListCron {
-            request_id,
-            session_id,
-        });
-    }
-    let mut parts = arguments.split_ascii_whitespace();
-    match parts.next() {
-        Some("new") => {
-            let task = parts.collect::<Vec<_>>().join(" ");
-            Ok(ClientMessage::StartCronSetup {
-                request_id,
-                session_id,
-                task: (!task.is_empty()).then_some(task),
-            })
-        }
-        Some("reschedule") => {
-            let id = required_command_part(
-                parts.next().unwrap_or_default(),
-                "usage: /cron reschedule <id> <schedule>",
-            )?;
-            let schedule = parts.collect::<Vec<_>>().join(" ");
-            required_command_part(&schedule, "usage: /cron reschedule <id> <schedule>")?;
-            Ok(ClientMessage::RescheduleCron {
-                request_id,
-                session_id,
-                id: id.into(),
-                schedule,
-            })
-        }
-        Some("delete") => one_id_message(parts, |id| ClientMessage::DeleteCron {
-            request_id,
-            session_id,
-            id,
-        }),
-        Some("run") => one_id_message(parts, |id| ClientMessage::RunCron {
-            request_id,
-            session_id,
-            id,
-        }),
-        Some("history") => {
-            let id = parts.next().map(str::to_owned);
-            if parts.next().is_some() {
-                return Err(Error::Config("usage: /cron history [id]".into()));
-            }
-            Ok(ClientMessage::ListCronHistory {
-                request_id,
-                session_id,
-                id,
-            })
-        }
-        _ => Err(Error::Config(
-            "usage: /cron [new [task]|list|reschedule <id> <schedule>|delete <id>|run <id>|history [id]]".into(),
-        )),
-    }
-}
-
-fn one_id_message<'a>(
-    mut parts: impl Iterator<Item = &'a str>,
-    build: impl FnOnce(String) -> ClientMessage,
-) -> Result<ClientMessage> {
-    let id = required_command_part(parts.next().unwrap_or_default(), "cron task ID is required")?;
-    if parts.next().is_some() {
-        return Err(Error::Config("cron command accepts one task ID".into()));
-    }
-    Ok(build(id.into()))
-}
-
-fn required_command_part<'a>(value: &'a str, usage: &str) -> Result<&'a str> {
-    let value = value.trim();
-    if value.is_empty() {
-        Err(Error::Config(usage.into()))
-    } else {
-        Ok(value)
     }
 }
 

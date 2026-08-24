@@ -18,18 +18,19 @@ use crate::backend::checkpoint::CheckpointStore;
 use crate::backend::checkpoint::ExecutionOutcome;
 use crate::backend::checkpoint::ExecutionRecord;
 use crate::backend::checkpoint::JournalEvent;
-use crate::backend::model::ModelChoice;
-use crate::backend::model::ModelInfo;
 use crate::backend::model::ModelRouter;
 use crate::backend::sandbox::Sandbox;
 use crate::middleware::FrontendExtensions;
 use crate::middleware::MiddlewareCommandContext;
 use crate::middleware::MiddlewareStack;
 use crate::middleware::RuntimeContext;
+use crate::middleware::session_files::session_file_limits;
 use crate::middleware::tools::Catalog;
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
 use crate::protocol::ModelChangedEvent;
+use crate::protocol::ModelChoice;
+use crate::protocol::ModelInfo;
 use crate::protocol::Op;
 use crate::protocol::SessionConfiguredEvent;
 use crate::protocol::SessionContext;
@@ -54,7 +55,6 @@ const EVENT_QUEUE_CAPACITY: usize = 256;
 const MAX_DEFERRED_SUBMISSIONS: usize = 64;
 const MAX_IDENTIFIER_BYTES: usize = 4 * 1024;
 const MAX_OPERATION_BYTES: usize = 256;
-const MAX_ATTACHMENT_REFERENCES: usize = 16;
 const DEFAULT_INITIAL_REPLAY_BATCHES: usize = 100;
 
 type UsageObserver = Arc<dyn Fn(&str, &TokenUsage) -> Result<()> + Send + Sync>;
@@ -317,12 +317,15 @@ fn validate_user_input(
     if text.len() > crate::protocol::MAX_USER_INPUT_BYTES {
         return Err(Error::Config("user input exceeds size limit".into()));
     }
-    if attachments.len() > MAX_ATTACHMENT_REFERENCES {
+    let limits = session_file_limits();
+    if attachments.len() > limits.max_attachment_references {
         return Err(Error::Config(format!(
-            "user input cannot reference more than {MAX_ATTACHMENT_REFERENCES} attachments"
+            "user input cannot reference more than {} attachments",
+            limits.max_attachment_references
         )));
     }
     let mut attachment_ids = std::collections::BTreeSet::new();
+    let mut attachment_bytes = 0_u64;
     for attachment in attachments {
         if !attachment_ids.insert(&attachment.id) {
             return Err(Error::Config(
@@ -334,9 +337,21 @@ fn validate_user_input(
         }
         validate_identifier("attachment name", &attachment.name, 255)?;
         validate_identifier("attachment media type", &attachment.media_type, 127)?;
-        if attachment.size == 0 {
-            return Err(Error::Config("attachment size must be positive".into()));
+        if !(1..=limits.max_file_bytes).contains(&attachment.size) {
+            return Err(Error::Config(format!(
+                "attachment size must be 1–{} bytes",
+                limits.max_file_bytes
+            )));
         }
+        attachment_bytes = attachment_bytes
+            .checked_add(attachment.size)
+            .ok_or_else(|| Error::Config("attachment sizes overflowed".into()))?;
+    }
+    if attachment_bytes > limits.max_session_bytes {
+        return Err(Error::Config(format!(
+            "user input attachments exceed the {}-byte session limit",
+            limits.max_session_bytes
+        )));
     }
     Ok(())
 }

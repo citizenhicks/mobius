@@ -10,6 +10,11 @@ use crate::BoxFuture;
 use crate::Error;
 use crate::Result;
 use crate::backend::model::ToolCall;
+use crate::middleware::Middleware;
+use crate::middleware::PromptSection;
+use crate::middleware::RuntimeContext;
+use crate::middleware::SessionStartContext;
+use crate::middleware::SessionStartSource;
 use crate::middleware::manifest::MiddlewareManifest;
 use crate::middleware::manifest::MiddlewareSettingChoice;
 use crate::middleware::manifest::MiddlewareSettingChoices;
@@ -450,6 +455,43 @@ impl Sandbox {
         let approval = self.approval.session_end(session_id);
         let background = self.background.shutdown(session_id).await;
         approval.and(background)
+    }
+}
+
+impl Middleware for Sandbox {
+    fn name(&self) -> &'static str {
+        MANIFEST.id
+    }
+
+    fn frontend(&self) -> FrontendContribution {
+        Sandbox::frontend(self)
+    }
+
+    fn prompt_section(&self, _runtime: &RuntimeContext) -> Result<Option<PromptSection>> {
+        Ok(Some(PromptSection::new(Sandbox::platform_prompt())))
+    }
+
+    fn render(&self, event: &EventMsg, _session_id: &str) -> Option<FrontendBlock> {
+        Sandbox::render(self, event)
+    }
+
+    fn session_start<'a>(
+        &'a self,
+        context: &'a mut SessionStartContext<'_>,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            if context.source() == SessionStartSource::Compact {
+                return Ok(());
+            }
+            for event in Sandbox::session_start(self, &context.runtime.session_id)? {
+                (context.runtime.frontend)(event)?;
+            }
+            Ok(())
+        })
+    }
+
+    fn session_end<'a>(&'a self, runtime: &'a RuntimeContext) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move { Sandbox::session_end(self, &runtime.session_id).await })
     }
 }
 

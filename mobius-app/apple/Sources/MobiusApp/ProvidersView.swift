@@ -378,12 +378,21 @@ private struct ProviderFormSections: View {
 
                 Picker("Hosted web search", selection: providerWebSearch) {
                     ForEach(status.webSearch) { search in
-                        Text(search.label).tag(search)
+                        if let value = HostedWebSearch(rawValue: search.value) {
+                            Text(search.label).tag(value)
+                        }
                     }
                 }
                 .settingsPickerStyle()
                 .sensoryFeedback(.selection, trigger: providerWebSearch.wrappedValue)
                 .disabled(status.webSearch.count == 1)
+                if let search = status.webSearch.first(where: {
+                    $0.value == providerWebSearch.wrappedValue.rawValue
+                }) {
+                    Text(search.description)
+                        .font(MobiusStyle.captionFont)
+                        .foregroundStyle(palette.muted)
+                }
             }
 
             Section("Credential") {

@@ -147,10 +147,10 @@ The TUI is a thin subscriber to the framework capability catalog:
   scan similarly named paths on the client machine.
 
 The CLI owns only shell lifecycle and presentation commands: `/help`, `/gateway`, `/extensions`,
-`/agent`, `/login`, `/pair`, `/profile`, `/artifacts`, `/new`, `/clear`, `/model`,
-`/reasoning`, `/cron`, `/status`, `/interrupt`, and `/exit`. The menu changes with the installed
-gateway capabilities. The gateway always contributes `/resume` as the single saved-chat picker;
-it lists chats across every workspace.
+`/agent`, `/login`, `/pair`, `/profile`, `/new`, `/clear`, `/model`, `/reasoning`, `/status`,
+`/interrupt`, and `/exit`. Capabilities contribute commands such as `/artifacts` and `/cron`, so
+the menu changes with the installed gateway capabilities. The gateway always contributes `/resume`
+as the single saved-chat picker; it lists chats across every workspace.
 
 The Sora-themed TUI uses the full terminal. The mouse wheel and Page Up/Page Down scroll the chat;
 Ctrl-T opens a full-screen transcript view, releases mouse capture for native drag-to-copy, and

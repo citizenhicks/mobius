@@ -52,6 +52,7 @@ use patch::{apply_patch_document, parse_patch_document, validate_patch_complexit
 const MAX_TOOL_OUTPUT_BYTES: usize = 40_000;
 const MAX_TOOL_UI_BYTES: usize = 512;
 const MAX_TOOL_UI_LINES: usize = 5;
+const MAX_TOOL_NAME_BYTES: usize = 256;
 const MAX_MUTATION_BYTES: usize = 40_000;
 const MAX_COMMAND_BYTES: usize = 8_000;
 const MAX_PATCH_MATCH_WORK: usize = 32 * 1024 * 1024;
@@ -159,9 +160,10 @@ pub struct Catalog {
 }
 
 impl Catalog {
-    /// Registers one tool and rejects duplicate names.
+    /// Registers one tool and rejects invalid definitions or duplicate names.
     pub fn register(&mut self, tool: Arc<dyn Tool>) -> Result<()> {
         let definition = tool.definition();
+        validate_definition(&definition)?;
         let name = definition.name.clone();
         let entry = RegisteredTool {
             definition,
@@ -248,6 +250,24 @@ impl Catalog {
     fn get(&self, name: &str) -> Option<&RegisteredTool> {
         self.tools.get(name)
     }
+}
+
+fn validate_definition(definition: &ToolDefinition) -> Result<()> {
+    if definition.name.trim().is_empty() {
+        return Err(Error::Config("tool name cannot be empty".into()));
+    }
+    if definition.name.len() > MAX_TOOL_NAME_BYTES {
+        return Err(Error::Config(format!(
+            "tool name exceeds {MAX_TOOL_NAME_BYTES} bytes"
+        )));
+    }
+    if !definition.parameters.is_object() {
+        return Err(Error::Config(format!(
+            "tool `{}` parameters must be a JSON object",
+            definition.name
+        )));
+    }
+    Ok(())
 }
 
 fn object_hook_input(input: Value) -> Result<Value> {

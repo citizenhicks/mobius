@@ -229,11 +229,12 @@ async fn deleting_last_reference_garbage_collects_the_blob() {
 async fn accepts_50_mib_and_rejects_larger_files() {
     let state = tempfile::tempdir().expect("state");
     let store = SessionFileStore::new(state.path());
+    let limits = session_file_limits();
     let pending = store
         .begin_upload(
             "session",
             "large.bin".into(),
-            MAX_FILE_BYTES,
+            limits.max_file_bytes,
             "application/octet-stream".into(),
         )
         .await
@@ -244,7 +245,7 @@ async fn accepts_50_mib_and_rejects_larger_files() {
             .begin_upload(
                 "session",
                 "too-large.bin".into(),
-                MAX_FILE_BYTES + 1,
+                limits.max_file_bytes + 1,
                 "application/octet-stream".into(),
             )
             .await
@@ -358,14 +359,15 @@ async fn upload_rejects_traversal_names() {
 async fn pending_uploads_reserve_session_quota_and_release_on_drop() {
     let state = tempfile::tempdir().expect("state");
     let store = SessionFileStore::new(state.path());
+    let limits = session_file_limits();
     let mut pending = Vec::new();
-    for index in 0..(MAX_SESSION_BYTES / MAX_FILE_BYTES) {
+    for index in 0..(limits.max_session_bytes / limits.max_file_bytes) {
         pending.push(
             store
                 .begin_upload(
                     "session",
                     format!("{index}.bin"),
-                    MAX_FILE_BYTES,
+                    limits.max_file_bytes,
                     "application/octet-stream".into(),
                 )
                 .await
@@ -391,12 +393,67 @@ async fn pending_uploads_reserve_session_quota_and_release_on_drop() {
             .begin_upload(
                 "session",
                 "replacement.bin".into(),
-                MAX_FILE_BYTES,
+                limits.max_file_bytes,
                 "application/octet-stream".into(),
             )
             .await
             .is_ok()
     );
+}
+
+#[tokio::test]
+async fn advertised_file_count_is_enforced() {
+    let state = tempfile::tempdir().expect("state");
+    let store = SessionFileStore::new(state.path());
+    let limits = session_file_limits();
+    let mut pending = Vec::new();
+    for index in 0..limits.max_session_files {
+        pending.push(
+            store
+                .begin_upload(
+                    "session",
+                    format!("{index}.bin"),
+                    1,
+                    "application/octet-stream".into(),
+                )
+                .await
+                .expect("reserve file slot"),
+        );
+    }
+
+    assert!(
+        store
+            .begin_upload(
+                "session",
+                "overflow.bin".into(),
+                1,
+                "application/octet-stream".into(),
+            )
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn advertised_upload_chunk_size_is_enforced() {
+    let state = tempfile::tempdir().expect("state");
+    let store = SessionFileStore::new(state.path());
+    let limits = session_file_limits();
+    let accepted = vec![0; limits.max_upload_chunk_bytes];
+    let rejected = vec![0; limits.max_upload_chunk_bytes + 1];
+    let mut upload = store
+        .begin_upload(
+            "session",
+            "large.bin".into(),
+            u64::try_from(rejected.len()).expect("upload size"),
+            "application/octet-stream".into(),
+        )
+        .await
+        .expect("begin upload");
+
+    upload.append(0, &accepted).await.expect("maximum chunk");
+    let offset = u64::try_from(accepted.len()).expect("chunk offset");
+    assert!(upload.append(offset, &rejected).await.is_err());
 }
 
 #[tokio::test]

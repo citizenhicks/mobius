@@ -24,8 +24,7 @@ use crate::frontend::gateway;
 use crate::frontend::gateway_actions::{prepare, render_response};
 use crate::frontend::setup;
 use crate::frontend::terminal::{INPUT_POLL, MAX_INPUT_BATCH, TerminalGuard, poll_event};
-use mobius::backend::model::ModelInfo;
-use mobius::protocol::{Op, Submission};
+use mobius::protocol::{ModelInfo, Op, Submission};
 use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayEvents, GatewaySender};
 use mobius_gateway::wire::{ClientMessage, ReadyPayload, ServerMessage, SessionReadyPayload};
@@ -140,7 +139,14 @@ pub(in crate::frontend) async fn run(
                 match event {
                     Ok(Some(frame)) => {
                         replay_hydration.observe(&frame.message, &session_id);
-                        if let Some(result) = uploads.handle(&frame.message, &session_id).await {
+                        if let Some(result) = uploads
+                            .handle(
+                                &frame.message,
+                                &session_id,
+                                &gateway.session_file_limits,
+                            )
+                            .await
+                        {
                             match result {
                                 Ok(advance) => {
                                     if let Some(attachment) = advance.attachment {
@@ -200,7 +206,6 @@ pub(in crate::frontend) async fn run(
                             message => {
                                 if let Some(message) = render_response(
                                     &message,
-                                    &session_id,
                                     &gateway.provider_instances,
                                 ) {
                                     state.push(message, TranscriptTone::Neutral);
@@ -286,7 +291,10 @@ pub(in crate::frontend) async fn run(
                                     TranscriptTone::Warning,
                                 );
                             } else {
-                                match read_clipboard(&state.attachments)
+                                match read_clipboard(
+                                    &state.attachments,
+                                    &gateway.session_file_limits,
+                                )
                                     .and_then(|candidates| uploads.start(candidates, &session_id))
                                 {
                                     Ok(message) => {

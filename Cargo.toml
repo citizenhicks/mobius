@@ -1,6 +1,6 @@
 [package]
 name = "mobius"
-version = "0.9.8"
+version = "0.9.9"
 edition = "2024"
 rust-version = "1.89"
 description = "A small, modular Rust framework for building coding agents"

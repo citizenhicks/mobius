@@ -217,7 +217,7 @@ impl CredentialStore {
     pub fn open(path: PathBuf) -> Result<Self> {
         let values = match fs::read(&path) {
             Ok(contents) => {
-                if contents.len() > 256 * 1024 {
+                if contents.len() > MAX_CREDENTIAL_STATE_BYTES {
                     return Err(Error::Config(
                         "provider credential state is too large".into(),
                     ));
@@ -227,6 +227,7 @@ impl CredentialStore {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
             Err(error) => return Err(error.into()),
         };
+        validate_credential_state(&values)?;
         Ok(Self {
             path,
             values: Mutex::new(values),
@@ -241,23 +242,12 @@ impl CredentialStore {
         api_key: &str,
         base_url: Option<&str>,
     ) -> Result<()> {
-        super::validation::validate_instance_id(instance)?;
-        let definition = provider(provider_id)?;
-        if !matches!(definition.auth(), ProviderAuth::ApiKey(_)) {
-            return Err(Error::Config(format!(
-                "provider `{provider_id}` does not accept an API key"
-            )));
-        }
-        if api_key.trim().is_empty() || api_key.len() > MAX_API_KEY_BYTES {
-            return Err(Error::Config(format!(
-                "API key must be 1–{MAX_API_KEY_BYTES} bytes"
-            )));
-        }
-        if definition.configurable_base_url() != base_url.is_some() {
-            return Err(Error::Config(
-                "credential endpoint does not match the provider".into(),
-            ));
-        }
+        let credential = StoredCredential {
+            provider: provider_id.into(),
+            api_key: api_key.into(),
+            base_url: base_url.map(str::to_owned),
+        };
+        validate_stored_credential(instance, &credential)?;
         let mut values = self
             .values
             .lock()
@@ -271,14 +261,7 @@ impl CredentialStore {
             )));
         }
         let mut next = values.clone();
-        next.insert(
-            instance.into(),
-            StoredCredential {
-                provider: provider_id.into(),
-                api_key: api_key.into(),
-                base_url: base_url.map(str::to_owned),
-            },
-        );
+        next.insert(instance.into(), credential);
         save_private_map(&self.path, &next)?;
         *values = next;
         Ok(())
@@ -426,11 +409,42 @@ fn validate_private_state_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn save_private_map<T: Serialize>(path: &Path, values: &BTreeMap<String, T>) -> Result<()> {
+fn validate_stored_credential(instance: &str, credential: &StoredCredential) -> Result<()> {
+    super::validation::validate_instance_id(instance)?;
+    let definition = provider(&credential.provider)?;
+    if !matches!(definition.auth(), ProviderAuth::ApiKey(_)) {
+        return Err(Error::Config(format!(
+            "provider `{}` does not accept an API key",
+            credential.provider
+        )));
+    }
+    if credential.api_key.trim().is_empty() || credential.api_key.len() > MAX_API_KEY_BYTES {
+        return Err(Error::Config(format!(
+            "API key must be 1–{MAX_API_KEY_BYTES} bytes"
+        )));
+    }
+    definition.validate_base_url(credential.base_url.as_deref())?;
+    Ok(())
+}
+
+fn validate_credential_state(values: &BTreeMap<String, StoredCredential>) -> Result<()> {
+    for (instance, credential) in values {
+        validate_stored_credential(instance, credential)?;
+    }
+    Ok(())
+}
+
+fn save_private_map(path: &Path, values: &BTreeMap<String, StoredCredential>) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| Error::Config("provider credential path has no parent".into()))?;
+    validate_credential_state(values)?;
     let contents = serde_json::to_vec(values)?;
+    if contents.len() > MAX_CREDENTIAL_STATE_BYTES {
+        return Err(Error::Config(
+            "provider credential state is too large".into(),
+        ));
+    }
     let mut file = tempfile::NamedTempFile::new_in(parent)?;
     #[cfg(unix)]
     file.as_file()

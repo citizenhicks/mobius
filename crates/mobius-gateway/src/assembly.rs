@@ -7,11 +7,9 @@ use mobius::agent::{Agent, AgentConfig, create_agent};
 use mobius::backend::checkpoint::CheckpointStore;
 use mobius::backend::model::provider::{
     HttpClient, ProviderAuth, ProviderBuildConfig, ProviderCredential, ProviderDefinition,
-    provider, providers, streaming_client,
+    provider, streaming_client,
 };
-use mobius::backend::model::{
-    Model, ModelChoice, ModelEventSink, ModelInfo, ModelOutput, ModelRequest, ModelRouter,
-};
+use mobius::backend::model::{Model, ModelEventSink, ModelOutput, ModelRequest, ModelRouter};
 use mobius::backend::sandbox::{
     ApprovalPolicy, ApprovalReviewerConfig, ApprovalStrictness, Sandbox, SandboxBackend,
 };
@@ -19,7 +17,7 @@ use mobius::middleware::artifacts::Artifacts;
 use mobius::middleware::attachments::Attachments;
 use mobius::middleware::compaction::Compaction;
 use mobius::middleware::context_offloading::ContextOffloading;
-use mobius::middleware::cron::Cron;
+use mobius::middleware::cron::{Cron, CronCommandHandler};
 use mobius::middleware::extensions::{Extensions, MANIFEST as EXTENSIONS_MANIFEST};
 use mobius::middleware::instructions::Instructions;
 use mobius::middleware::scratchpad::{Scratchpad, ScratchpadStore};
@@ -30,24 +28,24 @@ use mobius::middleware::subagents::{SubagentLaunch, SubagentLauncher, Subagents}
 use mobius::middleware::tasks::Tasks;
 use mobius::middleware::tools::Tools;
 use mobius::middleware::{Middleware, MiddlewareStack};
-use mobius::protocol::{SessionContext, TokenUsage};
+use mobius::protocol::{ModelChoice, ModelInfo, SessionContext, TokenUsage};
 
 use crate::config::{
-    ChatSpec, ConfigStore, ConfiguredProvider, CredentialStore, DEFAULT_CONTEXT_WINDOW,
-    GatewayConfig, effective_reasoning_effort, local_user_name, model_route_id,
+    ChatSpec, ConfigStore, CredentialStore, DEFAULT_CONTEXT_WINDOW, GatewayConfig,
+    effective_reasoning_effort, local_user_name, model_route_id,
 };
 use crate::cron::CronStore;
 use crate::extensions::{ExtensionStore, ResolvedExtensions};
 use crate::middleware_manifest::{BuiltinMiddleware, MIDDLEWARE};
-use crate::sandbox::GatewaySandbox;
-use crate::wire::{
-    MiddlewareConfig, ProviderAuthKind, ProviderConfig, ProviderEndpointAuth, ProviderInstance,
-    ProviderModel, ProviderStatus, ReasoningChoice, validate_session_id,
+use crate::provider_catalog::{
+    CatalogRoute, catalog_routes, configured_model_providers, configured_model_routes,
+    credential_is_configured,
 };
+use crate::sandbox::GatewaySandbox;
+use crate::wire::{MiddlewareConfig, ProviderConfig, ProviderEndpointAuth, validate_session_id};
 use crate::{Error, Result};
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
-const MAX_MODEL_ROUTE_BYTES: usize = 4 * 1024;
 
 pub(crate) struct BuiltAgent {
     pub(crate) agent: Agent,
@@ -66,6 +64,7 @@ pub(crate) async fn assemble(
     store: &ConfigStore,
     credentials: Arc<CredentialStore>,
     cron: Arc<CronStore>,
+    cron_commands: CronCommandHandler,
     checkpoints: Arc<dyn CheckpointStore>,
     scratchpad: ScratchpadStore,
     session_files: SessionFileStore,
@@ -171,6 +170,7 @@ pub(crate) async fn assemble(
         &chat.workspace,
         Arc::clone(&gateway),
         cron,
+        cron_commands,
         scratchpad,
         session_files,
         backend,
@@ -257,229 +257,6 @@ fn persist_usage(
         *gateway = next;
     }
     Ok(())
-}
-
-pub(crate) fn provider_statuses() -> Vec<ProviderStatus> {
-    providers().iter().map(provider_status).collect()
-}
-
-pub(crate) fn provider_instances(
-    gateway: &GatewayConfig,
-    store: &ConfigStore,
-    credentials: &CredentialStore,
-) -> Result<Vec<ProviderInstance>> {
-    gateway
-        .configured_providers
-        .values()
-        .map(|configured| {
-            Ok(ProviderInstance {
-                label: configured.label.clone(),
-                tint: configured.tint,
-                configured: credential_is_configured(&configured.selection, store, credentials)?,
-                selection: configured.selection.clone(),
-                model_ids: configured.model_ids.clone(),
-                reasoning_efforts: configured.reasoning_efforts.clone(),
-            })
-        })
-        .collect()
-}
-
-pub(crate) fn configured_model_choices(
-    gateway: &GatewayConfig,
-    store: &ConfigStore,
-    credentials: &CredentialStore,
-) -> Result<Vec<ModelChoice>> {
-    Ok(instantiate_routes(
-        configured_model_routes(gateway, store, credentials)?,
-        store,
-        credentials,
-    )?
-    .into_iter()
-    .map(|route| route.choice)
-    .collect())
-}
-
-pub(crate) fn configured_model_providers(
-    gateway: &GatewayConfig,
-    store: &ConfigStore,
-    credentials: &CredentialStore,
-) -> Result<BTreeMap<String, String>> {
-    Ok(configured_model_routes(gateway, store, credentials)?
-        .into_iter()
-        .map(|route| (route.choice.route, route.provider.instance))
-        .collect())
-}
-
-pub(crate) fn configured_provider_for_route(
-    gateway: &GatewayConfig,
-    store: &ConfigStore,
-    credentials: &CredentialStore,
-    route: &str,
-) -> Result<ProviderConfig> {
-    if route.trim().is_empty() || route.len() > MAX_MODEL_ROUTE_BYTES {
-        return Err(Error::Config(format!(
-            "model route must be 1–{MAX_MODEL_ROUTE_BYTES} bytes"
-        )));
-    }
-    configured_model_routes(gateway, store, credentials)?
-        .into_iter()
-        .find(|candidate| candidate.choice.route == route)
-        .map(|candidate| candidate.provider)
-        .ok_or_else(|| Error::Config("model route is not in the configured gateway catalog".into()))
-}
-
-pub(crate) fn configured_route_exists(gateway: &GatewayConfig, route: &str) -> Result<bool> {
-    for configured in gateway.configured_providers.values() {
-        let definition = provider(&configured.selection.provider)?;
-        if catalog_routes(definition, configured, &configured.selection)
-            .iter()
-            .any(|candidate| candidate.choice.route == route)
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-fn configured_model_routes(
-    gateway: &GatewayConfig,
-    store: &ConfigStore,
-    credentials: &CredentialStore,
-) -> Result<Vec<CatalogRoute>> {
-    let mut routes = Vec::new();
-    let default_instance = gateway
-        .default_agent
-        .as_ref()
-        .map(|default| default.config.provider.instance.as_str());
-    let mut configured = gateway.configured_providers.values().collect::<Vec<_>>();
-    configured
-        .sort_by_key(|configured| Some(configured.selection.instance.as_str()) != default_instance);
-    for configured in configured {
-        let definition = provider(&configured.selection.provider)?;
-        if credential_is_configured(&configured.selection, store, credentials)? {
-            routes.extend(catalog_routes(
-                definition,
-                configured,
-                &configured.selection,
-            ));
-        }
-    }
-    Ok(routes)
-}
-
-fn catalog_routes(
-    definition: &ProviderDefinition,
-    configured: &ConfiguredProvider,
-    selection: &ProviderConfig,
-) -> Vec<CatalogRoute> {
-    let mut models = definition
-        .models()
-        .iter()
-        .map(|preset| (preset.id, Some(preset)))
-        .collect::<Vec<_>>();
-    for model in &configured.model_ids {
-        if models.iter().all(|(candidate, _)| *candidate != model) {
-            models.push((model, None));
-        }
-    }
-    models.sort_by_key(|(model, _)| *model != selection.model);
-
-    let mut routes = Vec::new();
-    for (model, preset) in models {
-        let catalog_default = preset
-            .and_then(|preset| preset.default_reasoning)
-            .or_else(|| configured.reasoning_efforts.first().map(String::as_str));
-        let preferred = if model == selection.model {
-            effective_reasoning_effort(definition, configured, selection)
-        } else {
-            catalog_default
-        };
-        let mut efforts = vec![preferred];
-        for reasoning in preset.into_iter().flat_map(|preset| preset.reasoning) {
-            let effort = Some(reasoning.id);
-            if !efforts.contains(&effort) {
-                efforts.push(effort);
-            }
-        }
-        if preset.is_none() {
-            for reasoning in &configured.reasoning_efforts {
-                let effort = Some(reasoning.as_str());
-                if !efforts.contains(&effort) {
-                    efforts.push(effort);
-                }
-            }
-        }
-        for effort in efforts {
-            let mut provider = selection.clone();
-            provider.model = model.into();
-            provider.reasoning_effort = effort.map(str::to_string);
-            let route = model_route_id(&selection.instance, model, effort);
-            routes.push(CatalogRoute {
-                choice: ModelChoice {
-                    route,
-                    group: format!(
-                        "{} · {}",
-                        configured.label,
-                        preset.map_or(model, |preset| preset.label)
-                    ),
-                    model: model.into(),
-                    reasoning_effort: effort.map(str::to_string),
-                    context_window: Some(
-                        preset.map_or(DEFAULT_CONTEXT_WINDOW, |preset| preset.context_window),
-                    ),
-                    supports_image_input: definition.supports_image_input(),
-                },
-                provider,
-            });
-        }
-    }
-    routes
-}
-
-struct CatalogRoute {
-    choice: ModelChoice,
-    provider: ProviderConfig,
-}
-
-fn provider_status(definition: &ProviderDefinition) -> ProviderStatus {
-    let (auth, default_api_key_env) = match definition.auth() {
-        ProviderAuth::ApiKey(default_env) => (
-            ProviderAuthKind::ApiKey,
-            (!definition.configurable_base_url()).then(|| default_env.to_string()),
-        ),
-        ProviderAuth::Browser(_) => (ProviderAuthKind::DeviceCode, None),
-    };
-    ProviderStatus {
-        provider: definition.id().into(),
-        label: definition.label().into(),
-        symbol: definition.symbol(),
-        description: definition.description().into(),
-        model_ids_configurable: definition.models().is_empty(),
-        auth,
-        default_base_url: definition.default_base_url().map(str::to_string),
-        default_api_key_env,
-        models: definition
-            .models()
-            .iter()
-            .map(|model| ProviderModel {
-                id: model.id.into(),
-                label: model.label.into(),
-                description: model.description.into(),
-                context_window: model.context_window,
-                reasoning: model
-                    .reasoning
-                    .iter()
-                    .map(|reasoning| ReasoningChoice {
-                        id: reasoning.id.into(),
-                        label: reasoning.label.into(),
-                        description: reasoning.description.into(),
-                    })
-                    .collect(),
-                default_reasoning: model.default_reasoning.map(str::to_string),
-            })
-            .collect(),
-        web_search: definition.web_search().to_vec(),
-    }
 }
 
 fn subagent_launcher(template: &Arc<OnceLock<AgentConfig>>) -> SubagentLauncher {
@@ -622,43 +399,6 @@ fn resolve_credential(
     }
 }
 
-pub(crate) fn credential_is_configured(
-    selection: &ProviderConfig,
-    store: &ConfigStore,
-    credentials: &CredentialStore,
-) -> Result<bool> {
-    let definition = provider(&selection.provider)?;
-    if selection.endpoint_auth == ProviderEndpointAuth::Credentialless {
-        definition.validate_credentialless_endpoint(selection.base_url.as_deref())?;
-        return Ok(true);
-    }
-    let base_url = if definition.configurable_base_url() {
-        selection
-            .base_url
-            .as_deref()
-            .or_else(|| definition.default_base_url())
-    } else {
-        None
-    };
-    match definition.auth() {
-        ProviderAuth::ApiKey(default_env) => {
-            if credentials
-                .get(&selection.instance, definition.id(), base_url)?
-                .is_some()
-            {
-                return Ok(true);
-            }
-            if !definition.uses_default_endpoint(base_url) {
-                return Ok(false);
-            }
-            Ok(std::env::var(default_env).is_ok_and(|value| !value.trim().is_empty()))
-        }
-        ProviderAuth::Browser(auth) => auth
-            .configured(&store.provider_auth_path())
-            .map_err(Error::from),
-    }
-}
-
 fn build_route(
     route: CatalogRoute,
     definition: &'static ProviderDefinition,
@@ -761,6 +501,7 @@ fn build_middleware(
     workspace: &std::path::Path,
     gateway: Arc<Mutex<GatewayConfig>>,
     cron: Arc<CronStore>,
+    cron_commands: CronCommandHandler,
     scratchpad: ScratchpadStore,
     session_files: SessionFileStore,
     backend: Arc<dyn SandboxBackend>,
@@ -784,11 +525,14 @@ fn build_middleware(
             BuiltinMiddleware::Instructions => Arc::new(Instructions::discover(workspace)?),
             BuiltinMiddleware::Cron => {
                 let cron = Arc::clone(&cron);
-                Arc::new(Cron::new(move |session_id, task, schedule| {
-                    cron.add_managed(session_id, task, schedule)
-                        .map(|task| task.id)
-                        .map_err(|error| MobiusError::Tool(error.to_string()))
-                }))
+                Arc::new(Cron::new(
+                    move |session_id, task, schedule| {
+                        cron.add_managed(session_id, task, schedule)
+                            .map(|task| task.id)
+                            .map_err(|error| MobiusError::Tool(error.to_string()))
+                    },
+                    Arc::clone(&cron_commands),
+                ))
             }
             BuiltinMiddleware::Scratchpad => Arc::new(
                 Scratchpad::new(scratchpad.clone()).agent_enabled(settings.enabled("scratchpad")),

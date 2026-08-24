@@ -6,6 +6,7 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
 use mobius_gateway::client::{Endpoint, token_from_env};
+use mobius_gateway::config::{ConfigStore, GatewayConfig};
 use mobius_gateway::{Error, Result};
 use serde::{Deserialize, Serialize};
 
@@ -150,6 +151,44 @@ pub fn configured_token(endpoint: &Endpoint) -> Result<Option<String>> {
     Ok(GatewayAccounts::load()?.token(endpoint).map(str::to_owned))
 }
 
+pub fn dashboard_gateway_endpoint(state_dir: &Path) -> Result<Endpoint> {
+    let (_, config) = ConfigStore::open(state_dir.to_path_buf())?;
+    if config.tls.is_some() {
+        if env::var_os("MOBIUS_GATEWAY_ENDPOINT").is_none() {
+            return Err(Error::Config(
+                "TLS dashboards require MOBIUS_GATEWAY_ENDPOINT with the certificate hostname"
+                    .into(),
+            ));
+        }
+        return Endpoint::from_env();
+    }
+    endpoint_from_config(&config)
+}
+
+pub fn validate_local_gateway_config(
+    state_dir: &Path,
+    endpoint: &Endpoint,
+    has_saved_token: bool,
+) -> Result<()> {
+    let (_, config) = ConfigStore::open(state_dir.to_path_buf())?;
+    let configured_endpoint = endpoint_from_config(&config)?;
+    if endpoint != &configured_endpoint {
+        return Err(Error::Config(format!(
+            "saved endpoint {endpoint} is not the local gateway configured at {configured_endpoint}; start it separately or select the configured endpoint"
+        )));
+    }
+    if !has_saved_token && config.cloudflare.is_none() {
+        return Err(missing_local_token(endpoint));
+    }
+    Ok(())
+}
+
+pub fn missing_local_token(endpoint: &Endpoint) -> Error {
+    Error::Config(format!(
+        "local gateway state exists but mobius-cli is not paired; stop the gateway, run `mobius-gateway connect` in another terminal, then run `mobius pair {endpoint} <one-time-code>`"
+    ))
+}
+
 pub fn environment_override_message() -> Option<&'static str> {
     match (
         env::var_os("MOBIUS_GATEWAY_ENDPOINT").is_some(),
@@ -193,6 +232,15 @@ fn validate_record(record: &TokenStoreRecord) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn endpoint_from_config(config: &GatewayConfig) -> Result<Endpoint> {
+    format!(
+        "{}://{}",
+        if config.tls.is_some() { "tls" } else { "tcp" },
+        config.listen
+    )
+    .parse()
 }
 
 fn validate_token(token: &str) -> Result<()> {
@@ -305,5 +353,19 @@ mod tests {
 
         assert!(error.to_string().contains("delete"));
         assert!(error.to_string().contains("pair again"));
+    }
+
+    #[test]
+    fn local_gateway_config_rejects_a_different_saved_endpoint() {
+        let directory = tempfile::tempdir().expect("gateway state parent");
+        let state = directory.path().join("gateway");
+        mobius_gateway::command::initialize_quick_cloudflare(state.clone())
+            .expect("initialize gateway");
+        let endpoint = endpoint("tcp://127.0.0.1:9999");
+
+        let error = validate_local_gateway_config(&state, &endpoint, true)
+            .expect_err("mismatched endpoint must fail");
+
+        assert!(error.to_string().contains("127.0.0.1:8741"));
     }
 }

@@ -9,7 +9,8 @@ private let maximumFileThumbnailPixelDimension = 384
 
 extension AppModel {
     nonisolated static func loadImportedAttachment(
-        _ url: URL
+        _ url: URL,
+        maximumBytes: Int
     ) async throws -> ImportedAttachmentData {
         try await Task.detached(priority: .userInitiated) {
             let accessed = url.startAccessingSecurityScopedResource()
@@ -21,11 +22,13 @@ extension AppModel {
                 .contentTypeKey,
             ])
             guard values.isRegularFile == true else { throw AttachmentImportError.notAFile }
-            if let size = values.fileSize, size > maximumAttachmentBytes {
-                throw AttachmentImportError.tooLarge
+            if let size = values.fileSize, size > maximumBytes {
+                throw AttachmentImportError.tooLarge(Int64(maximumBytes))
             }
             let data = try Data(contentsOf: url)
-            guard data.count <= maximumAttachmentBytes else { throw AttachmentImportError.tooLarge }
+            guard data.count <= maximumBytes else {
+                throw AttachmentImportError.tooLarge(Int64(maximumBytes))
+            }
             if let size = values.fileSize, size != data.count {
                 throw AttachmentImportError.changedWhileReading
             }
@@ -236,14 +239,14 @@ extension AppModel {
         guard sessionID == selectedSessionID,
               !uploadID.isEmpty,
               maxChunkBytes > 0,
-              maxChunkBytes <= maximumGatewayFrameBytes
+              maxChunkBytes <= (sessionFileLimits?.maxUploadChunkBytes ?? 0)
         else { return failAttachment(localID, message: "The gateway returned an invalid upload.") }
         sessionFileUploadRequests.removeValue(forKey: requestID)
         activeSessionFileUpload = ActiveSessionFileUpload(
             localID: localID,
             sessionID: sessionID,
             uploadID: uploadID,
-            maxChunkBytes: min(maxChunkBytes, 256 * 1024)
+            maxChunkBytes: min(maxChunkBytes, uploadChunkByteLimit)
         )
         sendNextSessionFileChunk(localID: localID, offset: 0)
     }
@@ -1098,7 +1101,7 @@ extension AppModel {
             guard case .uploaded(let attachment) = item.state else { return nil }
             return attachment.id
         })
-        let available = max(0, maximumSessionFileReferences - composerAttachments.count)
+        let available = max(0, attachmentReferenceLimit - composerAttachments.count)
         composerAttachments.insert(contentsOf: draft.attachments
             .filter { !currentIDs.contains($0.id) }
             .prefix(available)

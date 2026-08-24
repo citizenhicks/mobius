@@ -1,4 +1,8 @@
-//! A small, modular Rust agent loop.
+//! A small, modular Rust framework for one linear agent session.
+//!
+//! Applications compose an [`agent::Agent`] from explicit model, sandbox, checkpoint, and
+//! middleware adapters. Frontends remain separate: they submit [`protocol::Op`] values and
+//! render the frontend-neutral [`protocol::Event`] stream.
 
 use std::future::Future;
 use std::pin::Pin;

@@ -1,5 +1,6 @@
 //! One-time pairing and independent bearer-token authentication.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::Write as _;
 #[cfg(unix)]
@@ -93,7 +94,7 @@ impl AuthStore {
             }),
             clients: Vec::new(),
         };
-        save_private_json(&path, &state, true)?;
+        save_auth_state(&path, &state, true)?;
         Ok((
             Self {
                 path,
@@ -111,16 +112,7 @@ impl AuthStore {
             return Err(Error::Config("authentication state is too large".into()));
         }
         let state: AuthState = serde_json::from_slice(&contents)?;
-        if state.clients.len() > MAX_CLIENTS {
-            return Err(Error::Config(
-                "authentication state exceeds the client limit".into(),
-            ));
-        }
-        if state.pending_pairing.is_none() && state.clients.is_empty() {
-            return Err(Error::Config(
-                "authentication state has neither pairing nor client access".into(),
-            ));
-        }
+        validate_auth_state(&state)?;
         Ok(Self {
             path,
             state: Mutex::new(state),
@@ -152,7 +144,7 @@ impl AuthStore {
             digest: digest(&token),
             created_at: now,
         });
-        save_private_json(&self.path, &next, false)?;
+        save_auth_state(&self.path, &next, false)?;
         *state = next;
         Ok(IssuedToken { client_id, token })
     }
@@ -180,7 +172,7 @@ impl AuthStore {
                 created_at: now,
             });
         }
-        save_private_json(&self.path, &next, false)?;
+        save_auth_state(&self.path, &next, false)?;
         *state = next;
         Ok(IssuedToken {
             client_id: LOCAL_CLIENT_ID.into(),
@@ -200,7 +192,7 @@ impl AuthStore {
             digest: digest(&grant.code),
             expires_at: grant.expires_at,
         });
-        save_private_json(&self.path, &next, false)?;
+        save_auth_state(&self.path, &next, false)?;
         *state = next;
         Ok(grant)
     }
@@ -256,7 +248,7 @@ impl AuthStore {
         };
         let mut next = state.clone();
         next.clients.remove(index);
-        save_private_json(&self.path, &next, false)?;
+        save_auth_state(&self.path, &next, false)?;
         *state = next;
         Ok(true)
     }
@@ -291,7 +283,7 @@ impl AuthStore {
             digest: digest(&random_secret(1)),
             expires_at: REVOKED_PAIRING_EXPIRY,
         });
-        save_private_json(&self.path, &next, false)?;
+        save_auth_state(&self.path, &next, false)?;
         *state = next;
         Ok(())
     }
@@ -304,10 +296,50 @@ impl AuthStore {
 }
 
 fn validate_client_label(label: &str) -> Result<()> {
-    if label.trim().is_empty() || label.len() > MAX_CLIENT_LABEL_BYTES {
+    if label.is_empty()
+        || label != label.trim()
+        || label.len() > MAX_CLIENT_LABEL_BYTES
+        || label.chars().any(char::is_control)
+    {
         return Err(Error::Config(format!(
-            "client label must be 1–{MAX_CLIENT_LABEL_BYTES} bytes"
+            "client label must be canonical, control-free, and 1–{MAX_CLIENT_LABEL_BYTES} bytes"
         )));
+    }
+    Ok(())
+}
+
+fn validate_auth_state(state: &AuthState) -> Result<()> {
+    if state.clients.len() > MAX_CLIENTS {
+        return Err(Error::Config(
+            "authentication state exceeds the client limit".into(),
+        ));
+    }
+    if state.pending_pairing.is_none() && state.clients.is_empty() {
+        return Err(Error::Config(
+            "authentication state has neither pairing nor client access".into(),
+        ));
+    }
+    let mut client_ids = BTreeSet::new();
+    let mut token_digests = BTreeSet::new();
+    for client in &state.clients {
+        let id = Uuid::parse_str(&client.id)
+            .map_err(|_| Error::Config("authentication client ID is invalid".into()))?;
+        if id.to_string() != client.id {
+            return Err(Error::Config(
+                "authentication client ID must be canonical".into(),
+            ));
+        }
+        if !client_ids.insert(client.id.as_str()) {
+            return Err(Error::Config(
+                "authentication state contains duplicate client IDs".into(),
+            ));
+        }
+        if !token_digests.insert(client.digest) {
+            return Err(Error::Config(
+                "authentication state contains duplicate token digests".into(),
+            ));
+        }
+        validate_client_label(&client.label)?;
     }
     Ok(())
 }
@@ -352,12 +384,13 @@ fn unix_timestamp() -> Result<i64> {
     i64::try_from(seconds).map_err(|_| Error::Config("system clock is unsupported".into()))
 }
 
-fn save_private_json(path: &Path, value: &impl Serialize, create_new: bool) -> Result<()> {
+fn save_auth_state(path: &Path, state: &AuthState, create_new: bool) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| Error::Config("authentication path has no parent".into()))?;
     fs::create_dir_all(parent)?;
-    let contents = serde_json::to_vec_pretty(value)?;
+    validate_auth_state(state)?;
+    let contents = serde_json::to_vec_pretty(state)?;
     let mut file = tempfile::NamedTempFile::new_in(parent)?;
     #[cfg(unix)]
     file.as_file()
@@ -375,6 +408,27 @@ fn save_private_json(path: &Path, value: &impl Serialize, create_new: bool) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn client(id: &str, label: &str, digest_byte: u8) -> ClientToken {
+        ClientToken {
+            id: id.into(),
+            label: label.into(),
+            digest: [digest_byte; 32],
+            created_at: 1,
+        }
+    }
+
+    fn write_auth_state(path: &Path, clients: Vec<ClientToken>) {
+        fs::write(
+            path,
+            serde_json::to_vec(&AuthState {
+                pending_pairing: None,
+                clients,
+            })
+            .expect("encode auth state"),
+        )
+        .expect("write auth state");
+    }
 
     #[test]
     fn pairing_three_clients_keeps_every_issued_token_valid() {
@@ -421,6 +475,54 @@ mod tests {
                 label: "Mac".into(),
             }]
         );
+    }
+
+    #[test]
+    fn pairing_rejects_noncanonical_client_labels_without_consuming_the_code() {
+        let directory = tempfile::tempdir().expect("state directory");
+        let path = directory.path().join("auth.json");
+        let (auth, grant) = AuthStore::initialize(path).expect("initialize auth");
+
+        for label in [" Mac", "Mac ", "Mac\nterminal"] {
+            let error = auth
+                .pair(&grant.code, label)
+                .expect_err("noncanonical label must fail");
+            assert!(error.to_string().contains("client label"));
+        }
+
+        auth.pair(&grant.code, "Mac").expect("pair canonical label");
+    }
+
+    #[test]
+    fn opening_auth_state_rejects_noncanonical_or_duplicate_client_identity() {
+        let directory = tempfile::tempdir().expect("state directory");
+        let path = directory.path().join("auth.json");
+        let first_id = "00000000-0000-0000-0000-000000000001";
+        let second_id = "00000000-0000-0000-0000-000000000002";
+        let cases = [
+            (
+                vec![client("00000000-0000-0000-0000-00000000000A", "Mac", 1)],
+                "must be canonical",
+            ),
+            (
+                vec![client(first_id, "Mac", 1), client(first_id, "Phone", 2)],
+                "duplicate client IDs",
+            ),
+            (
+                vec![client(first_id, "Mac", 1), client(second_id, "Phone", 1)],
+                "duplicate token digests",
+            ),
+            (vec![client(first_id, " Mac", 1)], "client label"),
+        ];
+
+        for (clients, expected) in cases {
+            write_auth_state(&path, clients);
+            let error = match AuthStore::open(&path) {
+                Ok(_) => panic!("invalid auth state must fail"),
+                Err(error) => error,
+            };
+            assert!(error.to_string().contains(expected), "{error}");
+        }
     }
 
     #[test]

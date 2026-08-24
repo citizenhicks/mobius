@@ -1,16 +1,16 @@
 //! OpenAI Responses API Adapter.
 
-use reqwest::Client;
-use serde_json::Value;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::sync::Arc;
+
+use reqwest::Client;
+use serde_json::Value;
 
 use super::CompactOutput;
 use super::CompactRequest;
 use super::Model;
 use super::ModelEventSink;
-use super::ModelInfo;
 use super::ModelOutput;
 use super::ModelPricing;
 use super::ModelRequest;
@@ -38,6 +38,10 @@ use super::usage_i64;
 use crate::BoxFuture;
 use crate::Error;
 use crate::Result;
+use crate::protocol::ModelEvent;
+use crate::protocol::ModelInfo;
+use crate::protocol::TokenUsage;
+use crate::protocol::WebSearchAction;
 
 mod manifest {
     include!(concat!(
@@ -45,9 +49,6 @@ mod manifest {
         "/src_backend_model_openai_manifest.rs"
     ));
 }
-use crate::protocol::ModelEvent;
-use crate::protocol::TokenUsage;
-use crate::protocol::WebSearchAction;
 
 const MAX_JSON_BYTES: usize = 16 * 1024 * 1024;
 const MAX_STREAM_OUTPUT_ITEMS: usize = 1_024;

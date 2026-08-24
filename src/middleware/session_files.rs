@@ -12,7 +12,8 @@ use tokio::sync::{Mutex, OnceCell};
 use uuid::Uuid;
 
 use crate::protocol::{
-    SessionFileOrigin as ProtocolFileOrigin, SessionFileRecord, SessionFileReference,
+    SessionFileLimits, SessionFileOrigin as ProtocolFileOrigin, SessionFileRecord,
+    SessionFileReference,
 };
 use crate::{Error, Result};
 
@@ -30,9 +31,10 @@ use storage::{
     validate_stored_file,
 };
 
+const MAX_ATTACHMENT_REFERENCES: usize = 16;
 pub(crate) const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
 pub(crate) const MAX_SESSION_BYTES: u64 = 250 * 1024 * 1024;
-pub const MAX_UPLOAD_CHUNK_BYTES: usize = 256 * 1024;
+const MAX_UPLOAD_CHUNK_BYTES: usize = 256 * 1024;
 pub(crate) const MAX_READ_CHUNK_BYTES: usize = 256 * 1024;
 const MAX_SESSION_FILES: usize = 128;
 const MAX_SESSION_ID_BYTES: usize = 4 * 1024;
@@ -40,6 +42,18 @@ const MAX_VALIDATED_BLOBS: usize = 1_024;
 const BLOB_DIR: &str = "blobs";
 const ATTACHMENT_WORKSPACE_FILE: &str = ".attachment-workspace.json";
 const METADATA_FILE: &str = ".session-file.json";
+
+/// Returns the file policy enforced by storage and agent input validation.
+#[must_use]
+pub const fn session_file_limits() -> SessionFileLimits {
+    SessionFileLimits {
+        max_attachment_references: MAX_ATTACHMENT_REFERENCES,
+        max_file_bytes: MAX_FILE_BYTES,
+        max_session_files: MAX_SESSION_FILES,
+        max_session_bytes: MAX_SESSION_BYTES,
+        max_upload_chunk_bytes: MAX_UPLOAD_CHUNK_BYTES,
+    }
+}
 
 /// One bounded range read from a stored session file.
 #[derive(Debug, Clone, PartialEq, Eq)]

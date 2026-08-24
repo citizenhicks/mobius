@@ -689,20 +689,15 @@ fn agent_events_preserve_every_web_search_query() {
 }
 
 #[test]
-fn session_record_flattens_checkpoint_fields_with_catalog_metadata() {
+fn session_record_exposes_only_frontend_catalog_fields() {
     let record = SessionRecord {
-        summary: SessionSummary {
-            session_id: "session-a".into(),
-            session_context: mobius::protocol::SessionContext::default(),
-            parent_session_id: None,
-            parent_sequence: None,
-            sequence: 3,
-            catalog_visible: true,
-            first_user_message: Some("hello".into()),
-            execution_stats: mobius::backend::checkpoint::ExecutionStats::default(),
-            created_at: 1,
-            updated_at: 2,
-        },
+        session_id: "session-a".into(),
+        session_context: mobius::protocol::SessionContext::default(),
+        parent_session_id: None,
+        parent_sequence: None,
+        sequence: 3,
+        first_user_message: Some("hello".into()),
+        execution_stats: mobius::backend::checkpoint::ExecutionStats::default(),
         title: Some("Greeting".into()),
         pinned: true,
         activity: SessionActivity {
@@ -712,6 +707,8 @@ fn session_record_flattens_checkpoint_fields_with_catalog_metadata() {
             last_outcome: None,
             message: None,
         },
+        created_at: 1,
+        updated_at: 2,
     };
 
     let encoded = serde_json::to_value(record).expect("encode session record");
@@ -721,7 +718,7 @@ fn session_record_flattens_checkpoint_fields_with_catalog_metadata() {
     assert_eq!(encoded["pinned"], true);
     assert_eq!(encoded["activity"]["state"], "running");
     assert_eq!(encoded["activity"]["turn_id"], "turn-a");
-    assert!(encoded.get("summary").is_none());
+    assert!(encoded.get("catalog_visible").is_none());
 }
 
 #[test]
@@ -732,7 +729,6 @@ fn session_record_requires_activity() {
         "parent_session_id": null,
         "parent_sequence": null,
         "sequence": 3,
-        "catalog_visible": true,
         "first_user_message": null,
         "execution_stats": {
             "run_count": 0,
@@ -819,6 +815,7 @@ fn extension_lifecycle_requests_are_gateway_scoped() {
 
 #[test]
 fn gateway_ready_contains_no_selected_session() {
+    let session_file_limits = mobius::middleware::session_files::session_file_limits();
     let frame = ServerFrame::new(ServerMessage::Ready {
         payload: ReadyPayload {
             machine_name: "snowwhite.local".into(),
@@ -843,10 +840,14 @@ fn gateway_ready_contains_no_selected_session() {
                 ..FrontendContribution::default()
             }],
             max_active_sessions: 32,
+            session_file_limits,
         },
     });
 
     let encoded = serde_json::to_value(frame).expect("encode gateway ready");
+    let encoded_limits: mobius::protocol::SessionFileLimits =
+        serde_json::from_value(encoded["payload"]["session_file_limits"].clone())
+            .expect("decode session file limits");
 
     assert_eq!(
         (
@@ -864,6 +865,7 @@ fn gateway_ready_contains_no_selected_session() {
             None
         )
     );
+    assert_eq!(encoded_limits, session_file_limits);
 }
 
 #[test]

@@ -1198,6 +1198,95 @@ fn provider_credentials_are_owner_only_and_absent_from_agent_snapshots() {
     assert!(!snapshot.contains("write-only-secret"));
 }
 
+#[test]
+fn provider_credential_write_limit_is_atomic_and_reopenable() {
+    let directory = tempfile::tempdir().expect("state directory");
+    let path = directory.path().join("credentials.json");
+    let credentials = CredentialStore::open(path.clone()).expect("credential store");
+    let api_key = "x".repeat(MAX_API_KEY_BYTES);
+    let mut accepted = Vec::new();
+    let rejected = (0..64)
+        .find_map(|index| {
+            let instance = format!("openrouter-{index}");
+            match credentials.set(
+                &instance,
+                "openrouter",
+                &api_key,
+                Some("https://openrouter.ai/api/v1"),
+            ) {
+                Ok(()) => {
+                    accepted.push(instance);
+                    None
+                }
+                Err(error) => Some((instance, error)),
+            }
+        })
+        .expect("aggregate credential limit");
+    let before = fs::read(&path).expect("credential state before rejection");
+
+    let retry = credentials
+        .set(
+            &rejected.0,
+            "openrouter",
+            &api_key,
+            Some("https://openrouter.ai/api/v1"),
+        )
+        .expect_err("oversized candidate must remain rejected");
+    let reopened = CredentialStore::open(path.clone()).expect("reopen credential store");
+
+    assert!(rejected.1.to_string().contains("state is too large"));
+    assert!(retry.to_string().contains("state is too large"));
+    assert_eq!(
+        fs::read(path).expect("credential state after rejection"),
+        before
+    );
+    assert_eq!(
+        reopened
+            .get(
+                accepted.last().expect("accepted credential"),
+                "openrouter",
+                Some("https://openrouter.ai/api/v1"),
+            )
+            .expect("read accepted credential"),
+        Some(api_key)
+    );
+    assert_eq!(
+        reopened
+            .get(
+                &rejected.0,
+                "openrouter",
+                Some("https://openrouter.ai/api/v1"),
+            )
+            .expect("read rejected credential"),
+        None
+    );
+}
+
+#[test]
+fn provider_credential_open_revalidates_stored_entries() {
+    let directory = tempfile::tempdir().expect("state directory");
+    let path = directory.path().join("credentials.json");
+    fs::write(
+        &path,
+        serde_json::to_vec(&serde_json::json!({
+            "not canonical": {
+                "provider": "openrouter",
+                "api_key": "secret",
+                "base_url": "https://openrouter.ai/api/v1"
+            }
+        }))
+        .expect("encode invalid credential state"),
+    )
+    .expect("write invalid credential state");
+
+    let error = match CredentialStore::open(path) {
+        Ok(_) => panic!("invalid stored entry must fail"),
+        Err(error) => error,
+    };
+
+    assert!(error.to_string().contains("provider instance ID"));
+}
+
 #[cfg(unix)]
 #[test]
 fn initialized_state_and_config_are_owner_only() {
