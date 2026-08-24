@@ -38,7 +38,10 @@ final class AppModel {
     var cloudAccount: MobiusCloudAccount?
     var cloudAction: MobiusCloudAction = .idle
     var cloudError: String?
+    var cloudIssue: MobiusCloudIssue?
     var isUpdatingCloudDiagnostics = false
+    @ObservationIgnored var cloudPurchaseUpdateTask: Task<Void, Never>?
+    @ObservationIgnored var cloudPurchaseTasks: [String: Task<Void, Error>] = [:]
     var hasCloudAccount: Bool { cloudSession != nil }
     var isLoadingCloudAccount: Bool {
         hasCloudAccount && cloudAccount == nil && cloudError == nil
@@ -267,6 +270,7 @@ final class AppModel {
     @ObservationIgnored let client: GatewayClient
     @ObservationIgnored let store: GatewayStore
     @ObservationIgnored let cloudClient: MobiusCloudClient
+    @ObservationIgnored let cloudPurchases: MobiusCloudPurchases
     @ObservationIgnored let settingsDefaults: UserDefaults
     @ObservationIgnored let appLockAuthenticator: AppLockAuthenticator
     @ObservationIgnored let requestSender:
@@ -387,7 +391,8 @@ final class AppModel {
         )? = nil,
         reconnectDelay: (@Sendable (Int) -> Duration)? = nil,
         titleWriter: ChatTitleWriter? = nil,
-        cloudClient: MobiusCloudClient? = nil
+        cloudClient: MobiusCloudClient? = nil,
+        cloudPurchases: MobiusCloudPurchases? = nil
     ) {
         let client = client ?? GatewayClient()
         let store = store ?? GatewayStore()
@@ -397,6 +402,7 @@ final class AppModel {
         self.client = client
         self.store = store
         self.cloudClient = cloudClient
+        self.cloudPurchases = cloudPurchases ?? .live()
         self.cloudSession = try? cloudClient.loadSession()
         self.settingsDefaults = settingsDefaults
         self.appLockAuthenticator = appLockAuthenticator
@@ -421,19 +427,6 @@ final class AppModel {
         self.isAppLocked = appLockEnabled
         self.appLockAuthenticationMethod = appLockAuthenticator.method
         if selectedAccountID == nil { selectedAccountID = accounts.first?.id }
-        if cloudSession != nil,
-           let selectedAccountID,
-           let index = accounts.firstIndex(where: { $0.id == selectedAccountID }),
-           isMobiusCloudSpriteEndpoint(accounts[index].endpoint) {
-            if accounts[index].displayName != mobiusCloudGatewayDisplayName,
-               let renamed = try? store.rename(accounts[index], to: mobiusCloudGatewayDisplayName) {
-                accounts[index] = renamed
-            }
-            if accounts[index].machineName != mobiusCloudGatewayDisplayName {
-                try? store.recordMachineName(mobiusCloudGatewayDisplayName, for: accounts[index])
-                accounts[index].machineName = mobiusCloudGatewayDisplayName
-            }
-        }
         showsPairing = accounts.isEmpty
         #if DEBUG
         let environment = ProcessInfo.processInfo.environment
@@ -453,6 +446,7 @@ final class AppModel {
         default: break
         }
         #endif
+        observeCloudPurchaseUpdates()
     }
 
     deinit {
@@ -462,6 +456,8 @@ final class AppModel {
         composerDraftSaveTask?.cancel()
         pairingCodeExpiryTask?.cancel()
         toastDismissTask?.cancel()
+        cloudPurchaseUpdateTask?.cancel()
+        cloudPurchaseTasks.values.forEach { $0.cancel() }
         chatTitleTasks.values.forEach { $0.cancel() }
     }
 
@@ -471,16 +467,7 @@ final class AppModel {
 
     var mobiusCloudGateway: GatewayAccount? {
         guard let userID = cloudSession?.userID else { return nil }
-        if let exact = accounts.first(where: { $0.cloudUserID == userID }) {
-            return exact
-        }
-        let legacy = accounts.filter {
-            $0.cloudUserID == nil
-                && ($0.displayName == mobiusCloudGatewayDisplayName
-                    || $0.machineName == mobiusCloudGatewayDisplayName
-                    || isMobiusCloudSpriteEndpoint($0.endpoint))
-        }
-        return legacy.count == 1 ? legacy[0] : nil
+        return accounts.first { $0.cloudUserID == userID }
     }
 
     var selectedGatewayIsMobiusCloud: Bool {

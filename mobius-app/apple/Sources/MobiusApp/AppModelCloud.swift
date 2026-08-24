@@ -1,11 +1,6 @@
 import Foundation
-import StoreKit
 
 let mobiusCloudGatewayDisplayName = "möbius Cloud"
-
-func isMobiusCloudSpriteEndpoint(_ endpoint: GatewayEndpoint) -> Bool {
-    endpoint.host.lowercased().hasSuffix(".sprites.app")
-}
 
 enum MobiusCloudAction: Equatable {
     case idle
@@ -19,38 +14,53 @@ enum MobiusCloudAction: Equatable {
     var isRunning: Bool { self != .idle }
 }
 
+enum MobiusCloudIssue: Equatable {
+    case subscriptionAccountConflict
+}
+
 extension AppModel {
+    func observeCloudPurchaseUpdates() {
+        guard cloudPurchaseUpdateTask == nil else { return }
+        let updates = cloudPurchases.updates()
+        cloudPurchaseUpdateTask = Task { @MainActor [weak self] in
+            for await purchase in updates {
+                guard let self, let requestedSession = cloudSession else { continue }
+                var activeSession = requestedSession
+                do {
+                    _ = try await authoritativeCloudAccount(requestedSession: requestedSession)
+                    guard let repairedSession = cloudSession else { continue }
+                    activeSession = repairedSession
+                    try await acknowledge(purchase)
+                    guard cloudSession == activeSession else { continue }
+                    _ = try await authoritativeCloudAccount(requestedSession: activeSession)
+                    clearCloudError()
+                } catch is CancellationError {
+                    continue
+                } catch {
+                    guard cloudSession == activeSession else { continue }
+                    reportCloud(error)
+                }
+            }
+        }
+    }
+
     func refreshCloudAccount() async {
-        guard let userID = cloudSession?.userID else {
+        guard let requestedSession = cloudSession else {
             cloudAccount = nil
             return
         }
-        cloudError = nil
+        var activeSession = requestedSession
+        clearCloudError()
 
         do {
-            var account = try await cloudClient.account()
-            if let verification = try await currentCloudEntitlement() {
-                let transaction = try verifiedCloudTransaction(from: verification)
-                if !account.subscribed {
-                    try await cloudClient.submitSubscription(
-                        signedTransaction: verification.jwsRepresentation
-                    )
-                    await transaction.finish()
-                }
-                account = MobiusCloudAccount(
-                    email: account.email,
-                    subscribed: true,
-                    sharesDiagnostics: account.sharesDiagnostics,
-                    subscriptionStartedAt: transaction.originalPurchaseDate,
-                    luna: account.luna
-                )
-            }
-            guard cloudSession?.userID == userID else { return }
-            cloudAccount = account
+            let account = try await authoritativeCloudAccount()
+            guard let repairedSession = cloudSession else { return }
+            activeSession = repairedSession
+            _ = try await reconcileActivePurchases(from: account)
         } catch is CancellationError {
             return
         } catch {
-            guard cloudSession?.userID == userID else { return }
+            guard cloudSession == activeSession else { return }
             reportCloud(error)
         }
     }
@@ -62,13 +72,14 @@ extension AppModel {
               !isUpdatingCloudDiagnostics
         else { return }
         isUpdatingCloudDiagnostics = true
-        cloudError = nil
+        clearCloudError()
         defer { isUpdatingCloudDiagnostics = false }
 
         do {
             try await cloudClient.updateSharesDiagnostics(sharesDiagnostics)
             guard cloudSession?.userID == userID, let account = cloudAccount else { return }
             cloudAccount = MobiusCloudAccount(
+                userID: account.userID,
                 email: account.email,
                 subscribed: account.subscribed,
                 sharesDiagnostics: sharesDiagnostics,
@@ -85,12 +96,11 @@ extension AppModel {
 
     func signInAndPurchaseCloud(
         authorizationCode: String,
-        nonce: String,
-        product: Product?
+        nonce: String
     ) async -> Bool {
         guard cloudAction == .idle else { return false }
         cloudAction = .signingIn
-        cloudError = nil
+        clearCloudError()
         defer { cloudAction = .idle }
 
         do {
@@ -100,7 +110,12 @@ extension AppModel {
             )
             cloudAccount = nil
             cloudAction = .purchasing
-            return try await continueCloudSignup(with: product)
+            return try await continueCloudSignup()
+        } catch MobiusCloudPurchaseError.cancelled {
+            return false
+        } catch MobiusCloudPurchaseError.pending {
+            showToast("Purchase approval is pending.", tone: .info)
+            return false
         } catch is CancellationError {
             return false
         } catch {
@@ -109,18 +124,24 @@ extension AppModel {
         }
     }
 
-    func purchaseCloud(_ product: Product) async -> Bool {
+    func purchaseCloud() async -> Bool {
         guard cloudAction == .idle else { return false }
+        guard cloudIssue != .subscriptionAccountConflict else { return false }
         guard cloudSession != nil else {
             reportCloud(MobiusCloudError.authenticationRequired)
             return false
         }
         cloudAction = .purchasing
-        cloudError = nil
+        clearCloudError()
         defer { cloudAction = .idle }
 
         do {
-            return try await continueCloudSignup(with: product)
+            return try await continueCloudSignup()
+        } catch MobiusCloudPurchaseError.cancelled {
+            return false
+        } catch MobiusCloudPurchaseError.pending {
+            showToast("Purchase approval is pending.", tone: .info)
+            return false
         } catch is CancellationError {
             return false
         } catch {
@@ -136,18 +157,11 @@ extension AppModel {
             return false
         }
         cloudAction = .provisioning
-        cloudError = nil
+        clearCloudError()
         defer { cloudAction = .idle }
 
         do {
-            let account = try await cloudClient.account()
-            cloudAccount = MobiusCloudAccount(
-                email: account.email,
-                subscribed: account.subscribed,
-                sharesDiagnostics: account.sharesDiagnostics,
-                subscriptionStartedAt: cloudAccount?.subscriptionStartedAt,
-                luna: account.luna
-            )
+            let account = try await authoritativeCloudAccount()
             guard account.subscribed else { throw MobiusCloudError.subscriptionRequired }
             return try await provisionCloudGateway()
         } catch is CancellationError {
@@ -158,24 +172,26 @@ extension AppModel {
         }
     }
 
-    func restoreCloudPurchases(
-        synchronize: () async throws -> Void = { try await AppStore.sync() }
-    ) async -> Bool {
+    func restoreCloudPurchases() async -> Bool {
         guard cloudAction == .idle else { return false }
         guard cloudSession != nil else {
             reportCloud(MobiusCloudError.authenticationRequired)
             return false
         }
         cloudAction = .restoring
-        cloudError = nil
+        clearCloudError()
         defer { cloudAction = .idle }
 
         do {
-            try await synchronize()
-            guard try await continueCloudSignup(with: nil) else {
-                throw MobiusCloudError.invalidSignedTransaction
+            let account = try await authoritativeCloudAccount()
+            let recoveredAccount = try await reconcileActivePurchases(
+                from: account,
+                synchronize: true
+            )
+            guard recoveredAccount.subscribed else {
+                throw MobiusCloudError.subscriptionRequired
             }
-            return true
+            return try await provisionCloudGateway()
         } catch is CancellationError {
             return false
         } catch {
@@ -188,89 +204,122 @@ extension AppModel {
         reportCloud(MobiusCloudError.invalidAuthorization)
     }
 
-    private func continueCloudSignup(with product: Product?) async throws -> Bool {
-        guard let userID = cloudSession?.userID else {
+    func cloudProductDisplayPrice() async throws -> String {
+        try await cloudPurchases.displayPrice()
+    }
+
+    func manageCloudSubscription() async {
+        do {
+            try await cloudPurchases.manage()
+            await refreshCloudAccount()
+        } catch is CancellationError {
+            return
+        } catch {
+            reportCloud(error)
+        }
+    }
+
+    private func continueCloudSignup() async throws -> Bool {
+        let account = try await authoritativeCloudAccount()
+        let recoveredAccount = try await reconcileActivePurchases(from: account)
+        if recoveredAccount.subscribed {
+            return try await provisionCloudGateway()
+        }
+
+        let purchase = try await cloudPurchases.purchase(userID: recoveredAccount.userID)
+        try await acknowledge(purchase)
+        let verifiedAccount = try await authoritativeCloudAccount()
+        guard verifiedAccount.subscribed else { throw MobiusCloudError.subscriptionRequired }
+        return try await provisionCloudGateway()
+    }
+
+    private func reconcileActivePurchases(
+        from account: MobiusCloudAccount,
+        synchronize: Bool = false
+    ) async throws -> MobiusCloudAccount {
+        guard let requestedSession = cloudSession else {
             throw MobiusCloudError.authenticationRequired
         }
-
-        let account = try await cloudClient.account()
-        cloudAccount = MobiusCloudAccount(
-            email: account.email,
-            subscribed: account.subscribed,
-            sharesDiagnostics: account.sharesDiagnostics,
-            subscriptionStartedAt: cloudAccount?.subscriptionStartedAt,
-            luna: account.luna
-        )
-        if account.subscribed {
-            return try await provisionCloudGateway()
+        let unfinished = try await cloudPurchases.unfinishedPurchases()
+        let current = account.subscribed && !synchronize
+            ? MobiusCloudPurchaseScan()
+            : try await cloudPurchases.currentEntitlements(synchronize: synchronize)
+        var seenJWS: Set<String> = []
+        let purchases = (unfinished.purchases + current.purchases).filter {
+            seenJWS.insert($0.jws).inserted
         }
-
-        if let verification = try await currentCloudEntitlement() {
-            try await acknowledge(verification)
-            return try await provisionCloudGateway()
-        }
-
-        guard let product else { return false }
-        guard product.id == mobiusCloudMonthlyProductID else {
-            throw MobiusCloudError.invalidSignedTransaction
-        }
-
-        switch try await product.purchase(options: [.appAccountToken(userID)]) {
-        case .success(let verification):
-            try await acknowledge(verification)
-            return try await provisionCloudGateway()
-        case .pending:
-            showToast("Purchase approval is pending.", tone: .info)
-            return false
-        case .userCancelled:
-            return false
-        @unknown default:
-            throw MobiusCloudError.unverifiedTransaction
-        }
-    }
-
-    private func acknowledge(_ verification: VerificationResult<Transaction>) async throws {
-        let transaction = try verifiedCloudTransaction(from: verification)
-
-        try await cloudClient.submitSubscription(
-            signedTransaction: verification.jwsRepresentation
-        )
-        await transaction.finish()
-        cloudAccount = MobiusCloudAccount(
-            email: cloudAccount?.email,
-            subscribed: true,
-            sharesDiagnostics: cloudAccount?.sharesDiagnostics ?? false,
-            subscriptionStartedAt: transaction.originalPurchaseDate,
-            luna: cloudAccount?.luna
-        )
-    }
-
-    private func currentCloudEntitlement() async throws -> VerificationResult<Transaction>? {
-        var sawUnverifiedTransaction = false
-        for await verification in Transaction.currentEntitlements(
-            for: mobiusCloudMonthlyProductID
-        ) {
-            switch verification {
-            case .verified:
-                _ = try verifiedCloudTransaction(from: verification)
-                return verification
-            case .unverified:
-                sawUnverifiedTransaction = true
+        var firstError: Error? = unfinished.hasUnverifiedPurchase || current.hasUnverifiedPurchase
+            ? MobiusCloudPurchaseError.unavailable
+            : nil
+        for purchase in purchases {
+            guard cloudSession == requestedSession else { throw CancellationError() }
+            do {
+                try await acknowledge(purchase)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                guard cloudSession == requestedSession else { throw CancellationError() }
+                if firstError == nil { firstError = error }
             }
         }
-        if sawUnverifiedTransaction { throw MobiusCloudError.unverifiedTransaction }
-        return nil
+        let refreshed = purchases.isEmpty
+            ? account
+            : try await authoritativeCloudAccount(requestedSession: requestedSession)
+        if refreshed.subscribed { return refreshed }
+        if let firstError { throw firstError }
+        return refreshed
     }
 
-    private func verifiedCloudTransaction(
-        from verification: VerificationResult<Transaction>
-    ) throws -> Transaction {
-        // Cloud owns account-token verification because only it can safely relink a transaction.
-        guard case .verified(let transaction) = verification,
-              transaction.productID == mobiusCloudMonthlyProductID,
-              transaction.revocationDate == nil
-        else { throw MobiusCloudError.unverifiedTransaction }
-        return transaction
+    private func acknowledge(_ purchase: MobiusCloudPurchase) async throws {
+        guard let requestedSession = cloudSession else {
+            throw MobiusCloudError.authenticationRequired
+        }
+        let taskKey = "\(requestedSession.credentialID):\(purchase.jws)"
+        if let task = cloudPurchaseTasks[taskKey] {
+            return try await task.value
+        }
+        let task = Task { @MainActor [weak self, cloudClient] in
+            guard self?.cloudSession == requestedSession else { throw CancellationError() }
+            try await cloudClient.submitSubscription(
+                jws: purchase.jws,
+                appTransactionJWS: purchase.appTransactionJWS
+            )
+            guard self?.cloudSession == requestedSession else { throw CancellationError() }
+            try await purchase.finish()
+        }
+        cloudPurchaseTasks[taskKey] = task
+        defer { cloudPurchaseTasks[taskKey] = nil }
+        try await task.value
+    }
+
+    private func authoritativeCloudAccount(
+        requestedSession: MobiusCloudSession? = nil
+    ) async throws -> MobiusCloudAccount {
+        guard let requestedSession = requestedSession ?? cloudSession else {
+            throw MobiusCloudError.authenticationRequired
+        }
+        let account = try await cloudClient.account()
+        guard cloudSession == requestedSession else { throw CancellationError() }
+
+        if account.userID != requestedSession.userID {
+            if let index = accounts.firstIndex(where: {
+                $0.cloudUserID == requestedSession.userID || $0.cloudUserID == account.userID
+            }), accounts[index].cloudUserID != account.userID {
+                try store.recordCloudUserID(account.userID, for: accounts[index])
+                accounts[index].cloudUserID = account.userID
+            }
+            guard try cloudClient.replaceSessionUserID(
+                account.userID,
+                replacing: requestedSession.userID
+            ) else { throw CancellationError() }
+        }
+        cloudSession = MobiusCloudSession(
+            userID: account.userID,
+            expiresAt: requestedSession.expiresAt,
+            credentialID: requestedSession.credentialID
+        )
+        cloudAccount = account
+        return account
     }
 
     private func provisionCloudGateway() async throws -> Bool {
@@ -346,7 +395,7 @@ extension AppModel {
         }
         let cloudGateway = mobiusCloudGateway
         cloudAction = .deleting
-        cloudError = nil
+        clearCloudError()
         defer { cloudAction = .idle }
 
         do {
@@ -375,13 +424,19 @@ extension AppModel {
     func reportCloud(_ error: Error) {
         if let cloudError = error as? MobiusCloudError {
             switch cloudError {
+            case .subscriptionAccountConflict:
+                cloudIssue = .subscriptionAccountConflict
             case .authenticationRequired, .sessionExpired, .server(401):
+                cloudIssue = nil
                 clearCloudAccountState()
             default:
-                break
+                cloudIssue = nil
             }
+        } else {
+            cloudIssue = nil
         }
         let message = (error as? MobiusCloudError)?.localizedDescription
+            ?? (error as? MobiusCloudPurchaseError)?.localizedDescription
             ?? "Couldn’t connect to möbius Cloud. Try again."
         cloudError = message
         showToast(message, tone: .error)
@@ -391,8 +446,14 @@ extension AppModel {
         cloudSession = nil
         cloudAccount = nil
         cloudError = nil
+        cloudIssue = nil
         availableExtensions = []
         extensionCatalogError = nil
         isLoadingExtensionCatalog = false
+    }
+
+    private func clearCloudError() {
+        cloudError = nil
+        cloudIssue = nil
     }
 }

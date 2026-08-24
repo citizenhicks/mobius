@@ -28,13 +28,15 @@ option in the gateway guide.
 
 ## möbius Cloud beta
 
-The cloud offer requests `app.mobius.client.cloud.monthly.v2` from StoreKit and
-renders its storefront-localized `displayPrice`. Configure that product in App
+The cloud offer uses StoreKit 2 to request `app.mobius.client.cloud.monthly.v2`
+and render its storefront-localized `displayPrice`. Configure that product in App
 Store Connect as a one-month auto-renewable subscription with a seven-day free
 introductory offer before distributing through TestFlight. Sign in with Apple
-creates the Cloud session; a verified StoreKit purchase or restore activates the
-entitlement, waits for the hosted gateway, and pairs the app with its one-time
-grant.
+creates the Cloud session; the app sends the locally verified transaction and
+AppTransaction JWS values to the Cloud backend and finishes the transaction only
+after backend acceptance.
+The backend account remains the subscription authority before the app waits for
+the hosted gateway and pairs with its one-time grant.
 
 The one-time code is only the first pairing credential. A successful pairing
 returns a per-pairing bearer token, which this app stores in device-only Keychain

@@ -1,5 +1,4 @@
 import Foundation
-import StoreKit
 import SwiftUI
 
 struct ProfileView: View {
@@ -188,10 +187,8 @@ private struct SettingsInformationRow: View {
 private struct CloudAccountSettings: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
-    @State private var showsSubscriptionManagement = false
     @State private var confirmsSignOut = false
     @State private var confirmsAccountDeletion = false
-    @State private var showsActiveSubscriptionWarning = false
     @State private var showsAccountDeletionAuthentication = false
 
     /// Signed out, this is an offer; signed in, it is an account. Account actions stay absent
@@ -255,12 +252,11 @@ private struct CloudAccountSettings: View {
                     .mobiusProminentButton()
                 }
                 Button("Manage subscription", glyph: .sealCheck) {
-                    showsSubscriptionManagement = true
+                    Task { await model.manageCloudSubscription() }
                 }
                 .buttonStyle(.mobiusGlass)
                 .tint(palette.accent)
                 .accessibilityHint("Opens App Store subscription management, where you can unsubscribe")
-                .manageSubscriptionsSheet(isPresented: $showsSubscriptionManagement)
                 Button(
                     model.cloudAction == .restoring ? "Restoring purchases…" : "Restore purchases",
                     glyph: .arrowClockwise
@@ -279,11 +275,7 @@ private struct CloudAccountSettings: View {
                 .disabled(model.cloudAction.isRunning)
                 .accessibilityHint("Forgets this Cloud sign-in and its paired gateway")
                 Button("Delete account", glyph: .trash, role: .destructive) {
-                    if model.cloudAccount?.subscribed == true {
-                        showsActiveSubscriptionWarning = true
-                    } else {
-                        confirmsAccountDeletion = true
-                    }
+                    confirmsAccountDeletion = true
                 }
                 .buttonStyle(.mobiusGlassProminent)
                 .tint(palette.danger)
@@ -302,29 +294,20 @@ private struct CloudAccountSettings: View {
             } message: {
                 Text("This device forgets the Cloud sign-in and removes its paired gateway. Your subscription is unaffected.")
             }
-            .alert("Cancel your subscription first", isPresented: $showsActiveSubscriptionWarning) {
-                Button("Manage subscription") {
-                    showsSubscriptionManagement = true
-                }
-                Button("OK", role: .cancel) {}
-            } message: {
-                Text("An active möbius Cloud subscription cannot be deleted. Cancel it in the App Store, then delete your account after the subscription expires.")
-            }
             .alert("Delete your möbius Cloud account?", isPresented: $confirmsAccountDeletion) {
-                Button("Continue", role: .destructive) {
+                Button("Delete now", role: .destructive) {
                     showsAccountDeletionAuthentication = true
+                }
+                Button("Manage subscription") {
+                    Task { await model.manageCloudSubscription() }
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("This permanently deletes your Cloud account, gateway, chats, credentials, and other Cloud data. It cannot be undone.")
+                Text("This permanently deletes your Cloud account, gateway, chats, credentials, and other Cloud data. Access ends immediately; Cloud resources may take a short time to erase. App Store billing is separate and may continue until you cancel the subscription.")
             }
             .sheet(isPresented: $showsAccountDeletionAuthentication) {
                 MobiusCloudAccountDeletionSheet()
                     .presentationDragIndicator(.visible)
-            }
-            .onChange(of: showsSubscriptionManagement) { wasPresented, isPresented in
-                guard wasPresented, !isPresented else { return }
-                Task { await model.refreshCloudAccount() }
             }
         } else {
             Text("möbius works on its own with a gateway you run. Connect möbius Cloud to have one provisioned and managed for you.")

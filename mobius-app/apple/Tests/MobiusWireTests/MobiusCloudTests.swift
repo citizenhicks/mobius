@@ -44,11 +44,15 @@ final class MobiusCloudTests: XCTestCase {
         XCTAssertFalse(model.isLoadingCloudAccount)
         model.cloudError = nil
         model.cloudAccount = MobiusCloudAccount(
+            userID: UUID(),
             email: "private@privaterelay.appleid.com",
             subscribed: true,
             sharesDiagnostics: false
         )
         XCTAssertFalse(model.isLoadingCloudAccount)
+
+        model.reportCloud(MobiusCloudPurchaseError.unavailable)
+        XCTAssertEqual(model.cloudError, "The App Store purchase could not be completed.")
     }
 
     func testClientUsesNativeCloudContractAndBearerFromDeviceOnlyKeychain() async throws {
@@ -60,10 +64,13 @@ final class MobiusCloudTests: XCTestCase {
         let reset = try XCTUnwrap(
             ISO8601DateFormatter().date(from: "2099-02-01T00:00:00Z")
         )
+        let subscriptionStartedAt = try XCTUnwrap(
+            ISO8601DateFormatter().date(from: "2026-08-24T00:00:00Z")
+        )
         var requests: [URLRequest] = []
         let responses = [
             #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#,
-            #"{"email":"private@privaterelay.appleid.com","subscribed":true,"sharesDiagnostics":true,"luna":{"creditMicrousd":2400000,"remainingMicrousd":1992000,"resetsAt":"2099-02-01T00:00:00Z"}}"#,
+            #"{"userId":"\#(userID.uuidString)","email":"private@privaterelay.appleid.com","subscribed":true,"sharesDiagnostics":true,"subscriptionStartedAt":"2026-08-24T00:00:00Z","luna":{"creditMicrousd":2400000,"remainingMicrousd":1992000,"resetsAt":"2099-02-01T00:00:00Z"}}"#,
             #"{}"#,
             #"{"accepted":true}"#,
             #"{"status":"ready"}"#,
@@ -91,7 +98,10 @@ final class MobiusCloudTests: XCTestCase {
         )
         let account = try await client.account()
         try await client.updateSharesDiagnostics(false)
-        try await client.submitSubscription(signedTransaction: "header.payload.signature")
+        try await client.submitSubscription(
+            jws: "header.payload.signature",
+            appTransactionJWS: "app.header.signature"
+        )
         let status = try await client.gatewayStatus()
         let grant = try await client.createPairingGrant()
         try await client.deleteAccount(
@@ -103,9 +113,11 @@ final class MobiusCloudTests: XCTestCase {
         XCTAssertEqual(
             account,
             MobiusCloudAccount(
+                userID: userID,
                 email: "private@privaterelay.appleid.com",
                 subscribed: true,
                 sharesDiagnostics: true,
+                subscriptionStartedAt: subscriptionStartedAt,
                 luna: MobiusCloudUsageLimit(
                     creditMicrousd: 2_400_000,
                     remainingMicrousd: 1_992_000,
@@ -156,6 +168,14 @@ final class MobiusCloudTests: XCTestCase {
             JSONSerialization.jsonObject(with: accountUpdateBody) as? [String: Bool]
         )
         XCTAssertEqual(accountUpdateJSON, ["sharesDiagnostics": false])
+        let subscriptionBody = try XCTUnwrap(requests[3].httpBody)
+        let subscriptionJSON = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: subscriptionBody) as? [String: String]
+        )
+        XCTAssertEqual(subscriptionJSON, [
+            "jws": "header.payload.signature",
+            "appTransactionJws": "app.header.signature",
+        ])
 
     }
 
@@ -185,10 +205,10 @@ final class MobiusCloudTests: XCTestCase {
                 authorizationCode: "delete-code",
                 nonce: String(repeating: "d", count: 43)
             )
-            XCTFail("Expected an active subscription to block deletion")
+            XCTFail("Expected rejected account deletion")
         } catch let error as MobiusCloudError {
-            guard case .activeSubscription = error else {
-                return XCTFail("Expected activeSubscription, got \(error)")
+            guard case .server(409) = error else {
+                return XCTFail("Expected server(409), got \(error)")
             }
         }
         XCTAssertNotNil(try client.loadSession())
@@ -208,11 +228,57 @@ final class MobiusCloudTests: XCTestCase {
         XCTAssertNotNil(try client.loadSession())
     }
 
-    func testUnauthorizedAccountDeletionClearsCloudSession() async throws {
+    func testAuthenticationExplainsPendingAccountDeletion() async throws {
+        let store = MobiusCloudSessionStore(service: "app.mobius.cloud.tests.\(UUID())")
+        defer { try? store.remove() }
+        let client = MobiusCloudClient(store: store) { request in
+            try self.response(for: request, status: 409, json: #"{}"#)
+        }
+
+        do {
+            _ = try await client.authenticate(
+                authorizationCode: "apple-code",
+                nonce: String(repeating: "n", count: 43)
+            )
+            XCTFail("Expected account deletion to block sign-in")
+        } catch let error as MobiusCloudError {
+            guard case .accountDeletionPending = error else {
+                return XCTFail("Expected accountDeletionPending, got \(error)")
+            }
+            XCTAssertEqual(
+                error.localizedDescription,
+                "Your previous Cloud account is still being deleted. Try again shortly."
+            )
+        }
+    }
+
+    func testAuthenticationDoesNotDescribeARejectedAppleCodeAsAnExpiredSession() async throws {
+        let store = MobiusCloudSessionStore(service: "app.mobius.cloud.tests.\(UUID())")
+        defer { try? store.remove() }
+        let client = MobiusCloudClient(store: store) { request in
+            try self.response(for: request, status: 401, json: #"{}"#)
+        }
+
+        do {
+            _ = try await client.authenticate(
+                authorizationCode: "rejected-code",
+                nonce: String(repeating: "n", count: 43)
+            )
+            XCTFail("Expected rejected Apple authorization")
+        } catch let error as MobiusCloudError {
+            guard case .invalidAuthorization = error else {
+                return XCTFail("Expected invalidAuthorization, got \(error)")
+            }
+            XCTAssertEqual(error.localizedDescription, "Apple sign-in could not be completed.")
+        }
+    }
+
+    func testSubscriptionConflictRequiresExactServerCode() async throws {
         let service = "app.mobius.cloud.tests.\(UUID())"
         let store = MobiusCloudSessionStore(service: service)
         defer { try? store.remove() }
         var requestCount = 0
+        var errorCode = "something_else"
         let client = MobiusCloudClient(store: store) { request in
             requestCount += 1
             if requestCount == 1 {
@@ -221,7 +287,65 @@ final class MobiusCloudTests: XCTestCase {
                     json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
                 )
             }
-            return try self.response(for: request, status: 401, json: #"{}"#)
+            return try self.response(
+                for: request,
+                status: 409,
+                json: #"{"error":"\#(errorCode)"}"#
+            )
+        }
+        _ = try await client.authenticate(
+            authorizationCode: "apple-code",
+            nonce: String(repeating: "n", count: 43)
+        )
+
+        do {
+            try await client.submitSubscription(
+                jws: "header.payload.signature",
+                appTransactionJWS: "app.header.signature"
+            )
+            XCTFail("Expected a generic conflict response")
+        } catch let error as MobiusCloudError {
+            guard case .server(409) = error else {
+                return XCTFail("Expected server(409), got \(error)")
+            }
+        }
+
+        errorCode = "subscription_account_conflict"
+        do {
+            try await client.submitSubscription(
+                jws: "header.payload.signature",
+                appTransactionJWS: "app.header.signature"
+            )
+            XCTFail("Expected a subscription ownership conflict")
+        } catch let error as MobiusCloudError {
+            guard case .subscriptionAccountConflict = error else {
+                return XCTFail("Expected subscriptionAccountConflict, got \(error)")
+            }
+        }
+    }
+
+    func testUnauthorizedAccountDeletionClearsCloudSession() async throws {
+        let userID = try XCTUnwrap(UUID(
+            uuidString: "00000000-0000-0000-0000-000000000001"
+        ))
+        let service = "app.mobius.cloud.tests.\(UUID())"
+        let store = MobiusCloudSessionStore(service: service)
+        defer { try? store.remove() }
+        let client = MobiusCloudClient(store: store) { request in
+            switch (request.url?.path, request.httpMethod) {
+            case ("/api/mobile/auth/apple", "POST"):
+                return try self.response(
+                    for: request,
+                    json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                )
+            case ("/api/mobile/account", "GET"):
+                return try self.response(
+                    for: request,
+                    json: #"{"userId":"\#(userID.uuidString)","email":null,"subscribed":false,"sharesDiagnostics":false}"#
+                )
+            default:
+                return try self.response(for: request, status: 401, json: #"{}"#)
+            }
         }
         _ = try await client.authenticate(
             authorizationCode: "apple-code",
@@ -233,9 +357,19 @@ final class MobiusCloudTests: XCTestCase {
         let model = AppModel(
             store: GatewayStore(defaults: defaults),
             settingsDefaults: defaults,
-            cloudClient: client
+            cloudClient: client,
+            cloudPurchases: MobiusCloudPurchases(
+                displayPrice: { "$9.99" },
+                unfinishedPurchases: { MobiusCloudPurchaseScan() },
+                currentEntitlements: { synchronize in
+                    XCTAssertTrue(synchronize)
+                    return MobiusCloudPurchaseScan()
+                },
+                purchase: { _ in throw MobiusCloudPurchaseError.unavailable }
+            )
         )
         model.cloudAccount = MobiusCloudAccount(
+            userID: userID,
             email: nil,
             subscribed: false,
             sharesDiagnostics: false
@@ -258,13 +392,19 @@ final class MobiusCloudTests: XCTestCase {
         let service = "app.mobius.cloud.tests.\(UUID())"
         let store = MobiusCloudSessionStore(service: service)
         defer { try? store.remove() }
-        var requestCount = 0
+        var requests: [URLRequest] = []
         let client = MobiusCloudClient(store: store) { request in
-            requestCount += 1
-            if requestCount == 1 {
+            requests.append(request)
+            if request.url?.path == "/api/mobile/auth/apple" {
                 return try self.response(
                     for: request,
                     json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"\#(currentUserID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                )
+            }
+            if request.httpMethod == "GET" {
+                return try self.response(
+                    for: request,
+                    json: #"{"userId":"\#(currentUserID.uuidString)","email":"private@privaterelay.appleid.com","subscribed":false,"sharesDiagnostics":false}"#
                 )
             }
             return try self.response(for: request, status: 202, json: "")
@@ -302,9 +442,19 @@ final class MobiusCloudTests: XCTestCase {
             settingsDefaults: defaults,
             requestSender: { _ in },
             connectionOpener: { _ in AsyncThrowingStream { _ in } },
-            cloudClient: client
+            cloudClient: client,
+            cloudPurchases: MobiusCloudPurchases(
+                displayPrice: { "$9.99" },
+                unfinishedPurchases: { MobiusCloudPurchaseScan() },
+                currentEntitlements: { synchronize in
+                    XCTAssertTrue(synchronize)
+                    return MobiusCloudPurchaseScan()
+                },
+                purchase: { _ in throw MobiusCloudPurchaseError.unavailable }
+            )
         )
         model.cloudAccount = MobiusCloudAccount(
+            userID: currentUserID,
             email: "private@privaterelay.appleid.com",
             subscribed: false,
             sharesDiagnostics: false
@@ -320,11 +470,85 @@ final class MobiusCloudTests: XCTestCase {
         XCTAssertNil(model.cloudAccount)
         XCTAssertNil(try client.loadSession())
         XCTAssertEqual(model.cloudAction, .idle)
+        XCTAssertEqual(
+            requests.map { ($0.url?.path ?? "") + ":" + ($0.httpMethod ?? "") },
+            [
+                "/api/mobile/auth/apple:POST",
+                "/api/mobile/account:DELETE",
+            ]
+        )
         XCTAssertEqual(model.accounts.map(\.id), [retainedGateway.id])
         XCTAssertEqual(gatewayStore.loadAccounts().map(\.id), [retainedGateway.id])
         XCTAssertNoThrow(try gatewayStore.token(for: retainedGateway))
         XCTAssertThrowsError(try gatewayStore.token(for: deletedGateway))
         try await gatewayStore.remove(retainedGateway)
+    }
+
+    func testAccountDeletionDoesNotScanStoreKitOrBlockActiveSubscription() async throws {
+        let userID = UUID()
+        let token = String(repeating: "t", count: 43)
+        let service = "app.mobius.cloud.tests.\(UUID())"
+        let sessionStore = MobiusCloudSessionStore(service: service)
+        defer { try? sessionStore.remove() }
+        var requests: [URLRequest] = []
+        let client = MobiusCloudClient(store: sessionStore) { request in
+            requests.append(request)
+            switch (request.url?.path, request.httpMethod) {
+            case ("/api/mobile/auth/apple", "POST"):
+                return try self.response(
+                    for: request,
+                    json: #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                )
+            case ("/api/mobile/account", "DELETE"):
+                return try self.response(for: request, json: #"{}"#)
+            default:
+                return try self.response(for: request, status: 500, json: #"{}"#)
+            }
+        }
+        _ = try await client.authenticate(
+            authorizationCode: "apple-code",
+            nonce: String(repeating: "n", count: 43)
+        )
+        var readCurrentEntitlements = false
+        let suiteName = "app.mobius.cloud.tests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let model = AppModel(
+            store: GatewayStore(defaults: defaults),
+            settingsDefaults: defaults,
+            cloudClient: client,
+            cloudPurchases: MobiusCloudPurchases(
+                displayPrice: { "$9.99" },
+                unfinishedPurchases: { MobiusCloudPurchaseScan() },
+                currentEntitlements: { _ in
+                    readCurrentEntitlements = true
+                    return MobiusCloudPurchaseScan()
+                },
+                purchase: { _ in throw MobiusCloudPurchaseError.unavailable }
+            )
+        )
+        model.cloudAccount = MobiusCloudAccount(
+            userID: userID,
+            email: nil,
+            subscribed: true,
+            sharesDiagnostics: false,
+            subscriptionStartedAt: .now
+        )
+
+        let deleted = await model.deleteCloudAccount(
+            authorizationCode: "delete-code",
+            nonce: String(repeating: "d", count: 43)
+        )
+
+        XCTAssertTrue(deleted)
+        XCTAssertFalse(readCurrentEntitlements)
+        XCTAssertNil(model.cloudSession)
+        XCTAssertNil(model.cloudAccount)
+        XCTAssertNil(try client.loadSession())
+        XCTAssertEqual(requests.map { ($0.url?.path ?? "") + ":" + ($0.httpMethod ?? "") }, [
+            "/api/mobile/auth/apple:POST",
+            "/api/mobile/account:DELETE",
+        ])
     }
 
     func testCloudAccountRejectsInvalidEmail() async throws {
@@ -335,7 +559,7 @@ final class MobiusCloudTests: XCTestCase {
             requestCount += 1
             let json = requestCount == 1
                 ? #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
-                : #"{"email":"not-an-email","subscribed":true,"sharesDiagnostics":false}"#
+                : #"{"userId":"00000000-0000-0000-0000-000000000001","email":"not-an-email","subscribed":true,"sharesDiagnostics":false,"subscriptionStartedAt":"2026-08-24T00:00:00Z"}"#
             return try self.response(for: request, json: json)
         }
         _ = try await client.authenticate(
@@ -361,7 +585,7 @@ final class MobiusCloudTests: XCTestCase {
             requestCount += 1
             let json = requestCount == 1
                 ? #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
-                : #"{"email":null,"subscribed":true,"sharesDiagnostics":false,"luna":{"creditMicrousd":2400000,"remainingMicrousd":2400001,"resetsAt":"2099-02-01T00:00:00Z"}}"#
+                : #"{"userId":"00000000-0000-0000-0000-000000000001","email":null,"subscribed":true,"sharesDiagnostics":false,"subscriptionStartedAt":"2026-08-24T00:00:00Z","luna":{"creditMicrousd":2400000,"remainingMicrousd":2400001,"resetsAt":"2099-02-01T00:00:00Z"}}"#
             return try self.response(for: request, json: json)
         }
         _ = try await client.authenticate(
@@ -375,6 +599,67 @@ final class MobiusCloudTests: XCTestCase {
         } catch let error as MobiusCloudError {
             guard case .invalidAccountResponse = error else {
                 return XCTFail("Expected invalidAccountResponse, got \(error)")
+            }
+        }
+    }
+
+    func testCloudAccountRequiresSubscriptionStartToMatchStatus() async throws {
+        let userID = "00000000-0000-0000-0000-000000000001"
+        let accountResponses = [
+            #"{"userId":"00000000-0000-0000-0000-000000000001","email":null,"subscribed":true,"sharesDiagnostics":false}"#,
+            #"{"userId":"00000000-0000-0000-0000-000000000001","email":null,"subscribed":false,"sharesDiagnostics":false,"subscriptionStartedAt":"2026-08-24T00:00:00Z"}"#,
+        ]
+
+        for accountResponse in accountResponses {
+            let store = MobiusCloudSessionStore(service: "app.mobius.cloud.tests.\(UUID())")
+            defer { try? store.remove() }
+            var requestCount = 0
+            let client = MobiusCloudClient(store: store) { request in
+                requestCount += 1
+                let json = requestCount == 1
+                    ? #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"\#(userID)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                    : accountResponse
+                return try self.response(for: request, json: json)
+            }
+            _ = try await client.authenticate(
+                authorizationCode: "apple-code",
+                nonce: String(repeating: "n", count: 43)
+            )
+
+            do {
+                _ = try await client.account()
+                XCTFail("Expected inconsistent subscription dates to be rejected")
+            } catch let error as MobiusCloudError {
+                guard case .invalidAccountResponse = error else {
+                    return XCTFail("Expected invalidAccountResponse, got \(error)")
+                }
+            }
+        }
+    }
+
+    func testSubscriptionRejectsJWSLargerThanBackendLimit() async throws {
+        let client = MobiusCloudClient(
+            store: MobiusCloudSessionStore(service: "app.mobius.cloud.tests.\(UUID())")
+        ) { _ in
+            XCTFail("Oversized JWS must be rejected before transport")
+            throw URLError(.badURL)
+        }
+        let oversizedJWS = "a.\(String(repeating: "b", count: 16 * 1024)).c"
+
+        for (jws, appTransactionJWS) in [
+            (oversizedJWS, "app.header.signature"),
+            ("header.payload.signature", oversizedJWS),
+        ] {
+            do {
+                try await client.submitSubscription(
+                    jws: jws,
+                    appTransactionJWS: appTransactionJWS
+                )
+                XCTFail("Expected oversized JWS to be rejected")
+            } catch let error as MobiusCloudError {
+                guard case .invalidPurchaseJWS = error else {
+                    return XCTFail("Expected invalidPurchaseJWS, got \(error)")
+                }
             }
         }
     }
@@ -425,7 +710,8 @@ final class MobiusCloudTests: XCTestCase {
         let model = AppModel(
             store: GatewayStore(defaults: defaults),
             settingsDefaults: defaults,
-            cloudClient: client
+            cloudClient: client,
+            cloudPurchases: emptyCloudPurchases()
         )
         let staleRefresh = Task { await model.refreshCloudAccount() }
         await fulfillment(of: [staleRequestStarted], timeout: 1)
@@ -443,21 +729,855 @@ final class MobiusCloudTests: XCTestCase {
         XCTAssertNil(model.cloudError)
     }
 
-    func testSubscribedSignInConnectsWithoutProductOrSubmittingAnotherTransaction() async throws {
-        let userID = UUID()
+    func testAccountRefreshAdoptsCanonicalUserIDAndRetagsGateway() async throws {
+        let temporaryUserID = try XCTUnwrap(UUID(
+            uuidString: "00000000-0000-0000-0000-000000000001"
+        ))
+        let canonicalUserID = try XCTUnwrap(UUID(
+            uuidString: "00000000-0000-0000-0000-000000000002"
+        ))
         let token = String(repeating: "t", count: 43)
         let service = "app.mobius.cloud.tests.\(UUID())"
         let sessionStore = MobiusCloudSessionStore(service: service)
         defer { try? sessionStore.remove() }
         var requests: [URLRequest] = []
         let responses = [
+            #"{"token":"\#(token)","userId":"\#(temporaryUserID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#,
+            #"{"userId":"\#(canonicalUserID.uuidString)","email":"private@privaterelay.appleid.com","subscribed":true,"sharesDiagnostics":false,"subscriptionStartedAt":"2026-08-24T00:00:00Z"}"#,
+        ]
+        let client = MobiusCloudClient(store: sessionStore) { request in
+            requests.append(request)
+            return try self.response(for: request, json: responses[requests.count - 1])
+        }
+        _ = try await client.authenticate(
+            authorizationCode: "apple-code",
+            nonce: String(repeating: "n", count: 43)
+        )
+
+        let suiteName = "app.mobius.cloud.tests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let gatewayStore = GatewayStore(defaults: defaults)
+        let gateway = GatewayAccount(
+            endpoint: try GatewayEndpoint("wss://gateway.example"),
+            cloudUserID: temporaryUserID
+        )
+        try gatewayStore.save(gateway, token: "gateway-token")
+        var queriedPurchases = false
+        let purchases = MobiusCloudPurchases(
+            displayPrice: { throw MobiusCloudPurchaseError.unavailable },
+            unfinishedPurchases: {
+                queriedPurchases = true
+                return MobiusCloudPurchaseScan()
+            },
+            currentEntitlements: { _ in
+                XCTFail("A subscribed account must not resubmit a finished entitlement")
+                return MobiusCloudPurchaseScan()
+            },
+            purchase: { _ in throw MobiusCloudPurchaseError.unavailable }
+        )
+        let model = AppModel(
+            store: gatewayStore,
+            settingsDefaults: defaults,
+            cloudClient: client,
+            cloudPurchases: purchases
+        )
+
+        await model.refreshCloudAccount()
+
+        XCTAssertTrue(queriedPurchases)
+        XCTAssertEqual(model.cloudSession?.userID, canonicalUserID)
+        XCTAssertEqual(try client.loadSession()?.userID, canonicalUserID)
+        XCTAssertEqual(model.cloudAccount?.userID, canonicalUserID)
+        XCTAssertEqual(model.cloudAccount?.subscribed, true)
+        XCTAssertEqual(
+            model.cloudAccount?.subscriptionStartedAt,
+            ISO8601DateFormatter().date(from: "2026-08-24T00:00:00Z")
+        )
+        XCTAssertEqual(model.accounts.first?.cloudUserID, canonicalUserID)
+        XCTAssertEqual(gatewayStore.loadAccounts().first?.cloudUserID, canonicalUserID)
+        XCTAssertEqual(model.mobiusCloudGateway?.id, gateway.id)
+        XCTAssertEqual(requests.map { $0.url?.path }, [
+            "/api/mobile/auth/apple",
+            "/api/mobile/account",
+        ])
+        try await gatewayStore.remove(try XCTUnwrap(model.accounts.first))
+    }
+
+    func testTransactionUpdateRepairsCanonicalUserIDBeforeFinishing() async throws {
+        let temporaryUserID = try XCTUnwrap(UUID(
+            uuidString: "00000000-0000-0000-0000-000000000001"
+        ))
+        let canonicalUserID = try XCTUnwrap(UUID(
+            uuidString: "00000000-0000-0000-0000-000000000002"
+        ))
+        let token = String(repeating: "t", count: 43)
+        let service = "app.mobius.cloud.tests.\(UUID())"
+        let sessionStore = MobiusCloudSessionStore(service: service)
+        defer { try? sessionStore.remove() }
+        var requests: [URLRequest] = []
+        var accountRequests = 0
+        var backendAccepted = false
+        var finished = false
+        let client = MobiusCloudClient(store: sessionStore) { request in
+            requests.append(request)
+            switch request.url?.path {
+            case "/api/mobile/auth/apple":
+                return try self.response(
+                    for: request,
+                    json: #"{"token":"\#(token)","userId":"\#(temporaryUserID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                )
+            case "/api/mobile/account":
+                accountRequests += 1
+                let subscribed = accountRequests > 1
+                let startedAt = subscribed
+                    ? #", "subscriptionStartedAt":"2026-08-24T00:00:00Z""#
+                    : ""
+                return try self.response(
+                    for: request,
+                    json: #"{"userId":"\#(canonicalUserID.uuidString)","email":null,"subscribed":\#(subscribed),"sharesDiagnostics":false\#(startedAt)}"#
+                )
+            case "/api/mobile/subscription":
+                XCTAssertFalse(finished)
+                backendAccepted = true
+                return try self.response(for: request, json: #"{}"#)
+            default:
+                return try self.response(for: request, status: 500, json: #"{}"#)
+            }
+        }
+        _ = try await client.authenticate(
+            authorizationCode: "apple-code",
+            nonce: String(repeating: "n", count: 43)
+        )
+
+        let transactionFinished = expectation(description: "Transaction finished")
+        let purchase = MobiusCloudPurchase(
+            jws: "header.payload.signature",
+            appTransactionJWS: "app.header.signature"
+        ) {
+            XCTAssertTrue(backendAccepted)
+            finished = true
+            transactionFinished.fulfill()
+        }
+        let stream = AsyncStream.makeStream(of: MobiusCloudPurchase.self)
+        let purchases = MobiusCloudPurchases(
+            displayPrice: { "$9.99" },
+            unfinishedPurchases: { MobiusCloudPurchaseScan() },
+            currentEntitlements: { _ in MobiusCloudPurchaseScan() },
+            purchase: { _ in throw MobiusCloudPurchaseError.unavailable },
+            updates: { stream.stream }
+        )
+        let suiteName = "app.mobius.cloud.tests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let model = AppModel(
+            store: GatewayStore(defaults: defaults),
+            settingsDefaults: defaults,
+            cloudClient: client,
+            cloudPurchases: purchases
+        )
+
+        stream.continuation.yield(purchase)
+        await fulfillment(of: [transactionFinished], timeout: 1)
+
+        let accountUpdated = await eventually { model.cloudAccount?.subscribed == true }
+        XCTAssertTrue(accountUpdated)
+        XCTAssertTrue(finished)
+        XCTAssertEqual(model.cloudSession?.userID, canonicalUserID)
+        XCTAssertEqual(requests.map { $0.url?.path }, [
+            "/api/mobile/auth/apple",
+            "/api/mobile/account",
+            "/api/mobile/subscription",
+            "/api/mobile/account",
+        ])
+    }
+
+    func testStaleTransactionUpdateCannotUseOrClearNewSession() async throws {
+        let firstUserID = UUID()
+        let secondUserID = UUID()
+        let firstToken = String(repeating: "a", count: 43)
+        let secondToken = String(repeating: "b", count: 43)
+        let service = "app.mobius.cloud.tests.\(UUID())"
+        let sessionStore = MobiusCloudSessionStore(service: service)
+        defer { try? sessionStore.remove() }
+        let subscriptionStarted = expectation(description: "Subscription request started")
+        var blockedResponse: (Data, HTTPURLResponse)?
+        var blockedContinuation: CheckedContinuation<(Data, HTTPURLResponse), Never>?
+        var authenticationCount = 0
+        var subscriptionBearer: String?
+        let client = MobiusCloudClient(store: sessionStore) { request in
+            switch request.url?.path {
+            case "/api/mobile/auth/apple":
+                authenticationCount += 1
+                let userID = authenticationCount == 1 ? firstUserID : secondUserID
+                let token = authenticationCount == 1 ? firstToken : secondToken
+                return try self.response(
+                    for: request,
+                    json: #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                )
+            case "/api/mobile/account":
+                return try self.response(
+                    for: request,
+                    json: #"{"userId":"\#(firstUserID.uuidString)","email":null,"subscribed":false,"sharesDiagnostics":false}"#
+                )
+            case "/api/mobile/subscription":
+                subscriptionBearer = request.value(forHTTPHeaderField: "Authorization")
+                blockedResponse = try self.response(
+                    for: request,
+                    status: 401,
+                    json: #"{}"#
+                )
+                subscriptionStarted.fulfill()
+                return await withCheckedContinuation { blockedContinuation = $0 }
+            default:
+                return try self.response(for: request, status: 500, json: #"{}"#)
+            }
+        }
+        _ = try await client.authenticate(
+            authorizationCode: "first-code",
+            nonce: String(repeating: "n", count: 43)
+        )
+
+        var finished = false
+        let stream = AsyncStream.makeStream(of: MobiusCloudPurchase.self)
+        let purchases = MobiusCloudPurchases(
+            displayPrice: { "$9.99" },
+            unfinishedPurchases: { MobiusCloudPurchaseScan() },
+            currentEntitlements: { _ in MobiusCloudPurchaseScan() },
+            purchase: { _ in throw MobiusCloudPurchaseError.unavailable },
+            updates: { stream.stream }
+        )
+        let suiteName = "app.mobius.cloud.tests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let model = AppModel(
+            store: GatewayStore(defaults: defaults),
+            settingsDefaults: defaults,
+            cloudClient: client,
+            cloudPurchases: purchases
+        )
+
+        stream.continuation.yield(MobiusCloudPurchase(
+            jws: "header.payload.signature",
+            appTransactionJWS: "app.header.signature"
+        ) {
+            finished = true
+        })
+        await fulfillment(of: [subscriptionStarted], timeout: 1)
+        let secondSession = try await client.authenticate(
+            authorizationCode: "second-code",
+            nonce: String(repeating: "m", count: 43)
+        )
+        model.cloudSession = secondSession
+        blockedContinuation?.resume(returning: try XCTUnwrap(blockedResponse))
+        let staleTaskFinished = await eventually { model.cloudPurchaseTasks.isEmpty }
+        XCTAssertTrue(staleTaskFinished)
+
+        XCTAssertEqual(subscriptionBearer, "Bearer \(firstToken)")
+        XCTAssertFalse(finished)
+        XCTAssertEqual(model.cloudSession, secondSession)
+        XCTAssertEqual(try client.loadSession(), secondSession)
+        XCTAssertNil(model.cloudError)
+    }
+
+    func testAccountRefreshFinishesUnfinishedPurchaseAfterBackendAcceptsIt() async throws {
+        let userID = UUID()
+        let token = String(repeating: "t", count: 43)
+        let service = "app.mobius.cloud.tests.\(UUID())"
+        let sessionStore = MobiusCloudSessionStore(service: service)
+        defer { try? sessionStore.remove() }
+        var requests: [URLRequest] = []
+        var backendAccepted = false
+        var finished = false
+        let responses = [
             #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#,
-            #"{"email":"private@privaterelay.appleid.com","subscribed":true,"sharesDiagnostics":false}"#,
+            #"{"userId":"\#(userID.uuidString)","email":null,"subscribed":true,"sharesDiagnostics":false,"subscriptionStartedAt":"2026-08-24T00:00:00Z"}"#,
+            #"{}"#,
+            #"{"userId":"\#(userID.uuidString)","email":null,"subscribed":true,"sharesDiagnostics":false,"subscriptionStartedAt":"2026-08-24T00:00:00Z"}"#,
+        ]
+        let client = MobiusCloudClient(store: sessionStore) { request in
+            requests.append(request)
+            if request.url?.path == "/api/mobile/subscription" {
+                XCTAssertFalse(finished)
+                backendAccepted = true
+            }
+            return try self.response(for: request, json: responses[requests.count - 1])
+        }
+        _ = try await client.authenticate(
+            authorizationCode: "apple-code",
+            nonce: String(repeating: "n", count: 43)
+        )
+
+        let purchase = MobiusCloudPurchase(
+            jws: "header.payload.signature",
+            appTransactionJWS: "app.header.signature"
+        ) {
+            XCTAssertTrue(backendAccepted)
+            finished = true
+        }
+        let purchases = MobiusCloudPurchases(
+            displayPrice: { "$9.99" },
+            unfinishedPurchases: { MobiusCloudPurchaseScan(purchases: [purchase]) },
+            currentEntitlements: { _ in
+                XCTFail("A subscribed account must not scan current entitlements")
+                return MobiusCloudPurchaseScan()
+            },
+            purchase: { _ in throw MobiusCloudPurchaseError.unavailable }
+        )
+        let suiteName = "app.mobius.cloud.tests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let model = AppModel(
+            store: GatewayStore(defaults: defaults),
+            settingsDefaults: defaults,
+            cloudClient: client,
+            cloudPurchases: purchases
+        )
+
+        await model.refreshCloudAccount()
+
+        XCTAssertTrue(finished)
+        XCTAssertEqual(model.cloudAccount?.subscribed, true)
+        XCTAssertEqual(requests.map { $0.url?.path }, [
+            "/api/mobile/auth/apple",
+            "/api/mobile/account",
+            "/api/mobile/subscription",
+            "/api/mobile/account",
+        ])
+    }
+
+    func testRejectedPurchaseDoesNotStarveLaterVerifiedEntitlement() async throws {
+        let userID = UUID()
+        let token = String(repeating: "t", count: 43)
+        let service = "app.mobius.cloud.tests.\(UUID())"
+        let sessionStore = MobiusCloudSessionStore(service: service)
+        defer { try? sessionStore.remove() }
+        var accountRequests = 0
+        var submittedJWS: [String] = []
+        let client = MobiusCloudClient(store: sessionStore) { request in
+            switch request.url?.path {
+            case "/api/mobile/auth/apple":
+                return try self.response(
+                    for: request,
+                    json: #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                )
+            case "/api/mobile/account":
+                accountRequests += 1
+                let subscribed = accountRequests > 1
+                let startedAt = subscribed
+                    ? #", "subscriptionStartedAt":"2026-08-24T00:00:00Z""#
+                    : ""
+                return try self.response(
+                    for: request,
+                    json: #"{"userId":"\#(userID.uuidString)","email":null,"subscribed":\#(subscribed),"sharesDiagnostics":false\#(startedAt)}"#
+                )
+            case "/api/mobile/subscription":
+                let body = try XCTUnwrap(request.httpBody)
+                let value = try XCTUnwrap(
+                    (JSONSerialization.jsonObject(with: body) as? [String: String])?["jws"]
+                )
+                submittedJWS.append(value)
+                return try self.response(
+                    for: request,
+                    status: value.hasPrefix("bad.") ? 400 : 200,
+                    json: #"{}"#
+                )
+            default:
+                return try self.response(for: request, status: 500, json: #"{}"#)
+            }
+        }
+        _ = try await client.authenticate(
+            authorizationCode: "apple-code",
+            nonce: String(repeating: "n", count: 43)
+        )
+
+        var rejectedFinished = false
+        var acceptedFinished = false
+        let rejected = MobiusCloudPurchase(
+            jws: "bad.payload.signature",
+            appTransactionJWS: "app.header.signature"
+        ) {
+            rejectedFinished = true
+        }
+        let accepted = MobiusCloudPurchase(
+            jws: "good.payload.signature",
+            appTransactionJWS: "app.header.signature"
+        ) {
+            acceptedFinished = true
+        }
+        let purchases = MobiusCloudPurchases(
+            displayPrice: { "$9.99" },
+            unfinishedPurchases: {
+                MobiusCloudPurchaseScan(
+                    purchases: [rejected],
+                    hasUnverifiedPurchase: true
+                )
+            },
+            currentEntitlements: { _ in
+                MobiusCloudPurchaseScan(purchases: [accepted])
+            },
+            purchase: { _ in throw MobiusCloudPurchaseError.unavailable }
+        )
+        let suiteName = "app.mobius.cloud.tests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let model = AppModel(
+            store: GatewayStore(defaults: defaults),
+            settingsDefaults: defaults,
+            cloudClient: client,
+            cloudPurchases: purchases
+        )
+
+        await model.refreshCloudAccount()
+
+        XCTAssertEqual(submittedJWS, ["bad.payload.signature", "good.payload.signature"])
+        XCTAssertFalse(rejectedFinished)
+        XCTAssertTrue(acceptedFinished)
+        XCTAssertEqual(model.cloudAccount?.subscribed, true)
+        XCTAssertNil(model.cloudError)
+    }
+
+    func testSubscriptionConflictIsActionableAndLeavesTransactionUnfinished() async throws {
+        let userID = UUID()
+        let token = String(repeating: "t", count: 43)
+        let service = "app.mobius.cloud.tests.\(UUID())"
+        let sessionStore = MobiusCloudSessionStore(service: service)
+        defer { try? sessionStore.remove() }
+        var requests: [URLRequest] = []
+        let client = MobiusCloudClient(store: sessionStore) { request in
+            requests.append(request)
+            switch request.url?.path {
+            case "/api/mobile/auth/apple":
+                return try self.response(
+                    for: request,
+                    json: #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                )
+            case "/api/mobile/account":
+                return try self.response(
+                    for: request,
+                    json: #"{"userId":"\#(userID.uuidString)","email":null,"subscribed":false,"sharesDiagnostics":false}"#
+                )
+            case "/api/mobile/subscription":
+                return try self.response(
+                    for: request,
+                    status: 409,
+                    json: #"{"error":"subscription_account_conflict"}"#
+                )
+            default:
+                return try self.response(for: request, status: 500, json: #"{}"#)
+            }
+        }
+        _ = try await client.authenticate(
+            authorizationCode: "apple-code",
+            nonce: String(repeating: "n", count: 43)
+        )
+
+        var finished = false
+        let purchase = MobiusCloudPurchase(
+            jws: "header.payload.signature",
+            appTransactionJWS: "app.header.signature"
+        ) {
+            finished = true
+        }
+        var purchaseAttempts = 0
+        let purchases = MobiusCloudPurchases(
+            displayPrice: { "$9.99" },
+            unfinishedPurchases: { MobiusCloudPurchaseScan() },
+            currentEntitlements: { synchronize in
+                XCTAssertFalse(synchronize)
+                return MobiusCloudPurchaseScan(purchases: [purchase])
+            },
+            purchase: { _ in
+                purchaseAttempts += 1
+                throw MobiusCloudPurchaseError.unavailable
+            }
+        )
+        let suiteName = "app.mobius.cloud.tests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let model = AppModel(
+            store: GatewayStore(defaults: defaults),
+            settingsDefaults: defaults,
+            cloudClient: client,
+            cloudPurchases: purchases
+        )
+
+        await model.refreshCloudAccount()
+
+        XCTAssertFalse(finished)
+        XCTAssertNotNil(model.cloudSession)
+        XCTAssertEqual(
+            model.cloudError,
+            MobiusCloudError.subscriptionAccountConflict.localizedDescription
+        )
+        XCTAssertEqual(model.cloudIssue, .subscriptionAccountConflict)
+        let retried = await model.purchaseCloud()
+        XCTAssertFalse(retried)
+        XCTAssertEqual(purchaseAttempts, 0)
+        XCTAssertEqual(requests.map { $0.url?.path }, [
+            "/api/mobile/auth/apple",
+            "/api/mobile/account",
+            "/api/mobile/subscription",
+            "/api/mobile/account",
+        ])
+    }
+
+    func testConcurrentAccountRefreshesSubmitAndFinishPurchaseOnce() async throws {
+        let userID = UUID()
+        let token = String(repeating: "t", count: 43)
+        let service = "app.mobius.cloud.tests.\(UUID())"
+        let sessionStore = MobiusCloudSessionStore(service: service)
+        defer { try? sessionStore.remove() }
+        var subscriptionRequests = 0
+        let client = MobiusCloudClient(store: sessionStore) { request in
+            let json: String
+            switch request.url?.path {
+            case "/api/mobile/auth/apple":
+                json = #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+            case "/api/mobile/subscription":
+                subscriptionRequests += 1
+                json = #"{}"#
+            case "/api/mobile/account":
+                json = #"{"userId":"\#(userID.uuidString)","email":null,"subscribed":true,"sharesDiagnostics":false,"subscriptionStartedAt":"2026-08-24T00:00:00Z"}"#
+            default:
+                return try self.response(for: request, status: 500, json: #"{}"#)
+            }
+            return try self.response(for: request, json: json)
+        }
+        _ = try await client.authenticate(
+            authorizationCode: "apple-code",
+            nonce: String(repeating: "n", count: 43)
+        )
+
+        let finishStarted = expectation(description: "First refresh started finishing")
+        let secondScan = expectation(description: "Second refresh found the purchase")
+        var finishContinuation: CheckedContinuation<Void, Never>?
+        var finishCount = 0
+        var scanCount = 0
+        let purchase = MobiusCloudPurchase(
+            jws: "header.payload.signature",
+            appTransactionJWS: "app.header.signature"
+        ) {
+            finishCount += 1
+            finishStarted.fulfill()
+            await withCheckedContinuation { finishContinuation = $0 }
+        }
+        let purchases = MobiusCloudPurchases(
+            displayPrice: { "$9.99" },
+            unfinishedPurchases: {
+                scanCount += 1
+                if scanCount == 2 { secondScan.fulfill() }
+                return MobiusCloudPurchaseScan(purchases: [purchase])
+            },
+            currentEntitlements: { _ in
+                XCTFail("A subscribed account must not scan current entitlements")
+                return MobiusCloudPurchaseScan()
+            },
+            purchase: { _ in throw MobiusCloudPurchaseError.unavailable }
+        )
+        let suiteName = "app.mobius.cloud.tests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let model = AppModel(
+            store: GatewayStore(defaults: defaults),
+            settingsDefaults: defaults,
+            cloudClient: client,
+            cloudPurchases: purchases
+        )
+
+        let firstRefresh = Task { await model.refreshCloudAccount() }
+        await fulfillment(of: [finishStarted], timeout: 1)
+        let secondRefresh = Task { await model.refreshCloudAccount() }
+        await fulfillment(of: [secondScan], timeout: 1)
+        finishContinuation?.resume()
+        await firstRefresh.value
+        await secondRefresh.value
+
+        XCTAssertEqual(subscriptionRequests, 1)
+        XCTAssertEqual(finishCount, 1)
+        XCTAssertEqual(model.cloudAccount?.subscribed, true)
+    }
+
+    func testPurchaseUsesAccountUserIDButDoesNotOverrideServerSubscription() async throws {
+        let temporaryUserID = UUID()
+        let userID = UUID()
+        let token = String(repeating: "t", count: 43)
+        let service = "app.mobius.cloud.tests.\(UUID())"
+        let sessionStore = MobiusCloudSessionStore(service: service)
+        defer { try? sessionStore.remove() }
+        var requests: [URLRequest] = []
+        var backendAccepted = false
+        var finished = false
+        var purchaseStarted = false
+        let responses = [
+            #"{"token":"\#(token)","userId":"\#(temporaryUserID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#,
+            #"{"userId":"\#(userID.uuidString)","email":null,"subscribed":false,"sharesDiagnostics":false}"#,
+            #"{}"#,
+            #"{"userId":"\#(userID.uuidString)","email":null,"subscribed":false,"sharesDiagnostics":false}"#,
+        ]
+        let client = MobiusCloudClient(store: sessionStore) { request in
+            requests.append(request)
+            if request.url?.path == "/api/mobile/subscription", request.httpMethod == "PUT" {
+                XCTAssertTrue(purchaseStarted)
+                XCTAssertFalse(finished)
+                backendAccepted = true
+            }
+            return try self.response(for: request, json: responses[requests.count - 1])
+        }
+        var purchaseUserID: UUID?
+        var queriedActivePurchases = false
+        let purchase = MobiusCloudPurchase(
+            jws: "header.payload.signature",
+            appTransactionJWS: "app.header.signature"
+        ) {
+            XCTAssertTrue(backendAccepted)
+            finished = true
+        }
+        let purchases = MobiusCloudPurchases(
+            displayPrice: { "$9.99" },
+            unfinishedPurchases: { MobiusCloudPurchaseScan() },
+            currentEntitlements: { synchronize in
+                XCTAssertFalse(synchronize)
+                queriedActivePurchases = true
+                return MobiusCloudPurchaseScan()
+            },
+            purchase: { requestedUserID in
+                purchaseStarted = true
+                purchaseUserID = requestedUserID
+                return purchase
+            }
+        )
+        let suiteName = "app.mobius.cloud.tests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let model = AppModel(
+            store: GatewayStore(defaults: defaults),
+            settingsDefaults: defaults,
+            cloudClient: client,
+            cloudPurchases: purchases
+        )
+
+        let connected = await model.signInAndPurchaseCloud(
+            authorizationCode: "apple-code",
+            nonce: String(repeating: "n", count: 43)
+        )
+
+        XCTAssertFalse(connected)
+        XCTAssertTrue(queriedActivePurchases)
+        XCTAssertEqual(purchaseUserID, userID)
+        XCTAssertTrue(finished)
+        XCTAssertEqual(model.cloudAccount?.subscribed, false)
+        XCTAssertEqual(
+            model.cloudError,
+            MobiusCloudError.subscriptionRequired.localizedDescription
+        )
+        XCTAssertEqual(requests.map { $0.url?.path }, [
+            "/api/mobile/auth/apple",
+            "/api/mobile/account",
+            "/api/mobile/subscription",
+            "/api/mobile/account",
+        ])
+        XCTAssertEqual(requests.map(\.httpMethod), ["POST", "GET", "PUT", "GET"])
+        XCTAssertEqual(
+            try JSONSerialization.jsonObject(with: try XCTUnwrap(requests[2].httpBody))
+                as? [String: String],
+            [
+                "jws": "header.payload.signature",
+                "appTransactionJws": "app.header.signature",
+            ]
+        )
+    }
+
+    func testCancelledStoreKitPurchaseDoesNotSubmitTransaction() async throws {
+        let userID = UUID()
+        let token = String(repeating: "t", count: 43)
+        let service = "app.mobius.cloud.tests.\(UUID())"
+        let sessionStore = MobiusCloudSessionStore(service: service)
+        defer { try? sessionStore.remove() }
+        var requests: [URLRequest] = []
+        let client = MobiusCloudClient(store: sessionStore) { request in
+            requests.append(request)
+            switch request.url?.path {
+            case "/api/mobile/auth/apple":
+                return try self.response(
+                    for: request,
+                    json: #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                )
+            case "/api/mobile/account":
+                return try self.response(
+                    for: request,
+                    json: #"{"userId":"\#(userID.uuidString)","email":null,"subscribed":false,"sharesDiagnostics":false}"#
+                )
+            case "/api/mobile/subscription":
+                XCTFail("A cancelled purchase has no transaction to submit")
+                return try self.response(for: request, status: 500, json: #"{}"#)
+            default:
+                return try self.response(for: request, status: 500, json: #"{}"#)
+            }
+        }
+        let suiteName = "app.mobius.cloud.tests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let model = AppModel(
+            store: GatewayStore(defaults: defaults),
+            settingsDefaults: defaults,
+            cloudClient: client,
+            cloudPurchases: MobiusCloudPurchases(
+                displayPrice: { "$9.99" },
+                unfinishedPurchases: { MobiusCloudPurchaseScan() },
+                currentEntitlements: { _ in MobiusCloudPurchaseScan() },
+                purchase: { _ in throw MobiusCloudPurchaseError.cancelled }
+            )
+        )
+
+        let connected = await model.signInAndPurchaseCloud(
+            authorizationCode: "apple-code",
+            nonce: String(repeating: "n", count: 43)
+        )
+
+        XCTAssertFalse(connected)
+        XCTAssertNil(model.cloudError)
+        XCTAssertEqual(requests.map { $0.url?.path }, [
+            "/api/mobile/auth/apple",
+            "/api/mobile/account",
+        ])
+        XCTAssertEqual(requests.map(\.httpMethod), ["POST", "GET"])
+    }
+
+    func testUnresolvedStoreKitPurchaseDoesNotSubmitTransaction() async throws {
+        for purchaseError in [MobiusCloudPurchaseError.pending, .unavailable] {
+            let userID = UUID()
+            let token = String(repeating: "t", count: 43)
+            let service = "app.mobius.cloud.tests.\(UUID())"
+            let sessionStore = MobiusCloudSessionStore(service: service)
+            defer { try? sessionStore.remove() }
+            var methods: [String] = []
+            let client = MobiusCloudClient(store: sessionStore) { request in
+                methods.append(request.httpMethod ?? "")
+                if request.url?.path == "/api/mobile/auth/apple" {
+                    return try self.response(
+                        for: request,
+                        json: #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                    )
+                }
+                if request.url?.path == "/api/mobile/account" {
+                    return try self.response(
+                        for: request,
+                        json: #"{"userId":"\#(userID.uuidString)","email":null,"subscribed":false,"sharesDiagnostics":false}"#
+                    )
+                }
+                return try self.response(for: request, status: 500, json: "")
+            }
+            let suiteName = "app.mobius.cloud.tests.\(UUID())"
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            let model = AppModel(
+                store: GatewayStore(defaults: defaults),
+                settingsDefaults: defaults,
+                cloudClient: client,
+                cloudPurchases: MobiusCloudPurchases(
+                    displayPrice: { "$9.99" },
+                    unfinishedPurchases: { MobiusCloudPurchaseScan() },
+                    currentEntitlements: { _ in MobiusCloudPurchaseScan() },
+                    purchase: { _ in throw purchaseError }
+                )
+            )
+
+            _ = await model.signInAndPurchaseCloud(
+                authorizationCode: "apple-code",
+                nonce: String(repeating: "n", count: 43)
+            )
+
+            XCTAssertEqual(methods, ["POST", "GET"])
+        }
+    }
+
+    func testPendingStoreKitPurchaseCanDeleteBeforeTransactionExists() async throws {
+        let userID = UUID()
+        let token = String(repeating: "t", count: 43)
+        let service = "app.mobius.cloud.tests.\(UUID())"
+        let sessionStore = MobiusCloudSessionStore(service: service)
+        defer { try? sessionStore.remove() }
+        var requests: [URLRequest] = []
+        let client = MobiusCloudClient(store: sessionStore) { request in
+            requests.append(request)
+            switch (request.url?.path, request.httpMethod) {
+            case ("/api/mobile/auth/apple", "POST"):
+                return try self.response(
+                    for: request,
+                    json: #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                )
+            case ("/api/mobile/account", "GET"):
+                return try self.response(
+                    for: request,
+                    json: #"{"userId":"\#(userID.uuidString)","email":null,"subscribed":false,"sharesDiagnostics":false}"#
+                )
+            case ("/api/mobile/account", "DELETE"):
+                return try self.response(for: request, status: 202, json: "")
+            default:
+                return try self.response(for: request, status: 500, json: #"{}"#)
+            }
+        }
+        let suiteName = "app.mobius.cloud.tests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let model = AppModel(
+            store: GatewayStore(defaults: defaults),
+            settingsDefaults: defaults,
+            cloudClient: client,
+            cloudPurchases: MobiusCloudPurchases(
+                displayPrice: { "$9.99" },
+                unfinishedPurchases: { MobiusCloudPurchaseScan() },
+                currentEntitlements: { _ in MobiusCloudPurchaseScan() },
+                purchase: { _ in throw MobiusCloudPurchaseError.pending }
+            )
+        )
+
+        _ = await model.signInAndPurchaseCloud(
+            authorizationCode: "apple-code",
+            nonce: String(repeating: "n", count: 43)
+        )
+        let deleted = await model.deleteCloudAccount(
+            authorizationCode: "delete-code",
+            nonce: String(repeating: "d", count: 43)
+        )
+
+        XCTAssertTrue(deleted)
+        XCTAssertNil(model.cloudSession)
+        XCTAssertNil(model.cloudError)
+        XCTAssertEqual(
+            requests.map { "\($0.httpMethod ?? "") \($0.url?.path ?? "")" },
+            [
+                "POST /api/mobile/auth/apple",
+                "GET /api/mobile/account",
+                "DELETE /api/mobile/account",
+            ]
+        )
+    }
+
+    func testSubscribedSignInFinishesUnfinishedTransactionBeforeConnecting() async throws {
+        let userID = UUID()
+        let token = String(repeating: "t", count: 43)
+        let service = "app.mobius.cloud.tests.\(UUID())"
+        let sessionStore = MobiusCloudSessionStore(service: service)
+        defer { try? sessionStore.remove() }
+        var requests: [URLRequest] = []
+        var backendAccepted = false
+        var finished = false
+        let responses = [
+            #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#,
+            #"{"userId":"\#(userID.uuidString)","email":"private@privaterelay.appleid.com","subscribed":true,"sharesDiagnostics":false,"subscriptionStartedAt":"2026-08-24T00:00:00Z"}"#,
+            #"{}"#,
+            #"{"userId":"\#(userID.uuidString)","email":"private@privaterelay.appleid.com","subscribed":true,"sharesDiagnostics":false,"subscriptionStartedAt":"2026-08-24T00:00:00Z"}"#,
             #"{"status":"ready"}"#,
             #"{"endpoint":"wss://gateway.example","pairingCode":"0123456789abcdef","expiresAt":"2099-01-01T00:00:00Z"}"#,
         ]
         let client = MobiusCloudClient(store: sessionStore) { request in
             requests.append(request)
+            if request.url?.path == "/api/mobile/subscription" {
+                XCTAssertFalse(finished)
+                backendAccepted = true
+            }
             return try self.response(for: request, json: responses[requests.count - 1])
         }
 
@@ -466,20 +1586,39 @@ final class MobiusCloudTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let gatewayStore = GatewayStore(defaults: defaults)
         let gatewayRequests = GatewayRequestRecorder()
+        let purchase = MobiusCloudPurchase(
+            jws: "header.payload.signature",
+            appTransactionJWS: "app.header.signature"
+        ) {
+            XCTAssertTrue(backendAccepted)
+            finished = true
+        }
+        let purchases = MobiusCloudPurchases(
+            displayPrice: { "$9.99" },
+            unfinishedPurchases: { MobiusCloudPurchaseScan(purchases: [purchase]) },
+            currentEntitlements: { _ in
+                XCTFail("A subscribed account must not scan current entitlements")
+                return MobiusCloudPurchaseScan()
+            },
+            purchase: { _ in
+                XCTFail("An unfinished transaction must be recovered before buying again")
+                throw MobiusCloudPurchaseError.unavailable
+            }
+        )
         let model = AppModel(
             store: gatewayStore,
             settingsDefaults: defaults,
             requestSender: { request in await gatewayRequests.record(request) },
             connectionOpener: { _ in AsyncThrowingStream { _ in } },
-            cloudClient: client
+            cloudClient: client,
+            cloudPurchases: purchases
         )
         XCTAssertFalse(model.selectedGatewayIsMobiusCloud)
 
         let connection = Task {
             await model.signInAndPurchaseCloud(
                 authorizationCode: "apple-code",
-                nonce: String(repeating: "n", count: 43),
-                product: nil
+                nonce: String(repeating: "n", count: 43)
             )
         }
         _ = await gatewayRequests.firstRequest(after: 0) {
@@ -489,13 +1628,15 @@ final class MobiusCloudTests: XCTestCase {
         model.handle(.paired(clientID: "cloud-client", token: "gateway-token"))
         let connected = await connection.value
         XCTAssertTrue(connected)
+        XCTAssertTrue(finished)
         XCTAssertEqual(requests.map { $0.url?.path }, [
             "/api/mobile/auth/apple",
+            "/api/mobile/account",
+            "/api/mobile/subscription",
             "/api/mobile/account",
             "/api/mobile/gateway",
             "/api/mobile/gateway",
         ])
-        XCTAssertFalse(requests.contains { $0.url?.path == "/api/mobile/subscription" })
         XCTAssertEqual(model.cloudAccount?.subscribed, true)
         XCTAssertTrue(model.selectedGatewayIsMobiusCloud)
         XCTAssertEqual(model.selectedAccount?.displayName, "möbius Cloud")
@@ -511,7 +1652,7 @@ final class MobiusCloudTests: XCTestCase {
         try await gatewayStore.remove(try XCTUnwrap(model.accounts.first))
     }
 
-    func testExistingSpriteGatewayIsRecognizedAndNamedAfterCloudSignIn() async throws {
+    func testUntaggedGatewayIsNotTreatedAsCloud() async throws {
         let suiteName = "app.mobius.cloud.tests.\(UUID())"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -533,67 +1674,21 @@ final class MobiusCloudTests: XCTestCase {
                 json: #"{"token":"\#(token)","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
             )
         }
-        let signedOut = AppModel(
-            store: gatewayStore,
-            settingsDefaults: defaults,
-            cloudClient: client
-        )
-        XCTAssertFalse(signedOut.selectedGatewayIsMobiusCloud)
-        XCTAssertEqual(signedOut.selectedAccount?.displayName, "existing-beta.sprites.app")
-        XCTAssertEqual(signedOut.selectedAccount?.machineName, "opaque-sprite-machine")
-
         _ = try await client.authenticate(
             authorizationCode: "apple-code",
             nonce: String(repeating: "n", count: 43)
         )
-        let signedIn = AppModel(
+        let model = AppModel(
             store: gatewayStore,
             settingsDefaults: defaults,
             cloudClient: client
         )
 
-        XCTAssertTrue(signedIn.selectedGatewayIsMobiusCloud)
-        XCTAssertEqual(signedIn.selectedAccount?.displayName, "möbius Cloud")
-        XCTAssertEqual(signedIn.selectedAccount?.machineName, "möbius Cloud")
-        XCTAssertEqual(signedIn.selectedAccount?.endpoint, account.endpoint)
-        XCTAssertEqual(gatewayStore.loadAccounts().first?.displayName, "möbius Cloud")
-        XCTAssertEqual(gatewayStore.loadAccounts().first?.machineName, "möbius Cloud")
-
-        try gatewayStore.recordMachineName(
-            "opaque-sprite-machine",
-            for: try XCTUnwrap(signedIn.selectedAccount)
-        )
-        let repaired = AppModel(
-            store: gatewayStore,
-            settingsDefaults: defaults,
-            cloudClient: client
-        )
-        XCTAssertEqual(repaired.selectedAccount?.displayName, "möbius Cloud")
-        XCTAssertEqual(repaired.selectedAccount?.machineName, "möbius Cloud")
-        XCTAssertEqual(gatewayStore.loadAccounts().first?.machineName, "möbius Cloud")
-
-        repaired.applyGatewayCatalog(ReadyPayload(
-            machineName: "opaque-sprite-machine",
-            sessions: [],
-            providers: [],
-            providerInstances: [],
-            defaultConfig: nil,
-            models: [],
-            modelProviders: [:],
-            middlewareFeatures: [],
-            extensions: [],
-            contributions: [],
-            maxActiveSessions: 4
-        ))
-
-        XCTAssertEqual(repaired.gatewayMachineName, "möbius Cloud")
-        XCTAssertEqual(repaired.selectedAccount?.machineName, "möbius Cloud")
-        XCTAssertEqual(gatewayStore.loadAccounts().first?.machineName, "möbius Cloud")
-        XCTAssertEqual(
-            try gatewayStore.token(for: try XCTUnwrap(repaired.selectedAccount)),
-            "existing-gateway-token"
-        )
-        try await gatewayStore.remove(try XCTUnwrap(repaired.selectedAccount))
+        XCTAssertNil(model.mobiusCloudGateway)
+        XCTAssertFalse(model.selectedGatewayIsMobiusCloud)
+        XCTAssertEqual(model.selectedAccount, account)
+        XCTAssertEqual(gatewayStore.loadAccounts(), [account])
+        try await gatewayStore.remove(account)
     }
 
     func testCloudSignOutForgetsCloudGatewayAndClearsPresentedSession() async throws {
@@ -614,7 +1709,10 @@ final class MobiusCloudTests: XCTestCase {
         let gateway = GatewayAccount(
             endpoint: try GatewayEndpoint("wss://gateway.example"),
             displayName: "Renamed Cloud gateway",
-            machineName: mobiusCloudGatewayDisplayName
+            machineName: mobiusCloudGatewayDisplayName,
+            cloudUserID: try XCTUnwrap(UUID(
+                uuidString: "00000000-0000-0000-0000-000000000001"
+            ))
         )
         try gatewayStore.save(gateway, token: "gateway-token")
 
@@ -639,6 +1737,9 @@ final class MobiusCloudTests: XCTestCase {
             cloudClient: client
         )
         model.cloudAccount = MobiusCloudAccount(
+            userID: try XCTUnwrap(UUID(
+                uuidString: "00000000-0000-0000-0000-000000000001"
+            )),
             email: "private@privaterelay.appleid.com",
             subscribed: true,
             sharesDiagnostics: false
@@ -668,21 +1769,30 @@ final class MobiusCloudTests: XCTestCase {
         }
     }
 
-    func testRestoreConnectsSubscribedAccountWithoutSubmittingTransaction() async throws {
+    func testRestoreRecoversOutsidePurchaseBeforeFinishingAndConnects() async throws {
         let userID = UUID()
         let token = String(repeating: "t", count: 43)
         let service = "app.mobius.cloud.tests.\(UUID())"
         let sessionStore = MobiusCloudSessionStore(service: service)
         defer { try? sessionStore.remove() }
         var requests: [URLRequest] = []
+        var backendAccepted = false
+        var finished = false
+        var synchronized = false
         let responses = [
             #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#,
-            #"{"email":"private@privaterelay.appleid.com","subscribed":true,"sharesDiagnostics":false}"#,
+            #"{"userId":"\#(userID.uuidString)","email":"private@privaterelay.appleid.com","subscribed":false,"sharesDiagnostics":false}"#,
+            #"{}"#,
+            #"{"userId":"\#(userID.uuidString)","email":"private@privaterelay.appleid.com","subscribed":true,"sharesDiagnostics":false,"subscriptionStartedAt":"2023-11-14T22:13:20Z"}"#,
             #"{"status":"ready"}"#,
             #"{"endpoint":"wss://gateway.example","pairingCode":"0123456789abcdef","expiresAt":"2099-01-01T00:00:00Z"}"#,
         ]
         let client = MobiusCloudClient(store: sessionStore) { request in
             requests.append(request)
+            if request.url?.path == "/api/mobile/subscription" {
+                XCTAssertFalse(finished)
+                backendAccepted = true
+            }
             return try self.response(for: request, json: responses[requests.count - 1])
         }
         _ = try await client.authenticate(
@@ -695,19 +1805,33 @@ final class MobiusCloudTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let gatewayStore = GatewayStore(defaults: defaults)
         let gatewayRequests = GatewayRequestRecorder()
+        let purchase = MobiusCloudPurchase(
+            jws: "header.payload.signature",
+            appTransactionJWS: "app.header.signature"
+        ) {
+            XCTAssertTrue(backendAccepted)
+            finished = true
+        }
+        let purchases = MobiusCloudPurchases(
+            displayPrice: { "$9.99" },
+            unfinishedPurchases: { MobiusCloudPurchaseScan() },
+            currentEntitlements: { shouldSynchronize in
+                synchronized = shouldSynchronize
+                return MobiusCloudPurchaseScan(purchases: [purchase])
+            },
+            purchase: { _ in throw MobiusCloudPurchaseError.unavailable }
+        )
         let model = AppModel(
             store: gatewayStore,
             settingsDefaults: defaults,
             requestSender: { request in await gatewayRequests.record(request) },
             connectionOpener: { _ in AsyncThrowingStream { _ in } },
-            cloudClient: client
+            cloudClient: client,
+            cloudPurchases: purchases
         )
-        var synchronized = false
 
         let restoration = Task {
-            await model.restoreCloudPurchases {
-                synchronized = true
-            }
+            await model.restoreCloudPurchases()
         }
         _ = await gatewayRequests.firstRequest(after: 0) {
             if case .pair = $0 { return true }
@@ -718,15 +1842,28 @@ final class MobiusCloudTests: XCTestCase {
 
         XCTAssertTrue(restored)
         XCTAssertTrue(synchronized)
+        XCTAssertTrue(finished)
         XCTAssertEqual(model.accounts.first?.cloudUserID, userID)
         XCTAssertEqual(requests.map { $0.url?.path }, [
             "/api/mobile/auth/apple",
             "/api/mobile/account",
+            "/api/mobile/subscription",
+            "/api/mobile/account",
             "/api/mobile/gateway",
             "/api/mobile/gateway",
         ])
-        XCTAssertEqual(requests.map(\.httpMethod), ["POST", "GET", "GET", "POST"])
-        XCTAssertFalse(requests.contains { $0.url?.path == "/api/mobile/subscription" })
+        XCTAssertEqual(
+            requests.map(\.httpMethod),
+            ["POST", "GET", "PUT", "GET", "GET", "POST"]
+        )
+        let body = try XCTUnwrap(requests[2].httpBody)
+        XCTAssertEqual(
+            try JSONSerialization.jsonObject(with: body) as? [String: String],
+            [
+                "jws": "header.payload.signature",
+                "appTransactionJws": "app.header.signature",
+            ]
+        )
         try await gatewayStore.remove(try XCTUnwrap(model.accounts.first))
     }
 
@@ -739,7 +1876,7 @@ final class MobiusCloudTests: XCTestCase {
         var requests: [URLRequest] = []
         let responses = [
             #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#,
-            #"{"email":"private@privaterelay.appleid.com","subscribed":true,"sharesDiagnostics":false}"#,
+            #"{"userId":"\#(userID.uuidString)","email":"private@privaterelay.appleid.com","subscribed":true,"sharesDiagnostics":false,"subscriptionStartedAt":"2023-11-14T22:13:20Z"}"#,
             #"{"status":"expired"}"#,
         ]
         let client = MobiusCloudClient(store: sessionStore) { request in
@@ -781,16 +1918,16 @@ final class MobiusCloudTests: XCTestCase {
         var requests: [URLRequest] = []
         let responses = [
             #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#,
-            #"{"email":"private@privaterelay.appleid.com","subscribed":true,"sharesDiagnostics":false}"#,
+            #"{"userId":"\#(userID.uuidString)","email":"private@privaterelay.appleid.com","subscribed":true,"sharesDiagnostics":false,"subscriptionStartedAt":"2023-11-14T22:13:20Z"}"#,
             #"{"status":"ready"}"#,
             #"{"endpoint":"wss://fresh.example","pairingCode":"fresh-code-1","expiresAt":"2099-01-01T00:00:00Z"}"#,
-            #"{"email":"private@privaterelay.appleid.com","subscribed":true,"sharesDiagnostics":false}"#,
+            #"{"userId":"\#(userID.uuidString)","email":"private@privaterelay.appleid.com","subscribed":true,"sharesDiagnostics":false,"subscriptionStartedAt":"2023-11-14T22:13:20Z"}"#,
             #"{"status":"ready"}"#,
             #"{"endpoint":"wss://fresh.example","pairingCode":"fresh-code-2","expiresAt":"2099-01-01T00:00:00Z"}"#,
-            #"{"email":"private@privaterelay.appleid.com","subscribed":true,"sharesDiagnostics":false}"#,
+            #"{"userId":"\#(userID.uuidString)","email":"private@privaterelay.appleid.com","subscribed":true,"sharesDiagnostics":false,"subscriptionStartedAt":"2023-11-14T22:13:20Z"}"#,
             #"{"status":"ready"}"#,
             #"{"endpoint":"wss://fresh.example","pairingCode":"fresh-code-3","expiresAt":"2099-01-01T00:00:00Z"}"#,
-            #"{"email":"private@privaterelay.appleid.com","subscribed":true,"sharesDiagnostics":false}"#,
+            #"{"userId":"\#(userID.uuidString)","email":"private@privaterelay.appleid.com","subscribed":true,"sharesDiagnostics":false,"subscriptionStartedAt":"2023-11-14T22:13:20Z"}"#,
             #"{"status":"ready"}"#,
             #"{"endpoint":"wss://fresh.example","pairingCode":"fresh-code-4","expiresAt":"2099-01-01T00:00:00Z"}"#,
         ]
@@ -821,6 +1958,7 @@ final class MobiusCloudTests: XCTestCase {
         )
         let subscriptionStartedAt = Date(timeIntervalSince1970: 1_700_000_000)
         model.cloudAccount = MobiusCloudAccount(
+            userID: userID,
             email: "private@privaterelay.appleid.com",
             subscribed: true,
             sharesDiagnostics: false,
@@ -942,7 +2080,7 @@ final class MobiusCloudTests: XCTestCase {
         let responses = [
             (200, #"{"token":"\#(token)","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#),
             (503, #"{}"#),
-            (200, #"{"email":"private@privaterelay.appleid.com","subscribed":false,"sharesDiagnostics":false}"#),
+            (200, #"{"userId":"00000000-0000-0000-0000-000000000001","email":"private@privaterelay.appleid.com","subscribed":false,"sharesDiagnostics":false}"#),
         ]
         let client = MobiusCloudClient(store: sessionStore) { request in
             requests.append(request)
@@ -962,7 +2100,8 @@ final class MobiusCloudTests: XCTestCase {
             settingsDefaults: defaults,
             requestSender: { _ in },
             connectionOpener: { _ in AsyncThrowingStream { _ in } },
-            cloudClient: client
+            cloudClient: client,
+            cloudPurchases: emptyCloudPurchases()
         )
 
         await model.refreshCloudAccount()
@@ -973,6 +2112,9 @@ final class MobiusCloudTests: XCTestCase {
         XCTAssertEqual(
             model.cloudAccount,
             MobiusCloudAccount(
+                userID: try XCTUnwrap(UUID(
+                    uuidString: "00000000-0000-0000-0000-000000000001"
+                )),
                 email: "private@privaterelay.appleid.com",
                 subscribed: false,
                 sharesDiagnostics: false
@@ -994,7 +2136,7 @@ final class MobiusCloudTests: XCTestCase {
         var requests: [URLRequest] = []
         let responses = [
             (200, #"{"token":"\#(token)","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#),
-            (200, #"{"email":"private@privaterelay.appleid.com","subscribed":true,"sharesDiagnostics":false,"luna":{"creditMicrousd":2400000,"remainingMicrousd":1992000,"resetsAt":"2099-02-01T00:00:00Z"}}"#),
+            (200, #"{"userId":"00000000-0000-0000-0000-000000000001","email":"private@privaterelay.appleid.com","subscribed":true,"sharesDiagnostics":false,"subscriptionStartedAt":"2026-08-24T00:00:00Z","luna":{"creditMicrousd":2400000,"remainingMicrousd":1992000,"resetsAt":"2099-02-01T00:00:00Z"}}"#),
             (503, #"{}"#),
             (204, #"{}"#),
         ]
@@ -1016,7 +2158,8 @@ final class MobiusCloudTests: XCTestCase {
             settingsDefaults: defaults,
             requestSender: { _ in },
             connectionOpener: { _ in AsyncThrowingStream { _ in } },
-            cloudClient: client
+            cloudClient: client,
+            cloudPurchases: emptyCloudPurchases()
         )
 
         await model.refreshCloudAccount()
@@ -1126,6 +2269,28 @@ final class MobiusCloudTests: XCTestCase {
             headerFields: ["Content-Type": "application/json"]
         ))
         return (Data(json.utf8), response)
+    }
+
+    private func emptyCloudPurchases() -> MobiusCloudPurchases {
+        MobiusCloudPurchases(
+            displayPrice: { throw MobiusCloudPurchaseError.unavailable },
+            unfinishedPurchases: { MobiusCloudPurchaseScan() },
+            currentEntitlements: { _ in MobiusCloudPurchaseScan() },
+            purchase: { _ in throw MobiusCloudPurchaseError.unavailable }
+        )
+    }
+
+    private func eventually(
+        timeout: Duration = .seconds(1),
+        _ predicate: @MainActor () async -> Bool
+    ) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        repeat {
+            if await predicate() { return true }
+            try? await Task.sleep(for: .milliseconds(5))
+        } while clock.now < deadline
+        return await predicate()
     }
 
     private func keychainAttributes(service: String) throws -> [String: Any] {

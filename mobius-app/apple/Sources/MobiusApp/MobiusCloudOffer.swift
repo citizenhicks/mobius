@@ -1,5 +1,4 @@
 import AuthenticationServices
-import StoreKit
 import SwiftUI
 
 struct MobiusCloudOfferButton: View {
@@ -48,7 +47,7 @@ private struct MobiusCloudOfferSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.mobiusPalette) private var palette
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var product: Product?
+    @State private var productDisplayPrice: String?
     @State private var productLoadFailed = false
     @State private var stageIsSlow = false
 
@@ -222,8 +221,7 @@ private struct MobiusCloudOfferSheet: View {
                     Task {
                         if await model.signInAndPurchaseCloud(
                             authorizationCode: authorizationCode,
-                            nonce: nonce,
-                            product: product
+                            nonce: nonce
                         ) {
                             dismiss()
                         }
@@ -242,10 +240,24 @@ private struct MobiusCloudOfferSheet: View {
                     .controlSize(.extraLarge)
                     .frame(maxWidth: .infinity)
                 }
-            } else if let product {
+            } else if model.cloudIssue == .subscriptionAccountConflict {
+                VStack(spacing: MobiusSpace.s) {
+                    Button("Manage App Store subscription") {
+                        Task { await model.manageCloudSubscription() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.extraLarge)
+                    Button("Sign out of Cloud") {
+                        Task { await model.signOutOfCloud() }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                }
+                .frame(maxWidth: .infinity)
+            } else if productDisplayPrice != nil {
                 Button("Subscribe") {
                     Task {
-                        if await model.purchaseCloud(product) { dismiss() }
+                        if await model.purchaseCloud() { dismiss() }
                     }
                 }
                 .buttonStyle(.borderedProminent)
@@ -298,22 +310,21 @@ private struct MobiusCloudOfferSheet: View {
     }
 
     private var billingDescription: Text {
-        guard let product else {
+        guard let productDisplayPrice else {
             return Text(
                 "Billed monthly. \(Text("Price shown at purchase.").foregroundStyle(palette.muted))"
             )
         }
         return Text(
-            "\(product.displayPrice) a month. \(Text("Cancel anytime.").foregroundStyle(palette.muted))"
+            "\(productDisplayPrice) a month. \(Text("Cancel anytime.").foregroundStyle(palette.muted))"
         )
     }
 
     private func loadProduct() async {
-        guard product == nil else { return }
+        guard productDisplayPrice == nil else { return }
         productLoadFailed = false
         do {
-            product = try await Product.products(for: [mobiusCloudMonthlyProductID]).first
-            productLoadFailed = product == nil
+            productDisplayPrice = try await model.cloudProductDisplayPrice()
         } catch {
             productLoadFailed = true
         }

@@ -85,13 +85,15 @@ extension AppModelTests {
         }
         XCTAssertNotNil(localRequest)
 
+        let userID = UUID()
         let cloudAccount = GatewayAccount(
             endpoint: try GatewayEndpoint("wss://cloud-test.sprites.app"),
-            displayName: "möbius Cloud"
+            displayName: "möbius Cloud",
+            cloudUserID: userID
         )
         model.accounts = [cloudAccount]
         model.selectedAccountID = cloudAccount.id
-        model.cloudSession = MobiusCloudSession(userID: UUID(), expiresAt: .distantFuture)
+        model.cloudSession = MobiusCloudSession(userID: userID, expiresAt: .distantFuture)
 
         let cloudRequestCount = await recorder.requestCount()
         model.openWorkspaceBrowser()

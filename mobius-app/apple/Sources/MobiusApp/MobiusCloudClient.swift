@@ -7,6 +7,13 @@ let mobiusCloudMonthlyProductID = "app.mobius.client.cloud.monthly.v2"
 struct MobiusCloudSession: Equatable, Sendable {
     let userID: UUID
     let expiresAt: Date
+    let credentialID: String
+
+    init(userID: UUID, expiresAt: Date, credentialID: String = UUID().uuidString) {
+        self.userID = userID
+        self.expiresAt = expiresAt
+        self.credentialID = credentialID
+    }
 }
 
 struct MobiusCloudUsageLimit: Decodable, Equatable, Sendable {
@@ -20,6 +27,7 @@ struct MobiusCloudUsageLimit: Decodable, Equatable, Sendable {
 }
 
 struct MobiusCloudAccount: Equatable, Sendable {
+    let userID: UUID
     let email: String?
     let subscribed: Bool
     let sharesDiagnostics: Bool
@@ -27,12 +35,14 @@ struct MobiusCloudAccount: Equatable, Sendable {
     let luna: MobiusCloudUsageLimit?
 
     init(
+        userID: UUID,
         email: String?,
         subscribed: Bool,
         sharesDiagnostics: Bool,
         subscriptionStartedAt: Date? = nil,
         luna: MobiusCloudUsageLimit? = nil
     ) {
+        self.userID = userID
         self.email = email
         self.subscribed = subscribed
         self.sharesDiagnostics = sharesDiagnostics
@@ -88,14 +98,14 @@ struct MobiusCloudAppleNonce: Equatable, Sendable {
 }
 
 enum MobiusCloudError: LocalizedError {
-    case activeSubscription
+    case accountDeletionPending
     case authenticationRequired
     case invalidAccountResponse
     case invalidAuthenticationResponse
     case invalidAuthorization
     case invalidExtensionCatalog
     case invalidGatewayResponse
-    case invalidSignedTransaction
+    case invalidPurchaseJWS
     case keychain(OSStatus)
     case oversizedResponse
     case provisioningFailed
@@ -103,19 +113,20 @@ enum MobiusCloudError: LocalizedError {
     case secureRandomUnavailable
     case server(Int)
     case sessionExpired
+    case subscriptionAccountConflict
     case subscriptionRequired
-    case unverifiedTransaction
 
     var errorDescription: String? {
         switch self {
-        case .activeSubscription: "Cancel your Cloud subscription before deleting your account."
+        case .accountDeletionPending:
+            "Your previous Cloud account is still being deleted. Try again shortly."
         case .authenticationRequired: "Sign in with Apple to continue."
         case .invalidAccountResponse: "möbius Cloud returned invalid account information."
         case .invalidAuthenticationResponse: "möbius Cloud returned an invalid sign-in response."
         case .invalidAuthorization: "Apple sign-in could not be completed."
         case .invalidExtensionCatalog: "möbius Cloud returned an invalid extension catalog."
         case .invalidGatewayResponse: "möbius Cloud returned an invalid gateway response."
-        case .invalidSignedTransaction: "The App Store transaction is invalid."
+        case .invalidPurchaseJWS: "The App Store transaction is invalid."
         case .keychain: "The Cloud sign-in could not be saved securely."
         case .oversizedResponse: "möbius Cloud returned too much data."
         case .provisioningFailed: "möbius Cloud could not provision your gateway."
@@ -126,8 +137,9 @@ enum MobiusCloudError: LocalizedError {
                 ? "Your Cloud sign-in expired. Sign in with Apple again."
                 : "möbius Cloud is temporarily unavailable."
         case .sessionExpired: "Your Cloud sign-in expired. Sign in with Apple again."
+        case .subscriptionAccountConflict:
+            "This App Store subscription is linked to another Cloud account. Sign in to that account or contact support."
         case .subscriptionRequired: "An active Cloud subscription is required."
-        case .unverifiedTransaction: "The App Store could not verify this transaction."
         }
     }
 }
@@ -138,7 +150,13 @@ private struct MobiusCloudCredential: Codable {
     let expiresAt: Date
 
     var session: MobiusCloudSession {
-        MobiusCloudSession(userID: userID, expiresAt: expiresAt)
+        MobiusCloudSession(
+            userID: userID,
+            expiresAt: expiresAt,
+            credentialID: SHA256.hash(data: Data(token.utf8)).map {
+                String(format: "%02x", $0)
+            }.joined()
+        )
     }
 
     var hasValidToken: Bool {
@@ -230,6 +248,19 @@ final class MobiusCloudSessionStore {
         guard try load()?.token == token else { return }
         try remove()
     }
+
+    fileprivate func replaceUserID(_ userID: UUID, replacing oldUserID: UUID) throws -> Bool {
+        guard let credential = try load(),
+              credential.userID == oldUserID || credential.userID == userID
+        else { return false }
+        guard credential.userID != userID else { return true }
+        try save(MobiusCloudCredential(
+            token: credential.token,
+            userID: userID,
+            expiresAt: credential.expiresAt
+        ))
+        return true
+    }
 }
 
 @MainActor
@@ -248,13 +279,20 @@ final class MobiusCloudClient {
     }
 
     private struct SubscriptionRequest: Encodable {
-        let signedTransaction: String
+        let jws: String
+        let appTransactionJws: String
+    }
+
+    private struct ErrorResponse: Decodable {
+        let error: String
     }
 
     private struct AccountResponse: Decodable {
+        let userId: String
         let email: String?
         let subscribed: Bool
         let sharesDiagnostics: Bool
+        let subscriptionStartedAt: Date?
         let luna: MobiusCloudUsageLimit?
     }
 
@@ -282,7 +320,7 @@ final class MobiusCloudClient {
     private static let gatewayURL = cloudURL("api/mobile/gateway")
     private static let extensionCatalogURL = cloudURL("api/mobile/extensions/catalog")
     private static let maximumResponseBytes = 64 * 1024
-    private static let maximumSignedTransactionBytes = 64 * 1024
+    private static let maximumPurchaseJWSBytes = 16 * 1024
 
     private let store: MobiusCloudSessionStore
     private let transport: Transport
@@ -330,11 +368,21 @@ final class MobiusCloudClient {
     }
 
     func authenticate(authorizationCode: String, nonce: String) async throws -> MobiusCloudSession {
-        let data = try await send(
-            url: Self.authenticationURL,
-            method: "POST",
-            body: try appleAuthenticationBody(authorizationCode: authorizationCode, nonce: nonce)
-        )
+        let data: Data
+        do {
+            data = try await send(
+                url: Self.authenticationURL,
+                method: "POST",
+                body: try appleAuthenticationBody(
+                    authorizationCode: authorizationCode,
+                    nonce: nonce
+                )
+            )
+        } catch MobiusCloudError.server(409) {
+            throw MobiusCloudError.accountDeletionPending
+        } catch MobiusCloudError.server(401) {
+            throw MobiusCloudError.invalidAuthorization
+        }
         let response: AppleAuthenticationResponse
         do {
             response = try decoder.decode(AppleAuthenticationResponse.self, from: data)
@@ -369,8 +417,6 @@ final class MobiusCloudClient {
                 authenticated: true,
                 forgetAuthenticationOnSuccess: true
             )
-        } catch MobiusCloudError.server(409) {
-            throw MobiusCloudError.activeSubscription
         } catch MobiusCloudError.server(403) {
             throw MobiusCloudError.invalidAuthorization
         }
@@ -388,7 +434,9 @@ final class MobiusCloudClient {
         } catch {
             throw MobiusCloudError.invalidAccountResponse
         }
-        guard response.email.map(Self.isValidEmail) ?? true,
+        guard let userID = UUID(uuidString: response.userId),
+              (response.subscriptionStartedAt != nil) == response.subscribed,
+              response.email.map(Self.isValidEmail) ?? true,
               response.luna.map({
                   response.subscribed &&
                       $0.creditMicrousd > 0 &&
@@ -398,11 +446,17 @@ final class MobiusCloudClient {
             throw MobiusCloudError.invalidAccountResponse
         }
         return MobiusCloudAccount(
+            userID: userID,
             email: response.email,
             subscribed: response.subscribed,
             sharesDiagnostics: response.sharesDiagnostics,
+            subscriptionStartedAt: response.subscriptionStartedAt,
             luna: response.luna
         )
+    }
+
+    func replaceSessionUserID(_ userID: UUID, replacing oldUserID: UUID) throws -> Bool {
+        try store.replaceUserID(userID, replacing: oldUserID)
     }
 
     func updateSharesDiagnostics(_ sharesDiagnostics: Bool) async throws {
@@ -416,24 +470,16 @@ final class MobiusCloudClient {
         )
     }
 
-    func submitSubscription(signedTransaction: String) async throws {
-        let parts = signedTransaction.split(separator: ".", omittingEmptySubsequences: false)
-        guard signedTransaction.utf8.count <= Self.maximumSignedTransactionBytes,
-              parts.count == 3,
-              parts.allSatisfy({ part in
-                  !part.isEmpty && part.utf8.allSatisfy {
-                      ($0 >= 0x30 && $0 <= 0x39)
-                          || ($0 >= 0x41 && $0 <= 0x5a)
-                          || ($0 >= 0x61 && $0 <= 0x7a)
-                          || $0 == 0x2d
-                          || $0 == 0x5f
-                  }
-              })
-        else { throw MobiusCloudError.invalidSignedTransaction }
+    func submitSubscription(jws: String, appTransactionJWS: String) async throws {
+        guard Self.isValidPurchaseJWS(jws), Self.isValidPurchaseJWS(appTransactionJWS)
+        else { throw MobiusCloudError.invalidPurchaseJWS }
         _ = try await send(
             url: Self.subscriptionURL,
             method: "PUT",
-            body: try encoder.encode(SubscriptionRequest(signedTransaction: signedTransaction)),
+            body: try encoder.encode(SubscriptionRequest(
+                jws: jws,
+                appTransactionJws: appTransactionJWS
+            )),
             authenticated: true
         )
     }
@@ -542,6 +588,12 @@ final class MobiusCloudClient {
             if response.statusCode == 401, let bearer {
                 try? store.remove(ifTokenMatches: bearer)
             }
+            if response.statusCode == 409,
+               let error = try? decoder.decode(ErrorResponse.self, from: data).error {
+                if error == "subscription_account_conflict" {
+                    throw MobiusCloudError.subscriptionAccountConflict
+                }
+            }
             throw MobiusCloudError.server(response.statusCode)
         }
         if forgetAuthenticationOnSuccess, let bearer {
@@ -580,6 +632,21 @@ final class MobiusCloudClient {
                 of: #"^[^\s@]+@[^\s@]+\.[^\s@]+$"#,
                 options: .regularExpression
             ) != nil
+    }
+
+    private static func isValidPurchaseJWS(_ jws: String) -> Bool {
+        let parts = jws.split(separator: ".", omittingEmptySubsequences: false)
+        return jws.utf8.count <= maximumPurchaseJWSBytes
+            && parts.count == 3
+            && parts.allSatisfy { part in
+                !part.isEmpty && part.utf8.allSatisfy {
+                    ($0 >= 0x30 && $0 <= 0x39)
+                        || ($0 >= 0x41 && $0 <= 0x5a)
+                        || ($0 >= 0x61 && $0 <= 0x7a)
+                        || $0 == 0x2d
+                        || $0 == 0x5f
+                }
+            }
     }
 
     private static func isValidExtensionSource(_ source: MobiusCloudExtensionSource) -> Bool {

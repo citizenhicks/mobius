@@ -24,9 +24,11 @@ extension AppModelTests {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let store = GatewayStore(defaults: defaults)
-        let account = GatewayAccount(endpoint: try GatewayEndpoint(
-            "wss://mobius-test-org.sprites.app"
-        ))
+        let userID = UUID()
+        let account = GatewayAccount(
+            endpoint: try GatewayEndpoint("wss://mobius-test-org.sprites.app"),
+            cloudUserID: userID
+        )
         try store.save(account, token: "test-token")
         addTeardownBlock { try await store.remove(account) }
         let payload = ready(
@@ -52,7 +54,7 @@ extension AppModelTests {
             },
             reconnectDelay: { _ in .milliseconds(20) }
         )
-        model.cloudSession = MobiusCloudSession(userID: UUID(), expiresAt: .distantFuture)
+        model.cloudSession = MobiusCloudSession(userID: userID, expiresAt: .distantFuture)
         await model.appDidBecomeActive()
 
         model.start()
@@ -64,10 +66,14 @@ extension AppModelTests {
 
     func testCloudAccountRemainsRecognizedWhenAnotherGatewayIsSelected() throws {
         let model = try model()
-        let cloud = GatewayAccount(endpoint: try GatewayEndpoint("wss://account.sprites.app"))
+        let userID = UUID()
+        let cloud = GatewayAccount(
+            endpoint: try GatewayEndpoint("wss://account.sprites.app"),
+            cloudUserID: userID
+        )
         let selfHosted = GatewayAccount(endpoint: try GatewayEndpoint("wss://gateway.example"))
         model.accounts = [cloud, selfHosted]
-        model.cloudSession = MobiusCloudSession(userID: UUID(), expiresAt: .distantFuture)
+        model.cloudSession = MobiusCloudSession(userID: userID, expiresAt: .distantFuture)
         model.selectedAccountID = selfHosted.id
 
         XCTAssertEqual(model.mobiusCloudGateway?.id, cloud.id)

@@ -10,6 +10,7 @@
 		200000000000000000000001 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000001 /* AppModel.swift */; };
 		B20000000000000000000001 /* AppModelCloud.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000001 /* AppModelCloud.swift */; };
 		B20000000000000000000002 /* MobiusCloudClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* MobiusCloudClient.swift */; };
+		D20000000000000000000001 /* MobiusCloudPurchases.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000001 /* MobiusCloudPurchases.swift */; };
 		20000000000000000000005B /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000040 /* AppState.swift */; };
 		200000000000000000000051 /* TranscriptModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000003B /* TranscriptModel.swift */; };
 		200000000000000000000053 /* AppModelCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000003C /* AppModelCommands.swift */; };
@@ -98,6 +99,7 @@
 		B20000000000000000000003 /* AppModelCloud.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000001 /* AppModelCloud.swift */; };
 		B20000000000000000000004 /* MobiusCloudClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* MobiusCloudClient.swift */; };
 		B20000000000000000000005 /* MobiusCloudTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000003 /* MobiusCloudTests.swift */; };
+		D20000000000000000000002 /* MobiusCloudPurchases.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000001 /* MobiusCloudPurchases.swift */; };
 		20000000000000000000005F /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000040 /* AppState.swift */; };
 		200000000000000000000052 /* TranscriptModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000003B /* TranscriptModel.swift */; };
 		200000000000000000000057 /* AppModelCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000003C /* AppModelCommands.swift */; };
@@ -147,6 +149,7 @@
 		100000000000000000000001 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		B10000000000000000000001 /* AppModelCloud.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelCloud.swift; sourceTree = "<group>"; };
 		B10000000000000000000002 /* MobiusCloudClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobiusCloudClient.swift; sourceTree = "<group>"; };
+		D10000000000000000000001 /* MobiusCloudPurchases.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobiusCloudPurchases.swift; sourceTree = "<group>"; };
 		B10000000000000000000004 /* MobiusApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MobiusApp.entitlements; sourceTree = "<group>"; };
 		100000000000000000000040 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
 		10000000000000000000003B /* TranscriptModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptModel.swift; sourceTree = "<group>"; };
@@ -294,6 +297,7 @@
 				100000000000000000000001 /* AppModel.swift */,
 				B10000000000000000000001 /* AppModelCloud.swift */,
 				B10000000000000000000002 /* MobiusCloudClient.swift */,
+				D10000000000000000000001 /* MobiusCloudPurchases.swift */,
 				100000000000000000000040 /* AppState.swift */,
 				10000000000000000000003B /* TranscriptModel.swift */,
 				10000000000000000000003C /* AppModelCommands.swift */,
@@ -515,6 +519,7 @@
 				200000000000000000000001 /* AppModel.swift in Sources */,
 				B20000000000000000000001 /* AppModelCloud.swift in Sources */,
 				B20000000000000000000002 /* MobiusCloudClient.swift in Sources */,
+				D20000000000000000000001 /* MobiusCloudPurchases.swift in Sources */,
 				20000000000000000000005B /* AppState.swift in Sources */,
 				200000000000000000000051 /* TranscriptModel.swift in Sources */,
 				200000000000000000000053 /* AppModelCommands.swift in Sources */,
@@ -599,6 +604,7 @@
 				200000000000000000000016 /* AppModel.swift in Sources */,
 				B20000000000000000000003 /* AppModelCloud.swift in Sources */,
 				B20000000000000000000004 /* MobiusCloudClient.swift in Sources */,
+				D20000000000000000000002 /* MobiusCloudPurchases.swift in Sources */,
 				B20000000000000000000005 /* MobiusCloudTests.swift in Sources */,
 				20000000000000000000005F /* AppState.swift in Sources */,
 				200000000000000000000052 /* TranscriptModel.swift in Sources */,
@@ -751,7 +757,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CODE_SIGN_ENTITLEMENTS = Sources/MobiusApp/MobiusApp.entitlements;
-				CURRENT_PROJECT_VERSION = 168;
+				CURRENT_PROJECT_VERSION = 206;
 				DEVELOPMENT_TEAM = 3T68GZFAR6;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -789,7 +795,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CODE_SIGN_ENTITLEMENTS = Sources/MobiusApp/MobiusApp.entitlements;
-				CURRENT_PROJECT_VERSION = 168;
+				CURRENT_PROJECT_VERSION = 206;
 				DEVELOPMENT_TEAM = 3T68GZFAR6;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Sources/MobiusApp/Info.plist;
