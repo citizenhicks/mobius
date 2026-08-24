@@ -99,6 +99,7 @@ struct MobiusCloudAppleNonce: Equatable, Sendable {
 
 enum MobiusCloudError: LocalizedError {
     case accountDeletionPending
+    case accountIdentityMismatch
     case authenticationRequired
     case invalidAccountResponse
     case invalidAuthenticationResponse
@@ -120,6 +121,8 @@ enum MobiusCloudError: LocalizedError {
         switch self {
         case .accountDeletionPending:
             "Your previous Cloud account is still being deleted. Try again shortly."
+        case .accountIdentityMismatch:
+            "Your Cloud account did not match this sign-in. Sign in again."
         case .authenticationRequired: "Sign in with Apple to continue."
         case .invalidAccountResponse: "möbius Cloud returned invalid account information."
         case .invalidAuthenticationResponse: "möbius Cloud returned an invalid sign-in response."
@@ -249,18 +252,6 @@ final class MobiusCloudSessionStore {
         try remove()
     }
 
-    fileprivate func replaceUserID(_ userID: UUID, replacing oldUserID: UUID) throws -> Bool {
-        guard let credential = try load(),
-              credential.userID == oldUserID || credential.userID == userID
-        else { return false }
-        guard credential.userID != userID else { return true }
-        try save(MobiusCloudCredential(
-            token: credential.token,
-            userID: userID,
-            expiresAt: credential.expiresAt
-        ))
-        return true
-    }
 }
 
 @MainActor
@@ -455,8 +446,9 @@ final class MobiusCloudClient {
         )
     }
 
-    func replaceSessionUserID(_ userID: UUID, replacing oldUserID: UUID) throws -> Bool {
-        try store.replaceUserID(userID, replacing: oldUserID)
+    func invalidateSession(_ session: MobiusCloudSession) throws {
+        guard try loadSession() == session else { return }
+        try store.remove()
     }
 
     func updateSharesDiagnostics(_ sharesDiagnostics: Bool) async throws {
@@ -582,7 +574,13 @@ final class MobiusCloudClient {
             request.setValue("Bearer \(credential.token)", forHTTPHeaderField: "Authorization")
         }
 
-        let (data, response) = try await transport(request)
+        let data: Data
+        let response: HTTPURLResponse
+        do {
+            (data, response) = try await transport(request)
+        } catch let error as URLError where error.code == .cancelled {
+            throw CancellationError()
+        }
         guard data.count <= Self.maximumResponseBytes else { throw MobiusCloudError.oversizedResponse }
         guard (200..<300).contains(response.statusCode) else {
             if response.statusCode == 401, let bearer {

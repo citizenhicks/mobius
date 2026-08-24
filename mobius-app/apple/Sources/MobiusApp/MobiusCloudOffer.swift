@@ -4,17 +4,22 @@ import SwiftUI
 struct MobiusCloudOfferButton: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
-    @State private var showsOffer = false
 
     // A centred label and no chevron: with a leading glyph, a spacer and a caret this read
     // as a list row that happened to be capsule-shaped. The accent tint marks it as the
     // other path rather than a second copy of the pairing button.
     var body: some View {
         Button {
-            showsOffer = true
+            model.showsCloudOffer = true
         } label: {
             Label {
-                Text(model.hasCloudAccount ? "Subscribe to möbius Cloud" : "Connect to möbius Cloud")
+                Text(
+                    model.cloudAccount?.subscribed == true
+                        ? "Connect Cloud gateway"
+                        : model.hasCloudAccount
+                            ? "Subscribe to möbius Cloud"
+                            : "Connect to möbius Cloud"
+                )
                     // Glass takes a tint from its own material, not from the button's, so
                     // the accent has to be carried by the label for it to read at all.
                     .foregroundStyle(palette.accent)
@@ -34,15 +39,15 @@ struct MobiusCloudOfferButton: View {
         .buttonBorderShape(.capsule)
         .controlSize(.large)
         .buttonSizing(.flexible)
-        .sheet(isPresented: $showsOffer) {
-            MobiusCloudOfferSheet()
-                .presentationDragIndicator(.visible)
-        }
-        .accessibilityHint("Explains the managed möbius Cloud subscription")
+        .accessibilityHint(
+            model.cloudAccount?.subscribed == true
+                ? "Connects this device to your managed Cloud gateway"
+                : "Explains the managed möbius Cloud subscription"
+        )
     }
 }
 
-private struct MobiusCloudOfferSheet: View {
+struct MobiusCloudOfferSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @Environment(\.mobiusPalette) private var palette

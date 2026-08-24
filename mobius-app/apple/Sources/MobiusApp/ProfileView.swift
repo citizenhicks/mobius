@@ -18,9 +18,6 @@ struct ProfileView: View {
             // and usage is the one section here nobody comes to act on.
             Section {
                 CloudAccountSettings()
-                    .task(id: model.cloudSession?.userID) {
-                        await model.refreshCloudAccount()
-                    }
             } header: {
                 HStack(spacing: MobiusSpace.xs) {
                     MobiusCloudLabel(showsAccount: true)
@@ -52,6 +49,9 @@ struct ProfileView: View {
                 }
             }
             .listRowSeparator(.hidden)
+        }
+        .task(id: model.cloudSession?.credentialID) {
+            await model.refreshCloudAccount()
         }
         .task(id: model.connectionState.isReady) { model.refreshProfile() }
     }
@@ -243,13 +243,8 @@ private struct CloudAccountSettings: View {
                 CloudAgentUsageLimit(limit: limit)
             }
             VStack(spacing: MobiusSpace.s) {
-                if model.cloudAccount?.subscribed == false {
+                if model.cloudAccount != nil, model.mobiusCloudGateway == nil {
                     MobiusCloudOfferButton()
-                } else if model.cloudAccount?.subscribed == true, model.mobiusCloudGateway == nil {
-                    Button("Connect Cloud gateway", glyph: .cloudServer) {
-                        Task { _ = await model.connectCloudGateway() }
-                    }
-                    .mobiusProminentButton()
                 }
                 Button("Manage subscription", glyph: .sealCheck) {
                     Task { await model.manageCloudSubscription() }

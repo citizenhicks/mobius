@@ -300,24 +300,10 @@ extension AppModel {
         }
         let account = try await cloudClient.account()
         guard cloudSession == requestedSession else { throw CancellationError() }
-
-        if account.userID != requestedSession.userID {
-            if let index = accounts.firstIndex(where: {
-                $0.cloudUserID == requestedSession.userID || $0.cloudUserID == account.userID
-            }), accounts[index].cloudUserID != account.userID {
-                try store.recordCloudUserID(account.userID, for: accounts[index])
-                accounts[index].cloudUserID = account.userID
-            }
-            guard try cloudClient.replaceSessionUserID(
-                account.userID,
-                replacing: requestedSession.userID
-            ) else { throw CancellationError() }
+        guard account.userID == requestedSession.userID else {
+            try cloudClient.invalidateSession(requestedSession)
+            throw MobiusCloudError.accountIdentityMismatch
         }
-        cloudSession = MobiusCloudSession(
-            userID: account.userID,
-            expiresAt: requestedSession.expiresAt,
-            credentialID: requestedSession.credentialID
-        )
         cloudAccount = account
         return account
     }
@@ -339,6 +325,7 @@ extension AppModel {
                 let grant = try await cloudClient.createPairingGrant()
                 cloudAction = .connecting
                 applyPairingSetup(grant.setup)
+                showsPairing = false
                 pair()
                 pendingPairingAccount?.displayName = mobiusCloudGatewayDisplayName
                 pendingPairingAccount?.cloudUserID = cloudSession?.userID
@@ -426,7 +413,7 @@ extension AppModel {
             switch cloudError {
             case .subscriptionAccountConflict:
                 cloudIssue = .subscriptionAccountConflict
-            case .authenticationRequired, .sessionExpired, .server(401):
+            case .accountIdentityMismatch, .authenticationRequired, .sessionExpired, .server(401):
                 cloudIssue = nil
                 clearCloudAccountState()
             default:

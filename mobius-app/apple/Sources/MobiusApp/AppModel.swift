@@ -37,6 +37,7 @@ final class AppModel {
     var cloudSession: MobiusCloudSession?
     var cloudAccount: MobiusCloudAccount?
     var cloudAction: MobiusCloudAction = .idle
+    var showsCloudOffer = false
     var cloudError: String?
     var cloudIssue: MobiusCloudIssue?
     var isUpdatingCloudDiagnostics = false

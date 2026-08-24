@@ -93,6 +93,10 @@ struct AppShell: View {
             Text("This removes the chat from the gateway history.")
         }
         .quickLookPreview($model.previewURL)
+        .sheet(isPresented: $model.showsCloudOffer) {
+            MobiusCloudOfferSheet()
+                .presentationDragIndicator(.visible)
+        }
         .sheet(item: presentedTextFilePreview, onDismiss: {
             // App lock hides the sheet through the presentation binding while retaining its
             // in-memory workspace draft. A user dismissal clears the bound item first.
