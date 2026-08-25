@@ -178,23 +178,19 @@ private struct AddProviderSheet: View {
                     ProviderFormSections(provider: provider, isNew: true)
                 } else {
                     Section {
-                        ForEach(model.providerStatuses) { status in
-                            Button {
-                                model.addProviderInstance(status.provider)
-                                provider = status.provider
-                            } label: {
-                                SettingsRowLabel(
-                                    title: status.label,
-                                    detail: status.description
-                                )
-                                    .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                        }
+                        providerRows(auth: .deviceCode)
                     } header: {
-                        Text("Provider")
-                    } footer: {
-                        Text("Pick a service, then name this setup. Adding a second setup of the same service keeps both, each with its own credential.")
+                        HStack(spacing: MobiusSpace.xs) {
+                            Text("Subscription providers")
+                            SettingsInfoButton(
+                                title: "Provider setups",
+                                detail: "Pick a service, then name this setup. Adding a second setup of the same service keeps both, each with its own credential.",
+                                compact: true
+                            )
+                        }
+                    }
+                    Section("API providers") {
+                        providerRows(auth: .apiKey)
                     }
                 }
             }
@@ -217,6 +213,22 @@ private struct AddProviderSheet: View {
                 else { return }
                 dismiss()
             }
+        }
+    }
+
+    private func providerRows(auth: ProviderAuthKind) -> some View {
+        ForEach(model.providerStatuses.filter { $0.auth == auth }) { status in
+            Button {
+                model.addProviderInstance(status.provider)
+                provider = status.provider
+            } label: {
+                SettingsRowLabel(
+                    title: status.label,
+                    detail: status.description
+                )
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
         }
     }
 }
