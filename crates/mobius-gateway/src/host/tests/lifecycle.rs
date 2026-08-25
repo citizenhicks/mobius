@@ -1122,6 +1122,42 @@ async fn open_session_rejects_invalid_ids_before_checkpoint_lookup() {
 }
 
 #[test]
+fn cron_execution_spec_disables_scheduling_and_frames_execution() {
+    let root = tempfile::tempdir().expect("root");
+    let workspace = root.path().join("workspace");
+    let state = root.path().join("state");
+    std::fs::create_dir(&workspace).expect("workspace");
+    std::fs::create_dir(&state).expect("state");
+    let mut config = AgentComposition::default();
+    config.middleware.set_enabled("cron", true);
+    config.system_prompt = "base instructions".into();
+    let spec = ChatSpec::new(
+        &workspace,
+        VersionedAgentConfig {
+            revision: 1,
+            config,
+        },
+        &state,
+        None,
+    )
+    .expect("chat spec");
+
+    let execution = cron_execution_spec(spec);
+    let restored = ChatSpec::from_metadata(
+        &execution.metadata().expect("execution metadata"),
+        &state,
+        None,
+    )
+    .expect("restore execution spec");
+
+    assert!(!restored.agent.config.middleware.enabled("cron"));
+    assert_eq!(
+        restored.agent.config.system_prompt,
+        "base instructions\n\nExecute the scheduled task in the next user message. Do not create or modify schedules."
+    );
+}
+
+#[test]
 fn cron_execution_inherits_the_chat_recipe_without_transcript_state() {
     let mut source = Checkpoint::empty("source");
     source.context.push(serde_json::json!({"role": "user"}));

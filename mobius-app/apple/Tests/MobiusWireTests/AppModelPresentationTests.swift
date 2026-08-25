@@ -784,6 +784,20 @@ extension AppModelTests {
         XCTAssertEqual(model.toast?.tone, .error)
     }
 
+    func testCronTaskFilterUsesTheCronOriginPrefix() throws {
+        let model = try model()
+        model.applySessions([
+            session(sessionID: "chat", state: .idle),
+            session(sessionID: "task", state: .idle, originLabel: "cron · task"),
+            session(sessionID: "other", state: .idle, originLabel: "cron")
+        ])
+
+        XCTAssertEqual(
+            model.sessions.filter { $0.isCronTask }.map(\.sessionId),
+            ["task"]
+        )
+    }
+
     func testIdenticalSessionCatalogDoesNotPublishAChange() async throws {
         let model = try model()
         let catalog = [session(state: .idle)]

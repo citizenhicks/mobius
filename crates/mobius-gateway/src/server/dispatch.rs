@@ -823,7 +823,7 @@ pub(super) async fn handle_message(
         ClientMessage::ListCron {
             request_id,
             session_id,
-        } => match cron.list(&session_id) {
+        } => match cron.records(&session_id) {
             Ok(tasks) => {
                 write_frame(
                     writer,

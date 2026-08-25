@@ -535,7 +535,8 @@ final class AppModelTests: XCTestCase {
         updatedAt: Int64 = 100,
         firstUserMessage: String? = "Review",
         title: String? = nil,
-        workspaceLabel: String = "/srv/mobius"
+        workspaceLabel: String = "/srv/mobius",
+        originLabel: String? = nil
     ) -> SessionRecord {
         SessionRecord(
             sessionId: sessionID,
@@ -545,7 +546,7 @@ final class AppModelTests: XCTestCase {
                 userName: nil,
                 workspaceId: "workspace-1",
                 workspaceLabel: workspaceLabel,
-                originLabel: nil
+                originLabel: originLabel
             ),
             parentSessionId: nil,
             parentSequence: nil,

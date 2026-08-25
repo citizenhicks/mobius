@@ -87,6 +87,14 @@ const SESSION_PAGE_SIZE: usize = 100;
 const RECENT_RUN_LIMIT: usize = 30;
 pub(crate) const MAX_ACTIVE_SESSIONS: usize = 32;
 
+fn cron_execution_spec(mut spec: ChatSpec) -> ChatSpec {
+    spec.agent.config.middleware.set_enabled("cron", false);
+    spec.agent.config.system_prompt.push_str(
+        "\n\nExecute the scheduled task in the next user message. Do not create or modify schedules.",
+    );
+    spec
+}
+
 type SessionActivities = Arc<StdMutex<HashMap<String, SessionActivity>>>;
 
 /// Machine-wide chat registry. A session has at most one resident agent owner.
@@ -210,7 +218,7 @@ impl GatewayHost {
         let config_error = |error: crate::Error| MobiusError::Config(error.to_string());
         match command {
             CronCommand::List => cron
-                .list(&session_id)
+                .records(&session_id)
                 .map(|tasks| {
                     CronCommandResult::Tasks(
                         tasks
@@ -218,7 +226,7 @@ impl GatewayHost {
                             .map(|task| CronTaskRecord {
                                 id: task.id,
                                 schedule: task.schedule,
-                                task: task.task.display().to_string(),
+                                task: task.task,
                             })
                             .collect(),
                     )
@@ -558,9 +566,10 @@ impl GatewayHost {
             .map_err(|_| internal("gateway configuration lock is poisoned"))?
             .tls
             .clone();
-        let spec =
+        let spec = cron_execution_spec(
             ChatSpec::from_metadata(&checkpoint.metadata, state.store.state_dir(), tls.as_ref())
-                .map_err(invalid_config)?;
+                .map_err(invalid_config)?,
+        );
         let workspace = spec.workspace_info();
         let workspace_label = workspace.path.display().to_string();
         if checkpoint.session_context.workspace_id.as_deref() != Some(workspace.id.as_str())
@@ -569,6 +578,7 @@ impl GatewayHost {
         {
             return Err(invalid_session_workspace());
         }
+        let execution_metadata = spec.metadata().map_err(invalid_config)?;
         let source_sequence = checkpoint.sequence;
         let session_id = Uuid::new_v4().to_string();
         let label = format!("cron · {}", task.id.get(..8).unwrap_or(&task.id));
@@ -582,7 +592,8 @@ impl GatewayHost {
                 });
             }
         };
-        let checkpoint = cron_execution_checkpoint(&checkpoint, &session_id, &label);
+        let mut checkpoint = cron_execution_checkpoint(&checkpoint, &session_id, &label);
+        checkpoint.metadata.extend(execution_metadata);
         if let Err(error) = state
             .checkpoints
             .fork(&source_session_id, source_sequence, &checkpoint)

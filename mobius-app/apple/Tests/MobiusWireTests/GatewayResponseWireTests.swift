@@ -182,13 +182,14 @@ extension GatewayWireTests {
         XCTAssertEqual(scope, .unstaged)
         XCTAssertTrue(diff.hasPrefix("diff --git"))
 
-        let tasks = try decodeEnvelope(#"{"version":27,"type":"cron_tasks","request_id":"cron-1","session_id":"chat-1","tasks":[{"id":"task-1","session_id":"chat-1","task":"/srv/task.md","schedule":"0 9 * * *"}]}"#)
+        let tasks = try decodeEnvelope(#"{"version":27,"type":"cron_tasks","request_id":"cron-1","session_id":"chat-1","tasks":[{"id":"task-1","session_id":"chat-1","task":"Review open pull requests","schedule":"0 9 * * *"}]}"#)
         guard case .cronTasks(let taskRequestID, let taskSessionID, let cronTasks) = tasks else {
             return XCTFail("Expected cron tasks envelope")
         }
         XCTAssertEqual(taskRequestID, "cron-1")
         XCTAssertEqual(taskSessionID, "chat-1")
         XCTAssertEqual(cronTasks.first?.sessionId, "chat-1")
+        XCTAssertEqual(cronTasks.first?.task, "Review open pull requests")
 
         let history = try decodeEnvelope(#"{"version":27,"type":"cron_history","request_id":"history-1","session_id":"chat-1","runs":[{"id":"run-1","task_id":"task-1","source_session_id":"chat-1","started_at":100,"finished_at":110,"status":"succeeded","session_id":"chat-2","message":null}]}"#)
         guard case .cronHistory(let historyRequestID, let historySessionID, let runs) = history else {

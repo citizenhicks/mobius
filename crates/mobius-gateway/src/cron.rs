@@ -15,7 +15,7 @@ use mobius::protocol::MAX_USER_INPUT_BYTES;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::wire::{CronRun, CronRunStatus, CronTask};
+use crate::wire::{CronRun, CronRunStatus, CronTask as CronTaskRecord};
 use crate::{Error, Result};
 
 const STATE_VERSION: u32 = 2;
@@ -24,6 +24,7 @@ const STATE_LOCK_FILE: &str = "cron-state.lock";
 const TASKS_DIR: &str = "tasks";
 const MAX_STATE_BYTES: u64 = 1024 * 1024;
 const MAX_RUNS: usize = 256;
+const UNAVAILABLE_TASK_DESCRIPTION: &str = "Task instructions unavailable";
 
 /// Gateway-wide persistent cron state partitioned by source session.
 pub(crate) struct CronStore {
@@ -32,6 +33,15 @@ pub(crate) struct CronStore {
     setup_sessions: Mutex<BTreeSet<String>>,
     path: PathBuf,
     state: Mutex<CronState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StoredCronTask {
+    pub(crate) id: String,
+    pub(crate) session_id: String,
+    pub(crate) task: PathBuf,
+    pub(crate) schedule: String,
 }
 
 /// Result of reserving one task invocation.
@@ -56,7 +66,7 @@ impl Drop for ActiveCronRun {
 #[serde(deny_unknown_fields)]
 struct CronState {
     version: u32,
-    tasks: Vec<CronTask>,
+    tasks: Vec<StoredCronTask>,
     runs: Vec<CronRun>,
 }
 
@@ -113,9 +123,9 @@ impl CronStore {
         source_session_id: &str,
         task: PathBuf,
         schedule: String,
-    ) -> Result<CronTask> {
+    ) -> Result<StoredCronTask> {
         self.update(|state| {
-            let task = CronTask {
+            let task = StoredCronTask {
                 id: Uuid::new_v4().to_string(),
                 session_id: source_session_id.into(),
                 task,
@@ -136,12 +146,12 @@ impl CronStore {
         let task = task.map(str::trim).filter(|task| !task.is_empty());
         let input = task.map_or_else(
             || {
-                "Set up a recurring task. Ask me for the task and timing details, then use `schedule_task`."
+                "Set up a recurring task. Ask me for the task and timing details, then use `schedule_task`. Save only instructions for what each run must execute, not instructions to create the schedule."
                     .into()
             },
             |task| {
                 format!(
-                    "Set up this recurring task:\n\n{task}\n\nAsk only for missing timing details, then use `schedule_task`."
+                    "Set up this recurring task:\n\n{task}\n\nAsk only for missing timing details, then use `schedule_task`. Save only instructions for what each run must execute, not instructions to create the schedule."
                 )
             },
         );
@@ -167,7 +177,7 @@ impl CronStore {
         source_session_id: &str,
         task: &str,
         schedule: &str,
-    ) -> Result<CronTask> {
+    ) -> Result<StoredCronTask> {
         validate_session_id(source_session_id)?;
         let mut active = self.lock_setups()?;
         if !active.contains(source_session_id) {
@@ -209,13 +219,13 @@ impl CronStore {
         source_session_id: &str,
         task: &str,
         schedule: &str,
-    ) -> Result<CronTask> {
+    ) -> Result<StoredCronTask> {
         self.begin_setup(source_session_id, Some(task))?;
         self.add_managed(source_session_id, task, schedule)
     }
 
     /// Lists one source session's scheduled tasks in creation order.
-    pub(crate) fn list(&self, source_session_id: &str) -> Result<Vec<CronTask>> {
+    pub(crate) fn list(&self, source_session_id: &str) -> Result<Vec<StoredCronTask>> {
         Ok(self
             .lock_state()?
             .tasks
@@ -223,6 +233,24 @@ impl CronStore {
             .filter(|task| task.session_id == source_session_id)
             .cloned()
             .collect())
+    }
+
+    /// Lists one source session's scheduled tasks without exposing their storage paths.
+    pub(crate) fn records(&self, source_session_id: &str) -> Result<Vec<CronTaskRecord>> {
+        self.list(source_session_id)?
+            .into_iter()
+            .map(|stored| {
+                let task = self
+                    .task_input(&stored.id)
+                    .map_or_else(|_| UNAVAILABLE_TASK_DESCRIPTION.into(), |(_, task)| task);
+                Ok(CronTaskRecord {
+                    id: stored.id,
+                    session_id: stored.session_id,
+                    task,
+                    schedule: stored.schedule,
+                })
+            })
+            .collect()
     }
 
     pub(crate) fn has_tasks(&self) -> Result<bool> {
@@ -235,7 +263,7 @@ impl CronStore {
         source_session_id: &str,
         id: &str,
         schedule: &str,
-    ) -> Result<CronTask> {
+    ) -> Result<StoredCronTask> {
         let schedule = validate_schedule(schedule)?;
         self.update(|state| {
             let index = resolve_task(&state.tasks, source_session_id, id)?;
@@ -245,7 +273,7 @@ impl CronStore {
     }
 
     /// Deletes one idle task, accepting an unambiguous ID prefix.
-    pub(crate) fn delete(&self, source_session_id: &str, id: &str) -> Result<CronTask> {
+    pub(crate) fn delete(&self, source_session_id: &str, id: &str) -> Result<StoredCronTask> {
         let task = self.task(source_session_id, id)?;
         let Some(_lock) = self.try_task_lock(&task.id)? else {
             return Err(Error::Config(format!(
@@ -302,13 +330,13 @@ impl CronStore {
     }
 
     /// Resolves one task by full ID or unambiguous prefix.
-    pub(crate) fn task(&self, source_session_id: &str, id: &str) -> Result<CronTask> {
+    pub(crate) fn task(&self, source_session_id: &str, id: &str) -> Result<StoredCronTask> {
         let state = self.lock_state()?;
         Ok(state.tasks[resolve_task(&state.tasks, source_session_id, id)?].clone())
     }
 
     /// Reads a task after rechecking its path and input-size boundary.
-    pub(crate) fn task_input(&self, id: &str) -> Result<(CronTask, String)> {
+    pub(crate) fn task_input(&self, id: &str) -> Result<(StoredCronTask, String)> {
         let task = self.stored_task(id)?;
         let path = std::fs::canonicalize(&task.task)?;
         if !path.is_file() || path.parent() != Some(self.tasks_dir.as_path()) {
@@ -344,7 +372,7 @@ impl CronStore {
     }
 
     /// Returns tasks matching one local-time Unix minute.
-    pub(crate) fn due_at_minute(&self, unix_minute: i64) -> Result<Vec<CronTask>> {
+    pub(crate) fn due_at_minute(&self, unix_minute: i64) -> Result<Vec<StoredCronTask>> {
         let seconds = unix_minute
             .checked_mul(60)
             .ok_or_else(|| Error::Config("cron timestamp overflow".into()))?;
@@ -469,7 +497,7 @@ impl CronStore {
             .collect())
     }
 
-    fn stored_task(&self, id: &str) -> Result<CronTask> {
+    fn stored_task(&self, id: &str) -> Result<StoredCronTask> {
         self.lock_state()?
             .tasks
             .iter()
@@ -487,7 +515,10 @@ impl CronStore {
         }
     }
 
-    fn lock_session_tasks(&self, source_session_id: &str) -> Result<(Vec<CronTask>, Vec<File>)> {
+    fn lock_session_tasks(
+        &self,
+        source_session_id: &str,
+    ) -> Result<(Vec<StoredCronTask>, Vec<File>)> {
         let tasks = self.list(source_session_id)?;
         let mut locks = Vec::with_capacity(tasks.len());
         for task in &tasks {
@@ -504,7 +535,7 @@ impl CronStore {
 
     fn record_terminal_run(
         &self,
-        task: &CronTask,
+        task: &StoredCronTask,
         status: CronRunStatus,
         message: Option<String>,
     ) -> Result<CronRun> {
@@ -668,7 +699,7 @@ fn recover_interrupted_runs(state: &mut CronState) -> bool {
     changed
 }
 
-fn resolve_task(tasks: &[CronTask], source_session_id: &str, id: &str) -> Result<usize> {
+fn resolve_task(tasks: &[StoredCronTask], source_session_id: &str, id: &str) -> Result<usize> {
     validate_task_id_prefix(id)?;
     if let Some(index) = tasks
         .iter()

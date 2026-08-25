@@ -10,13 +10,36 @@ fn store() -> (tempfile::TempDir, CronStore) {
     (root, store)
 }
 
-fn add_task(store: &CronStore, source_session_id: &str, task: &str, schedule: &str) -> CronTask {
+fn add_task(
+    store: &CronStore,
+    source_session_id: &str,
+    task: &str,
+    schedule: &str,
+) -> StoredCronTask {
     store
         .begin_setup(source_session_id, Some(task))
         .expect("begin setup");
     store
         .add_managed(source_session_id, task, schedule)
         .expect("add managed task")
+}
+
+#[test]
+fn frontend_records_return_task_contents_instead_of_paths() {
+    let (_root, store) = store();
+    let stored = add_task(&store, "session-a", "do work", "0 9 * * *");
+
+    let records = store.records("session-a").expect("frontend records");
+
+    assert_eq!(
+        records,
+        vec![CronTaskRecord {
+            id: stored.id,
+            session_id: "session-a".into(),
+            task: "do work".into(),
+            schedule: "0 9 * * *".into(),
+        }]
+    );
 }
 
 #[cfg(unix)]
@@ -284,6 +307,9 @@ fn missing_managed_file_does_not_block_schedule_deletion() {
     let task = add_task(&store, "session-a", "do work", "0 9 * * *");
     std::fs::remove_file(&task.task).expect("remove managed file");
 
+    let records = store.records("session-a").expect("list broken schedule");
+    assert_eq!(records[0].task, UNAVAILABLE_TASK_DESCRIPTION);
+
     store
         .delete("session-a", &task.id)
         .expect("delete broken schedule");
@@ -424,7 +450,7 @@ fn history_trimming_preserves_running_entries() {
 fn persisted_tasks_must_stay_in_the_private_task_directory() {
     let (root, store) = store();
     let mut state = CronState::default();
-    state.tasks.push(CronTask {
+    state.tasks.push(StoredCronTask {
         id: Uuid::new_v4().to_string(),
         session_id: "session-a".into(),
         task: root.path().join("outside.md"),

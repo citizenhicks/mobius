@@ -486,12 +486,12 @@ pub struct DailyUsage {
     pub usage: TokenUsage,
 }
 
-/// One persisted scheduled task owned by its source session.
+/// One frontend-safe scheduled task owned by its source session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CronTask {
     pub id: String,
     pub session_id: String,
-    pub task: PathBuf,
+    pub task: String,
     pub schedule: String,
 }
 

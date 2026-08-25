@@ -7,7 +7,7 @@ arguments = "[new [task]|list|reschedule <id> <schedule>|delete <id>|run <id>|hi
 description = "Create or manage scheduled tasks"
 
 [prompt]
-main = "Use `schedule_task` only during an explicit recurring-task setup. During setup, ask only for missing task or timing details, then call it once with standalone task instructions and a five-field cron expression in the host's local time. Outside explicit setup, never call it."
+main = "Use `schedule_task` only during an explicit recurring-task setup. During setup, ask only for missing task or timing details, then call it once with instructions for what each run must execute and a five-field cron expression in the host's local time. Never put setup or scheduling instructions in the saved task. Outside explicit setup, never call it."
 
 [render]
 schedule = "Schedule"
@@ -16,7 +16,7 @@ schedule = "Schedule"
 description = "Save the recurring task confirmed during explicit setup."
 
 [tool.schedule_task.parameter.task]
-description = "Complete standalone task instructions in Markdown."
+description = "Standalone Markdown instructions for what each run must execute; never include setup or scheduling instructions."
 
 [tool.schedule_task.parameter.schedule]
 description = "Five-field cron expression evaluated in the host's local time."

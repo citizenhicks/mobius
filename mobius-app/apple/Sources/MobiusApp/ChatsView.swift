@@ -3,6 +3,7 @@ import SwiftUI
 private enum ChatOrganization: CaseIterable, Identifiable {
     case byProject
     case chronological
+    case tasks
 
     var id: Self { self }
 
@@ -10,6 +11,7 @@ private enum ChatOrganization: CaseIterable, Identifiable {
         switch self {
         case .byProject: "By project"
         case .chronological: "Chronological list"
+        case .tasks: "Tasks"
         }
     }
 
@@ -17,6 +19,7 @@ private enum ChatOrganization: CaseIterable, Identifiable {
         switch self {
         case .byProject: "Projects"
         case .chronological: "Recent chats"
+        case .tasks: "Recent tasks"
         }
     }
 
@@ -24,6 +27,7 @@ private enum ChatOrganization: CaseIterable, Identifiable {
         switch self {
         case .byProject: .folder
         case .chronological: .clock
+        case .tasks: .calendarDots
         }
     }
 }
@@ -130,7 +134,10 @@ struct ChatsView: View {
                 .sharedBackgroundVisibility(.hidden)
             }
         }
-        .searchable(text: $searchText, prompt: "Search chats")
+        .searchable(
+            text: $searchText,
+            prompt: organization == .tasks ? "Search tasks" : "Search chats"
+        )
         .searchToolbarBehavior(.automatic)
         .searchPresentationToolbarBehavior(.avoidHidingContent)
     }
@@ -153,10 +160,16 @@ struct ChatsView: View {
                 MobiusIcon(.notificationSquare)
             }
             .buttonStyle(MobiusIconButtonStyle(prominent: showsAttentionOnly, bare: true))
-            .accessibilityLabel("Filter chats needing attention")
+            .accessibilityLabel(
+                organization == .tasks ? "Filter tasks needing attention" : "Filter chats needing attention"
+            )
             .accessibilityValue(showsAttentionOnly ? "On" : "Off")
             .accessibilityAddTraits(showsAttentionOnly ? .isSelected : [])
-            .help(showsAttentionOnly ? "Show all chats" : "Show active and unread chats")
+            .help(
+                showsAttentionOnly
+                    ? (organization == .tasks ? "Show all tasks" : "Show all chats")
+                    : (organization == .tasks ? "Show active and unread tasks" : "Show active and unread chats")
+            )
             .disabled(showsLoadingCatalog)
         }
         .padding(.top, MobiusSpace.l)
@@ -170,7 +183,7 @@ struct ChatsView: View {
             ForEach(sessionGroups) { group in
                 workspaceGroup(group)
             }
-        case .chronological:
+        case .chronological, .tasks:
             ForEach(chronologicalSessions) { session in
                 sessionRow(session, showsWorkspace: true)
             }
@@ -265,7 +278,9 @@ struct ChatsView: View {
     }
 
     private var displayedSessions: [SessionRecord] {
-        var sessions = model.sessions
+        var sessions = model.sessions.filter { session in
+            organization == .tasks ? session.isCronTask : !session.isCronTask
+        }
         if showsAttentionOnly {
             let attentionSessionIDs = model.attentionSessionIDs
             sessions = sessions.filter { attentionSessionIDs.contains($0.sessionId) }
@@ -282,13 +297,15 @@ struct ChatsView: View {
 
     private var emptySessionsMessage: String {
         if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return "No chats match your search"
+            return organization == .tasks ? "No tasks match your search" : "No chats match your search"
         }
-        if model.sessions.isEmpty {
-            return model.connectionState.isReady ? "No chats yet" : model.connectionState.label
+        if !model.connectionState.isReady && model.sessions.isEmpty {
+            return model.connectionState.label
         }
-        if showsAttentionOnly { return "No chats need attention" }
-        return "No chats"
+        if showsAttentionOnly {
+            return organization == .tasks ? "No tasks need attention" : "No chats need attention"
+        }
+        return organization == .tasks ? "No tasks yet" : "No chats yet"
     }
 
     private var emptyState: some View {
