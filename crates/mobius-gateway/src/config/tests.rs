@@ -1199,6 +1199,45 @@ fn provider_credentials_are_owner_only_and_absent_from_agent_snapshots() {
 }
 
 #[test]
+fn provider_credentials_normalize_paste_noise_and_reject_non_tokens() {
+    let directory = tempfile::tempdir().expect("state directory");
+    let credentials =
+        CredentialStore::open(directory.path().join("credentials.json")).expect("credential store");
+    let base_url = "https://openrouter.ai/api/v1";
+
+    credentials
+        .set(
+            "openrouter",
+            "openrouter",
+            " \nvalid-token-1234\t",
+            Some(base_url),
+        )
+        .expect("trim pasted credential");
+    let error = credentials
+        .set(
+            "openrouter-prose",
+            "openrouter",
+            "not an api key",
+            Some(base_url),
+        )
+        .expect_err("credential prose must fail");
+
+    assert_eq!(
+        credentials
+            .get("openrouter", "openrouter", Some(base_url))
+            .expect("stored credential"),
+        Some("valid-token-1234".into())
+    );
+    assert_eq!(
+        credentials
+            .hint("openrouter", "openrouter", Some(base_url))
+            .expect("credential hint"),
+        Some("1234".into())
+    );
+    assert!(error.to_string().contains("visible ASCII"));
+}
+
+#[test]
 fn provider_credential_write_limit_is_atomic_and_reopenable() {
     let directory = tempfile::tempdir().expect("state directory");
     let path = directory.path().join("credentials.json");

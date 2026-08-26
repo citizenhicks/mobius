@@ -15,7 +15,10 @@ poll_command = "Poll"
 stop_command = "Stop"
 
 [tool.read_file]
-description = "Read a UTF-8 workspace file."
+description = "Read a UTF-8 text file. Use a workspace-relative path such as `src/main.rs`; absolute paths work only for explicitly allowed read roots, and paths outside the sandbox are rejected."
+
+[tool.read_file.parameter.path]
+description = "Workspace-relative path such as `src/main.rs`; do not use `..` or paths outside the sandbox."
 
 [tool.write_file]
 description = "Write a UTF-8 workspace file."

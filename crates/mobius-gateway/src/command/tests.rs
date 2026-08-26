@@ -331,12 +331,66 @@ fn parse_register_provider_accepts_credentialless_endpoint_configuration() {
             web_search: HostedWebSearch::Live,
             base_url: Some(base_url),
             credentialless: true,
+            credential_stdin: false,
         }) if state_dir == std::path::Path::new("/tmp/mobius")
             && provider == "openrouter"
             && model == "openai/gpt-5"
             && reasoning_efforts == ["medium", "none", "low", "high", "xhigh", "max"]
             && base_url == "https://connector.example/v1"
     ));
+}
+
+#[test]
+fn parse_register_provider_accepts_a_piped_credential() {
+    let command = parse(vec![
+        "register-provider".into(),
+        "--provider".into(),
+        "openrouter".into(),
+        "--model".into(),
+        "openai/gpt-5".into(),
+        "--credential-stdin".into(),
+    ])
+    .expect("parse provider credential input");
+
+    assert!(matches!(
+        command,
+        Command::RegisterProvider(RegisterProviderOptions {
+            credentialless: false,
+            credential_stdin: true,
+            ..
+        })
+    ));
+    assert!(
+        parse(vec![
+            "register-provider".into(),
+            "--provider".into(),
+            "openrouter".into(),
+            "--model".into(),
+            "openai/gpt-5".into(),
+            "--credentialless".into(),
+            "--credential-stdin".into(),
+        ])
+        .is_err()
+    );
+}
+
+#[test]
+fn provider_credential_stdin_is_bounded() {
+    assert_eq!(
+        read_provider_credential(std::io::Cursor::new(b"secret\n"))
+            .expect("read provider credential"),
+        "secret\n"
+    );
+    assert!(
+        read_provider_credential(std::io::Cursor::new(vec![
+            b'x';
+            crate::config::MAX_API_KEY_BYTES
+                + 1
+        ]))
+        .expect_err("oversized provider credential")
+        .to_string()
+        .contains("API key must be")
+    );
 }
 
 #[test]
@@ -387,6 +441,7 @@ async fn register_provider_command_is_idempotent() {
             web_search: HostedWebSearch::Live,
             base_url: Some("https://connector.example/v1".into()),
             credentialless: true,
+            credential_stdin: false,
         },
         load_register_provider_test_client,
     )
@@ -449,13 +504,14 @@ async fn register_provider_command_is_idempotent() {
             web_search: HostedWebSearch::Live,
             base_url: Some("https://connector.example/v1".into()),
             credentialless: true,
+            credential_stdin: false,
         },
         load_register_provider_test_client,
     )
     .await
     .expect("register provider again");
 
-    let (_, config) = ConfigStore::open(state).expect("persisted gateway config");
+    let (_, config) = ConfigStore::open(state.clone()).expect("persisted gateway config");
     let configured = &config.configured_providers["openrouter"];
     assert_eq!(
         (
@@ -484,6 +540,47 @@ async fn register_provider_command_is_idempotent() {
             ["openai/gpt-5".to_string()].as_slice(),
             ["medium".to_string(), "high".to_string()].as_slice(),
             Some("high"),
+        )
+    );
+
+    let api_key = "sk-or-v1-aaaaaaaaaaaaaaaa";
+    register_provider_with_credential(
+        RegisterProviderOptions {
+            state_dir: state.clone(),
+            provider: "openrouter".into(),
+            instance: Some("mobius-cloud".into()),
+            label: Some("Möbius Cloud".into()),
+            model: "openai/gpt-5.6-luna".into(),
+            reasoning_efforts: vec!["medium".into()],
+            web_search: HostedWebSearch::Live,
+            base_url: None,
+            credentialless: false,
+            credential_stdin: true,
+        },
+        Some(api_key.into()),
+        load_register_provider_test_client,
+    )
+    .await
+    .expect("register provider with piped credential");
+    let (store, config) = ConfigStore::open(state).expect("direct provider config");
+    let configured = &config.configured_providers["mobius-cloud"];
+    assert_eq!(
+        (
+            configured.selection.endpoint_auth,
+            configured.selection.base_url.as_deref(),
+            crate::config::CredentialStore::open(store.credentials_path())
+                .expect("direct credential store")
+                .get(
+                    "mobius-cloud",
+                    "openrouter",
+                    Some("https://openrouter.ai/api/v1")
+                )
+                .expect("direct credential"),
+        ),
+        (
+            crate::wire::ProviderEndpointAuth::ProviderDefault,
+            Some("https://openrouter.ai/api/v1"),
+            Some(api_key.into()),
         )
     );
 

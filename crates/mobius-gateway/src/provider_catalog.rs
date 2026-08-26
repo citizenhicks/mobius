@@ -30,10 +30,25 @@ pub(crate) fn provider_instances(
         .configured_providers
         .values()
         .map(|configured| {
+            let definition = provider(&configured.selection.provider)?;
+            let base_url = if definition.configurable_base_url() {
+                configured
+                    .selection
+                    .base_url
+                    .as_deref()
+                    .or_else(|| definition.default_base_url())
+            } else {
+                None
+            };
             Ok(ProviderInstance {
                 label: configured.label.clone(),
                 tint: configured.tint,
                 configured: credential_is_configured(&configured.selection, store, credentials)?,
+                credential_hint: credentials.hint(
+                    &configured.selection.instance,
+                    definition.id(),
+                    base_url,
+                )?,
                 selection: configured.selection.clone(),
                 model_ids: configured.model_ids.clone(),
                 reasoning_efforts: configured.reasoning_efforts.clone(),

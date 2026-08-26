@@ -10,7 +10,8 @@ use crate::Error;
 use crate::config::{ChatSpec, GatewayConfig};
 use crate::provider_catalog::{configured_model_choices, credential_is_configured};
 use crate::wire::{
-    AgentComposition, ProviderConfig, ProviderTint, ReadyPayload, ServerFrame, ServerMessage,
+    AgentComposition, ProviderConfig, ProviderEndpointAuth, ProviderTint, ReadyPayload,
+    ServerFrame, ServerMessage,
 };
 
 use super::session::ProviderRefresh;
@@ -52,7 +53,7 @@ impl GatewayHost {
         api_key: String,
         base_url: Option<String>,
     ) -> std::result::Result<(), Rejection> {
-        let base_url = {
+        let (base_url, configured) = {
             let state = self.state.lock().await;
             let definition = provider(&provider_id).map_err(invalid_config)?;
             let base_url = if definition.configurable_base_url() {
@@ -67,8 +68,44 @@ impl GatewayHost {
                 .credentials
                 .set(&instance, &provider_id, &api_key, base_url.as_deref())
                 .map_err(invalid_config)?;
-            base_url
+            let configured = state
+                .config
+                .lock()
+                .map_err(|_| internal("gateway configuration lock is poisoned"))?
+                .configured_providers
+                .get(&instance)
+                .filter(|configured| {
+                    let configured_base_url = if definition.configurable_base_url() {
+                        configured
+                            .selection
+                            .base_url
+                            .as_deref()
+                            .or_else(|| definition.default_base_url())
+                    } else {
+                        None
+                    };
+                    configured.selection.provider == provider_id.as_str()
+                        && configured.selection.endpoint_auth
+                            == ProviderEndpointAuth::Credentialless
+                        && configured_base_url == base_url.as_deref()
+                })
+                .cloned();
+            (base_url, configured)
         };
+        if let Some(configured) = configured {
+            let mut selection = configured.selection;
+            selection.endpoint_auth = ProviderEndpointAuth::ProviderDefault;
+            self.register_provider(
+                selection,
+                configured.label,
+                configured.tint,
+                configured.model_ids,
+                configured.reasoning_efforts,
+                true,
+            )
+            .await?;
+            return Ok(());
+        }
         self.refresh_provider_sessions(ProviderRefresh::Instance { instance, base_url })
             .await
     }

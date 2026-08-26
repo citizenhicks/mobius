@@ -297,6 +297,7 @@ struct ProviderInstance: Identifiable, Codable, Equatable, Sendable {
     let label: String
     let tint: ProviderTint
     var configured: Bool
+    var credentialHint: String? = nil
     let selection: ProviderConfig
     let modelIds: [String]
     let reasoningEfforts: [String]

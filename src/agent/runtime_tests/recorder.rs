@@ -142,6 +142,55 @@ async fn recorder_flush_waits_for_prior_unacknowledged_events() {
     );
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn recorder_accepts_a_synchronous_provider_burst() {
+    let directory = tempfile::tempdir().expect("checkpoint directory");
+    let checkpoints = Arc::new(
+        SqliteCheckpoint::new(directory.path().join("checkpoints.sqlite3"))
+            .expect("checkpoint store"),
+    );
+    checkpoints
+        .save(&Checkpoint::empty("session"), &[], None)
+        .await
+        .expect("initial checkpoint");
+    let store: Arc<dyn CheckpointStore> = checkpoints.clone();
+    let (events, mut receiver) = EventRecorder::spawn(store, "session".into());
+    let event_count = EVENT_QUEUE_CAPACITY + 1;
+
+    for index in 0..event_count {
+        try_send_event(
+            &events,
+            Event {
+                submission_id: None,
+                msg: EventMsg::Warning(WarningEvent {
+                    message: index.to_string(),
+                }),
+            },
+        )
+        .expect("queue burst event");
+    }
+    let drain = tokio::spawn(async move {
+        for _ in 0..event_count {
+            receiver.recv().await.expect("delivered burst event");
+        }
+    });
+
+    events.flush().await.expect("flush burst events");
+    drain.await.expect("drain task");
+    let page = checkpoints
+        .event_page(
+            "session",
+            EventPageRequest {
+                before_sequence: None,
+                limit: event_count,
+            },
+        )
+        .await
+        .expect("event page");
+
+    assert_eq!(page.events.len(), event_count);
+}
+
 #[tokio::test]
 async fn recorder_flush_reports_a_prior_unacknowledged_failure() {
     let directory = tempfile::tempdir().expect("checkpoint directory");

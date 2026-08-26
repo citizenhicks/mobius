@@ -24,7 +24,12 @@ impl Tool for ReadFile {
             description: text::TOOL_READ_FILE_DESCRIPTION.into(),
             parameters: serde_json::json!({
                 "type": "object",
-                "properties": {"path": {"type": "string"}},
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": text::TOOL_READ_FILE_PARAMETER_PATH_DESCRIPTION
+                    }
+                },
                 "required": ["path"],
                 "additionalProperties": false
             }),

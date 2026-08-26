@@ -14,6 +14,17 @@ fn every_tool_set_uses_the_grounded_editing_policy() {
     assert_eq!(Tools::new(Vec::new()).section(), expected);
 }
 
+#[test]
+fn read_file_definition_explains_path_scope() {
+    let definition = ReadFile.definition();
+
+    assert!(definition.description.contains("workspace-relative"));
+    assert_eq!(
+        definition.parameters["properties"]["path"]["description"],
+        text::TOOL_READ_FILE_PARAMETER_PATH_DESCRIPTION
+    );
+}
+
 struct InterruptibleTool {
     name: &'static str,
     interruptible: bool,

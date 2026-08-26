@@ -278,6 +278,8 @@ pub struct ProviderInstance {
     pub label: String,
     pub tint: ProviderTint,
     pub configured: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_hint: Option<String>,
     pub selection: ProviderConfig,
     pub model_ids: Vec<String>,
     pub reasoning_efforts: Vec<String>,

@@ -353,17 +353,21 @@ extension AppModel {
 
     func saveProviderCredential() {
         let key = providerAPIKey
-        guard let config = providerDraft, !key.isEmpty else {
+        guard var config = providerDraft, !key.isEmpty else {
             let message = "Enter an API key. It will be sent once and never read back."
             providerActionState = .failed(message)
             showToast(message, tone: .error)
             return
         }
+        config.endpointAuth = .providerDefault
+        providerDraft = config
         let id = requestID("credential")
+        let normalizedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
         pendingProviderCredential = (
             requestID: id,
             instance: config.instance,
-            provider: config.provider
+            provider: config.provider,
+            credentialHint: normalizedKey.count >= 4 ? String(normalizedKey.suffix(4)) : nil
         )
         providerActionState = .savingCredential(config.instance)
         let request: GatewayRequest

@@ -493,6 +493,67 @@ async fn credential_endpoints_are_validated_and_persisted() {
 }
 
 #[tokio::test]
+async fn explicit_key_replaces_credentialless_endpoint_auth() {
+    let root = tempfile::tempdir().expect("root");
+    let state = root.path().join("state");
+    let listen = "127.0.0.1:8741".parse().expect("listen address");
+    let (store, config) = ConfigStore::initialize(state.clone(), listen, None).expect("config");
+    let credentials =
+        Arc::new(CredentialStore::open(store.credentials_path()).expect("credential store"));
+    let cron = Arc::new(CronStore::open(store.state_dir()).expect("cron"));
+    let gateway =
+        GatewayHost::start(store, config, Arc::clone(&credentials), cron).expect("gateway");
+    let base_url = "https://connector.example/v1";
+    let model = "openai/gpt-5.6-luna";
+
+    gateway
+        .register_provider(
+            ProviderConfig {
+                instance: "openrouter-managed".into(),
+                provider: "openrouter".into(),
+                model: model.into(),
+                base_url: Some(base_url.into()),
+                endpoint_auth: ProviderEndpointAuth::Credentialless,
+                reasoning_effort: None,
+                web_search: mobius::backend::model::provider::HostedWebSearch::Off,
+            },
+            "Managed".into(),
+            Default::default(),
+            vec![model.into()],
+            Vec::new(),
+            false,
+        )
+        .await
+        .expect("register credentialless provider");
+    gateway
+        .set_credential(
+            "openrouter-managed".into(),
+            "openrouter".into(),
+            "user-secret".into(),
+            Some(base_url.into()),
+        )
+        .await
+        .expect("store explicit key");
+
+    let (_, persisted) = ConfigStore::open(state).expect("persisted config");
+    assert_eq!(
+        persisted
+            .configured_providers
+            .get("openrouter-managed")
+            .expect("configured provider")
+            .selection
+            .endpoint_auth,
+        ProviderEndpointAuth::ProviderDefault
+    );
+    assert_eq!(
+        credentials
+            .get("openrouter-managed", "openrouter", Some(base_url))
+            .expect("credential"),
+        Some("user-secret".into())
+    );
+}
+
+#[tokio::test]
 async fn credential_update_refreshes_every_matching_resident_chat() {
     let root = tempfile::tempdir().expect("root");
     let workspace = root.path().join("workspace");

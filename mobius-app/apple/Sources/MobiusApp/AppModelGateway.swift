@@ -174,6 +174,7 @@ extension AppModel {
             // An API key belongs to the one setup that received it.
             if let index = providerInstances.firstIndex(where: { $0.instance == instance }) {
                 providerInstances[index].configured = true
+                providerInstances[index].credentialHint = pending.credentialHint
             }
             pendingProviderCredential = nil
             providerAPIKey = ""

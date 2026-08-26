@@ -109,8 +109,17 @@ the default agent or a chat. Executable plugin hooks require explicit review for
 the installed package digest. Update and uninstall require deactivation first;
 per-workspace plugin data under `.mobius/extensions` is retained.
 
-Automation may register an OpenRouter-compatible HTTPS endpoint without sending
-provider credentials:
+Automation may register OpenRouter with a direct credential read from bounded
+standard input, keeping the key out of arguments and URLs:
+
+```sh
+printf %s "$OPENROUTER_API_KEY" | mobius-gateway register-provider \
+  --provider openrouter --model MODEL \
+  --reasoning-efforts medium,none,low,high,xhigh,max \
+  --web-search live --credential-stdin
+```
+
+A trusted OpenRouter-compatible connector can instead remain credentialless:
 
 ```sh
 mobius-gateway register-provider --provider openrouter --model MODEL \

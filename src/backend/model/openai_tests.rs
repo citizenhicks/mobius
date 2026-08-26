@@ -772,7 +772,7 @@ impl OpenAiAuthorization for HttpRefreshingAuthorization {
 }
 
 #[tokio::test]
-async fn completed_http_stream_returns_before_the_transport_eof() {
+async fn http_stream_forwards_deltas_and_completion_before_eof() {
     use tokio::io::AsyncReadExt as _;
     use tokio::io::AsyncWriteExt as _;
 
@@ -780,7 +780,8 @@ async fn completed_http_stream_returns_before_the_transport_eof() {
         .await
         .expect("HTTP listener");
     let address = listener.local_addr().expect("HTTP address");
-    let (release, released) = tokio::sync::oneshot::channel();
+    let (finish, finished) = tokio::sync::oneshot::channel();
+    let (close, closed) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.expect("HTTP connection");
         let mut request = Vec::new();
@@ -790,7 +791,15 @@ async fn completed_http_stream_returns_before_the_transport_eof() {
             assert_ne!(count, 0, "request ended before its headers");
             request.extend_from_slice(&chunk[..count]);
         }
-        let body = [
+        let delta = format!(
+            "data: {}\n\n",
+            serde_json::json!({
+                "type": "response.output_text.delta",
+                "item_id": "message-1",
+                "delta": "D"
+            })
+        );
+        let completion = [
             serde_json::json!({
                 "type": "response.output_item.done",
                 "output_index": 0,
@@ -809,29 +818,46 @@ async fn completed_http_stream_returns_before_the_transport_eof() {
         .into_iter()
         .map(|event| format!("data: {event}\n\n"))
         .collect::<String>();
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n{body}",
-            body.len() + 1_024
+        let headers = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",
+            delta.len() + completion.len() + 1_024
         );
         stream
-            .write_all(response.as_bytes())
+            .write_all(format!("{headers}{delta}").as_bytes())
             .await
-            .expect("HTTP response");
-        stream.flush().await.expect("flush HTTP response");
-        let _ = released.await;
+            .expect("HTTP delta");
+        stream.flush().await.expect("flush HTTP delta");
+        let _ = finished.await;
+        stream
+            .write_all(completion.as_bytes())
+            .await
+            .expect("HTTP completion");
+        stream.flush().await.expect("flush HTTP completion");
+        let _ = closed.await;
     });
     let provider =
         OpenAi::new("test-key", format!("http://{address}"), "test-model").expect("provider");
-    let events: ModelEventSink = Arc::new(|_| Ok(()));
+    let (event_sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+    let event_sink: ModelEventSink = Arc::new(move |event| {
+        let _ = event_sender.send(event);
+        Ok(())
+    });
+    let response =
+        tokio::spawn(async move { provider.send_response(model_request(), event_sink).await });
 
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(1),
-        provider.send_response(model_request(), events),
-    )
-    .await
-    .expect("completed response waited for EOF")
-    .expect("completed response");
-    let _ = release.send(());
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())
+            .await
+            .expect("delta was buffered until completion"),
+        Some(ModelEvent::TextDelta("D".into()))
+    );
+    let _ = finish.send(());
+    let output = tokio::time::timeout(std::time::Duration::from_secs(1), response)
+        .await
+        .expect("completed response waited for EOF")
+        .expect("response task")
+        .expect("completed response");
+    let _ = close.send(());
     server.await.expect("HTTP server");
 
     assert_eq!(output.text(), "Done.");

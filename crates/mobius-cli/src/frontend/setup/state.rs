@@ -74,6 +74,7 @@ pub(super) struct SetupState {
     pub(super) provider: usize,
     pub(super) new_instance: String,
     pub(super) credential: String,
+    pub(super) api_key_entered: bool,
     pub(super) endpoint: String,
     pub(super) label: String,
     pub(super) auth_field: AuthField,
@@ -185,6 +186,7 @@ impl SetupState {
             provider,
             new_instance: Uuid::new_v4().to_string(),
             credential: String::new(),
+            api_key_entered: false,
             endpoint: String::new(),
             label: String::new(),
             auth_field: AuthField::Label,
@@ -785,6 +787,7 @@ impl SetupState {
 
     pub(super) fn reset_provider_fields(&mut self) {
         self.credential.clear();
+        self.api_key_entered = false;
         self.authenticated = None;
         let definition = self.entry().status.clone();
         let current = &self.original.provider;
@@ -934,6 +937,7 @@ impl SetupState {
             ProviderAuthKind::ApiKey => {
                 let credential = take_trimmed(&mut self.credential);
                 if !credential.is_empty() {
+                    self.api_key_entered = true;
                     Ok(Authentication::ApiKey(credential))
                 } else {
                     Ok(Authentication::Reuse)
@@ -978,7 +982,9 @@ impl SetupState {
             .value
             .parse::<HostedWebSearch>()?;
         let base_url = self.selected_base_url();
-        let endpoint_auth = if current.provider.instance == self.target_instance()
+        let endpoint_auth = if self.api_key_entered {
+            ProviderEndpointAuth::ProviderDefault
+        } else if current.provider.instance == self.target_instance()
             && current.provider.base_url.as_deref() == base_url.as_deref()
         {
             current.provider.endpoint_auth

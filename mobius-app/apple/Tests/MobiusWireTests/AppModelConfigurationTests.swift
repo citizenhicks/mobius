@@ -91,6 +91,7 @@ extension AppModelTests {
             provider: "openai_socket",
             model: "gpt-5.6-sol",
             baseUrl: nil,
+            endpointAuth: .credentialless,
             reasoningEffort: "high",
             webSearch: .cached
         )
@@ -99,6 +100,7 @@ extension AppModelTests {
             provider: target.provider,
             model: target.model,
             baseUrl: nil,
+            endpointAuth: target.endpointAuth,
             reasoningEffort: target.reasoningEffort,
             webSearch: target.webSearch
         )
@@ -109,6 +111,7 @@ extension AppModelTests {
                 label: "Setup",
                 tint: .blue,
                 configured: false,
+                credentialHint: "old1",
                 selection: config,
                 modelIds: [],
                 reasoningEfforts: []
@@ -117,6 +120,7 @@ extension AppModelTests {
         model.providerAPIKey = "secret"
 
         model.saveProviderCredential()
+        XCTAssertEqual(model.providerDraft?.endpointAuth, .providerDefault)
         let request = await recorder.firstRequest(after: 0) { request in
             if case .setProviderCredential = request { return true }
             return false
@@ -151,6 +155,7 @@ extension AppModelTests {
         ))
 
         XCTAssertEqual(model.providerInstances.map(\.configured), [true, false])
+        XCTAssertEqual(model.providerInstances.map(\.credentialHint), ["cret", "old1"])
         XCTAssertEqual(model.providerAPIKey, "")
         XCTAssertEqual(model.providerActionState, .credentialSaved(target.instance))
         XCTAssertEqual(model.toast?.message, "Personal credential saved.")

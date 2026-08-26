@@ -103,6 +103,7 @@ mod tests {
             label: "Work".into(),
             tint: Default::default(),
             configured: true,
+            credential_hint: None,
             selection,
             model_ids: Vec::new(),
             reasoning_efforts: Vec::new(),

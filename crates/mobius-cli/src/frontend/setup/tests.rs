@@ -113,6 +113,7 @@ fn state(mode: SetupMode, provider: &str, configured: bool) -> SetupState {
         label: provider.into(),
         tint: Default::default(),
         configured,
+        credential_hint: None,
         selection: original.provider.clone(),
         model_ids: if statuses[0].model_ids_configurable {
             vec![original.provider.model.clone()]
@@ -344,6 +345,7 @@ fn configured_fixed_provider_can_be_selected_from_another_provider() {
             label: "responses".into(),
             tint: Default::default(),
             configured: false,
+            credential_hint: None,
             selection: original.provider.clone(),
             model_ids: vec![original.provider.model.clone()],
             reasoning_efforts: original
@@ -357,6 +359,7 @@ fn configured_fixed_provider_can_be_selected_from_another_provider() {
             label: "kimi".into(),
             tint: Default::default(),
             configured: true,
+            credential_hint: None,
             selection: kimi,
             model_ids: Vec::new(),
             reasoning_efforts: Vec::new(),
@@ -780,6 +783,7 @@ fn setup_rejects_active_provider_values_outside_the_manifest() {
                 label: config.instance.clone(),
                 tint: Default::default(),
                 configured: true,
+                credential_hint: None,
                 selection: config.clone(),
                 model_ids: vec![config.model.clone()],
                 reasoning_efforts: catalog.clone(),
@@ -906,6 +910,26 @@ fn credential_entry_is_masked_and_supports_backspace() {
     state.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
 
     assert_eq!(masked_credential(&state.credential), "•••••");
+}
+
+#[test]
+fn explicit_api_key_replaces_credentialless_auth() {
+    let mut state = state(SetupMode::Login, "responses", true);
+    state.original.provider.endpoint_auth = ProviderEndpointAuth::Credentialless;
+    state.credential = "replacement-secret".into();
+
+    assert!(matches!(
+        state.take_authentication().expect("API-key authentication"),
+        Authentication::ApiKey(_)
+    ));
+    let config = state
+        .agent_composition(&state.original)
+        .expect("agent composition");
+
+    assert_eq!(
+        config.provider.endpoint_auth,
+        ProviderEndpointAuth::ProviderDefault
+    );
 }
 
 #[test]

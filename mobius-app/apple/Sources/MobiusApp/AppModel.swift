@@ -357,7 +357,8 @@ final class AppModel {
     @ObservationIgnored var pendingProviderCredential: (
         requestID: String,
         instance: String,
-        provider: String
+        provider: String,
+        credentialHint: String?
     )?
     @ObservationIgnored var pairingCodeRequestID: String?
     @ObservationIgnored var pairingCodeExpiryTask: Task<Void, Never>?

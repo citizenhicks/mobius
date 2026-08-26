@@ -242,6 +242,8 @@ impl CredentialStore {
         api_key: &str,
         base_url: Option<&str>,
     ) -> Result<()> {
+        let api_key = api_key.trim();
+        validate_new_api_key(api_key)?;
         let credential = StoredCredential {
             provider: provider_id.into(),
             api_key: api_key.into(),
@@ -284,6 +286,28 @@ impl CredentialStore {
                 credential.provider == provider_id && credential.base_url.as_deref() == base_url
             })
             .map(|credential| credential.api_key.clone()))
+    }
+
+    /// Returns a non-secret suffix for identifying one stored credential.
+    pub(crate) fn hint(
+        &self,
+        instance: &str,
+        provider_id: &str,
+        base_url: Option<&str>,
+    ) -> Result<Option<String>> {
+        let values = self
+            .values
+            .lock()
+            .map_err(|_| Error::Config("provider credential lock is poisoned".into()))?;
+        Ok(values
+            .get(instance)
+            .filter(|credential| {
+                credential.provider == provider_id && credential.base_url.as_deref() == base_url
+            })
+            .and_then(|credential| {
+                let suffix = credential.api_key.chars().rev().take(4).collect::<String>();
+                (suffix.chars().count() == 4).then(|| suffix.chars().rev().collect())
+            }))
     }
 
     /// Atomically removes one instance-scoped API-key credential.
@@ -424,6 +448,20 @@ fn validate_stored_credential(instance: &str, credential: &StoredCredential) -> 
         )));
     }
     definition.validate_base_url(credential.base_url.as_deref())?;
+    Ok(())
+}
+
+fn validate_new_api_key(api_key: &str) -> Result<()> {
+    if api_key.is_empty() || api_key.len() > MAX_API_KEY_BYTES {
+        return Err(Error::Config(format!(
+            "API key must be 1–{MAX_API_KEY_BYTES} bytes"
+        )));
+    }
+    if !api_key.bytes().all(|byte| byte.is_ascii_graphic()) {
+        return Err(Error::Config(
+            "API key must contain only visible ASCII characters without whitespace".into(),
+        ));
+    }
     Ok(())
 }
 

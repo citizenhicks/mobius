@@ -67,6 +67,7 @@ pub(super) struct RegisterProviderOptions {
     pub(super) web_search: HostedWebSearch,
     pub(super) base_url: Option<String>,
     pub(super) credentialless: bool,
+    pub(super) credential_stdin: bool,
 }
 
 pub(super) fn parse(arguments: Vec<OsString>) -> Result<Command> {
@@ -105,6 +106,7 @@ pub(super) fn parse_register_provider(arguments: Vec<OsString>) -> Result<Regist
     let mut web_search = None;
     let mut base_url = None;
     let mut credentialless = false;
+    let mut credential_stdin = false;
     let mut arguments = arguments.into_iter();
     while let Some(flag) = arguments.next() {
         if flag == "--credentialless" {
@@ -112,6 +114,13 @@ pub(super) fn parse_register_provider(arguments: Vec<OsString>) -> Result<Regist
                 return Err(Error::Config("--credentialless supplied twice".into()));
             }
             credentialless = true;
+            continue;
+        }
+        if flag == "--credential-stdin" {
+            if credential_stdin {
+                return Err(Error::Config("--credential-stdin supplied twice".into()));
+            }
+            credential_stdin = true;
             continue;
         }
         let value = arguments
@@ -184,6 +193,11 @@ pub(super) fn parse_register_provider(arguments: Vec<OsString>) -> Result<Regist
             return Err(Error::Config(USAGE.into()));
         }
     }
+    if credentialless && credential_stdin {
+        return Err(Error::Config(
+            "--credentialless and --credential-stdin cannot be combined".into(),
+        ));
+    }
     Ok(RegisterProviderOptions {
         state_dir: configured_state_dir.map_or_else(state_dir, Ok)?,
         provider: provider.ok_or_else(|| Error::Config("--provider is required".into()))?,
@@ -194,6 +208,7 @@ pub(super) fn parse_register_provider(arguments: Vec<OsString>) -> Result<Regist
         web_search: web_search.unwrap_or_default(),
         base_url,
         credentialless,
+        credential_stdin,
     })
 }
 

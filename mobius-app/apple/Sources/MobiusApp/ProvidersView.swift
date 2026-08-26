@@ -448,12 +448,21 @@ private struct ProviderFormSections: View {
             }
         }
         if status.auth == .apiKey {
+            if let instance = model.providerDraft?.instance,
+               let hint = model.providerInstances.first(where: { $0.instance == instance })?.credentialHint {
+                LabeledContent("Saved key") {
+                    Text("••••\(hint)")
+                        .foregroundStyle(palette.muted)
+                        .accessibilityLabel("Saved key ending in \(hint)")
+                }
+            }
             SettingsStackedField(
                 title: "API key",
                 info: "Sent once to the gateway and never returned to this app. Sending a new one replaces the stored key for this setup."
             ) {
                 SecureField("API key", text: $model.providerAPIKey)
                     .textContentType(.password)
+                    .privacySensitive()
             }
         }
     }

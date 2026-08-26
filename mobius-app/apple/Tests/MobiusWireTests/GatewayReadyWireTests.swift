@@ -2,6 +2,21 @@ import Foundation
 import XCTest
 
 extension GatewayWireTests {
+    func testGatewayWideReadyPayloadDefaultsMissingCredentialHint() throws {
+        let legacyPayload = readyPayloadJSON.replacingOccurrences(
+            of: "\"credential_hint\":\"a8f2\",",
+            with: ""
+        )
+        let envelope = try decodeEnvelope(
+            #"{"version":28,"type":"ready","payload":\#(legacyPayload)}"#
+        )
+        guard case .ready(let payload) = envelope else {
+            return XCTFail("Expected ready envelope")
+        }
+
+        XCTAssertNil(payload.providerInstances.first?.credentialHint)
+    }
+
     func testGatewayWideReadyPayloadDecodesV28State() throws {
         let envelope = try decodeEnvelope(
             #"{"version":28,"type":"ready","payload":\#(readyPayloadJSON)}"#
@@ -25,6 +40,7 @@ extension GatewayWireTests {
         XCTAssertEqual(payload.providerInstances.first?.instance, "openai-work")
         XCTAssertEqual(payload.providerInstances.first?.provider, "openai_socket")
         XCTAssertEqual(payload.providerInstances.first?.tint, .blue)
+        XCTAssertEqual(payload.providerInstances.first?.credentialHint, "a8f2")
         XCTAssertEqual(payload.providerInstances.first?.reasoningEfforts, [])
         XCTAssertEqual(payload.providers.first?.models.first?.reasoning.first?.description, "Balanced reasoning and latency")
         XCTAssertEqual(payload.providers.first?.webSearch.map(\.value), ["off", "cached", "live"])

@@ -17,7 +17,7 @@ use crate::protocol::Event;
 
 #[derive(Clone)]
 pub(super) struct EventRecorder {
-    commands: mpsc::Sender<RecorderCommand>,
+    commands: mpsc::UnboundedSender<RecorderCommand>,
 }
 
 enum RecorderCommand {
@@ -44,7 +44,9 @@ impl EventRecorder {
         checkpoints: Arc<dyn CheckpointStore>,
         session_id: String,
     ) -> (Self, mpsc::Receiver<JournalEvent>) {
-        let (commands, receiver) = mpsc::channel(EVENT_QUEUE_CAPACITY);
+        // ponytail: synchronous model sinks cannot await; the model stream byte limit bounds
+        // this queue. Batch journal writes if profiling shows recorder memory pressure.
+        let (commands, receiver) = mpsc::unbounded_channel();
         let (events, event_receiver) = mpsc::channel(EVENT_QUEUE_CAPACITY);
         tokio::spawn(run_recorder(checkpoints, session_id, receiver, events));
         (Self { commands }, event_receiver)
@@ -57,7 +59,6 @@ impl EventRecorder {
                 event: timestamp(event)?,
                 result: Some(result),
             })))
-            .await
             .map_err(|_| Error::Stopped("event recorder stopped".into()))?;
         recorded
             .await
@@ -66,18 +67,11 @@ impl EventRecorder {
 
     pub(super) fn try_record(&self, event: Event) -> Result<()> {
         self.commands
-            .try_send(RecorderCommand::Append(Box::new(AppendCommand {
+            .send(RecorderCommand::Append(Box::new(AppendCommand {
                 event: timestamp(event)?,
                 result: None,
             })))
-            .map_err(|error| match error {
-                mpsc::error::TrySendError::Full(_) => {
-                    Error::Stopped("event recorder queue is full".into())
-                }
-                mpsc::error::TrySendError::Closed(_) => {
-                    Error::Stopped("event recorder stopped".into())
-                }
-            })
+            .map_err(|_| Error::Stopped("event recorder stopped".into()))
     }
 
     pub(super) async fn save(
@@ -100,7 +94,6 @@ impl EventRecorder {
                 events,
                 result,
             })))
-            .await
             .map_err(|_| Error::Stopped("event recorder stopped".into()))?;
         saved
             .await
@@ -111,7 +104,6 @@ impl EventRecorder {
         let (flushed, result) = oneshot::channel();
         self.commands
             .send(RecorderCommand::Flush(flushed))
-            .await
             .map_err(|_| Error::Stopped("event recorder stopped".into()))?;
         result
             .await
@@ -129,7 +121,7 @@ fn timestamp(event: Event) -> Result<TimestampedEvent> {
 async fn run_recorder(
     checkpoints: Arc<dyn CheckpointStore>,
     session_id: String,
-    mut commands: mpsc::Receiver<RecorderCommand>,
+    mut commands: mpsc::UnboundedReceiver<RecorderCommand>,
     events: mpsc::Sender<JournalEvent>,
 ) {
     let mut terminal_error = None;
