@@ -322,14 +322,14 @@ extension AppModel {
             directoryListing = listing
             directoryError = nil
             isLoadingDirectories = false
-        case .cronTasks(let requestID, let sessionID, let tasks):
-            guard sessionID == selectedSessionID else { break }
+        case .cronTasks(let requestID, let tasks):
             cronRequestIDs.remove(requestID)
             cronTasks = tasks
-        case .cronHistory(let requestID, let sessionID, let runs):
-            guard sessionID == selectedSessionID else { break }
+        case .cronHistory(let requestID, let runs):
             cronRequestIDs.remove(requestID)
             cronRuns = runs
+        case .cronRunPreview(let preview):
+            applyCronRunPreview(preview)
         case .error(let failure):
             let wasPairing = pendingPairingAccount != nil
             if wasPairing { pairingError = failure.message }
@@ -781,7 +781,6 @@ extension AppModel {
             refreshWorkspaceFiles()
         }
         if cronRequestIDs.remove(requestID) != nil {
-            cronTaskDraft = ""
             refreshCron()
         }
     }
@@ -951,6 +950,12 @@ extension AppModel {
         }
         if cronRequestIDs.remove(rejection.requestId) != nil {
             cronError = rejection.message
+        }
+        if rejection.requestId == cronRunPreviewRequestID {
+            cronRunPreviewRequestID = nil
+            cronRunPreviewRequestBeforeSequence = nil
+            isLoadingCronRunPreview = false
+            cronRunPreviewError = rejection.message
         }
         if !rejectedFileThumbnail || rejection.fatal {
             showToast(

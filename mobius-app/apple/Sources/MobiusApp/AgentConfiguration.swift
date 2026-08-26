@@ -411,11 +411,67 @@ struct DailyUsage: Codable, Equatable, Sendable {
     let usage: TokenUsage
 }
 
+enum CronScheduleKind: String, Codable, CaseIterable, Identifiable, Sendable {
+    case once
+    case interval
+    case cron
+
+    var id: Self { self }
+}
+
+struct CronSchedule: Codable, Equatable, Sendable {
+    let kind: CronScheduleKind
+    let at: Int64?
+    let everySeconds: Int64?
+    let expression: String?
+    let timeZone: String?
+
+    static func once(at: Int64) -> Self {
+        Self(kind: .once, at: at, everySeconds: nil, expression: nil, timeZone: nil)
+    }
+
+    static func interval(seconds: Int64) -> Self {
+        Self(kind: .interval, at: nil, everySeconds: seconds, expression: nil, timeZone: nil)
+    }
+
+    static func cron(_ expression: String, timeZone: String = TimeZone.current.identifier) -> Self {
+        Self(
+            kind: .cron,
+            at: nil,
+            everySeconds: nil,
+            expression: expression,
+            timeZone: timeZone
+        )
+    }
+}
+
+struct SimpleCronSchedule: Equatable {
+    let minute: Int
+    let hour: Int
+    let weekday: Int?
+}
+
+func simpleCronSchedule(_ expression: String) -> SimpleCronSchedule? {
+    let fields = expression.split(whereSeparator: \.isWhitespace)
+    guard fields.count == 5,
+          fields[2] == "*", fields[3] == "*",
+          let minute = Int(fields[0]), (0..<60).contains(minute),
+          let hour = Int(fields[1]), (0..<24).contains(hour)
+    else { return nil }
+    if fields[4] == "*" { return SimpleCronSchedule(minute: minute, hour: hour, weekday: nil) }
+    guard let weekday = Int(fields[4]), (0...7).contains(weekday) else { return nil }
+    return SimpleCronSchedule(minute: minute, hour: hour, weekday: weekday == 7 ? 0 : weekday)
+}
+
 struct CronTask: Identifiable, Codable, Equatable, Sendable {
     let id: String
-    let sessionId: String
+    let sourceSessionId: String
     let task: String
-    let schedule: String
+    let schedule: CronSchedule
+    let endsAt: Int64?
+    let enabled: Bool
+    let finished: Bool
+    let nextRunAt: Int64?
 }
 
 struct CronRun: Identifiable, Codable, Equatable, Sendable {
@@ -427,6 +483,14 @@ struct CronRun: Identifiable, Codable, Equatable, Sendable {
     let status: CronRunStatus
     let sessionId: String?
     let message: String?
+}
+
+struct CronRunPreview: Decodable, Sendable {
+    let requestID: String
+    let task: CronTask
+    let run: CronRun
+    let records: [RecordedEvent]
+    let nextBeforeSequence: UInt64?
 }
 
 enum CronRunStatus: String, Codable, Equatable, Sendable {

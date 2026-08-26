@@ -160,16 +160,27 @@ struct ComposerOptionsView: View {
     @State private var photoSelection: [PhotosPickerItem] = []
 
     var body: some View {
-        // The icon buttons already pad their own glyphs, so they need no spacing between
-        // them: 44pt centres are the native rhythm, and anything more reads as drift.
-        HStack(spacing: 0) {
-            if model.attachmentsEnabled { addAttachmentControl }
-            ForEach(composerSettings) { item in
-                ComposerSettingMenu(item: item)
+        Group {
+            if dictation.isActive {
+                ComposerDictationControls(
+                    dictation: dictation,
+                    cancel: discardDictation,
+                    stop: toggleDictation
+                )
+            } else {
+                // The icon buttons already pad their own glyphs, so they need no spacing
+                // between them: 44pt centres are the native rhythm, and anything more
+                // reads as drift.
+                HStack(spacing: 0) {
+                    if model.attachmentsEnabled { addAttachmentControl }
+                    ForEach(composerSettings) { item in
+                        ComposerSettingMenu(item: item)
+                    }
+                    Spacer(minLength: MobiusSpace.s)
+                    modelMenu
+                    actionButtons
+                }
             }
-            Spacer(minLength: MobiusSpace.s)
-            modelMenu
-            actionButtons
         }
         .fileImporter(
             isPresented: $isFileImporterPresented,
@@ -494,5 +505,82 @@ struct ComposerOptionsView: View {
                 model.showToast(error.localizedDescription, tone: .error)
             }
         }
+    }
+
+    private func discardDictation() {
+        Task { await dictation.discard() }
+    }
+}
+
+private struct ComposerDictationControls: View {
+    @Environment(\.mobiusPalette) private var palette
+    let dictation: ComposerDictation
+    let cancel: () -> Void
+    let stop: () -> Void
+
+    var body: some View {
+        HStack(spacing: MobiusSpace.s) {
+            Button("Cancel dictation", glyph: .x, action: cancel)
+                .mobiusIconButton()
+                .disabled(dictation.state == .stopping)
+
+            VStack(spacing: MobiusSpace.xxs) {
+                ComposerDictationWaveform(samples: dictation.audioLevels)
+                    .frame(height: MobiusStyle.rowCompact)
+                Text(dictation.detectedLanguageName.map { "Auto · \($0)" } ?? "Auto language")
+                    .font(MobiusStyle.captionFont)
+                    .foregroundStyle(palette.muted)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity)
+
+            Button(action: stop) {
+                if dictation.isTransitioning {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    MobiusLabel(title: "Stop dictation", glyph: .stopFill)
+                }
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(MobiusIconButtonStyle(prominent: true))
+            .disabled(!dictation.isRecording)
+            .help("Stop dictation")
+            .accessibilityLabel("Stop dictation")
+        }
+        .frame(minHeight: MobiusStyle.iconButtonSize)
+    }
+}
+
+private struct ComposerDictationWaveform: View {
+    @Environment(\.mobiusPalette) private var palette
+    let samples: [Double]
+
+    var body: some View {
+        Canvas { context, size in
+            let count = max(16, min(44, Int(size.width / 7)))
+            let levels = Array(samples.suffix(count))
+            let leadingEmpty = count - levels.count
+            let step = size.width / Double(count)
+            let barWidth = min(4, max(2, step * 0.48))
+            let minimumHeight = 3.0
+
+            for index in 0..<count {
+                let level = index < leadingEmpty ? 0 : levels[index - leadingEmpty]
+                let height = minimumHeight
+                    + pow(min(1, max(0, level)), 0.7) * max(0, size.height - minimumHeight)
+                let rect = CGRect(
+                    x: (Double(index) + 0.5) * step - barWidth / 2,
+                    y: (size.height - height) / 2,
+                    width: barWidth,
+                    height: height
+                )
+                context.fill(
+                    Path(roundedRect: rect, cornerRadius: barWidth / 2),
+                    with: .color(palette.muted.opacity(0.45 + level * 0.55))
+                )
+            }
+        }
+        .accessibilityHidden(true)
     }
 }

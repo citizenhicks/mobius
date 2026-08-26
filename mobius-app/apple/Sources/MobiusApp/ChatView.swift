@@ -203,15 +203,6 @@ private struct ChatOptionsMenu: View {
                     .disabled(widget.widget.content == nil && widget.widget.action == nil)
                 }
                 Button {
-                    model.startCronSetup()
-                } label: {
-                    MobiusLabel(
-                        title: "Schedule as a task…",
-                        glyph: .calendarDots
-                    )
-                }
-                .disabled(!model.canStartCronSetup)
-                Button {
                     model.openNewSession()
                 } label: {
                     MobiusLabel(

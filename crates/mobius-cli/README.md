@@ -13,7 +13,7 @@ Download one `mobius-cli` archive and checksum from
 
 Verify with `shasum -a 256 -c FILE.sha256`, extract the included `mobius` and
 `mobius-gateway` binaries into one directory, and put it on your `PATH`. Rust users and other
-macOS or Linux architectures can install both commands with Rust 1.89 or newer:
+macOS or Linux architectures can install both commands with Rust 1.98 or newer:
 
 ```sh
 cargo install --locked mobius-cli
@@ -103,12 +103,6 @@ The same lifecycle screen is available as `/extensions` from an idle chat. Insta
 an HTTPS Git URL or a GitHub tree URL; update, uninstall, and digest-bound hook trust operate on
 the selected installed extension.
 
-Inside the TUI, `/cron new [task]` starts the model-assisted setup when scheduling is enabled for
-the chat. The model asks for missing task or frequency details, then an approval-required gateway
-tool saves and registers the final task. Ordinary chat cannot create schedules. `/cron` also
-exposes list, reschedule, delete, run, and history operations for the selected chat; every
-scheduled execution creates a separate durable result chat.
-
 `/login` is the single provider setup path. It opens the guided provider screen, where API keys
 can be pasted into a masked field, the environment variable declared by the provider manifest is
 used when the field is empty, and device-login providers show their login flow. There is no
@@ -148,7 +142,7 @@ The TUI is a thin subscriber to the framework capability catalog:
 
 The CLI owns only shell lifecycle and presentation commands: `/help`, `/gateway`, `/extensions`,
 `/agent`, `/login`, `/pair`, `/profile`, `/new`, `/clear`, `/model`, `/reasoning`, `/status`,
-`/interrupt`, and `/exit`. Capabilities contribute commands such as `/artifacts` and `/cron`, so
+`/interrupt`, and `/exit`. Capabilities contribute commands such as `/artifacts`, so
 the menu changes with the installed gateway capabilities. The gateway always contributes `/resume`
 as the single saved-chat picker; it lists chats across every workspace.
 

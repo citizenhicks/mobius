@@ -107,7 +107,7 @@ the loop.
 
 ## Checks
 
-Rust 1.89 or newer is required. Before handing off a change, run:
+Rust 1.98 or newer is required. Before handing off a change, run:
 
 ```sh
 cargo fmt --all -- --check

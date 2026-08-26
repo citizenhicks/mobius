@@ -15,7 +15,6 @@ pub(crate) enum BuiltinMiddleware {
     Artifacts,
     Tools,
     Instructions,
-    Cron,
     Extensions,
     Tasks,
     Subagents,
@@ -31,7 +30,7 @@ pub(crate) struct MiddlewareRegistration {
     pub(crate) manifest: &'static MiddlewareManifest,
 }
 
-pub(crate) const MIDDLEWARE: [MiddlewareRegistration; 14] = [
+pub(crate) const MIDDLEWARE: [MiddlewareRegistration; 13] = [
     MiddlewareRegistration {
         kind: BuiltinMiddleware::Sandbox,
         manifest: &mobius::backend::sandbox::MANIFEST,
@@ -51,10 +50,6 @@ pub(crate) const MIDDLEWARE: [MiddlewareRegistration; 14] = [
     MiddlewareRegistration {
         kind: BuiltinMiddleware::Instructions,
         manifest: &mobius::middleware::instructions::MANIFEST,
-    },
-    MiddlewareRegistration {
-        kind: BuiltinMiddleware::Cron,
-        manifest: &mobius::middleware::cron::MANIFEST,
     },
     MiddlewareRegistration {
         kind: BuiltinMiddleware::Extensions,
@@ -261,7 +256,6 @@ mod tests {
         assert!(validate(&config).is_ok());
         assert!(!config.enabled("tasks"));
         assert!(config.enabled("artifacts"));
-        assert!(config.enabled("cron"));
         assert!(config.enabled("extensions"));
         assert!(config.enabled("context_offloading"));
         assert_eq!(
@@ -277,10 +271,6 @@ mod tests {
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from(["sandbox", "sessions", "steering", "tools"])
         );
-
-        let mut without_cron = config.clone();
-        without_cron.set_enabled("cron", false);
-        assert!(validate(&without_cron).is_ok());
 
         let mut invalid = config;
         invalid.set_enabled("tools", true);

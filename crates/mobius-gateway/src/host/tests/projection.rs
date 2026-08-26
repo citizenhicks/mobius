@@ -56,10 +56,9 @@ fn router_reuse_ignores_local_recipe_changes_but_not_provider_changes() {
     )
     .expect("chat spec");
 
-    let changes: [fn(&mut AgentComposition); 3] = [
+    let changes: [fn(&mut AgentComposition); 2] = [
         |config: &mut AgentComposition| config.system_prompt.push_str(" updated"),
         |config: &mut AgentComposition| config.max_model_steps += 1,
-        |config: &mut AgentComposition| config.middleware.set_enabled("cron", false),
     ];
     for change in changes {
         let mut next = base.clone();

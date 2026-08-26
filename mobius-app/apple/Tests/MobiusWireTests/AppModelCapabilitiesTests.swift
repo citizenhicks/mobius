@@ -3,58 +3,113 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
-    func testCronSetupRequiresEnabledSchedulingCapability() async throws {
+    func testSimpleCronScheduleRecognizesEditorModes() {
+        XCTAssertEqual(
+            simpleCronSchedule("30 14 * * *"),
+            SimpleCronSchedule(minute: 30, hour: 14, weekday: nil)
+        )
+        XCTAssertEqual(
+            simpleCronSchedule("0 9 * * 1"),
+            SimpleCronSchedule(minute: 0, hour: 9, weekday: 1)
+        )
+        XCTAssertNil(simpleCronSchedule("0 9 * * 1-5"))
+    }
+
+    func testScheduledTaskManagementIsGlobal() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
         model.connectionState = .ready
-        model.selectedSessionID = "chat-1"
-        model.middlewareFeatures = [MiddlewareFeature(
-            id: "cron",
-            label: "Cron",
-            description: "Scheduled work",
-            required: false,
-            settings: []
-        )]
-        var config = composition()
-        model.agentSnapshot = VersionedAgentConfig(revision: 1, config: config)
-
-        XCTAssertFalse(model.canStartCronSetup)
-        model.startCronSetup()
         let task = CronTask(
             id: "cron-1",
-            sessionId: "chat-1",
+            sourceSessionId: "chat-1",
             task: "Historical task",
-            schedule: "0 9 * * *"
+            schedule: .cron("0 9 * * *"),
+            endsAt: nil,
+            enabled: true,
+            finished: false,
+            nextRunAt: nil
         )
         model.runCron(task)
-        model.rescheduleCron(task, schedule: "0 10 * * *")
         model.deleteCron(task)
-        let disabledRequestCount = await recorder.requestCount()
-        XCTAssertEqual(disabledRequestCount, 0)
+        model.updateCron(
+            task,
+            sourceSessionID: "chat-1",
+            instructions: "Updated task",
+            schedule: .cron("0 10 * * *"),
+            endsAt: nil,
+            enabled: false
+        )
+        model.createCron(
+            sourceSessionID: "chat-1",
+            task: "New task",
+            schedule: .interval(seconds: 120),
+            endsAt: nil
+        )
 
         model.refreshCron()
-        let readsArrived = await eventually { await recorder.requestCount() == 2 }
-        XCTAssertTrue(readsArrived)
+        let requestsArrived = await eventually { await recorder.requestCount() == 6 }
+        XCTAssertTrue(requestsArrived)
         let readRequests = await recorder.requests()
         XCTAssertTrue(readRequests.contains { if case .listCron = $0 { true } else { false } })
         XCTAssertTrue(readRequests.contains { if case .listCronHistory = $0 { true } else { false } })
+    }
 
-        config.middleware.enabled.insert("cron")
-        model.agentSnapshot = VersionedAgentConfig(revision: 2, config: config)
+    func testCronRunPreviewDoesNotMutateSelectedTranscript() throws {
+        let model = try model()
+        model.selectedSessionID = "chat-1"
+        model.transcript = [TranscriptEntry(
+            id: "selected",
+            text: "Selected chat",
+            kind: .user,
+            format: "plain_text",
+            pending: false
+        )]
+        let task = CronTask(
+            id: "cron-1",
+            sourceSessionId: "chat-1",
+            task: "Review nightly",
+            schedule: .interval(seconds: 120),
+            endsAt: nil,
+            enabled: true,
+            finished: false,
+            nextRunAt: nil
+        )
+        let run = CronRun(
+            id: "run-1",
+            taskId: task.id,
+            sourceSessionId: task.sourceSessionId,
+            startedAt: 100,
+            finishedAt: nil,
+            status: .running,
+            sessionId: nil,
+            message: nil
+        )
+        model.cronRunPreviewRequestID = "preview-1"
+        model.applyCronRunPreview(CronRunPreview(
+            requestID: "preview-1",
+            task: task,
+            run: run,
+            records: [RecordedEvent(
+                sequence: 1,
+                recordedAtMs: 1_000,
+                event: AgentEventRecord(submissionId: nil, msg: .object([
+                    "type": .string("user_message"),
+                    "message": .string("Scheduled transcript"),
+                    "attachments": .array([]),
+                    "messageTarget": .null
+                ])),
+                streamMetrics: [],
+                blocks: [],
+                preview: nil
+            )],
+            nextBeforeSequence: nil
+        ))
 
-        XCTAssertTrue(model.canStartCronSetup)
-        model.startCronSetup()
-        let request = await recorder.firstRequest(after: 2) {
-            if case .startCronSetup = $0 { return true }
-            return false
-        }
-        guard case .startCronSetup(_, let sessionID, let task) = try XCTUnwrap(request) else {
-            return XCTFail("Expected cron setup request")
-        }
-        XCTAssertEqual(sessionID, "chat-1")
-        XCTAssertNil(task)
+        XCTAssertEqual(model.transcript.map(\.text), ["Selected chat"])
+        XCTAssertEqual(model.cronRunPreviewEntries.map(\.text), ["Scheduled transcript"])
+        XCTAssertEqual(model.presentedCronRun?.id, "run-1")
     }
 
     func testDisabledScratchpadActionDoesNotSubmitUntilEnabled() async throws {

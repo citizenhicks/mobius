@@ -164,7 +164,7 @@ extension GatewayWireTests {
         XCTAssertEqual(payload.runStats.elapsedMs, 9_000)
         XCTAssertEqual(payload.contributions.first?.count, 2)
         XCTAssertEqual(payload.contributions.first?.acceptsFileAttachments, false)
-        XCTAssertEqual(payload.config.config.middleware.enabled, ["cron", "extensions", "subagents"])
+        XCTAssertEqual(payload.config.config.middleware.enabled, ["extensions", "subagents"])
         XCTAssertEqual(payload.config.config.maxModelSteps, 256)
         guard let widget = payload.contributions.first?.widgets.first,
               case .picker(let title, let options) = widget.content,

@@ -1,7 +1,10 @@
 use super::*;
 use crate::backend::checkpoint::sqlite::SqliteCheckpoint;
-use crate::middleware::FrontendEventSink;
 use crate::middleware::tools::{ApprovalRequirement, Tool};
+use crate::middleware::{
+    ActiveCommandContext, ActiveSubmissionResult, FrontendEventSink, QueuedInputBaseline,
+    QueuedInputQueue,
+};
 use crate::protocol::{
     FrontendEvent, FrontendSlot, FrontendWidgetContent, Op, internal_message_kind,
 };
@@ -25,6 +28,34 @@ async fn store() -> (tempfile::TempDir, ScratchpadStore) {
 
 fn frontend_sink() -> FrontendEventSink {
     Arc::new(|_| Ok(()))
+}
+
+async fn active_command(
+    middleware: &Scratchpad,
+    command: &str,
+    arguments: &str,
+    input: Option<&str>,
+) -> (Option<ActiveSubmissionResult>, Vec<EventMsg>) {
+    let metadata = std::collections::BTreeMap::new();
+    let mut queued = Vec::new();
+    let mut events = Vec::new();
+    let mut context = ActiveCommandContext {
+        submission_id: "active-command",
+        session_id: "session",
+        metadata: &metadata,
+        active_turn_id: "turn",
+        command,
+        arguments,
+        input,
+        target: None,
+        queued_input: QueuedInputQueue::new(&mut queued, QueuedInputBaseline::default()),
+        events: &mut events,
+    };
+    let result = middleware
+        .active_command(&mut context)
+        .await
+        .expect("active command");
+    (result, events)
 }
 
 #[tokio::test]
@@ -187,6 +218,82 @@ async fn edit_preserves_identity_confirms_provenance_and_rejects_duplicates() {
             .await
             .is_err()
     );
+}
+
+#[tokio::test]
+async fn active_edit_applies_immediately_and_refreshes_widgets() {
+    let (_temporary, store) = store().await;
+    store
+        .write_session("session", "first note")
+        .await
+        .expect("write note");
+    let note_id = store.snapshot("session").await.expect("snapshot").session[0]
+        .id
+        .clone();
+    let middleware = Scratchpad::new(store.clone());
+    let arguments = format!("edit session {note_id}");
+
+    let (result, events) =
+        active_command(&middleware, "scratchpad", &arguments, Some("revised note")).await;
+
+    assert_eq!(result, Some(ActiveSubmissionResult::Handled));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, EventMsg::Frontend(FrontendEvent::Widget { .. })))
+    );
+    assert_eq!(
+        store.snapshot("session").await.expect("snapshot").session[0].note,
+        "revised note"
+    );
+}
+
+#[tokio::test]
+async fn active_promote_applies_immediately() {
+    let (_temporary, store) = store().await;
+    store
+        .write_session("session", "promote this")
+        .await
+        .expect("write note");
+    let note_id = store.snapshot("session").await.expect("snapshot").session[0]
+        .id
+        .clone();
+    let middleware = Scratchpad::new(store.clone());
+
+    let (result, events) = active_command(
+        &middleware,
+        "scratchpad",
+        &format!("promote {note_id}"),
+        None,
+    )
+    .await;
+
+    assert_eq!(result, Some(ActiveSubmissionResult::Handled));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, EventMsg::Frontend(FrontendEvent::Widget { .. })))
+    );
+    let snapshot = store.snapshot("session").await.expect("snapshot");
+    assert_eq!(snapshot.global[0].note, "promote this");
+    assert_eq!(snapshot.global[0].basis, Basis::UserConfirmed);
+}
+
+#[tokio::test]
+async fn active_command_defers_when_scratchpad_lock_is_busy() {
+    let (_temporary, store) = store().await;
+    let middleware = Scratchpad::new(store.clone());
+    let _access = store.access.lock().await;
+
+    let (result, events) = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        active_command(&middleware, "scratchpad", "refresh", None),
+    )
+    .await
+    .expect("busy active command must not block");
+
+    assert_eq!(result, None);
+    assert!(events.is_empty());
 }
 
 #[tokio::test]
@@ -531,6 +638,7 @@ async fn frontend_is_semantic_and_only_promotion_requires_approval() {
 
     assert_eq!(contribution.widgets[0].slot, FrontendSlot::Navigation);
     assert_eq!(contribution.widgets[1].slot, FrontendSlot::ChatMenu);
+    assert!(!contribution.commands[0].requires_idle);
     assert!(
         contribution
             .widgets

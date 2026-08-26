@@ -32,7 +32,7 @@ final class GatewayWireTests: XCTestCase {
     }
 
     var configJSON: String {
-        #"{"revision":4,"config":{"provider":{"instance":"openai-work","provider":"openai_socket","model":"gpt-5.6-sol","endpoint_auth":"provider_default","reasoning_effort":"high","web_search":"cached"},"middleware":{"enabled":["cron","extensions","subagents"],"settings":{"context_offloading":{"stale_after_tokens":50000},"subagents":{"model_route":"openai_socket/gpt-5.6-sol"}}},"extensions":["plugin:ponytail"],"system_prompt":"Stay focused.","max_model_steps":256}}"#
+        #"{"revision":4,"config":{"provider":{"instance":"openai-work","provider":"openai_socket","model":"gpt-5.6-sol","endpoint_auth":"provider_default","reasoning_effort":"high","web_search":"cached"},"middleware":{"enabled":["extensions","subagents"],"settings":{"context_offloading":{"stale_after_tokens":50000},"subagents":{"model_route":"openai_socket/gpt-5.6-sol"}}},"extensions":["plugin:ponytail"],"system_prompt":"Stay focused.","max_model_steps":256}}"#
     }
 
     var usageJSON: String {
@@ -70,7 +70,7 @@ final class GatewayWireTests: XCTestCase {
                 webSearch: .cached
             ),
             middleware: MiddlewareConfig(
-                enabled: ["cron", "extensions", "subagents"],
+                enabled: ["extensions", "subagents"],
                 settings: [
                     "context_offloading": ["stale_after_tokens": .integer(50_000)],
                     "subagents": ["model_route": .string("openai_socket/gpt-5.6-sol")]

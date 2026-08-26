@@ -16,7 +16,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
 use chrono::Utc;
-use mobius::Error as MobiusError;
 use mobius::agent::{AgentConfig, AgentSender};
 use mobius::backend::checkpoint::{
     ActiveExecution, Checkpoint, CheckpointStore, EventPageRequest, ExecutionOutcome,
@@ -24,10 +23,6 @@ use mobius::backend::checkpoint::{
     event_turn_page, sqlite::SqliteCheckpoint,
 };
 use mobius::backend::model::ModelRouter;
-use mobius::middleware::cron::{
-    CronCommand, CronCommandHandler, CronCommandResult, CronRun as CronRunRecord,
-    CronTask as CronTaskRecord,
-};
 use mobius::middleware::scratchpad::ScratchpadStore;
 use mobius::middleware::session_files::SessionFileStore;
 use mobius::middleware::{FrontendExtensions, Middleware as _};
@@ -87,8 +82,7 @@ const SESSION_PAGE_SIZE: usize = 100;
 const RECENT_RUN_LIMIT: usize = 30;
 pub(crate) const MAX_ACTIVE_SESSIONS: usize = 32;
 
-fn cron_execution_spec(mut spec: ChatSpec) -> ChatSpec {
-    spec.agent.config.middleware.set_enabled("cron", false);
+fn scheduled_execution_spec(mut spec: ChatSpec) -> ChatSpec {
     spec.agent.config.system_prompt.push_str(
         "\n\nExecute the scheduled task in the next user message. Do not create or modify schedules.",
     );
@@ -183,100 +177,6 @@ impl GatewayHost {
         self.events.subscribe()
     }
 
-    fn cron_command_handler(&self) -> CronCommandHandler {
-        let state = Arc::downgrade(&self.state);
-        let events = self.events.clone();
-        Arc::new(move |session_id, command| {
-            let state = state.clone();
-            let events = events.clone();
-            Box::pin(async move {
-                let state = state
-                    .upgrade()
-                    .ok_or_else(|| MobiusError::Stopped("gateway stopped".into()))?;
-                GatewayHost { state, events }
-                    .execute_cron_command(session_id, command)
-                    .await
-            })
-        })
-    }
-
-    fn try_command_state(&self) -> mobius::Result<tokio::sync::MutexGuard<'_, GatewayState>> {
-        self.state
-            .try_lock()
-            .map_err(|_| MobiusError::Busy("retry after the gateway update finishes".into()))
-    }
-
-    async fn execute_cron_command(
-        &self,
-        session_id: String,
-        command: CronCommand,
-    ) -> mobius::Result<CronCommandResult> {
-        let cron = {
-            let state = self.try_command_state()?;
-            Arc::clone(&state.cron)
-        };
-        let config_error = |error: crate::Error| MobiusError::Config(error.to_string());
-        match command {
-            CronCommand::List => cron
-                .records(&session_id)
-                .map(|tasks| {
-                    CronCommandResult::Tasks(
-                        tasks
-                            .into_iter()
-                            .map(|task| CronTaskRecord {
-                                id: task.id,
-                                schedule: task.schedule,
-                                task: task.task,
-                            })
-                            .collect(),
-                    )
-                })
-                .map_err(config_error),
-            CronCommand::New { task } => {
-                let host = self
-                    .try_command_state()?
-                    .sessions
-                    .get(&session_id)
-                    .cloned()
-                    .ok_or_else(|| MobiusError::Config("unknown cron session".into()))?;
-                host.start_cron_setup(task)
-                    .await
-                    .map_err(|rejection| MobiusError::Config(rejection.message))?;
-                Ok(CronCommandResult::None)
-            }
-            CronCommand::Reschedule { id, schedule } => cron
-                .reschedule(&session_id, &id, &schedule)
-                .map(|_| CronCommandResult::None)
-                .map_err(config_error),
-            CronCommand::Delete { id } => cron
-                .delete(&session_id, &id)
-                .map(|_| CronCommandResult::None)
-                .map_err(config_error),
-            CronCommand::Run { id } => {
-                let state = self.try_command_state()?;
-                self.run_cron_with_state(state, session_id, id)
-                    .await
-                    .map_err(|rejection| MobiusError::Config(rejection.message))?;
-                Ok(CronCommandResult::None)
-            }
-            CronCommand::History { id } => cron
-                .history(&session_id, id.as_deref())
-                .map(|runs| {
-                    CronCommandResult::History(
-                        runs.into_iter()
-                            .map(|run| CronRunRecord {
-                                id: run.id,
-                                task_id: run.task_id,
-                                status: format!("{:?}", run.status),
-                                started_at: run.started_at,
-                            })
-                            .collect(),
-                    )
-                })
-                .map_err(config_error),
-        }
-    }
-
     pub(crate) async fn session_file_store(&self) -> SessionFileStore {
         self.state.lock().await.session_files.clone()
     }
@@ -327,7 +227,6 @@ impl GatewayHost {
         &self,
         workspace: &Path,
     ) -> std::result::Result<HostHandle, Rejection> {
-        let cron_commands = self.cron_command_handler();
         let mut state = self.state.lock().await;
         state.ensure_capacity().await?;
         let (default_agent, tls) = {
@@ -357,7 +256,6 @@ impl GatewayHost {
             spec,
             Arc::clone(&state.credentials),
             Arc::clone(&state.cron),
-            cron_commands,
             Arc::clone(&state.checkpoints),
             state.scratchpad.clone(),
             state.session_files.clone(),
@@ -404,13 +302,22 @@ impl GatewayHost {
         &self,
         session_id: &str,
     ) -> std::result::Result<HostHandle, Rejection> {
+        self.open_session_with_cache(session_id, true)
+            .await
+            .map(|(host, _)| host)
+    }
+
+    async fn open_session_with_cache(
+        &self,
+        session_id: &str,
+        cache: bool,
+    ) -> std::result::Result<(HostHandle, bool), Rejection> {
         validate_session_id(session_id).map_err(|_| invalid_session_id())?;
-        let cron_commands = self.cron_command_handler();
         let mut state = self.state.lock().await;
         if let Some(host) = state.sessions.get(session_id)
             && host.is_alive()
         {
-            return Ok(host.clone());
+            return Ok((host.clone(), false));
         }
         state.sessions.remove(session_id);
         state.ensure_capacity().await?;
@@ -443,7 +350,6 @@ impl GatewayHost {
             spec,
             Arc::clone(&state.credentials),
             Arc::clone(&state.cron),
-            cron_commands,
             Arc::clone(&state.checkpoints),
             state.scratchpad.clone(),
             state.session_files.clone(),
@@ -457,8 +363,10 @@ impl GatewayHost {
         )
         .await
         .map_err(internal)?;
-        state.sessions.insert(session_id.into(), host.clone());
-        Ok(host)
+        if cache {
+            state.sessions.insert(session_id.into(), host.clone());
+        }
+        Ok((host, !cache))
     }
 
     pub(crate) async fn delete_session(
@@ -470,9 +378,6 @@ impl GatewayHost {
             .await
             .map_err(internal)?;
         let session_ids = session_tree_ids(session_id, &summaries).ok_or_else(unknown_session)?;
-        for id in &session_ids {
-            state.cron.require_session_idle(id).map_err(internal)?;
-        }
         for id in &session_ids {
             let Some(host) = state.sessions.get(id).cloned() else {
                 continue;
@@ -525,73 +430,171 @@ impl GatewayHost {
         self.broadcast_sessions().await
     }
 
-    pub(crate) async fn run_cron(
+    pub(crate) async fn create_cron(
         &self,
-        source_session_id: String,
-        task_id: String,
+        source_session_id: &str,
+        task: &str,
+        schedule: crate::wire::CronSchedule,
+        ends_at: Option<i64>,
     ) -> std::result::Result<(), Rejection> {
         let state = self.state.lock().await;
-        self.run_cron_with_state(state, source_session_id, task_id)
-            .await
+        require_cron_source(&state, source_session_id).await?;
+        state
+            .cron
+            .create(source_session_id, task, schedule, ends_at)
+            .map(|_| ())
+            .map_err(invalid_cron)
+    }
+
+    pub(crate) async fn update_cron(
+        &self,
+        id: &str,
+        source_session_id: &str,
+        task: &str,
+        schedule: crate::wire::CronSchedule,
+        ends_at: Option<i64>,
+        enabled: bool,
+    ) -> std::result::Result<(), Rejection> {
+        let state = self.state.lock().await;
+        require_cron_source(&state, source_session_id).await?;
+        state
+            .cron
+            .reschedule(id, source_session_id, task, schedule, ends_at, enabled)
+            .map(|_| ())
+            .map_err(invalid_cron)
+    }
+
+    pub(crate) async fn run_cron(&self, task_id: String) -> std::result::Result<(), Rejection> {
+        let state = self.state.lock().await;
+        let run = match state.cron.begin_run(&task_id).map_err(invalid_cron)? {
+            BeginRun::Started(run) => run,
+            BeginRun::Skipped => {
+                return Err(Rejection {
+                    code: "cron_overlap",
+                    message: format!("cron task {task_id} is already running"),
+                    fatal: false,
+                });
+            }
+        };
+        self.run_cron_with_state(state, task_id, run).await
+    }
+
+    pub(crate) async fn run_due_cron(
+        &self,
+        task_id: String,
+        run: ActiveCronRun,
+    ) -> std::result::Result<(), Rejection> {
+        let state = self.state.lock().await;
+        self.run_cron_with_state(state, task_id, run).await
+    }
+
+    pub(crate) async fn cron_run_preview(
+        &self,
+        run_id: &str,
+        before_sequence: Option<u64>,
+    ) -> std::result::Result<crate::wire::CronRunPreview, Rejection> {
+        let (cron, run) = {
+            let state = self.state.lock().await;
+            let cron = Arc::clone(&state.cron);
+            let run = cron.run(run_id).map_err(invalid_cron)?;
+            (cron, run)
+        };
+        let session_id = run.session_id.clone().ok_or_else(|| Rejection {
+            code: "cron_run_unavailable",
+            message: "this scheduled run has no execution session".into(),
+            fatal: false,
+        })?;
+        let (host, temporary) = self.open_session_with_cache(&session_id, false).await?;
+        let page = host.history_page(before_sequence).await;
+        if temporary {
+            let _ = host.stop_if_idle().await;
+        }
+        let page = page?;
+        let task = cron
+            .record(&run.task_id, Utc::now().timestamp())
+            .map_err(invalid_cron)?;
+        Ok(crate::wire::CronRunPreview {
+            task,
+            run,
+            records: page.records,
+            next_before_sequence: page.next_before_sequence,
+        })
     }
 
     async fn run_cron_with_state(
         &self,
         mut state: tokio::sync::MutexGuard<'_, GatewayState>,
-        source_session_id: String,
         task_id: String,
+        run: ActiveCronRun,
     ) -> std::result::Result<(), Rejection> {
-        let cron_commands = self.cron_command_handler();
-        let task = state
-            .cron
-            .task(&source_session_id, &task_id)
-            .map_err(invalid_cron)?;
-        let (_, input) = state.cron.task_input(&task.id).map_err(invalid_cron)?;
+        let preflight: std::result::Result<_, Rejection> = async {
+            let task = state.cron.task(&task_id).map_err(invalid_cron)?;
+            let source_session_id = task.session_id.clone();
+            let (_, input) = state.cron.task_input(&task.id).map_err(invalid_cron)?;
+            let checkpoint = state
+                .checkpoints
+                .load(&source_session_id)
+                .await
+                .map_err(internal)?
+                .ok_or_else(unknown_session)?;
+            let tls = state
+                .config
+                .lock()
+                .map_err(|_| internal("gateway configuration lock is poisoned"))?
+                .tls
+                .clone();
+            let spec = scheduled_execution_spec(
+                ChatSpec::from_metadata(
+                    &checkpoint.metadata,
+                    state.store.state_dir(),
+                    tls.as_ref(),
+                )
+                .map_err(invalid_config)?,
+            );
+            let workspace = spec.workspace_info();
+            let workspace_label = workspace.path.display().to_string();
+            if checkpoint.session_context.workspace_id.as_deref() != Some(workspace.id.as_str())
+                || checkpoint.session_context.workspace_label.as_deref()
+                    != Some(workspace_label.as_str())
+            {
+                return Err(invalid_session_workspace());
+            }
+            let execution_metadata = spec.metadata().map_err(invalid_config)?;
+            Ok((
+                task,
+                source_session_id,
+                input,
+                checkpoint,
+                spec,
+                execution_metadata,
+            ))
+        }
+        .await;
+        let (task, source_session_id, input, checkpoint, spec, execution_metadata) = match preflight
+        {
+            Ok(preflight) => preflight,
+            Err(rejection) => {
+                state
+                    .cron
+                    .finish_run(run, CronRunStatus::Failed, Some(rejection.message.clone()))
+                    .map_err(internal)?;
+                return Err(rejection);
+            }
+        };
         if let Err(rejection) = state.ensure_capacity().await {
             state
                 .cron
-                .skip_run(&task.id, "the gateway active-chat limit was reached")
+                .finish_run(
+                    run,
+                    CronRunStatus::Skipped,
+                    Some("the gateway active-chat limit was reached".into()),
+                )
                 .map_err(internal)?;
             return Err(rejection);
         }
-        let checkpoint = state
-            .checkpoints
-            .load(&source_session_id)
-            .await
-            .map_err(internal)?
-            .ok_or_else(unknown_session)?;
-        let tls = state
-            .config
-            .lock()
-            .map_err(|_| internal("gateway configuration lock is poisoned"))?
-            .tls
-            .clone();
-        let spec = cron_execution_spec(
-            ChatSpec::from_metadata(&checkpoint.metadata, state.store.state_dir(), tls.as_ref())
-                .map_err(invalid_config)?,
-        );
-        let workspace = spec.workspace_info();
-        let workspace_label = workspace.path.display().to_string();
-        if checkpoint.session_context.workspace_id.as_deref() != Some(workspace.id.as_str())
-            || checkpoint.session_context.workspace_label.as_deref()
-                != Some(workspace_label.as_str())
-        {
-            return Err(invalid_session_workspace());
-        }
-        let execution_metadata = spec.metadata().map_err(invalid_config)?;
         let source_sequence = checkpoint.sequence;
         let session_id = Uuid::new_v4().to_string();
         let label = format!("cron · {}", task.id.get(..8).unwrap_or(&task.id));
-        let run = match state.cron.begin_run(&task.id).map_err(invalid_cron)? {
-            BeginRun::Started(run) => run,
-            BeginRun::Skipped => {
-                return Err(Rejection {
-                    code: "cron_overlap",
-                    message: format!("cron task {} is already running", task.id),
-                    fatal: false,
-                });
-            }
-        };
         let mut checkpoint = cron_execution_checkpoint(&checkpoint, &session_id, &label);
         checkpoint.metadata.extend(execution_metadata);
         if let Err(error) = state
@@ -623,7 +626,6 @@ impl GatewayHost {
             spec,
             Arc::clone(&state.credentials),
             Arc::clone(&state.cron),
-            cron_commands,
             Arc::clone(&state.checkpoints),
             state.scratchpad.clone(),
             state.session_files.clone(),
@@ -795,6 +797,23 @@ fn unknown_session() -> Rejection {
         message: "the requested chat does not exist".into(),
         fatal: false,
     }
+}
+
+async fn require_cron_source(
+    state: &GatewayState,
+    session_id: &str,
+) -> std::result::Result<(), Rejection> {
+    validate_session_id(session_id).map_err(|_| invalid_session_id())?;
+    let checkpoint = state
+        .checkpoints
+        .load(session_id)
+        .await
+        .map_err(internal)?
+        .ok_or_else(unknown_session)?;
+    if !checkpoint.catalog_visible {
+        return Err(unknown_session());
+    }
+    Ok(())
 }
 
 fn invalid_session_id() -> Rejection {

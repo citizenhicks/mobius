@@ -472,6 +472,27 @@ extension AppModel {
         if selection != nil || presentedPreview?.id == preview.id { presentedPreview = record }
     }
 
+    func applyCronRunPreview(_ preview: CronRunPreview) {
+        guard cronRunPreviewRequestID == preview.requestID else { return }
+        var pageEntries: [TranscriptEntry] = []
+        var turnState = TranscriptHistoryTurnState()
+        for record in preview.records {
+            reduceHistory(record, into: &pageEntries, turnState: &turnState)
+        }
+        cronRunPreviewEntries = if cronRunPreviewRequestBeforeSequence == nil {
+            pageEntries
+        } else {
+            mergePreviewPages(older: pageEntries, newer: cronRunPreviewEntries)
+        }
+        cronRunPreview = preview
+        presentedCronRun = preview.run
+        cronRunPreviewNextBeforeSequence = preview.nextBeforeSequence
+        cronRunPreviewRequestID = nil
+        cronRunPreviewRequestBeforeSequence = nil
+        isLoadingCronRunPreview = false
+        cronRunPreviewError = nil
+    }
+
     private func mergePreviewPages(
         older: [TranscriptEntry],
         newer: [TranscriptEntry]

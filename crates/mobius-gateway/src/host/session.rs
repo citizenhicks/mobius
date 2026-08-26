@@ -25,7 +25,6 @@ struct HostState {
     spec: ChatSpec,
     credentials: Arc<CredentialStore>,
     cron: Arc<CronStore>,
-    cron_commands: CronCommandHandler,
     checkpoints: Arc<dyn CheckpointStore>,
     scratchpad: ScratchpadStore,
     session_files: SessionFileStore,
@@ -113,10 +112,6 @@ pub(super) enum HostCommand {
     },
     Submit {
         submission: Submission,
-        reply: oneshot::Sender<std::result::Result<(), Rejection>>,
-    },
-    StartCronSetup {
-        task: Option<String>,
         reply: oneshot::Sender<std::result::Result<(), Rejection>>,
     },
     Configure {
@@ -207,7 +202,6 @@ impl HostHandle {
         spec: ChatSpec,
         credentials: Arc<CredentialStore>,
         cron: Arc<CronStore>,
-        cron_commands: CronCommandHandler,
         checkpoints: Arc<dyn CheckpointStore>,
         scratchpad: ScratchpadStore,
         session_files: SessionFileStore,
@@ -231,8 +225,6 @@ impl HostHandle {
             &spec,
             &store,
             Arc::clone(&credentials),
-            Arc::clone(&cron),
-            Arc::clone(&cron_commands),
             Arc::clone(&checkpoints),
             scratchpad.clone(),
             session_files.clone(),
@@ -261,7 +253,6 @@ impl HostHandle {
             spec,
             credentials,
             cron,
-            cron_commands,
             checkpoints,
             scratchpad,
             session_files,
@@ -381,16 +372,6 @@ impl HostHandle {
     ) -> std::result::Result<(), Rejection> {
         let (reply, receiver) = oneshot::channel();
         self.send(HostCommand::Submit { submission, reply }).await?;
-        receive(receiver).await
-    }
-
-    pub(crate) async fn start_cron_setup(
-        &self,
-        task: Option<String>,
-    ) -> std::result::Result<(), Rejection> {
-        let (reply, receiver) = oneshot::channel();
-        self.send(HostCommand::StartCronSetup { task, reply })
-            .await?;
         receive(receiver).await
     }
 
@@ -636,8 +617,6 @@ async fn start_agent(
     spec: &ChatSpec,
     store: &ConfigStore,
     credentials: Arc<CredentialStore>,
-    cron: Arc<CronStore>,
-    cron_commands: CronCommandHandler,
     checkpoints: Arc<dyn CheckpointStore>,
     scratchpad: ScratchpadStore,
     session_files: SessionFileStore,
@@ -660,8 +639,6 @@ async fn start_agent(
         spec,
         store,
         credentials,
-        cron,
-        cron_commands,
         checkpoints,
         scratchpad,
         session_files,
@@ -735,6 +712,7 @@ pub(super) fn cron_execution_checkpoint(
         .session_context
         .clone_from(&source.session_context);
     checkpoint.session_context.origin_label = Some(origin_label.into());
+    checkpoint.catalog_visible = false;
     checkpoint.metadata.clone_from(&source.metadata);
     checkpoint.model_route.clone_from(&source.model_route);
     checkpoint

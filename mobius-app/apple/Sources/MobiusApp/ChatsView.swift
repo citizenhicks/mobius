@@ -3,7 +3,6 @@ import SwiftUI
 private enum ChatOrganization: CaseIterable, Identifiable {
     case byProject
     case chronological
-    case tasks
 
     var id: Self { self }
 
@@ -11,7 +10,6 @@ private enum ChatOrganization: CaseIterable, Identifiable {
         switch self {
         case .byProject: "By project"
         case .chronological: "Chronological list"
-        case .tasks: "Tasks"
         }
     }
 
@@ -19,7 +17,6 @@ private enum ChatOrganization: CaseIterable, Identifiable {
         switch self {
         case .byProject: "Projects"
         case .chronological: "Recent chats"
-        case .tasks: "Recent tasks"
         }
     }
 
@@ -27,7 +24,6 @@ private enum ChatOrganization: CaseIterable, Identifiable {
         switch self {
         case .byProject: .folder
         case .chronological: .clock
-        case .tasks: .calendarDots
         }
     }
 }
@@ -136,7 +132,7 @@ struct ChatsView: View {
         }
         .searchable(
             text: $searchText,
-            prompt: organization == .tasks ? "Search tasks" : "Search chats"
+            prompt: "Search chats"
         )
         .searchToolbarBehavior(.automatic)
         .searchPresentationToolbarBehavior(.avoidHidingContent)
@@ -161,14 +157,14 @@ struct ChatsView: View {
             }
             .buttonStyle(MobiusIconButtonStyle(prominent: showsAttentionOnly, bare: true))
             .accessibilityLabel(
-                organization == .tasks ? "Filter tasks needing attention" : "Filter chats needing attention"
+                "Filter chats needing attention"
             )
             .accessibilityValue(showsAttentionOnly ? "On" : "Off")
             .accessibilityAddTraits(showsAttentionOnly ? .isSelected : [])
             .help(
                 showsAttentionOnly
-                    ? (organization == .tasks ? "Show all tasks" : "Show all chats")
-                    : (organization == .tasks ? "Show active and unread tasks" : "Show active and unread chats")
+                    ? "Show all chats"
+                    : "Show active and unread chats"
             )
             .disabled(showsLoadingCatalog)
         }
@@ -183,7 +179,7 @@ struct ChatsView: View {
             ForEach(sessionGroups) { group in
                 workspaceGroup(group)
             }
-        case .chronological, .tasks:
+        case .chronological:
             ForEach(chronologicalSessions) { session in
                 sessionRow(session, showsWorkspace: true)
             }
@@ -278,9 +274,7 @@ struct ChatsView: View {
     }
 
     private var displayedSessions: [SessionRecord] {
-        var sessions = model.sessions.filter { session in
-            organization == .tasks ? session.isCronTask : !session.isCronTask
-        }
+        var sessions = model.sessions
         if showsAttentionOnly {
             let attentionSessionIDs = model.attentionSessionIDs
             sessions = sessions.filter { attentionSessionIDs.contains($0.sessionId) }
@@ -297,15 +291,15 @@ struct ChatsView: View {
 
     private var emptySessionsMessage: String {
         if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return organization == .tasks ? "No tasks match your search" : "No chats match your search"
+            return "No chats match your search"
         }
         if !model.connectionState.isReady && model.sessions.isEmpty {
             return model.connectionState.label
         }
         if showsAttentionOnly {
-            return organization == .tasks ? "No tasks need attention" : "No chats need attention"
+            return "No chats need attention"
         }
-        return organization == .tasks ? "No tasks yet" : "No chats yet"
+        return "No chats yet"
     }
 
     private var emptyState: some View {

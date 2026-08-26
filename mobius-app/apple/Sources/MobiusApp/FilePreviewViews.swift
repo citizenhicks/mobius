@@ -334,12 +334,29 @@ struct NumberedSourceText: View {
     }
 }
 
-struct PreviewTranscriptSheet: View {
-    @Environment(AppModel.self) private var model
+struct ReadOnlyTranscriptSheet<Header: View>: View {
     @Environment(\.mobiusPalette) private var palette
     @State private var retainedEntryID: String?
     @State private var selectedDetent: PresentationDetent = .large
-    let preview: TranscriptPreview
+    let header: Header
+    let entries: [TranscriptEntry]
+    let hasEarlier: Bool
+    let isLoading: Bool
+    let loadEarlier: () -> Void
+
+    init(
+        entries: [TranscriptEntry],
+        hasEarlier: Bool,
+        isLoading: Bool,
+        loadEarlier: @escaping () -> Void,
+        @ViewBuilder header: () -> Header
+    ) {
+        self.header = header()
+        self.entries = entries
+        self.hasEarlier = hasEarlier
+        self.isLoading = isLoading
+        self.loadEarlier = loadEarlier
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -347,13 +364,11 @@ struct PreviewTranscriptSheet: View {
             ZStack {
                 ScrollViewReader { proxy in
                     ScrollView {
-                        // This is the chat transcript surface without its navigation or composer.
-                        // Exact rows avoid lazy height estimates for very long agent messages.
                         VStack(alignment: .leading, spacing: 0) {
-                            if currentPreview.next != nil {
+                            if hasEarlier {
                                 TranscriptPaginationButton(
-                                    isLoading: model.isLoadingPreviewPage,
-                                    isEnabled: !model.isLoadingPreviewPage
+                                    isLoading: isLoading,
+                                    isEnabled: !isLoading
                                 ) { loadEarlierPage() }
                                 .padding(.bottom, MobiusSpace.m)
                             }
@@ -369,7 +384,7 @@ struct PreviewTranscriptSheet: View {
                     }
                     .scrollIndicators(.hidden)
                     .refreshable { loadEarlierPage() }
-                    .onChange(of: model.isLoadingPreviewPage) { _, loading in
+                    .onChange(of: isLoading) { _, loading in
                         guard !loading, let retainedEntryID else { return }
                         let row = projection.rows.first { row in
                             row.id == retainedEntryID
@@ -382,7 +397,7 @@ struct PreviewTranscriptSheet: View {
                     }
                 }
 
-                if model.isLoadingPreviewPage {
+                if isLoading {
                     ZStack {
                         palette.canvas.opacity(0.58)
                         MobiusComposingOrb()
@@ -394,6 +409,32 @@ struct PreviewTranscriptSheet: View {
             }
         }
         .presentationDetents([.medium, .large], selection: $selectedDetent)
+    }
+
+    private var projection: TranscriptProjection {
+        TranscriptProjection(entries: entries, breakBefore: retainedEntryID)
+    }
+
+    private func loadEarlierPage() {
+        guard !isLoading else { return }
+        retainedEntryID = entries.first?.presentationID
+        loadEarlier()
+    }
+}
+
+struct PreviewTranscriptSheet: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.mobiusPalette) private var palette
+    let preview: TranscriptPreview
+
+    var body: some View {
+        ReadOnlyTranscriptSheet(
+            entries: currentPreview.entries,
+            hasEarlier: currentPreview.next != nil,
+            isLoading: model.isLoadingPreviewPage,
+            loadEarlier: loadEarlierPage,
+            header: { header }
+        )
     }
 
     private var header: some View {
@@ -448,7 +489,6 @@ struct PreviewTranscriptSheet: View {
 
     private func loadEarlierPage() {
         guard let next = currentPreview.next, !model.isLoadingPreviewPage else { return }
-        retainedEntryID = currentPreview.entries.first?.presentationID
         model.loadPreviewPage(next)
     }
 
@@ -457,13 +497,6 @@ struct PreviewTranscriptSheet: View {
             return presented
         }
         return model.previews.first(where: { $0.id == preview.id }) ?? preview
-    }
-
-    private var projection: TranscriptProjection {
-        TranscriptProjection(
-            entries: currentPreview.entries,
-            breakBefore: retainedEntryID
-        )
     }
 
     private var agentName: String {

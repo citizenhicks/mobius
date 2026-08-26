@@ -133,7 +133,7 @@ storage, navigation, and rendering—not agent, provider, or middleware behavior
 Download `mobius-<version>-<target>.tar.gz` and its checksum from
 [GitHub Releases](https://github.com/citizenhicks/mobius/releases). The archive
 contains `mobius`, `mobius-gateway`, and `cloudflared`. Rust users can install the
-two möbius commands with Rust 1.89 or newer:
+two möbius commands with Rust 1.98 or newer:
 
 ```sh
 cargo install --locked mobius-cli
@@ -183,7 +183,7 @@ cargo run -p mobius-cli --bin mobius
 
 ## Embed the core
 
-möbius requires Rust 1.89 or newer.
+möbius requires Rust 1.98 or newer.
 
 ```toml
 [dependencies]

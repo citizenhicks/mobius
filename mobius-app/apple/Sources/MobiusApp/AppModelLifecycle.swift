@@ -247,9 +247,18 @@ extension AppModel {
         configRequestID = nil
         cronTasks = []
         cronRuns = []
-        cronTaskDraft = ""
         cronError = nil
         cronRequestIDs.removeAll()
+        cronRunPreviewPollingTask?.cancel()
+        cronRunPreviewPollingTask = nil
+        cronRunPreviewRequestID = nil
+        cronRunPreviewRequestBeforeSequence = nil
+        presentedCronRun = nil
+        cronRunPreview = nil
+        cronRunPreviewEntries = []
+        cronRunPreviewNextBeforeSequence = nil
+        isLoadingCronRunPreview = false
+        cronRunPreviewError = nil
         transcript = []
         deltaFlushTask?.cancel()
         deltaFlushTask = nil

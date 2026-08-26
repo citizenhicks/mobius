@@ -27,15 +27,10 @@ async fn native_compaction_survives_recreation_with_current_prompt_and_tools() {
         ApprovalPolicy::Ask,
     ));
     let checkpoints: Arc<dyn CheckpointStore> = Arc::new(MemoryCheckpoints::default());
-    let config = |base: &str, section: &'static str, scheduling: bool| {
+    let config = |base: &str, section: &'static str, coding_tools: bool| {
         let mut middleware: Vec<Arc<dyn Middleware>> = vec![Arc::new(StaticPrompt(section))];
-        if scheduling {
-            middleware.push(Arc::new(Cron::new(
-                |_, _, _| Ok("unused".into()),
-                Arc::new(|_, _| {
-                    Box::pin(async { Ok(mobius::middleware::cron::CronCommandResult::None) })
-                }),
-            )));
+        if coding_tools {
+            middleware.push(Arc::new(Tools::coding()));
         }
         middleware.push(Arc::new(
             Compaction::new(1_000).expect("compaction middleware"),
@@ -87,12 +82,12 @@ async fn native_compaction_survives_recreation_with_current_prompt_and_tools() {
 
     let requests = model.requests.lock().expect("requests");
     assert_eq!(requests.len(), 3);
-    assert_eq!(requests[0].tools[0].name, "schedule_task");
-    assert!(requests[0].instructions.contains("**cron**"));
+    assert!(!requests[0].tools.is_empty());
+    assert!(requests[0].instructions.contains("**tools**"));
     assert_eq!(requests[1].tools, requests[0].tools);
     let replacement = &requests[2];
     assert!(replacement.tools.is_empty());
-    assert!(!replacement.instructions.contains("**cron**"));
+    assert!(!replacement.instructions.contains("**tools**"));
     assert_eq!(
         replacement.instructions.matches("new base marker").count(),
         1
@@ -111,6 +106,7 @@ async fn native_compaction_survives_recreation_with_current_prompt_and_tools() {
     assert!(history.contains("second turn"));
     assert!(!history.contains("base marker"));
     assert!(!history.contains("section marker"));
+    let first_tools = requests[0].tools.clone();
     drop(requests);
 
     let compact_requests = model.compact_requests.lock().expect("compact requests");
@@ -119,14 +115,14 @@ async fn native_compaction_survives_recreation_with_current_prompt_and_tools() {
     assert_eq!(compact_request.session_id, "prompt-refresh");
     assert!(compact_request.instructions.contains("old base marker"));
     assert!(compact_request.instructions.contains("old section marker"));
-    assert!(compact_request.instructions.contains("**cron**"));
-    assert_eq!(compact_request.tools[0].name, "schedule_task");
+    assert!(compact_request.instructions.contains("**tools**"));
+    assert_eq!(compact_request.tools, first_tools);
     let compact_input = serde_json::to_string(&compact_request.input).expect("compact input");
     assert!(compact_input.contains("first turn"));
     assert!(compact_input.contains("compact turn"));
     assert!(!compact_input.contains("old base marker"));
     assert!(!compact_input.contains("old section marker"));
-    assert!(!compact_input.contains("schedule_task"));
+    assert!(!compact_input.contains("read_file"));
 }
 
 #[tokio::test]

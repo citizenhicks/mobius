@@ -168,15 +168,12 @@ mobius-gateway exit
 mobius-gateway connect # add --endpoint tls://HOST:PORT for TLS
 ```
 
-The internal scheduler accepts standard five-field cron expressions. Scheduled
-runs use durable möbius sessions and never install system crontab entries or
-spawn a child CLI. A frontend starts assisted setup with the protocol's cron
-setup operation (`/cron new [task]` in the terminal client); ordinary chat is
-not authorized to create schedules. Model-confirmed task files are owner-only
-under the gateway state directory. Disabling scheduling for a chat removes its setup tool and
-prompt but does not delete or pause existing schedules; history stays visible and the capability
-state remains available to management views while agent scheduling is off.
-With no clients and no registered cron tasks,
-the gateway exits after 72 hours; any scheduled task disables that idle timer.
-Stopping the gateway manually also stops scheduled work, and missed runs are not
-replayed after restart.
+The internal scheduler accepts one-time, interval, and standard five-field cron
+schedules, optionally bounded by an end time. Authenticated frontends manage
+them directly through the gateway protocol; task text contains only executable
+instructions. Runs use hidden durable möbius sessions and never install system
+crontab entries or spawn a child CLI. Task files are owner-only under the
+gateway state directory. With no clients and no active scheduled tasks, the
+gateway exits after 72 hours. Stopping it manually also stops scheduled work;
+cron occurrences are not replayed after restart, and intervals catch up at most
+one overdue occurrence.

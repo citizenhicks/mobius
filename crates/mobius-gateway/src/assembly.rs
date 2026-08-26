@@ -17,7 +17,6 @@ use mobius::middleware::artifacts::Artifacts;
 use mobius::middleware::attachments::Attachments;
 use mobius::middleware::compaction::Compaction;
 use mobius::middleware::context_offloading::ContextOffloading;
-use mobius::middleware::cron::{Cron, CronCommandHandler};
 use mobius::middleware::extensions::{Extensions, MANIFEST as EXTENSIONS_MANIFEST};
 use mobius::middleware::instructions::Instructions;
 use mobius::middleware::scratchpad::{Scratchpad, ScratchpadStore};
@@ -34,7 +33,6 @@ use crate::config::{
     ChatSpec, ConfigStore, CredentialStore, DEFAULT_CONTEXT_WINDOW, GatewayConfig,
     effective_reasoning_effort, local_user_name, model_route_id,
 };
-use crate::cron::CronStore;
 use crate::extensions::{ExtensionStore, ResolvedExtensions};
 use crate::middleware_manifest::{BuiltinMiddleware, MIDDLEWARE};
 use crate::provider_catalog::{
@@ -63,8 +61,6 @@ pub(crate) async fn assemble(
     chat: &ChatSpec,
     store: &ConfigStore,
     credentials: Arc<CredentialStore>,
-    cron: Arc<CronStore>,
-    cron_commands: CronCommandHandler,
     checkpoints: Arc<dyn CheckpointStore>,
     scratchpad: ScratchpadStore,
     session_files: SessionFileStore,
@@ -169,8 +165,6 @@ pub(crate) async fn assemble(
         &chat.agent.config.middleware,
         &chat.workspace,
         Arc::clone(&gateway),
-        cron,
-        cron_commands,
         scratchpad,
         session_files,
         backend,
@@ -500,8 +494,6 @@ fn build_middleware(
     settings: &MiddlewareConfig,
     workspace: &std::path::Path,
     gateway: Arc<Mutex<GatewayConfig>>,
-    cron: Arc<CronStore>,
-    cron_commands: CronCommandHandler,
     scratchpad: ScratchpadStore,
     session_files: SessionFileStore,
     backend: Arc<dyn SandboxBackend>,
@@ -523,17 +515,6 @@ fn build_middleware(
             BuiltinMiddleware::Artifacts => Arc::new(Artifacts::new(session_files.clone())),
             BuiltinMiddleware::Tools => Arc::new(Tools::coding()),
             BuiltinMiddleware::Instructions => Arc::new(Instructions::discover(workspace)?),
-            BuiltinMiddleware::Cron => {
-                let cron = Arc::clone(&cron);
-                Arc::new(Cron::new(
-                    move |session_id, task, schedule| {
-                        cron.add_managed(session_id, task, schedule)
-                            .map(|task| task.id)
-                            .map_err(|error| MobiusError::Tool(error.to_string()))
-                    },
-                    Arc::clone(&cron_commands),
-                ))
-            }
             BuiltinMiddleware::Scratchpad => Arc::new(
                 Scratchpad::new(scratchpad.clone()).agent_enabled(settings.enabled("scratchpad")),
             ),

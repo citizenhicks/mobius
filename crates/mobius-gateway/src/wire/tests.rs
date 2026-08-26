@@ -159,7 +159,6 @@ fn ssh_identity_wire_record_has_no_key_or_path_material() {
 async fn framed_reader_retains_a_partial_prefix_when_cancelled() {
     let first = ClientFrame::new(ClientMessage::ListCron {
         request_id: "request-a".into(),
-        session_id: "session-a".into(),
     });
     let second = ClientFrame::new(ClientMessage::GetProfile {
         request_id: "request-b".into(),
@@ -433,59 +432,67 @@ fn opening_a_session_owns_its_replay_cursor() {
 }
 
 #[test]
-fn cron_setup_is_an_explicit_correlated_request() {
-    let frame = ClientFrame::new(ClientMessage::StartCronSetup {
-        request_id: "request-cron".into(),
-        session_id: "session-a".into(),
-        task: Some("Review open pull requests".into()),
-    });
-
-    let encoded = serde_json::to_value(frame).expect("encode cron setup");
-
-    assert_eq!(encoded["type"], "start_cron_setup");
-    assert_eq!(encoded["request_id"], "request-cron");
-    assert_eq!(encoded["session_id"], "session-a");
-    assert_eq!(encoded["task"], "Review open pull requests");
-}
-
-#[test]
-fn cron_management_is_session_scoped() {
+fn cron_management_is_gateway_scoped_and_structured() {
     let frames = [
         ClientMessage::ListCron {
             request_id: "list".into(),
-            session_id: "session-a".into(),
         },
-        ClientMessage::RescheduleCron {
+        ClientMessage::UpdateCron {
             request_id: "reschedule".into(),
-            session_id: "session-a".into(),
             id: "cron-a".into(),
-            schedule: "0 9 * * *".into(),
+            source_session_id: "session-a".into(),
+            task: "Review pull requests".into(),
+            schedule: CronSchedule {
+                kind: CronScheduleKind::Cron,
+                at: None,
+                every_seconds: None,
+                expression: Some("0 9 * * *".into()),
+                time_zone: Some("UTC".into()),
+            },
+            ends_at: None,
+            enabled: true,
         },
         ClientMessage::DeleteCron {
             request_id: "delete".into(),
-            session_id: "session-a".into(),
             id: "cron-a".into(),
         },
         ClientMessage::RunCron {
             request_id: "run".into(),
-            session_id: "session-a".into(),
             id: "cron-a".into(),
         },
         ClientMessage::ListCronHistory {
             request_id: "history".into(),
-            session_id: "session-a".into(),
             id: None,
         },
     ];
 
-    let session_ids = frames
+    let encoded = frames
         .into_iter()
         .map(ClientFrame::new)
         .map(|frame| serde_json::to_value(frame).expect("encode cron operation"))
-        .map(|value| value["session_id"].clone())
         .collect::<Vec<_>>();
 
-    assert_eq!(session_ids, vec![Value::String("session-a".into()); 5]);
+    assert!(
+        encoded
+            .iter()
+            .all(|value| value.get("session_id").is_none())
+    );
+    assert_eq!(encoded[1]["schedule"]["kind"], "cron");
+    assert_eq!(encoded[1]["schedule"]["expression"], "0 9 * * *");
+}
+
+#[test]
+fn cron_run_preview_is_correlated_and_cursored() {
+    let request = ClientFrame::new(ClientMessage::GetCronRunPreview {
+        request_id: "preview".into(),
+        id: "run-a".into(),
+        before_sequence: Some(8),
+    });
+    let encoded = serde_json::to_value(request).expect("encode preview request");
+
+    assert_eq!(encoded["type"], "get_cron_run_preview");
+    assert_eq!(encoded["id"], "run-a");
+    assert_eq!(encoded["before_sequence"], 8);
 }
 
 #[test]
@@ -949,7 +956,7 @@ fn server_frame_decodes_session_opened_with_a_widget_action_tag() {
                     },
                     "middleware": {
                         "enabled": [
-                            "compaction", "context_offloading", "cron", "extensions", "subagents"
+                            "compaction", "context_offloading", "extensions", "subagents"
                         ],
                         "settings": {
                             "context_offloading": {"stale_after_tokens": 50000}

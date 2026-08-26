@@ -117,6 +117,8 @@
 		200000000000000000000019 /* ComposerDictation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000013 /* ComposerDictation.swift */; };
 		20000000000000000000001A /* ComposerOptionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000014 /* ComposerOptionsView.swift */; };
 		20000000000000000000001B /* ComposingOrb.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000015 /* ComposingOrb.swift */; };
+		F20000000000000000000001 /* ComposerDictation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000013 /* ComposerDictation.swift */; };
+		F20000000000000000000002 /* ComposerDictationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000001 /* ComposerDictationTests.swift */; };
 		20000000000000000000001C /* ProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000016 /* ProfileView.swift */; };
 		20000000000000000000001D /* ComposingOrb.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000015 /* ComposingOrb.swift */; };
 		20000000000000000000001E /* ComposingOrbTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000017 /* ComposingOrbTests.swift */; };
@@ -234,6 +236,7 @@
 		100000000000000000000015 /* ComposingOrb.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposingOrb.swift; sourceTree = "<group>"; };
 		100000000000000000000016 /* ProfileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileView.swift; sourceTree = "<group>"; };
 		100000000000000000000017 /* ComposingOrbTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposingOrbTests.swift; sourceTree = "<group>"; };
+		F10000000000000000000001 /* ComposerDictationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerDictationTests.swift; sourceTree = "<group>"; };
 		100000000000000000000018 /* UnifiedDiff.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnifiedDiff.swift; sourceTree = "<group>"; };
 		100000000000000000000019 /* WorkspaceDiffView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceDiffView.swift; sourceTree = "<group>"; };
 		10000000000000000000001A /* UnifiedDiffTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnifiedDiffTests.swift; sourceTree = "<group>"; };
@@ -390,6 +393,7 @@
 				A10000000000000000000015 /* AppModelTurnTests.swift */,
 				A10000000000000000000016 /* ChatTitleWriterTests.swift */,
 				100000000000000000000017 /* ComposingOrbTests.swift */,
+				F10000000000000000000001 /* ComposerDictationTests.swift */,
 				A10000000000000000000017 /* FileTreeNodeTests.swift */,
 				A10000000000000000000020 /* GatewayAgentEventWireTests.swift */,
 				A10000000000000000000021 /* GatewayClientWireTests.swift */,
@@ -618,6 +622,8 @@
 				200000000000000000000061 /* AppModelLifecycle.swift in Sources */,
 				20000000000000000000001D /* ComposingOrb.swift in Sources */,
 				20000000000000000000001E /* ComposingOrbTests.swift in Sources */,
+				F20000000000000000000001 /* ComposerDictation.swift in Sources */,
+				F20000000000000000000002 /* ComposerDictationTests.swift in Sources */,
 				200000000000000000000021 /* UnifiedDiff.swift in Sources */,
 				200000000000000000000022 /* UnifiedDiffTests.swift in Sources */,
 				200000000000000000000017 /* GatewayClient.swift in Sources */,
@@ -757,7 +763,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CODE_SIGN_ENTITLEMENTS = Sources/MobiusApp/MobiusApp.entitlements;
-				CURRENT_PROJECT_VERSION = 209;
+				CURRENT_PROJECT_VERSION = 215;
 				DEVELOPMENT_TEAM = 3T68GZFAR6;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -795,7 +801,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CODE_SIGN_ENTITLEMENTS = Sources/MobiusApp/MobiusApp.entitlements;
-				CURRENT_PROJECT_VERSION = 209;
+				CURRENT_PROJECT_VERSION = 215;
 				DEVELOPMENT_TEAM = 3T68GZFAR6;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Sources/MobiusApp/Info.plist;

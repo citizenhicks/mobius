@@ -809,79 +809,79 @@ pub(super) async fn handle_message(
             }
             Err(rejection) => write_rejection(writer, request_id, rejection).await,
         },
-        ClientMessage::StartCronSetup {
+        ClientMessage::CreateCron {
             request_id,
-            session_id,
             task,
+            source_session_id,
+            schedule,
+            ends_at,
         } => {
-            let host = match require_selected(selected, &session_id) {
-                Ok(host) => host,
-                Err(rejection) => return write_rejection(writer, request_id, rejection).await,
-            };
-            write_result(writer, request_id, host.start_cron_setup(task).await).await
+            write_result(
+                writer,
+                request_id,
+                gateway
+                    .create_cron(&source_session_id, &task, schedule, ends_at)
+                    .await,
+            )
+            .await
         }
-        ClientMessage::ListCron {
-            request_id,
-            session_id,
-        } => match cron.records(&session_id) {
+        ClientMessage::ListCron { request_id } => match cron.records(Utc::now().timestamp()) {
             Ok(tasks) => {
                 write_frame(
                     writer,
-                    &ServerFrame::new(ServerMessage::CronTasks {
-                        request_id,
-                        session_id,
-                        tasks,
-                    }),
+                    &ServerFrame::new(ServerMessage::CronTasks { request_id, tasks }),
                 )
                 .await
             }
             Err(error) => write_rejection(writer, request_id, cron_rejection(error)).await,
         },
-        ClientMessage::RescheduleCron {
+        ClientMessage::UpdateCron {
             request_id,
-            session_id,
             id,
+            source_session_id,
+            task,
             schedule,
+            ends_at,
+            enabled,
         } => {
-            let result = cron
-                .reschedule(&session_id, &id, &schedule)
-                .map(|_| ())
-                .map_err(cron_rejection);
+            let result = gateway
+                .update_cron(&id, &source_session_id, &task, schedule, ends_at, enabled)
+                .await;
             write_result(writer, request_id, result).await
         }
-        ClientMessage::DeleteCron {
-            request_id,
-            session_id,
-            id,
-        } => {
-            let result = cron
-                .delete(&session_id, &id)
-                .map(|_| ())
-                .map_err(cron_rejection);
+        ClientMessage::DeleteCron { request_id, id } => {
+            let result = cron.delete(&id).map(|_| ()).map_err(cron_rejection);
             write_result(writer, request_id, result).await
         }
-        ClientMessage::RunCron {
-            request_id,
-            session_id,
-            id,
-        } => write_result(writer, request_id, gateway.run_cron(session_id, id).await).await,
-        ClientMessage::ListCronHistory {
-            request_id,
-            session_id,
-            id,
-        } => match cron.history(&session_id, id.as_deref()) {
+        ClientMessage::RunCron { request_id, id } => {
+            write_result(writer, request_id, gateway.run_cron(id).await).await
+        }
+        ClientMessage::ListCronHistory { request_id, id } => match cron.history(id.as_deref()) {
             Ok(runs) => {
                 write_frame(
                     writer,
-                    &ServerFrame::new(ServerMessage::CronHistory {
-                        request_id,
-                        session_id,
-                        runs,
-                    }),
+                    &ServerFrame::new(ServerMessage::CronHistory { request_id, runs }),
                 )
                 .await
             }
             Err(error) => write_rejection(writer, request_id, cron_rejection(error)).await,
+        },
+        ClientMessage::GetCronRunPreview {
+            request_id,
+            id,
+            before_sequence,
+        } => match gateway.cron_run_preview(&id, before_sequence).await {
+            Ok(preview) => {
+                write_frame(
+                    writer,
+                    &ServerFrame::new(ServerMessage::CronRunPreview {
+                        request_id,
+                        preview,
+                    }),
+                )
+                .await
+            }
+            Err(rejection) => write_rejection(writer, request_id, rejection).await,
         },
     }
 }

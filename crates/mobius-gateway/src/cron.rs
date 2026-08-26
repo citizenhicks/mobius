@@ -9,28 +9,29 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr as _;
 use std::sync::Mutex;
 
-use chrono::{Local, TimeZone as _, Utc};
+use chrono::{TimeZone as _, Timelike as _, Utc};
+use chrono_tz::Tz;
 use croner::Cron;
 use mobius::protocol::MAX_USER_INPUT_BYTES;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::wire::{CronRun, CronRunStatus, CronTask as CronTaskRecord};
+use crate::wire::{
+    CronRun, CronRunStatus, CronSchedule, CronScheduleKind, CronTask as CronTaskRecord,
+};
 use crate::{Error, Result};
 
-const STATE_VERSION: u32 = 2;
+const STATE_VERSION: u32 = 3;
 const STATE_FILE: &str = "cron.json";
 const STATE_LOCK_FILE: &str = "cron-state.lock";
 const TASKS_DIR: &str = "tasks";
 const MAX_STATE_BYTES: u64 = 1024 * 1024;
 const MAX_RUNS: usize = 256;
-const UNAVAILABLE_TASK_DESCRIPTION: &str = "Task instructions unavailable";
 
-/// Gateway-wide persistent cron state partitioned by source session.
+/// Gateway-wide persistent scheduled-task state.
 pub(crate) struct CronStore {
     state_dir: PathBuf,
     tasks_dir: PathBuf,
-    setup_sessions: Mutex<BTreeSet<String>>,
     path: PathBuf,
     state: Mutex<CronState>,
 }
@@ -41,7 +42,84 @@ pub(crate) struct StoredCronTask {
     pub(crate) id: String,
     pub(crate) session_id: String,
     pub(crate) task: PathBuf,
-    pub(crate) schedule: String,
+    pub(crate) schedule: CronSchedule,
+    pub(crate) ends_at: Option<i64>,
+    pub(crate) enabled: bool,
+    pub(crate) next_run_at: Option<i64>,
+    pub(crate) last_scheduled_minute: Option<i64>,
+}
+
+impl StoredCronTask {
+    fn reset_next_run(&mut self, now: i64) -> Result<()> {
+        self.last_scheduled_minute = None;
+        self.next_run_at = match self.schedule.kind {
+            CronScheduleKind::Once => self.schedule.at,
+            CronScheduleKind::Interval => Some(
+                now.checked_add(
+                    i64::try_from(self.schedule.every_seconds.ok_or_else(|| {
+                        Error::Config("interval schedule is missing its interval".into())
+                    })?)
+                    .map_err(|_| Error::Config("interval schedule is too large".into()))?,
+                )
+                .ok_or_else(|| Error::Config("interval schedule overflows its timestamp".into()))?,
+            ),
+            CronScheduleKind::Cron => None,
+        };
+        Ok(())
+    }
+
+    fn advance_interval(&mut self, now: i64) -> Result<()> {
+        let every =
+            i64::try_from(self.schedule.every_seconds.ok_or_else(|| {
+                Error::Config("interval schedule is missing its interval".into())
+            })?)
+            .map_err(|_| Error::Config("interval schedule is too large".into()))?;
+        let next = self
+            .next_run_at
+            .ok_or_else(|| Error::Config("interval schedule has no next run".into()))?;
+        let missed = (now.saturating_sub(next) / every).saturating_add(1);
+        self.next_run_at = Some(
+            next.checked_add(every.saturating_mul(missed))
+                .ok_or_else(|| Error::Config("interval schedule overflows its timestamp".into()))?,
+        );
+        Ok(())
+    }
+
+    fn is_finished(&self, now: i64) -> bool {
+        match self.schedule.kind {
+            CronScheduleKind::Once => {
+                self.next_run_at.is_none()
+                    || self
+                        .ends_at
+                        .is_some_and(|ends_at| self.next_run_at.is_some_and(|next| next > ends_at))
+            }
+            CronScheduleKind::Interval => self
+                .ends_at
+                .is_some_and(|ends_at| self.next_run_at.is_none_or(|next| next > ends_at)),
+            CronScheduleKind::Cron => self
+                .ends_at
+                .is_some_and(|ends_at| ends_at.div_euclid(60) < now.div_euclid(60)),
+        }
+    }
+
+    fn next_run_at(&self, now: i64) -> Option<i64> {
+        if self.is_finished(now) || !self.enabled {
+            return None;
+        }
+        if self.schedule.kind != CronScheduleKind::Cron {
+            return self.next_run_at;
+        }
+        let expression = self.schedule.expression.as_deref()?;
+        let schedule = Cron::from_str(expression).ok()?;
+        let time_zone = self.schedule.time_zone.as_deref()?.parse::<Tz>().ok()?;
+        let now = Utc
+            .timestamp_opt(now, 0)
+            .single()?
+            .with_timezone(&time_zone);
+        let next = schedule.find_next_occurrence(&now, false).ok()?.timestamp();
+        self.ends_at
+            .map_or(Some(next), |ends_at| (next <= ends_at).then_some(next))
+    }
 }
 
 /// Result of reserving one task invocation.
@@ -107,7 +185,6 @@ impl CronStore {
         let store = Self {
             state_dir,
             tasks_dir,
-            setup_sessions: Mutex::new(BTreeSet::new()),
             path,
             state: Mutex::new(state),
         };
@@ -118,73 +195,15 @@ impl CronStore {
         Ok(store)
     }
 
-    fn register(
-        &self,
-        source_session_id: &str,
-        task: PathBuf,
-        schedule: String,
-    ) -> Result<StoredCronTask> {
-        self.update(|state| {
-            let task = StoredCronTask {
-                id: Uuid::new_v4().to_string(),
-                session_id: source_session_id.into(),
-                task,
-                schedule,
-            };
-            state.tasks.push(task.clone());
-            Ok(task)
-        })
-    }
-
-    /// Starts one explicit conversational setup and returns its model input.
-    pub(crate) fn begin_setup(
-        &self,
-        source_session_id: &str,
-        task: Option<&str>,
-    ) -> Result<String> {
-        validate_session_id(source_session_id)?;
-        let task = task.map(str::trim).filter(|task| !task.is_empty());
-        let input = task.map_or_else(
-            || {
-                "Set up a recurring task. Ask me for the task and timing details, then use `schedule_task`. Save only instructions for what each run must execute, not instructions to create the schedule."
-                    .into()
-            },
-            |task| {
-                format!(
-                    "Set up this recurring task:\n\n{task}\n\nAsk only for missing timing details, then use `schedule_task`. Save only instructions for what each run must execute, not instructions to create the schedule."
-                )
-            },
-        );
-        if input.len() > MAX_USER_INPUT_BYTES {
-            return Err(Error::Config(format!(
-                "cron setup exceeds the {MAX_USER_INPUT_BYTES}-byte input limit"
-            )));
-        }
-        self.lock_setups()?.insert(source_session_id.into());
-        Ok(input)
-    }
-
-    /// Ends an unfinished conversational setup.
-    pub(crate) fn cancel_setup(&self, source_session_id: &str) {
-        if let Ok(mut active) = self.setup_sessions.lock() {
-            active.remove(source_session_id);
-        }
-    }
-
-    /// Writes and registers one model-confirmed task in the private gateway task directory.
-    pub(crate) fn add_managed(
+    /// Writes and registers one user-created task in the private gateway task directory.
+    pub(crate) fn create(
         &self,
         source_session_id: &str,
         task: &str,
-        schedule: &str,
+        schedule: CronSchedule,
+        ends_at: Option<i64>,
     ) -> Result<StoredCronTask> {
         validate_session_id(source_session_id)?;
-        let mut active = self.lock_setups()?;
-        if !active.contains(source_session_id) {
-            return Err(Error::Config(
-                "scheduled tasks require an active scheduling setup".into(),
-            ));
-        }
         let task = task.trim();
         if task.is_empty() {
             return Err(Error::Config("scheduled task cannot be empty".into()));
@@ -194,16 +213,29 @@ impl CronStore {
                 "scheduled task exceeds the {MAX_USER_INPUT_BYTES}-byte input limit"
             )));
         }
-        let schedule = validate_schedule(schedule)?;
+        validate_schedule(&schedule, ends_at)?;
         let path = self
             .tasks_dir
             .join(format!("{}.md", Uuid::new_v4().as_hyphenated()));
         write_private_task(&self.tasks_dir, &path, task.as_bytes())?;
-        match self.register(source_session_id, path.clone(), schedule) {
-            Ok(task) => {
-                active.remove(source_session_id);
-                Ok(task)
-            }
+        let result = self.update(|state| {
+            let now = Utc::now().timestamp();
+            let mut task = StoredCronTask {
+                id: Uuid::new_v4().to_string(),
+                session_id: source_session_id.into(),
+                task: path.clone(),
+                schedule,
+                ends_at,
+                enabled: true,
+                next_run_at: Some(now),
+                last_scheduled_minute: None,
+            };
+            task.reset_next_run(now)?;
+            state.tasks.push(task.clone());
+            Ok(task)
+        });
+        match result {
+            Ok(task) => Ok(task),
             Err(error) => match std::fs::remove_file(&path) {
                 Ok(()) => Err(error),
                 Err(rollback) => Err(Error::Config(format!(
@@ -218,63 +250,104 @@ impl CronStore {
         &self,
         source_session_id: &str,
         task: &str,
-        schedule: &str,
+        schedule: CronSchedule,
+        ends_at: Option<i64>,
     ) -> Result<StoredCronTask> {
-        self.begin_setup(source_session_id, Some(task))?;
-        self.add_managed(source_session_id, task, schedule)
+        self.create(source_session_id, task, schedule, ends_at)
     }
 
-    /// Lists one source session's scheduled tasks in creation order.
-    pub(crate) fn list(&self, source_session_id: &str) -> Result<Vec<StoredCronTask>> {
-        Ok(self
-            .lock_state()?
-            .tasks
-            .iter()
-            .filter(|task| task.session_id == source_session_id)
-            .cloned()
-            .collect())
+    /// Lists all scheduled tasks in creation order.
+    pub(crate) fn list(&self) -> Result<Vec<StoredCronTask>> {
+        Ok(self.lock_state()?.tasks.clone())
     }
 
-    /// Lists one source session's scheduled tasks without exposing their storage paths.
-    pub(crate) fn records(&self, source_session_id: &str) -> Result<Vec<CronTaskRecord>> {
-        self.list(source_session_id)?
+    /// Lists all scheduled tasks without exposing their storage paths.
+    pub(crate) fn records(&self, now: i64) -> Result<Vec<CronTaskRecord>> {
+        self.list()?
             .into_iter()
             .map(|stored| {
-                let task = self
-                    .task_input(&stored.id)
-                    .map_or_else(|_| UNAVAILABLE_TASK_DESCRIPTION.into(), |(_, task)| task);
+                let finished = stored.is_finished(now);
+                let next_run_at = stored.next_run_at(now);
+                let (_, task) = self.task_input(&stored.id)?;
                 Ok(CronTaskRecord {
                     id: stored.id,
-                    session_id: stored.session_id,
+                    source_session_id: stored.session_id,
                     task,
-                    schedule: stored.schedule,
+                    schedule: stored.schedule.clone(),
+                    ends_at: stored.ends_at,
+                    enabled: stored.enabled,
+                    finished,
+                    next_run_at,
                 })
             })
             .collect()
     }
 
-    pub(crate) fn has_tasks(&self) -> Result<bool> {
-        Ok(!self.lock_state()?.tasks.is_empty())
+    pub(crate) fn record(&self, id: &str, now: i64) -> Result<CronTaskRecord> {
+        self.records(now)?
+            .into_iter()
+            .find(|task| task.id == id)
+            .ok_or_else(|| Error::Config(format!("unknown cron task `{id}`")))
     }
 
-    /// Replaces one task's schedule, accepting an unambiguous ID prefix.
+    pub(crate) fn has_active_tasks(&self, now: i64) -> Result<bool> {
+        Ok(self
+            .lock_state()?
+            .tasks
+            .iter()
+            .any(|task| task.enabled && !task.is_finished(now)))
+    }
+
+    /// Replaces one task, accepting an unambiguous ID prefix.
     pub(crate) fn reschedule(
         &self,
-        source_session_id: &str,
         id: &str,
-        schedule: &str,
+        source_session_id: &str,
+        task_input: &str,
+        schedule: CronSchedule,
+        ends_at: Option<i64>,
+        enabled: bool,
     ) -> Result<StoredCronTask> {
-        let schedule = validate_schedule(schedule)?;
-        self.update(|state| {
-            let index = resolve_task(&state.tasks, source_session_id, id)?;
-            state.tasks[index].schedule = schedule;
+        validate_session_id(source_session_id)?;
+        validate_task_input(task_input)?;
+        validate_schedule(&schedule, ends_at)?;
+        let existing = self.task(id)?;
+        let (_, previous_input) = self.task_input(&existing.id)?;
+        let Some(_lock) = self.try_task_lock(&existing.id)? else {
+            return Err(Error::Config(format!(
+                "cron task {} is currently running",
+                existing.id
+            )));
+        };
+        rewrite_private_task(&self.tasks_dir, &existing.task, task_input.as_bytes())?;
+        let result = self.update(|state| {
+            let index = resolve_task(&state.tasks, &existing.id)?;
+            let stored = &mut state.tasks[index];
+            stored.session_id = source_session_id.into();
+            stored.schedule = schedule;
+            stored.ends_at = ends_at;
+            stored.enabled = enabled;
+            stored.reset_next_run(Utc::now().timestamp())?;
             Ok(state.tasks[index].clone())
-        })
+        });
+        match result {
+            Ok(task) => Ok(task),
+            Err(error) => match rewrite_private_task(
+                &self.tasks_dir,
+                &existing.task,
+                previous_input.as_bytes(),
+            ) {
+                Ok(()) => Err(error),
+                Err(rollback) => Err(Error::Config(format!(
+                    "{error}; restoring the previous task input failed: {rollback}"
+                ))),
+            },
+        }
     }
 
     /// Deletes one idle task, accepting an unambiguous ID prefix.
-    pub(crate) fn delete(&self, source_session_id: &str, id: &str) -> Result<StoredCronTask> {
-        let task = self.task(source_session_id, id)?;
+    pub(crate) fn delete(&self, id: &str) -> Result<StoredCronTask> {
+        let task = self.task(id)?;
         let Some(_lock) = self.try_task_lock(&task.id)? else {
             return Err(Error::Config(format!(
                 "cron task {} is currently running",
@@ -282,8 +355,10 @@ impl CronStore {
             )));
         };
         let deleted = self.update(|state| {
-            let index = resolve_task(&state.tasks, source_session_id, &task.id)?;
-            Ok(state.tasks.remove(index))
+            let index = resolve_task(&state.tasks, &task.id)?;
+            let deleted = state.tasks.remove(index);
+            state.runs.retain(|run| run.task_id != deleted.id);
+            Ok(deleted)
         })?;
         match std::fs::remove_file(&deleted.task) {
             Ok(()) => {}
@@ -300,7 +375,6 @@ impl CronStore {
 
     /// Permanently removes one idle session's schedules and run history.
     pub(crate) fn delete_session(&self, source_session_id: &str) -> Result<()> {
-        self.require_session_idle(source_session_id)?;
         let (tasks, locks) = self.lock_session_tasks(source_session_id)?;
         for task in &tasks {
             remove_if_present(&task.task)?;
@@ -318,21 +392,10 @@ impl CronStore {
         Ok(())
     }
 
-    pub(crate) fn require_session_idle(&self, source_session_id: &str) -> Result<()> {
-        validate_session_id(source_session_id)?;
-        if self.lock_setups()?.contains(source_session_id) {
-            return Err(Error::Config(
-                "scheduled-task setup is currently active for this session".into(),
-            ));
-        }
-        let _ = self.lock_session_tasks(source_session_id)?;
-        Ok(())
-    }
-
     /// Resolves one task by full ID or unambiguous prefix.
-    pub(crate) fn task(&self, source_session_id: &str, id: &str) -> Result<StoredCronTask> {
+    pub(crate) fn task(&self, id: &str) -> Result<StoredCronTask> {
         let state = self.lock_state()?;
-        Ok(state.tasks[resolve_task(&state.tasks, source_session_id, id)?].clone())
+        Ok(state.tasks[resolve_task(&state.tasks, id)?].clone())
     }
 
     /// Reads a task after rechecking its path and input-size boundary.
@@ -371,36 +434,95 @@ impl CronStore {
         Ok((task, input))
     }
 
-    /// Returns tasks matching one local-time Unix minute.
-    pub(crate) fn due_at_minute(&self, unix_minute: i64) -> Result<Vec<StoredCronTask>> {
-        let seconds = unix_minute
-            .checked_mul(60)
-            .ok_or_else(|| Error::Config("cron timestamp overflow".into()))?;
-        let time = Local
-            .timestamp_opt(seconds, 0)
-            .single()
-            .ok_or_else(|| Error::Config("cron timestamp is outside the supported range".into()))?;
-        self.lock_state()?
-            .tasks
-            .iter()
-            .filter_map(|task| match Cron::from_str(&task.schedule) {
-                Ok(schedule) => match schedule.is_time_matching(&time) {
-                    Ok(true) => Some(Ok(task.clone())),
-                    Ok(false) => None,
-                    Err(error) => Some(Err(Error::Config(format!(
-                        "invalid persisted cron schedule: {error}"
-                    )))),
-                },
-                Err(error) => Some(Err(Error::Config(format!(
-                    "invalid persisted cron schedule: {error}"
-                )))),
-            })
-            .collect()
-    }
-
-    /// Returns the current Unix minute for scheduler de-duplication.
-    pub(crate) fn current_unix_minute() -> i64 {
-        Utc::now().timestamp().div_euclid(60)
+    /// Reserves due tasks and records their invocations atomically.
+    pub(crate) fn take_due(&self, now: i64) -> Result<Vec<(String, ActiveCronRun)>> {
+        let minute = now.div_euclid(60);
+        self.update(|state| {
+            let mut due = Vec::new();
+            for index in 0..state.tasks.len() {
+                let task = &state.tasks[index];
+                if !task.enabled || task.is_finished(now) {
+                    continue;
+                }
+                let should_run = match task.schedule.kind {
+                    CronScheduleKind::Once | CronScheduleKind::Interval => {
+                        task.next_run_at.is_some_and(|next| next <= now)
+                    }
+                    CronScheduleKind::Cron => {
+                        if task.last_scheduled_minute == Some(minute) {
+                            false
+                        } else {
+                            let expression =
+                                task.schedule.expression.as_deref().ok_or_else(|| {
+                                    Error::Config("cron schedule is missing its expression".into())
+                                })?;
+                            let schedule = Cron::from_str(expression).map_err(|error| {
+                                Error::Config(format!("invalid persisted cron schedule: {error}"))
+                            })?;
+                            let time_zone = task
+                                .schedule
+                                .time_zone
+                                .as_deref()
+                                .ok_or_else(|| {
+                                    Error::Config("cron schedule is missing its time zone".into())
+                                })?
+                                .parse::<Tz>()
+                                .map_err(|error| {
+                                    Error::Config(format!(
+                                        "invalid persisted cron time zone: {error}"
+                                    ))
+                                })?;
+                            let local_time = Utc
+                                .timestamp_opt(now, 0)
+                                .single()
+                                .and_then(|time| time.with_timezone(&time_zone).with_second(0))
+                                .ok_or_else(|| {
+                                    Error::Config(
+                                        "cron timestamp is outside the supported range".into(),
+                                    )
+                                })?;
+                            schedule.is_time_matching(&local_time).map_err(|error| {
+                                Error::Config(format!("invalid persisted cron schedule: {error}"))
+                            })?
+                        }
+                    }
+                };
+                if !should_run {
+                    continue;
+                }
+                let task = state.tasks[index].clone();
+                {
+                    let stored = &mut state.tasks[index];
+                    stored.last_scheduled_minute = Some(minute);
+                    match stored.schedule.kind {
+                        CronScheduleKind::Once => stored.next_run_at = None,
+                        CronScheduleKind::Interval => stored.advance_interval(now)?,
+                        CronScheduleKind::Cron => {}
+                    }
+                }
+                let Some(lock) = self.try_task_lock(&task.id)? else {
+                    append_run(
+                        state,
+                        new_run(
+                            &task,
+                            CronRunStatus::Skipped,
+                            Some("the previous invocation is still running".into()),
+                        ),
+                    )?;
+                    continue;
+                };
+                let run = new_run(&task, CronRunStatus::Running, None);
+                append_run(state, run.clone())?;
+                due.push((
+                    task.id,
+                    ActiveCronRun {
+                        run_id: run.id,
+                        _lock: lock,
+                    },
+                ));
+            }
+            Ok(due)
+        })
     }
 
     /// Starts an overlap-locked invocation or records an overlap skip.
@@ -414,16 +536,7 @@ impl CronStore {
             )?;
             return Ok(BeginRun::Skipped);
         };
-        let run = CronRun {
-            id: Uuid::new_v4().to_string(),
-            task_id: task.id.clone(),
-            source_session_id: task.session_id,
-            started_at: Utc::now().timestamp(),
-            finished_at: None,
-            status: CronRunStatus::Running,
-            session_id: None,
-            message: None,
-        };
+        let run = new_run(&task, CronRunStatus::Running, None);
         self.update(|state| {
             append_run(state, run.clone())?;
             Ok(())
@@ -469,32 +582,26 @@ impl CronStore {
         })
     }
 
-    /// Records a skipped invocation that could not enter the agent host.
-    pub(crate) fn skip_run(&self, id: &str, message: impl Into<String>) -> Result<CronRun> {
-        let task = self.stored_task(id)?;
-        self.record_terminal_run(&task, CronRunStatus::Skipped, Some(message.into()))
-    }
-
     /// Returns newest-first run history for one source session.
-    pub(crate) fn history(
-        &self,
-        source_session_id: &str,
-        id: Option<&str>,
-    ) -> Result<Vec<CronRun>> {
+    pub(crate) fn history(&self, id: Option<&str>) -> Result<Vec<CronRun>> {
         let state = self.lock_state()?;
-        let task_id = id
-            .map(|id| resolve_history_task(&state, source_session_id, id))
-            .transpose()?;
+        let task_id = id.map(|id| resolve_history_task(&state, id)).transpose()?;
         Ok(state
             .runs
             .iter()
             .rev()
-            .filter(|run| {
-                run.source_session_id == source_session_id
-                    && task_id.as_ref().is_none_or(|id| &run.task_id == id)
-            })
+            .filter(|run| task_id.as_ref().is_none_or(|id| &run.task_id == id))
             .cloned()
             .collect())
+    }
+
+    pub(crate) fn run(&self, id: &str) -> Result<CronRun> {
+        self.lock_state()?
+            .runs
+            .iter()
+            .find(|run| run.id == id)
+            .cloned()
+            .ok_or_else(|| Error::Config(format!("unknown cron run `{id}`")))
     }
 
     fn stored_task(&self, id: &str) -> Result<StoredCronTask> {
@@ -519,7 +626,11 @@ impl CronStore {
         &self,
         source_session_id: &str,
     ) -> Result<(Vec<StoredCronTask>, Vec<File>)> {
-        let tasks = self.list(source_session_id)?;
+        let tasks = self
+            .list()?
+            .into_iter()
+            .filter(|task| task.session_id == source_session_id)
+            .collect::<Vec<_>>();
         let mut locks = Vec::with_capacity(tasks.len());
         for task in &tasks {
             let Some(lock) = self.try_task_lock(&task.id)? else {
@@ -539,17 +650,7 @@ impl CronStore {
         status: CronRunStatus,
         message: Option<String>,
     ) -> Result<CronRun> {
-        let now = Utc::now().timestamp();
-        let run = CronRun {
-            id: Uuid::new_v4().to_string(),
-            task_id: task.id.clone(),
-            source_session_id: task.session_id.clone(),
-            started_at: now,
-            finished_at: Some(now),
-            status,
-            session_id: None,
-            message,
-        };
+        let run = new_run(task, status, message);
         self.update(|state| {
             append_run(state, run.clone())?;
             Ok(run)
@@ -588,12 +689,6 @@ impl CronStore {
             .lock()
             .map_err(|_| Error::Config("cron state lock is poisoned".into()))
     }
-
-    fn lock_setups(&self) -> Result<std::sync::MutexGuard<'_, BTreeSet<String>>> {
-        self.setup_sessions
-            .lock()
-            .map_err(|_| Error::Config("cron setup lock is poisoned".into()))
-    }
 }
 
 fn validate_session_id(session_id: &str) -> Result<()> {
@@ -610,24 +705,82 @@ fn validate_task_id_prefix(id: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_schedule(schedule: &str) -> Result<String> {
-    let fields = schedule.split_ascii_whitespace().collect::<Vec<_>>();
-    if fields.len() != 5
-        || fields.iter().any(|field| {
-            field.is_empty()
-                || !field.chars().all(|character| {
-                    character.is_ascii_alphanumeric() || matches!(character, '*' | '/' | ',' | '-')
-                })
-        })
-    {
-        return Err(Error::Config(
-            "schedule must be a five-field cron expression".into(),
-        ));
+fn validate_task_input(task: &str) -> Result<()> {
+    let task = task.trim();
+    if task.is_empty() {
+        return Err(Error::Config("scheduled task cannot be empty".into()));
     }
-    let schedule = fields.join(" ");
-    Cron::from_str(&schedule)
-        .map_err(|error| Error::Config(format!("invalid cron schedule: {error}")))?;
-    Ok(schedule)
+    if task.len() > MAX_USER_INPUT_BYTES {
+        return Err(Error::Config(format!(
+            "scheduled task exceeds the {MAX_USER_INPUT_BYTES}-byte input limit"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_schedule(schedule: &CronSchedule, ends_at: Option<i64>) -> Result<()> {
+    let populated = [
+        schedule.at.is_some(),
+        schedule.every_seconds.is_some(),
+        schedule.expression.is_some(),
+    ]
+    .into_iter()
+    .filter(|populated| *populated)
+    .count();
+    match schedule.kind {
+        CronScheduleKind::Once
+            if populated == 1 && schedule.at.is_some() && schedule.time_zone.is_none() =>
+        {
+            if ends_at.is_some_and(|ends_at| schedule.at.is_some_and(|at| at > ends_at)) {
+                return Err(Error::Config(
+                    "a once schedule cannot end before it runs".into(),
+                ));
+            }
+        }
+        CronScheduleKind::Interval
+            if populated == 1
+                && schedule.every_seconds.is_some()
+                && schedule.time_zone.is_none() =>
+        {
+            if schedule.every_seconds.unwrap_or_default() < 60 {
+                return Err(Error::Config("interval must be at least 60 seconds".into()));
+            }
+        }
+        CronScheduleKind::Cron
+            if populated == 1 && schedule.expression.is_some() && schedule.time_zone.is_some() =>
+        {
+            let time_zone = schedule.time_zone.as_deref().unwrap_or_default();
+            time_zone
+                .parse::<Tz>()
+                .map_err(|error| Error::Config(format!("invalid cron time zone: {error}")))?;
+            let expression = schedule.expression.as_deref().unwrap_or_default();
+            let fields = expression.split_ascii_whitespace().collect::<Vec<_>>();
+            if fields.len() != 5
+                || fields.iter().any(|field| {
+                    field.is_empty()
+                        || !field.chars().all(|character| {
+                            character.is_ascii_alphanumeric()
+                                || matches!(character, '*' | '/' | ',' | '-')
+                        })
+                })
+            {
+                return Err(Error::Config(
+                    "schedule must be a five-field cron expression".into(),
+                ));
+            }
+            Cron::from_str(expression)
+                .map_err(|error| Error::Config(format!("invalid cron schedule: {error}")))?;
+        }
+        _ => {
+            return Err(Error::Config(
+                "schedule fields do not match the selected schedule kind".into(),
+            ));
+        }
+    }
+    if ends_at.is_some_and(|ends_at| ends_at <= 0) {
+        return Err(Error::Config("schedule end time must be positive".into()));
+    }
+    Ok(())
 }
 
 fn validate_state(state: &CronState, tasks_dir: &Path) -> Result<()> {
@@ -657,7 +810,10 @@ fn validate_state(state: &CronState, tasks_dir: &Path) -> Result<()> {
                 "persisted cron task path is outside the private gateway task directory".into(),
             ));
         }
-        validate_schedule(&task.schedule)?;
+        validate_schedule(&task.schedule, task.ends_at)?;
+        if task.next_run_at.is_some_and(|next| next <= 0) {
+            return Err(Error::Config("invalid persisted cron next run".into()));
+        }
     }
     let mut run_ids = BTreeSet::new();
     for run in &state.runs {
@@ -670,16 +826,6 @@ fn validate_state(state: &CronState, tasks_dir: &Path) -> Result<()> {
         validate_session_id(&run.source_session_id)?;
         if let Some(session_id) = &run.session_id {
             validate_session_id(session_id)?;
-        }
-        if state
-            .tasks
-            .iter()
-            .find(|task| task.id == run.task_id)
-            .is_some_and(|task| task.session_id != run.source_session_id)
-        {
-            return Err(Error::Config(
-                "persisted cron run source does not own its task".into(),
-            ));
         }
     }
     Ok(())
@@ -699,18 +845,15 @@ fn recover_interrupted_runs(state: &mut CronState) -> bool {
     changed
 }
 
-fn resolve_task(tasks: &[StoredCronTask], source_session_id: &str, id: &str) -> Result<usize> {
+fn resolve_task(tasks: &[StoredCronTask], id: &str) -> Result<usize> {
     validate_task_id_prefix(id)?;
-    if let Some(index) = tasks
-        .iter()
-        .position(|task| task.session_id == source_session_id && task.id == id)
-    {
+    if let Some(index) = tasks.iter().position(|task| task.id == id) {
         return Ok(index);
     }
     let mut matches = tasks
         .iter()
         .enumerate()
-        .filter(|(_, task)| task.session_id == source_session_id && task.id.starts_with(id));
+        .filter(|(_, task)| task.id.starts_with(id));
     let (index, _) = matches
         .next()
         .ok_or_else(|| Error::Config(format!("unknown cron task `{id}`")))?;
@@ -722,20 +865,13 @@ fn resolve_task(tasks: &[StoredCronTask], source_session_id: &str, id: &str) -> 
     Ok(index)
 }
 
-fn resolve_history_task(state: &CronState, source_session_id: &str, id: &str) -> Result<String> {
+fn resolve_history_task(state: &CronState, id: &str) -> Result<String> {
     validate_task_id_prefix(id)?;
     let mut ids = state
         .tasks
         .iter()
-        .filter(|task| task.session_id == source_session_id)
         .map(|task| task.id.as_str())
-        .chain(
-            state
-                .runs
-                .iter()
-                .filter(|run| run.source_session_id == source_session_id)
-                .map(|run| run.task_id.as_str()),
-        )
+        .chain(state.runs.iter().map(|run| run.task_id.as_str()))
         .filter(|task_id| task_id.starts_with(id))
         .collect::<BTreeSet<_>>();
     if ids.contains(id) {
@@ -750,6 +886,20 @@ fn resolve_history_task(state: &CronState, source_session_id: &str, id: &str) ->
         )));
     }
     Ok(resolved.into())
+}
+
+fn new_run(task: &StoredCronTask, status: CronRunStatus, message: Option<String>) -> CronRun {
+    let now = Utc::now().timestamp();
+    CronRun {
+        id: Uuid::new_v4().to_string(),
+        task_id: task.id.clone(),
+        source_session_id: task.session_id.clone(),
+        started_at: now,
+        finished_at: (status != CronRunStatus::Running).then_some(now),
+        status,
+        session_id: None,
+        message,
+    }
 }
 
 fn append_run(state: &mut CronState, run: CronRun) -> Result<()> {
@@ -814,6 +964,17 @@ fn write_private_task(directory: &Path, path: &Path, contents: &[u8]) -> Result<
     file.write_all(contents)?;
     file.as_file().sync_all()?;
     file.persist_noclobber(path).map_err(|error| error.error)?;
+    Ok(())
+}
+
+fn rewrite_private_task(directory: &Path, path: &Path, contents: &[u8]) -> Result<()> {
+    let mut file = tempfile::NamedTempFile::new_in(directory)?;
+    #[cfg(unix)]
+    file.as_file()
+        .set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    file.write_all(contents)?;
+    file.as_file().sync_all()?;
+    file.persist(path).map_err(|error| error.error)?;
     Ok(())
 }
 

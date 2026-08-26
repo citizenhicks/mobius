@@ -11,8 +11,9 @@ use uuid::Uuid;
 use super::manifest::MiddlewareManifest;
 use super::tools::{Catalog, labeled_tool_heading, render_tool_event};
 use super::{
-    Middleware, MiddlewareCommandContext, MiddlewareCommandOutput, ModelContext, PromptSection,
-    RuntimeContext, SessionStartContext, SessionStartSource,
+    ActiveCommandContext, ActiveSubmissionResult, Middleware, MiddlewareCommandContext,
+    MiddlewareCommandOutput, ModelContext, PromptSection, RuntimeContext, SessionStartContext,
+    SessionStartSource,
 };
 use crate::backend::checkpoint::{CheckpointStore, ContextRewriteReason};
 use crate::protocol::{
@@ -124,8 +125,24 @@ impl ScratchpadStore {
         }
     }
 
+    async fn lock_access(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.access.lock().await
+    }
+
+    fn try_lock_access(&self) -> Option<tokio::sync::MutexGuard<'_, ()>> {
+        self.access.try_lock().ok()
+    }
+
     async fn snapshot(&self, session_id: &str) -> Result<Snapshot> {
-        let _guard = self.access.lock().await;
+        let access = self.lock_access().await;
+        self.snapshot_locked(session_id, &access).await
+    }
+
+    async fn snapshot_locked(
+        &self,
+        session_id: &str,
+        _access: &tokio::sync::MutexGuard<'_, ()>,
+    ) -> Result<Snapshot> {
         Ok(Snapshot {
             session: self.load(Scope::Session, session_id).await?,
             global: self.load(Scope::Global, session_id).await?,
@@ -156,9 +173,19 @@ impl ScratchpadStore {
         self.promote_locked(session_id, entry, false).await
     }
 
+    #[cfg(test)]
     async fn promote_id(&self, session_id: &str, id: &str) -> Result<WriteOutcome> {
         validate_id(id).map_err(Error::Tool)?;
-        let _guard = self.access.lock().await;
+        let access = self.lock_access().await;
+        self.promote_id_locked(session_id, id, &access).await
+    }
+
+    async fn promote_id_locked(
+        &self,
+        session_id: &str,
+        id: &str,
+        _access: &tokio::sync::MutexGuard<'_, ()>,
+    ) -> Result<WriteOutcome> {
         let session = self.load(Scope::Session, session_id).await?;
         let entry = session
             .iter()
@@ -186,9 +213,13 @@ impl ScratchpadStore {
         Ok(outcome)
     }
 
-    async fn forget(&self, session_id: &str, scope: Scope, id: &str) -> Result<()> {
-        validate_id(id).map_err(Error::Tool)?;
-        let _guard = self.access.lock().await;
+    async fn forget_locked(
+        &self,
+        session_id: &str,
+        scope: Scope,
+        id: &str,
+        _access: &tokio::sync::MutexGuard<'_, ()>,
+    ) -> Result<()> {
         let mut entries = self.load(scope, session_id).await?;
         let previous_len = entries.len();
         entries.retain(|entry| entry.id != id);
@@ -198,10 +229,22 @@ impl ScratchpadStore {
         self.save(scope, session_id, &entries).await
     }
 
+    #[cfg(test)]
     async fn edit(&self, session_id: &str, scope: Scope, id: &str, note: &str) -> Result<()> {
         validate_id(id).map_err(Error::Tool)?;
+        let access = self.lock_access().await;
+        self.edit_locked(session_id, scope, id, note, &access).await
+    }
+
+    async fn edit_locked(
+        &self,
+        session_id: &str,
+        scope: Scope,
+        id: &str,
+        note: &str,
+        _access: &tokio::sync::MutexGuard<'_, ()>,
+    ) -> Result<()> {
         let note = canonical_note(note).map_err(Error::Tool)?;
-        let _guard = self.access.lock().await;
         let mut entries = self.load(scope, session_id).await?;
         if entries
             .iter()
@@ -268,6 +311,99 @@ impl Scratchpad {
     }
 }
 
+impl Scratchpad {
+    async fn execute_command_locked(
+        &self,
+        session_id: &str,
+        command: &str,
+        arguments: &str,
+        input: Option<&str>,
+        access: tokio::sync::MutexGuard<'_, ()>,
+    ) -> Result<MiddlewareCommandOutput> {
+        let _access = access;
+        if command != "scratchpad" {
+            return Err(Error::Unknown(format!("scratchpad command `{command}`")));
+        }
+        let mut arguments = arguments.split_whitespace();
+        let operation = arguments.next().unwrap_or("read");
+        if !self.agent_enabled && !matches!(operation, "read" | "refresh") {
+            return Err(Error::Tool("scratchpad is disabled for this chat".into()));
+        }
+        match operation {
+            "read" if arguments.next().is_none() && input.is_none() => {
+                let snapshot = self.store.snapshot_locked(session_id, &_access).await?;
+                Ok(MiddlewareCommandOutput::render(
+                    self.name(),
+                    format_snapshot(&snapshot),
+                    FrontendTone::Neutral,
+                ))
+            }
+            "refresh" if arguments.next().is_none() && input.is_none() => {
+                let snapshot = self.store.snapshot_locked(session_id, &_access).await?;
+                Ok(MiddlewareCommandOutput::events(widget_events(&snapshot)))
+            }
+            "promote" if input.is_none() => match (arguments.next(), arguments.next()) {
+                (Some(id), None) => {
+                    let outcome = self
+                        .store
+                        .promote_id_locked(session_id, id, &_access)
+                        .await?;
+                    let snapshot = self.store.snapshot_locked(session_id, &_access).await?;
+                    Ok(command_confirmation("promoted", outcome, &snapshot))
+                }
+                _ => Ok(usage()),
+            },
+            "edit" => match (arguments.next(), arguments.next(), arguments.next(), input) {
+                (Some(scope), Some(id), None, Some(note)) => {
+                    let Some(scope) = parse_scope(scope) else {
+                        return Ok(usage());
+                    };
+                    self.store
+                        .edit_locked(session_id, scope, id, note, &_access)
+                        .await?;
+                    let snapshot = self.store.snapshot_locked(session_id, &_access).await?;
+                    let mut events = widget_events(&snapshot);
+                    events.extend(
+                        MiddlewareCommandOutput::render(
+                            self.name(),
+                            text::MESSAGE_UPDATED,
+                            FrontendTone::Success,
+                        )
+                        .events,
+                    );
+                    Ok(MiddlewareCommandOutput::events(events))
+                }
+                _ => Ok(usage()),
+            },
+            "forget" if input.is_none() => {
+                match (arguments.next(), arguments.next(), arguments.next()) {
+                    (Some(scope), Some(id), None) => {
+                        let Some(scope) = parse_scope(scope) else {
+                            return Ok(usage());
+                        };
+                        self.store
+                            .forget_locked(session_id, scope, id, &_access)
+                            .await?;
+                        let snapshot = self.store.snapshot_locked(session_id, &_access).await?;
+                        let mut events = widget_events(&snapshot);
+                        events.extend(
+                            MiddlewareCommandOutput::render(
+                                self.name(),
+                                text::MESSAGE_FORGOT,
+                                FrontendTone::Success,
+                            )
+                            .events,
+                        );
+                        Ok(MiddlewareCommandOutput::events(events))
+                    }
+                    _ => Ok(usage()),
+                }
+            }
+            _ => Ok(usage()),
+        }
+    }
+}
+
 impl Middleware for Scratchpad {
     fn name(&self) -> &'static str {
         MANIFEST.id
@@ -304,7 +440,7 @@ impl Middleware for Scratchpad {
                 name: "scratchpad".into(),
                 arguments: text::COMMAND_ARGUMENTS.into(),
                 description: text::COMMAND_DESCRIPTION.into(),
-                requires_idle: true,
+                requires_idle: false,
             }],
             widgets: surface_widgets(&Snapshot::default()),
             references: Vec::new(),
@@ -356,89 +492,39 @@ impl Middleware for Scratchpad {
         context: MiddlewareCommandContext<'a>,
     ) -> BoxFuture<'a, Result<MiddlewareCommandOutput>> {
         Box::pin(async move {
-            if context.command != "scratchpad" {
-                return Err(Error::Unknown(format!(
-                    "scratchpad command `{}`",
-                    context.command
-                )));
-            }
-            let mut arguments = context.arguments.split_whitespace();
-            let operation = arguments.next().unwrap_or("read");
-            if !self.agent_enabled && !matches!(operation, "read" | "refresh") {
-                return Err(Error::Tool("scratchpad is disabled for this chat".into()));
-            }
-            match operation {
-                "read" if arguments.next().is_none() && context.input.is_none() => {
-                    let snapshot = self.store.snapshot(context.session_id).await?;
-                    Ok(MiddlewareCommandOutput::render(
-                        self.name(),
-                        format_snapshot(&snapshot),
-                        FrontendTone::Neutral,
-                    ))
-                }
-                "refresh" if arguments.next().is_none() && context.input.is_none() => {
-                    let snapshot = self.store.snapshot(context.session_id).await?;
-                    Ok(MiddlewareCommandOutput::events(widget_events(&snapshot)))
-                }
-                "promote" if context.input.is_none() => {
-                    match (arguments.next(), arguments.next()) {
-                        (Some(id), None) => {
-                            let outcome = self.store.promote_id(context.session_id, id).await?;
-                            let snapshot = self.store.snapshot(context.session_id).await?;
-                            Ok(command_confirmation("promoted", outcome, &snapshot))
-                        }
-                        _ => Ok(usage()),
-                    }
-                }
-                "edit" => match (
-                    arguments.next(),
-                    arguments.next(),
-                    arguments.next(),
+            let access = self.store.lock_access().await;
+            self.execute_command_locked(
+                context.session_id,
+                context.command,
+                context.arguments,
+                context.input,
+                access,
+            )
+            .await
+        })
+    }
+
+    fn active_command<'a>(
+        &'a self,
+        context: &'a mut ActiveCommandContext<'_>,
+    ) -> BoxFuture<'a, Result<Option<ActiveSubmissionResult>>> {
+        Box::pin(async move {
+            let Some(access) = self.store.try_lock_access() else {
+                return Ok(None);
+            };
+            let output = self
+                .execute_command_locked(
+                    context.session_id,
+                    context.command,
+                    context.arguments,
                     context.input,
-                ) {
-                    (Some(scope), Some(id), None, Some(note)) => {
-                        let Some(scope) = parse_scope(scope) else {
-                            return Ok(usage());
-                        };
-                        self.store.edit(context.session_id, scope, id, note).await?;
-                        let snapshot = self.store.snapshot(context.session_id).await?;
-                        let mut events = widget_events(&snapshot);
-                        events.extend(
-                            MiddlewareCommandOutput::render(
-                                self.name(),
-                                text::MESSAGE_UPDATED,
-                                FrontendTone::Success,
-                            )
-                            .events,
-                        );
-                        Ok(MiddlewareCommandOutput::events(events))
-                    }
-                    _ => Ok(usage()),
-                },
-                "forget" if context.input.is_none() => {
-                    match (arguments.next(), arguments.next(), arguments.next()) {
-                        (Some(scope), Some(id), None) => {
-                            let Some(scope) = parse_scope(scope) else {
-                                return Ok(usage());
-                            };
-                            self.store.forget(context.session_id, scope, id).await?;
-                            let snapshot = self.store.snapshot(context.session_id).await?;
-                            let mut events = widget_events(&snapshot);
-                            events.extend(
-                                MiddlewareCommandOutput::render(
-                                    self.name(),
-                                    text::MESSAGE_FORGOT,
-                                    FrontendTone::Success,
-                                )
-                                .events,
-                            );
-                            Ok(MiddlewareCommandOutput::events(events))
-                        }
-                        _ => Ok(usage()),
-                    }
-                }
-                _ => Ok(usage()),
-            }
+                    access,
+                )
+                .await?;
+            context
+                .events
+                .extend(output.events.into_iter().map(EventMsg::Frontend));
+            Ok(Some(ActiveSubmissionResult::Handled))
         })
     }
 

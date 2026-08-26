@@ -34,10 +34,10 @@ jobs:
           rustup default stable
           rustup component add clippy rustfmt
       - run: cargo fmt --all -- --check
-      - name: Check Rust 1.89
+      - name: Check Rust 1.98
         run: |
-          rustup toolchain install 1.89.0 --profile minimal
-          cargo +1.89.0 check --workspace --all-targets --all-features --locked
+          rustup toolchain install 1.98.0 --profile minimal
+          cargo +1.98.0 check --workspace --all-targets --all-features --locked
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Build documentation
         env:

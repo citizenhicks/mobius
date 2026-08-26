@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use chrono::Utc;
 use futures_util::StreamExt as _;
 use mobius::agent::validate_submission;
 use mobius::middleware::session_files::{PendingSessionFileWrite, SessionFileStore};
@@ -208,49 +209,42 @@ impl GatewayServer {
         let mut connections = JoinSet::new();
         let client_connections = Arc::new(ClientConnections::default());
         let (client_revocations, _) = broadcast::channel(MAX_CONNECTIONS);
-        let mut has_scheduled_tasks = self.cron.has_tasks()?;
+        let mut has_scheduled_tasks = self.cron.has_active_tasks(Utc::now().timestamp())?;
         let inactivity = tokio::time::sleep(inactivity_timeout);
         tokio::pin!(inactivity);
         let mut scheduler = tokio::time::interval(SCHEDULER_TICK);
         scheduler.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut scheduled_minute = None;
         tokio::pin!(shutdown);
         loop {
             tokio::select! {
                 biased;
                 () = &mut shutdown => return Ok(()),
                 _ = scheduler.tick() => {
-                    let scheduled = self.cron.has_tasks()?;
+                    let now = Utc::now().timestamp();
+                    let scheduled = self.cron.has_active_tasks(now)?;
                     if has_scheduled_tasks && !scheduled && connections.is_empty() {
                         inactivity.as_mut().reset(tokio::time::Instant::now() + inactivity_timeout);
                     }
                     has_scheduled_tasks = scheduled;
-                    let minute = CronStore::current_unix_minute();
-                    if scheduled_minute != Some(minute) {
-                        scheduled_minute = Some(minute);
-                        let due = self.cron.due_at_minute(minute)?;
-                        if !due.is_empty() {
-                            let host = self.host.clone();
-                            tokio::spawn(async move {
-                                for task in due {
-                                    let session_id = task.session_id;
-                                    let task_id = task.id;
-                                    if let Err(error) =
-                                        host.run_cron(session_id.clone(), task_id.clone()).await
-                                    {
-                                        eprintln!(
-                                            "cron run failed: session_id={session_id} task_id={task_id} code={} message={}",
-                                            error.code, error.message
-                                        );
-                                    }
+                    let due = self.cron.take_due(now)?;
+                    if !due.is_empty() {
+                        let host = self.host.clone();
+                        tokio::spawn(async move {
+                            for (task_id, run) in due {
+                                if let Err(error) = host.run_due_cron(task_id.clone(), run).await {
+                                    eprintln!(
+                                        "cron run failed: task_id={task_id} code={} message={}",
+                                        error.code, error.message
+                                    );
                                 }
-                            });
-                        }
+                            }
+                        });
                     }
                 }
                 Some(_) = connections.join_next(), if !connections.is_empty() => {
                     if connections.is_empty() {
-                        has_scheduled_tasks = self.cron.has_tasks()?;
+                        has_scheduled_tasks =
+                            self.cron.has_active_tasks(Utc::now().timestamp())?;
                         if !has_scheduled_tasks {
                             inactivity.as_mut().reset(tokio::time::Instant::now() + inactivity_timeout);
                         }
@@ -299,7 +293,7 @@ impl GatewayServer {
                     });
                 }
                 () = &mut inactivity, if connections.is_empty() && !has_scheduled_tasks => {
-                    has_scheduled_tasks = self.cron.has_tasks()?;
+                    has_scheduled_tasks = self.cron.has_active_tasks(Utc::now().timestamp())?;
                     if !has_scheduled_tasks {
                         return Ok(());
                     }

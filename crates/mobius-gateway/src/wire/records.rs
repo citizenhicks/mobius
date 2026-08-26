@@ -488,13 +488,45 @@ pub struct DailyUsage {
     pub usage: TokenUsage,
 }
 
-/// One frontend-safe scheduled task owned by its source session.
+/// One frontend-safe scheduled task.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CronTask {
     pub id: String,
-    pub session_id: String,
+    pub source_session_id: String,
     pub task: String,
-    pub schedule: String,
+    pub schedule: CronSchedule,
+    pub ends_at: Option<i64>,
+    pub enabled: bool,
+    pub finished: bool,
+    pub next_run_at: Option<i64>,
+}
+
+/// A user-selected scheduling rule.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CronSchedule {
+    pub kind: CronScheduleKind,
+    pub at: Option<i64>,
+    pub every_seconds: Option<u64>,
+    pub expression: Option<String>,
+    pub time_zone: Option<String>,
+}
+
+/// The supported scheduling rule families.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CronScheduleKind {
+    Once,
+    Interval,
+    Cron,
+}
+
+/// A read-only page of a scheduled run transcript.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CronRunPreview {
+    pub task: CronTask,
+    pub run: CronRun,
+    pub records: Vec<RecordedEvent>,
+    pub next_before_sequence: Option<u64>,
 }
 
 /// One completed or active invocation of a scheduled task.

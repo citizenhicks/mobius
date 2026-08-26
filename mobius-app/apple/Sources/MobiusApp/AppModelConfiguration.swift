@@ -537,68 +537,141 @@ extension AppModel {
         }
     }
 
-    func startCronSetup() {
-        guard canStartCronSetup, let sessionID = selectedSessionID else { return }
-        let task = cronTaskDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        let id = requestID("cron-setup")
+    func createCron(
+        sourceSessionID: String,
+        task: String,
+        schedule: CronSchedule,
+        endsAt: Int64?
+    ) {
+        let task = task.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard connectionState.isReady, !sourceSessionID.isEmpty, !task.isEmpty else { return }
+        let id = requestID("cron-create")
         cronRequestIDs.insert(id)
         cronError = nil
-        openChat(sessionID)
-        transmit(.startCronSetup(
+        transmit(.createCron(
             requestID: id,
-            sessionID: sessionID,
-            task: task.isEmpty ? nil : task
+            sourceSessionID: sourceSessionID,
+            task: task,
+            schedule: schedule,
+            endsAt: endsAt
         )) { [weak self] message in
             self?.cronRequestIDs.remove(id)
             self?.cronError = message
         }
     }
 
-    func rescheduleCron(_ task: CronTask, schedule: String) {
-        guard isSchedulingEnabled, let sessionID = selectedSessionID else { return }
-        let value = schedule.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else { return }
-        let request = requestID("cron-reschedule")
-        cronRequestIDs.insert(request)
-        transmit(.rescheduleCron(
-            requestID: request,
-            sessionID: sessionID,
+    func updateCron(
+        _ task: CronTask,
+        sourceSessionID: String,
+        instructions: String,
+        schedule: CronSchedule,
+        endsAt: Int64?,
+        enabled: Bool
+    ) {
+        let instructions = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard connectionState.isReady, !sourceSessionID.isEmpty, !instructions.isEmpty else { return }
+        let id = requestID("cron-update")
+        cronRequestIDs.insert(id)
+        cronError = nil
+        transmit(.updateCron(
+            requestID: id,
             id: task.id,
-            schedule: value
+            sourceSessionID: sourceSessionID,
+            task: instructions,
+            schedule: schedule,
+            endsAt: endsAt,
+            enabled: enabled
         )) { [weak self] message in
-            self?.cronRequestIDs.remove(request)
+            self?.cronRequestIDs.remove(id)
             self?.cronError = message
         }
     }
 
     func deleteCron(_ task: CronTask) {
-        guard isSchedulingEnabled, let sessionID = selectedSessionID else { return }
-        let request = requestID("cron-delete")
-        cronRequestIDs.insert(request)
-        transmit(.deleteCron(requestID: request, sessionID: sessionID, id: task.id)) { [weak self] message in
-            self?.cronRequestIDs.remove(request)
+        guard connectionState.isReady else { return }
+        let id = requestID("cron-delete")
+        cronRequestIDs.insert(id)
+        transmit(.deleteCron(requestID: id, id: task.id)) { [weak self] message in
+            self?.cronRequestIDs.remove(id)
             self?.cronError = message
         }
     }
 
     func runCron(_ task: CronTask) {
-        guard isSchedulingEnabled, let sessionID = selectedSessionID else { return }
-        let request = requestID("cron-run")
-        cronRequestIDs.insert(request)
-        transmit(.runCron(requestID: request, sessionID: sessionID, id: task.id)) { [weak self] message in
-            self?.cronRequestIDs.remove(request)
+        guard connectionState.isReady else { return }
+        let id = requestID("cron-run")
+        cronRequestIDs.insert(id)
+        transmit(.runCron(requestID: id, id: task.id)) { [weak self] message in
+            self?.cronRequestIDs.remove(id)
             self?.cronError = message
         }
     }
 
     func refreshCron() {
-        guard let sessionID = selectedSessionID else { return }
-        transmit(.listCron(requestID: requestID("cron-list"), sessionID: sessionID))
-        transmit(.listCronHistory(
-            requestID: requestID("cron-history"),
-            sessionID: sessionID,
-            id: nil
-        ))
+        guard connectionState.isReady else { return }
+        transmit(.listCron(requestID: requestID("cron-list")))
+        transmit(.listCronHistory(requestID: requestID("cron-history"), id: nil))
+    }
+
+    func presentCronRun(_ run: CronRun) {
+        presentedCronRun = run
+        cronRunPreview = nil
+        cronRunPreviewEntries = []
+        cronRunPreviewNextBeforeSequence = nil
+        cronRunPreviewError = nil
+        cronRunPreviewPollingTask?.cancel()
+        cronRunPreviewPollingTask = nil
+        loadCronRunPreview(runID: run.id)
+        cronRunPreviewPollingTask = Task { [weak self] in
+            // ponytail: poll only while a sheet is open; add push subscriptions if live viewers scale.
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                guard !Task.isCancelled, let self,
+                      self.presentedCronRun?.id == run.id
+                else { return }
+                guard (self.cronRunPreview?.run.status ?? run.status) == .running else { return }
+                self.loadCronRunPreview(runID: run.id)
+            }
+        }
+    }
+
+    func closeCronRunPreview() {
+        cronRunPreviewPollingTask?.cancel()
+        cronRunPreviewPollingTask = nil
+        cronRunPreviewRequestID = nil
+        cronRunPreviewRequestBeforeSequence = nil
+        presentedCronRun = nil
+        cronRunPreview = nil
+        cronRunPreviewEntries = []
+        cronRunPreviewNextBeforeSequence = nil
+        cronRunPreviewError = nil
+        isLoadingCronRunPreview = false
+    }
+
+    func loadEarlierCronRunPreview() {
+        guard let runID = presentedCronRun?.id,
+              let beforeSequence = cronRunPreviewNextBeforeSequence
+        else { return }
+        loadCronRunPreview(runID: runID, beforeSequence: beforeSequence)
+    }
+
+    private func loadCronRunPreview(runID: String, beforeSequence: UInt64? = nil) {
+        guard connectionState.isReady, cronRunPreviewRequestID == nil else { return }
+        let id = requestID("cron-preview")
+        cronRunPreviewRequestID = id
+        cronRunPreviewRequestBeforeSequence = beforeSequence
+        isLoadingCronRunPreview = cronRunPreview == nil || beforeSequence != nil
+        transmit(.getCronRunPreview(
+            requestID: id,
+            id: runID,
+            beforeSequence: beforeSequence
+        )) { [weak self] message in
+            guard let self, self.cronRunPreviewRequestID == id else { return }
+            self.cronRunPreviewRequestID = nil
+            self.cronRunPreviewRequestBeforeSequence = nil
+            self.isLoadingCronRunPreview = false
+            self.cronRunPreviewError = message
+        }
     }
 
     func setTheme(_ theme: ThemePreference) {

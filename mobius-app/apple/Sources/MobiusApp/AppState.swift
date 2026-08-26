@@ -326,10 +326,6 @@ enum ModifiedFilesScope: CaseIterable, Identifiable {
 extension SessionRecord {
     static let untitledDisplayTitle = "new conversation"
 
-    var isCronTask: Bool {
-        sessionContext.originLabel?.hasPrefix("cron · ") == true
-    }
-
     var explicitTitle: String? {
         guard let title = title?.trimmingCharacters(in: .whitespacesAndNewlines),
               !title.isEmpty

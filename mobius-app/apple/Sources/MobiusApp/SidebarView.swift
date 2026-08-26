@@ -216,7 +216,7 @@ struct SidebarView: View {
 
                 VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
                     navigationButton("Chats", destination: .chats)
-                    navigationButton("Cron", destination: .cron)
+                    navigationButton("Scheduled", destination: .cron)
                     navigationButton("Scratchpad", destination: .scratchpad)
                     ForEach(model.navigationWidgets.filter { $0.capability != "scratchpad" }) { widget in
                         contributionNavigationButton(widget)

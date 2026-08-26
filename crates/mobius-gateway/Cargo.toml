@@ -1,8 +1,8 @@
 [package]
 name = "mobius-gateway"
-version = "0.9.16"
+version = "0.9.17"
 edition = "2024"
-rust-version = "1.89"
+rust-version = "1.98"
 description = "Headless authenticated gateway for möbius frontends"
 license = "Apache-2.0"
 repository = "https://github.com/citizenhicks/mobius"
@@ -18,9 +18,10 @@ path = "src/lib.rs"
 [dependencies]
 base64 = "0.22"
 chrono = "0.4"
+chrono-tz = "0.10"
 croner = "3"
 futures-util = { version = "0.3", features = ["sink"] }
-mobius = { version = "=0.9.11", path = "../.." }
+mobius = { version = "=0.9.12", path = "../.." }
 qrcode = { version = "0.14.1", default-features = false }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pemfile = "2"

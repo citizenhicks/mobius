@@ -117,12 +117,27 @@ enum GatewayRequest: Encodable, Sendable {
     case createPairingCode(requestID: String)
     case startProviderLogin(requestID: String, provider: String)
     case getProfile(requestID: String)
-    case startCronSetup(requestID: String, sessionID: String, task: String?)
-    case listCron(requestID: String, sessionID: String)
-    case rescheduleCron(requestID: String, sessionID: String, id: String, schedule: String)
-    case deleteCron(requestID: String, sessionID: String, id: String)
-    case runCron(requestID: String, sessionID: String, id: String)
-    case listCronHistory(requestID: String, sessionID: String, id: String?)
+    case createCron(
+        requestID: String,
+        sourceSessionID: String,
+        task: String,
+        schedule: CronSchedule,
+        endsAt: Int64?
+    )
+    case listCron(requestID: String)
+    case updateCron(
+        requestID: String,
+        id: String,
+        sourceSessionID: String,
+        task: String,
+        schedule: CronSchedule,
+        endsAt: Int64?,
+        enabled: Bool
+    )
+    case deleteCron(requestID: String, id: String)
+    case runCron(requestID: String, id: String)
+    case listCronHistory(requestID: String, id: String?)
+    case getCronRunPreview(requestID: String, id: String, beforeSequence: UInt64?)
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: DynamicCodingKey.self)
@@ -347,36 +362,50 @@ enum GatewayRequest: Encodable, Sendable {
         case .getProfile(let requestID):
             try container.encode("get_profile", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
-        case .startCronSetup(let requestID, let sessionID, let task):
-            try container.encode("start_cron_setup", forKey: "type")
+        case .createCron(let requestID, let sourceSessionID, let task, let schedule, let endsAt):
+            try container.encode("create_cron", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
-            try container.encode(sessionID, forKey: "sessionId")
+            try container.encode(sourceSessionID, forKey: "sourceSessionId")
             try container.encode(task, forKey: "task")
-        case .listCron(let requestID, let sessionID):
+            try container.encode(schedule, forKey: "schedule")
+            try container.encode(endsAt, forKey: "endsAt")
+        case .listCron(let requestID):
             try container.encode("list_cron", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
-            try container.encode(sessionID, forKey: "sessionId")
-        case .rescheduleCron(let requestID, let sessionID, let id, let schedule):
-            try container.encode("reschedule_cron", forKey: "type")
+        case .updateCron(
+            let requestID,
+            let id,
+            let sourceSessionID,
+            let task,
+            let schedule,
+            let endsAt,
+            let enabled
+        ):
+            try container.encode("update_cron", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
-            try container.encode(sessionID, forKey: "sessionId")
             try container.encode(id, forKey: "id")
+            try container.encode(sourceSessionID, forKey: "sourceSessionId")
+            try container.encode(task, forKey: "task")
             try container.encode(schedule, forKey: "schedule")
-        case .deleteCron(let requestID, let sessionID, let id):
+            try container.encode(endsAt, forKey: "endsAt")
+            try container.encode(enabled, forKey: "enabled")
+        case .deleteCron(let requestID, let id):
             try container.encode("delete_cron", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
-            try container.encode(sessionID, forKey: "sessionId")
             try container.encode(id, forKey: "id")
-        case .runCron(let requestID, let sessionID, let id):
+        case .runCron(let requestID, let id):
             try container.encode("run_cron", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
-            try container.encode(sessionID, forKey: "sessionId")
             try container.encode(id, forKey: "id")
-        case .listCronHistory(let requestID, let sessionID, let id):
+        case .listCronHistory(let requestID, let id):
             try container.encode("list_cron_history", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
-            try container.encode(sessionID, forKey: "sessionId")
             try container.encode(id, forKey: "id")
+        case .getCronRunPreview(let requestID, let id, let beforeSequence):
+            try container.encode("get_cron_run_preview", forKey: "type")
+            try container.encode(requestID, forKey: "requestId")
+            try container.encode(id, forKey: "id")
+            try container.encode(beforeSequence, forKey: "beforeSequence")
         }
     }
 }
@@ -463,8 +492,9 @@ enum GatewayEnvelope: Decodable, Sendable {
         nextOffset: Int64?
     )
     case directories(requestID: String, listing: DirectoryListing)
-    case cronTasks(requestID: String, sessionID: String, tasks: [CronTask])
-    case cronHistory(requestID: String, sessionID: String, runs: [CronRun])
+    case cronTasks(requestID: String, tasks: [CronTask])
+    case cronHistory(requestID: String, runs: [CronRun])
+    case cronRunPreview(CronRunPreview)
     case error(GatewayFailure)
 
     init(from decoder: Decoder) throws {
@@ -653,15 +683,28 @@ enum GatewayEnvelope: Decodable, Sendable {
         case "cron_tasks":
             self = .cronTasks(
                 requestID: try container.decode(String.self, forKey: "requestId"),
-                sessionID: try container.decode(String.self, forKey: "sessionId"),
                 tasks: try container.decode([CronTask].self, forKey: "tasks")
             )
         case "cron_history":
             self = .cronHistory(
                 requestID: try container.decode(String.self, forKey: "requestId"),
-                sessionID: try container.decode(String.self, forKey: "sessionId"),
                 runs: try container.decode([CronRun].self, forKey: "runs")
             )
+        case "cron_run_preview":
+            let preview = try container.nestedContainer(
+                keyedBy: DynamicCodingKey.self,
+                forKey: DynamicCodingKey("preview")
+            )
+            self = .cronRunPreview(CronRunPreview(
+                requestID: try container.decode(String.self, forKey: "requestId"),
+                task: try preview.decode(CronTask.self, forKey: "task"),
+                run: try preview.decode(CronRun.self, forKey: "run"),
+                records: try preview.decode([RecordedEvent].self, forKey: "records"),
+                nextBeforeSequence: try preview.decodeIfPresent(
+                    UInt64.self,
+                    forKey: "nextBeforeSequence"
+                )
+            ))
         case "error":
             self = .error(try GatewayFailure(from: decoder))
         default:

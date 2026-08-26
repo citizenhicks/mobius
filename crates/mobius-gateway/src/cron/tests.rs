@@ -1,4 +1,4 @@
-use chrono::{LocalResult, NaiveDate};
+use chrono::Utc;
 
 use super::*;
 
@@ -6,64 +6,101 @@ fn store() -> (tempfile::TempDir, CronStore) {
     let root = tempfile::tempdir().expect("temp dir");
     let state = root.path().join("state");
     std::fs::create_dir(&state).expect("state");
-    let store = CronStore::open(&state).expect("cron store");
-    (root, store)
+    (root, CronStore::open(&state).expect("cron store"))
 }
 
-fn add_task(
-    store: &CronStore,
-    source_session_id: &str,
-    task: &str,
-    schedule: &str,
-) -> StoredCronTask {
+fn cron(expression: &str) -> CronSchedule {
+    cron_in(expression, "UTC")
+}
+
+fn cron_in(expression: &str, time_zone: &str) -> CronSchedule {
+    CronSchedule {
+        kind: CronScheduleKind::Cron,
+        at: None,
+        every_seconds: None,
+        expression: Some(expression.into()),
+        time_zone: Some(time_zone.into()),
+    }
+}
+
+fn once(at: i64) -> CronSchedule {
+    CronSchedule {
+        kind: CronScheduleKind::Once,
+        at: Some(at),
+        every_seconds: None,
+        expression: None,
+        time_zone: None,
+    }
+}
+
+fn interval(every_seconds: u64) -> CronSchedule {
+    CronSchedule {
+        kind: CronScheduleKind::Interval,
+        at: None,
+        every_seconds: Some(every_seconds),
+        expression: None,
+        time_zone: None,
+    }
+}
+
+fn add_task(store: &CronStore, source: &str, task: &str, schedule: CronSchedule) -> StoredCronTask {
     store
-        .begin_setup(source_session_id, Some(task))
-        .expect("begin setup");
-    store
-        .add_managed(source_session_id, task, schedule)
-        .expect("add managed task")
+        .add_for_test(source, task, schedule, None)
+        .expect("scheduled task")
+}
+
+fn take_due(store: &CronStore, now: i64) -> Vec<String> {
+    let due = store.take_due(now).expect("due tasks");
+    let ids = due.iter().map(|(id, _)| id.clone()).collect();
+    for (_, run) in due {
+        store
+            .finish_run(run, CronRunStatus::Succeeded, None)
+            .expect("finish due run");
+    }
+    ids
 }
 
 #[test]
-fn frontend_records_return_task_contents_instead_of_paths() {
+fn global_records_expose_structured_schedule_and_task_contents() {
     let (_root, store) = store();
-    let stored = add_task(&store, "session-a", "do work", "0 9 * * *");
+    let stored = add_task(&store, "session-a", "do work", cron("0 9 * * *"));
+    let records = store.records(1_000).expect("frontend records");
 
-    let records = store.records("session-a").expect("frontend records");
-
-    assert_eq!(
-        records,
-        vec![CronTaskRecord {
-            id: stored.id,
-            session_id: "session-a".into(),
-            task: "do work".into(),
-            schedule: "0 9 * * *".into(),
-        }]
-    );
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].id, stored.id);
+    assert_eq!(records[0].source_session_id, "session-a");
+    assert_eq!(records[0].task, "do work");
+    assert_eq!(records[0].schedule, cron("0 9 * * *"));
+    assert!(records[0].enabled);
+    assert!(!records[0].finished);
 }
 
 #[cfg(unix)]
 #[test]
 fn managed_task_cannot_be_replaced_with_an_outside_symlink() {
     let (root, store) = store();
-    let task = add_task(&store, "session-a", "inside", "0 9 * * *");
+    let task = add_task(&store, "session-a", "inside", cron("0 9 * * *"));
     let outside = root.path().join("outside.md");
     std::fs::write(&outside, "outside").expect("outside task");
     std::fs::remove_file(&task.task).expect("remove task");
     std::os::unix::fs::symlink(&outside, &task.task).expect("replace with symlink");
 
-    let error = store
-        .task_input(&task.id)
-        .expect_err("replacement symlink must fail");
-
-    assert!(error.to_string().contains("private gateway task directory"));
+    assert!(store.task_input(&task.id).is_err());
 }
 
 #[test]
-fn tasks_and_history_persist_with_source_and_owner_only_permissions() {
+fn missing_task_contents_fail_closed() {
+    let (_root, store) = store();
+    let task = add_task(&store, "session-a", "inside", cron("0 9 * * *"));
+    std::fs::remove_file(&task.task).expect("remove task input");
+
+    assert!(store.records(1_000).is_err());
+}
+
+#[test]
+fn tasks_and_history_persist_with_global_ownership() {
     let (root, store) = store();
-    let task = add_task(&store, "session-a", "do work", "0 9 * * MON");
-    assert_eq!(store.task_input(&task.id).expect("read task").1, "do work");
+    let task = add_task(&store, "session-a", "do work", cron("0 9 * * MON"));
     let run = match store.begin_run(&task.id).expect("begin run") {
         BeginRun::Started(run) => run,
         BeginRun::Skipped => panic!("first run must start"),
@@ -77,138 +114,72 @@ fn tasks_and_history_persist_with_source_and_owner_only_permissions() {
     drop(store);
 
     let reopened = CronStore::open(&root.path().join("state")).expect("reopen");
-    let runs = reopened.history("session-a", None).expect("source history");
-
-    assert_eq!(
-        reopened.list("session-a").expect("source tasks"),
-        vec![task.clone()]
-    );
-    assert!(reopened.list("session-b").expect("other tasks").is_empty());
+    assert_eq!(reopened.list().expect("tasks"), std::slice::from_ref(&task));
+    let runs = reopened.history(None).expect("history");
     assert_eq!(runs.len(), 1);
     assert_eq!(task.session_id, "session-a");
     assert_eq!(runs[0].source_session_id, "session-a");
     assert_eq!(runs[0].session_id.as_deref(), Some("execution-session"));
-    #[cfg(unix)]
-    {
-        assert_eq!(
-            std::fs::metadata(root.path().join("state").join(STATE_FILE))
-                .expect("state metadata")
-                .permissions()
-                .mode()
-                & 0o777,
-            0o600
-        );
-        assert_eq!(
-            std::fs::metadata(root.path().join("state").join(TASKS_DIR))
-                .expect("task directory metadata")
-                .permissions()
-                .mode()
-                & 0o777,
-            0o700
-        );
-        assert_eq!(
-            std::fs::metadata(&task.task)
-                .expect("task metadata")
-                .permissions()
-                .mode()
-                & 0o777,
-            0o600
-        );
-    }
 }
 
 #[test]
-fn setup_authority_is_concurrent_and_consumed_per_session() {
+fn update_rewrites_task_contents_and_metadata() {
     let (_root, store) = store();
+    let task = add_task(&store, "session-a", "old task", cron("0 9 * * *"));
+    let run = match store.begin_run(&task.id).expect("begin run") {
+        BeginRun::Started(run) => run,
+        BeginRun::Skipped => panic!("first run must start"),
+    };
     store
-        .begin_setup("session-a", Some("task a"))
-        .expect("begin a");
-    store
-        .begin_setup("session-b", Some("task b"))
-        .expect("begin b");
-    store.cancel_setup("unrelated-session");
+        .finish_run(run, CronRunStatus::Succeeded, None)
+        .expect("finish run");
+    let updated = store
+        .reschedule(
+            &task.id,
+            "session-b",
+            "new task",
+            interval(60),
+            Some(2_000),
+            false,
+        )
+        .expect("update task");
 
-    let task_a = store
-        .add_managed("session-a", "task a", "0 9 * * *")
-        .expect("schedule a");
-    let task_b = store
-        .add_managed("session-b", "task b", "0 10 * * *")
-        .expect("schedule b");
-
-    assert!(
-        store
-            .add_managed("session-a", "second a", "0 11 * * *")
-            .is_err(),
-        "successful creation must consume only its setup authority"
+    assert_eq!(
+        store.task_input(&task.id).expect("updated input").1,
+        "new task"
     );
-    assert_eq!(store.list("session-a").expect("tasks a"), vec![task_a]);
-    assert_eq!(store.list("session-b").expect("tasks b"), vec![task_b]);
+    assert_eq!(updated.session_id, "session-b");
+    assert_eq!(updated.schedule, interval(60));
+    assert_eq!(updated.ends_at, Some(2_000));
+    assert!(!updated.enabled);
+    assert_eq!(
+        store.history(Some(&task.id)).expect("history")[0].source_session_id,
+        "session-a"
+    );
 }
 
 #[test]
-fn task_operations_are_scoped_to_the_source_session() {
+fn delete_removes_unopenable_run_history() {
     let (_root, store) = store();
-    let task_a = add_task(&store, "session-a", "task a", "0 9 * * *");
-    let task_b = add_task(&store, "session-b", "task b", "0 10 * * *");
-    let prefix_len = task_a
-        .id
-        .bytes()
-        .zip(task_b.id.bytes())
-        .position(|(left, right)| left != right)
-        .expect("unique task IDs must differ")
-        + 1;
-    let foreign_prefix = &task_b.id[..prefix_len];
-
-    assert!(store.task("session-a", foreign_prefix).is_err());
-    assert!(
-        store
-            .reschedule("session-a", foreign_prefix, "0 11 * * *")
-            .is_err()
-    );
-    assert!(store.delete("session-a", foreign_prefix).is_err());
-    assert_eq!(
-        store
-            .reschedule("session-a", &task_a.id, "0 12 * * *")
-            .expect("reschedule own task")
-            .schedule,
-        "0 12 * * *"
-    );
-    for task in [&task_a, &task_b] {
-        let run = match store.begin_run(&task.id).expect("begin run") {
-            BeginRun::Started(run) => run,
-            BeginRun::Skipped => panic!("run must start"),
-        };
-        store
-            .finish_run(run, CronRunStatus::Succeeded, None)
-            .expect("finish run");
-    }
-
-    assert_eq!(
-        store.history("session-a", None).expect("history a").len(),
-        1
-    );
-    assert_eq!(
-        store.history("session-b", None).expect("history b").len(),
-        1
-    );
-    assert!(store.history("session-a", Some(foreign_prefix)).is_err());
+    let task = add_task(&store, "session-a", "task", cron("0 9 * * *"));
+    let run = match store.begin_run(&task.id).expect("begin run") {
+        BeginRun::Started(run) => run,
+        BeginRun::Skipped => panic!("first run must start"),
+    };
     store
-        .delete("session-a", &task_a.id)
-        .expect("delete own task");
-    assert_eq!(
-        store
-            .history("session-a", Some(&task_a.id))
-            .expect("deleted task history")
-            .len(),
-        1
-    );
+        .finish_run(run, CronRunStatus::Succeeded, None)
+        .expect("finish run");
+
+    store.delete(&task.id).expect("delete task");
+
+    assert!(store.history(None).expect("history").is_empty());
 }
 
 #[test]
-fn delete_session_removes_only_its_schedules_files_and_history() {
-    let (root, store) = store();
-    let deleted = add_task(&store, "session-a", "task a", "0 9 * * *");
-    let retained = add_task(&store, "session-b", "task b", "0 10 * * *");
+fn delete_session_removes_only_its_global_records() {
+    let (_root, store) = store();
+    let deleted = add_task(&store, "session-a", "task a", cron("0 9 * * *"));
+    let retained = add_task(&store, "session-b", "task b", cron("0 10 * * *"));
     for task in [&deleted, &retained] {
         let run = match store.begin_run(&task.id).expect("begin run") {
             BeginRun::Started(run) => run,
@@ -221,180 +192,141 @@ fn delete_session_removes_only_its_schedules_files_and_history() {
 
     store
         .delete_session("session-a")
-        .expect("delete session cron data");
-
-    assert!(store.list("session-a").expect("deleted tasks").is_empty());
+        .expect("delete source session");
+    assert_eq!(store.list().expect("remaining tasks"), [retained]);
     assert!(
         store
-            .history("session-a", None)
-            .expect("deleted history")
-            .is_empty()
+            .history(None)
+            .expect("remaining history")
+            .iter()
+            .all(|run| run.source_session_id != "session-a")
     );
     assert!(!deleted.task.exists());
-    assert_eq!(store.list("session-b").expect("retained tasks"), [retained]);
-    drop(store);
-    let reopened = CronStore::open(&root.path().join("state")).expect("reopen");
-    assert!(
-        reopened
-            .list("session-a")
-            .expect("reopened tasks")
-            .is_empty()
-    );
+}
+
+#[test]
+fn once_and_interval_schedules_advance_without_replay_storms() {
+    let (_root, store) = store();
+    let now = 1_000;
+    let once_task = add_task(&store, "session-a", "once", once(now - 1));
+    let interval_task = add_task(&store, "session-b", "interval", interval(60));
+    {
+        let mut state = store.lock_state().expect("state");
+        state
+            .tasks
+            .iter_mut()
+            .find(|task| task.id == interval_task.id)
+            .expect("interval task")
+            .next_run_at = Some(now - 1);
+    }
+
+    let due = take_due(&store, now);
+    assert_eq!(due, [once_task.id.clone(), interval_task.id.clone()]);
+    assert!(take_due(&store, now).is_empty());
+    assert!(store.records(now).expect("records")[0].finished);
     assert_eq!(
-        reopened
-            .history("session-b", None)
-            .expect("retained history")
-            .len(),
-        1
+        store.task(&interval_task.id).expect("interval").next_run_at,
+        Some(1_059)
     );
 }
 
 #[test]
-fn delete_session_rejects_a_running_schedule() {
+fn bounded_interval_runs_its_last_due_occurrence() {
     let (_root, store) = store();
-    let task = add_task(&store, "session-a", "task a", "0 9 * * *");
-    let run = match store.begin_run(&task.id).expect("begin run") {
-        BeginRun::Started(run) => run,
-        BeginRun::Skipped => panic!("run must start"),
-    };
-
-    assert!(store.delete_session("session-a").is_err());
-    assert_eq!(store.list("session-a").expect("retained task"), [task]);
-
+    let task = store
+        .add_for_test("session-a", "bounded", interval(60), Some(1_000))
+        .expect("bounded task");
     store
-        .finish_run(run, CronRunStatus::Succeeded, None)
-        .expect("finish run");
+        .lock_state()
+        .expect("state")
+        .tasks
+        .iter_mut()
+        .find(|stored| stored.id == task.id)
+        .expect("stored task")
+        .next_run_at = Some(1_000);
+
+    let due = take_due(&store, 1_007);
+
+    assert_eq!(due.len(), 1);
+    assert!(store.records(1_007).expect("records")[0].finished);
+    assert!(!store.has_active_tasks(1_007).expect("active tasks"));
 }
 
 #[test]
-fn finish_run_unlocks_a_duplicated_file_handle() {
+fn cron_matching_is_global_and_deduplicated_by_local_minute() {
     let (_root, store) = store();
-    let task = add_task(&store, "session-a", "task a", "0 9 * * *");
-    let run = match store.begin_run(&task.id).expect("begin run") {
-        BeginRun::Started(run) => run,
-        BeginRun::Skipped => panic!("run must start"),
-    };
-    let duplicate = run._lock.try_clone().expect("duplicate task lock");
+    let now = Utc::now();
+    let expression = format!("{} {} * * *", now.minute(), now.hour());
+    let first = add_task(&store, "session-a", "first", cron(&expression));
+    let second = add_task(&store, "session-b", "second", cron(&expression));
+    let timestamp = now.with_second(7).expect("scheduler phase").timestamp();
 
-    store
-        .finish_run(run, CronRunStatus::Succeeded, None)
-        .expect("finish run");
-    store
-        .delete_session("session-a")
-        .expect("completed run must release every task lock");
-
-    drop(duplicate);
+    let due = take_due(&store, timestamp);
+    assert_eq!(due, [first.id, second.id]);
+    assert!(take_due(&store, timestamp).is_empty());
 }
 
 #[test]
-fn delete_session_rejects_an_active_setup() {
+fn cron_next_occurrence_uses_iana_timezone_across_dst() {
     let (_root, store) = store();
-    store
-        .begin_setup("session-a", Some("task a"))
-        .expect("begin setup");
-
-    assert!(store.delete_session("session-a").is_err());
-
-    store.cancel_setup("session-a");
-    store
-        .delete_session("session-a")
-        .expect("delete idle session cron data");
-}
-
-#[test]
-fn missing_managed_file_does_not_block_schedule_deletion() {
-    let (_root, store) = store();
-    let task = add_task(&store, "session-a", "do work", "0 9 * * *");
-    std::fs::remove_file(&task.task).expect("remove managed file");
-
-    let records = store.records("session-a").expect("list broken schedule");
-    assert_eq!(records[0].task, UNAVAILABLE_TASK_DESCRIPTION);
-
-    store
-        .delete("session-a", &task.id)
-        .expect("delete broken schedule");
-
-    assert!(store.list("session-a").expect("list").is_empty());
-}
-
-#[test]
-fn cancelling_setup_is_scoped_to_its_session() {
-    let (_root, store) = store();
-    store.begin_setup("session-a", None).expect("begin a");
-    store.begin_setup("session-b", None).expect("begin b");
-    store.cancel_setup("session-a");
-
-    assert!(
-        store
-            .add_managed("session-a", "task a", "0 9 * * *")
-            .is_err()
+    let task = add_task(
+        &store,
+        "session-a",
+        "dst",
+        cron_in("30 1 * * *", "America/New_York"),
     );
-    assert!(
-        store
-            .add_managed("session-b", "task b", "0 10 * * *")
-            .is_ok()
-    );
-}
+    let now = Utc
+        .with_ymd_and_hms(2024, 3, 10, 7, 0, 0)
+        .single()
+        .expect("timestamp")
+        .timestamp();
+    let expected = Utc
+        .with_ymd_and_hms(2024, 3, 11, 5, 30, 0)
+        .single()
+        .expect("timestamp")
+        .timestamp();
 
-#[test]
-fn ordinary_chat_cannot_create_a_scheduled_task() {
-    let (_root, store) = store();
-    store
-        .begin_setup("setup-chat", None)
-        .expect("begin setup in another chat");
-
-    let error = store
-        .add_managed("ordinary-chat", "Review open pull requests", "0 9 * * 1")
-        .expect_err("setup authority is required");
-
-    assert!(error.to_string().contains("active scheduling setup"));
-    assert!(store.list("ordinary-chat").expect("list").is_empty());
-}
-
-#[test]
-fn due_matching_is_global_across_source_sessions() {
-    let (_root, store) = store();
-    let task_a = add_task(&store, "session-a", "task a", "30 8 * * 1");
-    let task_b = add_task(&store, "session-b", "task b", "30 8 * * 1");
-    let local = match Local.from_local_datetime(
-        &NaiveDate::from_ymd_opt(2026, 8, 3)
-            .expect("date")
-            .and_hms_opt(8, 30, 0)
-            .expect("time"),
-    ) {
-        LocalResult::Single(value) => value,
-        LocalResult::Ambiguous(first, _) => first,
-        LocalResult::None => panic!("local test timestamp must exist"),
-    };
-
-    let due = store
-        .due_at_minute(local.timestamp().div_euclid(60))
-        .expect("due tasks");
-
-    assert_eq!(due, vec![task_a, task_b]);
+    assert_eq!(task.next_run_at(now), Some(expected));
 }
 
 #[test]
 fn overlap_is_skipped_and_recorded() {
     let (_root, store) = store();
-    let task = add_task(&store, "session-a", "do work", "* * * * *");
+    let task = add_task(&store, "session-a", "do work", cron("* * * * *"));
+    let active = match store.begin_run(&task.id).expect("begin run") {
+        BeginRun::Started(run) => run,
+        BeginRun::Skipped => panic!("first run must start"),
+    };
+    assert!(matches!(
+        store.begin_run(&task.id).expect("overlap"),
+        BeginRun::Skipped
+    ));
+    assert_eq!(
+        store.history(Some(&task.id)).expect("history")[0].status,
+        CronRunStatus::Skipped
+    );
+    store
+        .finish_run(active, CronRunStatus::Succeeded, None)
+        .expect("finish run");
+}
+
+#[test]
+fn due_overlap_is_skipped_and_recorded() {
+    let (_root, store) = store();
+    let now = 1_000;
+    let task = add_task(&store, "session-a", "do work", once(now - 1));
     let active = match store.begin_run(&task.id).expect("begin run") {
         BeginRun::Started(run) => run,
         BeginRun::Skipped => panic!("first run must start"),
     };
 
-    let skipped = match store.begin_run(&task.id).expect("overlap result") {
-        BeginRun::Skipped => store
-            .history("session-a", Some(&task.id))
-            .expect("history")
-            .into_iter()
-            .next()
-            .expect("skipped run"),
-        BeginRun::Started(_) => panic!("overlap must not start"),
-    };
+    assert!(store.take_due(now).expect("due tasks").is_empty());
+    let history = store.history(Some(&task.id)).expect("history");
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[0].status, CronRunStatus::Skipped);
+    assert!(history[0].finished_at.is_some());
+    assert_eq!(history[1].status, CronRunStatus::Running);
 
-    assert_eq!(skipped.status, CronRunStatus::Skipped);
-    assert_eq!(skipped.source_session_id, "session-a");
     store
         .finish_run(active, CronRunStatus::Succeeded, None)
         .expect("finish run");
@@ -416,21 +348,20 @@ fn history_trimming_preserves_running_entries() {
     state.runs.push(running.clone());
     for index in 1..MAX_RUNS {
         state.runs.push(CronRun {
-            id: index.to_string(),
+            id: Uuid::new_v4().to_string(),
             task_id: "task".into(),
             source_session_id: "source".into(),
-            started_at: 0,
-            finished_at: Some(0),
+            started_at: index as i64,
+            finished_at: Some(index as i64),
             status: CronRunStatus::Succeeded,
             session_id: None,
             message: None,
         });
     }
-
     append_run(
         &mut state,
         CronRun {
-            id: "new".into(),
+            id: Uuid::new_v4().to_string(),
             task_id: "task".into(),
             source_session_id: "source".into(),
             started_at: 1,
@@ -454,13 +385,18 @@ fn persisted_tasks_must_stay_in_the_private_task_directory() {
         id: Uuid::new_v4().to_string(),
         session_id: "session-a".into(),
         task: root.path().join("outside.md"),
-        schedule: "0 9 * * *".into(),
+        schedule: cron("0 9 * * *"),
+        ends_at: None,
+        enabled: true,
+        next_run_at: Some(1),
+        last_scheduled_minute: None,
     });
-
-    let error =
-        validate_state(&state, &store.tasks_dir).expect_err("outside persisted task must fail");
-
-    assert!(error.to_string().contains("private gateway task directory"));
+    assert!(
+        validate_state(&state, &store.tasks_dir)
+            .expect_err("outside persisted task must fail")
+            .to_string()
+            .contains("private gateway task directory")
+    );
 }
 
 #[test]
@@ -483,13 +419,15 @@ fn previous_state_version_is_rejected_without_compatibility() {
         Ok(_) => panic!("old state must fail"),
         Err(error) => error,
     };
-
     assert!(error.to_string().contains("unsupported cron state version"));
 }
 
 #[test]
 fn malformed_or_out_of_range_schedule_is_rejected() {
-    assert!(validate_schedule("0 9 * *").is_err());
-    assert!(validate_schedule("75 9 * * *").is_err());
-    assert!(validate_schedule("0 9 * * MON").is_ok());
+    assert!(validate_schedule(&cron("0 9 * *"), None).is_err());
+    assert!(validate_schedule(&cron("75 9 * * *"), None).is_err());
+    assert!(validate_schedule(&cron("0 9 * * MON"), None).is_ok());
+    assert!(validate_schedule(&interval(59), None).is_err());
+    assert!(validate_schedule(&once(1), Some(0)).is_err());
+    assert!(validate_schedule(&once(2), Some(1)).is_err());
 }

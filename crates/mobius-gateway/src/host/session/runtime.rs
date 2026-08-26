@@ -138,7 +138,6 @@ impl HostState {
         for waiter in self.idle_waiters.drain(..) {
             let _ = waiter.send(());
         }
-        self.cron.cancel_setup(&self.running.session_id);
         shutdown_agent(self.running).await;
         self.alive.store(false, Ordering::Release);
     }
@@ -202,12 +201,6 @@ impl HostState {
                     result
                 }
                 .await;
-                let _ = reply.send(result);
-            }
-            HostCommand::StartCronSetup { task, reply } => {
-                let result = self
-                    .begin_session_mutation()
-                    .and_then(|_mutation| self.start_cron_setup(task));
                 let _ = reply.send(result);
             }
             HostCommand::Configure {
@@ -535,36 +528,6 @@ impl HostState {
         Ok(())
     }
 
-    pub(super) fn start_cron_setup(
-        &mut self,
-        task: Option<String>,
-    ) -> std::result::Result<(), Rejection> {
-        self.require_idle()?;
-        if !self.spec.agent.config.middleware.enabled("cron") {
-            return Err(Rejection {
-                code: "capability_disabled",
-                message: "scheduling is disabled for this chat".into(),
-                fatal: false,
-            });
-        }
-        let input = self
-            .cron
-            .begin_setup(&self.running.session_id, task.as_deref())
-            .map_err(invalid_cron)?;
-        let submission = Submission {
-            id: Uuid::new_v4().to_string(),
-            op: Op::UserInput {
-                text: input,
-                attachments: Vec::new(),
-            },
-        };
-        if let Err(rejection) = self.submit(submission, false) {
-            self.cron.cancel_setup(&self.running.session_id);
-            return Err(rejection);
-        }
-        Ok(())
-    }
-
     pub(super) async fn configure(
         &mut self,
         expected_revision: u64,
@@ -666,8 +629,6 @@ impl HostState {
             &next,
             &self.store,
             Arc::clone(&self.credentials),
-            Arc::clone(&self.cron),
-            Arc::clone(&self.cron_commands),
             Arc::clone(&self.checkpoints),
             self.scratchpad.clone(),
             self.session_files.clone(),
@@ -686,8 +647,6 @@ impl HostState {
                     &old_spec,
                     &self.store,
                     Arc::clone(&self.credentials),
-                    Arc::clone(&self.cron),
-                    Arc::clone(&self.cron_commands),
                     Arc::clone(&self.checkpoints),
                     self.scratchpad.clone(),
                     self.session_files.clone(),
@@ -800,8 +759,6 @@ impl HostState {
             &self.spec,
             &self.store,
             Arc::clone(&self.credentials),
-            Arc::clone(&self.cron),
-            Arc::clone(&self.cron_commands),
             Arc::clone(&self.checkpoints),
             self.scratchpad.clone(),
             self.session_files.clone(),

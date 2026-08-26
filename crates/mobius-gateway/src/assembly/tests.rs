@@ -5,10 +5,6 @@ use crate::provider_catalog::*;
 
 use super::*;
 
-fn cron_command_handler() -> CronCommandHandler {
-    Arc::new(|_, _| Box::pin(async { Ok(mobius::middleware::cron::CronCommandResult::None) }))
-}
-
 #[test]
 fn configured_provider_status_requires_the_selected_credential_endpoint() {
     let root = tempfile::tempdir().expect("root");
@@ -369,7 +365,6 @@ async fn updating_the_chat_recipe_preserves_capability_metadata() {
         .expect("register provider");
     let credentials =
         Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
-    let cron = Arc::new(CronStore::open(store.state_dir()).expect("cron"));
     let checkpoints: Arc<dyn CheckpointStore> =
         Arc::new(SqliteCheckpoint::new(store.checkpoints_path()).expect("checkpoints"));
     let original = ChatSpec::new(
@@ -395,7 +390,6 @@ async fn updating_the_chat_recipe_preserves_capability_metadata() {
     let (reusable_router, _) = unavailable_models(&gateway, &original.agent.config.provider)
         .expect("unavailable model router");
     let mut composition = original.agent.config.clone();
-    composition.middleware.set_enabled("cron", false);
     composition.middleware.set_enabled("scratchpad", false);
     composition.system_prompt = "updated instructions".into();
     let updated = original
@@ -408,8 +402,6 @@ async fn updating_the_chat_recipe_preserves_capability_metadata() {
         &updated,
         &store,
         credentials,
-        cron,
-        cron_command_handler(),
         Arc::clone(&checkpoints),
         ScratchpadStore::new(Arc::clone(&checkpoints)),
         SessionFileStore::new(store.state_dir()),
@@ -456,7 +448,6 @@ async fn updating_the_chat_recipe_preserves_capability_metadata() {
         serde_json::json!({"identity": "preserved"})
     );
     assert_eq!(saved.agent.revision, 2);
-    assert!(!saved.agent.config.middleware.enabled("cron"));
     assert_eq!(saved.agent.config.system_prompt, "updated instructions");
 }
 
@@ -543,7 +534,6 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
         Arc::new(SqliteCheckpoint::new(store.checkpoints_path()).expect("checkpoints"));
     let scratchpad = ScratchpadStore::new(Arc::clone(&checkpoints));
     let session_files = SessionFileStore::new(store.state_dir());
-    let cron = Arc::new(CronStore::open(store.state_dir()).expect("cron"));
     let backend: Arc<dyn SandboxBackend> =
         Arc::new(LocalSandbox::new(&workspace).expect("sandbox"));
     let discover = |resolved: &ResolvedExtensions| {
@@ -563,8 +553,6 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
         &settings,
         &workspace,
         Arc::clone(&gateway),
-        Arc::clone(&cron),
-        cron_command_handler(),
         scratchpad.clone(),
         session_files.clone(),
         Arc::clone(&backend),
@@ -576,8 +564,6 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
         &settings,
         &workspace,
         gateway,
-        cron,
-        cron_command_handler(),
         scratchpad,
         session_files,
         backend,

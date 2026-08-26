@@ -230,8 +230,13 @@ final class AppModel {
     var lastUsage = TokenUsage()
     var cronTasks: [CronTask] = []
     var cronRuns: [CronRun] = []
-    var cronTaskDraft = ""
     var cronError: String?
+    var presentedCronRun: CronRun?
+    var cronRunPreview: CronRunPreview?
+    var cronRunPreviewEntries: [TranscriptEntry] = []
+    var cronRunPreviewNextBeforeSequence: UInt64?
+    var isLoadingCronRunPreview = false
+    var cronRunPreviewError: String?
     var workspaceError: String?
     var isChangingWorkspace = false
     var showsWorkspaceBrowser = false
@@ -367,6 +372,9 @@ final class AppModel {
     var pendingProviderRemoval: (requestID: String, instance: String)?
     @ObservationIgnored var extensionRequestID: String?
     @ObservationIgnored var cronRequestIDs: Set<String> = []
+    @ObservationIgnored var cronRunPreviewRequestID: String?
+    @ObservationIgnored var cronRunPreviewRequestBeforeSequence: UInt64?
+    @ObservationIgnored var cronRunPreviewPollingTask: Task<Void, Never>?
     @ObservationIgnored var toastDismissTask: Task<Void, Never>?
     @ObservationIgnored var isChatVisible = false
     @ObservationIgnored var latestSequence: UInt64?
@@ -515,14 +523,6 @@ final class AppModel {
         }
         return feature.required
             || snapshot.config.middleware.enabled.contains(capability)
-    }
-
-    var isSchedulingEnabled: Bool { isCapabilityEnabled("cron") }
-
-    var canStartCronSetup: Bool {
-        canModifySelectedSession
-            && selectedSessionID != nil
-            && isSchedulingEnabled
     }
 
     var isSwitchingGitBranch: Bool { gitBranchRequestID != nil }

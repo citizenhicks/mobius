@@ -33,7 +33,6 @@ impl HostState {
             EventMsg::TurnAborted(_) => {
                 self.pending_turns = self.pending_turns.saturating_sub(1);
                 self.approval_active = false;
-                self.cron.cancel_setup(&self.running.session_id);
             }
             _ => {}
         }

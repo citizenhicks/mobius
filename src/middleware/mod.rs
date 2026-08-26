@@ -31,7 +31,6 @@ pub mod attachments;
 pub mod compaction;
 mod context;
 pub mod context_offloading;
-pub mod cron;
 pub mod extensions;
 pub mod instructions;
 pub mod manifest;

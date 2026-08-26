@@ -172,7 +172,7 @@ extension GatewayWireTests {
         XCTAssertEqual(sessions.first?.pinned, true)
     }
 
-    func testScopedGitAndCronResponsesDecodeV28Fields() throws {
+    func testGlobalCronResponsesDecodeV48Fields() throws {
         let gitDiff = try decodeEnvelope(#"{"version":27,"type":"git_diff","request_id":"diff-1","session_id":"chat-1","scope":"unstaged","diff":"diff --git a/a b/a"}"#)
         guard case .gitDiff(let diffRequestID, let diffSessionID, let scope, let diff) = gitDiff else {
             return XCTFail("Expected git diff envelope")
@@ -182,28 +182,41 @@ extension GatewayWireTests {
         XCTAssertEqual(scope, .unstaged)
         XCTAssertTrue(diff.hasPrefix("diff --git"))
 
-        let tasks = try decodeEnvelope(#"{"version":27,"type":"cron_tasks","request_id":"cron-1","session_id":"chat-1","tasks":[{"id":"task-1","session_id":"chat-1","task":"Review open pull requests","schedule":"0 9 * * *"}]}"#)
-        guard case .cronTasks(let taskRequestID, let taskSessionID, let cronTasks) = tasks else {
+        let tasks = try decodeEnvelope(#"{"version":27,"type":"cron_tasks","request_id":"cron-1","tasks":[{"id":"task-1","source_session_id":"chat-1","task":"Review open pull requests","schedule":{"kind":"interval","at":null,"every_seconds":120,"expression":null},"ends_at":null,"enabled":true,"finished":false,"next_run_at":500}]}"#)
+        guard case .cronTasks(let taskRequestID, let cronTasks) = tasks else {
             return XCTFail("Expected cron tasks envelope")
         }
         XCTAssertEqual(taskRequestID, "cron-1")
-        XCTAssertEqual(taskSessionID, "chat-1")
-        XCTAssertEqual(cronTasks.first?.sessionId, "chat-1")
+        XCTAssertEqual(cronTasks.first?.sourceSessionId, "chat-1")
         XCTAssertEqual(cronTasks.first?.task, "Review open pull requests")
+        XCTAssertEqual(cronTasks.first?.schedule.everySeconds, 120)
+        XCTAssertEqual(cronTasks.first?.nextRunAt, 500)
 
-        let history = try decodeEnvelope(#"{"version":27,"type":"cron_history","request_id":"history-1","session_id":"chat-1","runs":[{"id":"run-1","task_id":"task-1","source_session_id":"chat-1","started_at":100,"finished_at":110,"status":"succeeded","session_id":"chat-2","message":null}]}"#)
-        guard case .cronHistory(let historyRequestID, let historySessionID, let runs) = history else {
+        let history = try decodeEnvelope(#"{"version":27,"type":"cron_history","request_id":"history-1","runs":[{"id":"run-1","task_id":"task-1","source_session_id":"chat-1","started_at":100,"finished_at":110,"status":"succeeded","session_id":"chat-2","message":null}]}"#)
+        guard case .cronHistory(let historyRequestID, let runs) = history else {
             return XCTFail("Expected cron history envelope")
         }
         XCTAssertEqual(historyRequestID, "history-1")
-        XCTAssertEqual(historySessionID, "chat-1")
         XCTAssertEqual(runs.first?.sourceSessionId, "chat-1")
         XCTAssertEqual(runs.first?.status, .succeeded)
     }
 
+    func testCronRunPreviewDecodesNestedPayload() throws {
+        let envelope = try decodeEnvelope(#"{"version":27,"type":"cron_run_preview","request_id":"preview-1","preview":{"task":{"id":"task-1","source_session_id":"chat-1","task":"Review open pull requests","schedule":{"kind":"interval","at":null,"every_seconds":120,"expression":null,"time_zone":null},"ends_at":null,"enabled":true,"finished":false,"next_run_at":500},"run":{"id":"run-1","task_id":"task-1","source_session_id":"chat-1","started_at":100,"finished_at":null,"status":"running","session_id":"chat-2","message":null},"records":[],"next_before_sequence":42}}"#)
+        guard case .cronRunPreview(let preview) = envelope else {
+            return XCTFail("Expected cron run preview envelope")
+        }
+
+        XCTAssertEqual(preview.requestID, "preview-1")
+        XCTAssertEqual(preview.task.id, "task-1")
+        XCTAssertEqual(preview.run.id, "run-1")
+        XCTAssertEqual(preview.records.count, 0)
+        XCTAssertEqual(preview.nextBeforeSequence, 42)
+    }
+
     func testUnknownCronRunStatusIsRejected() {
         XCTAssertThrowsError(try decodeEnvelope(
-            #"{"version":27,"type":"cron_history","request_id":"history-1","session_id":"chat-1","runs":[{"id":"run-1","task_id":"task-1","source_session_id":"chat-1","started_at":100,"finished_at":110,"status":"future_status","session_id":null,"message":null}]}"#
+            #"{"version":27,"type":"cron_history","request_id":"history-1","runs":[{"id":"run-1","task_id":"task-1","source_session_id":"chat-1","started_at":100,"finished_at":110,"status":"future_status","session_id":null,"message":null}]}"#
         ))
     }
 

@@ -507,8 +507,19 @@ async fn scheduled_task_disables_inactivity_shutdown() {
     ));
     tokio::task::yield_now().await;
     tokio::time::advance(Duration::from_millis(25)).await;
-    cron.add_for_test("source-chat", "do work", "0 9 * * *")
-        .expect("schedule task");
+    cron.add_for_test(
+        "source-chat",
+        "do work",
+        crate::wire::CronSchedule {
+            kind: crate::wire::CronScheduleKind::Cron,
+            at: None,
+            every_seconds: None,
+            expression: Some("0 9 * * *".into()),
+            time_zone: Some("UTC".into()),
+        },
+        None,
+    )
+    .expect("schedule task");
 
     tokio::time::advance(Duration::from_millis(75)).await;
     assert!(

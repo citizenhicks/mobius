@@ -60,12 +60,7 @@ extension GatewayWireTests {
                 sessionID: "chat-1",
                 beforeSequence: 40
             ), "get_session_history"),
-            (.startCronSetup(requestID: "setup-1", sessionID: "chat-1", task: "Review nightly"), "start_cron_setup"),
-            (.listCron(requestID: "cron-1", sessionID: "chat-1"), "list_cron"),
-            (.rescheduleCron(requestID: "cron-2", sessionID: "chat-1", id: "task-1", schedule: "0 9 * * *"), "reschedule_cron"),
-            (.deleteCron(requestID: "cron-3", sessionID: "chat-1", id: "task-1"), "delete_cron"),
-            (.runCron(requestID: "cron-4", sessionID: "chat-1", id: "task-1"), "run_cron"),
-            (.listCronHistory(requestID: "cron-5", sessionID: "chat-1", id: nil), "list_cron_history")
+
         ]
 
         for (request, type) in requests {
@@ -85,7 +80,7 @@ extension GatewayWireTests {
         XCTAssertEqual(encodedConfig["max_model_steps"] as? Int, 256)
         let middleware = try XCTUnwrap(encodedConfig["middleware"] as? [String: Any])
         let enabled = try XCTUnwrap(middleware["enabled"] as? [String])
-        XCTAssertEqual(Set(enabled), ["cron", "extensions", "subagents"])
+        XCTAssertEqual(Set(enabled), ["extensions", "subagents"])
         XCTAssertEqual(encodedConfig["extensions"] as? [String], ["plugin:ponytail"])
         let settings = try XCTUnwrap(middleware["settings"] as? [String: Any])
         let subagents = try XCTUnwrap(settings["subagents"] as? [String: Any])
@@ -98,18 +93,48 @@ extension GatewayWireTests {
         ))
         XCTAssertEqual(branch["branch"] as? String, "feature")
 
-        let cronSetup = try requestObject(.startCronSetup(
-            requestID: "setup-2",
-            sessionID: "chat-1",
-            task: nil
+        let schedule = CronSchedule.interval(seconds: 3_700)
+        let create = try requestObject(.createCron(
+            requestID: "cron-1",
+            sourceSessionID: "chat-1",
+            task: "Review nightly",
+            schedule: schedule,
+            endsAt: nil
         ))
-        XCTAssertTrue(cronSetup["task"] is NSNull)
-        let history = try requestObject(.listCronHistory(
-            requestID: "cron-6",
-            sessionID: "chat-1",
-            id: nil
+        XCTAssertEqual(create["type"] as? String, "create_cron")
+        XCTAssertEqual(create["source_session_id"] as? String, "chat-1")
+        XCTAssertEqual((create["schedule"] as? [String: Any])?["kind"] as? String, "interval")
+        XCTAssertEqual((create["schedule"] as? [String: Any])?["every_seconds"] as? Int, 3_700)
+
+        let update = try requestObject(.updateCron(
+            requestID: "cron-2",
+            id: "task-1",
+            sourceSessionID: "chat-1",
+            task: "Review nightly",
+            schedule: .cron("0 9 * * *", timeZone: "America/New_York"),
+            endsAt: 500,
+            enabled: false
         ))
+        XCTAssertEqual(update["type"] as? String, "update_cron")
+        XCTAssertEqual(update["id"] as? String, "task-1")
+        XCTAssertEqual(update["enabled"] as? Bool, false)
+        XCTAssertEqual(
+            (update["schedule"] as? [String: Any])?["time_zone"] as? String,
+            "America/New_York"
+        )
+
+        let list = try requestObject(.listCron(requestID: "cron-3"))
+        XCTAssertNil(list["session_id"])
+        let history = try requestObject(.listCronHistory(requestID: "cron-4", id: nil))
         XCTAssertTrue(history["id"] is NSNull)
+
+        let preview = try requestObject(.getCronRunPreview(
+            requestID: "cron-5",
+            id: "run-1",
+            beforeSequence: 12
+        ))
+        XCTAssertEqual(preview["type"] as? String, "get_cron_run_preview")
+        XCTAssertEqual(preview["before_sequence"] as? Int, 12)
     }
 
     func testSessionFileRequestsMatchV28() throws {

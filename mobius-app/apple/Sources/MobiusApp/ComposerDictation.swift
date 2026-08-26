@@ -6,6 +6,15 @@ import Speech
 @MainActor
 @Observable
 final class ComposerDictation {
+    private static let waveformSampleCount = 32
+    nonisolated static var requestedLocales: [Locale] {
+        [
+            Locale(identifier: "en_US"),
+            Locale(identifier: "fr_FR"),
+            Locale.current,
+        ]
+    }
+
     enum State: Equatable {
         case idle
         case preparing
@@ -14,20 +23,21 @@ final class ComposerDictation {
     }
 
     private(set) var state = State.idle
+    private(set) var audioLevels = Array(repeating: 0.0, count: waveformSampleCount)
 
     @ObservationIgnored private var audioEngine: AVAudioEngine?
     @ObservationIgnored private var audioContinuation: AsyncStream<AVAudioPCMBuffer>.Continuation?
     @ObservationIgnored private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
     @ObservationIgnored private var analyzer: SpeechAnalyzer?
     @ObservationIgnored private var feedTask: Task<Void, Never>?
-    @ObservationIgnored private var recognitionTask: Task<Void, Never>?
+    @ObservationIgnored private var recognitionTasks: [Task<Void, Never>] = []
     @ObservationIgnored private var workerFailure: ComposerDictationError?
     @ObservationIgnored private var hasAudioTap = false
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var baseText = ""
     @ObservationIgnored private var separator = ""
-    @ObservationIgnored private var finalizedText = ""
-    @ObservationIgnored private var volatileText = ""
+    private var transcripts: [ComposerDictationTranscript] = []
+    private var selectedTranscriptIndex = 0
     @ObservationIgnored private var updateText: ((String) -> Void)?
     @ObservationIgnored private var reportError: ((String) -> Void)?
 
@@ -35,6 +45,14 @@ final class ComposerDictation {
     var isRecording: Bool { state == .recording }
     var isTransitioning: Bool { state == .preparing || state == .stopping }
     var canToggle: Bool { state == .idle || state == .recording }
+    var detectedLanguageName: String? {
+        guard transcripts.indices.contains(selectedTranscriptIndex),
+              !transcripts[selectedTranscriptIndex].text.isEmpty,
+              let languageCode = transcripts[selectedTranscriptIndex]
+                .locale.language.languageCode?.identifier
+        else { return nil }
+        return Locale.current.localizedString(forLanguageCode: languageCode)
+    }
 
     func start(
         existingText: String,
@@ -47,8 +65,9 @@ final class ComposerDictation {
         let currentGeneration = generation
         baseText = existingText
         separator = existingText.isEmpty || existingText.last?.isWhitespace == true ? "" : " "
-        finalizedText = ""
-        volatileText = ""
+        audioLevels = Array(repeating: 0, count: Self.waveformSampleCount)
+        transcripts = []
+        selectedTranscriptIndex = 0
         self.updateText = updateText
         self.reportError = reportError
         workerFailure = nil
@@ -59,48 +78,51 @@ final class ComposerDictation {
             }
             try checkGeneration(currentGeneration)
 
-            guard let locale = await DictationTranscriber.supportedLocale(
-                equivalentTo: Locale.current
-            ) else {
+            let locales = await supportedLocales()
+            guard !locales.isEmpty else {
                 throw ComposerDictationError.unsupportedLanguage
             }
             try checkGeneration(currentGeneration)
 
-            let transcriber = DictationTranscriber(
-                locale: locale,
-                preset: .progressiveShortDictation
-            )
+            transcripts = locales.map(ComposerDictationTranscript.init(locale:))
+            var preset = DictationTranscriber.Preset.progressiveShortDictation
+            preset.attributeOptions.insert(.transcriptionConfidence)
+            let transcribers = locales.map { locale in
+                DictationTranscriber(locale: locale, preset: preset)
+            }
+            let modules: [any SpeechModule] = transcribers
             if let installation = try await AssetInventory.assetInstallationRequest(
-                supporting: [transcriber]
+                supporting: modules
             ) {
                 try await installation.downloadAndInstall()
             }
             try checkGeneration(currentGeneration)
 
             guard let analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(
-                compatibleWith: [transcriber]
+                compatibleWith: modules
             ) else {
                 throw ComposerDictationError.audioUnavailable
             }
             try checkGeneration(currentGeneration)
 
-            let analyzer = SpeechAnalyzer(modules: [transcriber])
+            let analyzer = SpeechAnalyzer(modules: modules)
             let (inputStream, inputContinuation) = AsyncStream<AnalyzerInput>.makeStream()
             self.analyzer = analyzer
             self.inputContinuation = inputContinuation
-            let recognition = Task { [weak self] in
-                do {
-                    for try await result in transcriber.results {
-                        guard !Task.isCancelled, let self else { return }
-                        self.consume(result)
+            recognitionTasks = transcribers.enumerated().map { index, transcriber in
+                Task { [weak self] in
+                    do {
+                        for try await result in transcriber.results {
+                            guard !Task.isCancelled, let self else { return }
+                            self.consume(result, transcriptIndex: index)
+                        }
+                    } catch is CancellationError {
+                        return
+                    } catch {
+                        await self?.workerFailed(.transcriptionFailed)
                     }
-                } catch is CancellationError {
-                    return
-                } catch {
-                    await self?.workerFailed(.transcriptionFailed)
                 }
             }
-            recognitionTask = recognition
             try await analyzer.start(inputSequence: inputStream)
             try checkGeneration(currentGeneration)
 
@@ -119,7 +141,7 @@ final class ComposerDictation {
             self.audioContinuation = audioContinuation
             inputNode.installTap(
                 onBus: 0,
-                bufferSize: 4_096,
+                bufferSize: 2_048,
                 format: inputFormat
             ) { buffer, _ in
                 audioContinuation.yield(buffer)
@@ -132,6 +154,8 @@ final class ComposerDictation {
                 do {
                     for await buffer in audioStream {
                         try Task.checkCancellation()
+                        let level = ComposerAudioMeter.normalizedLevel(in: buffer)
+                        await self?.recordAudioLevel(level)
                         let converted = try converter.convert(buffer, to: analyzerFormat)
                         inputContinuation.yield(AnalyzerInput(buffer: converted))
                     }
@@ -170,7 +194,9 @@ final class ComposerDictation {
             try checkWorkerFailure()
             inputContinuation?.finish()
             try await analyzer?.finalizeAndFinishThroughEndOfInput()
-            await recognitionTask?.value
+            for task in recognitionTasks {
+                await task.value
+            }
             try checkWorkerFailure()
             finish()
         } catch {
@@ -180,10 +206,18 @@ final class ComposerDictation {
     }
 
     func cancel() async {
+        await cancel(keepingFinalizedText: true)
+    }
+
+    func discard() async {
+        await cancel(keepingFinalizedText: false)
+    }
+
+    private func cancel(keepingFinalizedText: Bool) async {
         guard state != .idle else { return }
         state = .stopping
         generation += 1
-        updateText?(renderedText(includeVolatile: false))
+        updateText?(keepingFinalizedText ? renderedText(includeVolatile: false) : baseText)
         updateText = nil
         audioEngine?.stop()
         removeAudioTap()
@@ -191,18 +225,21 @@ final class ComposerDictation {
         feedTask?.cancel()
         inputContinuation?.finish()
         await analyzer?.cancelAndFinishNow()
-        recognitionTask?.cancel()
+        recognitionTasks.forEach { $0.cancel() }
         finish()
     }
 
-    private func consume(_ result: DictationTranscriber.Result) {
-        let text = String(result.text.characters)
-        if result.isFinal {
-            finalizedText += text
-            volatileText = ""
-        } else {
-            volatileText = text
-        }
+    private func consume(_ result: DictationTranscriber.Result, transcriptIndex: Int) {
+        guard transcripts.indices.contains(transcriptIndex) else { return }
+        transcripts[transcriptIndex].consume(
+            text: String(result.text.characters),
+            confidence: result.text.transcriptionConfidence,
+            isFinal: result.isFinal
+        )
+        selectedTranscriptIndex = ComposerDictationTranscript.bestIndex(
+            in: transcripts,
+            keeping: selectedTranscriptIndex
+        )
         updateText?(renderedText(includeVolatile: true))
     }
 
@@ -219,8 +256,29 @@ final class ComposerDictation {
     }
 
     private func renderedText(includeVolatile: Bool) -> String {
-        let transcript = finalizedText + (includeVolatile ? volatileText : "")
+        guard transcripts.indices.contains(selectedTranscriptIndex) else { return baseText }
+        let transcript = includeVolatile
+            ? transcripts[selectedTranscriptIndex].text
+            : transcripts[selectedTranscriptIndex].finalizedText
         return transcript.isEmpty ? baseText : baseText + separator + transcript
+    }
+
+    private func supportedLocales() async -> [Locale] {
+        var locales: [Locale] = []
+        for requested in Self.requestedLocales {
+            guard let supported = await DictationTranscriber.supportedLocale(
+                equivalentTo: requested
+            ), !locales.contains(where: {
+                $0.identifier(.bcp47) == supported.identifier(.bcp47)
+            }) else { continue }
+            locales.append(supported)
+        }
+        return locales
+    }
+
+    private func recordAudioLevel(_ level: Double) {
+        audioLevels.append(level)
+        audioLevels.removeFirst(max(0, audioLevels.count - Self.waveformSampleCount))
     }
 
     private func checkGeneration(_ expected: Int) throws {
@@ -249,11 +307,99 @@ final class ComposerDictation {
         inputContinuation = nil
         analyzer = nil
         feedTask = nil
-        recognitionTask = nil
+        recognitionTasks = []
         hasAudioTap = false
         updateText = nil
         reportError = nil
         state = .idle
+    }
+}
+
+struct ComposerDictationTranscript {
+    let locale: Locale
+    private(set) var finalizedText = ""
+    private(set) var volatileText = ""
+    private var finalizedConfidenceTotal = 0.0
+    private var finalizedConfidenceWeight = 0
+    private var volatileConfidence: Double?
+    private var volatileConfidenceWeight = 0
+
+    init(locale: Locale) {
+        self.locale = locale
+    }
+
+    var text: String { finalizedText + volatileText }
+
+    private var score: Double {
+        guard !text.isEmpty else { return -.infinity }
+        let volatileTotal = (volatileConfidence ?? 0) * Double(volatileConfidenceWeight)
+        let weight = finalizedConfidenceWeight + volatileConfidenceWeight
+        return weight == 0 ? 0 : (finalizedConfidenceTotal + volatileTotal) / Double(weight)
+    }
+
+    mutating func consume(text: String, confidence: Double?, isFinal: Bool) {
+        let weight = text.count
+        if isFinal {
+            finalizedText += text
+            finalizedConfidenceTotal += (confidence ?? 0) * Double(weight)
+            finalizedConfidenceWeight += weight
+            volatileText = ""
+            volatileConfidence = nil
+            volatileConfidenceWeight = 0
+        } else {
+            volatileText = text
+            volatileConfidence = confidence
+            volatileConfidenceWeight = weight
+        }
+    }
+
+    static func bestIndex(
+        in transcripts: [ComposerDictationTranscript],
+        keeping current: Int
+    ) -> Int {
+        var best = transcripts.indices.contains(current) ? current : transcripts.startIndex
+        for index in transcripts.indices where transcripts[index].score > transcripts[best].score {
+            best = index
+        }
+        return best
+    }
+}
+
+enum ComposerAudioMeter {
+    static func normalizedLevel<S: Collection>(for samples: S) -> Double
+    where S.Element == Float {
+        guard !samples.isEmpty else { return 0 }
+        let meanSquare = samples.reduce(0.0) { $0 + Double($1 * $1) }
+            / Double(samples.count)
+        guard meanSquare > 0 else { return 0 }
+        let decibels = 20 * log10(sqrt(meanSquare))
+        return min(1, max(0, (decibels + 50) / 50))
+    }
+
+    static func normalizedLevel(in buffer: AVAudioPCMBuffer) -> Double {
+        guard buffer.frameLength > 0, let channel = buffer.floatChannelData?.pointee else {
+            return 0
+        }
+        return normalizedLevel(for: UnsafeBufferPointer(
+            start: channel,
+            count: Int(buffer.frameLength)
+        ))
+    }
+}
+
+private extension AttributedString {
+    var transcriptionConfidence: Double? {
+        var total = 0.0
+        var weight = 0
+        for run in runs {
+            guard let confidence = run[
+                AttributeScopes.SpeechAttributes.ConfidenceAttribute.self
+            ] else { continue }
+            let count = self[run.range].characters.count
+            total += confidence * Double(count)
+            weight += count
+        }
+        return weight == 0 ? nil : total / Double(weight)
     }
 }
 

@@ -848,10 +848,10 @@ mod tests {
     #[test]
     fn active_capability_command_dispatch_is_declared_data() {
         let workspace = tempfile::tempdir().expect("workspace");
-        let mut cron = contribution("cron");
-        cron.capability = "cron".into();
-        cron.commands[0].requires_idle = false;
-        let catalog = UiCatalog::build(&[cron], &[], workspace.path()).expect("catalog");
+        let mut review = contribution("review");
+        review.capability = "review".into();
+        review.commands[0].requires_idle = false;
+        let catalog = UiCatalog::build(&[review], &[], workspace.path()).expect("catalog");
         let context = CommandContext {
             active_turn: Some("turn"),
             status: "working",
@@ -859,15 +859,15 @@ mod tests {
         };
 
         assert!(matches!(
-            catalog.dispatch("/cron new review pull requests", context),
+            catalog.dispatch("/review pull requests", context),
             Some(CommandAction::Submit(Op::CapabilityCommand {
                 capability,
                 command,
                 arguments,
                 ..
-            })) if capability == "cron"
-                && command == "cron"
-                && arguments == "new review pull requests"
+            })) if capability == "review"
+                && command == "review"
+                && arguments == "pull requests"
         ));
     }
 
@@ -901,7 +901,7 @@ mod tests {
         });
 
         let catalog = UiCatalog::build(
-            &[inspect, contribution("cron")],
+            &[inspect, contribution("audit")],
             &model_choices(),
             workspace.path(),
         )
@@ -917,7 +917,7 @@ mod tests {
             commands.contains("/inspect")
                 && commands.contains("/model")
                 && commands.contains("/workspace")
-                && commands.contains("/cron")
+                && commands.contains("/audit")
                 && commands.contains("/pair")
                 && references
                     .iter()

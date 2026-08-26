@@ -1,34 +1,12 @@
 use super::*;
 
-#[tokio::test]
-async fn cron_commands_fail_fast_while_the_gateway_is_mutating() {
-    let root = tempfile::tempdir().expect("root");
-    let listen = "127.0.0.1:8741".parse().expect("listen address");
-    let (store, config) =
-        ConfigStore::initialize(root.path().join("state"), listen, None).expect("config");
-    let credentials =
-        Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
-    let cron = Arc::new(CronStore::open(store.state_dir()).expect("cron"));
-    let gateway = GatewayHost::start(store, config, credentials, cron).expect("gateway");
-    let _state = gateway.state.lock().await;
-
-    for command in [
-        CronCommand::List,
-        CronCommand::New { task: None },
-        CronCommand::Run { id: "task".into() },
-    ] {
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            gateway.execute_cron_command("session".into(), command),
-        )
-        .await
-        .expect("cron command must not wait for gateway state");
-
-        assert!(matches!(
-            result,
-            Err(MobiusError::Busy(message))
-                if message == "retry after the gateway update finishes"
-        ));
+fn cron_schedule(expression: &str) -> crate::wire::CronSchedule {
+    crate::wire::CronSchedule {
+        kind: crate::wire::CronScheduleKind::Cron,
+        at: None,
+        every_seconds: None,
+        expression: Some(expression.into()),
+        time_zone: Some("UTC".into()),
     }
 }
 
@@ -253,7 +231,7 @@ async fn replacement_ready_precedes_every_reconciled_startup_event() {
         .expect("create session");
     let before = host.snapshot(None).await.expect("initial snapshot").ready;
     let mut composition = before.config.config.clone();
-    composition.middleware.set_enabled("cron", false);
+    composition.system_prompt.push_str("\nupdated");
     let mut updates = host.subscribe();
 
     host.configure(before.config.revision, composition)
@@ -970,7 +948,12 @@ async fn delete_session_stops_the_host_and_removes_its_durable_tree() {
         .await
         .expect("title retained session");
     let task = cron
-        .add_for_test(&deleted_id, "scheduled task", "0 9 * * *")
+        .add_for_test(
+            &deleted_id,
+            "scheduled task",
+            cron_schedule("0 9 * * *"),
+            None,
+        )
         .expect("schedule task");
     let run = match cron.begin_run(&task.id).expect("begin run") {
         BeginRun::Started(run) => run,
@@ -1011,14 +994,16 @@ async fn delete_session_stops_the_host_and_removes_its_durable_tree() {
     assert!(!metadata.contains_key(&deleted_id));
     assert_eq!(metadata[&retained_id].title.as_deref(), Some("Retained"));
     assert!(
-        cron.list(&deleted_id)
-            .expect("deleted schedules")
-            .is_empty()
+        cron.list()
+            .expect("remaining schedules")
+            .iter()
+            .all(|task| task.session_id != deleted_id)
     );
     assert!(
-        cron.history(&deleted_id, None)
-            .expect("deleted schedule history")
-            .is_empty()
+        cron.history(None)
+            .expect("remaining schedule history")
+            .iter()
+            .all(|run| run.source_session_id != deleted_id)
     );
     assert!(!task.task.exists());
     assert!(deleted.snapshot(None).await.is_err());
@@ -1122,15 +1107,16 @@ async fn open_session_rejects_invalid_ids_before_checkpoint_lookup() {
 }
 
 #[test]
-fn cron_execution_spec_disables_scheduling_and_frames_execution() {
+fn scheduled_execution_spec_frames_execution() {
     let root = tempfile::tempdir().expect("root");
     let workspace = root.path().join("workspace");
     let state = root.path().join("state");
     std::fs::create_dir(&workspace).expect("workspace");
     std::fs::create_dir(&state).expect("state");
-    let mut config = AgentComposition::default();
-    config.middleware.set_enabled("cron", true);
-    config.system_prompt = "base instructions".into();
+    let config = AgentComposition {
+        system_prompt: "base instructions".into(),
+        ..AgentComposition::default()
+    };
     let spec = ChatSpec::new(
         &workspace,
         VersionedAgentConfig {
@@ -1142,7 +1128,7 @@ fn cron_execution_spec_disables_scheduling_and_frames_execution() {
     )
     .expect("chat spec");
 
-    let execution = cron_execution_spec(spec);
+    let execution = scheduled_execution_spec(spec);
     let restored = ChatSpec::from_metadata(
         &execution.metadata().expect("execution metadata"),
         &state,
@@ -1150,7 +1136,6 @@ fn cron_execution_spec_disables_scheduling_and_frames_execution() {
     )
     .expect("restore execution spec");
 
-    assert!(!restored.agent.config.middleware.enabled("cron"));
     assert_eq!(
         restored.agent.config.system_prompt,
         "base instructions\n\nExecute the scheduled task in the next user message. Do not create or modify schedules."
@@ -1191,7 +1176,7 @@ fn stopped_agent_finishes_its_active_cron_run() {
     let state = tempfile::tempdir().expect("state");
     let cron = CronStore::open(state.path()).expect("cron");
     let task = cron
-        .add_for_test("source", "do work", "17 3 * * *")
+        .add_for_test("source", "do work", cron_schedule("17 3 * * *"), None)
         .expect("task");
     let run = match cron.begin_run(&task.id).expect("begin run") {
         BeginRun::Started(run) => run,
@@ -1205,11 +1190,117 @@ fn stopped_agent_finishes_its_active_cron_run() {
     });
 
     fail_active_cron(&cron, &mut active, "agent stopped").expect("finish run");
-    let history = cron.history("source", Some(&task.id)).expect("history");
+    let history = cron.history(Some(&task.id)).expect("history");
 
     assert!(active.is_none());
     assert_eq!(history[0].status, CronRunStatus::Failed);
     assert_eq!(history[0].message.as_deref(), Some("agent stopped"));
+}
+
+#[tokio::test]
+async fn scheduled_task_creation_requires_a_visible_source_chat() {
+    let root = tempfile::tempdir().expect("root");
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).expect("workspace");
+    let listen = "127.0.0.1:8741".parse().expect("listen address");
+    let (store, config) =
+        ConfigStore::initialize(root.path().join("state"), listen, None).expect("config");
+    let credentials =
+        Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
+    let cron = Arc::new(CronStore::open(store.state_dir()).expect("cron"));
+    let gateway =
+        GatewayHost::start(store, config, credentials, Arc::clone(&cron)).expect("gateway");
+
+    let missing = gateway
+        .create_cron("missing", "do work", cron_schedule("0 9 * * *"), None)
+        .await
+        .expect_err("missing source chat must be rejected");
+    assert_eq!(missing.code, "unknown_session");
+
+    let source = gateway
+        .create_session(&workspace)
+        .await
+        .expect("source chat");
+    let checkpoints = Arc::clone(&gateway.state.lock().await.checkpoints);
+    let source_checkpoint = checkpoints
+        .load(source.session_id())
+        .await
+        .expect("load source")
+        .expect("source checkpoint");
+    checkpoints
+        .fork(
+            source.session_id(),
+            source_checkpoint.sequence,
+            &cron_execution_checkpoint(&source_checkpoint, "hidden", "scheduled"),
+        )
+        .await
+        .expect("fork hidden session");
+
+    let hidden = gateway
+        .create_cron("hidden", "do work", cron_schedule("0 9 * * *"), None)
+        .await
+        .expect_err("hidden source chat must be rejected");
+    assert_eq!(hidden.code, "unknown_session");
+
+    gateway
+        .create_cron(
+            source.session_id(),
+            "do work",
+            cron_schedule("0 9 * * *"),
+            None,
+        )
+        .await
+        .expect("visible source chat");
+    assert_eq!(cron.list().expect("tasks").len(), 1);
+}
+
+#[tokio::test]
+async fn due_preflight_failure_finishes_the_reserved_run() {
+    let root = tempfile::tempdir().expect("root");
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).expect("workspace");
+    let listen = "127.0.0.1:8741".parse().expect("listen address");
+    let (store, config) =
+        ConfigStore::initialize(root.path().join("state"), listen, None).expect("config");
+    let credentials =
+        Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
+    let cron = Arc::new(CronStore::open(store.state_dir()).expect("cron"));
+    let gateway =
+        GatewayHost::start(store, config, credentials, Arc::clone(&cron)).expect("gateway");
+    let source = gateway
+        .create_session(&workspace)
+        .await
+        .expect("source chat");
+    let now = Utc::now().timestamp();
+    let task = cron
+        .add_for_test(
+            source.session_id(),
+            "do work",
+            crate::wire::CronSchedule {
+                kind: crate::wire::CronScheduleKind::Once,
+                at: Some(now - 1),
+                every_seconds: None,
+                expression: None,
+                time_zone: None,
+            },
+            None,
+        )
+        .expect("task");
+    std::fs::remove_file(&task.task).expect("remove task input");
+    let mut due = cron.take_due(now).expect("reserve due run");
+    assert_eq!(due.len(), 1);
+    let (task_id, run) = due.pop().expect("due run");
+
+    gateway
+        .run_due_cron(task_id, run)
+        .await
+        .expect_err("missing task input must fail preflight");
+
+    let history = cron.history(Some(&task.id)).expect("history");
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].status, CronRunStatus::Failed);
+    assert!(history[0].finished_at.is_some());
+    assert_eq!(cron.task(&task.id).expect("task").next_run_at, None);
 }
 
 #[tokio::test]
@@ -1230,7 +1321,12 @@ async fn overlapping_cron_does_not_create_a_visible_execution_chat() {
         .await
         .expect("source chat");
     let task = cron
-        .add_for_test(source.session_id(), "do work", "* * * * *")
+        .add_for_test(
+            source.session_id(),
+            "do work",
+            cron_schedule("* * * * *"),
+            None,
+        )
         .expect("task");
     let held = match cron.begin_run(&task.id).expect("claim run") {
         BeginRun::Started(run) => run,
@@ -1239,7 +1335,7 @@ async fn overlapping_cron_does_not_create_a_visible_execution_chat() {
     let before = gateway.sessions().await.expect("sessions before");
 
     let error = gateway
-        .run_cron(source.session_id().into(), task.id)
+        .run_cron(task.id)
         .await
         .expect_err("overlap must fail");
     let after = gateway.sessions().await.expect("sessions after");
@@ -1248,6 +1344,65 @@ async fn overlapping_cron_does_not_create_a_visible_execution_chat() {
 
     assert_eq!(error.code, "cron_overlap");
     assert_eq!(after, before);
+}
+
+#[tokio::test]
+async fn repeated_cron_run_previews_do_not_consume_resident_capacity() {
+    let root = tempfile::tempdir().expect("root");
+    let workspace = root.path().join("workspace");
+    let state_dir = root.path().join("state");
+    std::fs::create_dir(&workspace).expect("workspace");
+    let listen = "127.0.0.1:8741".parse().expect("listen address");
+    let (store, config) = ConfigStore::initialize(state_dir, listen, None).expect("config");
+    let credentials =
+        Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
+    let cron = Arc::new(CronStore::open(store.state_dir()).expect("cron"));
+    let gateway =
+        GatewayHost::start(store, config, credentials, Arc::clone(&cron)).expect("gateway");
+    let source = gateway
+        .create_session(&workspace)
+        .await
+        .expect("source chat");
+    let source_id = source.session_id().to_owned();
+    let checkpoints = Arc::clone(&gateway.state.lock().await.checkpoints);
+    let source_checkpoint = checkpoints
+        .load(&source_id)
+        .await
+        .expect("load source")
+        .expect("source checkpoint");
+    let task = cron
+        .add_for_test(&source_id, "do work", cron_schedule("* * * * *"), None)
+        .expect("task");
+    assert!(source.stop_if_idle().await);
+    while source.is_alive() {
+        tokio::task::yield_now().await;
+    }
+    gateway.state.lock().await.sessions.remove(&source_id);
+    drop(source);
+
+    for index in 0..MAX_ACTIVE_SESSIONS {
+        let execution_id = format!("execution-{index}");
+        let execution = cron_execution_checkpoint(&source_checkpoint, &execution_id, "preview");
+        checkpoints
+            .fork(&source_id, source_checkpoint.sequence, &execution)
+            .await
+            .expect("fork execution checkpoint");
+        let run = match cron.begin_run(&task.id).expect("begin run") {
+            BeginRun::Started(run) => run,
+            BeginRun::Skipped => panic!("new run must start"),
+        };
+        cron.attach_execution_session(&run, &execution_id)
+            .expect("attach execution session");
+        let run = cron
+            .finish_run(run, CronRunStatus::Succeeded, None)
+            .expect("finish run");
+
+        gateway
+            .cron_run_preview(&run.id, None)
+            .await
+            .expect("preview run");
+        assert!(gateway.state.lock().await.sessions.is_empty());
+    }
 }
 
 #[tokio::test]
@@ -1277,7 +1432,12 @@ async fn chats_keep_independent_workspace_and_agent_configuration() {
     let first_host = gateway.create_session(&first).await.expect("first chat");
     let second_host = gateway.create_session(&second).await.expect("second chat");
     let scheduled = cron
-        .add_for_test(first_host.session_id(), "keep scheduled work", "0 9 * * *")
+        .add_for_test(
+            first_host.session_id(),
+            "keep scheduled work",
+            cron_schedule("0 9 * * *"),
+            None,
+        )
         .expect("scheduled task");
     let first_before = first_host
         .snapshot(None)
@@ -1290,7 +1450,7 @@ async fn chats_keep_independent_workspace_and_agent_configuration() {
         .expect("second snapshot")
         .ready;
     let mut composition = first_before.config.config.clone();
-    composition.middleware.set_enabled("cron", false);
+    composition.system_prompt.push_str("\nupdated");
 
     first_host
         .configure(first_before.config.revision, composition)
@@ -1308,22 +1468,14 @@ async fn chats_keep_independent_workspace_and_agent_configuration() {
         .ready;
 
     assert_ne!(first_after.workspace, second_after.workspace);
-    assert!(!first_after.config.config.middleware.enabled("cron"));
-    assert_eq!(first_after.tool_count + 1, first_before.tool_count);
+    assert_eq!(first_after.tool_count, first_before.tool_count);
     assert_eq!(
-        first_host
-            .start_cron_setup(None)
-            .await
-            .expect_err("disabled scheduler must reject setup")
-            .code,
-        "capability_disabled"
-    );
-    assert_eq!(
-        cron.list(first_host.session_id())
+        cron.list()
             .expect("existing schedules")
-            .first()
-            .map(|task| task.id.as_str()),
-        Some(scheduled.id.as_str())
+            .into_iter()
+            .find(|task| task.id == scheduled.id)
+            .map(|task| task.id),
+        Some(scheduled.id)
     );
     assert!(
         first_after

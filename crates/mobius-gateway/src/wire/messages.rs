@@ -242,35 +242,41 @@ pub enum ClientMessage {
     GetProfile {
         request_id: String,
     },
-    StartCronSetup {
+    CreateCron {
         request_id: String,
-        session_id: String,
-        task: Option<String>,
+        source_session_id: String,
+        task: String,
+        schedule: CronSchedule,
+        ends_at: Option<i64>,
     },
     ListCron {
         request_id: String,
-        session_id: String,
     },
-    RescheduleCron {
+    UpdateCron {
         request_id: String,
-        session_id: String,
         id: String,
-        schedule: String,
+        source_session_id: String,
+        task: String,
+        schedule: CronSchedule,
+        ends_at: Option<i64>,
+        enabled: bool,
     },
     DeleteCron {
         request_id: String,
-        session_id: String,
         id: String,
     },
     RunCron {
         request_id: String,
-        session_id: String,
         id: String,
     },
     ListCronHistory {
         request_id: String,
-        session_id: String,
         id: Option<String>,
+    },
+    GetCronRunPreview {
+        request_id: String,
+        id: String,
+        before_sequence: Option<u64>,
     },
 }
 
@@ -460,13 +466,15 @@ pub enum ServerMessage {
     },
     CronTasks {
         request_id: String,
-        session_id: String,
         tasks: Vec<CronTask>,
     },
     CronHistory {
         request_id: String,
-        session_id: String,
         runs: Vec<CronRun>,
+    },
+    CronRunPreview {
+        request_id: String,
+        preview: CronRunPreview,
     },
     Error {
         code: String,
