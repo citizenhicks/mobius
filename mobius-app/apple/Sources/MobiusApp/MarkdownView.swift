@@ -95,7 +95,11 @@ private struct MobiusMarkdownDocument: View {
                 document = parsed
             }
             .sheet(isPresented: $selection.isPresented) {
-                SelectableText(content: selectableMarkdown(text))
+                SelectableText(content: selectableMarkdown(
+                    text,
+                    markerColor: UIColor(palette.accent),
+                    quoteColor: UIColor(palette.muted)
+                ))
                     .padding(.horizontal, MobiusSpace.l)
                     .padding(.bottom, MobiusSpace.l)
                     // Clears the drag indicator, which sits in the top of the sheet's own bounds.
@@ -106,6 +110,7 @@ private struct MobiusMarkdownDocument: View {
 
     private var config: MarkdownRenderConfig {
         let bodyFonts = TextFonts.mobius(MobiusStyle.bodyFont, context: fontResolutionContext)
+        let captionFonts = TextFonts.mobius(MobiusStyle.captionFont, context: fontResolutionContext)
         let codeFonts = TextFonts.mobiusCode(context: fontResolutionContext)
         return MarkdownRenderConfig(
             shouldAnimateText: streaming && !reduceMotion,
@@ -119,14 +124,14 @@ private struct MobiusMarkdownDocument: View {
                 h6Font: .mobius(.subheadline.weight(.bold), context: fontResolutionContext),
                 textColor: .primary
             ),
-            orderedListStyle: .init(textFonts: bodyFonts, textColor: .primary),
+            orderedListStyle: .init(textFonts: bodyFonts, textColor: palette.accent),
             paragraphStyle: .init(textFonts: bodyFonts, textColor: .primary),
             tableStyle: .init(
                 textFonts: .mobius(.subheadline, context: fontResolutionContext),
                 headerTextColor: .primary,
                 regularTextColor: .primary,
                 headerBackgroundColor: palette.raised,
-                borderColor: palette.muted.opacity(0.42),
+                borderColor: palette.line,
                 actionButtonColor: palette.accent
             ),
             inlineStyle: .init(
@@ -142,12 +147,17 @@ private struct MobiusMarkdownDocument: View {
             // This item opens the whole message as one selectable document, which is the only
             // cross-block selection UIKit will give us.
             textContextMenu: mobiusSelectTextMenu,
+            citationConfig: .init(
+                font: captionFonts.normal,
+                textColor: palette.accent,
+                backgroundColor: palette.accentSoft
+            ),
             codeBlockConfig: CodeBlockConfig(
                 theme: .xcode,
                 backgroundColor: palette.raised,
                 foregroundColor: palette.muted,
                 codeTextFonts: codeFonts,
-                chromeTextFonts: .mobius(.footnote, context: fontResolutionContext)
+                chromeTextFonts: captionFonts
             ),
             blockSpacing: MobiusSpace.m,
             textSelectionConfig: TextSelectionConfig(isEnabled: false),

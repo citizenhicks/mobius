@@ -8,7 +8,11 @@ import UIKit
 /// On iOS a SwiftUI `Text` only ever selects all of itself, so the selection sheet hands this
 /// to a `UITextView`. That view draws fonts rather than intents, so every block and inline
 /// intent is resolved to one here — otherwise bold, code, and list markers all vanish.
-func selectableMarkdown(_ source: String) -> NSAttributedString {
+func selectableMarkdown(
+    _ source: String,
+    markerColor: UIColor,
+    quoteColor: UIColor
+) -> NSAttributedString {
     guard let parsed = try? AttributedString(
         markdown: source,
         options: .init(
@@ -23,7 +27,13 @@ func selectableMarkdown(_ source: String) -> NSAttributedString {
 
     for run in parsed.runs {
         let blocks = run.presentationIntent?.components ?? []
-        appendBlockStart(blocks, to: result, blockID: &blockID, listID: &listID)
+        appendBlockStart(
+            blocks,
+            to: result,
+            markerColor: markerColor,
+            blockID: &blockID,
+            listID: &listID
+        )
 
         var text = String(parsed[run.range].characters)
         // A fenced block ends in the newline that closed it, which would draw as a blank line.
@@ -35,7 +45,7 @@ func selectableMarkdown(_ source: String) -> NSAttributedString {
         if inline.contains(.emphasized) { traits.insert(.traitItalic) }
         var attributes: [NSAttributedString.Key: Any] = [
             .font: inline.contains(.code) ? .mobiusCode : blocks.font.withTraits(traits),
-            .foregroundColor: blocks.isQuoted ? UIColor.secondaryLabel : UIColor.label
+            .foregroundColor: blocks.isQuoted ? quoteColor : UIColor.label
         ]
         if inline.contains(.strikethrough) {
             attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
@@ -57,6 +67,7 @@ func selectableMarkdown(_ source: String) -> NSAttributedString {
 private func appendBlockStart(
     _ blocks: [PresentationIntent.IntentType],
     to result: NSMutableAttributedString,
+    markerColor: UIColor,
     blockID: inout Int?,
     listID: inout Int?
 ) {
@@ -66,7 +77,10 @@ private func appendBlockStart(
         result.append(NSAttributedString(string: list != nil && list == listID ? "\n" : "\n\n"))
     }
     if let marker = blocks.listMarker {
-        result.append(NSAttributedString(string: marker, attributes: [.font: blocks.font]))
+        result.append(NSAttributedString(
+            string: marker,
+            attributes: [.font: blocks.font, .foregroundColor: markerColor]
+        ))
     }
     blockID = id
     listID = list

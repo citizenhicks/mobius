@@ -1,8 +1,11 @@
 import Foundation
+import UIKit
 import XCTest
 
 final class TranscriptMarkdownSelectionTests: XCTestCase {
     func testFlattensEveryBlockKindIntoOneSelectableValue() {
+        let markerColor = UIColor.systemPurple
+        let quoteColor = UIColor.systemGray
         let selectable = selectableMarkdown("""
             # Heading
 
@@ -22,7 +25,7 @@ final class TranscriptMarkdownSelectionTests: XCTestCase {
             > quoted
 
             Last.
-            """)
+            """, markerColor: markerColor, quoteColor: quoteColor)
 
         XCTAssertEqual(selectable.string, """
             Heading
@@ -42,6 +45,22 @@ final class TranscriptMarkdownSelectionTests: XCTestCase {
 
             Last.
             """)
+
+        for marker in ["\u{2022}", "1.", "2."] {
+            let range = (selectable.string as NSString).range(of: marker)
+            XCTAssertEqual(
+                selectable.attribute(.foregroundColor, at: range.location, effectiveRange: nil)
+                    as? UIColor,
+                markerColor
+            )
+        }
+
+        let quoteRange = (selectable.string as NSString).range(of: "quoted")
+        XCTAssertEqual(
+            selectable.attribute(.foregroundColor, at: quoteRange.location, effectiveRange: nil)
+                as? UIColor,
+            quoteColor
+        )
     }
 }
 
