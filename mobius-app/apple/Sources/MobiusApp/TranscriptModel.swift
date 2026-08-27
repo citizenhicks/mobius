@@ -1,23 +1,23 @@
 import Foundation
 import Observation
-import SwiftUI
+import UIKit
 
-/// The message as one value `Text` can select end to end, still shaped like the blocks above
-/// it: one text view is the only thing UIKit will drag a selection across.
+/// The message as one attributed value a text view can drag a selection across, still shaped
+/// like the blocks above it.
 ///
-/// `Text` renders inline intents but drops block ones, so paragraphs would run together and a
-/// list would lose its markers. Blocks are separated here and each kind carries the font it
-/// reads as in the transcript.
-func selectableMarkdown(_ source: String) -> AttributedString {
+/// On iOS a SwiftUI `Text` only ever selects all of itself, so the selection sheet hands this
+/// to a `UITextView`. That view draws fonts rather than intents, so every block and inline
+/// intent is resolved to one here — otherwise bold, code, and list markers all vanish.
+func selectableMarkdown(_ source: String) -> NSAttributedString {
     guard let parsed = try? AttributedString(
         markdown: source,
         options: .init(
             interpretedSyntax: .full,
             failurePolicy: .returnPartiallyParsedIfPossible
         )
-    ) else { return AttributedString(source) }
+    ) else { return NSAttributedString(string: source) }
 
-    var result = AttributedString()
+    let result = NSMutableAttributedString()
     var blockID: Int?
     var listID: Int?
 
@@ -25,24 +25,43 @@ func selectableMarkdown(_ source: String) -> AttributedString {
         let blocks = run.presentationIntent?.components ?? []
         if let id = blocks.first?.identity, id != blockID {
             let list = blocks.listIdentity
-            if !result.characters.isEmpty {
-                result.append(AttributedString(list != nil && list == listID ? "\n" : "\n\n"))
+            if result.length > 0 {
+                let gap = list != nil && list == listID ? "\n" : "\n\n"
+                result.append(NSAttributedString(string: gap))
             }
-            if let marker = blocks.listMarker { result.append(AttributedString(marker)) }
+            if let marker = blocks.listMarker {
+                result.append(NSAttributedString(string: marker, attributes: [.font: blocks.font]))
+            }
             blockID = id
             listID = list
         }
-        var fragment = AttributedString(parsed[run.range])
-        if let font = blocks.blockFont { fragment.font = font }
-        if blocks.isQuoted { fragment.foregroundColor = .secondary }
+
+        var text = String(parsed[run.range].characters)
         // A fenced block ends in the newline that closed it, which would draw as a blank line.
-        while blocks.isCode, let last = fragment.characters.last, last.isNewline {
-            fragment.removeSubrange(
-                fragment.characters.index(before: fragment.characters.endIndex)..<fragment.endIndex
-            )
+        if blocks.isCode { while text.last?.isNewline == true { text.removeLast() } }
+
+        let inline = run.inlinePresentationIntent ?? []
+        var traits: UIFontDescriptor.SymbolicTraits = []
+        if inline.contains(.stronglyEmphasized) { traits.insert(.traitBold) }
+        if inline.contains(.emphasized) { traits.insert(.traitItalic) }
+        var attributes: [NSAttributedString.Key: Any] = [
+            .font: inline.contains(.code) ? .mobiusCode : blocks.font.withTraits(traits),
+            .foregroundColor: blocks.isQuoted ? UIColor.secondaryLabel : UIColor.label
+        ]
+        if inline.contains(.strikethrough) {
+            attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
         }
-        result.append(fragment)
+        if let link = run.link { attributes[.link] = link }
+        result.append(NSAttributedString(string: text, attributes: attributes))
     }
+
+    let paragraph = NSMutableParagraphStyle()
+    paragraph.lineSpacing = 5
+    result.addAttribute(
+        .paragraphStyle,
+        value: paragraph,
+        range: NSRange(location: 0, length: result.length)
+    )
     return result
 }
 
@@ -76,20 +95,36 @@ private extension [PresentationIntent.IntentType] {
         contains { if case .codeBlock = $0.kind { true } else { false } }
     }
 
-    /// Only the kinds that do not read as body text carry a font of their own.
-    var blockFont: Font? {
+    var font: UIFont {
         for component in self {
             switch component.kind {
             case .header(let level):
-                return level == 1 ? .title3.weight(.bold) : level == 2 ? .headline
-                    : .subheadline.weight(.bold)
+                let style: UIFont.TextStyle = level == 1 ? .title3 : level == 2 ? .headline
+                    : .subheadline
+                return UIFont.preferredFont(forTextStyle: style).withTraits(.traitBold)
             case .codeBlock:
-                return .footnote.monospaced()
+                return .mobiusCode
             default:
                 continue
             }
         }
-        return nil
+        return .preferredFont(forTextStyle: .body)
+    }
+}
+
+extension UIFont {
+    static var mobiusCode: UIFont {
+        .monospacedSystemFont(
+            ofSize: UIFont.preferredFont(forTextStyle: .footnote).pointSize,
+            weight: .regular
+        )
+    }
+
+    func withTraits(_ traits: UIFontDescriptor.SymbolicTraits) -> UIFont {
+        guard !traits.isEmpty, let descriptor = fontDescriptor.withSymbolicTraits(
+            fontDescriptor.symbolicTraits.union(traits)
+        ) else { return self }
+        return UIFont(descriptor: descriptor, size: 0)
     }
 }
 

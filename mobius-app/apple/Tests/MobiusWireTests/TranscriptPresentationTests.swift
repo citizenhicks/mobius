@@ -24,7 +24,7 @@ final class TranscriptMarkdownSelectionTests: XCTestCase {
             Last.
             """)
 
-        XCTAssertEqual(String(selectable.characters), """
+        XCTAssertEqual(selectable.string, """
             Heading
 
             A bold line.

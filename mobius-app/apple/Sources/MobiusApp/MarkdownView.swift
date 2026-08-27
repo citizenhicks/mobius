@@ -95,17 +95,11 @@ private struct MobiusMarkdownDocument: View {
                 document = parsed
             }
             .sheet(isPresented: $selection.isPresented) {
-                ScrollView {
-                    Text(selectableMarkdown(text))
-                        .font(MobiusStyle.bodyFont)
-                        .lineSpacing(5)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(MobiusSpace.l)
-                }
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-                .presentationBackground(.ultraThinMaterial)
+                SelectableText(content: selectableMarkdown(text))
+                    .padding(.horizontal, MobiusSpace.l)
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+                    .presentationBackground(palette.canvas)
             }
     }
 
@@ -186,20 +180,30 @@ private extension TextFonts {
         let base = font.resolve(in: context).ctFont as UIFont
         return TextFonts(
             normal: base,
-            italic: base.mobiusWithTraits(.traitItalic),
-            bold: base.mobiusWithTraits(.traitBold),
-            boldItalic: base.mobiusWithTraits([.traitBold, .traitItalic]),
+            italic: base.withTraits(.traitItalic),
+            bold: base.withTraits(.traitBold),
+            boldItalic: base.withTraits([.traitBold, .traitItalic]),
             preferredLetterSpacing: nil,
             preferredLineHeight: nil
         )
     }
 }
 
-private extension UIFont {
-    func mobiusWithTraits(_ traits: UIFontDescriptor.SymbolicTraits) -> UIFont {
-        guard let descriptor = fontDescriptor.withSymbolicTraits(
-            fontDescriptor.symbolicTraits.union(traits)
-        ) else { return self }
-        return UIFont(descriptor: descriptor, size: 0)
+/// Read-only and selectable: `Text` selects all of itself or nothing on iOS, so the one
+/// control that drags a selection across a whole message is a text view.
+private struct SelectableText: UIViewRepresentable {
+    let content: NSAttributedString
+
+    func makeUIView(context: Context) -> UITextView {
+        let view = UITextView()
+        view.isEditable = false
+        view.backgroundColor = .clear
+        view.textContainerInset = .zero
+        view.textContainer.lineFragmentPadding = 0
+        return view
+    }
+
+    func updateUIView(_ view: UITextView, context: Context) {
+        view.attributedText = content
     }
 }
