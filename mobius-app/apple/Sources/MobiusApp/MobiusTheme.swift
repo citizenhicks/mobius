@@ -42,7 +42,7 @@ enum MobiusSymbol {
 
 struct MobiusPalette: Sendable {
     let canvas: Color
-    /// Base surface behind the compact drawer and embedded document views.
+    /// Base surface behind sidebar views and the compact drawer.
     let recessed: Color
     let panel: Color
     let raised: Color
@@ -67,39 +67,85 @@ struct MobiusPalette: Sendable {
 
     // Keep the Nord surface steps distinct: chat bubbles, tool details, and diff rows rely
     // on this hierarchy instead of carrying one-off borders and backgrounds.
-    init(_ scheme: ColorScheme, lightsOut: Bool = false) {
+    init(
+        _ scheme: ColorScheme,
+        lightsOut: Bool = false,
+        accentTint: AccentTint = .blue
+    ) {
+        let isDark = scheme == .dark || lightsOut
+        let hue = accentTint.color
+        let surfaceTintAmount = accentTint == .blue ? 0.0 : 0.2
+        let surfaceHue = hue.mix(
+            with: isDark ? .black : .white,
+            by: isDark ? 0.65 : 0.75,
+            in: .device
+        )
+        let panelColor: Color
+        let defaultAccentFill: Color
+        let defaultAccentSoft: Color
+        func surface(_ base: Color) -> Color {
+            guard surfaceTintAmount > 0 else { return base }
+            return base.mix(with: surfaceHue, by: surfaceTintAmount, in: .device)
+        }
+
         onAccent = .nord6
-        if scheme == .dark || lightsOut {
-            canvas = lightsOut ? .black : Color(red: 0.141, green: 0.161, blue: 0.200)
-            recessed = Color(red: 0.094, green: 0.106, blue: 0.133)
-            panel = .nord0
-            raised = .nord1
-            line = .nord3
-            accent = .nord10
+        accent = hue.mix(
+            with: isDark ? .white : .black,
+            by: 0.55,
+            in: .device
+        )
+        if isDark {
+            canvas = lightsOut
+                ? .black
+                : surface(Color(red: 0.141, green: 0.161, blue: 0.200))
+            recessed = lightsOut
+                ? .black
+                : surface(Color(red: 0.094, green: 0.106, blue: 0.133))
+            panelColor = surface(.nord0)
+            panel = panelColor
+            raised = surface(.nord1)
+            line = surface(.nord3)
             // 4.84:1 against onAccent, and the dark backdrop only deepens it under glass.
-            accentFill = Color(red: 0.298, green: 0.416, blue: 0.557)
-            accentSoft = Color(red: 0.227, green: 0.278, blue: 0.349)
+            defaultAccentFill = Color(red: 0.298, green: 0.416, blue: 0.557)
+            defaultAccentSoft = Color(red: 0.227, green: 0.278, blue: 0.349)
             signal = .nord14
             warning = .nord13
             danger = .nord11
             muted = Color(red: 0.541, green: 0.588, blue: 0.671)
-            sidebarScrim = .nord3
+            sidebarScrim = lightsOut ? .nord3 : surface(.nord3)
         } else {
-            canvas = .nord6
-            recessed = .nord5
-            panel = .nord5
-            raised = Color(red: 0.965, green: 0.973, blue: 0.984)
-            line = .nord4
-            accent = .nord10
+            canvas = surface(.nord6)
+            recessed = surface(.nord5)
+            panelColor = surface(.nord5)
+            panel = panelColor
+            raised = surface(Color(red: 0.965, green: 0.973, blue: 0.984))
+            line = surface(.nord4)
             // 6.15:1 against onAccent: the light backdrop lightens the tint under glass,
             // so the extra headroom is what keeps the composited result above 4.5:1.
-            accentFill = Color(red: 0.239, green: 0.353, blue: 0.494)
-            accentSoft = Color(red: 0.831, green: 0.871, blue: 0.918)
+            defaultAccentFill = Color(red: 0.239, green: 0.353, blue: 0.494)
+            defaultAccentSoft = Color(red: 0.831, green: 0.871, blue: 0.918)
             signal = Color(red: 0.353, green: 0.482, blue: 0.243)
             warning = Color(red: 0.565, green: 0.435, blue: 0.153)
             danger = Color(red: 0.639, green: 0.263, blue: 0.310)
             muted = .nord3
-            sidebarScrim = .nord6
+            sidebarScrim = surface(.nord6)
+        }
+
+        if accentTint == .blue {
+            accentFill = defaultAccentFill
+            accentSoft = defaultAccentSoft
+        } else {
+            // Bright swatches need extra black headroom under glass, especially in light mode.
+            accentFill = hue.mix(
+                with: .black,
+                by: isDark ? 0.5 : 0.6,
+                in: .device
+            )
+            accentSoft = panelColor.mix(
+                with: hue,
+                by: isDark ? 0.08 : 0.12,
+                in: .device
+            )
         }
     }
 
@@ -138,7 +184,11 @@ struct MobiusTheme: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
 
     func body(content: Content) -> some View {
-        let palette = MobiusPalette(colorScheme, lightsOut: model.theme == .lightsOut)
+        let palette = MobiusPalette(
+            colorScheme,
+            lightsOut: model.theme == .lightsOut,
+            accentTint: model.accentTint
+        )
         content
             .environment(\.mobiusPalette, palette)
             .foregroundStyle(.primary)
@@ -158,9 +208,8 @@ struct MobiusBackdrop: View {
     }
 }
 
-/// A user-chosen accent telling two setups of one provider apart. The gateway sends
-/// hues; this app maps them onto its own Nord palette.
-enum ProviderTint: String, Codable, CaseIterable, Identifiable, Sendable {
+/// Nord hues shared by provider identities and the user-selected app accent.
+enum AccentTint: String, Codable, CaseIterable, Identifiable, Sendable {
     case blue
     case teal
     case green

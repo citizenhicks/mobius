@@ -173,9 +173,11 @@ struct SidebarView: View {
             VStack(spacing: 0) {
                 HStack(spacing: MobiusSpace.m) {
                     Image("MobiusLogo")
+                        .renderingMode(.template)
                         .resizable()
                         .scaledToFit()
                         .frame(width: 28, height: 28)
+                        .foregroundStyle(palette.accent)
                         .clipShape(.rect(cornerRadius: 6))
                         .accessibilityHidden(true)
                     Group {
@@ -186,6 +188,7 @@ struct SidebarView: View {
                         }
                     }
                     .font(.system(.subheadline, design: .serif, weight: .bold))
+                    .foregroundStyle(palette.accent)
                     .tracking(1.4)
                     Spacer()
                     Button {

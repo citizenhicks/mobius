@@ -783,6 +783,13 @@ private struct AppearanceSettings: View {
         }
         .pickerStyle(.segmented)
         .sensoryFeedback(.selection, trigger: model.theme)
+
+        LabeledContent("Accent") {
+            AccentTintPicker(selection: Binding(
+                get: { model.accentTint },
+                set: { model.setAccentTint($0) }
+            ))
+        }
     }
 }
 

@@ -98,7 +98,7 @@ extension AppModel {
     }
 
     /// The accent of the setup behind one route, so two setups of a provider differ.
-    func providerTint(for choice: ModelChoice) -> ProviderTint {
+    func providerTint(for choice: ModelChoice) -> AccentTint {
         guard let instance = modelProviders[choice.route] else { return .blue }
         return providerInstances.first { $0.instance == instance }?.tint ?? .blue
     }
@@ -679,6 +679,11 @@ extension AppModel {
     func setTheme(_ theme: ThemePreference) {
         self.theme = theme
         settingsDefaults.set(theme.rawValue, forKey: "theme")
+    }
+
+    func setAccentTint(_ accentTint: AccentTint) {
+        self.accentTint = accentTint
+        settingsDefaults.set(accentTint.rawValue, forKey: "accent-tint")
     }
 
     func refreshAppLockAuthenticationMethod() {

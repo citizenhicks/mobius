@@ -234,7 +234,7 @@ final class AppModel {
     var sessionFileLimits: SessionFileLimits?
     var providerAPIKey = ""
     var providerLabelDraft = ""
-    var providerTintDraft: ProviderTint = .blue
+    var providerTintDraft: AccentTint = .blue
     var providerModelIDsText = ""
     var providerReasoningEffortsText = ""
     var providerActionState: ProviderActionState = .idle
@@ -246,6 +246,7 @@ final class AppModel {
     var pairingCode = ""
     var pairingError: String?
     var theme: ThemePreference
+    var accentTint: AccentTint
     var appLockEnabled: Bool
     var isAppLocked: Bool
     var isAppLockAuthenticating = false
@@ -413,6 +414,9 @@ final class AppModel {
         self.accounts = store.loadAccounts()
         self.selectedAccountID = store.selectedAccountID()
         self.theme = ThemePreference(rawValue: settingsDefaults.string(forKey: "theme") ?? "") ?? .system
+        self.accentTint = AccentTint(
+            rawValue: settingsDefaults.string(forKey: "accent-tint") ?? ""
+        ) ?? .blue
         self.appLockEnabled = appLockEnabled
         self.isAppLocked = appLockEnabled
         self.appLockAuthenticationMethod = appLockAuthenticator.method

@@ -295,7 +295,7 @@ struct ProviderInstance: Identifiable, Codable, Equatable, Sendable {
     var provider: String { selection.provider }
 
     let label: String
-    let tint: ProviderTint
+    let tint: AccentTint
     var configured: Bool
     var credentialHint: String? = nil
     let selection: ProviderConfig

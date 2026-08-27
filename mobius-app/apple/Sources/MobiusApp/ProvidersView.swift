@@ -151,7 +151,7 @@ struct ProvidersView: View {
 /// The provider's glyph drawn in the setup's chosen accent.
 struct ProviderMark: View {
     let symbol: String?
-    let tint: ProviderTint
+    let tint: AccentTint
 
     private var glyph: MobiusGlyph {
         guard let symbol, let known = MobiusSymbol.knownGlyph(for: symbol) else { return .hardDrives }
@@ -334,7 +334,7 @@ private struct ProviderFormSections: View {
                     .font(MobiusStyle.controlFont)
                 }
                 LabeledContent("Colour") {
-                    ProviderTintPicker(selection: $model.providerTintDraft)
+                    AccentTintPicker(selection: $model.providerTintDraft)
                 }
             }
 
@@ -564,32 +564,37 @@ private struct ProviderFormSections: View {
     }
 }
 
-/// The accent swatches one setup can be marked with.
-private struct ProviderTintPicker: View {
+/// The shared Nord accent swatches.
+struct AccentTintPicker: View {
     @Environment(\.mobiusPalette) private var palette
-    @Binding var selection: ProviderTint
+    @Binding var selection: AccentTint
 
     var body: some View {
-        HStack(spacing: MobiusSpace.xs) {
-            ForEach(ProviderTint.allCases) { tint in
-                Button {
-                    selection = tint
-                } label: {
-                    Circle()
-                        .fill(tint.color)
-                        .frame(width: 18, height: 18)
-                        .overlay(
-                            Circle().strokeBorder(
-                                palette.onAccent,
-                                lineWidth: selection == tint ? 2 : 0
+        ScrollView(.horizontal) {
+            HStack(spacing: 0) {
+                ForEach(AccentTint.allCases) { tint in
+                    Button {
+                        selection = tint
+                    } label: {
+                        Circle()
+                            .fill(tint.color)
+                            .frame(width: 18, height: 18)
+                            .overlay(
+                                Circle().strokeBorder(
+                                    palette.onAccent,
+                                    lineWidth: selection == tint ? 2 : 0
+                                )
                             )
-                        )
+                            .frame(width: 44, height: 44)
+                            .contentShape(.rect)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(tint.label)
+                    .accessibilityAddTraits(selection == tint ? [.isSelected] : [])
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(tint.label)
-                .accessibilityAddTraits(selection == tint ? [.isSelected] : [])
             }
         }
+        .scrollIndicators(.hidden)
         .sensoryFeedback(.selection, trigger: selection)
     }
 }

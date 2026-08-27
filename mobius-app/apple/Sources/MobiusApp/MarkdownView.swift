@@ -193,6 +193,7 @@ private extension TextFonts {
 /// Read-only and selectable: `Text` selects all of itself or nothing on iOS, so the one
 /// control that drags a selection across a whole message is a text view.
 private struct SelectableText: UIViewRepresentable {
+    @Environment(\.mobiusPalette) private var palette
     let content: NSAttributedString
 
     func makeUIView(context: Context) -> UITextView {
@@ -206,5 +207,10 @@ private struct SelectableText: UIViewRepresentable {
 
     func updateUIView(_ view: UITextView, context: Context) {
         view.attributedText = content
+        view.tintColor = UIColor(palette.accent)
+        view.linkTextAttributes = [
+            .foregroundColor: UIColor(palette.accent),
+            .underlineStyle: NSUnderlineStyle.single.rawValue,
+        ]
     }
 }

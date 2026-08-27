@@ -80,12 +80,12 @@ struct ModelRoutePicker: View {
         .foregroundStyle(palette.accent)
     }
 
-    private var selectedTint: ProviderTint? {
+    private var selectedTint: AccentTint? {
         selected.map { model.providerTint(for: $0) }
     }
 
     @ViewBuilder
-    private func optionLabel(_ title: String, symbol: String?, tint: ProviderTint) -> some View {
+    private func optionLabel(_ title: String, symbol: String?, tint: AccentTint) -> some View {
         if let symbol,
            let glyph = MobiusSymbol.knownGlyph(for: symbol),
            let image = glyph.menuImage(tint.color) {

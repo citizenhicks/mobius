@@ -110,7 +110,7 @@ enum GatewayRequest: Encodable, Sendable {
         requestID: String,
         config: ProviderConfig,
         label: String,
-        tint: ProviderTint,
+        tint: AccentTint,
         modelIds: [String],
         reasoningEfforts: [String]
     )

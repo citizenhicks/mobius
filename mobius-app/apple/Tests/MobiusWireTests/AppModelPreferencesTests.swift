@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UIKit
 import XCTest
 
 @MainActor
@@ -73,11 +74,12 @@ extension AppModelTests {
         XCTAssertTrue(results.isEmpty)
     }
 
-    func testThemeUsesTheInjectedDefaults() throws {
+    func testAppearanceUsesTheInjectedDefaults() throws {
         let suiteName = UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
         defaults.set(ThemePreference.lightsOut.rawValue, forKey: "theme")
+        defaults.set(AccentTint.purple.rawValue, forKey: "accent-tint")
         let model = AppModel(
             client: GatewayClient(),
             store: GatewayStore(defaults: defaults),
@@ -85,8 +87,11 @@ extension AppModelTests {
         )
 
         XCTAssertEqual(model.theme, .lightsOut)
+        XCTAssertEqual(model.accentTint, .purple)
         model.setTheme(.light)
+        model.setAccentTint(.orange)
         XCTAssertEqual(defaults.string(forKey: "theme"), ThemePreference.light.rawValue)
+        XCTAssertEqual(defaults.string(forKey: "accent-tint"), AccentTint.orange.rawValue)
     }
 
     func testLightsOutUsesBlackCanvasWithDarkPalette() {
@@ -94,20 +99,97 @@ extension AppModelTests {
         let lightsOut = MobiusPalette(.light, lightsOut: true)
 
         XCTAssertEqual(lightsOut.canvas, .black)
+        XCTAssertEqual(lightsOut.recessed, .black)
         XCTAssertEqual(
             [
-                lightsOut.recessed, lightsOut.panel, lightsOut.raised, lightsOut.line,
+                lightsOut.panel, lightsOut.raised, lightsOut.line,
                 lightsOut.accent, lightsOut.accentFill, lightsOut.accentSoft,
                 lightsOut.signal, lightsOut.warning, lightsOut.danger,
                 lightsOut.muted, lightsOut.onAccent, lightsOut.sidebarScrim,
             ],
             [
-                dark.recessed, dark.panel, dark.raised, dark.line,
+                dark.panel, dark.raised, dark.line,
                 dark.accent, dark.accentFill, dark.accentSoft,
                 dark.signal, dark.warning, dark.danger,
                 dark.muted, dark.onAccent, dark.sidebarScrim,
             ]
         )
+    }
+
+    func testAccentTintColorsThePalette() {
+        let tint = AccentTint.purple
+        let dark = MobiusPalette(.dark, accentTint: tint)
+        let light = MobiusPalette(.light, accentTint: tint)
+        let defaultDark = MobiusPalette(.dark)
+        let defaultLight = MobiusPalette(.light)
+
+        XCTAssertEqual(
+            dark.accent,
+            tint.color.mix(with: .white, by: 0.55, in: .device)
+        )
+        XCTAssertEqual(
+            dark.accentFill,
+            tint.color.mix(with: .black, by: 0.5, in: .device)
+        )
+        XCTAssertEqual(
+            dark.accentSoft,
+            dark.panel.mix(with: tint.color, by: 0.08, in: .device)
+        )
+        XCTAssertEqual(
+            light.accent,
+            tint.color.mix(with: .black, by: 0.55, in: .device)
+        )
+        XCTAssertEqual(
+            light.accentFill,
+            tint.color.mix(with: .black, by: 0.6, in: .device)
+        )
+        XCTAssertEqual(
+            light.accentSoft,
+            light.panel.mix(with: tint.color, by: 0.12, in: .device)
+        )
+        XCTAssertTrue(zip(
+            [dark.canvas, dark.recessed, dark.panel, dark.raised, dark.line, dark.sidebarScrim],
+            [
+                defaultDark.canvas, defaultDark.recessed, defaultDark.panel,
+                defaultDark.raised, defaultDark.line, defaultDark.sidebarScrim,
+            ]
+        ).allSatisfy { $0.0 != $0.1 })
+        XCTAssertTrue(zip(
+            [light.canvas, light.recessed, light.panel, light.raised, light.line, light.sidebarScrim],
+            [
+                defaultLight.canvas, defaultLight.recessed, defaultLight.panel,
+                defaultLight.raised, defaultLight.line, defaultLight.sidebarScrim,
+            ]
+        ).allSatisfy { $0.0 != $0.1 })
+    }
+
+    func testAccentTintsMeetTextContrastInEveryAppearance() {
+        let appearances: [(ColorScheme, Bool)] = [(.light, false), (.dark, false), (.dark, true)]
+        for (scheme, lightsOut) in appearances {
+            for tint in AccentTint.allCases {
+                let palette = MobiusPalette(scheme, lightsOut: lightsOut, accentTint: tint)
+                for surface in [
+                    palette.canvas, palette.recessed, palette.panel,
+                    palette.raised, palette.accentSoft,
+                ] {
+                    XCTAssertGreaterThanOrEqual(
+                        palette.accent.contrastRatio(with: surface),
+                        4.5,
+                        "\(tint.label) in \(scheme) mode"
+                    )
+                    XCTAssertGreaterThanOrEqual(
+                        palette.muted.contrastRatio(with: surface),
+                        3,
+                        "\(tint.label) muted text in \(scheme) mode"
+                    )
+                }
+                XCTAssertGreaterThanOrEqual(
+                    palette.onAccent.contrastRatio(with: palette.accentFill),
+                    4.5,
+                    "\(tint.label) fill in \(scheme) mode"
+                )
+            }
+        }
     }
 
     func testGitBranchSwitchUsesAnAdvertisedBranch() async throws {
@@ -136,4 +218,29 @@ extension AppModelTests {
         XCTAssertEqual(branch, "feature")
     }
 
+}
+
+@MainActor
+private extension Color {
+    func contrastRatio(with other: Color) -> CGFloat {
+        let brighter = max(relativeLuminance, other.relativeLuminance)
+        let darker = min(relativeLuminance, other.relativeLuminance)
+        return (brighter + 0.05) / (darker + 0.05)
+    }
+
+    var relativeLuminance: CGFloat {
+        var red: CGFloat = 0
+        var green: CGFloat = 0
+        var blue: CGFloat = 0
+        var alpha: CGFloat = 0
+        guard UIColor(self).getRed(&red, green: &green, blue: &blue, alpha: &alpha) else {
+            return 0
+        }
+        let channels = [red, green, blue].map { component in
+            component <= 0.04045
+                ? component / 12.92
+                : pow((component + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+    }
 }

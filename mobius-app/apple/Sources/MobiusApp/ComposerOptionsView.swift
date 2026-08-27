@@ -282,7 +282,7 @@ struct ComposerOptionsView: View {
     private func modelMenuOptionLabel(
         _ title: String,
         providerSymbol: String?,
-        tint: ProviderTint
+        tint: AccentTint
     ) -> some View {
         Group {
             if let providerSymbol,
@@ -431,7 +431,7 @@ struct ComposerOptionsView: View {
         return "\(model.modelLabel(for: currentChoice)) · \(currentChoice.reasoningEffort?.capitalized ?? "Default")"
     }
 
-    private var providerTint: ProviderTint? {
+    private var providerTint: AccentTint? {
         currentChoice.map { model.providerTint(for: $0) }
     }
 
