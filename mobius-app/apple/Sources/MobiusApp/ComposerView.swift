@@ -291,12 +291,10 @@ private struct ExpandedComposerSheet: View {
                 .padding(.bottom, MobiusStyle.iconRowPadding)
         }
         .frame(maxWidth: MobiusStyle.transcriptWidth, maxHeight: .infinity)
-        .mobiusGlass(in: MobiusStyle.cardShape, interactive: true)
-        .shadow(color: .black.opacity(0.18), radius: 12, y: 6)
         .padding(.horizontal, MobiusSpace.l)
         .padding(.top, MobiusSpace.xl)
         .padding(.bottom, MobiusSpace.m)
-        .defaultFocus($isComposerFocused, true)
+        .task { isComposerFocused = true }
         .onChange(of: model.composerFocusRequest) { _, _ in
             isComposerFocused = true
         }
