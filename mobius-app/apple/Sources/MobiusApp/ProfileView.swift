@@ -9,6 +9,9 @@ struct ProfileView: View {
         let providerLabels = model.providerInstances.reduce(into: [String: String]()) {
             $0[$1.instance] = $1.label
         }
+        let providerTints = model.providerInstances.reduce(into: [String: AccentTint]()) {
+            $0[$1.instance] = $1.tint
+        }
         PageScaffold(
             title: "Settings",
             detail: "",
@@ -39,7 +42,11 @@ struct ProfileView: View {
             Section("Usage") {
                 ProfileUsageSection(days: usage)
                 DisclosureGroup("Usage history") {
-                    ProfileUsageHistory(days: usage, providerLabels: providerLabels)
+                    ProfileUsageHistory(
+                        days: usage,
+                        providerLabels: providerLabels,
+                        providerTints: providerTints
+                    )
                 }
                 if let stats = model.profile?.runStats {
                     DisclosureGroup("Run activity") {
@@ -266,7 +273,7 @@ private struct CloudAccountSettings: View {
                 }
                 .buttonStyle(.mobiusGlassProminent)
                 .tint(palette.danger)
-                .foregroundStyle(.white)
+                .foregroundStyle(palette.onDanger)
                 .disabled(model.cloudAction.isRunning)
                 .accessibilityHint("Forgets this Cloud sign-in and its paired gateway")
                 Button("Delete account", glyph: .trash, role: .destructive) {
@@ -274,7 +281,7 @@ private struct CloudAccountSettings: View {
                 }
                 .buttonStyle(.mobiusGlassProminent)
                 .tint(palette.danger)
-                .foregroundStyle(.white)
+                .foregroundStyle(palette.onDanger)
                 .disabled(model.cloudAction.isRunning || model.cloudAccount == nil)
                 .accessibilityHint("Permanently deletes your Cloud account and its data")
             }
@@ -421,6 +428,7 @@ private struct ProfileUsageHistory: View {
     @State private var aggregation: UsageAggregation = .daily
     let days: [DailyUsage]
     let providerLabels: [String: String]
+    let providerTints: [String: AccentTint]
 
     var body: some View {
         VStack(alignment: .leading, spacing: MobiusSpace.l) {
@@ -458,6 +466,7 @@ private struct ProfileUsageHistory: View {
             ProviderUsageChart(
                 usage: days,
                 providerLabels: providerLabels,
+                providerTints: providerTints,
                 weekCount: profileUsageWeekCount,
                 aggregation: aggregation
             )

@@ -391,9 +391,9 @@ struct FileCard<Trailing: View>: View {
         .clipShape(MobiusStyle.tileShape)
         .overlay(alignment: .topTrailing) {
             trailing
-                .foregroundStyle(thumbnail == nil ? Color.primary : Color.white)
+                .foregroundStyle(thumbnail == nil ? Color.primary : palette.onMedia)
                 .shadow(
-                    color: thumbnail == nil ? .clear : .black.opacity(0.85),
+                    color: thumbnail == nil ? .clear : palette.shadow.opacity(0.85),
                     radius: 1,
                     y: 1
                 )

@@ -61,8 +61,12 @@ struct MobiusPalette: Sendable {
     let warning: Color
     let danger: Color
     let muted: Color
+    /// Base shadow ink. Call sites own geometry and opacity, not its hue.
+    let shadow: Color
     /// Label colour for anything filled with `accentFill`.
     let onAccent: Color
+    let onDanger: Color
+    let onMedia: Color
     let sidebarScrim: Color
 
     // Keep the Nord surface steps distinct: chat bubbles, tool details, and diff rows rely
@@ -70,11 +74,11 @@ struct MobiusPalette: Sendable {
     init(
         _ scheme: ColorScheme,
         lightsOut: Bool = false,
-        accentTint: AccentTint = .blue
+        accentTint: AccentTint = .appDefault
     ) {
         let isDark = scheme == .dark || lightsOut
         let hue = accentTint.color
-        let surfaceTintAmount = accentTint == .blue ? 0.0 : 0.2
+        let surfaceTintAmount = accentTint == .appDefault ? 0.0 : 0.2
         let surfaceHue = hue.mix(
             with: isDark ? .black : .white,
             by: isDark ? 0.65 : 0.75,
@@ -89,6 +93,9 @@ struct MobiusPalette: Sendable {
         }
 
         onAccent = .nord6
+        onDanger = .white
+        onMedia = .white
+        shadow = .black
         accent = hue.mix(
             with: isDark ? .white : .black,
             by: 0.55,
@@ -131,7 +138,7 @@ struct MobiusPalette: Sendable {
             sidebarScrim = surface(.nord6)
         }
 
-        if accentTint == .blue {
+        if accentTint == .appDefault {
             accentFill = defaultAccentFill
             accentSoft = defaultAccentSoft
         } else {
@@ -156,6 +163,11 @@ struct MobiusPalette: Sendable {
         case "error": danger
         default: muted
         }
+    }
+
+    static func composingOrbInk(white: Double, scheme: ColorScheme) -> Color {
+        let white = min(1, max(0, white))
+        return Color(white: scheme == .dark ? 1 - white : white)
     }
 }
 
@@ -217,6 +229,8 @@ enum AccentTint: String, Codable, CaseIterable, Identifiable, Sendable {
     case orange
     case red
     case purple
+
+    static let appDefault: Self = .blue
 
     var id: String { rawValue }
 

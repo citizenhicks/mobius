@@ -105,13 +105,15 @@ extension AppModelTests {
                 lightsOut.panel, lightsOut.raised, lightsOut.line,
                 lightsOut.accent, lightsOut.accentFill, lightsOut.accentSoft,
                 lightsOut.signal, lightsOut.warning, lightsOut.danger,
-                lightsOut.muted, lightsOut.onAccent, lightsOut.sidebarScrim,
+                lightsOut.muted, lightsOut.onAccent, lightsOut.onDanger,
+                lightsOut.onMedia, lightsOut.shadow, lightsOut.sidebarScrim,
             ],
             [
                 dark.panel, dark.raised, dark.line,
                 dark.accent, dark.accentFill, dark.accentSoft,
                 dark.signal, dark.warning, dark.danger,
-                dark.muted, dark.onAccent, dark.sidebarScrim,
+                dark.muted, dark.onAccent, dark.onDanger,
+                dark.onMedia, dark.shadow, dark.sidebarScrim,
             ]
         )
     }

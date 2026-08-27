@@ -284,6 +284,7 @@ struct MobiusCloudLabel: View {
 /// masked by the content, so it lights the glyphs rather than a rectangle around them.
 private struct MobiusRunningShimmer: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.mobiusPalette) private var palette
     @Environment(\.scenePhase) private var scenePhase
     let active: Bool
 
@@ -306,7 +307,7 @@ private struct MobiusRunningShimmer: ViewModifier {
                                 GeometryReader { proxy in
                                     let travel = proxy.size.width + 200
                                     LinearGradient(
-                                        colors: [.clear, .white, .white, .clear],
+                                        colors: [.clear, palette.onAccent, palette.onAccent, .clear],
                                         startPoint: .leading,
                                         endPoint: .trailing
                                     )

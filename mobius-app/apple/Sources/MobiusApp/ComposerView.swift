@@ -37,6 +37,7 @@ private struct ComposerStack: View {
 
 private struct ComposerSurface: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.mobiusPalette) private var palette
     @Environment(\.scenePhase) private var scenePhase
     @State private var dictation = ComposerDictation()
     @State private var selection: TextSelection?
@@ -102,7 +103,7 @@ private struct ComposerSurface: View {
             }
         }
         .mobiusGlass(in: MobiusStyle.cardShape, interactive: true)
-        .shadow(color: .black.opacity(0.18), radius: 12, y: 6)
+        .shadow(color: palette.shadow.opacity(0.18), radius: 12, y: 6)
         .overlay(alignment: .top) {
             if !showsExpandedComposer, let suggestions = referenceSuggestions {
                 ReferenceSuggestionsPopup(suggestions: suggestions) {
@@ -385,7 +386,7 @@ private struct ReferenceSuggestionsPopup: View {
         .frame(height: height)
         .background(palette.panel, in: MobiusStyle.tileShape)
         .mobiusGlass(in: MobiusStyle.tileShape)
-        .shadow(color: .black.opacity(0.2), radius: 16, y: 8)
+        .shadow(color: palette.shadow.opacity(0.2), radius: 16, y: 8)
         .offset(y: floatsAbove ? -height - 8 : 0)
     }
 }

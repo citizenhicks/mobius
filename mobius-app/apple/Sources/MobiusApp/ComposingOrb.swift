@@ -29,8 +29,6 @@ struct MobiusComposingOrb: View {
                 context.scaleBy(x: scale, y: scale)
 
                 for dot in MobiusComposingOrbRenderer.dots(at: time) {
-                    let white = min(1, max(0, dot.white))
-                    let ink = colorScheme == .dark ? 1 - white : white
                     let radius = max(0.3, dot.radius)
                     let rect = CGRect(
                         x: dot.x - radius,
@@ -41,7 +39,7 @@ struct MobiusComposingOrb: View {
                     context.fill(
                         Path(ellipseIn: rect),
                         with: .color(
-                            Color(red: ink, green: ink, blue: ink)
+                            MobiusPalette.composingOrbInk(white: dot.white, scheme: colorScheme)
                                 .opacity(dot.opacity)
                         )
                     )

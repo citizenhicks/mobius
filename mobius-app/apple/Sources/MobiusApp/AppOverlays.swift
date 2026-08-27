@@ -108,7 +108,7 @@ private struct AppToastView: View {
         .padding(.trailing, MobiusSpace.s)
         .padding(.vertical, MobiusSpace.m)
         .mobiusGlass(in: MobiusStyle.cardShape, interactive: true)
-        .shadow(color: .black.opacity(0.20), radius: 18, y: 8)
+        .shadow(color: palette.shadow.opacity(0.20), radius: 18, y: 8)
         .gesture(
             DragGesture(minimumDistance: 20)
                 .onEnded { value in

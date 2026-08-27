@@ -147,6 +147,7 @@ struct ProviderUsageChart: View {
     @Environment(\.mobiusPalette) private var palette
     let usage: [DailyUsage]
     let providerLabels: [String: String]
+    let providerTints: [String: AccentTint]
     var weekCount = 25
     var aggregation: UsageAggregation = .daily
 
@@ -180,13 +181,15 @@ struct ProviderUsageChart: View {
     }
 
     private func timelineChart(_ points: [ProviderUsagePoint]) -> some View {
-        Chart(points) { point in
+        let scale = providerStyleScale(points)
+        return Chart(points) { point in
             BarMark(
                 x: .value("Date", point.date),
                 y: .value("Tokens", point.totalTokens)
             )
             .foregroundStyle(by: .value("Provider", point.providerLabel))
         }
+        .chartForegroundStyleScale(domain: scale.domain, range: scale.range)
         .chartXAxis {
             AxisMarks(values: .stride(by: aggregation == .daily ? .month : .weekOfYear)) { _ in
                 AxisGridLine().foregroundStyle(palette.line.opacity(0.3))
@@ -217,13 +220,15 @@ struct ProviderUsageChart: View {
     }
 
     private func cumulativeChart(_ points: [ProviderUsagePoint]) -> some View {
-        Chart(points) { point in
+        let scale = providerStyleScale(points)
+        return Chart(points) { point in
             BarMark(
                 x: .value("Tokens", point.totalTokens),
                 y: .value("Provider", point.providerLabel)
             )
             .foregroundStyle(by: .value("Provider", point.providerLabel))
         }
+        .chartForegroundStyleScale(domain: scale.domain, range: scale.range)
         .chartXAxis {
             AxisMarks(position: .bottom, values: .automatic(desiredCount: 4)) { value in
                 AxisGridLine().foregroundStyle(palette.line.opacity(0.3))
@@ -250,6 +255,17 @@ struct ProviderUsageChart: View {
         }
         .frame(height: max(180, CGFloat(points.count) * 42))
         .accessibilityLabel("Cumulative token usage by provider")
+    }
+
+    private func providerStyleScale(
+        _ points: [ProviderUsagePoint]
+    ) -> (domain: [String], range: [Color]) {
+        var seen = Set<String>()
+        let providers = points.filter { seen.insert($0.providerLabel).inserted }
+        return (
+            providers.map(\.providerLabel),
+            providers.map { (providerTints[$0.provider] ?? .appDefault).color }
+        )
     }
 }
 

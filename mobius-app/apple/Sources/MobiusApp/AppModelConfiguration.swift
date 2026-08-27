@@ -99,8 +99,8 @@ extension AppModel {
 
     /// The accent of the setup behind one route, so two setups of a provider differ.
     func providerTint(for choice: ModelChoice) -> AccentTint {
-        guard let instance = modelProviders[choice.route] else { return .blue }
-        return providerInstances.first { $0.instance == instance }?.tint ?? .blue
+        guard let instance = modelProviders[choice.route] else { return .appDefault }
+        return providerInstances.first { $0.instance == instance }?.tint ?? .appDefault
     }
 
     private func providerStatus(for choice: ModelChoice) -> ProviderStatus? {
@@ -295,7 +295,7 @@ extension AppModel {
         else { return }
         let selectedModel = status.models.first
         providerLabelDraft = status.label
-        providerTintDraft = .blue
+        providerTintDraft = .appDefault
         providerDraft = ProviderConfig(
             instance: UUID().uuidString.lowercased(),
             provider: status.provider,
