@@ -1,6 +1,50 @@
 import Foundation
 import XCTest
 
+final class TranscriptMarkdownSelectionTests: XCTestCase {
+    func testFlattensEveryBlockKindIntoOneSelectableValue() {
+        let selectable = selectableMarkdown("""
+            # Heading
+
+            A **bold** line.
+
+            - first
+            - second
+              - nested
+
+            1. one
+            2. two
+
+            ```swift
+            let x = 1
+            ```
+
+            > quoted
+
+            Last.
+            """)
+
+        XCTAssertEqual(String(selectable.characters), """
+            Heading
+
+            A bold line.
+
+            \u{2022}  first
+            \u{2022}  second
+                \u{2022}  nested
+
+            1. one
+            2. two
+
+            let x = 1
+
+            quoted
+
+            Last.
+            """)
+    }
+}
+
 final class TranscriptWaitingNoteTests: XCTestCase {
     func testShowsOnlyWhileATurnRunsWithNothingPending() {
         // A pending row shimmers on its own, and a pending assistant message means text is

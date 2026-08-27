@@ -1,5 +1,97 @@
 import Foundation
 import Observation
+import SwiftUI
+
+/// The message as one value `Text` can select end to end, still shaped like the blocks above
+/// it: one text view is the only thing UIKit will drag a selection across.
+///
+/// `Text` renders inline intents but drops block ones, so paragraphs would run together and a
+/// list would lose its markers. Blocks are separated here and each kind carries the font it
+/// reads as in the transcript.
+func selectableMarkdown(_ source: String) -> AttributedString {
+    guard let parsed = try? AttributedString(
+        markdown: source,
+        options: .init(
+            interpretedSyntax: .full,
+            failurePolicy: .returnPartiallyParsedIfPossible
+        )
+    ) else { return AttributedString(source) }
+
+    var result = AttributedString()
+    var blockID: Int?
+    var listID: Int?
+
+    for run in parsed.runs {
+        let blocks = run.presentationIntent?.components ?? []
+        if let id = blocks.first?.identity, id != blockID {
+            let list = blocks.listIdentity
+            if !result.characters.isEmpty {
+                result.append(AttributedString(list != nil && list == listID ? "\n" : "\n\n"))
+            }
+            if let marker = blocks.listMarker { result.append(AttributedString(marker)) }
+            blockID = id
+            listID = list
+        }
+        var fragment = AttributedString(parsed[run.range])
+        if let font = blocks.blockFont { fragment.font = font }
+        if blocks.isQuoted { fragment.foregroundColor = .secondary }
+        // A fenced block ends in the newline that closed it, which would draw as a blank line.
+        while blocks.isCode, let last = fragment.characters.last, last.isNewline {
+            fragment.removeSubrange(
+                fragment.characters.index(before: fragment.characters.endIndex)..<fragment.endIndex
+            )
+        }
+        result.append(fragment)
+    }
+    return result
+}
+
+private func isList(_ component: PresentationIntent.IntentType) -> Bool {
+    switch component.kind {
+    case .orderedList, .unorderedList: true
+    default: false
+    }
+}
+
+private extension [PresentationIntent.IntentType] {
+    /// The outermost list, so nested items stay one line below their parent rather than
+    /// reading as a new list.
+    var listIdentity: Int? { last(where: isList)?.identity }
+
+    var listMarker: String? {
+        guard let item = first(where: { if case .listItem = $0.kind { true } else { false } }),
+              case .listItem(let ordinal) = item.kind else { return nil }
+        let indent = String(repeating: "    ", count: Swift.max(0, count(where: isList) - 1))
+        if let list = first(where: isList), case .orderedList = list.kind {
+            return "\(indent)\(ordinal). "
+        }
+        return "\(indent)\u{2022}  "
+    }
+
+    var isQuoted: Bool {
+        contains { if case .blockQuote = $0.kind { true } else { false } }
+    }
+
+    var isCode: Bool {
+        contains { if case .codeBlock = $0.kind { true } else { false } }
+    }
+
+    /// Only the kinds that do not read as body text carry a font of their own.
+    var blockFont: Font? {
+        for component in self {
+            switch component.kind {
+            case .header(let level):
+                return level == 1 ? .title3.weight(.bold) : level == 2 ? .headline
+                    : .subheadline.weight(.bold)
+            case .codeBlock:
+                return .footnote.monospaced()
+            default:
+                continue
+            }
+        }
+        return nil
+    }
+}
 
 @Observable
 final class TranscriptEntry: Identifiable {

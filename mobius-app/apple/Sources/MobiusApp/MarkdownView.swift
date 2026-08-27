@@ -34,6 +34,34 @@ struct MobiusMarkdownText: View, Equatable {
     }
 }
 
+/// Carries the "Select text" tap out of the renderer's edit menu and into SwiftUI.
+///
+/// The renderer ships its own selection sheet, but a sheet can only be sized and backed from
+/// inside its own content, so ours replaces it. Everything else the listener reports is
+/// somebody else's feature.
+@MainActor
+@Observable
+private final class MarkdownSelectionRequest: MarkdownListener {
+    var isPresented = false
+
+    func onContextMenuTap(id: String, selectedContent: String) async { isPresented = true }
+
+    func onRender(markdown: RenderableDocument) async {}
+    func onTableCopyTap(content: String) async {}
+    func onTableDownloadTap(content: String) async {}
+    func onContextMenuAppear(id: String, selectedContent: String) async {}
+    func onImageTap(image: MarkdownImage) async {}
+}
+
+private let mobiusSelectTextMenu = TextContextMenu(menuGroups: [
+    TextContextMenuGroup(
+        title: nil,
+        image: nil,
+        displayInline: true,
+        items: [TextContextMenuItem(id: "mobius.selectText", title: "Select text")]
+    )
+])
+
 /// The renderer fades each newly arrived word in, which is the whole reason for this package:
 /// the words settle in behind the stream instead of snapping in a line at a time.
 ///
@@ -46,6 +74,7 @@ private struct MobiusMarkdownDocument: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.fontResolutionContext) private var fontResolutionContext
     @State private var document = RenderableDocument.empty
+    @State private var selection = MarkdownSelectionRequest()
     let text: String
     let streaming: Bool
 
@@ -56,7 +85,7 @@ private struct MobiusMarkdownDocument: View {
             colorScheme: colorScheme,
             dynamicTypeSize: dynamicTypeSize
         )
-        DocumentView(renderableDocument: document, config: request.config)
+        DocumentView(renderableDocument: document, config: request.config, listener: selection)
             .task(id: request) {
                 let parsed = await MarkdownParserImpl().parse(
                     text: request.text,
@@ -64,6 +93,19 @@ private struct MobiusMarkdownDocument: View {
                 )
                 guard !Task.isCancelled else { return }
                 document = parsed
+            }
+            .sheet(isPresented: $selection.isPresented) {
+                ScrollView {
+                    Text(selectableMarkdown(text))
+                        .font(MobiusStyle.bodyFont)
+                        .lineSpacing(5)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(MobiusSpace.l)
+                }
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+                .presentationBackground(.ultraThinMaterial)
             }
     }
 
@@ -101,6 +143,10 @@ private struct MobiusMarkdownDocument: View {
                 codeBackgroundColor: palette.raised,
                 codeUnderlineColor: palette.line
             ),
+            // Each block is its own text view, so a drag stops at the paragraph it started in.
+            // This item opens the whole message as one selectable document, which is the only
+            // cross-block selection UIKit will give us.
+            textContextMenu: mobiusSelectTextMenu,
             codeBlockConfig: CodeBlockConfig(
                 theme: .xcode,
                 backgroundColor: palette.raised,
@@ -109,10 +155,7 @@ private struct MobiusMarkdownDocument: View {
                 chromeTextFonts: .mobius(.footnote, context: fontResolutionContext)
             ),
             blockSpacing: MobiusSpace.m,
-            // Each block is its own text view, so a drag stops at the paragraph it started in.
-            // The renderer's own "Select more text" action opens the whole message as one
-            // selectable document, which is the only cross-block selection UIKit will give us.
-            textSelectionConfig: TextSelectionConfig(backgroundColor: palette.canvas),
+            textSelectionConfig: TextSelectionConfig(isEnabled: false),
             thematicBreakColor: palette.line
         )
     }

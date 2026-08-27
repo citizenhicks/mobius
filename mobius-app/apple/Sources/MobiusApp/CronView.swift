@@ -42,17 +42,16 @@ struct CronView: View {
             }
 
             Section("Run history") {
-                if model.cronRuns.isEmpty {
+                let runs = namedRuns
+                if runs.isEmpty {
                     Text("No scheduled runs yet.").foregroundStyle(palette.muted)
                 } else {
-                    ForEach(model.cronRuns) { run in
-                        if let task = model.cronTasks.first(where: { $0.id == run.taskId }) {
-                            CronRunRow(
-                                run: run,
-                                taskName: task.task,
-                                open: { model.presentCronRun(run) }
-                            )
-                        }
+                    ForEach(runs, id: \.run.id) { entry in
+                        CronRunRow(
+                            run: entry.run,
+                            taskName: entry.name,
+                            open: { model.presentCronRun(entry.run) }
+                        )
                     }
                 }
             }
@@ -67,6 +66,15 @@ struct CronView: View {
         }
         .sheet(item: $model.presentedCronRun, onDismiss: model.closeCronRunPreview) { _ in
             ScheduledRunTranscriptSheet()
+        }
+    }
+
+    /// A run whose task is gone — deleted, or still loading — has no name to show, so it
+    /// drops out. Resolving before the branch keeps the placeholder honest when that empties
+    /// the section; testing `cronRuns` directly left a bare header with no rows under it.
+    private var namedRuns: [(run: CronRun, name: String)] {
+        model.cronRuns.compactMap { run in
+            model.cronTasks.first { $0.id == run.taskId }.map { (run, $0.task) }
         }
     }
 
