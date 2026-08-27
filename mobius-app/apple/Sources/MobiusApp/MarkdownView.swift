@@ -97,6 +97,9 @@ private struct MobiusMarkdownDocument: View {
             .sheet(isPresented: $selection.isPresented) {
                 SelectableText(content: selectableMarkdown(text))
                     .padding(.horizontal, MobiusSpace.l)
+                    .padding(.bottom, MobiusSpace.l)
+                    // Clears the drag indicator, which sits in the top of the sheet's own bounds.
+                    .padding(.top, MobiusSpace.xl)
                     .presentationDetents([.medium, .large])
                     .presentationDragIndicator(.visible)
                     .presentationBackground(palette.canvas)
