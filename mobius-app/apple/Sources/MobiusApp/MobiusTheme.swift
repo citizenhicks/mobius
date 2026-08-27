@@ -67,10 +67,10 @@ struct MobiusPalette: Sendable {
 
     // Keep the Nord surface steps distinct: chat bubbles, tool details, and diff rows rely
     // on this hierarchy instead of carrying one-off borders and backgrounds.
-    init(_ scheme: ColorScheme) {
+    init(_ scheme: ColorScheme, lightsOut: Bool = false) {
         onAccent = .nord6
-        if scheme == .dark {
-            canvas = Color(red: 0.141, green: 0.161, blue: 0.200)
+        if scheme == .dark || lightsOut {
+            canvas = lightsOut ? .black : Color(red: 0.141, green: 0.161, blue: 0.200)
             recessed = Color(red: 0.094, green: 0.106, blue: 0.133)
             panel = .nord0
             raised = .nord1
@@ -134,10 +134,11 @@ extension EnvironmentValues {
 }
 
 struct MobiusTheme: ViewModifier {
+    @Environment(AppModel.self) private var model
     @Environment(\.colorScheme) private var colorScheme
 
     func body(content: Content) -> some View {
-        let palette = MobiusPalette(colorScheme)
+        let palette = MobiusPalette(colorScheme, lightsOut: model.theme == .lightsOut)
         content
             .environment(\.mobiusPalette, palette)
             .foregroundStyle(.primary)

@@ -301,6 +301,7 @@ enum AttachmentImportError: LocalizedError {
 enum ThemePreference: String, CaseIterable, Identifiable {
     case system
     case dark
+    case lightsOut = "lights out"
     case light
 
     var id: Self { self }

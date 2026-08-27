@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import XCTest
 
 @MainActor
@@ -76,16 +77,37 @@ extension AppModelTests {
         let suiteName = UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
-        defaults.set(ThemePreference.dark.rawValue, forKey: "theme")
+        defaults.set(ThemePreference.lightsOut.rawValue, forKey: "theme")
         let model = AppModel(
             client: GatewayClient(),
             store: GatewayStore(defaults: defaults),
             settingsDefaults: defaults
         )
 
-        XCTAssertEqual(model.theme, .dark)
+        XCTAssertEqual(model.theme, .lightsOut)
         model.setTheme(.light)
         XCTAssertEqual(defaults.string(forKey: "theme"), ThemePreference.light.rawValue)
+    }
+
+    func testLightsOutUsesBlackCanvasWithDarkPalette() {
+        let dark = MobiusPalette(.dark)
+        let lightsOut = MobiusPalette(.light, lightsOut: true)
+
+        XCTAssertEqual(lightsOut.canvas, .black)
+        XCTAssertEqual(
+            [
+                lightsOut.recessed, lightsOut.panel, lightsOut.raised, lightsOut.line,
+                lightsOut.accent, lightsOut.accentFill, lightsOut.accentSoft,
+                lightsOut.signal, lightsOut.warning, lightsOut.danger,
+                lightsOut.muted, lightsOut.onAccent, lightsOut.sidebarScrim,
+            ],
+            [
+                dark.recessed, dark.panel, dark.raised, dark.line,
+                dark.accent, dark.accentFill, dark.accentSoft,
+                dark.signal, dark.warning, dark.danger,
+                dark.muted, dark.onAccent, dark.sidebarScrim,
+            ]
+        )
     }
 
     func testGitBranchSwitchUsesAnAdvertisedBranch() async throws {

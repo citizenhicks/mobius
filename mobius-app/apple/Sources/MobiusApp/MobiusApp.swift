@@ -7,8 +7,8 @@ struct MobiusAppleApp: App {
     var body: some Scene {
         WindowGroup {
             AppShell()
-                .environment(model)
                 .mobiusTheme()
+                .environment(model)
                 .onOpenURL { model.handleOpenURL($0) }
         }
     }

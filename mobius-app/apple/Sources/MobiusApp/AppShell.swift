@@ -288,7 +288,7 @@ struct AppShell: View {
     private var preferredColorScheme: ColorScheme? {
         switch model.theme {
         case .system: nil
-        case .dark: .dark
+        case .dark, .lightsOut: .dark
         case .light: .light
         }
     }
