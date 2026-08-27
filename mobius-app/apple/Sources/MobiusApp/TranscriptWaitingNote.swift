@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 /// The line that fills the gap between one step finishing and the next arriving.
 ///
@@ -83,5 +84,30 @@ enum TranscriptWaitingNote {
     static func message(in order: [String], elapsed: TimeInterval) -> String {
         let step = elapsed > 0 ? Int(elapsed / rotation) : 0
         return order[step % order.count]
+    }
+}
+
+/// The debounce behind the waiting phrase, held by every surface that draws a transcript so
+/// the chat, a subagent preview, and a scheduled run all reveal it on the same terms.
+@MainActor
+@Observable
+final class TranscriptWaitingHold {
+    private(set) var phrase: TranscriptWaitingPhrase?
+    private var order = TranscriptWaitingNote.messages
+    private var hold: Task<Void, Never>?
+
+    func update(isWaiting: Bool) {
+        hold?.cancel()
+        guard isWaiting else {
+            phrase = nil
+            return
+        }
+        guard phrase == nil else { return }
+        hold = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(TranscriptWaitingNote.appearAfter))
+            guard !Task.isCancelled, let self else { return }
+            order.shuffle()
+            phrase = TranscriptWaitingPhrase(startedAt: Date(), order: order)
+        }
     }
 }

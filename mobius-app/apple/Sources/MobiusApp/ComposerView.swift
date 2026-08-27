@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UIKit
 @preconcurrency import AVFoundation
 
 struct ComposerView: View {
@@ -18,7 +19,7 @@ struct ComposerView: View {
             }
             ComposerStack()
         }
-        .frame(maxWidth: 880)
+        .frame(maxWidth: MobiusStyle.transcriptWidth)
         .frame(maxWidth: .infinity)
         .padding(.horizontal, MobiusSpace.l)
         .padding(.bottom, MobiusSpace.m)
@@ -41,54 +42,85 @@ private struct ComposerSurface: View {
     @State private var selection: TextSelection?
     @FocusState private var isComposerFocused: Bool
     @State private var referenceSuggestions: ReferenceSuggestions?
+    @State private var composerHeight: CGFloat = 0
+    @State private var showsExpandedComposer = false
 
     var body: some View {
         @Bindable var model = model
         VStack(spacing: 0) {
-            if !model.composerAttachments.isEmpty {
-                ComposerAttachmentsView()
-                    .padding(.horizontal, MobiusSpace.m)
-                    .padding(.top, MobiusSpace.m)
-            }
-            TextField(
-                "You can just do things",
-                text: $model.composer,
-                selection: $selection,
-                axis: .vertical
-            )
-            .textFieldStyle(.plain)
-            .focused($isComposerFocused)
-            .lineLimit(1...8)
-            .scrollDismissesKeyboard(.interactively)
-            .font(MobiusStyle.bodyFont)
-            .accessibilityLabel("Message")
-            .disabled(dictation.isActive)
-            .onSubmit(submit)
-            .onKeyPress(.return, phases: .down) { keyPress in
-                if keyPress.modifiers.contains(.shift) {
-                    insertLineBreak()
-                } else {
-                    submit()
+            if !showsExpandedComposer {
+                if !model.composerAttachments.isEmpty {
+                    ComposerAttachmentsView()
+                        .padding(.horizontal, MobiusSpace.m)
+                        .padding(.top, MobiusSpace.m)
                 }
-                return .handled
-            }
-            .padding(.horizontal, MobiusSpace.l)
-            .padding(.top, MobiusSpace.m)
-            .padding(.bottom, MobiusSpace.xs)
-            ComposerOptionsView(dictation: dictation, selection: $selection)
+                TextField(
+                    "You can just do things",
+                    text: $model.composer,
+                    selection: $selection,
+                    axis: .vertical
+                )
+                .textFieldStyle(.plain)
+                .focused($isComposerFocused)
+                .lineLimit(1...8)
+                .scrollDismissesKeyboard(.interactively)
+                .font(MobiusStyle.bodyFont)
+                .accessibilityLabel("Message")
+                .disabled(dictation.isActive)
+                .onSubmit { _ = submit() }
+                .onKeyPress(.return, phases: .down) { keyPress in
+                    if keyPress.modifiers.contains(.shift) {
+                        insertLineBreak()
+                    } else {
+                        _ = submit()
+                    }
+                    return .handled
+                }
+                .onGeometryChange(for: CGFloat.self) { geometry in
+                    geometry.size.height
+                } action: { height in
+                    composerHeight = height
+                }
+                .padding(.horizontal, MobiusSpace.l)
+                .padding(.top, MobiusSpace.m)
+                .padding(.bottom, MobiusSpace.xs)
+                .padding(.trailing, showsExpansionControl ? MobiusStyle.iconButtonSize : 0)
+                .overlay(alignment: .topTrailing) {
+                    if showsExpansionControl {
+                        ComposerSizeButton(expanded: false) {
+                            showsExpandedComposer = true
+                        }
+                    }
+                }
+                ComposerOptionsView(
+                    dictation: dictation,
+                    selection: $selection,
+                    send: { _ = submit() }
+                )
                 .padding(.horizontal, MobiusStyle.iconRowPadding)
                 .padding(.bottom, MobiusStyle.iconRowPadding)
+            }
         }
         .mobiusGlass(in: MobiusStyle.cardShape, interactive: true)
         .shadow(color: .black.opacity(0.18), radius: 12, y: 6)
         .overlay(alignment: .top) {
-            if let suggestions = referenceSuggestions {
+            if !showsExpandedComposer, let suggestions = referenceSuggestions {
                 ReferenceSuggestionsPopup(suggestions: suggestions) {
                     complete($0, suggestions: suggestions)
                 }
                 .padding(.horizontal, MobiusSpace.s)
                 .zIndex(2)
             }
+        }
+        .sheet(isPresented: $showsExpandedComposer) {
+            ExpandedComposerSheet(
+                dictation: dictation,
+                selection: $selection,
+                suggestions: referenceSuggestions,
+                completeReference: complete,
+                submit: submit,
+                insertLineBreak: insertLineBreak
+            )
         }
         .task(id: referenceSuggestionRequest) {
             let request = referenceSuggestionRequest
@@ -141,10 +173,14 @@ private struct ComposerSurface: View {
         }
     }
 
-    private func submit() {
-        guard !dictation.isActive else { return }
+    private var showsExpansionControl: Bool {
+        composerHeight > UIFont.preferredFont(forTextStyle: .body).lineHeight * 2.5
+    }
+
+    private func submit() -> Bool {
+        guard !dictation.isActive, model.sendMessage() else { return false }
         selection = nil
-        model.sendMessage()
+        return true
     }
 
     private var referenceSuggestionRequest: ReferenceSuggestionRequest {
@@ -198,6 +234,102 @@ private struct ComposerSurface: View {
     }
 }
 
+private struct ExpandedComposerSheet: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    let dictation: ComposerDictation
+    @Binding var selection: TextSelection?
+    let suggestions: ReferenceSuggestions?
+    let completeReference: (MountedReference, ReferenceSuggestions) -> Void
+    let submit: () -> Bool
+    let insertLineBreak: () -> Void
+    @FocusState private var isComposerFocused: Bool
+
+    var body: some View {
+        @Bindable var model = model
+        VStack(spacing: 0) {
+            if !model.composerAttachments.isEmpty {
+                ComposerAttachmentsView()
+                    .padding(.horizontal, MobiusSpace.m)
+                    .padding(.top, MobiusSpace.m)
+            }
+            TextEditor(text: $model.composer, selection: $selection)
+                .scrollContentBackground(.hidden)
+                .scrollDismissesKeyboard(.interactively)
+                .focused($isComposerFocused)
+                .font(MobiusStyle.bodyFont)
+                .accessibilityLabel("Message")
+                .disabled(dictation.isActive)
+                .onKeyPress(.return, phases: .down) { keyPress in
+                    if keyPress.modifiers.contains(.shift) {
+                        insertLineBreak()
+                    } else {
+                        submitAndDismiss()
+                    }
+                    return .handled
+                }
+                .padding(.horizontal, MobiusSpace.l)
+                .padding(.top, MobiusSpace.m)
+                .padding(.bottom, MobiusSpace.xs)
+                .padding(.trailing, MobiusStyle.iconButtonSize)
+                .overlay(alignment: .topTrailing) {
+                    ComposerSizeButton(expanded: true, action: dismiss.callAsFunction)
+                }
+                .frame(maxHeight: .infinity)
+            if let suggestions {
+                ReferenceSuggestionsPopup(suggestions: suggestions, floatsAbove: false) {
+                    completeReference($0, suggestions)
+                }
+                .padding(.horizontal, MobiusSpace.s)
+            }
+            ComposerOptionsView(
+                dictation: dictation,
+                selection: $selection,
+                send: submitAndDismiss
+            )
+                .padding(.horizontal, MobiusStyle.iconRowPadding)
+                .padding(.bottom, MobiusStyle.iconRowPadding)
+        }
+        .frame(maxWidth: MobiusStyle.transcriptWidth, maxHeight: .infinity)
+        .mobiusGlass(in: MobiusStyle.cardShape, interactive: true)
+        .shadow(color: .black.opacity(0.18), radius: 12, y: 6)
+        .padding(.horizontal, MobiusSpace.l)
+        .padding(.top, MobiusSpace.xl)
+        .padding(.bottom, MobiusSpace.m)
+        .defaultFocus($isComposerFocused, true)
+        .onChange(of: model.composerFocusRequest) { _, _ in
+            isComposerFocused = true
+        }
+        .onChange(of: model.composerBlurRequest) { _, _ in
+            isComposerFocused = false
+        }
+        .mobiusSheet(detents: [.fraction(0.75)])
+    }
+
+    private func submitAndDismiss() {
+        if submit() { dismiss() }
+    }
+}
+
+private struct ComposerSizeButton: View {
+    let expanded: Bool
+    let action: () -> Void
+
+    var body: some View {
+        let title = expanded ? "Collapse composer" : "Expand composer"
+        Button(action: action) {
+            MobiusLabel(
+                title: title,
+                glyph: expanded ? .collapse : .expand,
+                iconSize: MobiusStyle.glyphMark
+            )
+        }
+        .labelStyle(.iconOnly)
+        .buttonStyle(MobiusIconButtonStyle(bare: true))
+        .help(title)
+    }
+}
+
 private struct ReferenceSuggestionRequest: Equatable, Sendable {
     let text: String
     let cursorOffset: Int
@@ -209,6 +341,7 @@ private struct ReferenceSuggestionRequest: Equatable, Sendable {
 private struct ReferenceSuggestionsPopup: View {
     @Environment(\.mobiusPalette) private var palette
     let suggestions: ReferenceSuggestions
+    var floatsAbove = true
     let select: (MountedReference) -> Void
 
     private var height: CGFloat {
@@ -255,7 +388,7 @@ private struct ReferenceSuggestionsPopup: View {
         .background(palette.panel, in: MobiusStyle.tileShape)
         .mobiusGlass(in: MobiusStyle.tileShape)
         .shadow(color: .black.opacity(0.2), radius: 16, y: 8)
-        .offset(y: -height - 8)
+        .offset(y: floatsAbove ? -height - 8 : 0)
     }
 }
 

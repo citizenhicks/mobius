@@ -282,7 +282,7 @@ private struct InstallExtensionSheet: View {
             }
             .background(MobiusBackdrop())
         }
-        .presentationDragIndicator(.visible)
+        .mobiusSheet(detents: [.large])
     }
 
     private var canInstall: Bool {

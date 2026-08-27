@@ -42,8 +42,8 @@ struct TranscriptRowsView: View {
     @State private var hasAppeared = false
     @State private var speaker = MessageSpeaker()
     let projection: TranscriptProjection
+    let fileSessionID: String?
     var activeStepID: TranscriptPresentationID?
-    var collapsesLongMessages = false
     var rowSpacing: CGFloat = 12
     var turnDiff: (TranscriptEntry) -> String = { _ in "" }
     var onExpandActivityGroup: () -> Void = {}
@@ -77,6 +77,7 @@ struct TranscriptRowsView: View {
         case .activityGroup:
             EventGroupView(
                 entries: row.records,
+                fileSessionID: fileSessionID,
                 isActive: row.records.contains { $0.presentationID == activeStepID },
                 waiting: projection.waiting.phrase(forRow: row.id),
                 onExpand: onExpandActivityGroup
@@ -84,6 +85,7 @@ struct TranscriptRowsView: View {
         case .workedGroup:
             WorkedForGroupView(
                 entries: row.records,
+                fileSessionID: fileSessionID,
                 elapsedMs: row.elapsedMs,
                 onExpand: onExpandActivityGroup
             )
@@ -93,8 +95,8 @@ struct TranscriptRowsView: View {
                     entry: entry,
                     isUser: row.kind == .user,
                     speaker: speaker,
-                    turnDiff: turnDiff(entry),
-                    collapsesLongMessages: collapsesLongMessages
+                    fileSessionID: fileSessionID,
+                    turnDiff: turnDiff(entry)
                 )
             }
         }
@@ -159,11 +161,9 @@ struct TranscriptView: View {
     @State private var historyBoundaryID: TranscriptPresentationID?
     @State private var historyAnchorID: TranscriptPresentationID?
     @State private var scrollMode = TranscriptScrollMode.followingTail
-    @State private var waitingSince: Date?
-    @State private var waitingHold: Task<Void, Never>?
-    @State private var waitingOrder = TranscriptWaitingNote.messages
-    private let rowSpacing: CGFloat = 12
-    private let contentPadding: CGFloat = 16
+    @State private var waiting = TranscriptWaitingHold()
+    private let rowSpacing = MobiusStyle.transcriptRowSpacing
+    private let contentPadding = MobiusStyle.transcriptPadding
 
     @ViewBuilder
     var body: some View {
@@ -189,6 +189,7 @@ struct TranscriptView: View {
                 }
                 TranscriptRowsView(
                     projection: projection,
+                    fileSessionID: model.selectedSessionID,
                     activeStepID: model.activeTranscriptStepID,
                     rowSpacing: rowSpacing,
                     turnDiff: { model.turnDiff(for: $0) },
@@ -203,7 +204,7 @@ struct TranscriptView: View {
                 Color.clear.frame(height: max(1, bottomInset))
             }
             .scrollTargetLayout()
-            .frame(maxWidth: 880)
+            .frame(maxWidth: MobiusStyle.transcriptWidth)
             .frame(maxWidth: .infinity)
             .padding(contentPadding)
         }
@@ -259,13 +260,10 @@ struct TranscriptView: View {
             scrollMode = .followingTail
             position = ScrollPosition(edge: .bottom)
         }
-        .onChange(of: model.isWaitingForModel, initial: true) { _, waiting in
-            rescheduleWaitingPhrase(waiting)
+        .onChange(of: model.isWaitingForModel, initial: true) { _, isWaiting in
+            rescheduleWaitingPhrase(isWaiting)
         }
-        .onDisappear {
-            waitingHold?.cancel()
-            waitingHold = nil
-        }
+        .onDisappear { rescheduleWaitingPhrase(false) }
     }
 
     private var projection: TranscriptProjection {
@@ -275,26 +273,10 @@ struct TranscriptView: View {
         )
     }
 
-    private var waitingPhrase: TranscriptWaitingPhrase? {
-        guard model.isWaitingForModel, let waitingSince else { return nil }
-        return TranscriptWaitingPhrase(startedAt: waitingSince, order: waitingOrder)
-    }
+    private var waitingPhrase: TranscriptWaitingPhrase? { waiting.phrase }
 
-    /// Steps land a few hundred milliseconds apart in a busy turn, so the phrase waits before
-    /// appearing instead of strobing between them. It leaves without a delay once work resumes.
-    private func rescheduleWaitingPhrase(_ waiting: Bool) {
-        waitingHold?.cancel()
-        guard waiting else {
-            waitingSince = nil
-            return
-        }
-        guard waitingSince == nil else { return }
-        waitingHold = Task {
-            try? await Task.sleep(for: .seconds(TranscriptWaitingNote.appearAfter))
-            guard !Task.isCancelled else { return }
-            waitingOrder.shuffle()
-            waitingSince = Date()
-        }
+    private func rescheduleWaitingPhrase(_ isWaiting: Bool) {
+        waiting.update(isWaiting: isWaiting)
     }
 
     private func loadEarlierHistory() {
@@ -356,8 +338,8 @@ private struct TranscriptRow: View {
     /// projection sends only what the reader wrote and what the agent said back.
     let isUser: Bool
     let speaker: MessageSpeaker
+    let fileSessionID: String?
     let turnDiff: String
-    var collapsesLongMessages = false
 
     var body: some View {
         rowContent
@@ -383,7 +365,7 @@ private struct TranscriptRow: View {
             HStack {
                 Spacer(minLength: 42)
                 VStack(alignment: .trailing, spacing: MobiusSpace.s) {
-                    TranscriptFileCards(files: entry.files)
+                    TranscriptFileCards(files: entry.files, sessionID: fileSessionID)
                     if !entry.text.isEmpty {
                         CollapsibleText(text: entry.text)
                             .padding(.horizontal, MobiusSpace.l)
@@ -396,18 +378,10 @@ private struct TranscriptRow: View {
             }
         } else {
             VStack(alignment: .leading, spacing: MobiusSpace.s) {
-                TranscriptFileCards(files: entry.files)
+                TranscriptFileCards(files: entry.files, sessionID: fileSessionID)
                 if !entry.text.isEmpty {
-                    if collapsesLongMessages {
-                        CollapsibleText(
-                            text: entry.text,
-                            rendersMarkdown: true,
-                            streaming: entry.pending
-                        )
-                    } else {
-                        MobiusMarkdownText(entry.text, streaming: entry.pending)
-                            .equatable()
-                    }
+                    MobiusMarkdownText(entry.text, streaming: entry.pending)
+                        .equatable()
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

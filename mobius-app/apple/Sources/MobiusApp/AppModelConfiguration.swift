@@ -614,6 +614,7 @@ extension AppModel {
     }
 
     func presentCronRun(_ run: CronRun) {
+        cancelSessionFileThumbnailDownloads()
         presentedCronRun = run
         cronRunPreview = nil
         cronRunPreviewEntries = []
@@ -636,6 +637,7 @@ extension AppModel {
     }
 
     func closeCronRunPreview() {
+        cancelSessionFileThumbnailDownloads()
         cronRunPreviewPollingTask?.cancel()
         cronRunPreviewPollingTask = nil
         cronRunPreviewRequestID = nil

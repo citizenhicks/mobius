@@ -105,6 +105,7 @@ struct ChatView: View {
                         }
                     }
             }
+            .mobiusSheet(detents: [.large])
         }
     }
 

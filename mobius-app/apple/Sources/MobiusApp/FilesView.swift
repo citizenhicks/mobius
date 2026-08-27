@@ -41,8 +41,7 @@ struct FilesView: View {
                 }
             }
         }
-        .presentationDetents([.medium, .large])
-        .presentationDragIndicator(.visible)
+        .mobiusSheet()
         .interactiveDismissDisabled(model.isLoadingFilePresentation)
     }
 
@@ -481,7 +480,7 @@ private struct SessionFileInspectorRow: View {
     var body: some View {
         HStack(spacing: 0) {
             Button {
-                model.previewSessionFile(file)
+                model.previewSessionFile(file, sessionID: model.selectedSessionID)
             } label: {
                 InspectorFileRow(
                     name: file.name,
@@ -494,10 +493,10 @@ private struct SessionFileInspectorRow: View {
 
             Menu {
                 Button("Preview", glyph: file.name.fileGlyph) {
-                    model.previewSessionFile(file)
+                    model.previewSessionFile(file, sessionID: model.selectedSessionID)
                 }
                 Button("Share or Save…", glyph: .arrowUpRight01) {
-                    model.saveOrShareSessionFile(file)
+                    model.saveOrShareSessionFile(file, sessionID: model.selectedSessionID)
                 }
             } label: {
                 MobiusIcon(.dotsThree, size: MobiusStyle.glyphInline)

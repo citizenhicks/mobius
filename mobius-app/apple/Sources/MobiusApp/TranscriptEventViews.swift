@@ -8,6 +8,7 @@ struct WorkedForGroupView: View {
     @ScaledMetric(relativeTo: .body) private var summaryHeight = MobiusStyle.rowRegular
     @State private var isExpanded = false
     let entries: [TranscriptEntry]
+    let fileSessionID: String?
     let elapsedMs: UInt64?
     var onExpand: () -> Void = {}
 
@@ -44,6 +45,7 @@ struct WorkedForGroupView: View {
             if isExpanded {
                 TranscriptRowsView(
                     projection: TranscriptProjection(entries: entries),
+                    fileSessionID: fileSessionID,
                     rowSpacing: MobiusSpace.s,
                     onExpandActivityGroup: onExpand
                 )
@@ -69,6 +71,7 @@ struct EventGroupView: View {
     @ScaledMetric(relativeTo: .body) private var summaryHeight = MobiusStyle.rowRegular
     @State private var isExpanded = false
     let entries: [TranscriptEntry]
+    let fileSessionID: String?
     let isActive: Bool
     /// The gap between two steps belongs to this row: rather than growing the transcript by a
     /// line that then has to disappear again, the summary hands its slot to the waiting line.
@@ -78,7 +81,7 @@ struct EventGroupView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: MobiusSpace.s) {
             // Files an event produced are the deliverable, not a detail, so they stay out.
-            TranscriptFileCards(files: files)
+            TranscriptFileCards(files: files, sessionID: fileSessionID)
             // The summary slot belongs to the run, not to its contents: while the run holds
             // the waiting phrase it draws the slot whether or not any step has named itself,
             // so naming one costs a crossfade rather than a row's worth of height.

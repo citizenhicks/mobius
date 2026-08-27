@@ -96,10 +96,11 @@ struct CollapsibleText: View {
 
 struct TranscriptFileCards: View {
     let files: [SessionFileReference]
+    let sessionID: String?
 
     var body: some View {
         ForEach(files) { file in
-            SessionFileCard(file: file)
+            SessionFileCard(file: file, sessionID: sessionID)
         }
     }
 }
@@ -149,8 +150,7 @@ struct TurnDiffCard: View {
                     }
                 }
             }
-            .presentationDetents([.medium, .large])
-            .presentationDragIndicator(.visible)
+            .mobiusSheet()
         }
     }
 
@@ -245,11 +245,12 @@ struct TurnDiffCard: View {
 struct SessionFileCard: View {
     @Environment(AppModel.self) private var model
     let file: SessionFileReference
+    let sessionID: String?
 
     var body: some View {
-        let thumbnail = model.fileThumbnail(for: file)
+        let thumbnail = model.fileThumbnail(for: file, sessionID: sessionID)
         Button {
-            model.previewSessionFile(file)
+            model.previewSessionFile(file, sessionID: sessionID)
         } label: {
             SessionFileCardLabel(file: file, thumbnail: thumbnail)
         }
@@ -263,16 +264,23 @@ struct SessionFileCard: View {
         .contentShape(Rectangle())
         .contextMenu {
             Button("Preview", glyph: file.name.fileGlyph) {
-                model.previewSessionFile(file)
+                model.previewSessionFile(file, sessionID: sessionID)
             }
             Button("Share or Save…", glyph: .arrowUpRight01) {
-                model.saveOrShareSessionFile(file)
+                model.saveOrShareSessionFile(file, sessionID: sessionID)
             }
         }
         .disabled(model.isLoadingFilePresentation)
-        .task(id: model.connectionState.isReady) {
-            model.requestSessionFileThumbnail(file)
+        .task(id: thumbnailTaskID) {
+            model.requestSessionFileThumbnail(file, sessionID: sessionID)
         }
+    }
+
+    private var thumbnailTaskID: FileThumbnailKey? {
+        guard model.connectionState.isReady,
+              let sessionID
+        else { return nil }
+        return .session(sessionID: sessionID, fileID: file.id)
     }
 }
 

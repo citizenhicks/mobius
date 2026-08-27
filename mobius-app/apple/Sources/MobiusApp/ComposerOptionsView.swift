@@ -155,6 +155,7 @@ struct ComposerOptionsView: View {
     @Environment(\.mobiusPalette) private var palette
     let dictation: ComposerDictation
     @Binding var selection: TextSelection?
+    let send: () -> Void
     @State private var isFileImporterPresented = false
     @State private var isPhotoPickerPresented = false
     @State private var photoSelection: [PhotosPickerItem] = []
@@ -320,7 +321,7 @@ struct ComposerOptionsView: View {
                 Button("Stop", glyph: .stopFill) { model.interrupt() }
                     .help("Stop")
             } else {
-                Button(action: model.sendMessage) {
+                Button(action: send) {
                     Label {
                         Text(model.activeTurnID == nil ? "Send" : "Send steering message")
                     } icon: {

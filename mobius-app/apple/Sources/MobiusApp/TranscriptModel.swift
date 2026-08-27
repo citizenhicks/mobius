@@ -23,18 +23,7 @@ func selectableMarkdown(_ source: String) -> NSAttributedString {
 
     for run in parsed.runs {
         let blocks = run.presentationIntent?.components ?? []
-        if let id = blocks.first?.identity, id != blockID {
-            let list = blocks.listIdentity
-            if result.length > 0 {
-                let gap = list != nil && list == listID ? "\n" : "\n\n"
-                result.append(NSAttributedString(string: gap))
-            }
-            if let marker = blocks.listMarker {
-                result.append(NSAttributedString(string: marker, attributes: [.font: blocks.font]))
-            }
-            blockID = id
-            listID = list
-        }
+        appendBlockStart(blocks, to: result, blockID: &blockID, listID: &listID)
 
         var text = String(parsed[run.range].characters)
         // A fenced block ends in the newline that closed it, which would draw as a blank line.
@@ -63,6 +52,24 @@ func selectableMarkdown(_ source: String) -> NSAttributedString {
         range: NSRange(location: 0, length: result.length)
     )
     return result
+}
+
+private func appendBlockStart(
+    _ blocks: [PresentationIntent.IntentType],
+    to result: NSMutableAttributedString,
+    blockID: inout Int?,
+    listID: inout Int?
+) {
+    guard let id = blocks.first?.identity, id != blockID else { return }
+    let list = blocks.listIdentity
+    if result.length > 0 {
+        result.append(NSAttributedString(string: list != nil && list == listID ? "\n" : "\n\n"))
+    }
+    if let marker = blocks.listMarker {
+        result.append(NSAttributedString(string: marker, attributes: [.font: blocks.font]))
+    }
+    blockID = id
+    listID = list
 }
 
 private func isList(_ component: PresentationIntent.IntentType) -> Bool {
@@ -685,4 +692,38 @@ extension TranscriptEntry {
         let sibilant = ["ch", "sh", "s", "x"].contains { noun.hasSuffix($0) }
         return "\(count) \(noun)\(sibilant ? "es" : "s")"
     }
+}
+
+/// Derived from the entries a surface actually holds, so the chat, a subagent preview, and a
+/// scheduled run all resolve these against their own transcript rather than the selected chat's.
+func activeStepID(in entries: [TranscriptEntry], isRunning: Bool) -> String? {
+    guard isRunning,
+          let latest = entries.last,
+          latest.pending,
+          [.reasoning, .event, .error].contains(latest.kind)
+    else { return nil }
+    return latest.presentationID
+}
+
+func transcriptTurnDiff(for entry: TranscriptEntry, in entries: [TranscriptEntry]) -> String {
+    guard entry.kind == .assistant,
+          entry.turnTerminal,
+          let turnID = entry.turnID,
+          entries.last(where: {
+              $0.turnID == turnID && $0.turnTerminal && $0.kind == .assistant
+          })?.id == entry.id
+    else { return "" }
+    return transcriptTurnDiff(forTurn: turnID, in: entries)
+}
+
+func transcriptTurnDiff(forTurn turnID: String, in entries: [TranscriptEntry]) -> String {
+    entries.lazy
+        .filter {
+            $0.turnID == turnID
+                && $0.role == .tool
+                && $0.format == "unified_diff"
+                && !$0.pending
+        }
+        .map(\.text)
+        .joined(separator: "\ndiff --git a/turn-change b/turn-change\n")
 }

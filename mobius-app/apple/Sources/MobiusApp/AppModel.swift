@@ -91,12 +91,7 @@ final class AppModel {
     }
     /// The one visible activity label that represents the live turn's current step.
     var activeTranscriptStepID: String? {
-        guard activeTurnID != nil,
-              let latest = displayedTranscript.last,
-              latest.pending,
-              [.reasoning, .event, .error].contains(latest.kind)
-        else { return nil }
-        return latest.presentationID
+        activeStepID(in: displayedTranscript, isRunning: activeTurnID != nil)
     }
     /// The turn is running with nothing pending, so no row is shimmering and the transcript
     /// would otherwise sit still while the model decides what to do next.
@@ -188,28 +183,10 @@ final class AppModel {
         guard let final = transcript.last(where: {
             $0.turnTerminal && $0.kind == .assistant
         })?.turnID else { return "" }
-        return turnDiff(for: final)
+        return transcriptTurnDiff(forTurn: final, in: transcript)
     }
     func turnDiff(for entry: TranscriptEntry) -> String {
-        guard entry.kind == .assistant,
-              entry.turnTerminal,
-              let turnID = entry.turnID,
-              transcript.last(where: {
-                  $0.turnID == turnID && $0.turnTerminal && $0.kind == .assistant
-              })?.id == entry.id
-        else { return "" }
-        return turnDiff(for: turnID)
-    }
-    private func turnDiff(for turnID: String) -> String {
-        return transcript.lazy
-            .filter {
-                $0.turnID == turnID
-                    && $0.role == .tool
-                    && $0.format == "unified_diff"
-                    && !$0.pending
-            }
-            .map(\.text)
-            .joined(separator: "\ndiff --git a/turn-change b/turn-change\n")
+        transcriptTurnDiff(for: entry, in: transcript)
     }
     var lastTurnDiffRevision: Int {
         transcript.lastIndex(where: {
@@ -352,9 +329,10 @@ final class AppModel {
     @ObservationIgnored var activeSessionFileUpload: ActiveSessionFileUpload?
     @ObservationIgnored var sessionFileDownload: SessionFileDownload?
     @ObservationIgnored var fileThumbnailOrder: [FileThumbnailKey] = []
-    @ObservationIgnored var requestedSessionFileThumbnailIDs: Set<String> = []
+    @ObservationIgnored var requestedSessionFileThumbnailKeys: Set<FileThumbnailKey> = []
     @ObservationIgnored var discardedSessionFileThumbnailRequestIDs: Set<String> = []
-    @ObservationIgnored var queuedSessionFileThumbnails: [SessionFileReference] = []
+    @ObservationIgnored var queuedSessionFileThumbnails:
+        [(sessionID: String, file: SessionFileReference)] = []
     @ObservationIgnored var sessionFileThumbnailDownload: SessionFileThumbnailDownload?
     @ObservationIgnored var workspaceFilePreviewDownload: WorkspaceFilePreviewDownload?
     @ObservationIgnored var filePresentationGeneration = UUID()

@@ -524,6 +524,20 @@ impl GatewayHost {
         self.run_cron_with_state(state, task_id, run).await
     }
 
+    pub(crate) async fn is_cron_execution_session(
+        &self,
+        session_id: &str,
+    ) -> std::result::Result<bool, Rejection> {
+        validate_session_id(session_id).map_err(|_| invalid_session_id())?;
+        let checkpoints = Arc::clone(&self.state.lock().await.checkpoints);
+        Ok(checkpoints
+            .load(session_id)
+            .await
+            .map_err(internal)?
+            .as_ref()
+            .is_some_and(is_cron_execution_checkpoint))
+    }
+
     pub(crate) async fn cron_run_preview(
         &self,
         run_id: &str,

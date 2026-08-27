@@ -75,14 +75,14 @@ extension AppModel {
         }.value
     }
 
-    func fileThumbnail(for file: SessionFileReference) -> CGImage? {
-        guard let sessionID = selectedSessionID else { return nil }
+    func fileThumbnail(for file: SessionFileReference, sessionID: String?) -> CGImage? {
+        guard let sessionID else { return nil }
         return fileThumbnails[.session(sessionID: sessionID, fileID: file.id)]
     }
 
     func fileThumbnail(for attachment: ComposerAttachment) -> CGImage? {
         if case .uploaded(let file) = attachment.state {
-            return fileThumbnail(for: file)
+            return fileThumbnail(for: file, sessionID: selectedSessionID)
         }
         return fileThumbnails[.composer(attachment.id)]
     }
@@ -117,28 +117,28 @@ extension AppModel {
         )
     }
 
-    func requestSessionFileThumbnail(_ file: SessionFileReference) {
-        guard let sessionID = selectedSessionID,
+    func requestSessionFileThumbnail(_ file: SessionFileReference, sessionID: String?) {
+        guard let sessionID,
               Self.isFileThumbnailCandidate(mediaType: file.mediaType, size: file.size),
               fileThumbnails[.session(sessionID: sessionID, fileID: file.id)] == nil
         else { return }
-        if requestedSessionFileThumbnailIDs.insert(file.id).inserted {
-            queuedSessionFileThumbnails.append(file)
+        let key = FileThumbnailKey.session(sessionID: sessionID, fileID: file.id)
+        if requestedSessionFileThumbnailKeys.insert(key).inserted {
+            queuedSessionFileThumbnails.append((sessionID, file))
         }
         startNextSessionFileThumbnailDownload()
     }
 
     func startNextSessionFileThumbnailDownload() {
         guard connectionState.isReady,
-              sessionFileThumbnailDownload == nil,
-              let sessionID = selectedSessionID
+              sessionFileThumbnailDownload == nil
         else { return }
 
         while !queuedSessionFileThumbnails.isEmpty {
-            let file = queuedSessionFileThumbnails.removeFirst()
+            let (sessionID, file) = queuedSessionFileThumbnails.removeFirst()
             let key = FileThumbnailKey.session(sessionID: sessionID, fileID: file.id)
             guard fileThumbnails[key] == nil else {
-                requestedSessionFileThumbnailIDs.remove(file.id)
+                requestedSessionFileThumbnailKeys.remove(key)
                 continue
             }
             let id = requestID("session-file-thumbnail")
@@ -170,7 +170,7 @@ extension AppModel {
             rememberDiscardedSessionFileThumbnailRequest(requestID)
         }
         queuedSessionFileThumbnails.removeAll()
-        requestedSessionFileThumbnailIDs.removeAll()
+        requestedSessionFileThumbnailKeys.removeAll()
         sessionFileThumbnailDownload = nil
     }
 
@@ -178,7 +178,10 @@ extension AppModel {
         _ download: SessionFileThumbnailDownload,
         startsNext: Bool = true
     ) {
-        requestedSessionFileThumbnailIDs.remove(download.file.id)
+        requestedSessionFileThumbnailKeys.remove(.session(
+            sessionID: download.sessionID,
+            fileID: download.file.id
+        ))
         if sessionFileThumbnailDownload?.requestID == download.requestID {
             sessionFileThumbnailDownload = nil
         }
@@ -489,7 +492,6 @@ extension AppModel {
         else { return }
         sessionFileThumbnailDownload = nil
         guard download.sessionID == sessionID,
-              sessionID == selectedSessionID,
               download.file.id == fileID,
               offset == Int64(download.data.count),
               data.count <= 256 * 1024,
@@ -532,8 +534,7 @@ extension AppModel {
         Task { [weak self] in
             let thumbnail = await Self.downsampledFileThumbnail(from: download.data)
             guard let self,
-                  self.sessionFileThumbnailDownload?.requestID == download.requestID,
-                  self.selectedSessionID == sessionID
+                  self.sessionFileThumbnailDownload?.requestID == download.requestID
             else { return }
             self.sessionFileThumbnailDownload = nil
             if let thumbnail {

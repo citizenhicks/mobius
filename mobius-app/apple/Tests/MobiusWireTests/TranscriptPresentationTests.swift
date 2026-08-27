@@ -46,6 +46,22 @@ final class TranscriptMarkdownSelectionTests: XCTestCase {
 }
 
 final class TranscriptWaitingNoteTests: XCTestCase {
+    @MainActor
+    func testWaitingHoldDebouncesAndCancels() async {
+        let hold = TranscriptWaitingHold()
+
+        hold.update(isWaiting: true)
+        hold.update(isWaiting: false)
+        try? await Task.sleep(for: .seconds(TranscriptWaitingNote.appearAfter + 0.1))
+        XCTAssertNil(hold.phrase)
+
+        hold.update(isWaiting: true)
+        try? await Task.sleep(for: .seconds(TranscriptWaitingNote.appearAfter + 0.1))
+        XCTAssertNotNil(hold.phrase)
+        hold.update(isWaiting: false)
+        XCTAssertNil(hold.phrase)
+    }
+
     func testShowsOnlyWhileATurnRunsWithNothingPending() {
         // A pending row shimmers on its own, and a pending assistant message means text is
         // arriving — neither is waiting.

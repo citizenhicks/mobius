@@ -141,7 +141,7 @@ extension AppModelTests {
 
         model.contributions = []
         XCTAssertFalse(model.canSendComposer)
-        model.sendMessage()
+        XCTAssertFalse(model.sendMessage())
         XCTAssertEqual(model.toast?.message, "File attachments are not enabled for this chat.")
         model.contributions = [attachmentContribution]
 
@@ -155,12 +155,12 @@ extension AppModelTests {
         )]
         XCTAssertTrue(model.canImportAttachments)
         XCTAssertFalse(model.canSendComposer)
-        model.sendMessage()
+        XCTAssertFalse(model.sendMessage())
         XCTAssertEqual(model.toast?.message, "The selected model does not accept image attachments.")
         model.modelChoices = [capableChoice]
 
         requestCount = await recorder.requestCount()
-        model.sendMessage()
+        XCTAssertTrue(model.sendMessage())
         let submitRequest = await recorder.firstRequest(
             after: requestCount
         ) { request in

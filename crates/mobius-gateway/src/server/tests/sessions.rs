@@ -183,6 +183,26 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
         }
     }
 
+    open_chat(&sender, &mut events, &other_session_id).await;
+    sender
+        .send(ClientMessage::ListSessionFiles {
+            request_id: "reject-unselected-file-list".into(),
+            session_id: session_id.clone(),
+        })
+        .await
+        .expect("reject file list for unselected chat");
+    loop {
+        if let ServerMessage::Rejected {
+            request_id, code, ..
+        } = next_gateway_message(&mut events).await
+            && request_id == "reject-unselected-file-list"
+        {
+            assert_eq!(code, "session_not_selected");
+            break;
+        }
+    }
+    open_chat(&sender, &mut events, &session_id).await;
+
     sender
         .send(ClientMessage::BeginSessionFileUpload {
             request_id: "begin-doomed-upload".into(),
@@ -401,6 +421,127 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
     );
     shutdown.send(()).expect("stop gateway");
     serving.await.expect("gateway task").expect("gateway stop");
+}
+
+#[tokio::test]
+async fn paired_client_reads_cron_execution_files_after_run_history_is_removed() {
+    let root = tempfile::tempdir().expect("temporary directory");
+    let workspace = root.path().join("workspace");
+    fs::create_dir(&workspace).expect("workspace");
+    let (server, grant) = GatewayServer::bootstrap(
+        root.path().join("state"),
+        std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+    )
+    .await
+    .expect("bootstrap gateway");
+    let listen = server.config.listen;
+    let host = server.host.clone();
+    let cron = Arc::clone(&server.cron);
+    let files = host.session_file_store().await;
+    let (shutdown, signal) = tokio::sync::oneshot::channel();
+    let serving = tokio::spawn(server.serve_until(async move {
+        let _ = signal.await;
+    }));
+    let endpoint = format!("tcp://{listen}")
+        .parse::<Endpoint>()
+        .expect("endpoint");
+    let (connection, _) = GatewayClient::pair(&endpoint, grant.code, "cron files", ClientKind::Ios)
+        .await
+        .expect("pair frontend");
+    let (sender, mut events) = connection.into_parts();
+    wait_gateway_ready(&mut events).await;
+    let source_session_id = create_chat(&sender, &mut events, &workspace).await;
+    let task = cron
+        .add_for_test(
+            &source_session_id,
+            "produce a report",
+            crate::wire::CronSchedule {
+                kind: crate::wire::CronScheduleKind::Interval,
+                at: None,
+                every_seconds: Some(600),
+                expression: None,
+                time_zone: None,
+            },
+            None,
+        )
+        .expect("schedule task");
+
+    let _ = host.run_cron(task.id.clone()).await;
+    let execution_session_id = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(run) = cron.history(Some(&task.id)).expect("run history").first()
+                && run.status != crate::wire::CronRunStatus::Running
+                && let Some(session_id) = &run.session_id
+            {
+                break session_id.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("cron completion");
+    cron.delete(&task.id).expect("remove task and run history");
+    assert!(cron.history(None).expect("empty history").is_empty());
+
+    let contents = b"scheduled report";
+    let file = files
+        .publish_artifact(
+            &execution_session_id,
+            "report.txt".into(),
+            "text/plain".into(),
+            contents,
+        )
+        .await
+        .expect("publish cron artifact");
+    sender
+        .send(ClientMessage::ListSessionFiles {
+            request_id: "list-cron-files".into(),
+            session_id: execution_session_id.clone(),
+        })
+        .await
+        .expect("list cron files");
+    loop {
+        if let ServerMessage::SessionFiles {
+            request_id, files, ..
+        } = next_gateway_message(&mut events).await
+            && request_id == "list-cron-files"
+        {
+            assert_eq!(files.len(), 1);
+            assert_eq!(files[0].file, file);
+            break;
+        }
+    }
+
+    sender
+        .send(ClientMessage::ReadSessionFile {
+            request_id: "read-cron-file".into(),
+            session_id: execution_session_id,
+            file_id: file.id,
+            offset: 0,
+            max_bytes: contents.len(),
+        })
+        .await
+        .expect("read cron file");
+    loop {
+        if let ServerMessage::SessionFileChunk {
+            request_id,
+            data,
+            next_offset,
+            ..
+        } = next_gateway_message(&mut events).await
+            && request_id == "read-cron-file"
+        {
+            assert_eq!(data, contents);
+            assert_eq!(next_offset, None);
+            break;
+        }
+    }
+
+    shutdown.send(()).expect("send shutdown");
+    serving
+        .await
+        .expect("gateway task")
+        .expect("gateway shutdown");
 }
 
 #[tokio::test]

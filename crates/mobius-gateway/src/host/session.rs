@@ -5,6 +5,7 @@ use super::*;
 use mobius::backend::model::provider::provider;
 
 pub(super) type SessionWidgets = Vec<((String, String), mobius::protocol::FrontendWidget)>;
+const CRON_EXECUTION_METADATA_KEY: &str = "mobius_gateway.cron_execution";
 
 #[derive(Clone)]
 pub(crate) struct HostHandle {
@@ -714,8 +715,21 @@ pub(super) fn cron_execution_checkpoint(
     checkpoint.session_context.origin_label = Some(origin_label.into());
     checkpoint.catalog_visible = false;
     checkpoint.metadata.clone_from(&source.metadata);
+    checkpoint.metadata.insert(
+        CRON_EXECUTION_METADATA_KEY.into(),
+        serde_json::Value::String(session_id.into()),
+    );
     checkpoint.model_route.clone_from(&source.model_route);
     checkpoint
+}
+
+pub(super) fn is_cron_execution_checkpoint(checkpoint: &Checkpoint) -> bool {
+    !checkpoint.catalog_visible
+        && checkpoint
+            .metadata
+            .get(CRON_EXECUTION_METADATA_KEY)
+            .and_then(serde_json::Value::as_str)
+            == Some(checkpoint.session_id.as_str())
 }
 
 pub(super) async fn hide_checkpoint(

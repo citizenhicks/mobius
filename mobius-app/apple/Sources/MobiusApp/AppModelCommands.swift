@@ -647,19 +647,20 @@ extension AppModel {
         }
     }
 
-    func previewSessionFile(_ file: SessionFileReference) {
-        downloadSessionFile(file, purpose: .preview)
+    func previewSessionFile(_ file: SessionFileReference, sessionID: String?) {
+        downloadSessionFile(file, sessionID: sessionID, purpose: .preview)
     }
 
-    func saveOrShareSessionFile(_ file: SessionFileReference) {
-        downloadSessionFile(file, purpose: .share)
+    func saveOrShareSessionFile(_ file: SessionFileReference, sessionID: String?) {
+        downloadSessionFile(file, sessionID: sessionID, purpose: .share)
     }
 
     private func downloadSessionFile(
         _ file: SessionFileReference,
+        sessionID: String?,
         purpose: SessionFileDownloadPurpose
     ) {
-        guard let sessionID = selectedSessionID else { return }
+        guard let sessionID else { return }
         guard file.size <= Int64(maximumPresentedFileBytes) else {
             showToast("File downloads are limited to 50 MiB.", tone: .warning)
             return
@@ -814,31 +815,32 @@ extension AppModel {
         if returnsToFilesAfterFilePresentation { showsInspector = false }
     }
 
-    func sendMessage() {
+    @discardableResult
+    func sendMessage() -> Bool {
         guard connectionState.isReady,
               sessionRequestID == nil,
               let sessionID = selectedSessionID
-        else { return }
+        else { return false }
         let text = composer.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = uploadedComposerAttachments
-        guard attachments.count <= attachmentReferenceLimit else { return }
-        guard !text.isEmpty || !attachments.isEmpty else { return }
+        guard attachments.count <= attachmentReferenceLimit else { return false }
+        guard !text.isEmpty || !attachments.isEmpty else { return false }
         guard attachments.isEmpty || canSubmitAttachments else {
             showToast(attachmentSubmissionUnavailableMessage, tone: .warning)
-            return
+            return false
         }
-        guard canSendComposer else { return }
+        guard canSendComposer else { return false }
         guard !composerHasUnfinishedAttachments else {
             showToast("Wait for attachments to finish uploading.", tone: .warning)
-            return
+            return false
         }
         guard text.utf8.count <= maximumComposerBytes else {
             showToast("Messages are limited to 1 MiB.", tone: .error)
-            return
+            return false
         }
         if activeTurnID != nil, !attachments.isEmpty {
             showToast("Attachments can be sent with a new turn.", tone: .warning)
-            return
+            return false
         }
         let id = requestID("input")
         // Past every guard, so a rejected send leaves the keyboard up with the text still
@@ -847,7 +849,7 @@ extension AppModel {
         dismissComposerFocus()
         if pendingWidgetEdit?.recovery.phase == .editing {
             submitComposerEdit(sessionID: sessionID, requestID: id, text: text)
-            return
+            return true
         }
         let stashedText = stashedComposerDraft
         let op: AgentOperation
@@ -876,6 +878,7 @@ extension AppModel {
         if let stashedText, !stashedText.isEmpty {
             composer = stashedText
         }
+        return true
     }
 
     func editWidgetInputInComposer(_ mounted: MountedWidget) {

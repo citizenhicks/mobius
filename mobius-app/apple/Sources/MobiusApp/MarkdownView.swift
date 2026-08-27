@@ -100,9 +100,7 @@ private struct MobiusMarkdownDocument: View {
                     .padding(.bottom, MobiusSpace.l)
                     // Clears the drag indicator, which sits in the top of the sheet's own bounds.
                     .padding(.top, MobiusSpace.xl)
-                    .presentationDetents([.medium, .large])
-                    .presentationDragIndicator(.visible)
-                    .presentationBackground(palette.canvas)
+                    .mobiusSheet()
             }
     }
 

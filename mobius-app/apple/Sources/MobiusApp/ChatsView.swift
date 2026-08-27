@@ -33,6 +33,7 @@ struct ChatsView: View {
 
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var collapsedWorkspaces: Set<String> = []
     @State private var visibleSessionCounts: [String: Int] = [:]
     @State private var showsAttentionOnly = false
@@ -239,16 +240,13 @@ struct ChatsView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 0) {
                 HStack(spacing: MobiusSpace.s) {
-                    MobiusIcon(.folder, foreground: palette.muted)
+                    MobiusIcon(.folderOpen, foreground: palette.muted)
                         .unredacted()
                     Text(name)
                         .font(MobiusStyle.controlFont)
-                    MobiusIcon(
-                        .caretDown,
-                        size: 12,
-                        foreground: palette.muted
-                    )
-                    .unredacted()
+                    MobiusIcon(.caretRight, size: 12, foreground: palette.muted)
+                        .rotationEffect(.degrees(90))
+                        .unredacted()
                 }
                 .frame(
                     maxWidth: .infinity,
@@ -374,22 +372,32 @@ struct ChatsView: View {
             visibleSessionCounts[group.id, default: Self.sessionPageSize],
             group.sessions.count
         )
+        let isExpanded = !collapsedWorkspaces.contains(group.id)
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 0) {
                 Button {
-                    expansionBinding(for: group.id).wrappedValue.toggle()
+                    withAnimation(reduceMotion ? nil : .snappy(duration: 0.22)) {
+                        expansionBinding(for: group.id).wrappedValue.toggle()
+                    }
                 } label: {
                     HStack(spacing: MobiusSpace.s) {
-                        MobiusIcon(.folder, foreground: palette.muted)
+                        // Two drawings rather than one glyph in two states, so the swap is an
+                        // insertion the id drives, not a morph: HugeIcons ships no symbol
+                        // effect to interpolate between them.
+                        ZStack {
+                            MobiusIcon(
+                                isExpanded ? .folderOpen : .folder,
+                                foreground: palette.muted
+                            )
+                            .id(isExpanded)
+                            .transition(.opacity)
+                        }
                         Text(group.name)
                             .font(MobiusStyle.controlFont)
                             .lineLimit(1)
                             .truncationMode(.middle)
-                        MobiusIcon(
-                            collapsedWorkspaces.contains(group.id) ? .caretRight : .caretDown,
-                            size: 12,
-                            foreground: palette.muted
-                        )
+                        MobiusIcon(.caretRight, size: 12, foreground: palette.muted)
+                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
                     }
                     .frame(
                         maxWidth: .infinity,
@@ -399,9 +407,7 @@ struct ChatsView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.mobiusPlain)
-                .accessibilityValue(
-                    collapsedWorkspaces.contains(group.id) ? "Collapsed" : "Expanded"
-                )
+                .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
                 .help(group.path)
 
                 Button {
@@ -422,7 +428,7 @@ struct ChatsView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            if !collapsedWorkspaces.contains(group.id) {
+            if isExpanded {
                 ForEach(group.sessions.prefix(visibleCount)) { session in
                     sessionRow(session)
                 }

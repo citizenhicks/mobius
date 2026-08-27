@@ -47,7 +47,7 @@ struct TextFilePreviewView: View {
                 }
             }
         }
-        .presentationDetents([.large])
+        .mobiusSheet(detents: [.large])
         .interactiveDismissDisabled(model.isSavingWorkspaceFile)
     }
 
@@ -338,23 +338,32 @@ struct ReadOnlyTranscriptSheet<Header: View>: View {
     @Environment(\.mobiusPalette) private var palette
     @State private var retainedEntryID: String?
     @State private var selectedDetent: PresentationDetent = .large
+    @State private var waiting = TranscriptWaitingHold()
     let header: Header
     let entries: [TranscriptEntry]
+    let fileSessionID: String?
     let hasEarlier: Bool
     let isLoading: Bool
+    /// The run is still going, so the gap between two steps is the model thinking rather
+    /// than the end of the transcript. Drives the same waiting line the chat shows.
+    let isRunning: Bool
     let loadEarlier: () -> Void
 
     init(
         entries: [TranscriptEntry],
+        fileSessionID: String?,
         hasEarlier: Bool,
         isLoading: Bool,
+        isRunning: Bool,
         loadEarlier: @escaping () -> Void,
         @ViewBuilder header: () -> Header
     ) {
         self.header = header()
         self.entries = entries
+        self.fileSessionID = fileSessionID
         self.hasEarlier = hasEarlier
         self.isLoading = isLoading
+        self.isRunning = isRunning
         self.loadEarlier = loadEarlier
     }
 
@@ -370,17 +379,23 @@ struct ReadOnlyTranscriptSheet<Header: View>: View {
                                     isLoading: isLoading,
                                     isEnabled: !isLoading
                                 ) { loadEarlierPage() }
-                                .padding(.bottom, MobiusSpace.m)
+                                .padding(.bottom, MobiusStyle.transcriptRowSpacing)
                             }
                             TranscriptRowsView(
                                 projection: projection,
-                                collapsesLongMessages: true
+                                fileSessionID: fileSessionID,
+                                activeStepID: activeStepID(in: entries, isRunning: isRunning),
+                                turnDiff: { transcriptTurnDiff(for: $0, in: entries) }
+                            )
+                            TranscriptTailView(
+                                slot: projection.waiting,
+                                topSpacing: MobiusStyle.transcriptRowSpacing
                             )
                         }
                         .scrollTargetLayout()
-                        .frame(maxWidth: 880)
+                        .frame(maxWidth: MobiusStyle.transcriptWidth)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(MobiusSpace.l)
+                        .padding(MobiusStyle.transcriptPadding)
                     }
                     .scrollIndicators(.hidden)
                     .refreshable { loadEarlierPage() }
@@ -408,11 +423,30 @@ struct ReadOnlyTranscriptSheet<Header: View>: View {
                 }
             }
         }
-        .presentationDetents([.medium, .large], selection: $selectedDetent)
+        .mobiusSheet(selection: $selectedDetent)
+        .onChange(of: isWaitingForModel, initial: true) { _, isWaiting in
+            waiting.update(isWaiting: isWaiting)
+        }
+        .onDisappear { waiting.update(isWaiting: false) }
+    }
+
+    /// Mirrors the chat's rule: a live run with nothing pending is the model thinking.
+    private var isWaitingForModel: Bool {
+        TranscriptWaitingNote.isWaiting(
+            hasActiveTurn: isRunning,
+            lastEntryIsPending: entries.last?.pending == true,
+            connectionIsReady: true,
+            hasPendingApproval: false,
+            hasPendingPicker: false
+        )
     }
 
     private var projection: TranscriptProjection {
-        TranscriptProjection(entries: entries, breakBefore: retainedEntryID)
+        TranscriptProjection(
+            entries: entries,
+            breakBefore: retainedEntryID,
+            waitingPhrase: waiting.phrase
+        )
     }
 
     private func loadEarlierPage() {
@@ -430,8 +464,10 @@ struct PreviewTranscriptSheet: View {
     var body: some View {
         ReadOnlyTranscriptSheet(
             entries: currentPreview.entries,
+            fileSessionID: model.selectedSessionID,
             hasEarlier: currentPreview.next != nil,
             isLoading: model.isLoadingPreviewPage,
+            isRunning: currentPreview.status == "running",
             loadEarlier: loadEarlierPage,
             header: { header }
         )
@@ -534,13 +570,14 @@ struct PreviewTranscriptSheet: View {
 }
 
 struct PreviewBlockView: View {
+    @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
     let block: FrontendBlock
 
     var body: some View {
         VStack(alignment: .leading, spacing: MobiusSpace.s) {
             ForEach(block.files) { file in
-                SessionFileCard(file: file)
+                SessionFileCard(file: file, sessionID: model.selectedSessionID)
             }
             if !block.text.isEmpty {
                 HStack(alignment: .top, spacing: MobiusSpace.s) {

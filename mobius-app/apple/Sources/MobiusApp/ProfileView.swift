@@ -302,7 +302,7 @@ private struct CloudAccountSettings: View {
             }
             .sheet(isPresented: $showsAccountDeletionAuthentication) {
                 MobiusCloudAccountDeletionSheet()
-                    .presentationDragIndicator(.visible)
+                    .mobiusSheet(detents: [.large])
             }
         } else {
             Text("möbius works on its own with a gateway you run. Connect möbius Cloud to have one provisioned and managed for you.")
@@ -389,7 +389,7 @@ private struct MobiusCloudAccountDeletionSheet: View {
             }
         }
         .interactiveDismissDisabled(model.cloudAction == .deleting)
-        .presentationDetents([.medium, .large])
+        .mobiusSheet()
     }
 }
 

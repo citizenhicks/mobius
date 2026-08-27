@@ -252,6 +252,7 @@ struct AgentSettingsView: View {
                 }
             }
         }
+        .mobiusSheet(detents: [.large])
     }
 
     private func capabilityHasDetails(_ feature: MiddlewareFeature) -> Bool {

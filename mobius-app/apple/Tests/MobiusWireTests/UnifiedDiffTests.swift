@@ -11,11 +11,13 @@ private struct TurnDiffTranscriptHost: View {
             if showsTurnDiff {
                 Mobius.TranscriptRowsView(
                     projection: model.transcriptProjection(breakBefore: nil),
+                    fileSessionID: model.selectedSessionID,
                     turnDiff: { model.turnDiff(for: $0) }
                 )
             } else {
                 Mobius.TranscriptRowsView(
-                    projection: model.transcriptProjection(breakBefore: nil)
+                    projection: model.transcriptProjection(breakBefore: nil),
+                    fileSessionID: model.selectedSessionID
                 )
             }
         }

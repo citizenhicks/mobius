@@ -365,8 +365,7 @@ struct FrontendWidgetSheet: View {
             .navigationTitle(currentWidget?.title ?? widget.title)
             .toolbarTitleDisplayMode(.inline)
         }
-        .presentationDetents([.medium, .large])
-        .presentationDragIndicator(.visible)
+        .mobiusSheet()
     }
 
     private var currentWidget: MountedWidget? {

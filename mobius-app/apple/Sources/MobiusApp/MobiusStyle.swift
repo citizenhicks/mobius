@@ -61,6 +61,13 @@ enum MobiusStyle {
     static let controlHeight = rowRegular
     static let iconButtonSize = rowTouch
 
+    // MARK: Transcript
+    /// The chat, a subagent preview, and a scheduled run draw the same transcript, so they
+    /// read these rather than each carrying their own copy of the numbers.
+    static let transcriptWidth: CGFloat = 880
+    static let transcriptRowSpacing = MobiusSpace.m
+    static let transcriptPadding = MobiusSpace.l
+
     // MARK: Glyphs
     /// Marks that qualify a row rather than name it: carets, disclosure, trailing hints.
     static let glyphMark: CGFloat = 11
@@ -122,12 +129,14 @@ struct MobiusGlyph: Hashable {
     static let circleDotDashed = Self("hi.circleDotDashed")
     static let clock = Self("hi.clock")
     static let cloudServer = Self("hi.cloudServer")
+    static let collapse = Self("hi.collapse")
     static let combine = Self("hi.combine")
     static let copy = Self("hi.copy")
     static let csv = Self("hi.csv")
     static let deepseek = Self("hi.deepseek")
     static let doc = Self("hi.doc")
     static let dotsThree = Self("hi.dotsThree")
+    static let expand = Self("hi.expand")
     static let fileAxisThreeD = Self("hi.fileAxisThreeD")
     static let fileMagnifyingGlass = Self("hi.fileMagnifyingGlass")
     static let fileScript = Self("hi.fileScript")
@@ -136,6 +145,7 @@ struct MobiusGlyph: Hashable {
     static let fingerprint = Self("hi.fingerprint")
     static let floppyDisk = Self("hi.floppyDisk")
     static let folder = Self("hi.folder")
+    static let folderOpen = Self("hi.folderOpen")
     static let folderPlus = Self("hi.folderPlus")
     static let gear = Self("hi.gear")
     static let gitBranch = Self("hi.gitBranch")

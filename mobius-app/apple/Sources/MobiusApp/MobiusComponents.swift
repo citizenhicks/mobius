@@ -357,6 +357,32 @@ extension View {
         swipeActions(edge: .trailing, allowsFullSwipe: false, content: actions)
     }
 
+    /// Every sheet in the app presents through here, so a sheet never falls back to the
+    /// system's grey chrome. Pair the content with `PageScaffold` for the page inside it.
+    func mobiusSheet(
+        detents: Set<PresentationDetent> = [.medium, .large],
+        selection: Binding<PresentationDetent>? = nil
+    ) -> some View {
+        modifier(MobiusSheetModifier(detents: detents, selection: selection))
+    }
+}
+
+private struct MobiusSheetModifier: ViewModifier {
+    @Environment(\.mobiusPalette) private var palette
+    let detents: Set<PresentationDetent>
+    let selection: Binding<PresentationDetent>?
+
+    func body(content: Content) -> some View {
+        Group {
+            if let selection {
+                content.presentationDetents(detents, selection: selection)
+            } else {
+                content.presentationDetents(detents)
+            }
+        }
+        .presentationDragIndicator(.visible)
+        .presentationBackground(palette.canvas)
+    }
 }
 
 private struct MobiusGlassModifier<S: Shape>: ViewModifier {

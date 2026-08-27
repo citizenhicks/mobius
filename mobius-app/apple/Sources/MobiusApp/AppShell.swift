@@ -44,13 +44,13 @@ struct AppShell: View {
                                 .frame(maxWidth: 560)
                                 .padding(MobiusSpace.xl)
                                 .overlay(alignment: .top) { AppToastOverlay() }
-                                .presentationDetents([.large])
+                                .mobiusSheet(detents: [.large])
                         }
                         .sheet(isPresented: $model.showsWorkspaceBrowser) {
                             WorkspaceBrowserView()
                                 .frame(idealWidth: 520, idealHeight: 620)
                                 .overlay(alignment: .top) { AppToastOverlay() }
-                                .presentationDetents([.medium, .large])
+                                .mobiusSheet()
                         }
                     }
                 AppToastOverlay().zIndex(10)
@@ -104,7 +104,7 @@ struct AppShell: View {
         .quickLookPreview($model.previewURL)
         .sheet(isPresented: $model.showsCloudOffer) {
             MobiusCloudOfferSheet()
-                .presentationDragIndicator(.visible)
+                .mobiusSheet(detents: [.large])
         }
         .sheet(item: presentedTextFilePreview, onDismiss: {
             // App lock hides the sheet through the presentation binding while retaining its

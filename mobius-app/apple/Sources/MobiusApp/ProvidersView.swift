@@ -214,6 +214,7 @@ private struct AddProviderSheet: View {
                 dismiss()
             }
         }
+        .mobiusSheet(detents: [.large])
     }
 
     private func providerRows(auth: ProviderAuthKind) -> some View {

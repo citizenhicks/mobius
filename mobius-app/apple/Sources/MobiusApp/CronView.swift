@@ -349,7 +349,6 @@ private func cronDate(for schedule: SimpleCronSchedule, timeZone: TimeZone = .cu
 private struct CronTaskEditorSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.mobiusPalette) private var palette
     let task: CronTask?
     let projects: [CronProject]
     @State private var sourceSessionID: String
@@ -410,7 +409,10 @@ private struct CronTaskEditorSheet: View {
 
     var body: some View {
         NavigationStack {
-            Form {
+            PageScaffold(
+                title: task == nil ? "New scheduled task" : "Edit scheduled task",
+                detail: summary
+            ) {
                 Section("Workspace") {
                     Picker("Workspace", selection: $sourceSessionID) {
                         ForEach(projects) { project in
@@ -464,17 +466,7 @@ private struct CronTaskEditorSheet: View {
                         Toggle("Enabled", isOn: $enabled)
                     }
                 }
-
-                Section("Summary") {
-                    Text(summary)
-                        .foregroundStyle(palette.muted)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
             }
-            .formStyle(.grouped)
-            .scrollContentBackground(.hidden)
-            .navigationTitle(task == nil ? "New scheduled task" : "Edit scheduled task")
-            .toolbarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel", action: dismiss.callAsFunction)
@@ -485,9 +477,7 @@ private struct CronTaskEditorSheet: View {
                 }
             }
         }
-        .presentationDetents([.medium, .large])
-        .presentationDragIndicator(.visible)
-        .presentationBackground(.ultraThinMaterial)
+        .mobiusSheet()
     }
 
     @ViewBuilder
@@ -616,20 +606,21 @@ struct ScheduledRunTranscriptSheet: View {
                     .padding(MobiusSpace.l)
                 Spacer(minLength: 0)
             }
-            .background(palette.canvas)
-            .presentationDetents([.medium, .large])
+            .mobiusSheet()
         } else if model.cronRunPreview != nil {
             ReadOnlyTranscriptSheet(
                 entries: model.cronRunPreviewEntries,
+                fileSessionID: model.presentedCronRun?.sessionId,
                 hasEarlier: model.cronRunPreviewNextBeforeSequence != nil,
                 isLoading: model.isLoadingCronRunPreview,
+                isRunning: model.presentedCronRun?.status == .running,
                 loadEarlier: model.loadEarlierCronRunPreview,
                 header: { header }
             )
         } else {
             ProgressView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(palette.canvas)
+                .mobiusSheet()
         }
     }
 

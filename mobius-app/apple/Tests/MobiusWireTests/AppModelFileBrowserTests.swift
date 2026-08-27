@@ -405,7 +405,7 @@ extension AppModelTests {
         )
 
         let requestCount = await recorder.requestCount()
-        model.saveOrShareSessionFile(file)
+        model.saveOrShareSessionFile(file, sessionID: "chat-1")
         let request = await recorder.firstRequest(after: requestCount) { request in
             guard case .readSessionFile(_, _, let fileID, _, _) = request else { return false }
             return fileID == file.id
@@ -458,7 +458,7 @@ extension AppModelTests {
             mediaType: "image/png"
         )
 
-        model.requestSessionFileThumbnail(file)
+        model.requestSessionFileThumbnail(file, sessionID: "chat-1")
         let firstRequest = await recorder.firstRequest(after: 0) {
             guard case .readSessionFile(_, _, let fileID, _, _) = $0 else { return false }
             return fileID == file.id
@@ -491,11 +491,82 @@ extension AppModelTests {
             nextOffset: nil
         ))
 
-        let thumbnailLoaded = await eventually { model.fileThumbnail(for: file) != nil }
+        let thumbnailLoaded = await eventually {
+            model.fileThumbnail(for: file, sessionID: "chat-1") != nil
+        }
         XCTAssertTrue(thumbnailLoaded)
         XCTAssertNil(model.previewURL)
         XCTAssertNil(model.textFilePreview)
         XCTAssertFalse(model.isLoadingFilePresentation)
+    }
+
+    func testCronRunThumbnailUsesTheExecutionSession() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model(requestSender: { request in
+            await recorder.record(request)
+        })
+        model.connectionState = .ready
+        model.selectedSessionID = "chat-1"
+        model.presentedCronRun = CronRun(
+            id: "run-1",
+            taskId: "cron-1",
+            sourceSessionId: "chat-1",
+            startedAt: 100,
+            finishedAt: 200,
+            status: .succeeded,
+            sessionId: "cron-session-1",
+            message: nil
+        )
+        let data = try tinyPNGData()
+        let file = SessionFileReference(
+            id: "cron-image",
+            name: "report.png",
+            size: Int64(data.count),
+            mediaType: "image/png"
+        )
+
+        model.requestSessionFileThumbnail(file, sessionID: "cron-session-1")
+        let request = await recorder.firstRequest(after: 0) {
+            guard case .readSessionFile(_, let sessionID, let fileID, _, _) = $0 else {
+                return false
+            }
+            return sessionID == "cron-session-1" && fileID == file.id
+        }
+        guard case .readSessionFile(let requestID, _, _, _, _) = try XCTUnwrap(request)
+        else { return XCTFail("Expected cron thumbnail read") }
+
+        model.handle(.sessionFileChunk(
+            requestID: requestID,
+            sessionID: "cron-session-1",
+            fileID: file.id,
+            offset: 0,
+            data: data,
+            nextOffset: nil
+        ))
+
+        let thumbnailLoaded = await eventually {
+            model.fileThumbnail(for: file, sessionID: "cron-session-1") != nil
+        }
+        XCTAssertTrue(thumbnailLoaded)
+    }
+
+    func testThumbnailQueueKeepsTheOwningSessionForDuplicateFileIDs() throws {
+        let model = try model()
+        model.connectionState = .ready
+        let file = SessionFileReference(
+            id: "shared-id",
+            name: "image.png",
+            size: 1,
+            mediaType: "image/png"
+        )
+
+        model.requestSessionFileThumbnail(file, sessionID: "chat-1")
+        model.requestSessionFileThumbnail(file, sessionID: "cron-session-1")
+
+        XCTAssertEqual(model.sessionFileThumbnailDownload?.sessionID, "chat-1")
+        XCTAssertEqual(model.queuedSessionFileThumbnails.first?.sessionID, "cron-session-1")
+        XCTAssertEqual(model.requestedSessionFileThumbnailKeys.count, 2)
+        model.cancelSessionFileThumbnailDownloads()
     }
 
     func testSessionFileThumbnailSourceCapIsExactlyTenMiB() async throws {
@@ -513,7 +584,7 @@ extension AppModelTests {
             mediaType: "image/png"
         )
 
-        model.requestSessionFileThumbnail(eligible)
+        model.requestSessionFileThumbnail(eligible, sessionID: "chat-1")
         let eligibleRequest = await recorder.firstRequest(after: 0) {
             guard case .readSessionFile(_, _, let fileID, _, _) = $0 else { return false }
             return fileID == eligible.id
@@ -527,13 +598,13 @@ extension AppModelTests {
             name: "large.png",
             size: limit + 1,
             mediaType: "image/png"
-        ))
+        ), sessionID: "chat-1")
         model.requestSessionFileThumbnail(SessionFileReference(
             id: "not-an-image",
             name: "notes.txt",
             size: 4,
             mediaType: "text/plain"
-        ))
+        ), sessionID: "chat-1")
         await Task.yield()
 
         let finalRequestCount = await recorder.requestCount()
@@ -555,7 +626,7 @@ extension AppModelTests {
             mediaType: "image/png"
         )
 
-        model.requestSessionFileThumbnail(file)
+        model.requestSessionFileThumbnail(file, sessionID: "chat-1")
         let request = await recorder.firstRequest(after: 0) {
             guard case .readSessionFile(_, _, let fileID, _, _) = $0 else { return false }
             return fileID == file.id
@@ -573,11 +644,11 @@ extension AppModelTests {
 
         let thumbnailFinished = await eventually { model.sessionFileThumbnailDownload == nil }
         XCTAssertTrue(thumbnailFinished)
-        XCTAssertNil(model.fileThumbnail(for: file))
+        XCTAssertNil(model.fileThumbnail(for: file, sessionID: "chat-1"))
         XCTAssertNil(model.toast)
 
         let requestCount = await recorder.requestCount()
-        model.requestSessionFileThumbnail(file)
+        model.requestSessionFileThumbnail(file, sessionID: "chat-1")
         let retry = await recorder.firstRequest(after: requestCount) {
             guard case .readSessionFile(_, _, let fileID, _, _) = $0 else { return false }
             return fileID == file.id
@@ -626,7 +697,7 @@ extension AppModelTests {
         )
 
         let requestCount = await recorder.requestCount()
-        model.previewSessionFile(file)
+        model.previewSessionFile(file, sessionID: "chat-1")
         let request = await recorder.firstRequest(after: requestCount) {
             guard case .readSessionFile(_, _, let fileID, _, _) = $0 else { return false }
             return fileID == file.id
@@ -681,7 +752,7 @@ extension AppModelTests {
         })
         model.selectedSessionID = "chat-1"
 
-        model.previewSessionFile(firstFile)
+        model.previewSessionFile(firstFile, sessionID: "chat-1")
         await fulfillment(of: [firstReadSent], timeout: 1)
         guard let firstRequest = await recorder.requests().last(where: {
             guard case .readSessionFile(_, _, let fileID, _, _) = $0 else { return false }
@@ -689,7 +760,7 @@ extension AppModelTests {
         }), case .readSessionFile(let firstRequestID, _, _, _, _) = firstRequest
         else { return XCTFail("Expected first session file read") }
 
-        model.previewSessionFile(secondFile)
+        model.previewSessionFile(secondFile, sessionID: "chat-1")
         await fulfillment(of: [secondReadSent], timeout: 1)
         guard let secondRequest = await recorder.requests().last(where: {
             guard case .readSessionFile(_, _, let fileID, _, _) = $0 else { return false }

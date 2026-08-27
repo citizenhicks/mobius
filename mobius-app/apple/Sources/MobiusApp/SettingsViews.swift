@@ -614,7 +614,7 @@ private struct GitCredentialSheet: View {
                 }
             }
         }
-        .presentationDetents([.medium, .large])
+        .mobiusSheet()
     }
 
     @ViewBuilder
@@ -729,7 +729,7 @@ private struct SshCredentialSheet: View {
                 }
             }
         }
-        .presentationDetents([.medium, .large])
+        .mobiusSheet()
         .onDisappear {
             model.generatedSshIdentity = nil
         }

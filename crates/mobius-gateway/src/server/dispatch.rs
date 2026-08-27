@@ -185,7 +185,7 @@ pub(super) async fn handle_message(
         ClientMessage::ListSessionFiles {
             request_id,
             session_id,
-        } => return list_session_files(writer, &connection, request_id, session_id).await,
+        } => return list_session_files(writer, &connection, request_id, session_id, gateway).await,
         ClientMessage::ReadSessionFile {
             request_id,
             session_id,
@@ -201,6 +201,7 @@ pub(super) async fn handle_message(
                 file_id,
                 offset,
                 max_bytes,
+                gateway,
             )
             .await;
         }
@@ -894,13 +895,34 @@ async fn finish_session_file_upload(
     }
 }
 
+/// Files are readable for the selected chat, and for the session a scheduled run executed in.
+/// A run session is never selected on a connection, so without this its artifacts are the one
+/// part of a transcript the client can already read but not open.
+async fn require_readable_files(
+    selected: &Option<SelectedChat>,
+    session_id: &str,
+    gateway: &GatewayHost,
+) -> std::result::Result<(), Rejection> {
+    let Err(rejection) = require_selected(selected, session_id) else {
+        return Ok(());
+    };
+    if gateway.is_cron_execution_session(session_id).await? {
+        Ok(())
+    } else {
+        Err(rejection)
+    }
+}
+
 async fn list_session_files(
     writer: &mut (impl AsyncWrite + Unpin),
     connection: &ConnectionSessionState<'_>,
     request_id: String,
     session_id: String,
+    gateway: &GatewayHost,
 ) -> Result<()> {
-    if let Err(rejection) = require_selected(&*connection.selected, &session_id) {
+    if let Err(rejection) =
+        require_readable_files(&*connection.selected, &session_id, gateway).await
+    {
         return write_rejection(writer, request_id, rejection).await;
     }
     match connection.session_files.list_files(&session_id).await {
@@ -919,6 +941,10 @@ async fn list_session_files(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "wire read fields remain explicit at the dispatch boundary"
+)]
 async fn read_session_file(
     writer: &mut (impl AsyncWrite + Unpin),
     connection: &ConnectionSessionState<'_>,
@@ -927,8 +953,11 @@ async fn read_session_file(
     file_id: String,
     offset: u64,
     max_bytes: usize,
+    gateway: &GatewayHost,
 ) -> Result<()> {
-    if let Err(rejection) = require_selected(&*connection.selected, &session_id) {
+    if let Err(rejection) =
+        require_readable_files(&*connection.selected, &session_id, gateway).await
+    {
         return write_rejection(writer, request_id, rejection).await;
     }
     match connection

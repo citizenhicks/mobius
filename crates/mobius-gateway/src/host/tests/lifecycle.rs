@@ -1183,7 +1183,18 @@ fn cron_execution_inherits_the_chat_recipe_without_transcript_state() {
     let execution = cron_execution_checkpoint(&source, "execution", "cron · task");
 
     assert_eq!(execution.model_route, source.model_route);
-    assert_eq!(execution.metadata, source.metadata);
+    assert_eq!(
+        execution.metadata["mobius_gateway.chat"],
+        source.metadata["mobius_gateway.chat"]
+    );
+    assert_eq!(
+        execution.metadata["mobius_gateway.cron_execution"],
+        serde_json::json!("execution")
+    );
+    assert!(is_cron_execution_checkpoint(&execution));
+    let mut inherited = execution.clone();
+    inherited.session_id = "child".into();
+    assert!(!is_cron_execution_checkpoint(&inherited));
     assert_eq!(
         execution.session_context,
         mobius::protocol::SessionContext {
