@@ -595,6 +595,7 @@ struct AccentTintPicker: View {
             }
         }
         .scrollIndicators(.hidden)
+        .defaultScrollAnchor(.center, for: .alignment)
         .sensoryFeedback(.selection, trigger: selection)
     }
 }

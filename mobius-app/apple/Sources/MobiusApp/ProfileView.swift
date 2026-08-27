@@ -791,14 +791,13 @@ private struct AppearanceSettings: View {
             ForEach(ThemePreference.allCases) { Text($0.rawValue.capitalized).tag($0) }
         }
         .pickerStyle(.segmented)
+        .padding(.vertical, MobiusSpace.xs)
         .sensoryFeedback(.selection, trigger: model.theme)
 
-        LabeledContent("Accent") {
-            AccentTintPicker(selection: Binding(
-                get: { model.accentTint },
-                set: { model.setAccentTint($0) }
-            ))
-        }
+        AccentTintPicker(selection: Binding(
+            get: { model.accentTint },
+            set: { model.setAccentTint($0) }
+        ))
     }
 }
 
