@@ -135,6 +135,7 @@
 		200000000000000000000031 /* TranscriptWaitingNote.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000024 /* TranscriptWaitingNote.swift */; };
 		200000000000000000000032 /* TranscriptWaitingNote.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000024 /* TranscriptWaitingNote.swift */; };
 		200000000000000000000033 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000025 /* AppIcon.icon */; };
+		E20000000000000000000001 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000001 /* Localizable.xcstrings */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -246,6 +247,7 @@
 		100000000000000000000023 /* ProviderUsageChartTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderUsageChartTests.swift; sourceTree = "<group>"; };
 		100000000000000000000024 /* TranscriptWaitingNote.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptWaitingNote.swift; sourceTree = "<group>"; };
 		100000000000000000000025 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = AppIcon.icon; sourceTree = "<group>"; };
+		E10000000000000000000001 /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -356,6 +358,7 @@
 				100000000000000000000018 /* UnifiedDiff.swift */,
 				100000000000000000000019 /* WorkspaceDiffView.swift */,
 				100000000000000000000025 /* AppIcon.icon */,
+				E10000000000000000000001 /* Localizable.xcstrings */,
 				10000000000000000000000B /* Assets.xcassets */,
 				100000000000000000000010 /* PrivacyInfo.xcprivacy */,
 				100000000000000000000012 /* Info.plist */,
@@ -478,6 +481,7 @@
 			hasScannedForEncodings = 0;
 			knownRegions = (
 				en,
+				fr,
 				Base,
 			);
 			mainGroup = 000000000000000000000002;
@@ -502,6 +506,7 @@
 			files = (
 				200000000000000000000033 /* AppIcon.icon in Resources */,
 				20000000000000000000000B /* Assets.xcassets in Resources */,
+				E20000000000000000000001 /* Localizable.xcstrings in Resources */,
 				200000000000000000000014 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
