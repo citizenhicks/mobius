@@ -180,12 +180,8 @@ private struct CronTaskRow: View {
                 model.runCron(task)
             }
         }
-        .confirmationDialog(
-            "Delete this scheduled task?",
-            isPresented: $confirmsDeletion,
-            titleVisibility: .visible
-        ) {
-            Button("Delete task", role: .destructive) { model.deleteCron(task) }
+        .alert("Delete this scheduled task?", isPresented: $confirmsDeletion) {
+            Button("Delete", role: .destructive) { model.deleteCron(task) }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This removes the task and its run history. This cannot be undone.")

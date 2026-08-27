@@ -20,18 +20,8 @@ struct MobiusMarkdownText: View, Equatable {
     }
 
     var body: some View {
-        Group {
-            if !streaming, let prose = continuousProseMarkdown(normalizedText) {
-                Text(prose)
-                    .font(MobiusStyle.bodyFont)
-                    .foregroundStyle(.primary)
-                    .lineSpacing(5)
-                    .textSelection(.enabled)
-            } else {
-                MobiusMarkdownDocument(text: normalizedText, streaming: streaming)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        MobiusMarkdownDocument(text: normalizedText, streaming: streaming)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var normalizedText: String {
@@ -119,6 +109,10 @@ private struct MobiusMarkdownDocument: View {
                 chromeTextFonts: .mobius(.footnote, context: fontResolutionContext)
             ),
             blockSpacing: MobiusSpace.m,
+            // Each block is its own text view, so a drag stops at the paragraph it started in.
+            // The renderer's own "Select more text" action opens the whole message as one
+            // selectable document, which is the only cross-block selection UIKit will give us.
+            textSelectionConfig: TextSelectionConfig(backgroundColor: palette.canvas),
             thematicBreakColor: palette.line
         )
     }

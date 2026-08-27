@@ -1,23 +1,6 @@
 import Foundation
 import XCTest
 
-final class TranscriptMarkdownSelectionTests: XCTestCase {
-    func testPlainMarkdownParagraphsShareOneSelectableValue() throws {
-        let prose = try XCTUnwrap(continuousProseMarkdown(
-            "## Subject\n\nFirst **bold** paragraph.\n\nSecond paragraph."
-        ))
-
-        XCTAssertEqual(
-            String(prose.characters),
-            "Subject\n\nFirst bold paragraph.\n\nSecond paragraph."
-        )
-        XCTAssertTrue(
-            prose.runs.first?.inlinePresentationIntent?.contains(.stronglyEmphasized) == true
-        )
-        XCTAssertNil(continuousProseMarkdown("First paragraph.\n\n- A list item"))
-    }
-}
-
 final class TranscriptWaitingNoteTests: XCTestCase {
     func testShowsOnlyWhileATurnRunsWithNothingPending() {
         // A pending row shimmers on its own, and a pending assistant message means text is

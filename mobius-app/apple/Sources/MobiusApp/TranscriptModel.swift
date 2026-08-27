@@ -1,37 +1,6 @@
 import Foundation
 import Observation
 
-/// Native `Text` selects across its whole value, unlike the streaming renderer's separate
-/// paragraph text views. Keep rich block Markdown on that renderer and unify ordinary prose.
-func continuousProseMarkdown(_ source: String) -> AttributedString? {
-    guard let parsed = try? AttributedString(markdown: source) else { return nil }
-    var result = AttributedString()
-    var blockID: Int?
-
-    for run in parsed.runs {
-        let blocks = run.presentationIntent?.components ?? []
-        guard blocks.allSatisfy({ block in
-            switch block.kind {
-            case .paragraph, .header: true
-            default: false
-            }
-        }) else {
-            return nil
-        }
-        if let nextBlockID = blocks.last?.identity, nextBlockID != blockID {
-            if !result.characters.isEmpty { result.append(AttributedString("\n\n")) }
-            blockID = nextBlockID
-        }
-        var fragment = AttributedString(parsed[run.range])
-        if blocks.contains(where: { if case .header = $0.kind { true } else { false } }) {
-            fragment.inlinePresentationIntent = (fragment.inlinePresentationIntent ?? [])
-                .union(.stronglyEmphasized)
-        }
-        result.append(fragment)
-    }
-    return result
-}
-
 @Observable
 final class TranscriptEntry: Identifiable {
     enum Kind: String, Codable, Sendable {

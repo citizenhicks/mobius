@@ -219,7 +219,9 @@ struct MobiusSwipeAction: View {
     let action: () -> Void
 
     var body: some View {
-        Button(role: tone == "error" ? .destructive : nil, action: action) {
+        // No destructive role: it makes the list animate the row away on tap, which tears
+        // down any confirmation the action wanted to show. The tone already reads as red.
+        Button(action: action) {
             MobiusIcon(glyph, foreground: palette.tone(tone))
         }
         .tint(palette.panel)
