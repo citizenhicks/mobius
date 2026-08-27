@@ -156,6 +156,49 @@ fn bootstrap_cleans_state_when_the_control_token_cannot_be_saved() {
     assert_eq!((state.exists(), sibling.exists()), (false, true));
 }
 
+#[cfg(unix)]
+#[test]
+fn reset_default_agent_reapplies_defaults_without_changing_other_gateway_state() {
+    let directory = tempfile::tempdir().expect("gateway state parent");
+    let state = directory.path().join("gateway");
+    let (store, config) = ConfigStore::initialize(state.clone(), DEFAULT_LISTEN, None)
+        .expect("initialize gateway config");
+    let provider = crate::wire::AgentComposition::default().provider;
+    let config = config
+        .registering_provider(
+            provider.clone(),
+            "Primary".into(),
+            Default::default(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("register provider");
+    let current = config.default_agent.as_ref().expect("default agent");
+    let mut custom = current.config.clone();
+    custom.system_prompt = "custom prompt".into();
+    custom.max_model_steps = 3;
+    custom.middleware.set_enabled("tasks", true);
+    let config = config
+        .replacing_default_agent(current.revision, custom)
+        .expect("customize defaults");
+    store.save(&config).expect("save customized defaults");
+    let current = config.default_agent.as_ref().expect("custom default");
+    let expected = config
+        .replacing_default_agent(
+            current.revision,
+            crate::wire::AgentComposition {
+                provider,
+                ..crate::wire::AgentComposition::default()
+            },
+        )
+        .expect("expected reset");
+
+    reset_default_agent(state.clone()).expect("reset default agent");
+    let (_, actual) = ConfigStore::open(state).expect("open reset config");
+
+    assert_eq!(actual, expected);
+}
+
 #[test]
 fn bootstrap_commands_reject_tunnel_configuration() {
     let config = GatewayConfig::new_cloudflare(DEFAULT_LISTEN, CloudflareConfig::Quick)
@@ -297,6 +340,22 @@ fn parse_bootstrap_commands_accept_only_their_machine_interface() {
     ));
 
     assert!(parse(vec!["pairing-code".into()]).is_err());
+}
+
+#[test]
+fn parse_reset_default_agent_accepts_an_explicit_state_directory() {
+    let command = parse(vec![
+        "reset-default-agent".into(),
+        "--state-dir".into(),
+        "/tmp/mobius".into(),
+    ])
+    .expect("parse default reset");
+
+    assert!(matches!(
+        command,
+        Command::ResetDefaultAgent { state_dir }
+            if state_dir == std::path::Path::new("/tmp/mobius")
+    ));
 }
 
 #[test]

@@ -113,7 +113,7 @@ fn generated_toml_round_trips_manifest_settings() {
     let (_, restored) = ConfigStore::open(state).expect("open config");
 
     assert!(contents.starts_with("version = 20"));
-    assert!(contents.contains("max_model_steps = 256"));
+    assert!(contents.contains("max_model_steps = 2042"));
     assert!(contents.contains("[default_agent.config.middleware.settings.context_offloading]"));
     assert!(contents.contains("[default_agent.config.middleware.settings.sessions]"));
     assert_eq!(restored, config);

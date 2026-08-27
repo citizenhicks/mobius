@@ -50,6 +50,32 @@ pub(super) fn initialize_bootstrap(
     Ok(())
 }
 
+pub(super) fn reset_default_agent(state_dir: PathBuf) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let (store, _) = ConfigStore::open(state_dir)?;
+        let _startup = StartupGuard::create(store.state_dir())?;
+        stop_gateway(store.state_dir(), None)?;
+        let (store, config) = ConfigStore::open(store.state_dir().to_path_buf())?;
+        let current = config.default_agent.as_ref().ok_or_else(|| {
+            Error::Config("configure a provider before resetting defaults".into())
+        })?;
+        let composition = crate::wire::AgentComposition {
+            provider: current.config.provider.clone(),
+            ..crate::wire::AgentComposition::default()
+        };
+        let config = config.replacing_default_agent(current.revision, composition)?;
+        store.save(&config)?;
+        println!("reset möbius gateway defaults for new chats");
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = state_dir;
+        Err(unsupported_lifecycle())
+    }
+}
+
 pub(super) fn direct_loopback_endpoint(config: &GatewayConfig) -> Result<Endpoint> {
     if !config.listen.ip().is_loopback() || config.tls.is_some() || config.cloudflare.is_some() {
         return Err(Error::Config(

@@ -367,11 +367,13 @@ async fn updating_the_chat_recipe_preserves_capability_metadata() {
         Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
     let checkpoints: Arc<dyn CheckpointStore> =
         Arc::new(SqliteCheckpoint::new(store.checkpoints_path()).expect("checkpoints"));
+    let mut original_config = crate::wire::AgentComposition::default();
+    original_config.middleware.set_enabled("extensions", true);
     let original = ChatSpec::new(
         &workspace,
         crate::wire::VersionedAgentConfig {
             revision: 1,
-            config: crate::wire::AgentComposition::default(),
+            config: original_config,
         },
         store.state_dir(),
         None,

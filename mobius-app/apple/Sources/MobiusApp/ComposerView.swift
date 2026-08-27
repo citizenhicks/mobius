@@ -320,7 +320,7 @@ private struct ComposerSizeButton: View {
             MobiusLabel(
                 title: title,
                 glyph: expanded ? .collapse : .expand,
-                iconSize: MobiusStyle.glyphMark
+                iconSize: MobiusStyle.glyphLead
             )
         }
         .labelStyle(.iconOnly)

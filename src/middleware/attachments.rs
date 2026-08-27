@@ -49,7 +49,7 @@ pub const MANIFEST: MiddlewareManifest = MiddlewareManifest {
     label: text::MANIFEST_LABEL,
     description: text::MANIFEST_DESCRIPTION,
     required: false,
-    default_enabled: false,
+    default_enabled: true,
     settings: &[],
 };
 

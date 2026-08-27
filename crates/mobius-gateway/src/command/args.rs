@@ -7,6 +7,9 @@ pub(super) enum Command {
     Bootstrap {
         state_dir: PathBuf,
     },
+    ResetDefaultAgent {
+        state_dir: PathBuf,
+    },
     PairingCode {
         state_dir: PathBuf,
     },
@@ -79,6 +82,9 @@ pub(super) fn parse(arguments: Vec<OsString>) -> Result<Command> {
         parse_init(arguments.collect()).map(Command::Init)
     } else if command == "bootstrap" {
         parse_state_dir(arguments.collect()).map(|state_dir| Command::Bootstrap { state_dir })
+    } else if command == "reset-default-agent" {
+        parse_state_dir(arguments.collect())
+            .map(|state_dir| Command::ResetDefaultAgent { state_dir })
     } else if command == "pairing-code" {
         parse_pairing_code(arguments.collect()).map(|state_dir| Command::PairingCode { state_dir })
     } else if command == "register-provider" {

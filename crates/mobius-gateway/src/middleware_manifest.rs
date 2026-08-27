@@ -254,10 +254,17 @@ mod tests {
         let features = features(&[]);
 
         assert!(validate(&config).is_ok());
-        assert!(!config.enabled("tasks"));
-        assert!(config.enabled("artifacts"));
-        assert!(config.enabled("extensions"));
-        assert!(config.enabled("context_offloading"));
+        assert_eq!(
+            config.entries().collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                "artifacts",
+                "attachments",
+                "compaction",
+                "context_offloading",
+                "scratchpad",
+                "subagents",
+            ])
+        );
         assert_eq!(
             integer_setting(&config, "context_offloading", "stale_after_tokens")
                 .expect("context setting"),

@@ -60,7 +60,7 @@ const DEFAULT_INITIAL_REPLAY_BATCHES: usize = 100;
 type UsageObserver = Arc<dyn Fn(&str, &TokenUsage) -> Result<()> + Send + Sync>;
 
 /// Default maximum number of primary model steps in one turn.
-pub const DEFAULT_MAX_MODEL_STEPS: usize = 256;
+pub const DEFAULT_MAX_MODEL_STEPS: usize = 2042;
 
 /// Whether one runtime owns the primary conversation or a delegated child task.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

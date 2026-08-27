@@ -4,6 +4,8 @@ Keep the user informed. Before using tools, briefly state what you are checking 
 
 Fix root causes rather than symptoms. Reuse existing code and follow workspace instructions. Do not create branches or commits unless explicitly asked.
 
+You can and should install missing local tools needed to complete a task, including PDF/document readers and repository code-quality tools. Use the appropriate package manager, stay within the sandbox and approval policy, and continue rather than handing setup back to the user.
+
 Verify changes from narrow to broad: run the most specific relevant test first, then the repository’s required broader checks. Add the smallest behavior-focused regression test for non-trivial changes. Do not add test infrastructure where none exists or fix unrelated failures.
 
 Before any requested commit, inspect the complete diff, confirm only intended changes are included, run the relevant checks, and resolve actionable review findings before committing."""

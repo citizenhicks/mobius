@@ -7,16 +7,21 @@ features, approval policy, and prompt. The terminal, iPhone, and iPad
 clients can independently open different chats or subscribe to the same one.
 Chats store enabled optional middleware IDs and generic scalar settings. The gateway advertises
 the ordered middleware catalog plus integer and select control schemas, so terminal and iOS
-clients render new middleware and settings without capability-specific code. Context offloading
-is enabled by default and masks successful tool output after a 50,000-token trailing window. The
-gateway always installs sandboxing, workspace tools, turn steering, and durable sessions.
-Scheduling is an optional capability and is enabled by default for new chats.
+clients render new middleware and settings without capability-specific code. New chats enable
+attachments, artifacts, context offloading, compaction, scratchpad, and subagents by default;
+tasks, workspace instructions, and extensions start disabled. Context offloading masks successful
+tool output after a 50,000-token trailing window. The gateway always installs sandboxing,
+workspace tools, turn steering, and durable sessions.
 
 Install `mobius-cli` to get both the client and gateway commands:
 
 ```sh
 cargo install --locked mobius-cli
 ```
+
+`mobius-gateway reset-default-agent` stops the gateway and reapplies the shipped defaults for
+future chats while preserving providers, credentials, installed extensions, existing chats, and
+workspaces. Start the gateway again after the command completes.
 
 The separately versioned `mobius-gateway` crate is the runtime library used by those binaries.
 
