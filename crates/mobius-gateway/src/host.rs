@@ -186,6 +186,42 @@ impl GatewayHost {
         gateway_ready(&state).await
     }
 
+    pub(crate) async fn submit_global_scratchpad(
+        &self,
+        operation: Op,
+    ) -> std::result::Result<FrontendContribution, Rejection> {
+        let Op::CapabilityCommand {
+            capability,
+            command,
+            arguments,
+            input,
+            target,
+        } = operation
+        else {
+            return Err(invalid_global_scratchpad_operation());
+        };
+        if capability != "scratchpad" || command != "scratchpad" || target.is_some() {
+            return Err(invalid_global_scratchpad_operation());
+        }
+        let mut arguments = arguments.split_whitespace();
+        let operation = arguments.next();
+        let scope = arguments.next();
+        let id = arguments.next();
+        if arguments.next().is_some() {
+            return Err(invalid_global_scratchpad_operation());
+        }
+        let scratchpad = self.state.lock().await.scratchpad.clone();
+        match (operation, scope, id, input.as_deref()) {
+            (Some("refresh"), None, None, None) => scratchpad.global_contribution().await,
+            (Some("edit"), Some("global"), Some(id), Some(note)) => {
+                scratchpad.edit_global(id, note).await
+            }
+            (Some("forget"), Some("global"), Some(id), None) => scratchpad.forget_global(id).await,
+            _ => return Err(invalid_global_scratchpad_operation()),
+        }
+        .map_err(global_scratchpad_error)
+    }
+
     pub(crate) async fn sessions(&self) -> std::result::Result<Vec<SessionRecord>, Rejection> {
         let state = self.state.lock().await;
         session_catalog(&state.checkpoints, &state.activities)
@@ -829,6 +865,26 @@ fn invalid_cron(error: impl std::fmt::Display) -> Rejection {
         code: "invalid_cron",
         message: error.to_string(),
         fatal: false,
+    }
+}
+
+fn invalid_global_scratchpad_operation() -> Rejection {
+    Rejection {
+        code: "invalid_global_scratchpad",
+        message: "global scratchpad accepts only refresh, edit global <id>, or forget global <id>"
+            .into(),
+        fatal: false,
+    }
+}
+
+fn global_scratchpad_error(error: mobius::Error) -> Rejection {
+    match error {
+        mobius::Error::Tool(message) => Rejection {
+            code: "invalid_global_scratchpad",
+            message,
+            fatal: false,
+        },
+        error => internal(error),
     }
 }
 

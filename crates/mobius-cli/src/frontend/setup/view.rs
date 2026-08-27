@@ -167,274 +167,283 @@ pub(super) fn page_prompt(state: &SetupState) -> (&'static str, String) {
 }
 
 pub(super) fn render_page(lines: &mut Vec<Line<'static>>, state: &SetupState, width: u16) {
-    let theme = current();
     match state.page {
-        Page::Provider => {
-            for (index, entry) in state.providers.iter().enumerate() {
-                let configured = match &entry.instance {
-                    Some(instance) if instance.configured => "configured",
-                    Some(_) => "login required",
-                    None => "add setup",
-                };
-                choice(
-                    lines,
-                    entry
-                        .instance
-                        .as_ref()
-                        .map_or(&entry.status.label, |instance| &instance.label),
-                    &format!("{} · {configured}", entry.status.description),
-                    index == state.provider,
-                    if index == state.provider {
-                        "●"
-                    } else {
-                        "○"
-                    },
-                );
-            }
-        }
-        Page::Authentication => {
-            {
-                let focused = state.auth_field == AuthField::Label;
-                lines.push(Line::styled(
-                    format!(
-                        "{} Name  {}▏",
-                        if focused { "›" } else { " " },
-                        terminal_text(&state.label)
-                    ),
-                    theme.style(if focused { Role::Selection } else { Role::Text }),
-                ));
-                lines.push(Line::styled(
-                    format!(
-                        "    Shown in model pickers. Empty uses `{}`.",
-                        state.definition().label
-                    ),
-                    theme.style(Role::Muted),
-                ));
-                lines.push(Line::from(""));
-            }
-            match state.definition().auth {
-                ProviderAuthKind::ApiKey => {
-                    let focused = state.auth_field == AuthField::Credential;
-                    lines.push(Line::styled(
-                        format!(
-                            "{} API key  {}▏",
-                            if focused { "›" } else { " " },
-                            masked_credential(&state.credential)
-                        ),
-                        theme.style(if focused { Role::Selection } else { Role::Text }),
-                    ));
-                    lines.push(Line::styled(
-                        if state.has_matching_credential() {
-                            "    Paste a new key, or leave empty to reuse the gateway credential."
-                                .into()
-                        } else {
-                            state
-                                .definition()
-                                .default_api_key_env
-                                .as_deref()
-                                .map_or_else(
-                                    || "    Paste a key configured for this gateway endpoint.".into(),
-                                    |environment| format!(
-                                        "    Paste a key, or leave empty to use {environment} when set."
-                                    ),
-                                )
-                        },
-                        theme.style(Role::Muted),
-                    ));
-                }
-                ProviderAuthKind::DeviceCode => {
-                    lines.push(Line::styled(
-                        format!(
-                            "  Press Enter to start {} device login.",
-                            state.definition().label
-                        ),
-                        theme.style(Role::Info),
-                    ));
-                }
-            }
-            if state.definition().configurable_base_url() {
-                let focused = state.auth_field == AuthField::Endpoint;
-                lines.push(Line::from(""));
-                lines.push(Line::styled(
-                    format!(
-                        "{} Base URL  {}▏",
-                        if focused { "›" } else { " " },
-                        terminal_text(&state.endpoint)
-                    ),
-                    theme.style(if focused { Role::Selection } else { Role::Text }),
-                ));
-                lines.push(Line::styled(
-                    "    Credential storage is bound to this exact endpoint.",
-                    theme.style(Role::Muted),
-                ));
-            }
-        }
-        Page::Models => {
+        Page::Provider => render_provider_page(lines, state),
+        Page::Authentication => render_authentication_page(lines, state),
+        Page::Models => render_models_page(lines, state),
+        Page::Agent => render_agent_page(lines, state, width),
+    }
+}
+
+fn render_provider_page(lines: &mut Vec<Line<'static>>, state: &SetupState) {
+    for (index, entry) in state.providers.iter().enumerate() {
+        let configured = match &entry.instance {
+            Some(instance) if instance.configured => "configured",
+            Some(_) => "login required",
+            None => "add setup",
+        };
+        choice(
+            lines,
+            entry
+                .instance
+                .as_ref()
+                .map_or(&entry.status.label, |instance| &instance.label),
+            &format!("{} · {configured}", entry.status.description),
+            index == state.provider,
+            if index == state.provider {
+                "●"
+            } else {
+                "○"
+            },
+        );
+    }
+}
+
+fn render_authentication_page(lines: &mut Vec<Line<'static>>, state: &SetupState) {
+    let theme = current();
+    let focused = state.auth_field == AuthField::Label;
+    lines.push(Line::styled(
+        format!(
+            "{} Name  {}▏",
+            if focused { "›" } else { " " },
+            terminal_text(&state.label)
+        ),
+        theme.style(if focused { Role::Selection } else { Role::Text }),
+    ));
+    lines.push(Line::styled(
+        format!(
+            "    Shown in model pickers. Empty uses `{}`.",
+            state.definition().label
+        ),
+        theme.style(Role::Muted),
+    ));
+    lines.push(Line::from(""));
+
+    match state.definition().auth {
+        ProviderAuthKind::ApiKey => {
+            let focused = state.auth_field == AuthField::Credential;
             lines.push(Line::styled(
-                if state.definition().model_ids_configurable {
-                    "  Model IDs"
+                format!(
+                    "{} API key  {}▏",
+                    if focused { "›" } else { " " },
+                    masked_credential(&state.credential)
+                ),
+                theme.style(if focused { Role::Selection } else { Role::Text }),
+            ));
+            lines.push(Line::styled(
+                if state.has_matching_credential() {
+                    "    Paste a new key, or leave empty to reuse the gateway credential.".into()
                 } else {
-                    "  Model"
+                    state
+                        .definition()
+                        .default_api_key_env
+                        .as_deref()
+                        .map_or_else(
+                            || "    Paste a key configured for this gateway endpoint.".into(),
+                            |environment| {
+                                format!(
+                                    "    Paste a key, or leave empty to use {environment} when set."
+                                )
+                            },
+                        )
                 },
                 theme.style(Role::Muted),
             ));
-            for (index, model) in state.definition().models.iter().enumerate() {
-                choice(
-                    lines,
-                    &model.label,
-                    &model.description,
-                    state.row == index,
-                    if state.model == index { "●" } else { "○" },
-                );
-            }
-            if state.definition().model_ids_configurable {
-                choice(
-                    lines,
-                    "Model IDs",
-                    if state.custom_model.is_empty() {
-                        "Comma-separated; the first model is selected"
-                    } else {
-                        &state.custom_model
-                    },
-                    state.row == 0,
-                    "●",
-                );
-            }
-            lines.push(Line::from(""));
-            lines.push(Line::styled("  Reasoning", theme.style(Role::Muted)));
-            let reasoning_start = state.model_choice_count();
-            choice(
-                lines,
-                "Provider default",
-                "Use the selected model's default reasoning",
-                state.row == reasoning_start,
-                if state.reasoning == 0 { "●" } else { "○" },
-            );
-            for (index, preset) in state
-                .definition()
-                .models
-                .get(state.model)
-                .into_iter()
-                .flat_map(|model| &model.reasoning)
-                .enumerate()
-            {
-                choice(
-                    lines,
-                    &preset.label,
-                    &preset.description,
-                    state.row == reasoning_start + index + 1,
-                    if state.reasoning == index + 1 {
-                        "●"
-                    } else {
-                        "○"
-                    },
-                );
-            }
-            lines.push(Line::from(""));
-            lines.push(Line::styled(
-                "  Hosted web search",
-                theme.style(Role::Muted),
-            ));
-            if state.definition().web_search.len() == 1 {
-                let search = &state.definition().web_search[0];
-                choice(lines, &search.label, &search.description, false, "[fixed]");
-            } else {
-                let search_start = state.model_choice_count() + state.reasoning_choice_count();
-                for (index, search) in state.definition().web_search.iter().enumerate() {
-                    choice(
-                        lines,
-                        &search.label,
-                        &search.description,
-                        state.row == search_start + index,
-                        if state.web_search == index {
-                            "●"
-                        } else {
-                            "○"
-                        },
-                    );
-                }
-            }
-            render_apply_actions(lines, state, state.models_action_start(), None);
         }
-        Page::Agent => {
-            let layout = agent_layout(state, usize::from(width));
-            for row in 0..state.middleware_row_count() {
-                match state
-                    .middleware_row(row)
-                    .expect("visible agent rows have a catalog entry")
-                {
-                    MiddlewareRow::Feature(feature_index) => {
-                        let feature = &state.features[feature_index];
-                        let disclosure = if !state.feature_has_children(feature_index) {
-                            ""
-                        } else if state.expanded_features.contains(&feature.id) {
-                            " ▾"
-                        } else {
-                            " ▸"
-                        };
-                        agent_choice(
-                            lines,
-                            &format!("{}{disclosure}", feature.label),
-                            &feature.description,
-                            state.row == row,
-                            if feature.required || state.middleware.enabled(&feature.id) {
-                                "[x]"
-                            } else {
-                                "[ ]"
-                            },
-                            layout,
-                        );
-                    }
-                    MiddlewareRow::Setting { feature, setting } => {
-                        let feature = &state.features[feature];
-                        let setting = &feature.settings[setting];
-                        let (value, role) =
-                            middleware_setting_value(&state.middleware, &feature.id, setting);
-                        setting_choice(
-                            lines,
-                            &setting.label,
-                            &value,
-                            role,
-                            &setting.description,
-                            state.row == row,
-                            layout,
-                        );
-                    }
-                    MiddlewareRow::Extension { extension, .. } => {
-                        let extension = &state.available_extensions[extension];
-                        let version = extension
-                            .version
-                            .as_deref()
-                            .map_or(String::new(), |version| format!(" · {version}"));
-                        let hooks = if !extension.hooks.is_empty() && !extension.hooks_trusted {
-                            " · hooks disabled until trusted"
-                        } else {
-                            ""
-                        };
-                        extension_choice(
-                            lines,
-                            &extension.name,
-                            &format!(
-                                "{}{}{} · {}",
-                                extension_kind(extension.kind),
-                                version,
-                                hooks,
-                                extension.description
-                            ),
-                            state.row == row,
-                            if state.selected_extensions.contains(&extension.id) {
-                                "[x]"
-                            } else {
-                                "[ ]"
-                            },
-                            layout,
-                        );
-                    }
-                }
-            }
-            render_apply_actions(lines, state, state.agent_action_start(), Some(layout));
+        ProviderAuthKind::DeviceCode => {
+            lines.push(Line::styled(
+                format!(
+                    "  Press Enter to start {} device login.",
+                    state.definition().label
+                ),
+                theme.style(Role::Info),
+            ));
         }
     }
+    if state.definition().configurable_base_url() {
+        let focused = state.auth_field == AuthField::Endpoint;
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            format!(
+                "{} Base URL  {}▏",
+                if focused { "›" } else { " " },
+                terminal_text(&state.endpoint)
+            ),
+            theme.style(if focused { Role::Selection } else { Role::Text }),
+        ));
+        lines.push(Line::styled(
+            "    Credential storage is bound to this exact endpoint.",
+            theme.style(Role::Muted),
+        ));
+    }
+}
+
+fn render_models_page(lines: &mut Vec<Line<'static>>, state: &SetupState) {
+    let theme = current();
+    lines.push(Line::styled(
+        if state.definition().model_ids_configurable {
+            "  Model IDs"
+        } else {
+            "  Model"
+        },
+        theme.style(Role::Muted),
+    ));
+    for (index, model) in state.definition().models.iter().enumerate() {
+        choice(
+            lines,
+            &model.label,
+            &model.description,
+            state.row == index,
+            if state.model == index { "●" } else { "○" },
+        );
+    }
+    if state.definition().model_ids_configurable {
+        choice(
+            lines,
+            "Model IDs",
+            if state.custom_model.is_empty() {
+                "Comma-separated; the first model is selected"
+            } else {
+                &state.custom_model
+            },
+            state.row == 0,
+            "●",
+        );
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::styled("  Reasoning", theme.style(Role::Muted)));
+    let reasoning_start = state.model_choice_count();
+    choice(
+        lines,
+        "Provider default",
+        "Use the selected model's default reasoning",
+        state.row == reasoning_start,
+        if state.reasoning == 0 { "●" } else { "○" },
+    );
+    for (index, preset) in state
+        .definition()
+        .models
+        .get(state.model)
+        .into_iter()
+        .flat_map(|model| &model.reasoning)
+        .enumerate()
+    {
+        choice(
+            lines,
+            &preset.label,
+            &preset.description,
+            state.row == reasoning_start + index + 1,
+            if state.reasoning == index + 1 {
+                "●"
+            } else {
+                "○"
+            },
+        );
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::styled(
+        "  Hosted web search",
+        theme.style(Role::Muted),
+    ));
+    if state.definition().web_search.len() == 1 {
+        let search = &state.definition().web_search[0];
+        choice(lines, &search.label, &search.description, false, "[fixed]");
+    } else {
+        let search_start = state.model_choice_count() + state.reasoning_choice_count();
+        for (index, search) in state.definition().web_search.iter().enumerate() {
+            choice(
+                lines,
+                &search.label,
+                &search.description,
+                state.row == search_start + index,
+                if state.web_search == index {
+                    "●"
+                } else {
+                    "○"
+                },
+            );
+        }
+    }
+    render_apply_actions(lines, state, state.models_action_start(), None);
+}
+
+fn render_agent_page(lines: &mut Vec<Line<'static>>, state: &SetupState, width: u16) {
+    let layout = agent_layout(state, usize::from(width));
+    for row in 0..state.middleware_row_count() {
+        match state
+            .middleware_row(row)
+            .expect("visible agent rows have a catalog entry")
+        {
+            MiddlewareRow::Feature(feature_index) => {
+                let feature = &state.features[feature_index];
+                let disclosure = if !state.feature_has_children(feature_index) {
+                    ""
+                } else if state.expanded_features.contains(&feature.id) {
+                    " ▾"
+                } else {
+                    " ▸"
+                };
+                agent_choice(
+                    lines,
+                    &format!("{}{disclosure}", feature.label),
+                    &feature.description,
+                    state.row == row,
+                    if feature.required || state.middleware.enabled(&feature.id) {
+                        "[x]"
+                    } else {
+                        "[ ]"
+                    },
+                    layout,
+                );
+            }
+            MiddlewareRow::Setting { feature, setting } => {
+                let feature = &state.features[feature];
+                let setting = &feature.settings[setting];
+                let (value, role) =
+                    middleware_setting_value(&state.middleware, &feature.id, setting);
+                setting_choice(
+                    lines,
+                    &setting.label,
+                    &value,
+                    role,
+                    &setting.description,
+                    state.row == row,
+                    layout,
+                );
+            }
+            MiddlewareRow::Extension { extension, .. } => {
+                let extension = &state.available_extensions[extension];
+                let version = extension
+                    .version
+                    .as_deref()
+                    .map_or(String::new(), |version| format!(" · {version}"));
+                let hooks = if !extension.hooks.is_empty() && !extension.hooks_trusted {
+                    " · hooks disabled until trusted"
+                } else {
+                    ""
+                };
+                extension_choice(
+                    lines,
+                    &extension.name,
+                    &format!(
+                        "{}{}{} · {}",
+                        extension_kind(extension.kind),
+                        version,
+                        hooks,
+                        extension.description
+                    ),
+                    state.row == row,
+                    if state.selected_extensions.contains(&extension.id) {
+                        "[x]"
+                    } else {
+                        "[ ]"
+                    },
+                    layout,
+                );
+            }
+        }
+    }
+    render_apply_actions(lines, state, state.agent_action_start(), Some(layout));
 }
 
 pub(super) fn agent_layout(state: &SetupState, width: usize) -> AgentLayout {

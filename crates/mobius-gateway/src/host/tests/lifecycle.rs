@@ -11,7 +11,7 @@ fn cron_schedule(expression: &str) -> crate::wire::CronSchedule {
 }
 
 #[tokio::test]
-async fn ready_reuses_the_startup_contributions() {
+async fn ready_exposes_the_global_scratchpad_without_a_session() {
     let root = tempfile::tempdir().expect("root");
     let listen = "127.0.0.1:8741".parse().expect("listen address");
     let (store, config) =
@@ -31,10 +31,36 @@ async fn ready_reuses_the_startup_contributions() {
     }];
     gateway.state.lock().await.contributions = expected.clone();
 
+    let contributions = gateway.ready().await.expect("ready").contributions;
+    assert_eq!(&contributions[..expected.len()], expected);
     assert_eq!(
-        gateway.ready().await.expect("ready").contributions,
-        expected
+        contributions.last().expect("scratchpad").capability,
+        "scratchpad"
     );
+
+    let refreshed = gateway
+        .submit_global_scratchpad(Op::CapabilityCommand {
+            capability: "scratchpad".into(),
+            command: "scratchpad".into(),
+            arguments: "refresh".into(),
+            input: None,
+            target: None,
+        })
+        .await
+        .expect("refresh global scratchpad");
+    assert_eq!(refreshed.capability, "scratchpad");
+
+    let rejection = gateway
+        .submit_global_scratchpad(Op::CapabilityCommand {
+            capability: "scratchpad".into(),
+            command: "scratchpad".into(),
+            arguments: "forget session note-1".into(),
+            input: None,
+            target: None,
+        })
+        .await
+        .expect_err("session operations need a selected chat");
+    assert_eq!(rejection.code, "invalid_global_scratchpad");
 }
 
 #[tokio::test]

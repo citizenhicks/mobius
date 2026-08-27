@@ -1,6 +1,21 @@
 import Foundation
 
 extension AppModel {
+    func connectionEnded(generation: UUID, error: Error) {
+        guard connectionGeneration == generation else { return }
+        if case .unsupportedVersion(let version) = error as? GatewayWireError,
+           version > gatewayProtocolVersion {
+            automaticReconnectBlocked = true
+            showsAppUpdateAlert = true
+            connectionEnded(
+                generation: generation,
+                message: "Update möbius to connect to this gateway."
+            )
+            return
+        }
+        connectionEnded(generation: generation, message: error.localizedDescription)
+    }
+
     func connectionEnded(generation: UUID, message: String) {
         guard connectionGeneration == generation else { return }
         cancelReconnect()

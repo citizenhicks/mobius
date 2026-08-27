@@ -14,6 +14,7 @@ struct AppShell: View {
     @Environment(AppModel.self) private var model
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.openURL) private var openURL
     @State private var columnVisibility = NavigationSplitViewVisibility.all
     @State private var compactColumn = debugStartsOnDetail ? NavigationSplitViewColumn.detail : .sidebar
     @State private var sidebarIsOpen = !debugStartsOnDetail
@@ -91,6 +92,14 @@ struct AppShell: View {
             Button("Cancel", role: .cancel) { model.sessionToDelete = nil }
         } message: {
             Text("This removes the chat from the gateway history.")
+        }
+        .alert("Update möbius", isPresented: $model.showsAppUpdateAlert) {
+            Button("Open TestFlight") {
+                if let url = URL(string: "itms-beta://") { openURL(url) }
+            }
+            Button("Not now", role: .cancel) {}
+        } message: {
+            Text("This app is older than möbius Cloud and can no longer connect. Install the latest build from TestFlight, then reopen the app.")
         }
         .quickLookPreview($model.previewURL)
         .sheet(isPresented: $model.showsCloudOffer) {

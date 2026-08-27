@@ -15,17 +15,7 @@ pub(super) fn surface_widgets(snapshot: &Snapshot) -> Vec<FrontendWidget> {
         .map(|entry| entry.note.as_str())
         .collect::<BTreeSet<_>>();
     vec![
-        frontend_widget(
-            "navigation",
-            FrontendSlot::Navigation,
-            text::WIDGET_TEXT,
-            action_list_content(
-                text::WIDGET_GLOBAL_TITLE,
-                Scope::Global,
-                &snapshot.global,
-                None,
-            ),
-        ),
+        global_widget(&snapshot.global),
         frontend_widget(
             "chat_menu",
             FrontendSlot::ChatMenu,
@@ -38,6 +28,15 @@ pub(super) fn surface_widgets(snapshot: &Snapshot) -> Vec<FrontendWidget> {
             ),
         ),
     ]
+}
+
+pub(super) fn global_widget(entries: &[Entry]) -> FrontendWidget {
+    frontend_widget(
+        "navigation",
+        FrontendSlot::Navigation,
+        text::WIDGET_TEXT,
+        action_list_content(text::WIDGET_GLOBAL_TITLE, Scope::Global, entries, None),
+    )
 }
 
 fn frontend_widget(

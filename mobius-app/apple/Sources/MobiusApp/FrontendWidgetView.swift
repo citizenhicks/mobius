@@ -81,15 +81,21 @@ struct FrontendWidgetContentView: View {
     @Environment(\.mobiusPalette) private var palette
     let content: FrontendWidgetContent
     let actionsEnabled: Bool
+    let usesSwipeActions: Bool
+    let submitOperation: ((AgentOperation) -> Void)?
     let select: (FrontendPickerOption) -> Void
 
     init(
         content: FrontendWidgetContent,
         actionsEnabled: Bool = true,
+        usesSwipeActions: Bool = false,
+        submitOperation: ((AgentOperation) -> Void)? = nil,
         select: @escaping (FrontendPickerOption) -> Void
     ) {
         self.content = content
         self.actionsEnabled = actionsEnabled
+        self.usesSwipeActions = usesSwipeActions
+        self.submitOperation = submitOperation
         self.select = select
     }
 
@@ -121,10 +127,13 @@ struct FrontendWidgetContentView: View {
                     .foregroundStyle(palette.muted)
                     .frame(maxWidth: .infinity, minHeight: MobiusStyle.iconButtonSize)
             } else {
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(items) { item in
-                        FrontendActionListRow(item: item, actionsEnabled: actionsEnabled)
-                    }
+                ForEach(items) { item in
+                    FrontendActionListRow(
+                        item: item,
+                        actionsEnabled: actionsEnabled,
+                        usesSwipeActions: usesSwipeActions,
+                        submitOperation: submitOperation
+                    )
                 }
             }
         }
@@ -138,6 +147,8 @@ private struct FrontendActionListRow: View {
     @State private var editedText = ""
     let item: FrontendActionListItem
     let actionsEnabled: Bool
+    let usesSwipeActions: Bool
+    let submitOperation: ((AgentOperation) -> Void)?
 
     var body: some View {
         HStack(spacing: MobiusSpace.s) {
@@ -152,7 +163,7 @@ private struct FrontendActionListRow: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, minHeight: MobiusStyle.iconButtonSize, alignment: .leading)
-            if !item.actions.isEmpty {
+            if !item.actions.isEmpty, !usesSwipeActions {
                 Menu {
                     ForEach(item.actions) { action in
                         Button(role: action.tone == "error" ? .destructive : nil) {
@@ -180,6 +191,20 @@ private struct FrontendActionListRow: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(statusLabel): \(item.text)")
+        .mobiusSwipeActions {
+            if usesSwipeActions {
+                ForEach(item.actions.reversed()) { action in
+                    MobiusSwipeAction(
+                        title: action.label,
+                        glyph: MobiusSymbol.glyph(for: action.symbol),
+                        tone: action.tone,
+                        isEnabled: actionsEnabled
+                    ) {
+                        activate(action)
+                    }
+                }
+            }
+        }
         .alert(
             pendingAction?.action.label ?? "",
             isPresented: isPresentingAction,
@@ -190,9 +215,7 @@ private struct FrontendActionListRow: View {
                 TextField("Text", text: $editedText)
                 Button("Cancel", role: .cancel) { pendingAction = nil }
                 Button("Save") {
-                    model.submitFrontendOperation(
-                        pending.action.op.replacingCapabilityInput(with: editedText)
-                    )
+                    submit(pending.action.op.replacingCapabilityInput(with: editedText))
                     pendingAction = nil
                 }
                 .disabled(
@@ -203,7 +226,7 @@ private struct FrontendActionListRow: View {
             case .destructive:
                 Button("Cancel", role: .cancel) { pendingAction = nil }
                 Button(pending.action.label, role: .destructive) {
-                    model.submitFrontendOperation(pending.action.op)
+                    submit(pending.action.op)
                     pendingAction = nil
                 }
                 .disabled(!actionsEnabled)
@@ -230,8 +253,13 @@ private struct FrontendActionListRow: View {
             editedText = input
             pendingAction = PendingAction(kind: .edit, itemText: item.text, action: action)
         } else {
-            model.submitFrontendOperation(action.op)
+            submit(action.op)
         }
+    }
+
+    private func submit(_ operation: AgentOperation) {
+        if let submitOperation { submitOperation(operation) }
+        else { model.submitFrontendOperation(operation) }
     }
 
     private var statusGlyph: MobiusGlyph? {
@@ -324,7 +352,8 @@ struct FrontendWidgetSheet: View {
                     Section {
                         FrontendWidgetContentView(
                             content: content,
-                            actionsEnabled: model.isCapabilityEnabled(widget.capability)
+                            actionsEnabled: model.isCapabilityEnabled(widget.capability),
+                            usesSwipeActions: true
                         ) { option in
                             model.submitPickerOption(option)
                             dismiss()

@@ -91,6 +91,10 @@ pub enum ClientMessage {
         session_id: String,
         submission: Submission,
     },
+    SubmitGlobalScratchpad {
+        request_id: String,
+        operation: Op,
+    },
     BeginSessionFileUpload {
         request_id: String,
         session_id: String,
@@ -343,6 +347,10 @@ pub enum ServerMessage {
     GatewayConfigured {
         request_id: String,
         payload: ReadyPayload,
+    },
+    GlobalScratchpadChanged {
+        request_id: String,
+        contribution: FrontendContribution,
     },
     Accepted {
         request_id: String,

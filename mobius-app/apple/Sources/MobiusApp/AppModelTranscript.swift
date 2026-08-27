@@ -4,9 +4,21 @@ extension AppModel {
     func reduce(record: RecordedEvent) {
         pinTranscriptWindowIfNeeded()
         let event = record.event
-        let blocks = record.blocks
         let type = event.msg["type"]?.stringValue ?? "unknown"
         let turnID = event.msg["turnId"]?.stringValue ?? activeTurnID
+        prepareTranscriptEvent(event, type: type)
+        let wasRendered = applyPresentation(from: record, turnID: turnID)
+
+        if handleNarrativeEvent(type, event: event, record: record, turnID: turnID, wasRendered: wasRendered) {
+            return
+        }
+        if handleTurnEvent(type, event: event, record: record, turnID: turnID, wasRendered: wasRendered) {
+            return
+        }
+        _ = handleTranscriptStateEvent(type, event: event)
+    }
+
+    private func prepareTranscriptEvent(_ event: AgentEventRecord, type: String) {
         // Queue removal also happens for edits and turn cleanup; only the immediately
         // following targeted user message proves that steering reached the model input.
         let confirmsSteeringDelivery = awaitsSteeringDelivery
@@ -21,7 +33,6 @@ extension AppModel {
         if type != "agent_message_content_delta", type != "agent_reasoning_content_delta" {
             flushStreamDeltas()
         }
-        let wasRendered = !blocks.isEmpty
         if type == "user_message", let submissionID = event.submissionId {
             confirmChatTitle(submissionID: submissionID)
         }
@@ -44,8 +55,11 @@ extension AppModel {
                 flushComposerDraft()
             }
         }
+    }
 
-        for (index, rendered) in blocks.enumerated() {
+    private func applyPresentation(from record: RecordedEvent, turnID: String?) -> Bool {
+        let event = record.event
+        for (index, rendered) in record.blocks.enumerated() {
             apply(
                 rendered,
                 sequence: record.sequence,
@@ -65,7 +79,16 @@ extension AppModel {
             )
             if completesPageLoad { isLoadingPreviewPage = false }
         }
+        return !record.blocks.isEmpty
+    }
 
+    private func handleNarrativeEvent(
+        _ type: String,
+        event: AgentEventRecord,
+        record: RecordedEvent,
+        turnID: String?,
+        wasRendered: Bool
+    ) -> Bool {
         switch type {
         case "user_message":
             let startsTurn = turnID != nil && awaitingInitialUserTurnID == turnID
@@ -84,9 +107,10 @@ extension AppModel {
                 messageTarget: messageTarget(from: event.msg),
                 files: attachments
             )
+            return true
         case "agent_message_content_delta":
             let phase = event.msg["phase"]?.stringValue
-            guard let modelStepID = event.msg["modelStepId"]?.stringValue else { return }
+            guard let modelStepID = event.msg["modelStepId"]?.stringValue else { return true }
             let commentary = phase == "commentary"
             appendStream(
                 id: streamID(modelStepID: modelStepID, phase: phase ?? "final_answer"),
@@ -96,8 +120,9 @@ extension AppModel {
                 turnID: turnID,
                 record: record
             )
+            return true
         case "agent_reasoning_content_delta":
-            guard let modelStepID = event.msg["modelStepId"]?.stringValue else { return }
+            guard let modelStepID = event.msg["modelStepId"]?.stringValue else { return true }
             appendStream(
                 id: streamID(modelStepID: modelStepID, phase: "reasoning"),
                 delta: event.msg["delta"]?.stringValue ?? "",
@@ -106,10 +131,10 @@ extension AppModel {
                 turnID: turnID,
                 record: record
             )
+            return true
         case "model_step_completed":
             applyModelStepCompletion(event.msg, turnID: turnID, record: record)
-        case "model_step_started":
-            if replayRequestID == nil { runStats.active?.modelCalls += 1 }
+            return true
         case "agent_message":
             let phase = event.msg["phase"]?.stringValue
             let kind: TranscriptEntry.Kind = phase == "commentary" ? .commentary : .assistant
@@ -141,6 +166,22 @@ extension AppModel {
                     recordedAtMs: record.recordedAtMs
                 )
             }
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func handleTurnEvent(
+        _ type: String,
+        event: AgentEventRecord,
+        record: RecordedEvent,
+        turnID: String?,
+        wasRendered: Bool
+    ) -> Bool {
+        switch type {
+        case "model_step_started":
+            if replayRequestID == nil { runStats.active?.modelCalls += 1 }
         case "task_started":
             activeTurnID = event.msg["turnId"]?.stringValue
             awaitingInitialUserTurnID = activeTurnID
@@ -165,46 +206,10 @@ extension AppModel {
                 modelContextWindow = Int64(window)
             }
         case "task_complete":
-            finishPendingTranscriptEntries()
-            if let turnID {
-                markTranscriptTurnFinished(
-                    turnID,
-                    finishedAtMs: record.recordedAtMs,
-                    in: &transcript
-                )
-            }
-            awaitingInitialUserTurnID = nil
-            activeTurnID = nil
-            if replayRequestID == nil { runStats.active = nil }
-            refreshWorkspaceChanges()
-            if filesInspectorTab == .chatFiles { refreshSessionFiles() }
-            pendingApproval = nil
-            approvalRequestID = nil
-        case "web_search_begin":
-            break
-        case "web_search_end":
-            break
+            finishTranscriptTurn(record, turnID: turnID, aborted: false, wasRendered: wasRendered)
         case "turn_aborted":
-            finishPendingTranscriptEntries()
-            if let turnID {
-                markTranscriptTurnFinished(
-                    turnID,
-                    terminalSourceSequence: record.sequence,
-                    finishedAtMs: record.recordedAtMs,
-                    in: &transcript
-                )
-            }
-            awaitingInitialUserTurnID = nil
-            activeTurnID = nil
-            if replayRequestID == nil { runStats.active = nil }
-            refreshWorkspaceChanges()
-            if filesInspectorTab == .chatFiles { refreshSessionFiles() }
-            pendingApproval = nil
-            approvalRequestID = nil
-            if !wasRendered { finishPendingTranscriptEntries() }
-        case "warning":
-            break
-        case "error":
+            finishTranscriptTurn(record, turnID: turnID, aborted: true, wasRendered: wasRendered)
+        case "web_search_begin", "web_search_end", "warning", "error":
             break
         case "tool_call_begin":
             if replayRequestID == nil { runStats.active?.toolCalls += 1 }
@@ -212,6 +217,42 @@ extension AppModel {
             if replayRequestID == nil, event.msg["isError"]?.boolValue == true {
                 runStats.active?.failedToolCalls += 1
             }
+        default:
+            return false
+        }
+        return true
+    }
+
+    private func finishTranscriptTurn(
+        _ record: RecordedEvent,
+        turnID: String?,
+        aborted: Bool,
+        wasRendered: Bool
+    ) {
+        finishPendingTranscriptEntries()
+        if let turnID {
+            markTranscriptTurnFinished(
+                turnID,
+                terminalSourceSequence: aborted ? record.sequence : nil,
+                finishedAtMs: record.recordedAtMs,
+                in: &transcript
+            )
+        }
+        awaitingInitialUserTurnID = nil
+        activeTurnID = nil
+        if replayRequestID == nil { runStats.active = nil }
+        refreshWorkspaceChanges()
+        if filesInspectorTab == .chatFiles { refreshSessionFiles() }
+        pendingApproval = nil
+        approvalRequestID = nil
+        if aborted, !wasRendered { finishPendingTranscriptEntries() }
+    }
+
+    private func handleTranscriptStateEvent(
+        _ type: String,
+        event: AgentEventRecord
+    ) -> Bool {
+        switch type {
         case "model_changed":
             selectedModelRoute = event.msg["route"]?.stringValue ?? selectedModelRoute
             if let window = event.msg["modelContextWindow"]?.intValue {
@@ -238,8 +279,9 @@ extension AppModel {
         case "frontend":
             applyFrontendEvent(event.msg, submissionID: event.submissionId)
         default:
-            break
+            return false
         }
+        return true
     }
 
     private func applyFrontendEvent(_ event: JSONValue, submissionID: String?) {

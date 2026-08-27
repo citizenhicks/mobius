@@ -419,6 +419,26 @@ impl ExpectedResponse<'_> {
             } if instance == *expected_instance && provider == *expected_provider
         )
     }
+
+    fn is_login(self) -> bool {
+        matches!(self, Self::Login(_))
+    }
+}
+
+struct ResponseProgress {
+    accepted: bool,
+    completed: bool,
+    snapshot: Option<(usize, SessionReadyPayload)>,
+}
+
+impl ResponseProgress {
+    fn new(expected: ExpectedResponse<'_>) -> Self {
+        Self {
+            accepted: matches!(expected, ExpectedResponse::Credential { .. }),
+            completed: matches!(expected, ExpectedResponse::Configure { .. }),
+            snapshot: None,
+        }
+    }
 }
 
 pub(super) async fn wait_for_response(
@@ -428,104 +448,30 @@ pub(super) async fn wait_for_response(
     request_id: &str,
     expected: ExpectedResponse<'_>,
 ) -> Result<Option<SessionReadyPayload>> {
-    let mut accepted = matches!(expected, ExpectedResponse::Credential { .. });
-    let mut completed = matches!(expected, ExpectedResponse::Configure { .. });
+    let mut progress = ResponseProgress::new(expected);
     let mut deferred = Vec::new();
-    let mut snapshot = None;
     let result = loop {
-        let frame = match next_frame(
-            terminal,
-            state,
-            events,
-            matches!(expected, ExpectedResponse::Login(_)),
-        )
-        .await
-        {
+        let frame = match next_frame(terminal, state, events, expected.is_login()).await {
             Ok(frame) => frame,
             Err(error) => break Err(error),
         };
-        let defer = match &frame.message {
-            ServerMessage::SessionChanged { payload }
-                if matches!(
-                    expected,
-                    ExpectedResponse::Configure {
-                        session_id,
-                        revision,
-                    } if payload.session.session_id == session_id
-                        && payload.config.revision > revision
-                ) =>
-            {
-                snapshot = Some((deferred.len(), payload.clone()));
-                false
-            }
-            ServerMessage::Accepted { request_id: actual } if actual == request_id => {
-                accepted = true;
-                false
-            }
-            ServerMessage::ProviderCredentialSaved {
-                request_id: actual,
-                instance,
-                provider,
-            } if actual == request_id && expected.matches_credential(instance, provider) => {
-                completed = true;
-                false
-            }
-            ServerMessage::ProviderLoginStarted {
-                request_id: actual,
-                provider,
-                verification_url,
-                user_code,
-                ..
-            } if actual == request_id
-                && matches!(expected, ExpectedResponse::Login(expected) if provider == expected) =>
-            {
-                state.show_device_code(verification_url.clone(), user_code.clone());
-                if let Err(error) = draw(terminal, state) {
-                    break Err(error);
-                }
-                false
-            }
-            ServerMessage::ProviderLoginFinished {
-                request_id: actual,
-                provider,
-                ..
-            } if actual == request_id
-                && matches!(expected, ExpectedResponse::Login(expected) if provider == expected) =>
-            {
-                completed = true;
-                false
-            }
-            ServerMessage::ProviderCredentialSaved {
-                request_id: actual, ..
-            }
-            | ServerMessage::ProviderLoginStarted {
-                request_id: actual, ..
-            }
-            | ServerMessage::ProviderLoginFinished {
-                request_id: actual, ..
-            } if actual == request_id => {
-                break Err(Error::Stopped(
-                    "gateway returned an invalid setup response".into(),
-                ));
-            }
-            ServerMessage::Rejected {
-                request_id: actual,
-                message,
-                ..
-            } if actual == request_id => break Err(Error::Stopped(message.clone())),
-            ServerMessage::Error { message, .. } => break Err(Error::Stopped(message.clone())),
-            _ => true,
+        let defer = match observe_response(
+            terminal,
+            state,
+            &frame.message,
+            request_id,
+            expected,
+            &mut progress,
+            deferred.len(),
+        ) {
+            Ok(defer) => defer,
+            Err(error) => break Err(error),
         };
-        if accepted && completed {
-            if matches!(expected, ExpectedResponse::Configure { .. }) {
-                if let Some((_, payload)) = snapshot.take() {
-                    break Ok(Some(payload));
-                }
-            } else {
-                break Ok(None);
-            }
+        if let Some(response) = completed_response(expected, &mut progress) {
+            break Ok(response);
         }
-        if defer && deferred.len() + usize::from(snapshot.is_some()) == MAX_PENDING_FRAMES {
+        if defer && deferred.len() + usize::from(progress.snapshot.is_some()) == MAX_PENDING_FRAMES
+        {
             break Err(Error::Stopped(format!(
                 "gateway event backlog exceeds {MAX_PENDING_FRAMES} frames"
             )));
@@ -535,7 +481,7 @@ pub(super) async fn wait_for_response(
         }
     };
     if result.is_err()
-        && let Some((index, snapshot)) = snapshot
+        && let Some((index, snapshot)) = progress.snapshot
     {
         deferred.insert(
             index,
@@ -544,6 +490,153 @@ pub(super) async fn wait_for_response(
     }
     events.prepend(deferred).map_err(gateway_error)?;
     result
+}
+
+fn observe_response(
+    terminal: &mut SetupTerminal,
+    state: &mut SetupState,
+    message: &ServerMessage,
+    request_id: &str,
+    expected: ExpectedResponse<'_>,
+    progress: &mut ResponseProgress,
+    deferred_len: usize,
+) -> Result<bool> {
+    match message {
+        ServerMessage::Accepted { request_id: actual } if actual == request_id => {
+            progress.accepted = true;
+            return Ok(false);
+        }
+        ServerMessage::Rejected {
+            request_id: actual,
+            message,
+            ..
+        } if actual == request_id => return Err(Error::Stopped(message.clone())),
+        ServerMessage::Error { message, .. } => return Err(Error::Stopped(message.clone())),
+        _ => {}
+    }
+    match expected {
+        ExpectedResponse::Credential { .. } => {
+            observe_credential(message, request_id, expected, progress)
+        }
+        ExpectedResponse::Login(provider) => {
+            observe_login(terminal, state, message, request_id, provider, progress)
+        }
+        ExpectedResponse::Configure {
+            session_id,
+            revision,
+        } => observe_configure(
+            message,
+            request_id,
+            session_id,
+            revision,
+            progress,
+            deferred_len,
+        ),
+    }
+}
+
+fn observe_credential(
+    message: &ServerMessage,
+    request_id: &str,
+    expected: ExpectedResponse<'_>,
+    progress: &mut ResponseProgress,
+) -> Result<bool> {
+    if let ServerMessage::ProviderCredentialSaved {
+        request_id: actual,
+        instance: actual_instance,
+        provider: actual_provider,
+    } = message
+        && actual == request_id
+        && expected.matches_credential(actual_instance, actual_provider)
+    {
+        progress.completed = true;
+        return Ok(false);
+    }
+    reject_invalid_setup_response(message, request_id)?;
+    Ok(true)
+}
+
+fn observe_login(
+    terminal: &mut SetupTerminal,
+    state: &mut SetupState,
+    message: &ServerMessage,
+    request_id: &str,
+    provider: &str,
+    progress: &mut ResponseProgress,
+) -> Result<bool> {
+    match message {
+        ServerMessage::ProviderLoginStarted {
+            request_id: actual,
+            provider: actual_provider,
+            verification_url,
+            user_code,
+            ..
+        } if actual == request_id && actual_provider == provider => {
+            state.show_device_code(verification_url.clone(), user_code.clone());
+            draw(terminal, state)?;
+            return Ok(false);
+        }
+        ServerMessage::ProviderLoginFinished {
+            request_id: actual,
+            provider: actual_provider,
+            ..
+        } if actual == request_id && actual_provider == provider => {
+            progress.completed = true;
+            return Ok(false);
+        }
+        _ => {}
+    }
+    reject_invalid_setup_response(message, request_id)?;
+    Ok(true)
+}
+
+fn observe_configure(
+    message: &ServerMessage,
+    request_id: &str,
+    session_id: &str,
+    revision: u64,
+    progress: &mut ResponseProgress,
+    deferred_len: usize,
+) -> Result<bool> {
+    if let ServerMessage::SessionChanged { payload } = message
+        && payload.session.session_id == session_id
+        && payload.config.revision > revision
+    {
+        progress.snapshot = Some((deferred_len, payload.clone()));
+        return Ok(false);
+    }
+    reject_invalid_setup_response(message, request_id)?;
+    Ok(true)
+}
+
+fn reject_invalid_setup_response(message: &ServerMessage, request_id: &str) -> Result<()> {
+    let actual = match message {
+        ServerMessage::ProviderCredentialSaved { request_id, .. }
+        | ServerMessage::ProviderLoginStarted { request_id, .. }
+        | ServerMessage::ProviderLoginFinished { request_id, .. } => request_id,
+        _ => return Ok(()),
+    };
+    if actual == request_id {
+        return Err(Error::Stopped(
+            "gateway returned an invalid setup response".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn completed_response(
+    expected: ExpectedResponse<'_>,
+    progress: &mut ResponseProgress,
+) -> Option<Option<SessionReadyPayload>> {
+    if !progress.accepted || !progress.completed {
+        return None;
+    }
+    match expected {
+        ExpectedResponse::Configure { .. } => {
+            progress.snapshot.take().map(|(_, payload)| Some(payload))
+        }
+        ExpectedResponse::Credential { .. } | ExpectedResponse::Login(_) => Some(None),
+    }
 }
 
 pub(super) async fn next_frame(

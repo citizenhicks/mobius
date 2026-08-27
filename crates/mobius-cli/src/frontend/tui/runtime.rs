@@ -18,7 +18,7 @@ use super::events::{handle_gateway_event, handle_gateway_history};
 use super::input::UiAction;
 use super::view::render_preview;
 use crate::frontend::FrontendExit;
-use crate::frontend::catalog::UiCatalog;
+use crate::frontend::catalog::{GatewayAction, UiCatalog};
 use crate::frontend::extensions;
 use crate::frontend::gateway;
 use crate::frontend::gateway_actions::{prepare, render_response};
@@ -32,6 +32,8 @@ use uuid::Uuid;
 
 const ELAPSED_INTERVAL: Duration = Duration::from_secs(1);
 const CLEAR_SCREEN_AND_SCROLLBACK: &str = "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H";
+
+type TuiTerminal = Terminal<CrosstermBackend<io::Stdout>>;
 
 struct ReplayHydration {
     pending: bool,
@@ -73,25 +75,21 @@ pub(in crate::frontend) async fn run(
     gateway_endpoint: String,
 ) -> Result<(FrontendExit, GatewaySender, GatewayEvents)> {
     let mut guard = TerminalGuard::alternate()?;
-    let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
+    let mut terminal = TuiTerminal::new(CrosstermBackend::new(io::stdout()))?;
     terminal.clear()?;
-    if gateway.default_config.is_none() || gateway.models.is_empty() {
-        setup::run(
-            &mut terminal,
-            setup::SetupMode::Login,
-            None,
-            &sender,
-            &mut events,
-            gateway,
-            session,
-        )
-        .await?;
-        if gateway.default_config.is_none() || gateway.models.is_empty() {
-            drop(terminal);
-            drop(guard);
-            return Ok((FrontendExit::Discard, sender, events));
-        }
-        catalog.replace_model_choices(&gateway.models);
+    if !ensure_configured(
+        &mut terminal,
+        &sender,
+        &mut events,
+        gateway,
+        session,
+        &mut catalog,
+    )
+    .await?
+    {
+        drop(terminal);
+        drop(guard);
+        return Ok((FrontendExit::Discard, sender, events));
     }
     let mut workspace_inventory = catalog.start_workspace_inventory(local_gateway);
     let mut workspace_inventory_pending = true;
@@ -121,97 +119,38 @@ pub(in crate::frontend) async fn run(
     let mut clear_on_exit = false;
 
     'ui: loop {
-        if dirty && replay_hydration.allows_draw() {
-            io::stdout().sync_update(|_| -> Result<()> {
-                terminal.draw(|frame| {
-                    if state.preview.is_some() {
-                        render_preview(frame, &mut state);
-                    } else {
-                        super::view::render(frame, &mut state, &catalog);
-                    }
-                })?;
-                Ok(())
-            })??;
-            dirty = false;
-        }
+        draw_if_dirty(
+            &mut terminal,
+            &mut state,
+            &catalog,
+            &mut dirty,
+            &replay_hydration,
+        )?;
         tokio::select! {
             event = events.next(), if events_open => {
                 match event {
                     Ok(Some(frame)) => {
                         replay_hydration.observe(&frame.message, &session_id);
-                        if let Some(result) = uploads
-                            .handle(
-                                &frame.message,
+                        if !handle_upload_message(
+                            &frame.message,
+                            &sender,
+                            gateway,
+                            &mut state,
+                            &mut uploads,
+                            &session_id,
+                        )
+                        .await
+                            && let Some(next_exit) = handle_server_message(
+                                frame.message,
+                                gateway,
+                                session,
+                                &mut catalog,
+                                &mut state,
                                 &session_id,
-                                &gateway.session_file_limits,
                             )
-                            .await
                         {
-                            match result {
-                                Ok(advance) => {
-                                    if let Some(attachment) = advance.attachment {
-                                        state.attachments.push(attachment);
-                                    }
-                                    if let Some(message) = advance.message
-                                        && let Err(error) = sender.send(message).await
-                                    {
-                                        uploads.abort();
-                                        state.push(error.to_string(), TranscriptTone::Error);
-                                    }
-                                }
-                                Err(error) => state.push(error, TranscriptTone::Error),
-                            }
-                            state.upload_in_progress = uploads.is_active();
-                        } else {
-                            match frame.message {
-                            ServerMessage::AgentEvent {
-                                session_id: actual,
-                                record,
-                            } if actual == session_id => {
-                                handle_gateway_event(&mut state, record);
-                            }
-                            ServerMessage::SessionHistory {
-                                session_id: actual,
-                                records,
-                                ..
-                            } if actual == session_id => {
-                                handle_gateway_history(&mut state, records);
-                            }
-                            ServerMessage::SessionOpened { payload, .. } => {
-                                *session = payload;
-                                exit = FrontendExit::Reload;
-                                break 'ui;
-                            }
-                            ServerMessage::Ready { payload } => {
-                                *gateway = payload;
-                                sync_gateway_models(&mut state, &mut catalog, gateway);
-                            }
-                            ServerMessage::Sessions { sessions, .. } => {
-                                gateway.sessions = sessions;
-                            }
-                            ServerMessage::SessionChanged { payload }
-                                if payload.session.session_id == session_id
-                                    && payload.config.revision >= session.config.revision =>
-                            {
-                                if payload.workspace.id == session.workspace.id
-                                    && payload.contributions == session.contributions
-                                {
-                                    refresh_session(&mut state, session, payload, gateway);
-                                } else {
-                                    *session = payload;
-                                    exit = FrontendExit::Resume(session_id.clone());
-                                    break 'ui;
-                                }
-                            }
-                            message => {
-                                if let Some(message) = render_response(
-                                    &message,
-                                    &gateway.provider_instances,
-                                ) {
-                                    state.push(message, TranscriptTone::Neutral);
-                                }
-                            }
-                            }
+                            exit = next_exit;
+                            break 'ui;
                         }
                         if let Some(request) = state.requested_resume.take() {
                             clear_on_exit = true;
@@ -220,22 +159,22 @@ pub(in crate::frontend) async fn run(
                         }
                     }
                     Ok(None) => {
-                        uploads.abort();
-                        state.upload_in_progress = false;
-                        replay_hydration.finish();
+                        disconnect(
+                            &mut state,
+                            &mut uploads,
+                            &mut replay_hydration,
+                            "gateway disconnected · press q to exit",
+                        );
                         events_open = false;
-                        state.disconnected = true;
-                        state.finish_turn();
-                        state.push("gateway disconnected · press q to exit", TranscriptTone::Error);
                     }
                     Err(error) => {
-                        uploads.abort();
-                        state.upload_in_progress = false;
-                        replay_hydration.finish();
+                        disconnect(
+                            &mut state,
+                            &mut uploads,
+                            &mut replay_hydration,
+                            error.to_string(),
+                        );
                         events_open = false;
-                        state.disconnected = true;
-                        state.finish_turn();
-                        state.push(error.to_string(), TranscriptTone::Error);
                     }
                 }
                 dirty = true;
@@ -245,74 +184,22 @@ pub(in crate::frontend) async fn run(
                     let Some(event) = poll_event()? else {
                         break;
                     };
-                    let action = match event {
-                        TerminalEvent::Key(key) => {
-                            dirty |= matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat);
-                            state.handle_key(key, &catalog)
-                        }
-                        TerminalEvent::Paste(text) => {
-                            if state.preview.is_none() && state.picker.is_none() {
-                                let before = (state.input.len(), state.input_limit_reached);
-                                state.insert_paste(&text);
-                                dirty |=
-                                    before != (state.input.len(), state.input_limit_reached);
-                            }
-                            UiAction::None
-                        }
-                        TerminalEvent::Resize(_, _) => {
-                            dirty = true;
-                            UiAction::None
-                        }
-                        TerminalEvent::Mouse(mouse) => {
-                            dirty |= state.handle_mouse(mouse);
-                            UiAction::None
-                        }
-                        TerminalEvent::FocusGained
-                        | TerminalEvent::FocusLost => UiAction::None,
-                    };
+                    let action = terminal_action(event, &mut state, &catalog, &mut dirty);
                     match action {
                         UiAction::None => {}
                         UiAction::PasteClipboard => {
-                            if !catalog.accepts_file_attachments() {
-                                state.push(
-                                    "file attachments are not enabled for this chat",
-                                    TranscriptTone::Warning,
-                                );
-                            } else if state.active_turn.is_some() {
-                                state.push(
-                                    "files can be pasted when the agent is idle",
-                                    TranscriptTone::Warning,
-                                );
-                            } else if state.disconnected {
-                                state.push("gateway is disconnected", TranscriptTone::Error);
-                            } else if uploads.is_active() {
-                                state.push(
-                                    "an attachment upload is already in progress",
-                                    TranscriptTone::Warning,
-                                );
-                            } else {
-                                match read_clipboard(
-                                    &state.attachments,
-                                    &gateway.session_file_limits,
-                                )
-                                    .and_then(|candidates| uploads.start(candidates, &session_id))
-                                {
-                                    Ok(message) => {
-                                        state.upload_in_progress = true;
-                                        if let Err(error) = sender.send(message).await {
-                                            uploads.abort();
-                                            state.upload_in_progress = false;
-                                            state.push(error.to_string(), TranscriptTone::Error);
-                                        }
-                                    }
-                                    Err(error) => state.push(error, TranscriptTone::Error),
-                                }
-                            }
+                            paste_clipboard(
+                                &catalog,
+                                gateway,
+                                &sender,
+                                &session_id,
+                                &mut state,
+                                &mut uploads,
+                            )
+                            .await;
                         }
                         UiAction::Exit => {
-                            if let Some(turn_id) = state.active_turn.clone() {
-                                let _ = send_op(&sender, &session_id, Op::Interrupt { turn_id }).await;
-                            }
+                            interrupt_active_turn(&sender, &session_id, &state).await;
                             break 'ui;
                         }
                         UiAction::New => {
@@ -325,18 +212,11 @@ pub(in crate::frontend) async fn run(
                             break 'ui;
                         }
                         UiAction::Submit(op) => {
-                            if let Err(error) = send_op(&sender, &session_id, op).await {
-                                state.push(error.to_string(), TranscriptTone::Error);
-                            }
+                            send_and_report(&sender, &session_id, op, &mut state).await;
                         }
-                        UiAction::Gateway(action) => match prepare(action) {
-                            Ok(message) => {
-                                if let Err(error) = sender.send(*message).await {
-                                    state.push(error.to_string(), TranscriptTone::Error);
-                                }
-                            }
-                            Err(error) => state.push(error.to_string(), TranscriptTone::Error),
-                        },
+                        UiAction::Gateway(action) => {
+                            send_gateway_action(&sender, action, &mut state).await;
+                        }
                         UiAction::GatewaySettings => {
                             match gateway::run(&mut terminal, &gateway_endpoint).await {
                                 Ok(true) => {
@@ -344,32 +224,25 @@ pub(in crate::frontend) async fn run(
                                     break 'ui;
                                 }
                                 Ok(false) => {}
-                                Err(error) => {
-                                    state.push(error.to_string(), TranscriptTone::Error);
-                                }
+                                Err(error) => state.push(error.to_string(), TranscriptTone::Error),
                             }
                             dirty = true;
                         }
                         UiAction::Extensions => {
-                            let result = extensions::run(
+                            open_extensions(
                                 &mut terminal,
                                 &sender,
                                 &mut events,
                                 gateway,
+                                session,
+                                &mut catalog,
+                                &mut state,
                             )
                             .await;
-                            sync_gateway_models(&mut state, &mut catalog, gateway);
-                            sync_session(&mut state, session, gateway);
-                            if let Err(error) = result {
-                                state.push(error.to_string(), TranscriptTone::Error);
-                            }
                             dirty = true;
                         }
                         UiAction::Setup { mode, provider } => {
-                            let workspace = session.workspace.id.clone();
-                            let selected = session.session.session_id.clone();
-                            let contributions = session.contributions.clone();
-                            let result = setup::run(
+                            let (result, session_changed) = run_setup(
                                 &mut terminal,
                                 mode,
                                 provider.as_deref(),
@@ -379,13 +252,8 @@ pub(in crate::frontend) async fn run(
                                 session,
                             )
                             .await;
-                            if session.workspace.id != workspace
-                                || session.session.session_id != selected
-                                || session.contributions != contributions
-                            {
-                                exit = FrontendExit::Resume(
-                                    session.session.session_id.clone(),
-                                );
+                            if session_changed {
+                                exit = FrontendExit::Resume(session.session.session_id.clone());
                                 break 'ui;
                             }
                             sync_gateway_models(&mut state, &mut catalog, gateway);
@@ -416,6 +284,295 @@ pub(in crate::frontend) async fn run(
         execute!(io::stdout(), Print(CLEAR_SCREEN_AND_SCROLLBACK))?;
     }
     Ok((exit, sender, events))
+}
+
+async fn ensure_configured(
+    terminal: &mut TuiTerminal,
+    sender: &GatewaySender,
+    events: &mut GatewayEvents,
+    gateway: &mut ReadyPayload,
+    session: &mut SessionReadyPayload,
+    catalog: &mut UiCatalog,
+) -> Result<bool> {
+    if gateway.default_config.is_some() && !gateway.models.is_empty() {
+        return Ok(true);
+    }
+    setup::run(
+        terminal,
+        setup::SetupMode::Login,
+        None,
+        sender,
+        events,
+        gateway,
+        session,
+    )
+    .await?;
+    if gateway.default_config.is_none() || gateway.models.is_empty() {
+        return Ok(false);
+    }
+    catalog.replace_model_choices(&gateway.models);
+    Ok(true)
+}
+
+fn draw_if_dirty(
+    terminal: &mut TuiTerminal,
+    state: &mut TuiState,
+    catalog: &UiCatalog,
+    dirty: &mut bool,
+    replay_hydration: &ReplayHydration,
+) -> Result<()> {
+    if *dirty && replay_hydration.allows_draw() {
+        draw(terminal, state, catalog)?;
+        *dirty = false;
+    }
+    Ok(())
+}
+
+fn draw(terminal: &mut TuiTerminal, state: &mut TuiState, catalog: &UiCatalog) -> Result<()> {
+    io::stdout().sync_update(|_| -> Result<()> {
+        terminal.draw(|frame| {
+            if state.preview.is_some() {
+                render_preview(frame, state);
+            } else {
+                super::view::render(frame, state, catalog);
+            }
+        })?;
+        Ok(())
+    })??;
+    Ok(())
+}
+
+async fn handle_upload_message(
+    message: &ServerMessage,
+    sender: &GatewaySender,
+    gateway: &ReadyPayload,
+    state: &mut TuiState,
+    uploads: &mut ClipboardUploads,
+    session_id: &str,
+) -> bool {
+    let Some(result) = uploads
+        .handle(message, session_id, &gateway.session_file_limits)
+        .await
+    else {
+        return false;
+    };
+    match result {
+        Ok(advance) => {
+            if let Some(attachment) = advance.attachment {
+                state.attachments.push(attachment);
+            }
+            if let Some(message) = advance.message
+                && let Err(error) = sender.send(message).await
+            {
+                uploads.abort();
+                state.push(error.to_string(), TranscriptTone::Error);
+            }
+        }
+        Err(error) => state.push(error, TranscriptTone::Error),
+    }
+    state.upload_in_progress = uploads.is_active();
+    true
+}
+
+fn handle_server_message(
+    message: ServerMessage,
+    gateway: &mut ReadyPayload,
+    session: &mut SessionReadyPayload,
+    catalog: &mut UiCatalog,
+    state: &mut TuiState,
+    session_id: &str,
+) -> Option<FrontendExit> {
+    match message {
+        ServerMessage::AgentEvent {
+            session_id: actual,
+            record,
+        } if actual == session_id => handle_gateway_event(state, record),
+        ServerMessage::SessionHistory {
+            session_id: actual,
+            records,
+            ..
+        } if actual == session_id => handle_gateway_history(state, records),
+        ServerMessage::SessionOpened { payload, .. } => {
+            *session = payload;
+            return Some(FrontendExit::Reload);
+        }
+        ServerMessage::Ready { payload } => {
+            *gateway = payload;
+            sync_gateway_models(state, catalog, gateway);
+        }
+        ServerMessage::Sessions { sessions, .. } => gateway.sessions = sessions,
+        ServerMessage::SessionChanged { payload }
+            if payload.session.session_id == session_id
+                && payload.config.revision >= session.config.revision =>
+        {
+            if payload.workspace.id == session.workspace.id
+                && payload.contributions == session.contributions
+            {
+                refresh_session(state, session, payload, gateway);
+            } else {
+                *session = payload;
+                return Some(FrontendExit::Resume(session_id.into()));
+            }
+        }
+        message => {
+            if let Some(message) = render_response(&message, &gateway.provider_instances) {
+                state.push(message, TranscriptTone::Neutral);
+            }
+        }
+    }
+    None
+}
+
+fn disconnect(
+    state: &mut TuiState,
+    uploads: &mut ClipboardUploads,
+    replay_hydration: &mut ReplayHydration,
+    message: impl AsRef<str>,
+) {
+    uploads.abort();
+    state.upload_in_progress = false;
+    replay_hydration.finish();
+    state.disconnected = true;
+    state.finish_turn();
+    state.push(message, TranscriptTone::Error);
+}
+
+fn terminal_action(
+    event: TerminalEvent,
+    state: &mut TuiState,
+    catalog: &UiCatalog,
+    dirty: &mut bool,
+) -> UiAction {
+    match event {
+        TerminalEvent::Key(key) => {
+            *dirty |= matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat);
+            state.handle_key(key, catalog)
+        }
+        TerminalEvent::Paste(text) => {
+            if state.preview.is_none() && state.picker.is_none() {
+                let before = (state.input.len(), state.input_limit_reached);
+                state.insert_paste(&text);
+                *dirty |= before != (state.input.len(), state.input_limit_reached);
+            }
+            UiAction::None
+        }
+        TerminalEvent::Resize(_, _) => {
+            *dirty = true;
+            UiAction::None
+        }
+        TerminalEvent::Mouse(mouse) => {
+            *dirty |= state.handle_mouse(mouse);
+            UiAction::None
+        }
+        TerminalEvent::FocusGained | TerminalEvent::FocusLost => UiAction::None,
+    }
+}
+
+async fn paste_clipboard(
+    catalog: &UiCatalog,
+    gateway: &ReadyPayload,
+    sender: &GatewaySender,
+    session_id: &str,
+    state: &mut TuiState,
+    uploads: &mut ClipboardUploads,
+) {
+    if !catalog.accepts_file_attachments() {
+        state.push(
+            "file attachments are not enabled for this chat",
+            TranscriptTone::Warning,
+        );
+        return;
+    }
+    if state.active_turn.is_some() {
+        state.push(
+            "files can be pasted when the agent is idle",
+            TranscriptTone::Warning,
+        );
+        return;
+    }
+    if state.disconnected {
+        state.push("gateway is disconnected", TranscriptTone::Error);
+        return;
+    }
+    if uploads.is_active() {
+        state.push(
+            "an attachment upload is already in progress",
+            TranscriptTone::Warning,
+        );
+        return;
+    }
+    match read_clipboard(&state.attachments, &gateway.session_file_limits)
+        .and_then(|candidates| uploads.start(candidates, session_id))
+    {
+        Ok(message) => {
+            state.upload_in_progress = true;
+            if let Err(error) = sender.send(message).await {
+                uploads.abort();
+                state.upload_in_progress = false;
+                state.push(error.to_string(), TranscriptTone::Error);
+            }
+        }
+        Err(error) => state.push(error, TranscriptTone::Error),
+    }
+}
+
+async fn interrupt_active_turn(sender: &GatewaySender, session_id: &str, state: &TuiState) {
+    if let Some(turn_id) = state.active_turn.clone() {
+        let _ = send_op(sender, session_id, Op::Interrupt { turn_id }).await;
+    }
+}
+
+async fn send_and_report(sender: &GatewaySender, session_id: &str, op: Op, state: &mut TuiState) {
+    if let Err(error) = send_op(sender, session_id, op).await {
+        state.push(error.to_string(), TranscriptTone::Error);
+    }
+}
+
+async fn send_gateway_action(sender: &GatewaySender, action: GatewayAction, state: &mut TuiState) {
+    match prepare(action) {
+        Ok(message) => {
+            if let Err(error) = sender.send(*message).await {
+                state.push(error.to_string(), TranscriptTone::Error);
+            }
+        }
+        Err(error) => state.push(error.to_string(), TranscriptTone::Error),
+    }
+}
+
+async fn open_extensions(
+    terminal: &mut TuiTerminal,
+    sender: &GatewaySender,
+    events: &mut GatewayEvents,
+    gateway: &mut ReadyPayload,
+    session: &SessionReadyPayload,
+    catalog: &mut UiCatalog,
+    state: &mut TuiState,
+) {
+    let result = extensions::run(terminal, sender, events, gateway).await;
+    sync_gateway_models(state, catalog, gateway);
+    sync_session(state, session, gateway);
+    if let Err(error) = result {
+        state.push(error.to_string(), TranscriptTone::Error);
+    }
+}
+
+async fn run_setup(
+    terminal: &mut TuiTerminal,
+    mode: setup::SetupMode,
+    provider: Option<&str>,
+    sender: &GatewaySender,
+    events: &mut GatewayEvents,
+    gateway: &mut ReadyPayload,
+    session: &mut SessionReadyPayload,
+) -> (Result<()>, bool) {
+    let workspace = session.workspace.id.clone();
+    let selected = session.session.session_id.clone();
+    let contributions = session.contributions.clone();
+    let result = setup::run(terminal, mode, provider, sender, events, gateway, session).await;
+    let changed = session.workspace.id != workspace
+        || session.session.session_id != selected
+        || session.contributions != contributions;
+    (result, changed)
 }
 
 fn refresh_session(

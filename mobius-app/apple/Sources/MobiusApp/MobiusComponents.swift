@@ -210,6 +210,24 @@ struct MobiusToolbarIconButton: View {
     }
 }
 
+struct MobiusSwipeAction: View {
+    @Environment(\.mobiusPalette) private var palette
+    let title: String
+    let glyph: MobiusGlyph
+    var tone = "neutral"
+    var isEnabled = true
+    let action: () -> Void
+
+    var body: some View {
+        Button(role: tone == "error" ? .destructive : nil, action: action) {
+            MobiusIcon(glyph, foreground: palette.tone(tone))
+        }
+        .tint(palette.panel)
+        .disabled(!isEnabled)
+        .accessibilityLabel(title)
+    }
+}
+
 /// Keeps adjacent toolbar actions inside the system's single shared glass surface.
 struct HeaderActionGroup<Content: View>: View {
     @ViewBuilder let content: Content
@@ -320,6 +338,21 @@ extension View {
                 clear: clear
             )
         )
+    }
+
+    func promptCard() -> some View {
+        padding(.horizontal, MobiusSpace.l)
+            .padding(.vertical, MobiusSpace.m)
+            .mobiusGlass(in: MobiusStyle.cardShape, interactive: true)
+            .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+    }
+
+    func mobiusSwipeActions<Actions: View>(
+        @ViewBuilder actions: () -> Actions
+    ) -> some View {
+        swipeActions(edge: .trailing, allowsFullSwipe: false, content: actions)
     }
 
 }

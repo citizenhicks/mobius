@@ -185,6 +185,31 @@ extension AppModelTests {
         XCTAssertFalse(model.isGeneratingSshIdentity)
     }
 
+    func testNewerGatewayPromptsForAppUpdateAndStopsReconnects() throws {
+        let model = try model()
+
+        model.connectionEnded(
+            generation: model.connectionGeneration,
+            error: GatewayWireError.unsupportedVersion(gatewayProtocolVersion + 1)
+        )
+
+        XCTAssertTrue(model.showsAppUpdateAlert)
+        XCTAssertTrue(model.automaticReconnectBlocked)
+        XCTAssertNil(model.reconnectTask)
+    }
+
+    func testStaleProtocolErrorCannotBlockTheCurrentConnection() throws {
+        let model = try model()
+
+        model.connectionEnded(
+            generation: UUID(),
+            error: GatewayWireError.unsupportedVersion(gatewayProtocolVersion + 1)
+        )
+
+        XCTAssertFalse(model.showsAppUpdateAlert)
+        XCTAssertFalse(model.automaticReconnectBlocked)
+    }
+
     func testRenamingGatewayPersistsItsFriendlyName() throws {
         let suiteName = UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

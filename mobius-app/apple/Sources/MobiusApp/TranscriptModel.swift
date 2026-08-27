@@ -1,6 +1,37 @@
 import Foundation
 import Observation
 
+/// Native `Text` selects across its whole value, unlike the streaming renderer's separate
+/// paragraph text views. Keep rich block Markdown on that renderer and unify ordinary prose.
+func continuousProseMarkdown(_ source: String) -> AttributedString? {
+    guard let parsed = try? AttributedString(markdown: source) else { return nil }
+    var result = AttributedString()
+    var blockID: Int?
+
+    for run in parsed.runs {
+        let blocks = run.presentationIntent?.components ?? []
+        guard blocks.allSatisfy({ block in
+            switch block.kind {
+            case .paragraph, .header: true
+            default: false
+            }
+        }) else {
+            return nil
+        }
+        if let nextBlockID = blocks.last?.identity, nextBlockID != blockID {
+            if !result.characters.isEmpty { result.append(AttributedString("\n\n")) }
+            blockID = nextBlockID
+        }
+        var fragment = AttributedString(parsed[run.range])
+        if blocks.contains(where: { if case .header = $0.kind { true } else { false } }) {
+            fragment.inlinePresentationIntent = (fragment.inlinePresentationIntent ?? [])
+                .union(.stronglyEmphasized)
+        }
+        result.append(fragment)
+    }
+    return result
+}
+
 @Observable
 final class TranscriptEntry: Identifiable {
     enum Kind: String, Codable, Sendable {
@@ -290,39 +321,7 @@ struct TranscriptProjection {
         breakBefore boundaryID: TranscriptPresentationID?,
         previous: TranscriptProjection?
     ) -> [TranscriptPresentationRow] {
-        var rows: [TranscriptPresentationRow] = []
-        var activity: [TranscriptEntry] = []
-
-        func appendActivity() {
-            guard let first = activity.first else { return }
-            rows.append(TranscriptPresentationRow(
-                id: first.presentationID,
-                records: activity,
-                sizing: .fixedSummary,
-                kind: .activityGroup
-            ))
-            activity = []
-        }
-
-        for entry in entries {
-            if entry.presentationID == boundaryID { appendActivity() }
-            if entry.kind.isActivity {
-                if entry.turnTerminal { appendActivity() }
-                activity.append(entry)
-                if entry.turnTerminal { appendActivity() }
-                continue
-            }
-            appendActivity()
-            let isUser = entry.kind == .user
-            rows.append(TranscriptPresentationRow(
-                id: entry.presentationID,
-                records: [entry],
-                sizing: .intrinsic,
-                kind: isUser ? .user : .narrative
-            ))
-        }
-        appendActivity()
-
+        let rows = groupedRows(from: entries, breakBefore: boundaryID)
         var previousActivityRows = previous?.rows.filter { $0.kind == .activityGroup } ?? []
         var reusedIDs: [Int: TranscriptPresentationID] = [:]
 
@@ -373,6 +372,45 @@ struct TranscriptProjection {
             )
         }
         return collapseCompletedWork(in: stableRows)
+    }
+
+    private static func groupedRows(
+        from entries: [TranscriptEntry],
+        breakBefore boundaryID: TranscriptPresentationID?
+    ) -> [TranscriptPresentationRow] {
+        var rows: [TranscriptPresentationRow] = []
+        var activity: [TranscriptEntry] = []
+
+        func appendActivity() {
+            guard let first = activity.first else { return }
+            rows.append(TranscriptPresentationRow(
+                id: first.presentationID,
+                records: activity,
+                sizing: .fixedSummary,
+                kind: .activityGroup
+            ))
+            activity = []
+        }
+
+        for entry in entries {
+            if entry.presentationID == boundaryID { appendActivity() }
+            if entry.kind.isActivity {
+                if entry.turnTerminal { appendActivity() }
+                activity.append(entry)
+                if entry.turnTerminal { appendActivity() }
+                continue
+            }
+            appendActivity()
+            let isUser = entry.kind == .user
+            rows.append(TranscriptPresentationRow(
+                id: entry.presentationID,
+                records: [entry],
+                sizing: .intrinsic,
+                kind: isUser ? .user : .narrative
+            ))
+        }
+        appendActivity()
+        return rows
     }
 
     private static func collapseCompletedWork(

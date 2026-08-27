@@ -524,15 +524,16 @@ private struct ComposerDictationControls: View {
                 .mobiusIconButton()
                 .disabled(dictation.state == .stopping)
 
-            VStack(spacing: MobiusSpace.xxs) {
-                ComposerDictationWaveform(samples: dictation.audioLevels)
-                    .frame(height: MobiusStyle.rowCompact)
-                Text(dictation.detectedLanguageName.map { "Auto · \($0)" } ?? "Auto language")
-                    .font(MobiusStyle.captionFont)
-                    .foregroundStyle(palette.muted)
-                    .lineLimit(1)
-            }
-            .frame(maxWidth: .infinity)
+            Text(dictation.detectedLanguageCode ?? "—")
+                .font(MobiusStyle.badgeFont)
+                .foregroundStyle(palette.muted)
+                .frame(width: MobiusStyle.iconButtonSize, height: MobiusStyle.iconButtonSize)
+                .accessibilityLabel("Detected language")
+                .accessibilityValue(dictation.detectedLanguageCode ?? "Detecting")
+
+            ComposerDictationWaveform(samples: dictation.audioLevels)
+                .frame(maxWidth: .infinity)
+                .frame(height: MobiusStyle.rowCompact)
 
             Button(action: stop) {
                 if dictation.isTransitioning {

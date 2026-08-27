@@ -9,37 +9,25 @@ use super::TuiState;
 use super::attachment_label;
 use super::view::bounded_terminal_text;
 use crate::frontend::terminal::terminal_text;
+use mobius::protocol::AgentMessageEvent;
 use mobius::protocol::AgentMessagePhase;
 use mobius::protocol::EventMsg;
 use mobius::protocol::FrontendEvent;
 use mobius::protocol::FrontendPreviewUpdate;
+use mobius::protocol::ModelStepCompletedEvent;
 use mobius::protocol::ModelStepContentPhase;
 use mobius::protocol::ModelStepOutcome;
 use mobius::protocol::Op;
 use mobius::protocol::RenderedBlock;
 use mobius::protocol::TokenUsageInfo;
+use mobius::protocol::UserMessageEvent;
 use mobius_gateway::wire::RecordedEvent;
 use mobius_gateway::wire::RenderedEvent;
 use mobius_gateway::wire::RenderedPreview;
 
 impl TuiState {
     pub(super) fn handle_agent_event(&mut self, event: EventMsg, blocks: Vec<RenderedBlock>) {
-        let is_commentary = matches!(
-            &event,
-            EventMsg::AgentMessageContentDelta(delta)
-                if delta.phase == AgentMessagePhase::Commentary
-        ) || matches!(
-            &event,
-            EventMsg::AgentMessage(message)
-                if message.phase == AgentMessagePhase::Commentary
-        );
-        if !is_commentary {
-            self.commit_commentary_stream();
-        }
-        if matches!(&event, EventMsg::ModelStepCompleted(_)) {
-            self.commit_reasoning();
-            self.commit_stream();
-        }
+        self.prepare_agent_event(&event);
         let was_rendered = !blocks.is_empty();
         for block in blocks {
             self.apply_block(block);
@@ -52,17 +40,7 @@ impl TuiState {
                 self.clear_approval();
             }
             EventMsg::UserMessage(message) => {
-                self.remember_composer_input(message.message.clone());
-                let mut text = if message.message.is_empty() {
-                    "›".to_string()
-                } else {
-                    format!("› {}", message.message)
-                };
-                for attachment in &message.attachments {
-                    text.push_str(if text == "›" { " " } else { "\n  " });
-                    text.push_str(&attachment_label(attachment));
-                }
-                self.push(text, TranscriptTone::User);
+                self.handle_user_message(message);
             }
             EventMsg::AgentMessageContentDelta(delta) => {
                 self.remember_streamed_phase(
@@ -87,61 +65,10 @@ impl TuiState {
                     .or_default();
             }
             EventMsg::ModelStepCompleted(step) => {
-                let streamed = self
-                    .streamed_step_phases
-                    .remove(&step.model_step_id)
-                    .unwrap_or_default();
-                match step.outcome {
-                    ModelStepOutcome::Completed { content, .. } => {
-                        for item in content {
-                            if item.text.is_empty() || streamed.contains(item.phase) {
-                                continue;
-                            }
-                            let tone = match item.phase {
-                                ModelStepContentPhase::Reasoning => TranscriptTone::Reasoning,
-                                ModelStepContentPhase::Commentary
-                                | ModelStepContentPhase::FinalAnswer => TranscriptTone::Assistant,
-                            };
-                            self.push(item.text, tone);
-                        }
-                    }
-                    ModelStepOutcome::Failed
-                    | ModelStepOutcome::Interrupted
-                    | ModelStepOutcome::Retrying => {
-                        // Block ids are namespaced by model step, so a step that ends
-                        // without completing can never finish its pending blocks. The
-                        // backend closes live ones with its own end events; this sweep
-                        // only keeps replay after a crash from stranding them.
-                        let prefix = format!("{}/", step.model_step_id);
-                        for entry in &mut self.transcript {
-                            if entry.pending
-                                && entry
-                                    .id
-                                    .as_ref()
-                                    .is_some_and(|id| id.value.starts_with(&prefix))
-                            {
-                                entry.tone = TranscriptTone::Warning;
-                                entry.pending = false;
-                                entry.rendered = None;
-                            }
-                        }
-                    }
-                }
-                self.completed_model_steps.insert(step.model_step_id);
+                self.handle_model_step_completed(step);
             }
             EventMsg::AgentMessage(message) => {
-                if self.completed_model_steps.contains(&message.model_step_id) {
-                    return;
-                }
-                if self.streaming_phase == Some(message.phase) {
-                    self.streaming.clear();
-                    self.streaming_phase = None;
-                } else {
-                    self.commit_stream();
-                }
-                if !was_rendered {
-                    self.push(message.message, TranscriptTone::Assistant);
-                }
+                self.handle_agent_message(message, was_rendered);
             }
             EventMsg::ContextCompacted => {}
             EventMsg::ExecApprovalRequest(request) => {
@@ -194,66 +121,163 @@ impl TuiState {
                     );
                 }
             }
-            EventMsg::Frontend(update) => match update {
-                FrontendEvent::Widget {
-                    capability,
-                    mut item,
-                } => {
-                    item.text = bounded_terminal_text(&item.text, MAX_ENTRY_BYTES);
-                    let key = (capability, item.id.clone());
-                    if let Some((_, current)) = self
-                        .widgets
-                        .iter_mut()
-                        .find(|(candidate, _)| candidate == &key)
+            EventMsg::Frontend(update) => self.handle_frontend_event(update),
+            _ => {}
+        }
+    }
+
+    fn prepare_agent_event(&mut self, event: &EventMsg) {
+        let is_commentary = matches!(
+            event,
+            EventMsg::AgentMessageContentDelta(delta)
+                if delta.phase == AgentMessagePhase::Commentary
+        ) || matches!(
+            event,
+            EventMsg::AgentMessage(message)
+                if message.phase == AgentMessagePhase::Commentary
+        );
+        if !is_commentary {
+            self.commit_commentary_stream();
+        }
+        if matches!(event, EventMsg::ModelStepCompleted(_)) {
+            self.commit_reasoning();
+            self.commit_stream();
+        }
+    }
+
+    fn handle_user_message(&mut self, message: UserMessageEvent) {
+        self.remember_composer_input(message.message.clone());
+        let mut text = if message.message.is_empty() {
+            "›".to_string()
+        } else {
+            format!("› {}", message.message)
+        };
+        for attachment in &message.attachments {
+            text.push_str(if text == "›" { " " } else { "\n  " });
+            text.push_str(&attachment_label(attachment));
+        }
+        self.push(text, TranscriptTone::User);
+    }
+
+    fn handle_model_step_completed(&mut self, step: ModelStepCompletedEvent) {
+        let streamed = self
+            .streamed_step_phases
+            .remove(&step.model_step_id)
+            .unwrap_or_default();
+        match step.outcome {
+            ModelStepOutcome::Completed { content, .. } => {
+                for item in content {
+                    if item.text.is_empty() || streamed.contains(item.phase) {
+                        continue;
+                    }
+                    let tone = match item.phase {
+                        ModelStepContentPhase::Reasoning => TranscriptTone::Reasoning,
+                        ModelStepContentPhase::Commentary | ModelStepContentPhase::FinalAnswer => {
+                            TranscriptTone::Assistant
+                        }
+                    };
+                    self.push(item.text, tone);
+                }
+            }
+            ModelStepOutcome::Failed
+            | ModelStepOutcome::Interrupted
+            | ModelStepOutcome::Retrying => {
+                // Block ids are namespaced by model step, so a step that ends
+                // without completing can never finish its pending blocks. The
+                // backend closes live ones with its own end events; this sweep
+                // only keeps replay after a crash from stranding them.
+                let prefix = format!("{}/", step.model_step_id);
+                for entry in &mut self.transcript {
+                    if entry.pending
+                        && entry
+                            .id
+                            .as_ref()
+                            .is_some_and(|id| id.value.starts_with(&prefix))
                     {
-                        *current = item;
-                    } else {
-                        self.widgets.push((key, item));
+                        entry.tone = TranscriptTone::Warning;
+                        entry.pending = false;
+                        entry.rendered = None;
                     }
                 }
-                FrontendEvent::RemoveWidget { capability, id } => {
-                    self.widgets
-                        .retain(|((owner, widget), _)| owner != &capability || widget != &id);
+            }
+        }
+        self.completed_model_steps.insert(step.model_step_id);
+    }
+
+    fn handle_agent_message(&mut self, message: AgentMessageEvent, was_rendered: bool) {
+        if self.completed_model_steps.contains(&message.model_step_id) {
+            return;
+        }
+        if self.streaming_phase == Some(message.phase) {
+            self.streaming.clear();
+            self.streaming_phase = None;
+        } else {
+            self.commit_stream();
+        }
+        if !was_rendered {
+            self.push(message.message, TranscriptTone::Assistant);
+        }
+    }
+
+    fn handle_frontend_event(&mut self, update: FrontendEvent) {
+        match update {
+            FrontendEvent::Widget {
+                capability,
+                mut item,
+            } => {
+                item.text = bounded_terminal_text(&item.text, MAX_ENTRY_BYTES);
+                let key = (capability, item.id.clone());
+                if let Some((_, current)) = self
+                    .widgets
+                    .iter_mut()
+                    .find(|(candidate, _)| candidate == &key)
+                {
+                    *current = item;
+                } else {
+                    self.widgets.push((key, item));
                 }
-                // The gateway has already projected this event into `blocks`.
-                FrontendEvent::Render { .. } => {}
-                FrontendEvent::Picker { title, options } => {
-                    let selected = options
-                        .iter()
-                        .position(|option| {
-                            matches!(
-                                &option.op,
-                                Op::SetModel { route } if route == &self.model_route
-                            )
-                        })
-                        .or_else(|| {
-                            let group = self
-                                .model_choices
+            }
+            FrontendEvent::RemoveWidget { capability, id } => {
+                self.widgets
+                    .retain(|((owner, widget), _)| owner != &capability || widget != &id);
+            }
+            // The gateway has already projected this event into `blocks`.
+            FrontendEvent::Render { .. } => {}
+            FrontendEvent::Picker { title, options } => {
+                let selected = options
+                    .iter()
+                    .position(|option| {
+                        matches!(
+                            &option.op,
+                            Op::SetModel { route } if route == &self.model_route
+                        )
+                    })
+                    .or_else(|| {
+                        let group = self
+                            .model_choices
+                            .iter()
+                            .find(|choice| choice.route == self.model_route)?
+                            .group
+                            .as_str();
+                        options.iter().position(|option| {
+                            let Op::SetModel { route } = &option.op else {
+                                return false;
+                            };
+                            self.model_choices
                                 .iter()
-                                .find(|choice| choice.route == self.model_route)?
-                                .group
-                                .as_str();
-                            options.iter().position(|option| {
-                                let Op::SetModel { route } = &option.op else {
-                                    return false;
-                                };
-                                self.model_choices
-                                    .iter()
-                                    .any(|choice| choice.route == *route && choice.group == group)
-                            })
+                                .any(|choice| choice.route == *route && choice.group == group)
                         })
-                        .unwrap_or_default();
-                    self.picker = Some(PickerState {
-                        title: terminal_text(&title),
-                        options,
-                        selected,
-                    });
-                }
-                // Preview transcripts arrive as gateway-rendered records.
-                // Nested previews are control events, not transcript content.
-                FrontendEvent::Preview { .. } => {}
-            },
-            _ => {}
+                    })
+                    .unwrap_or_default();
+                self.picker = Some(PickerState {
+                    title: terminal_text(&title),
+                    options,
+                    selected,
+                });
+            }
+            // Preview transcripts arrive as gateway-rendered records.
+            // Nested previews are control events, not transcript content.
+            FrontendEvent::Preview { .. } => {}
         }
     }
 }

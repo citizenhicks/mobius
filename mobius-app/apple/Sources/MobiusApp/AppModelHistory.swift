@@ -74,29 +74,12 @@ extension AppModel {
     ) {
         let event = record.event.msg
         let type = event["type"]?.stringValue ?? "unknown"
-        let explicitTurnID = event["turnId"]?.stringValue
-        if type == "task_started" {
-            turnState = TranscriptHistoryTurnState(
-                turnID: explicitTurnID,
-                awaitingInitialUserTurnID: explicitTurnID
-            )
-        } else if let explicitTurnID {
-            if turnState.turnID == nil,
-               let start = turnState.unassignedEntryStart,
-               start < entries.count {
-                for index in start..<entries.count where entries[index].turnID == nil {
-                    entries[index].turnID = explicitTurnID
-                }
-                if let firstUser = entries[start...].firstIndex(where: {
-                    $0.kind == .user && !$0.startsTurn
-                }) {
-                    entries[firstUser].startsTurn = true
-                }
-            }
-            turnState.turnID = explicitTurnID
-            turnState.unassignedEntryStart = nil
-        }
-        let turnID = explicitTurnID ?? turnState.turnID
+        let turnID = historyTurnID(
+            for: type,
+            event: event,
+            entries: &entries,
+            turnState: &turnState
+        )
         let entryStart = entries.count
         defer {
             if turnID == nil,
@@ -137,40 +120,13 @@ extension AppModel {
                 to: &entries
             )
         case "agent_message_content_delta", "agent_reasoning_content_delta":
-            guard let modelStepID = event["modelStepId"]?.stringValue else { return }
-            let reasoning = type == "agent_reasoning_content_delta"
-            let commentary = event["phase"]?.stringValue == "commentary"
-            let phase = reasoning ? "reasoning" : (commentary ? "commentary" : "final_answer")
-            let id = streamID(modelStepID: modelStepID, phase: phase)
-            let kind: TranscriptEntry.Kind = reasoning
-                ? .reasoning
-                : (commentary ? .commentary : .assistant)
-            let delta = event["delta"]?.stringValue ?? ""
-            guard !delta.isEmpty else { return }
-            if let index = entries.lastIndex(where: { $0.id == id }) {
-                entries[index].text.append(delta)
-                if entries[index].turnID == nil { entries[index].turnID = turnID }
-                entries[index].sourceSequence = record.sequence
-                entries[index].recordedAtMs = record.recordedAtMs
-            } else {
-                entries.append(TranscriptEntry(
-                    id: id,
-                    presentationID: TranscriptEntry.narrativePresentationID(
-                        modelStepID: modelStepID,
-                        phase: phase,
-                        ordinal: 0
-                    ),
-                    text: delta,
-                    kind: kind,
-                    format: "plain_text",
-                    tone: "neutral",
-                    pending: true,
-                    modelStepID: modelStepID,
-                    turnID: turnID,
-                    sourceSequence: record.sequence,
-                    recordedAtMs: record.recordedAtMs
-                ))
-            }
+            reduceHistoryDelta(
+                type: type,
+                event: event,
+                record: record,
+                turnID: turnID,
+                entries: &entries
+            )
         case "model_step_completed":
             applyModelStepCompletion(event, turnID: turnID, record: record, to: &entries)
         case "agent_message":
@@ -196,29 +152,104 @@ extension AppModel {
                 )
             }
         case "task_complete":
-            for entry in entries where entry.pending { entry.pending = false }
-            if let turnID {
-                markTranscriptTurnFinished(
-                    turnID,
-                    finishedAtMs: record.recordedAtMs,
-                    in: &entries
-                )
-            }
+            finishHistoryTurn(record, turnID: turnID, aborted: false, entries: &entries)
             turnState = TranscriptHistoryTurnState()
         case "turn_aborted":
-            for entry in entries where entry.pending { entry.pending = false }
-            if let turnID {
-                markTranscriptTurnFinished(
-                    turnID,
-                    terminalSourceSequence: record.sequence,
-                    finishedAtMs: record.recordedAtMs,
-                    in: &entries
-                )
-            }
+            finishHistoryTurn(record, turnID: turnID, aborted: true, entries: &entries)
             turnState = TranscriptHistoryTurnState()
         default:
             break
         }
+    }
+
+    private func historyTurnID(
+        for type: String,
+        event: JSONValue,
+        entries: inout [TranscriptEntry],
+        turnState: inout TranscriptHistoryTurnState
+    ) -> String? {
+        let explicitTurnID = event["turnId"]?.stringValue
+        if type == "task_started" {
+            turnState = TranscriptHistoryTurnState(
+                turnID: explicitTurnID,
+                awaitingInitialUserTurnID: explicitTurnID
+            )
+        } else if let explicitTurnID {
+            if turnState.turnID == nil,
+               let start = turnState.unassignedEntryStart,
+               start < entries.count {
+                for index in start..<entries.count where entries[index].turnID == nil {
+                    entries[index].turnID = explicitTurnID
+                }
+                if let firstUser = entries[start...].firstIndex(where: {
+                    $0.kind == .user && !$0.startsTurn
+                }) {
+                    entries[firstUser].startsTurn = true
+                }
+            }
+            turnState.turnID = explicitTurnID
+            turnState.unassignedEntryStart = nil
+        }
+        return explicitTurnID ?? turnState.turnID
+    }
+
+    private func reduceHistoryDelta(
+        type: String,
+        event: JSONValue,
+        record: RecordedEvent,
+        turnID: String?,
+        entries: inout [TranscriptEntry]
+    ) {
+        guard let modelStepID = event["modelStepId"]?.stringValue else { return }
+        let reasoning = type == "agent_reasoning_content_delta"
+        let commentary = event["phase"]?.stringValue == "commentary"
+        let phase = reasoning ? "reasoning" : (commentary ? "commentary" : "final_answer")
+        let id = streamID(modelStepID: modelStepID, phase: phase)
+        let kind: TranscriptEntry.Kind = reasoning
+            ? .reasoning
+            : (commentary ? .commentary : .assistant)
+        let delta = event["delta"]?.stringValue ?? ""
+        guard !delta.isEmpty else { return }
+        if let index = entries.lastIndex(where: { $0.id == id }) {
+            entries[index].text.append(delta)
+            if entries[index].turnID == nil { entries[index].turnID = turnID }
+            entries[index].sourceSequence = record.sequence
+            entries[index].recordedAtMs = record.recordedAtMs
+        } else {
+            entries.append(TranscriptEntry(
+                id: id,
+                presentationID: TranscriptEntry.narrativePresentationID(
+                    modelStepID: modelStepID,
+                    phase: phase,
+                    ordinal: 0
+                ),
+                text: delta,
+                kind: kind,
+                format: "plain_text",
+                tone: "neutral",
+                pending: true,
+                modelStepID: modelStepID,
+                turnID: turnID,
+                sourceSequence: record.sequence,
+                recordedAtMs: record.recordedAtMs
+            ))
+        }
+    }
+
+    private func finishHistoryTurn(
+        _ record: RecordedEvent,
+        turnID: String?,
+        aborted: Bool,
+        entries: inout [TranscriptEntry]
+    ) {
+        for entry in entries where entry.pending { entry.pending = false }
+        guard let turnID else { return }
+        markTranscriptTurnFinished(
+            turnID,
+            terminalSourceSequence: aborted ? record.sequence : nil,
+            finishedAtMs: record.recordedAtMs,
+            in: &entries
+        )
     }
 
     func updateContextTokens() {

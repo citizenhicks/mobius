@@ -640,16 +640,3 @@ struct AgentSettingsView: View {
             : "The draft matches this chat's saved agent configuration."
     }
 }
-
-private extension View {
-    /// The same glass card the composer uses: the one place on this page you write prose
-    /// into should feel like the other one.
-    func promptCard() -> some View {
-        padding(.horizontal, MobiusSpace.l)
-            .padding(.vertical, MobiusSpace.m)
-            .mobiusGlass(in: MobiusStyle.cardShape, interactive: true)
-            .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
-    }
-}

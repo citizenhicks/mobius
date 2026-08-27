@@ -35,8 +35,8 @@ mod tools;
 #[cfg(test)]
 use presentation::action_list_item;
 use presentation::{
-    command_confirmation, format_snapshot, parse_scope, publish_widgets, surface_widgets, usage,
-    widget_events,
+    command_confirmation, format_snapshot, global_widget, parse_scope, publish_widgets,
+    surface_widgets, usage, widget_events,
 };
 pub(crate) use projection::is_projection_item;
 use projection::{next_projection, scratchpad_message, without_projection_items};
@@ -146,6 +146,42 @@ impl ScratchpadStore {
         Ok(Snapshot {
             session: self.load(Scope::Session, session_id).await?,
             global: self.load(Scope::Global, session_id).await?,
+        })
+    }
+
+    /// Returns the persisted gateway-wide scratchpad management surface.
+    pub async fn global_contribution(&self) -> Result<FrontendContribution> {
+        let access = self.lock_access().await;
+        self.global_contribution_locked(&access).await
+    }
+
+    /// Edits one gateway-wide note and returns the refreshed management surface.
+    pub async fn edit_global(&self, id: &str, note: &str) -> Result<FrontendContribution> {
+        validate_id(id).map_err(Error::Tool)?;
+        let access = self.lock_access().await;
+        self.edit_locked(GLOBAL_SCOPE, Scope::Global, id, note, &access)
+            .await?;
+        self.global_contribution_locked(&access).await
+    }
+
+    /// Forgets one gateway-wide note and returns the refreshed management surface.
+    pub async fn forget_global(&self, id: &str) -> Result<FrontendContribution> {
+        validate_id(id).map_err(Error::Tool)?;
+        let access = self.lock_access().await;
+        self.forget_locked(GLOBAL_SCOPE, Scope::Global, id, &access)
+            .await?;
+        self.global_contribution_locked(&access).await
+    }
+
+    async fn global_contribution_locked(
+        &self,
+        _access: &tokio::sync::MutexGuard<'_, ()>,
+    ) -> Result<FrontendContribution> {
+        let entries = self.load(Scope::Global, GLOBAL_SCOPE).await?;
+        Ok(FrontendContribution {
+            capability: MANIFEST.id.into(),
+            widgets: vec![global_widget(&entries)],
+            ..FrontendContribution::default()
         })
     }
 

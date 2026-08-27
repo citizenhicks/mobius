@@ -152,6 +152,57 @@ extension AppModelTests {
         XCTAssertEqual(sessionID, "chat-1")
     }
 
+    func testGlobalScratchpadWorksWithoutASelectedChat() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model(requestSender: { request in
+            await recorder.record(request)
+        })
+        let contribution = FrontendContribution(
+            capability: "scratchpad",
+            acceptsFileAttachments: false,
+            count: 1,
+            commands: [],
+            widgets: [FrontendWidget(
+                id: "navigation",
+                slot: .navigation,
+                text: "Scratchpad",
+                tone: "neutral",
+                symbol: "brain",
+                iconOnly: false,
+                progress: nil,
+                content: .actionList(title: "Global Scratchpad", items: []),
+                action: nil
+            )],
+            references: [],
+            activeInput: nil
+        )
+        model.applyGatewayCatalog(ready(
+            defaultConfig: VersionedAgentConfig(revision: 1, config: composition()),
+            contributions: [contribution]
+        ))
+        model.connectionState = .ready
+
+        XCTAssertNil(model.selectedSessionID)
+        XCTAssertEqual(model.globalScratchpadWidget?.title, "Global Scratchpad")
+
+        model.refreshGlobalScratchpad()
+        let request = await recorder.firstRequest(after: 0) {
+            if case .submitGlobalScratchpad = $0 { return true }
+            return false
+        }
+        guard case .submitGlobalScratchpad(_, let operation) = try XCTUnwrap(request),
+              case .capabilityCommand(
+                let capability,
+                let command,
+                let arguments,
+                _,
+                let target
+              ) = operation
+        else { return XCTFail("Expected a gateway-scoped scratchpad refresh") }
+        XCTAssertEqual([capability, command, arguments], ["scratchpad", "scratchpad", "refresh"])
+        XCTAssertNil(target)
+    }
+
 
     func testContributionCatalogReferencesAndWidgetsAreGeneric() throws {
         let model = try model()

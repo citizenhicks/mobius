@@ -153,6 +153,7 @@ final class AppModel {
     var isSavingWorkspaceFile = false
     var returnsToFilesAfterFilePresentation = false
     var toast: AppToast?
+    var showsAppUpdateAlert = false
     var activeTurnID: String?
     var activeOperation: String?
     var steeringDeliveryRevision = 0
@@ -1027,6 +1028,13 @@ final class AppModel {
     }
     var navigationWidgets: [MountedWidget] { widgets(in: .navigation) }
     var chatMenuWidgets: [MountedWidget] { widgets(in: .chatMenu) }
+    var globalScratchpadWidget: MountedWidget? {
+        guard let contribution = gatewayContributions.first(where: {
+            $0.capability == "scratchpad"
+        }), let widget = contribution.widgets.first(where: { $0.slot == .navigation })
+        else { return nil }
+        return MountedWidget(capability: contribution.capability, widget: widget)
+    }
 
     func referenceSuggestions(in text: String, cursor: String.Index) -> ReferenceSuggestions? {
         guard text.indices.contains(cursor) || cursor == text.endIndex else { return nil }

@@ -138,7 +138,8 @@ struct FrontendContributionPage: View {
                 Section {
                     FrontendWidgetContentView(
                         content: content,
-                        actionsEnabled: model.isCapabilityEnabled(widget.capability)
+                        actionsEnabled: model.isCapabilityEnabled(widget.capability),
+                        usesSwipeActions: true
                     ) { option in
                         model.submitPickerOption(option)
                     }
@@ -171,16 +172,31 @@ struct ScratchpadView: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        if let widget = model.navigationWidgets.first(where: { $0.capability == "scratchpad" }) {
-            FrontendContributionPage(widget: widget)
-        } else {
-            MobiusUnavailable(
-                title: "Scratchpad unavailable",
-                glyph: .brain,
-                detail: "Open a chat to view its scratchpad."
-            )
-            .navigationTitle("Scratchpad")
-            .background(MobiusBackdrop())
+        Group {
+            if let widget = model.globalScratchpadWidget,
+               let content = widget.widget.content {
+                PageScaffold(title: widget.title, detail: "") {
+                    Section {
+                        FrontendWidgetContentView(
+                            content: content,
+                            actionsEnabled: model.connectionState.isReady,
+                            usesSwipeActions: true,
+                            submitOperation: model.submitGlobalScratchpadOperation
+                        ) { _ in }
+                    }
+                }
+            } else {
+                MobiusUnavailable(
+                    title: "Global Scratchpad unavailable",
+                    glyph: .brain,
+                    detail: "Connect to a gateway to load it."
+                )
+                .navigationTitle("Scratchpad")
+                .background(MobiusBackdrop())
+            }
+        }
+        .task(id: model.connectionState.isReady) {
+            if model.connectionState.isReady { model.refreshGlobalScratchpad() }
         }
     }
 }

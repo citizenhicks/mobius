@@ -2,6 +2,34 @@ import Foundation
 import XCTest
 
 extension GatewayWireTests {
+    func testGlobalScratchpadRequestAndResponseAreGatewayScoped() throws {
+        let request = try requestObject(.submitGlobalScratchpad(
+            requestID: "scratchpad-1",
+            operation: .capabilityCommand(
+                capability: "scratchpad",
+                command: "scratchpad",
+                arguments: "refresh",
+                input: nil,
+                target: nil
+            )
+        ))
+        XCTAssertEqual(request["type"] as? String, "submit_global_scratchpad")
+        XCTAssertNil(request["session_id"])
+        XCTAssertEqual(
+            (request["operation"] as? [String: Any])?["arguments"] as? String,
+            "refresh"
+        )
+
+        let response = try decodeEnvelope(
+            #"{"version":48,"type":"global_scratchpad_changed","request_id":"scratchpad-1","contribution":{"capability":"scratchpad","accepts_file_attachments":false,"count":0,"commands":[],"widgets":[],"references":[],"active_input":null}}"#
+        )
+        guard case .globalScratchpadChanged(let requestID, let contribution) = response else {
+            return XCTFail("Expected a global scratchpad response")
+        }
+        XCTAssertEqual(requestID, "scratchpad-1")
+        XCTAssertEqual(contribution.capability, "scratchpad")
+    }
+
     func testSessionCatalogRequestsMatchV28() throws {
         let list = try requestObject(.listSessions(requestID: "list-1"))
         XCTAssertEqual(list["type"] as? String, "list_sessions")

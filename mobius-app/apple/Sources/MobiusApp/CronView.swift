@@ -125,52 +125,103 @@ private enum CronTaskSheet: Identifiable {
 private struct CronTaskRow: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
+    @State private var confirmsDeletion = false
     let task: CronTask
     let projectName: String
     let edit: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: MobiusSpace.m) {
-            VStack(alignment: .leading, spacing: MobiusSpace.xs) {
-                Text(task.task)
-                    .font(MobiusStyle.bodyFont.weight(.semibold))
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(projectName)
+        let status = taskStatus
+        let schedule = cronScheduleSummary(task.schedule)
+        let nextRun = nextRunText
+
+        VStack(alignment: .leading, spacing: MobiusSpace.s) {
+            HStack(alignment: .firstTextBaseline, spacing: MobiusSpace.s) {
+                MobiusIcon(status.glyph, size: MobiusStyle.glyphInline, foreground: status.color)
+                Spacer(minLength: MobiusSpace.s)
+                Text(schedule)
                     .font(MobiusStyle.metadataFont)
                     .foregroundStyle(palette.muted)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
-            LabeledContent("Schedule", value: cronScheduleSummary(task.schedule))
-            LabeledContent("Status", value: statusText)
-            if let nextRunAt = task.nextRunAt {
-                LabeledContent("Next", value: Date(timeIntervalSince1970: TimeInterval(nextRunAt)).formatted(.relative(presentation: .named)))
+
+            Text(task.task)
+                .font(MobiusStyle.bodyFont.weight(.semibold))
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(alignment: .firstTextBaseline, spacing: MobiusSpace.s) {
+                Text(projectName)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: MobiusSpace.s)
+                nextRunLabel
+                    .lineLimit(1)
             }
-            if let lastRun = model.cronRuns
-                .filter({ $0.taskId == task.id })
-                .max(by: { $0.startedAt < $1.startedAt }) {
-                LabeledContent("Last", value: Date(timeIntervalSince1970: TimeInterval(lastRun.startedAt)).formatted(.relative(presentation: .named)))
+            .font(MobiusStyle.metadataFont)
+            .foregroundStyle(palette.muted)
+        }
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(status.label) scheduled task: \(task.task)")
+        .accessibilityValue("\(schedule); workspace \(projectName); \(nextRun)")
+        .mobiusSwipeActions {
+            MobiusSwipeAction(title: "Delete", glyph: .trash, tone: "error") {
+                confirmsDeletion = true
             }
-            MobiusActionRow(collapsesToIcons: true) {
-                Button("Run", glyph: .playFill) { model.runCron(task) }
-                    .mobiusProminentButton()
-                Button(task.enabled ? "Pause" : "Resume", glyph: task.enabled ? .stopFill : .playFill) {
-                    model.updateCron(
-                        task,
-                        sourceSessionID: task.sourceSessionId,
-                        instructions: task.task,
-                        schedule: task.schedule,
-                        endsAt: task.endsAt,
-                        enabled: !task.enabled
-                    )
-                }
-                Button("Edit", glyph: .pencilSimple) { edit() }
-                Button("Delete", glyph: .trash, role: .destructive) { model.deleteCron(task) }
+            MobiusSwipeAction(title: "Edit", glyph: .pencilSimple, action: edit)
+            MobiusSwipeAction(
+                title: task.enabled ? "Pause" : "Resume",
+                glyph: task.enabled ? .stopFill : .playFill,
+                tone: task.enabled ? "warning" : "success",
+                action: toggleEnabled
+            )
+            MobiusSwipeAction(title: "Run", glyph: .playFill, tone: "success") {
+                model.runCron(task)
             }
+        }
+        .confirmationDialog(
+            "Delete this scheduled task?",
+            isPresented: $confirmsDeletion,
+            titleVisibility: .visible
+        ) {
+            Button("Delete task", role: .destructive) { model.deleteCron(task) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes the task and its run history. This cannot be undone.")
         }
     }
 
-    private var statusText: String {
-        if task.finished { return "Finished" }
-        return task.enabled ? "Active" : "Paused"
+    private var taskStatus: (label: String, glyph: MobiusGlyph, color: Color) {
+        if task.finished { return ("Finished", .checkCircle, palette.muted) }
+        if task.enabled { return ("Active", .playFill, palette.signal) }
+        return ("Paused", .stopFill, palette.warning)
+    }
+
+    private var nextRunText: String {
+        guard let nextRunAt = task.nextRunAt else { return "Next —" }
+        let date = Date(timeIntervalSince1970: TimeInterval(nextRunAt))
+        return "Next \(date.formatted(.relative(presentation: .numeric, unitsStyle: .abbreviated)))"
+    }
+
+    @ViewBuilder
+    private var nextRunLabel: some View {
+        if let nextRunAt = task.nextRunAt {
+            Text("Next \(Date(timeIntervalSince1970: TimeInterval(nextRunAt)), style: .relative)")
+        } else {
+            Text("Next —")
+        }
+    }
+
+    private func toggleEnabled() {
+        model.updateCron(
+            task,
+            sourceSessionID: task.sourceSessionId,
+            instructions: task.task,
+            schedule: task.schedule,
+            endsAt: task.endsAt,
+            enabled: !task.enabled
+        )
     }
 }
 
@@ -356,15 +407,23 @@ private struct CronTaskEditorSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Task") {
-                    Picker("Project", selection: $sourceSessionID) {
+                Section("Workspace") {
+                    Picker("Workspace", selection: $sourceSessionID) {
                         ForEach(projects) { project in
                             Text(project.name).tag(project.sourceSessionID)
                         }
                     }
-                    TextEditor(text: $instructions)
-                        .frame(minHeight: 120)
+                }
+
+                Section("Task") {
+                    TextField("Describe what möbius should do", text: $instructions, axis: .vertical)
+                        .font(MobiusStyle.bodyFont)
+                        .lineLimit(4...8)
+                        .textFieldStyle(.plain)
                         .textInputAutocapitalization(.sentences)
+                        .labelsHidden()
+                        .accessibilityLabel("Task")
+                        .promptCard()
                 }
 
                 Section("Schedule") {
@@ -408,6 +467,7 @@ private struct CronTaskEditorSheet: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
+            .formStyle(.grouped)
             .scrollContentBackground(.hidden)
             .navigationTitle(task == nil ? "New scheduled task" : "Edit scheduled task")
             .toolbarTitleDisplayMode(.inline)
@@ -422,6 +482,8 @@ private struct CronTaskEditorSheet: View {
             }
         }
         .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .presentationBackground(.ultraThinMaterial)
     }
 
     @ViewBuilder

@@ -45,13 +45,13 @@ final class ComposerDictation {
     var isRecording: Bool { state == .recording }
     var isTransitioning: Bool { state == .preparing || state == .stopping }
     var canToggle: Bool { state == .idle || state == .recording }
-    var detectedLanguageName: String? {
+    var detectedLanguageCode: String? {
         guard transcripts.indices.contains(selectedTranscriptIndex),
               !transcripts[selectedTranscriptIndex].text.isEmpty,
               let languageCode = transcripts[selectedTranscriptIndex]
                 .locale.language.languageCode?.identifier
         else { return nil }
-        return Locale.current.localizedString(forLanguageCode: languageCode)
+        return languageCode.uppercased()
     }
 
     func start(

@@ -20,8 +20,18 @@ struct MobiusMarkdownText: View, Equatable {
     }
 
     var body: some View {
-        MobiusMarkdownDocument(text: normalizedText, streaming: streaming)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        Group {
+            if !streaming, let prose = continuousProseMarkdown(normalizedText) {
+                Text(prose)
+                    .font(MobiusStyle.bodyFont)
+                    .foregroundStyle(.primary)
+                    .lineSpacing(5)
+                    .textSelection(.enabled)
+            } else {
+                MobiusMarkdownDocument(text: normalizedText, streaming: streaming)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var normalizedText: String {

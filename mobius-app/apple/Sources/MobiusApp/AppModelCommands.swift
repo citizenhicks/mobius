@@ -1022,6 +1022,24 @@ extension AppModel {
         ))
     }
 
+    func submitGlobalScratchpadOperation(_ operation: AgentOperation) {
+        guard connectionState.isReady else { return }
+        transmit(.submitGlobalScratchpad(
+            requestID: requestID("global-scratchpad"),
+            operation: operation
+        ))
+    }
+
+    func refreshGlobalScratchpad() {
+        submitGlobalScratchpadOperation(.capabilityCommand(
+            capability: "scratchpad",
+            command: "scratchpad",
+            arguments: "refresh",
+            input: nil,
+            target: nil
+        ))
+    }
+
     func loadPreviewPage(_ operation: AgentOperation) {
         guard let sessionID = selectedSessionID, !isLoadingPreviewPage else { return }
         if case .capabilityCommand(let capability, _, _, _, _) = operation,

@@ -66,13 +66,13 @@ extension AppModel {
                         }
                         self?.connectionEnded(generation: generation, message: "The gateway closed the connection.")
                     } catch {
-                        self?.connectionEnded(generation: generation, message: error.localizedDescription)
+                        self?.connectionEnded(generation: generation, error: error)
                     }
                 }
                 if self.selectedGatewayIsMobiusCloud { self.scheduleReconnect() }
                 try await authenticate()
             } catch {
-                self.connectionEnded(generation: generation, message: error.localizedDescription)
+                self.connectionEnded(generation: generation, error: error)
             }
         }
     }
@@ -97,6 +97,28 @@ extension AppModel {
 
     func handle(_ envelope: GatewayEnvelope) {
         switch envelope {
+        case .paired, .authenticated, .ready:
+            handleConnectionEnvelope(envelope)
+        case .sessionOpened, .sessionReplayComplete, .sessionHistory, .sessionChanged:
+            handleSessionEnvelope(envelope)
+        case .gatewayConfigured, .globalScratchpadChanged, .accepted, .rejected,
+             .agentEvent, .sessions, .clients:
+            handleGatewayUpdateEnvelope(envelope)
+        case .providerCredentialSaved, .pairingCode, .providerLoginStarted,
+             .providerLoginFinished, .gitCredentialStatus, .sshIdentities,
+             .sshIdentityGenerated, .profile:
+            handleCredentialEnvelope(envelope)
+        case .gitDiff, .workspaceFiles, .workspaceFileChunk, .sessionFileUploadReady,
+             .sessionFileUploadChunkAccepted, .sessionFileUploadCompleted,
+             .sessionFiles, .sessionFileChunk, .directories:
+            handleFileEnvelope(envelope)
+        case .cronTasks, .cronHistory, .cronRunPreview, .error:
+            handleCronOrFailureEnvelope(envelope)
+        }
+    }
+
+    private func handleConnectionEnvelope(_ envelope: GatewayEnvelope) {
+        switch envelope {
         case .paired(_, let token):
             guard let account = pendingPairingAccount else { return }
             do {
@@ -117,6 +139,13 @@ extension AppModel {
             connectionState = .loading
         case .ready(let payload):
             applyGatewayReady(payload)
+        default:
+            break
+        }
+    }
+
+    private func handleSessionEnvelope(_ envelope: GatewayEnvelope) {
+        switch envelope {
         case .sessionOpened(let requestID, let payload):
             guard requestID == sessionRequestID else { break }
             applySessionReady(payload, opened: true, replayRequestID: requestID)
@@ -144,8 +173,24 @@ extension AppModel {
                   payload.config.revision >= (agentSnapshot?.revision ?? 0)
             else { break }
             applySessionReady(payload, opened: false)
+        default:
+            break
+        }
+    }
+
+    private func handleGatewayUpdateEnvelope(_ envelope: GatewayEnvelope) {
+        switch envelope {
         case .gatewayConfigured(let requestID, let payload):
             applyGatewayConfigurationResponse(requestID: requestID, payload: payload)
+        case .globalScratchpadChanged(_, let contribution):
+            guard contribution.capability == "scratchpad" else { break }
+            if let index = gatewayContributions.firstIndex(where: {
+                $0.capability == contribution.capability
+            }) {
+                gatewayContributions[index] = contribution
+            } else {
+                gatewayContributions.append(contribution)
+            }
         case .accepted(let requestID):
             handleAccepted(requestID)
         case .rejected(let rejection):
@@ -165,6 +210,13 @@ extension AppModel {
             applySessions(sessions)
         case .clients:
             break
+        default:
+            break
+        }
+    }
+
+    private func handleCredentialEnvelope(_ envelope: GatewayEnvelope) {
+        switch envelope {
         case .providerCredentialSaved(let requestID, let instance, let provider):
             guard let pending = pendingProviderCredential,
                   requestID == pending.requestID,
@@ -236,6 +288,13 @@ extension AppModel {
             showToast("SSH identity created on the gateway host.", tone: .success)
         case .profile(_, let profile):
             self.profile = profile
+        default:
+            break
+        }
+    }
+
+    private func handleFileEnvelope(_ envelope: GatewayEnvelope) {
+        switch envelope {
         case .gitDiff(let requestID, let sessionID, let scope, let diff):
             guard sessionID == selectedSessionID else { break }
             if scope == .unstaged, requestID == gitDiffRequestID {
@@ -322,6 +381,13 @@ extension AppModel {
             directoryListing = listing
             directoryError = nil
             isLoadingDirectories = false
+        default:
+            break
+        }
+    }
+
+    private func handleCronOrFailureEnvelope(_ envelope: GatewayEnvelope) {
+        switch envelope {
         case .cronTasks(let requestID, let tasks):
             cronRequestIDs.remove(requestID)
             cronTasks = tasks
@@ -353,6 +419,8 @@ extension AppModel {
                 sshIdentityError = failure.message
                 connectionState = .failed(failure.message)
             }
+        default:
+            break
         }
     }
 
@@ -796,6 +864,34 @@ extension AppModel {
         let deletedPresentedSessionID = rejection.requestId == sessionMutationRequestID
             ? pendingDeletedPresentedSessionID
             : nil
+        handleRejectedTranscript(rejection)
+        if retryRejectedSessionReplay(rejection) { return }
+        handleRejectedFiles(rejection, thumbnail: rejectedFileThumbnailDownload)
+        handleRejectedConfiguration(rejection, deletedSessionID: deletedPresentedSessionID)
+        handleRejectedWorkspace(rejection)
+        handleRejectedCapabilities(rejection)
+        if !rejectedFileThumbnail || rejection.fatal {
+            showToast(
+                rejection.message,
+                tone: rejection.code == "revision_conflict" || rejection.code == "agent_busy"
+                    ? .warning
+                    : .error
+            )
+        }
+        if rejection.fatal {
+            automaticReconnectBlocked = true
+            cancelReconnect()
+            connectionGeneration = UUID()
+            eventTask?.cancel()
+            eventTask = nil
+            restorePendingDrafts()
+            cancelExtensionAndCredentialRequests()
+            sshIdentityError = rejection.message
+            connectionState = .failed(rejection.message)
+        }
+    }
+
+    private func handleRejectedTranscript(_ rejection: GatewayRejection) {
         if rejection.requestId == historyRequestID {
             finishHistoryLoad()
         }
@@ -813,24 +909,37 @@ extension AppModel {
             }
         }
         cancelChatTitle(submissionID: rejection.requestId, rearm: true)
-        if rejection.requestId == sessionRequestID,
-           rejection.code == "replay_unavailable",
-           let sessionID = sessionOpeningID,
-           sessionOpenCursor != nil {
-            if let accountID = selectedAccountID {
-                enqueueTranscriptIO { [store] in
-                    await store.removeTranscript(accountID: accountID, sessionID: sessionID)
-                }
+    }
+
+    private func retryRejectedSessionReplay(_ rejection: GatewayRejection) -> Bool {
+        guard rejection.requestId == sessionRequestID,
+              rejection.code == "replay_unavailable",
+              let sessionID = sessionOpeningID,
+              sessionOpenCursor != nil
+        else { return false }
+        if let accountID = selectedAccountID {
+            enqueueTranscriptIO { [store] in
+                await store.removeTranscript(accountID: accountID, sessionID: sessionID)
             }
-            sessionRequestID = nil
-            sessionOpenCursor = nil
-            pendingCachedTranscript = nil
-            pendingPresentedTranscript = nil
-            if sessionID == selectedSessionID { resetSessionState() }
-            requestSessionOpen(sessionID, lastSequence: nil)
-            return
         }
-        failSessionFileUploadRequest(rejection.requestId, message: rejection.message, showsToast: false)
+        sessionRequestID = nil
+        sessionOpenCursor = nil
+        pendingCachedTranscript = nil
+        pendingPresentedTranscript = nil
+        if sessionID == selectedSessionID { resetSessionState() }
+        requestSessionOpen(sessionID, lastSequence: nil)
+        return true
+    }
+
+    private func handleRejectedFiles(
+        _ rejection: GatewayRejection,
+        thumbnail: SessionFileThumbnailDownload?
+    ) {
+        failSessionFileUploadRequest(
+            rejection.requestId,
+            message: rejection.message,
+            showsToast: false
+        )
         if rejection.requestId == sessionFilesRequestID {
             sessionFilesRequestID = nil
             isLoadingSessionFiles = false
@@ -839,11 +948,8 @@ extension AppModel {
             sessionFileDownload = nil
             isLoadingFilePresentation = false
         }
-        if let rejectedFileThumbnailDownload {
-            finishSessionFileThumbnailAttempt(
-                rejectedFileThumbnailDownload,
-                startsNext: !rejection.fatal
-            )
+        if let thumbnail {
+            finishSessionFileThumbnailAttempt(thumbnail, startsNext: !rejection.fatal)
         }
         if rejection.requestId == workspaceFilePreviewDownload?.requestID {
             workspaceFilePreviewDownload = nil
@@ -857,6 +963,12 @@ extension AppModel {
             restoreDraft(id: rejection.requestId)
         }
         rejectComposerEdit(requestID: rejection.requestId)
+    }
+
+    private func handleRejectedConfiguration(
+        _ rejection: GatewayRejection,
+        deletedSessionID: String?
+    ) {
         if rejection.requestId == configRequestID
             || rejection.requestId == defaultConfigRequestID {
             let state: ApplyState = switch rejection.code {
@@ -890,8 +1002,11 @@ extension AppModel {
         }
         if rejection.requestId == sessionMutationRequestID {
             sessionMutationRequestID = nil
-            restoreDeletedPresentedSession(deletedPresentedSessionID)
+            restoreDeletedPresentedSession(deletedSessionID)
         }
+    }
+
+    private func handleRejectedWorkspace(_ rejection: GatewayRejection) {
         if rejection.requestId == directoryRequestID {
             directoryError = rejection.message
             directoryRequestID = nil
@@ -928,6 +1043,9 @@ extension AppModel {
             isGeneratingSshIdentity = false
             sshIdentityError = rejection.message
         }
+    }
+
+    private func handleRejectedCapabilities(_ rejection: GatewayRejection) {
         if rejection.requestId == pendingProviderCredential?.requestID {
             providerActionState = .failed(rejection.message)
             pendingProviderCredential = nil
@@ -956,25 +1074,6 @@ extension AppModel {
             cronRunPreviewRequestBeforeSequence = nil
             isLoadingCronRunPreview = false
             cronRunPreviewError = rejection.message
-        }
-        if !rejectedFileThumbnail || rejection.fatal {
-            showToast(
-                rejection.message,
-                tone: rejection.code == "revision_conflict" || rejection.code == "agent_busy"
-                    ? .warning
-                    : .error
-            )
-        }
-        if rejection.fatal {
-            automaticReconnectBlocked = true
-            cancelReconnect()
-            connectionGeneration = UUID()
-            eventTask?.cancel()
-            eventTask = nil
-            restorePendingDrafts()
-            cancelExtensionAndCredentialRequests()
-            sshIdentityError = rejection.message
-            connectionState = .failed(rejection.message)
         }
     }
 

@@ -1086,6 +1086,38 @@ fn validate_version_requires_the_exact_protocol() {
 }
 
 #[test]
+fn global_scratchpad_messages_are_gateway_scoped() {
+    let operation = Op::CapabilityCommand {
+        capability: "scratchpad".into(),
+        command: "scratchpad".into(),
+        arguments: "refresh".into(),
+        input: None,
+        target: None,
+    };
+    let request = serde_json::to_value(ClientFrame::new(ClientMessage::SubmitGlobalScratchpad {
+        request_id: "scratchpad-1".into(),
+        operation,
+    }))
+    .expect("encode global scratchpad request");
+
+    assert_eq!(request["type"], "submit_global_scratchpad");
+    assert!(request.get("session_id").is_none());
+
+    let response = ServerFrame::new(ServerMessage::GlobalScratchpadChanged {
+        request_id: "scratchpad-1".into(),
+        contribution: FrontendContribution {
+            capability: "scratchpad".into(),
+            ..FrontendContribution::default()
+        },
+    });
+    let decoded: ServerFrame = serde_json::from_value(
+        serde_json::to_value(&response).expect("encode global scratchpad response"),
+    )
+    .expect("decode global scratchpad response");
+    assert_eq!(decoded, response);
+}
+
+#[test]
 fn daily_usage_carries_its_provider_on_the_wire() {
     let usage = DailyUsage {
         unix_day: 42,

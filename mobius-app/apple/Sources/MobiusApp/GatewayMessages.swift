@@ -21,6 +21,7 @@ enum GatewayRequest: Encodable, Sendable {
     case setSessionPinned(requestID: String, sessionID: String, pinned: Bool)
     case deleteSession(requestID: String, sessionID: String)
     case submit(sessionID: String, submission: Submission)
+    case submitGlobalScratchpad(requestID: String, operation: AgentOperation)
     case configureSession(
         requestID: String,
         sessionID: String,
@@ -139,6 +140,8 @@ enum GatewayRequest: Encodable, Sendable {
     case listCronHistory(requestID: String, id: String?)
     case getCronRunPreview(requestID: String, id: String, beforeSequence: UInt64?)
 
+    // One exhaustive switch is the wire contract; splitting it would add fake dispatch.
+    // swift-complexity:disable cyclomatic
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: DynamicCodingKey.self)
         try container.encode(gatewayProtocolVersion, forKey: "version")
@@ -194,6 +197,10 @@ enum GatewayRequest: Encodable, Sendable {
             try container.encode("submit", forKey: "type")
             try container.encode(sessionID, forKey: "sessionId")
             try container.encode(submission, forKey: "submission")
+        case .submitGlobalScratchpad(let requestID, let operation):
+            try container.encode("submit_global_scratchpad", forKey: "type")
+            try container.encode(requestID, forKey: "requestId")
+            try container.encode(operation, forKey: "operation")
         case .configureSession(let requestID, let sessionID, let expectedRevision, let config):
             try container.encode("configure_session", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
@@ -424,6 +431,7 @@ enum GatewayEnvelope: Decodable, Sendable {
     )
     case sessionChanged(SessionReadyPayload)
     case gatewayConfigured(requestID: String, payload: ReadyPayload)
+    case globalScratchpadChanged(requestID: String, contribution: FrontendContribution)
     case accepted(requestID: String)
     case rejected(GatewayRejection)
     case agentEvent(
@@ -497,6 +505,8 @@ enum GatewayEnvelope: Decodable, Sendable {
     case cronRunPreview(CronRunPreview)
     case error(GatewayFailure)
 
+    // One exhaustive switch is the wire contract; splitting it would add fake dispatch.
+    // swift-complexity:disable cyclomatic
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: DynamicCodingKey.self)
         let version = try container.decode(Int.self, forKey: "version")
@@ -548,6 +558,14 @@ enum GatewayEnvelope: Decodable, Sendable {
                     ReadyPayload.self,
                     forKey: "payload"
                 ).validated()
+            )
+        case "global_scratchpad_changed":
+            self = .globalScratchpadChanged(
+                requestID: try container.decode(String.self, forKey: "requestId"),
+                contribution: try container.decode(
+                    FrontendContribution.self,
+                    forKey: "contribution"
+                )
             )
         case "accepted":
             self = .accepted(requestID: try container.decode(String.self, forKey: "requestId"))
