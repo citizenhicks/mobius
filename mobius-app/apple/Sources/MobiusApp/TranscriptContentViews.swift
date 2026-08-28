@@ -4,7 +4,7 @@ import SwiftUI
 private struct CollapsibleTextEndAttribute: TextAttribute {}
 
 struct CollapsibleText: View {
-    private static let collapsedLineLimit = 21
+    private static let defaultCollapsedLineLimit = 21
     // Bound the text SwiftUI must shape while collapsed. Four thousand characters still
     // exceed 21 lines at the transcript's widest supported layout, including on iPad.
     private static let collapsedCharacterLimit = 4_096
@@ -16,6 +16,9 @@ struct CollapsibleText: View {
     let text: String
     var rendersMarkdown = false
     var streaming = false
+    /// A transcript row can afford 21 lines before it collapses; a board post packed among
+    /// its neighbours cannot, so the surface owns the threshold.
+    var collapsedLineLimit = Self.defaultCollapsedLineLimit
 
     var body: some View {
         VStack(alignment: .leading, spacing: MobiusSpace.s) {
@@ -47,7 +50,7 @@ struct CollapsibleText: View {
                 .equatable()
         } else {
             markedText
-                .lineLimit(isExpanded ? nil : Self.collapsedLineLimit)
+                .lineLimit(isExpanded ? nil : collapsedLineLimit)
                 .truncationMode(.tail)
                 .textSelection(.enabled)
                 .onPreferenceChange(Text.LayoutKey.self, perform: measureTruncation)
@@ -76,6 +79,14 @@ struct CollapsibleText: View {
         let source = displayedText
         guard let end = source.lastIndex(where: { !$0.isNewline }) else {
             return Text(verbatim: source)
+        }
+        if rendersMarkdown {
+            let contentEnd = source.index(after: end)
+            let content = Text(inlineMarkdownPreview(String(source[..<contentEnd])))
+            let marker = Text(verbatim: "\u{200B}")
+                .customAttribute(CollapsibleTextEndAttribute())
+            let trailing = Text(verbatim: String(source[contentEnd...]))
+            return Text("\(content)\(marker)\(trailing)")
         }
         return Text(
             "\(Text(verbatim: String(source[..<end])))\(Text(verbatim: String(source[end...])).customAttribute(CollapsibleTextEndAttribute()))"
@@ -436,7 +447,7 @@ struct FileCard<Trailing: View>: View {
 
     private var placeholder: some View {
         VStack(spacing: 0) {
-            MobiusIcon(.fileText, size: 26, foreground: palette.accent)
+            MobiusIcon(.fileText, size: 26, foreground: .primary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             Text(verbatim: name)
                 .font(MobiusStyle.badgeFont)

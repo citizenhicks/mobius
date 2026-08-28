@@ -573,6 +573,47 @@ extension AppModelTests {
         XCTAssertEqual(model.transcript.last?.turnElapsedMs, 500)
     }
 
+    func testPeerMessageStartsAndCollapsesACompletedTurnLikeUserInput() throws {
+        let model = try model()
+        let turnID = "peer-turn"
+        model.reduce(record: recorded(1, .object([
+            "type": .string("task_started"),
+            "turnId": .string(turnID),
+        ])))
+        model.reduce(record: recorded(2, .object([
+            "type": .string("peer_message"),
+            "messageId": .string("message-1"),
+            "sourceSessionId": .string("chat-reviewer"),
+            "sourceHandle": .string("@reviewer"),
+            "message": .string("Review the parser boundary."),
+        ])))
+        model.reduce(record: recorded(3, .object([
+            "type": .string("agent_message"),
+            "turnId": .string(turnID),
+            "modelStepId": .string("step-1"),
+            "phase": .string("commentary"),
+            "message": .string("Checking"),
+        ])))
+        model.reduce(record: recorded(4, .object([
+            "type": .string("agent_message"),
+            "turnId": .string(turnID),
+            "modelStepId": .string("step-2"),
+            "phase": .string("final_answer"),
+            "message": .string("Done"),
+        ])))
+        model.reduce(record: recorded(5, .object([
+            "type": .string("task_complete"),
+            "turnId": .string(turnID),
+        ])))
+
+        XCTAssertEqual(model.transcript.map(\.turnID), Array(repeating: turnID, count: 3))
+        XCTAssertEqual(model.transcript.map(\.startsTurn), [true, false, false])
+        XCTAssertEqual(
+            model.transcriptProjection(breakBefore: nil).rows.map(\.kind),
+            [.peer, .workedGroup, .narrative]
+        )
+    }
+
     func testOnlyLatestActivityStepIsActiveDuringTurn() throws {
         let model = try model()
         model.activeTurnID = "turn-1"

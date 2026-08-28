@@ -220,7 +220,7 @@ private struct DiffFileHeader: View {
     var body: some View {
         Button(action: toggle) {
             HStack(spacing: MobiusSpace.m) {
-                MobiusIcon(file.path.fileGlyph, size: MobiusStyle.glyphLead, foreground: palette.accent)
+                MobiusIcon(file.path.fileGlyph, size: MobiusStyle.glyphLead, foreground: .primary)
                 VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
                     Text(verbatim: file.name)
                         .font(MobiusStyle.metadataFont.weight(.semibold))

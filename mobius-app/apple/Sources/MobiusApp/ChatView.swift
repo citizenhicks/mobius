@@ -311,7 +311,7 @@ private struct SwarmMenuSection: View {
                             candidates: candidates
                         )
                     } label: {
-                        MobiusLabel(title: "Create Swarm…", glyph: .group01)
+                        MobiusLabel(title: "Create Swarm…", glyph: .swarm)
                     }
                 }
                 if !swarms.isEmpty {
@@ -320,11 +320,11 @@ private struct SwarmMenuSection: View {
                             Button {
                                 model.addSwarmMember(session, to: swarm)
                             } label: {
-                                MobiusLabel(verbatim: swarm.title, glyph: .group01)
+                                MobiusLabel(verbatim: swarm.title, glyph: .swarm)
                             }
                         }
                     } label: {
-                        MobiusLabel(title: "Add to Swarm", glyph: .plus)
+                        MobiusLabel(title: "Add to Swarm", glyph: .swarm)
                     }
                 }
             }

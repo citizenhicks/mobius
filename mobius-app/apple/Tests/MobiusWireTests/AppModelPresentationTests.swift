@@ -4,6 +4,44 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testToolLoadUsesTheStandardToolTranscriptPresentation() throws {
+        let app = try model()
+        let event = AgentEventRecord(submissionId: "input-1", msg: .object([
+            "type": .string("tool_load"),
+            "turnId": .string("turn-1"),
+            "loadId": .string("step-1"),
+            "catalogRevision": .string("catalog-1"),
+            "tools": .array([.string("swarm_post"), .string("swarm_read")])
+        ]))
+        try AgentEventRecord.validate(event.msg)
+        app.reduce(record: RecordedEvent(
+            sequence: 1,
+            recordedAtMs: 1_000,
+            event: event,
+            streamMetrics: [],
+            blocks: [RenderedBlock(capability: "tools", block: FrontendBlock(
+                id: "turn-1/step-1/load",
+                group: nil,
+                update: .replace,
+                state: .complete,
+                role: .tool,
+                title: "Loaded tools",
+                text: "swarm_post\nswarm_read",
+                symbol: nil,
+                format: "plain_text",
+                tone: "success",
+                files: []
+            ))],
+            preview: nil
+        ))
+
+        let entry = try XCTUnwrap(app.transcript.first)
+        XCTAssertEqual(entry.role, .tool)
+        XCTAssertEqual(entry.title, "Loaded tools")
+        XCTAssertEqual(entry.text, "swarm_post\nswarm_read")
+        XCTAssertEqual(entry.turnID, "turn-1")
+    }
+
     func testFrontendPresentationMetadataUsesTheAppLanguageCatalog() {
         let french = Locale(identifier: "fr")
         let values = [

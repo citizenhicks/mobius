@@ -470,6 +470,57 @@ extension AppModelTests {
         )
     }
 
+    func testPeerHistoryReconnectsTurnMetadataAcrossAPageBoundary() throws {
+        let model = try model()
+        let turnID = "peer-turn"
+        model.mergeHistory([
+            recorded(5, .object([
+                "type": .string("peer_message"),
+                "messageId": .string("message-1"),
+                "sourceSessionId": .string("chat-reviewer"),
+                "sourceHandle": .string("reviewer"),
+                "message": .string("Review the parser boundary."),
+            ])),
+            recorded(6, .object([
+                "type": .string("agent_message"),
+                "turnId": .string(turnID),
+                "modelStepId": .string("step-1"),
+                "phase": .string("commentary"),
+                "message": .string("Checking"),
+            ])),
+            recorded(7, .object([
+                "type": .string("agent_message"),
+                "turnId": .string(turnID),
+                "modelStepId": .string("step-2"),
+                "phase": .string("final_answer"),
+                "message": .string("Done"),
+            ])),
+            recorded(8, .object([
+                "type": .string("task_complete"),
+                "turnId": .string(turnID),
+            ])),
+        ])
+
+        XCTAssertEqual(model.transcript.map(\.turnID), Array(repeating: turnID, count: 3))
+        XCTAssertEqual(model.transcript.map(\.startsTurn), [true, false, false])
+
+        model.mergeHistory([recorded(1, .object([
+            "type": .string("task_started"),
+            "turnId": .string(turnID),
+        ]))])
+
+        XCTAssertEqual(
+            model.transcript.map(\.text),
+            ["Review the parser boundary.", "Checking", "Done"]
+        )
+        XCTAssertEqual(model.transcript.map(\.turnID), Array(repeating: turnID, count: 3))
+        XCTAssertEqual(model.transcript.map(\.startsTurn), [true, false, false])
+        XCTAssertEqual(
+            model.transcriptProjection(breakBefore: nil).rows.map(\.kind),
+            [.peer, .workedGroup, .narrative]
+        )
+    }
+
     func testHistoricalInterruptedTurnCollapsesAroundAbortNotice() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }

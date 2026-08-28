@@ -468,7 +468,7 @@ private struct CloudBenefit: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: MobiusSpace.m) {
-            MobiusIcon(glyph, size: MobiusStyle.glyphLead, foreground: palette.accent)
+            MobiusIcon(glyph, size: MobiusStyle.glyphLead, foreground: .primary)
             VStack(alignment: .leading, spacing: MobiusSpace.xs) {
                 Text(title)
                     .font(MobiusStyle.controlFont)

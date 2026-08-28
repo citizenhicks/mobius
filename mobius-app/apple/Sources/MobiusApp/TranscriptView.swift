@@ -344,11 +344,7 @@ private struct TranscriptRow: View {
     let turnDiff: String
 
     var body: some View {
-        rowContent
-    }
-
-    private var rowContent: some View {
-        VStack(alignment: isUser ? .trailing : .leading, spacing: 0) {
+        VStack(alignment: isInput ? .trailing : .leading, spacing: 0) {
             content
             if !turnDiff.isEmpty {
                 TurnDiffCard(source: turnDiff)
@@ -358,8 +354,10 @@ private struct TranscriptRow: View {
             // final answer carries them under the text, where they are always available.
             if entry.kind == .assistant { controls }
         }
-        .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
+        .frame(maxWidth: .infinity, alignment: isInput ? .trailing : .leading)
     }
+
+    private var isInput: Bool { isUser || isPeer }
 
     @ViewBuilder
     private var content: some View {
@@ -379,12 +377,12 @@ private struct TranscriptRow: View {
                 }
             }
         } else if isPeer {
-            VStack(alignment: .leading, spacing: MobiusSpace.s) {
+            VStack(alignment: .trailing, spacing: MobiusSpace.s) {
                 HStack(spacing: MobiusSpace.s) {
                     MobiusIcon(
-                        .group01,
+                        .swarm,
                         size: MobiusStyle.glyphInline,
-                        foreground: palette.accent,
+                        foreground: .primary,
                         gutter: false
                     )
                     Text(verbatim: entry.title)
@@ -393,9 +391,9 @@ private struct TranscriptRow: View {
                 }
                 MobiusMarkdownText(entry.text, streaming: false)
                     .equatable()
+                    .multilineTextAlignment(.leading)
             }
             .padding(MobiusSpace.l)
-            .frame(maxWidth: .infinity, alignment: .leading)
             .background(palette.accentSoft.opacity(0.45), in: MobiusStyle.cardShape)
             .overlay {
                 MobiusStyle.cardShape.stroke(
@@ -403,6 +401,7 @@ private struct TranscriptRow: View {
                     lineWidth: MobiusStyle.borderWidth
                 )
             }
+            .padding(.leading, 42)
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Text("Message from agent \(entry.title)"))
             .accessibilityValue(Text(verbatim: entry.text))

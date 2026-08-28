@@ -120,7 +120,15 @@ extension AppModel {
                 to: &entries
             )
         case "peer_message":
-            appendPeerMessage(event, record: record, to: &entries)
+            let startsTurn = turnID != nil && turnState.awaitingInitialUserTurnID == turnID
+            if startsTurn { turnState.awaitingInitialUserTurnID = nil }
+            appendPeerMessage(
+                event,
+                record: record,
+                turnID: turnID,
+                startsTurn: startsTurn,
+                to: &entries
+            )
         case "agent_message_content_delta", "agent_reasoning_content_delta":
             reduceHistoryDelta(
                 type: type,
@@ -183,10 +191,10 @@ extension AppModel {
                 for index in start..<entries.count where entries[index].turnID == nil {
                     entries[index].turnID = explicitTurnID
                 }
-                if let firstUser = entries[start...].firstIndex(where: {
-                    $0.kind == .user && !$0.startsTurn
+                if let firstInput = entries[start...].firstIndex(where: {
+                    ($0.kind == .user || $0.kind == .peer) && !$0.startsTurn
                 }) {
-                    entries[firstUser].startsTurn = true
+                    entries[firstInput].startsTurn = true
                 }
             }
             turnState.turnID = explicitTurnID

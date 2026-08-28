@@ -34,6 +34,7 @@ struct ChatsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var collapsedSwarms: Set<String> = []
     @State private var collapsedWorkspaces: Set<String> = []
     @State private var visibleSessionCounts: [String: Int] = [:]
     @State private var showsAttentionOnly = false
@@ -535,43 +536,70 @@ struct ChatsView: View {
     }
 
     private func swarmSection(_ swarm: WorkspaceSwarm) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button {
-                model.openSwarm(swarm.id)
-            } label: {
-                HStack(spacing: MobiusSpace.s) {
-                    MobiusIcon(.group01, foreground: palette.accent)
-                    MobiusTitleText(verbatim: swarm.record.title)
-                        .font(MobiusStyle.controlFont)
-                        .lineLimit(1)
-                    Text(verbatim: "\u{2022}")
-                        .foregroundStyle(palette.muted)
-                        .accessibilityHidden(true)
-                    Text("\(swarm.activeCount) active")
-                        .font(MobiusStyle.metadataFont)
-                        .foregroundStyle(palette.muted)
-                    Spacer(minLength: 0)
-                    MobiusIcon(.caretRight, size: 12, foreground: palette.muted)
+        let isExpanded = !collapsedSwarms.contains(swarm.id)
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 0) {
+                Button {
+                    model.openSwarm(swarm.id)
+                } label: {
+                    HStack(spacing: MobiusSpace.s) {
+                        MobiusIcon(.swarm, foreground: .primary)
+                        MobiusTitleText(verbatim: swarm.record.title)
+                            .font(MobiusStyle.controlFont)
+                            .lineLimit(1)
+                        Text(verbatim: "\u{2022}")
+                            .foregroundStyle(palette.muted)
+                            .accessibilityHidden(true)
+                        Text("\(swarm.activeCount) active")
+                            .font(MobiusStyle.metadataFont)
+                            .foregroundStyle(palette.muted)
+                        Spacer(minLength: 0)
+                    }
+                    .frame(
+                        maxWidth: .infinity,
+                        minHeight: MobiusStyle.iconButtonSize,
+                        alignment: .leading
+                    )
+                    .contentShape(Rectangle())
                 }
-                .frame(
-                    maxWidth: .infinity,
-                    minHeight: MobiusStyle.iconButtonSize,
-                    alignment: .leading
-                )
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.mobiusPlain)
-            .accessibilityLabel(Text("Swarm, \(swarm.record.title)"))
-            .accessibilityValue(Text("\(swarm.activeCount) active agents"))
-            .accessibilityHint("Show roster and message board")
-            .padding(.horizontal, MobiusSpace.s)
+                .buttonStyle(.mobiusPlain)
+                .accessibilityLabel(Text("Swarm, \(swarm.record.title)"))
+                .accessibilityValue(Text("\(swarm.activeCount) active agents"))
+                .accessibilityHint("Show roster and message board")
 
-            ForEach(Array(swarm.members.enumerated()), id: \.element.id) { index, member in
-                SessionCatalogRow(
-                    session: member.session,
-                    detail: member.handle,
-                    connector: .init(isLast: index == swarm.members.count - 1)
+                Button {
+                    withAnimation(reduceMotion ? nil : .snappy(duration: 0.22)) {
+                        if collapsedSwarms.remove(swarm.id) == nil {
+                            collapsedSwarms.insert(swarm.id)
+                        }
+                    }
+                } label: {
+                    MobiusIcon(.caretRight, size: 12, foreground: palette.muted)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        .frame(
+                            width: MobiusStyle.iconButtonSize,
+                            height: MobiusStyle.iconButtonSize
+                        )
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.mobiusPlain)
+                .accessibilityLabel(
+                    isExpanded
+                        ? Text("Collapse swarm \(swarm.record.title)")
+                        : Text("Expand swarm \(swarm.record.title)")
                 )
+                .accessibilityValue(isExpanded ? Text("Expanded") : Text("Collapsed"))
+            }
+            .padding(.leading, MobiusSpace.s)
+
+            if isExpanded {
+                ForEach(swarm.members.enumerated(), id: \.element.id) { index, member in
+                    SessionCatalogRow(
+                        session: member.session,
+                        detail: member.handle,
+                        connector: .init(isLast: index == swarm.members.count - 1)
+                    )
+                }
             }
         }
     }
@@ -587,13 +615,15 @@ struct SessionCatalogRow: View {
     @Environment(\.mobiusPalette) private var palette
     let session: SessionRecord
     var showsWorkspace = false
+    var showsControls = true
     var detail: String?
     var connector: Connector?
 
+    @ViewBuilder
     var body: some View {
         let isSelected = session.sessionId == model.selectedSessionID
         let isUnread = model.unreadSessionIDs.contains(session.sessionId)
-        HStack(spacing: MobiusSpace.xs) {
+        let row = HStack(spacing: MobiusSpace.xs) {
             if let connector {
                 SwarmMemberConnector(isLast: connector.isLast)
             }
@@ -602,13 +632,8 @@ struct SessionCatalogRow: View {
             } label: {
                 HStack(spacing: MobiusSpace.s) {
                     VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
-                        MobiusTitleText(
-                            verbatim: model.displayedTitle(for: session),
-                            cursorColor: isSelected ? palette.accent : .primary
-                        )
-                        .fontWeight(isSelected ? .semibold : nil)
+                        MobiusTitleText(verbatim: model.displayedTitle(for: session))
                         .lineLimit(1)
-                        .foregroundStyle(isSelected ? palette.accent : .primary)
                         if let secondaryText, !secondaryText.isEmpty {
                             Text(verbatim: secondaryText)
                                 .font(MobiusStyle.captionFont)
@@ -641,17 +666,46 @@ struct SessionCatalogRow: View {
         }
         .padding(.horizontal, MobiusSpace.s)
         .frame(minHeight: MobiusStyle.iconButtonSize)
-        .background(
-            isSelected ? palette.accentSoft.opacity(0.55) : .clear,
-            in: MobiusStyle.controlShape
-        )
-        .overlay {
-            MobiusStyle.controlShape.stroke(
-                isSelected ? palette.accent.opacity(0.5) : .clear,
-                lineWidth: MobiusStyle.borderWidth
-            )
-            .allowsHitTesting(false)
+
+        if showsControls {
+            row.contextMenu { controls }
+        } else {
+            row
         }
+    }
+
+    @ViewBuilder
+    private var controls: some View {
+        Button(
+            session.pinned ? "Unpin chat" : "Pin chat",
+            glyph: session.pinned ? .pushPinSlash : .pushPin
+        ) {
+            model.setSessionPinned(session, pinned: !session.pinned)
+        }
+        .disabled(!model.canRenameSession)
+        Button("Rename chat", glyph: .pencilSimple) {
+            model.beginRenamingSession(session)
+        }
+        .disabled(!model.canRenameSession)
+        let swarms = model.availableSwarms(for: session)
+        if !swarms.isEmpty {
+            Menu {
+                ForEach(swarms) { swarm in
+                    Button {
+                        model.addSwarmMember(session, to: swarm)
+                    } label: {
+                        MobiusLabel(verbatim: swarm.title, glyph: .swarm)
+                    }
+                }
+            } label: {
+                MobiusLabel(title: "Add to Swarm", glyph: .swarm)
+            }
+            .disabled(!model.canMutateSwarm)
+        }
+        Button("Delete chat", glyph: .trash, role: .destructive) {
+            model.beginDeletingSession(session)
+        }
+        .disabled(!model.canRenameSession)
     }
 
     private var secondaryText: String? {

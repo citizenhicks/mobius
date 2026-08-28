@@ -3,6 +3,13 @@ import SwiftUI
 struct SwarmView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
+    private static let messagePageSize = 25
+
+    @State private var confirmsDisband = false
+    @State private var visibleMessages = messagePageSize
+    @State private var showsActivity = true
+    @State private var showsRoster = true
+    @State private var showsBoard = true
     let swarmID: String
 
     var body: some View {
@@ -10,7 +17,10 @@ struct SwarmView: View {
             if let swarm {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: MobiusSpace.l) {
-                        summary(swarm)
+                        SwarmStatsSection(
+                            stats: stats(for: swarm),
+                            isExpanded: $showsActivity
+                        )
                         roster(swarm)
                         board(swarm)
                     }
@@ -18,16 +28,34 @@ struct SwarmView: View {
                 }
                 .scrollIndicators(.hidden)
                 .navigationTitle(swarm.title)
+                .navigationSubtitle(subtitle(for: swarm))
             } else {
                 MobiusUnavailable(
                     title: "Swarm unavailable",
-                    glyph: .group01,
+                    glyph: .swarm,
                     detail: "This swarm is no longer available on the gateway."
                 )
                 .navigationTitle("Swarm")
             }
         }
         .toolbarTitleDisplayMode(.inline)
+        .toolbar {
+            if let swarm {
+                ToolbarItem(placement: .primaryAction) {
+                    optionsMenu(for: swarm)
+                }
+            }
+        }
+        .alert("Disband this swarm?", isPresented: $confirmsDisband) {
+            if let swarm {
+                Button("Disband Swarm", role: .destructive) {
+                    model.disbandSwarm(swarm, leaderSessionID: swarm.leaderSessionId)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This permanently deletes the shared swarm board.")
+        }
         .background { palette.canvas.ignoresSafeArea() }
     }
 
@@ -35,54 +63,106 @@ struct SwarmView: View {
         model.swarms.first { $0.id == swarmID }
     }
 
-    private func summary(_ swarm: SwarmRecord) -> some View {
-        HStack(spacing: MobiusSpace.m) {
-            MobiusIcon(
-                .group01,
-                size: 28,
-                foreground: palette.accent,
-                gutter: false
-            )
-            VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
-                MobiusTitleText(verbatim: swarm.title)
-                    .font(.title2.weight(.semibold))
-                    .lineLimit(2)
-                Text("\(activeCount(in: swarm)) active of \(orderedMembers(in: swarm).count)")
-                    .font(MobiusStyle.metadataFont)
-                    .foregroundStyle(palette.muted)
+    private func subtitle(for swarm: SwarmRecord) -> String {
+        let members = orderedMembers(in: swarm)
+        let coworkers = members.count == 1 ? "1 coworker" : "\(members.count) coworkers"
+        return "\(coworkers) \u{2022} \(activeCount(in: swarm)) active"
+    }
+
+    private func stats(for swarm: SwarmRecord) -> SwarmStats {
+        SwarmStats.make(messages: swarm.messages)
+    }
+
+    private func optionsMenu(for swarm: SwarmRecord) -> some View {
+        let additions = model.sessions.filter { session in
+            model.availableSwarms(for: session).contains { $0.id == swarm.id }
+        }
+        let removals = orderedMembers(in: swarm).filter {
+            $0.sessionId != swarm.leaderSessionId
+        }
+
+        return HeaderOptionsMenu(label: "Swarm options") {
+            Section("Members") {
+                if !additions.isEmpty {
+                    Menu {
+                        ForEach(additions) { session in
+                            Button {
+                                model.addSwarmMember(session, to: swarm)
+                            } label: {
+                                MobiusLabel(
+                                    verbatim: model.displayedTitle(for: session),
+                                    glyph: .chatCircle
+                                )
+                            }
+                        }
+                    } label: {
+                        MobiusLabel(title: "Add Coworker", glyph: .swarm)
+                    }
+                }
+                if !removals.isEmpty {
+                    Menu {
+                        ForEach(removals) { member in
+                            Button(role: .destructive) {
+                                model.leaveSwarm(swarm, sessionID: member.sessionId)
+                            } label: {
+                                MobiusLabel(verbatim: member.handle, glyph: .x)
+                            }
+                        }
+                    } label: {
+                        MobiusLabel(title: "Remove Coworker", glyph: .swarm)
+                    }
+                }
             }
-            Spacer(minLength: 0)
+            .disabled(!model.canMutateSwarm)
+            Section {
+                Button(role: .destructive) {
+                    confirmsDisband = true
+                } label: {
+                    MobiusLabel(title: "Disband Swarm", glyph: .trash)
+                }
+            }
+            .disabled(!model.canMutateSwarm)
         }
-        .padding(MobiusSpace.l)
-        .background(palette.panel, in: MobiusStyle.cardShape)
-        .overlay {
-            MobiusStyle.cardShape.stroke(palette.line, lineWidth: MobiusStyle.borderWidth)
-        }
-        .accessibilityElement(children: .combine)
     }
 
     private func roster(_ swarm: SwarmRecord) -> some View {
         VStack(alignment: .leading, spacing: MobiusSpace.xs) {
-            Text("Roster")
-                .font(.title3.weight(.semibold))
-            ForEach(orderedMembers(in: swarm)) { member in
-                if let session = session(member.sessionId) {
-                    SessionCatalogRow(
-                        session: session,
-                        detail: rosterDetail(member, swarm: swarm)
-                    )
-                } else {
-                    unavailableMember(member, swarm: swarm)
+            SwarmSectionHeading(
+                title: "Roster",
+                trailing: "\(orderedMembers(in: swarm).count)",
+                isExpanded: $showsRoster
+            )
+            if showsRoster {
+                ForEach(orderedMembers(in: swarm)) { member in
+                    if let session = session(member.sessionId) {
+                        SessionCatalogRow(
+                            session: session,
+                            showsControls: false,
+                            detail: rosterDetail(member, swarm: swarm)
+                        )
+                    } else {
+                        unavailableMember(member, swarm: swarm)
+                    }
                 }
             }
         }
     }
 
     private func board(_ swarm: SwarmRecord) -> some View {
-        VStack(alignment: .leading, spacing: MobiusSpace.s) {
-            Text("Message board")
-                .font(.title3.weight(.semibold))
-            if swarm.messages.isEmpty {
+        let ordered = swarm.messages.sorted { $0.sequence < $1.sequence }
+        let windowed = Array(ordered.suffix(visibleMessages))
+        let hidden = ordered.count - windowed.count
+        let roster = Set(swarm.members.map(\.handle))
+
+        return VStack(alignment: .leading, spacing: MobiusSpace.s) {
+            SwarmSectionHeading(
+                title: "Message board",
+                trailing: ordered.isEmpty ? nil : "\(ordered.count) posts",
+                isExpanded: $showsBoard
+            )
+            if !showsBoard {
+                EmptyView()
+            } else if ordered.isEmpty {
                 VStack(spacing: MobiusSpace.s) {
                     MobiusIcon(.chatDots, size: 24, foreground: palette.muted, gutter: false)
                     Text("No swarm messages yet")
@@ -92,42 +172,36 @@ struct SwarmView: View {
                 .frame(maxWidth: .infinity, minHeight: 132)
                 .background(palette.panel, in: MobiusStyle.cardShape)
             } else {
-                ForEach(swarm.messages) { message in
-                    swarmMessage(message)
+                // One card for the whole board, not one per post: a card per message is what
+                // made a short exchange fill a screen.
+                VStack(alignment: .leading, spacing: 0) {
+                    if hidden > 0 {
+                        Button {
+                            visibleMessages += Self.messagePageSize
+                        } label: {
+                            MobiusLabel(
+                                title: "Show \(hidden) earlier",
+                                glyph: .arrowUp,
+                                iconColor: palette.accent
+                            )
+                            .frame(maxWidth: .infinity, minHeight: MobiusStyle.iconButtonSize)
+                        }
+                        .buttonStyle(.mobiusPlain)
+                        .foregroundStyle(palette.accent)
+                        .padding(.bottom, MobiusSpace.s)
+                    }
+                    ForEach(windowed.enumerated(), id: \.element.id) { index, message in
+                        SwarmMessageRow(
+                            message: message,
+                            roster: roster,
+                            isLeader: message.authorSessionId == swarm.leaderSessionId,
+                            isLast: index == windowed.count - 1
+                        )
+                    }
                 }
+                .swarmCard()
             }
         }
-    }
-
-    private func swarmMessage(_ message: SwarmMessageRecord) -> some View {
-        VStack(alignment: .leading, spacing: MobiusSpace.s) {
-            HStack(spacing: MobiusSpace.s) {
-                MobiusIcon(
-                    .group01,
-                    size: MobiusStyle.glyphInline,
-                    foreground: palette.accent,
-                    gutter: false
-                )
-                Text(verbatim: message.authorHandle)
-                    .font(MobiusStyle.controlFont)
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-                Text(messageDate(message.createdAtMs), style: .relative)
-                    .font(MobiusStyle.captionFont)
-                    .foregroundStyle(palette.muted)
-            }
-            MobiusMarkdownText(message.body, streaming: false)
-                .equatable()
-        }
-        .padding(MobiusSpace.l)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(palette.panel, in: MobiusStyle.cardShape)
-        .overlay {
-            MobiusStyle.cardShape.stroke(palette.line, lineWidth: MobiusStyle.borderWidth)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(Text("Message from agent \(message.authorHandle)"))
-        .accessibilityValue(Text(verbatim: message.body))
     }
 
     private func unavailableMember(
@@ -175,7 +249,94 @@ struct SwarmView: View {
         }.count
     }
 
-    private func messageDate(_ milliseconds: Int64) -> Date {
-        Date(timeIntervalSince1970: TimeInterval(milliseconds) / 1_000)
+}
+
+/// One board post: a single header line naming who spoke and when, then what they said.
+private struct SwarmMessageRow: View {
+    @Environment(\.mobiusPalette) private var palette
+    /// The author mark and the name beside it centre in the same box, so the rail node stays
+    /// level with the header at every Dynamic Type size instead of riding above it.
+    @ScaledMetric(relativeTo: .body) private var headerHeight = MobiusStyle.rowRegular
+    let message: SwarmMessageRecord
+    let roster: Set<String>
+    let isLeader: Bool
+    let isLast: Bool
+
+    var body: some View {
+        HStack(alignment: .top, spacing: MobiusSpace.s) {
+            rail
+            VStack(alignment: .leading, spacing: MobiusSpace.xs) {
+                header
+                // Mentions are emphasised inside the body rather than repeated beside it, so
+                // the post reads as the sentence the agent actually wrote.
+                CollapsibleText(
+                    text: swarmHighlightedBody(message.body, roster: roster),
+                    rendersMarkdown: true,
+                    collapsedLineLimit: 6
+                )
+            }
+            .padding(.bottom, isLast ? 0 : MobiusSpace.l)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(Text("Post from \(message.authorHandle)"))
+    }
+
+    /// The board's spine. The author mark is the node, so the header row still reads
+    /// icon-then-name while the line carries the eye from one post to the next.
+    private var rail: some View {
+        ZStack(alignment: .top) {
+            if !isLast {
+                Rectangle()
+                    .fill(palette.line)
+                    .frame(width: 1)
+                    .frame(maxHeight: .infinity)
+            }
+            MobiusIcon(
+                .userFocus,
+                size: MobiusStyle.glyphInline,
+                foreground: .primary,
+                gutter: false
+            )
+            .background(palette.panel, in: Circle())
+            .frame(height: headerHeight)
+        }
+        .frame(width: MobiusStyle.glyphInline)
+        .accessibilityHidden(true)
+    }
+
+    private var header: some View {
+        HStack(spacing: MobiusSpace.xs) {
+            Text(verbatim: message.authorHandle)
+                .font(MobiusStyle.controlFont)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            if isLeader {
+                Text("Leader")
+                    .font(MobiusStyle.captionFont)
+                    .foregroundStyle(palette.muted)
+                    .padding(.horizontal, MobiusSpace.s)
+                    .padding(.vertical, MobiusSpace.xxs)
+                    .background(palette.raised, in: Capsule())
+            }
+            separator
+            Text(
+                Date(timeIntervalSince1970: TimeInterval(message.createdAtMs) / 1_000),
+                style: .relative
+            )
+            .font(MobiusStyle.captionFont)
+            .foregroundStyle(palette.muted)
+            .monospacedDigit()
+            .lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .frame(minHeight: headerHeight)
+    }
+
+    private var separator: some View {
+        Text(verbatim: "\u{2022}")
+            .font(MobiusStyle.captionFont)
+            .foregroundStyle(palette.muted)
+            .accessibilityHidden(true)
     }
 }

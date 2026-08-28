@@ -591,7 +591,7 @@ private struct InspectorFileRow: View {
 
     var body: some View {
         HStack(spacing: MobiusSpace.m) {
-            MobiusIcon(name.fileGlyph, foreground: palette.accent)
+            MobiusIcon(name.fileGlyph, foreground: .primary)
             VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
                 Text(verbatim: name)
                     .font(MobiusStyle.metadataFont.weight(.semibold))

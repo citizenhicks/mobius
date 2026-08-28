@@ -28,6 +28,9 @@
 		20000000000000000000004B /* PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000037 /* PairingView.swift */; };
 		200000000000000000000034 /* ChatsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000026 /* ChatsView.swift */; };
 		200000000000000000000066 /* SwarmView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000047 /* SwarmView.swift */; };
+		200000000000000000000067 /* SwarmStats.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000048 /* SwarmStats.swift */; };
+		200000000000000000000069 /* MarkdownPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000049 /* MarkdownPreview.swift */; };
+		20000000000000000000006A /* MarkdownPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000049 /* MarkdownPreview.swift */; };
 		200000000000000000000003 /* FilesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000003 /* FilesView.swift */; };
 		200000000000000000000050 /* FilePreviewViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000003A /* FilePreviewViews.swift */; };
 		200000000000000000000004 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000004 /* ChatView.swift */; };
@@ -94,6 +97,7 @@
 		A20000000000000000000015 /* AppModelTurnTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000015 /* AppModelTurnTests.swift */; };
 		A20000000000000000000016 /* ChatTitleWriterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000016 /* ChatTitleWriterTests.swift */; };
 		A20000000000000000000017 /* FileTreeNodeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000017 /* FileTreeNodeTests.swift */; };
+		A20000000000000000000027 /* SwarmStatsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000027 /* SwarmStatsTests.swift */; };
 		A20000000000000000000018 /* TranscriptPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000018 /* TranscriptPresentationTests.swift */; };
 		A20000000000000000000019 /* TranscriptProjectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000019 /* TranscriptProjectionTests.swift */; };
 		200000000000000000000016 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000001 /* AppModel.swift */; };
@@ -102,6 +106,7 @@
 		B20000000000000000000005 /* MobiusCloudTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000003 /* MobiusCloudTests.swift */; };
 		D20000000000000000000002 /* MobiusCloudPurchases.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000001 /* MobiusCloudPurchases.swift */; };
 		20000000000000000000005F /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000040 /* AppState.swift */; };
+		200000000000000000000068 /* SwarmStats.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000048 /* SwarmStats.swift */; };
 		200000000000000000000052 /* TranscriptModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000003B /* TranscriptModel.swift */; };
 		200000000000000000000057 /* AppModelCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000003C /* AppModelCommands.swift */; };
 		200000000000000000000060 /* AppModelConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000041 /* AppModelConfiguration.swift */; };
@@ -173,6 +178,8 @@
 		100000000000000000000037 /* PairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingView.swift; sourceTree = "<group>"; };
 		100000000000000000000026 /* ChatsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatsView.swift; sourceTree = "<group>"; };
 		100000000000000000000047 /* SwarmView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwarmView.swift; sourceTree = "<group>"; };
+		100000000000000000000048 /* SwarmStats.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwarmStats.swift; sourceTree = "<group>"; };
+		100000000000000000000049 /* MarkdownPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownPreview.swift; sourceTree = "<group>"; };
 		100000000000000000000003 /* FilesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilesView.swift; sourceTree = "<group>"; };
 		10000000000000000000003A /* FilePreviewViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePreviewViews.swift; sourceTree = "<group>"; };
 		100000000000000000000004 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
@@ -231,6 +238,7 @@
 		A10000000000000000000015 /* AppModelTurnTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelTurnTests.swift; sourceTree = "<group>"; };
 		A10000000000000000000016 /* ChatTitleWriterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatTitleWriterTests.swift; sourceTree = "<group>"; };
 		A10000000000000000000017 /* FileTreeNodeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileTreeNodeTests.swift; sourceTree = "<group>"; };
+		A10000000000000000000027 /* SwarmStatsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwarmStatsTests.swift; sourceTree = "<group>"; };
 		A10000000000000000000018 /* TranscriptPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptPresentationTests.swift; sourceTree = "<group>"; };
 		A10000000000000000000019 /* TranscriptProjectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptProjectionTests.swift; sourceTree = "<group>"; };
 		B10000000000000000000003 /* MobiusCloudTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobiusCloudTests.swift; sourceTree = "<group>"; };
@@ -324,6 +332,8 @@
 				100000000000000000000037 /* PairingView.swift */,
 				100000000000000000000026 /* ChatsView.swift */,
 				100000000000000000000047 /* SwarmView.swift */,
+				100000000000000000000048 /* SwarmStats.swift */,
+				100000000000000000000049 /* MarkdownPreview.swift */,
 				100000000000000000000003 /* FilesView.swift */,
 				10000000000000000000003A /* FilePreviewViews.swift */,
 				100000000000000000000004 /* ChatView.swift */,
@@ -404,6 +414,7 @@
 				100000000000000000000017 /* ComposingOrbTests.swift */,
 				F10000000000000000000001 /* ComposerDictationTests.swift */,
 				A10000000000000000000017 /* FileTreeNodeTests.swift */,
+				A10000000000000000000027 /* SwarmStatsTests.swift */,
 				A10000000000000000000020 /* GatewayAgentEventWireTests.swift */,
 				A10000000000000000000021 /* GatewayClientWireTests.swift */,
 				A10000000000000000000022 /* GatewayConfigurationWireTests.swift */,
@@ -553,6 +564,8 @@
 				20000000000000000000004B /* PairingView.swift in Sources */,
 				200000000000000000000034 /* ChatsView.swift in Sources */,
 				200000000000000000000066 /* SwarmView.swift in Sources */,
+				200000000000000000000067 /* SwarmStats.swift in Sources */,
+				200000000000000000000069 /* MarkdownPreview.swift in Sources */,
 				200000000000000000000003 /* FilesView.swift in Sources */,
 				200000000000000000000050 /* FilePreviewViews.swift in Sources */,
 				200000000000000000000004 /* ChatView.swift in Sources */,
@@ -616,6 +629,7 @@
 				A20000000000000000000015 /* AppModelTurnTests.swift in Sources */,
 				A20000000000000000000016 /* ChatTitleWriterTests.swift in Sources */,
 				A20000000000000000000017 /* FileTreeNodeTests.swift in Sources */,
+				A20000000000000000000027 /* SwarmStatsTests.swift in Sources */,
 				A20000000000000000000018 /* TranscriptPresentationTests.swift in Sources */,
 				A20000000000000000000019 /* TranscriptProjectionTests.swift in Sources */,
 				200000000000000000000016 /* AppModel.swift in Sources */,
@@ -624,6 +638,8 @@
 				D20000000000000000000002 /* MobiusCloudPurchases.swift in Sources */,
 				B20000000000000000000005 /* MobiusCloudTests.swift in Sources */,
 				20000000000000000000005F /* AppState.swift in Sources */,
+				200000000000000000000068 /* SwarmStats.swift in Sources */,
+				20000000000000000000006A /* MarkdownPreview.swift in Sources */,
 				200000000000000000000052 /* TranscriptModel.swift in Sources */,
 				200000000000000000000057 /* AppModelCommands.swift in Sources */,
 				200000000000000000000060 /* AppModelConfiguration.swift in Sources */,

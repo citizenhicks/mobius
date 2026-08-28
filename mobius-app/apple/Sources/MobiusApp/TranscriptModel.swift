@@ -594,7 +594,6 @@ struct TranscriptProjection {
         _ rows: [TranscriptPresentationRow],
         turnID: String
     ) -> [TranscriptPresentationRow] {
-        guard !rows.contains(where: { $0.kind == .peer }) else { return rows }
         let terminalRows = rows.filter { row in
             row.records.contains(where: \.turnTerminal)
         }
@@ -602,12 +601,13 @@ struct TranscriptProjection {
               terminalRows.allSatisfy({ row in row.records.allSatisfy { !$0.pending } })
         else { return rows }
 
-        let primaryUserIndex = rows.firstIndex { row in
-            row.kind == .user && row.records.contains(where: \.startsTurn)
+        let primaryInputIndex = rows.firstIndex { row in
+            (row.kind == .user || row.kind == .peer)
+                && row.records.contains(where: \.startsTurn)
         }
         let workRows: [TranscriptPresentationRow] = rows.enumerated().compactMap {
             index, row -> TranscriptPresentationRow? in
-            guard index != primaryUserIndex,
+            guard index != primaryInputIndex,
                   !terminalRows.contains(where: { $0.id == row.id })
             else { return nil }
             return row
@@ -629,7 +629,7 @@ struct TranscriptProjection {
                 }
             }()
         var result: [TranscriptPresentationRow] = []
-        if let primaryUserIndex { result.append(rows[primaryUserIndex]) }
+        if let primaryInputIndex { result.append(rows[primaryInputIndex]) }
         result.append(TranscriptPresentationRow(
             id: "turn-work:\(turnID.utf8.count):\(turnID)",
             records: records,

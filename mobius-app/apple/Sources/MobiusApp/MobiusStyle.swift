@@ -226,6 +226,7 @@ struct MobiusGlyph: Hashable {
     static let sparkle = Self("hi.sparkle")
     static let squaresFour = Self("hi.squaresFour")
     static let stopFill = Self("hi.stopFill")
+    static let swarm = Self("hi.swarm")
     static let terminalWindow = Self("hi.terminalWindow")
     static let text = Self("hi.text")
     static let trash = Self("hi.trash")

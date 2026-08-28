@@ -91,8 +91,6 @@ extension AppModel {
     ) -> Bool {
         switch type {
         case "user_message":
-            let startsTurn = turnID != nil && awaitingInitialUserTurnID == turnID
-            if startsTurn { awaitingInitialUserTurnID = nil }
             let attachments = event.msg["attachments"]?.arrayValue?.compactMap {
                 try? SessionFileReference(json: $0)
             } ?? []
@@ -101,7 +99,7 @@ extension AppModel {
                 kind: .user,
                 id: "event:\(record.sequence):user",
                 turnID: turnID,
-                startsTurn: startsTurn,
+                startsTurn: consumeInitialTurnMarker(turnID),
                 sourceSequence: record.sequence,
                 recordedAtMs: record.recordedAtMs,
                 messageTarget: messageTarget(from: event.msg),
@@ -109,7 +107,12 @@ extension AppModel {
             )
             return true
         case "peer_message":
-            appendPeerMessage(event.msg, record: record)
+            appendPeerMessage(
+                event.msg,
+                record: record,
+                turnID: turnID,
+                startsTurn: consumeInitialTurnMarker(turnID)
+            )
             return true
         case "agent_message_content_delta":
             let phase = event.msg["phase"]?.stringValue
@@ -173,6 +176,12 @@ extension AppModel {
         default:
             return false
         }
+    }
+
+    private func consumeInitialTurnMarker(_ turnID: String?) -> Bool {
+        guard turnID != nil, awaitingInitialUserTurnID == turnID else { return false }
+        awaitingInitialUserTurnID = nil
+        return true
     }
 
     private func handleTurnEvent(
@@ -599,15 +608,28 @@ extension AppModel {
         }
     }
 
-    func appendPeerMessage(_ event: JSONValue, record: RecordedEvent) {
+    func appendPeerMessage(
+        _ event: JSONValue,
+        record: RecordedEvent,
+        turnID: String?,
+        startsTurn: Bool
+    ) {
         mutateTranscriptPreservingPrefix { entries in
-            appendPeerMessage(event, record: record, to: &entries)
+            appendPeerMessage(
+                event,
+                record: record,
+                turnID: turnID,
+                startsTurn: startsTurn,
+                to: &entries
+            )
         }
     }
 
     func appendPeerMessage(
         _ event: JSONValue,
         record: RecordedEvent,
+        turnID: String?,
+        startsTurn: Bool,
         to entries: inout [TranscriptEntry]
     ) {
         guard let messageID = event["messageId"]?.stringValue,
@@ -625,6 +647,8 @@ extension AppModel {
             format: "plain_text",
             tone: "info",
             pending: false,
+            turnID: turnID,
+            startsTurn: startsTurn,
             sourceSequence: record.sequence,
             recordedAtMs: record.recordedAtMs
         ))
