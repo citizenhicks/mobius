@@ -13,6 +13,7 @@ struct CollapsibleText: View {
     @State private var isExpanded = false
     @State private var isTruncated = false
     @State private var hasMeasured = false
+    @State private var measuredWidth: CGFloat?
     let text: String
     var rendersMarkdown = false
     var streaming = false
@@ -38,6 +39,18 @@ struct CollapsibleText: View {
         }
         .onChange(of: text) { _, _ in
             guard !isExpanded else { return }
+            hasMeasured = false
+            isTruncated = false
+        }
+        // Truncation is a function of the width the text was laid out in, so a measurement
+        // taken at one width cannot be trusted at another. A lazy stack lays its rows out
+        // before the final width settles, which otherwise latches "Read more" onto every
+        // row and leaves it there, expanding to reveal nothing.
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.width
+        } action: { width in
+            guard !isExpanded, width != measuredWidth else { return }
+            measuredWidth = width
             hasMeasured = false
             isTruncated = false
         }

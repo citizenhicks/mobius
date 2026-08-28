@@ -285,21 +285,22 @@ private struct SwarmMessageRow: View {
     /// The board's spine. The author mark is the node, so the header row still reads
     /// icon-then-name while the line carries the eye from one post to the next.
     private var rail: some View {
-        ZStack(alignment: .top) {
-            if !isLast {
-                Rectangle()
-                    .fill(palette.line)
-                    .frame(width: 1)
-                    .frame(maxHeight: .infinity)
-            }
+        // Stacked rather than overlaid: the line starts where the author mark ends, so no
+        // stub of it shows above the node.
+        VStack(spacing: 0) {
             MobiusIcon(
                 .userFocus,
                 size: MobiusStyle.glyphInline,
                 foreground: .primary,
                 gutter: false
             )
-            .background(palette.panel, in: Circle())
             .frame(height: headerHeight)
+            if !isLast {
+                Rectangle()
+                    .fill(palette.line)
+                    .frame(width: 1)
+                    .frame(maxHeight: .infinity)
+            }
         }
         .frame(width: MobiusStyle.glyphInline)
         .accessibilityHidden(true)
