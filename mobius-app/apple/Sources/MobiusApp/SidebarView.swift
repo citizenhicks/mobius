@@ -209,8 +209,8 @@ struct SidebarView: View {
                     }
                     .buttonStyle(.mobiusPlain)
                     .accessibilityLabel("Gateway connection")
-                    .accessibilityValue(model.connectionState.label)
-                    .help("Gateway: \(model.connectionState.label)")
+                    .accessibilityValue(Text(model.connectionState.label))
+                    .help(Text("Gateway: \(model.connectionState.label)"))
                     .popover(isPresented: $showsConnectionDetails) { connectionDetails }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -308,7 +308,10 @@ struct SidebarView: View {
         .presentationCompactAdaptation(.popover)
     }
 
-    private func navigationButton(_ title: String, destination: AppDestination) -> some View {
+    private func navigationButton(
+        _ title: LocalizedStringResource,
+        destination: AppDestination
+    ) -> some View {
         Button {
             showDetail(destination)
         } label: {
@@ -336,7 +339,7 @@ struct SidebarView: View {
             showDetail(destination)
         } label: {
             MobiusLabel(
-                title: widget.widget.text,
+                verbatim: widget.widget.text,
                 glyph: widget.glyph,
                 iconColor: model.destination == destination ? palette.accent : Color.primary
             )

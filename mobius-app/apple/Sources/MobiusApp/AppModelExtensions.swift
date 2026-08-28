@@ -62,8 +62,9 @@ extension AppModel {
                     break
                 }
             }
-            extensionCatalogError = (error as? MobiusCloudError)?.localizedDescription
-                ?? "The extension catalog is temporarily unavailable."
+            extensionCatalogError = (error as? MobiusCloudError).map {
+                localizedString($0.localizedDescriptionResource)
+            } ?? localizedString("The extension catalog is temporarily unavailable.")
         }
     }
 
@@ -131,7 +132,7 @@ extension AppModel {
 
     private func extensionCompletionOutcome(
         _ action: ExtensionAction
-    ) -> (message: String, tone: ToastTone) {
+    ) -> (message: LocalizedStringResource, tone: ToastTone) {
         switch action {
         case .installing:
             return ("Extension installed.", .success)

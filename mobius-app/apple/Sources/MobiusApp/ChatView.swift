@@ -70,7 +70,7 @@ struct ChatView: View {
             // owns rather than the system's opaque navigation title.
             ToolbarItem(placement: .principal) {
                 VStack(spacing: MobiusSpace.xxs) {
-                    MobiusTitleText(title: chatTitle)
+                    MobiusTitleText(verbatim: chatTitle)
                         .font(MobiusStyle.titleFont)
                         .lineLimit(1)
                     if !chatSubtitle.isEmpty {
@@ -152,7 +152,7 @@ private struct ChatOptionsMenu: View {
                                 model.switchGitBranch(to: branch)
                             } label: {
                                 MobiusLabel(
-                                    title: branch,
+                                    verbatim: branch,
                                     glyph: branch == git.currentBranch ? .check : .gitBranch
                                 )
                             }
@@ -160,7 +160,7 @@ private struct ChatOptionsMenu: View {
                         }
                     } label: {
                         MobiusLabel(
-                            title: git.currentBranch,
+                            verbatim: git.currentBranch,
                             glyph: .gitBranch
                         )
                     }
@@ -197,7 +197,7 @@ private struct ChatOptionsMenu: View {
                         activate(widget)
                     } label: {
                         MobiusLabel(
-                            title: widget.widget.text,
+                            title: frontendPresentationText(widget.widget.text),
                             glyph: widget.glyph
                         )
                     }

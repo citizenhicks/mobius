@@ -39,7 +39,7 @@ final class ComposerDictation {
     private var transcripts: [ComposerDictationTranscript] = []
     private var selectedTranscriptIndex = 0
     @ObservationIgnored private var updateText: ((String) -> Void)?
-    @ObservationIgnored private var reportError: ((String) -> Void)?
+    @ObservationIgnored private var reportError: ((ComposerDictationError) -> Void)?
 
     var isActive: Bool { state != .idle }
     var isRecording: Bool { state == .recording }
@@ -57,7 +57,7 @@ final class ComposerDictation {
     func start(
         existingText: String,
         updateText: @escaping (String) -> Void,
-        reportError: @escaping (String) -> Void
+        reportError: @escaping (ComposerDictationError) -> Void
     ) async throws {
         guard state == .idle else { return }
         state = .preparing
@@ -251,7 +251,7 @@ final class ComposerDictation {
         let wasPreparing = state == .preparing
         await cancel()
         if !wasPreparing {
-            reportError?(failure.localizedDescription)
+            reportError?(failure)
         }
     }
 
@@ -403,14 +403,14 @@ private extension AttributedString {
     }
 }
 
-private enum ComposerDictationError: LocalizedError {
+enum ComposerDictationError: LocalizedError {
     case microphoneDenied
     case unsupportedLanguage
     case audioUnavailable
     case conversionFailed
     case transcriptionFailed
 
-    var errorDescription: String? {
+    var localizedDescriptionResource: LocalizedStringResource {
         switch self {
         case .microphoneDenied:
             "Microphone access is required to dictate a message."
@@ -424,6 +424,8 @@ private enum ComposerDictationError: LocalizedError {
             "Dictation stopped unexpectedly. Please try again."
         }
     }
+
+    var errorDescription: String? { String(localized: localizedDescriptionResource) }
 }
 
 private final class ComposerAudioBufferConverter {

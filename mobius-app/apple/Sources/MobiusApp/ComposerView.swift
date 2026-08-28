@@ -315,7 +315,7 @@ private struct ComposerSizeButton: View {
     let action: () -> Void
 
     var body: some View {
-        let title = expanded ? "Collapse composer" : "Expand composer"
+        let title: LocalizedStringResource = expanded ? "Collapse composer" : "Expand composer"
         Button(action: action) {
             MobiusLabel(
                 title: title,
@@ -325,7 +325,7 @@ private struct ComposerSizeButton: View {
         }
         .labelStyle(.iconOnly)
         .buttonStyle(MobiusIconButtonStyle(bare: true))
-        .help(title)
+        .help(Text(title))
     }
 }
 
@@ -353,16 +353,16 @@ private struct ReferenceSuggestionsPopup: View {
                 ForEach(suggestions.matches) { mounted in
                     Button { select(mounted) } label: {
                         HStack(spacing: MobiusSpace.m) {
-                            Text(String(mounted.reference.trigger))
+                            Text(verbatim: String(mounted.reference.trigger))
                                 .font(MobiusStyle.controlFont.monospaced().weight(.semibold))
                                 .foregroundStyle(palette.accent)
                                 .frame(width: 18, alignment: .center)
                             VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
-                                Text(mounted.reference.value)
+                                Text(verbatim: mounted.reference.value)
                                     .font(MobiusStyle.controlFont)
                                     .lineLimit(1)
                                     .truncationMode(.middle)
-                                Text(mounted.reference.description)
+                                Text(verbatim: mounted.reference.description)
                                     .font(MobiusStyle.metadataFont)
                                     .foregroundStyle(palette.muted)
                                     .lineLimit(1)
@@ -455,7 +455,7 @@ private struct SessionStatsBadge: View {
                 let elapsed = model.sessionElapsed(at: timeline.date)
                 Button { showsDetail = true } label: {
                     MobiusBadge(
-                        text: "\(model.contextFillPercent)% · \(formatDuration(elapsed))",
+                        verbatim: "\(model.contextFillPercent)% · \(formatDuration(elapsed))",
                         progress: model.contextFillFraction,
                         interactive: true
                     )
@@ -472,10 +472,10 @@ private struct SessionStatsBadge: View {
                 )
                 .sensoryFeedback(.selection, trigger: showsDetail)
                 .popover(isPresented: $showsDetail, arrowEdge: .bottom) {
-                    BadgePopover(title: "Session") {
+                    BadgePopover(localizedTitle: "Session") {
                         BadgeStat(
                             label: "Context",
-                            value: "\(model.contextFillPercent)% used · \(model.contextTokens.formatted()) / \(model.contextLimitTokens?.formatted() ?? "—")"
+                            value: "\(model.contextFillPercent)% · \(model.contextTokens.formatted()) / \(model.contextLimitTokens?.formatted() ?? "—")"
                         )
                         BadgeStat(
                             label: "Compactions",
@@ -505,12 +505,22 @@ private struct SessionStatsBadge: View {
 }
 
 struct BadgePopover<Content: View>: View {
-    let title: String
+    let title: MobiusText
     @ViewBuilder let content: Content
+
+    init(title: String, @ViewBuilder content: () -> Content) {
+        self.title = .verbatim(title)
+        self.content = content()
+    }
+
+    init(localizedTitle title: LocalizedStringResource, @ViewBuilder content: () -> Content) {
+        self.title = .localized(title)
+        self.content = content()
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: MobiusSpace.m) {
-            Text(title)
+            title.text
                 .font(MobiusStyle.controlFont.weight(.semibold))
             // A full list (every subagent, every file) would otherwise grow the popover
             // past the screen with no way to reach the bottom.
@@ -526,7 +536,7 @@ struct BadgePopover<Content: View>: View {
 
 private struct BadgeStat: View {
     @Environment(\.mobiusPalette) private var palette
-    let label: String
+    let label: LocalizedStringResource
     let value: String
 
     var body: some View {
@@ -535,7 +545,7 @@ private struct BadgeStat: View {
                 .font(MobiusStyle.metadataFont)
                 .foregroundStyle(palette.muted)
             Spacer(minLength: MobiusSpace.s)
-            Text(value)
+            Text(verbatim: value)
                 .font(MobiusStyle.bodyFont.monospacedDigit())
         }
         .accessibilityElement(children: .combine)
@@ -620,7 +630,7 @@ private struct ComposerAttachmentRow: View {
         case .queued: Text("Waiting to upload")
         case .uploading: Text("Uploading")
         case .uploaded: Text(attachment.size, format: .byteCount(style: .file))
-        case .failed(let message): Text(message)
+        case .failed(let message): Text(verbatim: message)
         }
     }
 
@@ -649,13 +659,15 @@ private struct ApprovalView: View {
             )
                 .font(MobiusStyle.titleFont)
                 .foregroundStyle(palette.warning)
-            Text(approval.reason).font(MobiusStyle.bodyFont)
+            Text(verbatim: approval.reason).font(MobiusStyle.bodyFont)
             ScrollView([.horizontal, .vertical]) {
                 LazyVStack(alignment: .leading, spacing: MobiusSpace.s) {
                     ForEach(approval.calls) { call in
                         VStack(alignment: .leading, spacing: MobiusSpace.xs) {
-                            Text(call.name).font(MobiusStyle.metadataFont.weight(.bold))
-                            Text(call.arguments).font(MobiusStyle.metadataFont).textSelection(.enabled)
+                            Text(verbatim: call.name).font(MobiusStyle.metadataFont.weight(.bold))
+                            Text(verbatim: call.arguments)
+                                .font(MobiusStyle.metadataFont)
+                                .textSelection(.enabled)
                         }
                         .padding(MobiusSpace.m)
                         .background(palette.raised, in: MobiusStyle.controlShape)

@@ -8,6 +8,7 @@ enum AgentSettingsScope: Equatable {
 struct AgentSettingsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
+    @Environment(\.locale) private var locale
     @State private var editingCapability: MiddlewareFeature?
     let scope: AgentSettingsScope
 
@@ -91,15 +92,15 @@ struct AgentSettingsView: View {
             }
             Section(modelSectionTitle) {
                 SettingsLoadingRows(label: "Loading model") {
-                    LabeledContent("Model", value: "Provider · model")
+                    LabeledContent("Model") { Text("Provider · model") }
                     Text("Maximum model steps: 500")
                 }
             }
             Section("Capabilities") {
                 SettingsLoadingRows(label: "Loading capabilities") {
-                    ForEach(["Web search", "File edits", "Shell commands"], id: \.self) { name in
-                        SettingsRowLabel(title: name, detail: "Tools this agent may call.")
-                    }
+                    SettingsRowLabel(title: "Web search", detail: "Tools this agent may call.")
+                    SettingsRowLabel(title: "File edits", detail: "Tools this agent may call.")
+                    SettingsRowLabel(title: "Shell commands", detail: "Tools this agent may call.")
                 }
             }
         }
@@ -107,21 +108,21 @@ struct AgentSettingsView: View {
 
     private var agentStatusAccessory: some View {
         SettingsStatusAccessory(
-            subject: "Agent",
+            subject: .localized("Agent"),
             hasChanges: hasChanges,
             isSaving: model.isApplyingConfiguration,
             saveDisabled: model.isApplyingConfiguration,
-            statusLabel: agentStatusLabel,
+            statusLabel: .localized(agentStatusLabel),
             statusDetail: agentStatusDetail,
             statusColor: agentStatusColor,
-            saveLabel: applyTitle,
-            secondaryActionLabel: reloadActionLabel,
+            saveLabel: .localized(applyTitle),
+            secondaryActionLabel: reloadActionLabel.map { .localized($0) },
             secondaryAction: reloadAction,
             save: applyConfiguration
         )
     }
 
-    private var applyTitle: String {
+    private var applyTitle: LocalizedStringResource {
         switch scope {
         case .currentChat: "Apply to this chat"
         case .gatewayDefault: "Save as gateway default"
@@ -135,7 +136,7 @@ struct AgentSettingsView: View {
         }
     }
 
-    private var agentStatusLabel: String {
+    private var agentStatusLabel: LocalizedStringResource {
         guard draft != nil else { return "Unavailable" }
         return switch applyState {
         case .idle, .applied:
@@ -163,22 +164,23 @@ struct AgentSettingsView: View {
         }
     }
 
-    private var agentStatusDetail: String {
-        guard draft != nil else { return unavailableDetail }
+    private var agentStatusDetail: MobiusText {
+        guard draft != nil else { return .localized(unavailableDetail) }
         return switch applyState {
         case .idle, .applied:
-            hasChanges ? unsavedStatusDetail : savedStatusDetail
+            .localized(hasChanges ? unsavedStatusDetail : savedStatusDetail)
         case .applying:
-            "The gateway is validating this revision."
+            .localized("The gateway is validating this revision.")
         case .restarting:
-            "The gateway accepted the configuration and is reopening the session."
+            .localized("The gateway accepted the configuration and is reopening the session.")
         case .busy(let message), .conflict(let message), .invalid(let message), .failed(let message):
-            message
+            .verbatim(message)
         }
     }
 
     @ViewBuilder
     private func capabilityRow(_ feature: MiddlewareFeature) -> some View {
+        let summary = capabilitySummary(feature)
         if capabilityHasDetails(feature) {
             HStack(spacing: MobiusSpace.s) {
                 Button {
@@ -186,8 +188,8 @@ struct AgentSettingsView: View {
                 } label: {
                     HStack(spacing: MobiusSpace.s) {
                         SettingsRowLabel(
-                            title: feature.label,
-                            detail: capabilitySummary(feature)
+                            title: .verbatim(feature.label),
+                            detail: summary
                         )
                         MobiusIcon(
                             .caretRight,
@@ -200,20 +202,24 @@ struct AgentSettingsView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("\(feature.label) settings")
-                .accessibilityValue(capabilitySummary(feature))
+                .accessibilityValue(summary.text)
                 .accessibilityHint("\(feature.description). Opens settings")
                 .help("Edit \(feature.label) settings")
 
-                Toggle(feature.label, isOn: middleware(feature))
+                Toggle(isOn: middleware(feature)) {
+                    Text(verbatim: feature.label)
+                }
                     .labelsHidden()
                     .disabled(feature.required)
-                    .accessibilityHint(feature.description)
+                    .accessibilityHint(Text(verbatim: feature.description))
             }
         } else {
-            Toggle(feature.label, isOn: middleware(feature))
+            Toggle(isOn: middleware(feature)) {
+                Text(verbatim: feature.label)
+            }
                 .disabled(feature.required)
-                .accessibilityHint(feature.description)
-                .help(feature.description)
+                .accessibilityHint(Text(verbatim: feature.description))
+                .help(Text(verbatim: feature.description))
         }
     }
 
@@ -224,7 +230,7 @@ struct AgentSettingsView: View {
                     Toggle("Enabled", isOn: middleware(feature))
                         .disabled(feature.required)
                 } footer: {
-                    Text(feature.description)
+                    Text(verbatim: feature.description)
                 }
 
                 if !feature.settings.isEmpty {
@@ -244,7 +250,7 @@ struct AgentSettingsView: View {
                     }
                 }
             }
-            .navigationTitle(feature.label)
+            .navigationTitle(Text(verbatim: feature.label))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -259,21 +265,21 @@ struct AgentSettingsView: View {
         !feature.settings.isEmpty || !extensions(for: feature).isEmpty
     }
 
-    private func capabilitySummary(_ feature: MiddlewareFeature) -> String {
+    private func capabilitySummary(_ feature: MiddlewareFeature) -> MobiusText {
         let settings = feature.settings.map { settingSummary(feature, $0) }
         let availableExtensions = extensions(for: feature)
-        guard !availableExtensions.isEmpty else { return settings.joined(separator: " · ") }
+        guard !availableExtensions.isEmpty else { return joined(settings) }
         let active = availableExtensions.filter { draft?.extensions.contains($0.id) == true }
-        let extensionSummary = active.isEmpty
-            ? "No extensions active"
-            : active.map(\.name).joined(separator: ", ")
-        return (settings + [extensionSummary]).joined(separator: " · ")
+        let extensionSummary: MobiusText = active.isEmpty
+            ? .localized("No extensions active")
+            : .verbatim(active.map(\.name).joined(separator: ", "))
+        return joined(settings + [extensionSummary])
     }
 
     private func settingSummary(
         _ feature: MiddlewareFeature,
         _ setting: FrontendSetting
-    ) -> String {
+    ) -> MobiusText {
         switch setting.kind {
         case .integer(let minimum, let maximum, _):
             let value = integerSetting(
@@ -282,19 +288,25 @@ struct AgentSettingsView: View {
                 minimum: minimum,
                 maximum: maximum
             ).wrappedValue
-            return "\(setting.label): \(value.formatted())"
+            return .localized("\(setting.label): \(value.formatted())")
         case .select(let options, let unsetLabel):
             guard let selected = selectSetting(feature, setting).wrappedValue else {
-                return unsetLabel ?? "Not set"
+                return unsetLabel.map(MobiusText.verbatim) ?? .localized("Not set")
             }
             if let choice = model.modelChoices.first(where: { $0.route == selected }) {
-                return model.modelLabel(for: choice)
+                return .verbatim(model.modelLabel(for: choice))
             }
-            return options.first { $0.value == selected }?.label ?? selected
+            return .verbatim(options.first { $0.value == selected }?.label ?? selected)
         }
     }
 
-    private var reloadActionLabel: String? {
+    private func joined(_ values: [MobiusText]) -> MobiusText {
+        guard let first = values.first else { return .verbatim("") }
+        guard values.count > 1 else { return first }
+        return .verbatim(values.map { $0.resolved(locale: locale) }.joined(separator: " · "))
+    }
+
+    private var reloadActionLabel: LocalizedStringResource? {
         if case .conflict = applyState { "Reload" } else { nil }
     }
 
@@ -314,8 +326,8 @@ struct AgentSettingsView: View {
         let selection = extensionSelection(extensionRecord)
         return HStack(spacing: MobiusSpace.xs) {
             VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
-                Text(extensionRecord.name)
-                Text(extensionMetadata(extensionRecord))
+                Text(verbatim: extensionRecord.name)
+                extensionMetadata(extensionRecord).text
                     .font(MobiusStyle.captionFont)
                     .foregroundStyle(
                         extensionRecord.hooksTrusted ? palette.muted : palette.warning
@@ -324,12 +336,14 @@ struct AgentSettingsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityHidden(true)
             SettingsInfoButton(
-                title: extensionRecord.name,
+                title: .verbatim(extensionRecord.name),
                 detail: extensionDetail(extensionRecord)
             )
-            Toggle(extensionRecord.name, isOn: selection)
+            Toggle(isOn: selection) {
+                Text(verbatim: extensionRecord.name)
+            }
                 .labelsHidden()
-                .accessibilityHint(extensionMetadata(extensionRecord))
+                .accessibilityHint(extensionMetadata(extensionRecord).text)
                 .disabled(!middlewareEnabled(feature) && !selection.wrappedValue)
         }
     }
@@ -346,19 +360,27 @@ struct AgentSettingsView: View {
         )
     }
 
-    private func extensionMetadata(_ extensionRecord: ExtensionRecord) -> String {
-        var metadata = [extensionRecord.kind == .plugin ? "Plugin" : "Skill"]
-        if let version = extensionRecord.version { metadata.append(version) }
-        if !extensionRecord.hooks.isEmpty && !extensionRecord.hooksTrusted {
-            metadata.append("Hooks disabled until trusted")
+    private func extensionMetadata(_ extensionRecord: ExtensionRecord) -> MobiusText {
+        let hooksDisabled = !extensionRecord.hooks.isEmpty && !extensionRecord.hooksTrusted
+        return switch (extensionRecord.kind, extensionRecord.version, hooksDisabled) {
+        case (.plugin, .some(let version), true):
+            .localized("Plugin · \(version) · Hooks disabled until trusted")
+        case (.plugin, .some(let version), false): .localized("Plugin · \(version)")
+        case (.plugin, .none, true): .localized("Plugin · Hooks disabled until trusted")
+        case (.plugin, .none, false): .localized("Plugin")
+        case (.skill, .some(let version), true):
+            .localized("Skill · \(version) · Hooks disabled until trusted")
+        case (.skill, .some(let version), false): .localized("Skill · \(version)")
+        case (.skill, .none, true): .localized("Skill · Hooks disabled until trusted")
+        case (.skill, .none, false): .localized("Skill")
         }
-        return metadata.joined(separator: " · ")
     }
 
-    private func extensionDetail(_ extensionRecord: ExtensionRecord) -> String {
-        guard !extensionRecord.hooksTrusted else { return extensionRecord.description }
-        return extensionRecord.description
-            + " Its skills can be active now; executable hooks remain disabled until trusted on the Extensions page."
+    private func extensionDetail(_ extensionRecord: ExtensionRecord) -> MobiusText {
+        guard !extensionRecord.hooksTrusted else {
+            return .verbatim(extensionRecord.description)
+        }
+        return .localized("\(extensionRecord.description) Its skills can be active now; executable hooks remain disabled until trusted on the Extensions page.")
     }
 
     @ViewBuilder
@@ -391,7 +413,10 @@ struct AgentSettingsView: View {
                     }
                     .disabled(!middlewareEnabled(feature))
                 }
-                SettingsInfoButton(title: setting.label, detail: setting.description)
+                SettingsInfoButton(
+                    title: .verbatim(setting.label),
+                    detail: .verbatim(setting.description)
+                )
             }
             .sensoryFeedback(.selection, trigger: value.wrappedValue)
         case .select(let options, let unsetLabel)
@@ -401,7 +426,7 @@ struct AgentSettingsView: View {
             // The gateway advertises reviewer and subagent models as plain selects over
             // routes. They are model choices like any other, so they get the same split.
             ModelRoutePicker(
-                label: setting.label,
+                verbatimLabel: setting.label,
                 detail: setting.description,
                 choices: options.compactMap { option in
                     model.modelChoices.first { $0.route == option.value }
@@ -415,23 +440,23 @@ struct AgentSettingsView: View {
             let selectedDescription = selection.wrappedValue.flatMap { selected in
                 options.first { $0.value == selected }?.description
             }
-            let selectedLabel = selection.wrappedValue.flatMap { selected in
-                options.first { $0.value == selected }?.label ?? selected
-            } ?? unsetLabel ?? "Select"
+            let selectedLabel: MobiusText = selection.wrappedValue.map { selected in
+                .verbatim(options.first { $0.value == selected }?.label ?? selected)
+            } ?? unsetLabel.map(MobiusText.verbatim) ?? .localized("Select")
             LabeledContent {
                 Menu {
-                    Picker(setting.label, selection: selection) {
+                    Picker(selection: selection) {
                         if let unsetLabel {
-                            Text(unsetLabel).tag(String?.none)
+                            Text(verbatim: unsetLabel).tag(String?.none)
                         }
                         ForEach(options) { option in
-                            Text(option.label).tag(Optional(option.value))
+                            Text(verbatim: option.label).tag(Optional(option.value))
                         }
-                    }
+                    } label: { Text(verbatim: setting.label) }
                     .labelsHidden()
                 } label: {
                     HStack(spacing: MobiusSpace.xs) {
-                        Text(selectedLabel)
+                        selectedLabel.text
                         MobiusIcon(.caretUpDown, size: MobiusStyle.glyphMark, gutter: false)
                             .accessibilityHidden(true)
                     }
@@ -440,14 +465,14 @@ struct AgentSettingsView: View {
                 .menuIndicator(.hidden)
                 .buttonStyle(.mobiusPlain)
                 .disabled(!middlewareEnabled(feature))
-                .accessibilityLabel(setting.label)
-                .accessibilityValue(selectedLabel)
+                .accessibilityLabel(Text(verbatim: setting.label))
+                .accessibilityValue(selectedLabel.text)
             } label: {
                 HStack(spacing: MobiusSpace.xs) {
-                    Text(setting.label)
+                    Text(verbatim: setting.label)
                     SettingsInfoButton(
-                        title: setting.label,
-                        detail: selectedDescription ?? setting.description
+                        title: .verbatim(setting.label),
+                        detail: .verbatim(selectedDescription ?? setting.description)
                     )
                 }
             }
@@ -593,11 +618,11 @@ struct AgentSettingsView: View {
         }
     }
 
-    private var pageTitle: String {
+    private var pageTitle: LocalizedStringResource {
         scope == .gatewayDefault ? "Default agent" : "Chat agent"
     }
 
-    private var pageDetail: String {
+    private var pageDetail: LocalizedStringResource {
         switch scope {
         case .gatewayDefault:
             "The prompt, model, and capabilities new chats start from."
@@ -606,11 +631,11 @@ struct AgentSettingsView: View {
         }
     }
 
-    private var modelSectionTitle: String {
+    private var modelSectionTitle: LocalizedStringResource {
         scope == .gatewayDefault ? "Default AI model" : "Chat AI model"
     }
 
-    private var modelSectionDetail: String {
+    private var modelSectionDetail: LocalizedStringResource {
         switch scope {
         case .gatewayDefault:
             "Sets the provider, model, and reasoning inherited by new chats."
@@ -619,23 +644,23 @@ struct AgentSettingsView: View {
         }
     }
 
-    private var unavailableTitle: String {
+    private var unavailableTitle: LocalizedStringResource {
         scope == .gatewayDefault ? "Default agent unavailable" : "Chat agent unavailable"
     }
 
-    private var unavailableDetail: String {
+    private var unavailableDetail: LocalizedStringResource {
         guard model.connectionState.isReady else { return "Connect to a gateway first." }
         if scope == .currentChat, model.selectedSessionID == nil { return "Open a chat first." }
         return "Configure a provider first."
     }
 
-    private var unsavedStatusDetail: String {
+    private var unsavedStatusDetail: LocalizedStringResource {
         scope == .gatewayDefault
             ? "Save this draft as the gateway default for new chats."
             : "Apply this draft to the current chat."
     }
 
-    private var savedStatusDetail: String {
+    private var savedStatusDetail: LocalizedStringResource {
         scope == .gatewayDefault
             ? "The draft matches the gateway default."
             : "The draft matches this chat's saved agent configuration."

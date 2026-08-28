@@ -607,17 +607,24 @@ extension GatewayStore {
         case missingToken
         case keychain(OSStatus)
 
-        var errorDescription: String? {
+        var localizedDescriptionResource: LocalizedStringResource? {
             switch self {
             case .invalidDisplayName: "Use a gateway name between 1 and 128 characters."
             case .missingAccount: "This gateway is no longer saved."
             case .invalidToken: "The gateway token is invalid."
             case .invalidEditRecovery: "The queued message edit is too large to save safely."
             case .missingToken: "This gateway needs to be paired again."
-            case .keychain(let status):
-                SecCopyErrorMessageString(status, nil) as String?
-                    ?? "Keychain operation failed (\(status))."
+            case .keychain: nil
             }
+        }
+
+        var errorDescription: String? {
+            if let localizedDescriptionResource {
+                return String(localized: localizedDescriptionResource)
+            }
+            guard case .keychain(let status) = self else { return nil }
+            return SecCopyErrorMessageString(status, nil) as String?
+                ?? String(localized: "Keychain operation failed (\(status)).")
         }
     }
 }

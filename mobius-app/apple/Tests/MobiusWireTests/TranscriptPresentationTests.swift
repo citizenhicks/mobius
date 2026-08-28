@@ -141,7 +141,7 @@ final class TranscriptWaitingNoteTests: XCTestCase {
     }
 
     func testRotationStaysInRangeAndAdvancesOnSchedule() {
-        let order = ["first", "second", "third"]
+        let order: [LocalizedStringResource] = ["first", "second", "third"]
         let first = TranscriptWaitingNote.message(in: order, elapsed: 0)
 
         // Holds for the rotation window, then moves on.
@@ -225,13 +225,13 @@ final class TranscriptEventLineTests: XCTestCase {
         ]
 
         XCTAssertEqual(
-            TranscriptEntry.summary(for: entries),
+            resolvedSummary(for: entries),
             "2 tool calls • 1 web search • 1 event • 1 error"
         )
-        XCTAssertEqual(TranscriptEntry.summary(for: [entries[0]]), "1 tool call")
+        XCTAssertEqual(resolvedSummary(for: [entries[0]]), "1 tool call")
         // "search" takes -es, which a bare +"s" would get wrong.
         XCTAssertEqual(
-            TranscriptEntry.summary(for: [entries[3], entries[3]]),
+            resolvedSummary(for: [entries[3], entries[3]]),
             "2 web searches"
         )
     }
@@ -306,7 +306,7 @@ final class TranscriptEventLineTests: XCTestCase {
             ]
         )
         XCTAssertEqual(
-            TranscriptEntry.summary(for: [thinking, tool, approval, artifact, notice]),
+            resolvedSummary(for: [thinking, tool, approval, artifact, notice]),
             "1 thought • 1 tool call • 1 approval • 1 artifact • 1 event"
         )
     }
@@ -319,6 +319,12 @@ final class TranscriptEventLineTests: XCTestCase {
             capability: "web_search",
             role: .tool
         ).isWebSearch)
+    }
+
+    private func resolvedSummary(for entries: [TranscriptEntry]) -> String {
+        var resource = TranscriptEntry.summary(for: entries)
+        resource.locale = Locale(identifier: "en")
+        return String(localized: resource)
     }
 }
 

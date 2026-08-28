@@ -1,5 +1,9 @@
 import Foundation
 
+func frontendPresentationText(_ value: String) -> LocalizedStringResource {
+    LocalizedStringResource(String.LocalizationValue(value))
+}
+
 struct FrontendContribution: Decodable, Sendable {
     let capability: String
     let acceptsFileAttachments: Bool

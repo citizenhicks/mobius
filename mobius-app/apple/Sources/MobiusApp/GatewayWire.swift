@@ -7,7 +7,7 @@ let maximumComposerBytes = 1024 * 1024
 let maximumWireSessionFileReferences = 16
 
 enum GatewayWireError: LocalizedError, Equatable {
-    case invalidEndpoint(String)
+    case invalidEndpoint(LocalizedStringResource)
     case invalidPairingSetup
     case insecureRemoteEndpoint
     case unsupportedVersion(Int)
@@ -15,7 +15,7 @@ enum GatewayWireError: LocalizedError, Equatable {
     case invalidFrame(String)
     case disconnected
 
-    var errorDescription: String? {
+    var localizedDescriptionResource: LocalizedStringResource {
         switch self {
         case .invalidEndpoint(let message): message
         case .invalidPairingSetup:
@@ -28,6 +28,8 @@ enum GatewayWireError: LocalizedError, Equatable {
         case .disconnected: "The gateway disconnected."
         }
     }
+
+    var errorDescription: String? { String(localized: localizedDescriptionResource) }
 }
 struct GatewayPairingSetup: Equatable, Sendable {
     private static let maximumCodeBytes = 512
@@ -135,17 +137,24 @@ struct GatewayEndpoint: Hashable, Codable, Sendable {
         UInt16(URLComponents(string: rawValue)?.port ?? (usesWebSocket ? 443 : 0))
     }
 
-    var displayName: String {
+    var displayName: String { displayName(locale: .current) }
+
+    func displayName(locale: Locale) -> String {
+        func resolve(_ resource: LocalizedStringResource) -> String {
+            var resource = resource
+            resource.locale = locale
+            return String(localized: resource)
+        }
         if Self.isLoopback(host) {
-            return "This device · \(port)"
+            return resolve("This device · \(port)")
         }
         let quickSuffix = ".trycloudflare.com"
         if host.hasSuffix(quickSuffix) {
             let words = host.dropLast(quickSuffix.count).split(separator: "-")
             let tunnel = words.count > 1
                 ? "\(words[0])…\(words[words.count - 1])"
-                : String(words.first ?? "Tunnel")
-            return "Cloudflare · \(tunnel)"
+                : words.first.map(String.init) ?? resolve("Tunnel")
+            return resolve("Cloudflare · \(tunnel)")
         }
         return port == 443 ? host : "\(host):\(port)"
     }

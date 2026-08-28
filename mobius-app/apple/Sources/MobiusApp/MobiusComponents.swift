@@ -17,11 +17,39 @@ struct MobiusCard<Content: View>: View {
 
 struct MobiusBadge: View {
     @Environment(\.mobiusPalette) private var palette
-    let text: String
+    private let text: MobiusText
     var tone = "neutral"
     var glyph: MobiusGlyph?
     var progress: Double?
     var interactive = false
+
+    init(
+        verbatim text: String,
+        tone: String = "neutral",
+        glyph: MobiusGlyph? = nil,
+        progress: Double? = nil,
+        interactive: Bool = false
+    ) {
+        self.text = .verbatim(text)
+        self.tone = tone
+        self.glyph = glyph
+        self.progress = progress
+        self.interactive = interactive
+    }
+
+    init(
+        localized text: LocalizedStringResource,
+        tone: String = "neutral",
+        glyph: MobiusGlyph? = nil,
+        progress: Double? = nil,
+        interactive: Bool = false
+    ) {
+        self.text = .localized(text)
+        self.tone = tone
+        self.glyph = glyph
+        self.progress = progress
+        self.interactive = interactive
+    }
 
     var body: some View {
         HStack(spacing: MobiusSpace.s) {
@@ -39,7 +67,7 @@ struct MobiusBadge: View {
             if let glyph {
                 MobiusIcon(glyph, size: MobiusStyle.glyphInline, foreground: foreground, gutter: false)
             }
-            if !text.isEmpty { Text(text).lineLimit(1) }
+            if !text.isEmpty { text.text.lineLimit(1) }
         }
         .font(MobiusStyle.badgeFont)
         .foregroundStyle(foreground)
@@ -56,9 +84,9 @@ struct MobiusBadge: View {
 /// between the three parts is what separates it from the row.
 struct MobiusMenuLabel: View {
     @Environment(\.mobiusPalette) private var palette
-    let text: String
+    private let label: MobiusText
     var glyph: MobiusGlyph?
-    var detail: String?
+    private var detail: MobiusText?
     var showsDisclosure = true
     /// The composer sizes its mark up to `glyphLead` to sit level with the icon buttons
     /// beside it; inline in a header the glyph stays on the text's own step.
@@ -68,6 +96,60 @@ struct MobiusMenuLabel: View {
     /// A settings row reads at body size beside its label; the composer and the file header
     /// carry the badge step so the label sits under the text it belongs to.
     var font = MobiusStyle.badgeFont
+
+    init(
+        text: MobiusText,
+        glyph: MobiusGlyph? = nil,
+        detail: MobiusText? = nil,
+        showsDisclosure: Bool = true,
+        glyphSize: CGFloat = MobiusStyle.glyphInline,
+        glyphColor: Color? = nil,
+        font: Font = MobiusStyle.badgeFont
+    ) {
+        label = text
+        self.glyph = glyph
+        self.detail = detail
+        self.showsDisclosure = showsDisclosure
+        self.glyphSize = glyphSize
+        self.glyphColor = glyphColor
+        self.font = font
+    }
+
+    init(
+        text: LocalizedStringResource,
+        glyph: MobiusGlyph? = nil,
+        detail: LocalizedStringResource? = nil,
+        showsDisclosure: Bool = true,
+        glyphSize: CGFloat = MobiusStyle.glyphInline,
+        glyphColor: Color? = nil,
+        font: Font = MobiusStyle.badgeFont
+    ) {
+        self.label = .localized(text)
+        self.glyph = glyph
+        self.detail = detail.map(MobiusText.localized)
+        self.showsDisclosure = showsDisclosure
+        self.glyphSize = glyphSize
+        self.glyphColor = glyphColor
+        self.font = font
+    }
+
+    init(
+        verbatim text: String,
+        glyph: MobiusGlyph? = nil,
+        detail: String? = nil,
+        showsDisclosure: Bool = true,
+        glyphSize: CGFloat = MobiusStyle.glyphInline,
+        glyphColor: Color? = nil,
+        font: Font = MobiusStyle.badgeFont
+    ) {
+        self.label = .verbatim(text)
+        self.glyph = glyph
+        self.detail = detail.map(MobiusText.verbatim)
+        self.showsDisclosure = showsDisclosure
+        self.glyphSize = glyphSize
+        self.glyphColor = glyphColor
+        self.font = font
+    }
 
     var body: some View {
         HStack(spacing: MobiusSpace.s) {
@@ -79,12 +161,12 @@ struct MobiusMenuLabel: View {
                     gutter: false
                 )
             }
-            Text(text)
+            label.text
                 .font(font)
                 .lineLimit(1)
                 .truncationMode(.middle)
             if let detail {
-                Text(detail)
+                detail.text
                     .font(font)
                     .foregroundStyle(palette.muted)
                     .lineLimit(1)
@@ -194,7 +276,7 @@ struct MobiusIconButtonStyle: ButtonStyle {
 
 struct MobiusToolbarIconButton: View {
     let glyph: MobiusGlyph
-    let label: String
+    let label: LocalizedStringResource
     let action: () -> Void
 
     var body: some View {
@@ -205,18 +287,46 @@ struct MobiusToolbarIconButton: View {
             MobiusIcon(glyph, foreground: .primary)
         }
         .tint(.primary)
-        .accessibilityLabel(label)
-        .help(label)
+        .accessibilityLabel(Text(label))
+        .help(Text(label))
     }
 }
 
 struct MobiusSwipeAction: View {
     @Environment(\.mobiusPalette) private var palette
-    let title: String
+    private let title: MobiusText
     let glyph: MobiusGlyph
     var tone = "neutral"
     var isEnabled = true
     let action: () -> Void
+
+    init(
+        title: LocalizedStringResource,
+        glyph: MobiusGlyph,
+        tone: String = "neutral",
+        isEnabled: Bool = true,
+        action: @escaping () -> Void
+    ) {
+        self.title = .localized(title)
+        self.glyph = glyph
+        self.tone = tone
+        self.isEnabled = isEnabled
+        self.action = action
+    }
+
+    init(
+        verbatim title: String,
+        glyph: MobiusGlyph,
+        tone: String = "neutral",
+        isEnabled: Bool = true,
+        action: @escaping () -> Void
+    ) {
+        self.title = .verbatim(title)
+        self.glyph = glyph
+        self.tone = tone
+        self.isEnabled = isEnabled
+        self.action = action
+    }
 
     var body: some View {
         // No destructive role: it makes the list animate the row away on tap, which tears
@@ -226,7 +336,7 @@ struct MobiusSwipeAction: View {
         }
         .tint(palette.panel)
         .disabled(!isEnabled)
-        .accessibilityLabel(title)
+        .accessibilityLabel(title.text)
     }
 }
 
@@ -241,10 +351,10 @@ struct HeaderActionGroup<Content: View>: View {
 }
 
 struct HeaderOptionsMenu<Content: View>: View {
-    let label: String
+    let label: LocalizedStringResource
     @ViewBuilder let content: Content
 
-    init(label: String, @ViewBuilder content: () -> Content) {
+    init(label: LocalizedStringResource, @ViewBuilder content: () -> Content) {
         self.label = label
         self.content = content()
     }
@@ -259,9 +369,9 @@ struct HeaderOptionsMenu<Content: View>: View {
         }
         .labelStyle(.titleAndIcon)
         .menuIndicator(.hidden)
-        .accessibilityLabel(label)
+        .accessibilityLabel(Text(label))
         .tint(.primary)
-        .help(label)
+        .help(Text(label))
     }
 }
 
@@ -404,8 +514,8 @@ private struct MobiusGlassModifier<S: Shape>: ViewModifier {
 
 struct SectionHeading: View {
     @Environment(\.mobiusPalette) private var palette
-    let title: String
-    let detail: String
+    let title: LocalizedStringResource
+    let detail: LocalizedStringResource
 
     var body: some View {
         VStack(alignment: .leading, spacing: MobiusSpace.s) {

@@ -38,9 +38,13 @@ struct WorkedForGroupView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.mobiusPlain)
-            .accessibilityLabel(title)
-            .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
-            .accessibilityHint(isExpanded ? "Collapses the completed work" : "Shows the completed work")
+            .accessibilityLabel(Text(title))
+            .accessibilityValue(isExpanded ? Text("Expanded") : Text("Collapsed"))
+            .accessibilityHint(
+                isExpanded
+                    ? Text("Collapses the completed work")
+                    : Text("Shows the completed work")
+            )
 
             if isExpanded {
                 TranscriptRowsView(
@@ -53,7 +57,7 @@ struct WorkedForGroupView: View {
         }
     }
 
-    private var title: String {
+    private var title: LocalizedStringResource {
         let elapsed = TimeInterval(elapsedMs ?? 0) / 1_000
         return "Worked for \(formatDuration(elapsed))"
     }
@@ -96,7 +100,9 @@ struct EventGroupView: View {
                 .accessibilityLabel(
                     waiting == nil ? TranscriptEntry.summary(for: lines) : "Waiting for the model"
                 )
-                .accessibilityHint(isExpanded ? "Collapses the steps" : "Expands the steps")
+                .accessibilityHint(
+                    isExpanded ? Text("Collapses the steps") : Text("Expands the steps")
+                )
                 if isExpanded {
                     VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
                         ForEach(lines, id: \.presentationID) { entry in
@@ -197,8 +203,10 @@ private struct ReasoningLine: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.mobiusPlain)
-        .accessibilityLabel(entry.text)
-        .accessibilityHint(isExpanded ? "Collapses the reasoning" : "Expands the reasoning")
+        .accessibilityLabel(Text(verbatim: entry.text))
+        .accessibilityHint(
+            isExpanded ? Text("Collapses the reasoning") : Text("Expands the reasoning")
+        )
     }
 
     private var summary: AttributedString {
@@ -299,19 +307,19 @@ private struct EventLine: View {
             if isInteractive {
                 Button(action: activate) { line }
                     .buttonStyle(.mobiusPlain)
-                    .accessibilityLabel("\(middlewareLabel), \(headline)")
-                    .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
-                    .accessibilityHint(accessibilityHint)
+                    .accessibilityLabel(eventAccessibilityLabel)
+                    .accessibilityValue(isExpanded ? Text("Expanded") : Text("Collapsed"))
+                    .accessibilityHint(Text(accessibilityHint))
             } else {
                 line
                     .accessibilityElement(children: .combine)
-                    .accessibilityLabel("\(middlewareLabel), \(headline)")
+                    .accessibilityLabel(eventAccessibilityLabel)
             }
             if isExpanded {
                 if entry.format == "unified_diff" {
                     InlineUnifiedDiffView(source: entry.text)
                 } else if !entry.eventDetail.isEmpty {
-                    Text(entry.eventDetail)
+                    Text(verbatim: entry.eventDetail)
                         .font(MobiusStyle.bodyFont)
                         .foregroundStyle(palette.muted)
                         .textSelection(.enabled)
@@ -332,11 +340,11 @@ private struct EventLine: View {
         HStack(spacing: MobiusSpace.s) {
             MobiusIcon(glyph, size: MobiusStyle.glyphInline, foreground: headlineColor)
             HStack(spacing: MobiusSpace.s) {
-                Text(middlewareLabel)
+                middlewareLabel.text
                     .foregroundStyle(palette.accent)
-                Text("•")
+                Text(verbatim: "•")
                     .foregroundStyle(palette.muted)
-                Text(headline)
+                headline.text
                     .foregroundStyle(headlineColor)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -360,8 +368,8 @@ private struct EventLine: View {
     }
 
     /// A diff says more as a count of changed lines than as the word "Code change".
-    private var headline: String {
-        entry.format == "unified_diff" ? diffSummary(entry.text) : entry.headline
+    private var headline: MobiusText {
+        entry.format == "unified_diff" ? diffSummary(entry.text) : .verbatim(entry.headline)
     }
 
     private var glyph: MobiusGlyph {
@@ -378,12 +386,12 @@ private struct EventLine: View {
         }
     }
 
-    private var middlewareLabel: String {
-        guard let capability = entry.capability else { return "Event" }
+    private var middlewareLabel: MobiusText {
+        guard let capability = entry.capability else { return .localized("Event") }
         if let feature = model.middlewareFeatures.first(where: { $0.id == capability }) {
-            return feature.label
+            return .verbatim(feature.label)
         }
-        return capability.replacingOccurrences(of: "_", with: " ").capitalized
+        return .verbatim(capability.replacingOccurrences(of: "_", with: " ").capitalized)
     }
 
     private var headlineColor: Color {
@@ -394,10 +402,23 @@ private struct EventLine: View {
         entry.format == "unified_diff" || !entry.eventDetail.isEmpty
     }
 
-    private var accessibilityHint: String {
+    private var accessibilityHint: LocalizedStringResource {
         if entry.format == "unified_diff" {
             return isExpanded ? "Collapses code changes" : "Shows code changes"
         }
         return isExpanded ? "Collapses details" : "Expands details"
+    }
+
+    private var eventAccessibilityLabel: Text {
+        switch (middlewareLabel, headline) {
+        case (.localized(let middleware), .localized(let headline)):
+            Text("\(middleware), \(headline)")
+        case (.localized(let middleware), .verbatim(let headline)):
+            Text("\(middleware), \(headline)")
+        case (.verbatim(let middleware), .localized(let headline)):
+            Text("\(middleware), \(headline)")
+        case (.verbatim(let middleware), .verbatim(let headline)):
+            Text("\(middleware), \(headline)")
+        }
     }
 }

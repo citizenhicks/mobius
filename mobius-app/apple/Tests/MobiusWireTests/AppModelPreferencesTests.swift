@@ -79,6 +79,7 @@ extension AppModelTests {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
         defaults.set(ThemePreference.lightsOut.rawValue, forKey: "theme")
+        defaults.set(AppLanguage.french.rawValue, forKey: "language")
         defaults.set(AccentTint.purple.rawValue, forKey: "accent-tint")
         let model = AppModel(
             client: GatewayClient(),
@@ -87,11 +88,41 @@ extension AppModelTests {
         )
 
         XCTAssertEqual(model.theme, .lightsOut)
+        XCTAssertEqual(model.language, .french)
         XCTAssertEqual(model.accentTint, .purple)
         model.setTheme(.light)
+        model.setLanguage(.english)
         model.setAccentTint(.orange)
         XCTAssertEqual(defaults.string(forKey: "theme"), ThemePreference.light.rawValue)
+        XCTAssertEqual(defaults.string(forKey: "language"), AppLanguage.english.rawValue)
         XCTAssertEqual(defaults.string(forKey: "accent-tint"), AccentTint.orange.rawValue)
+    }
+
+    func testLanguageLocalesPreserveTheSystemChoice() {
+        XCTAssertEqual(AppLanguage.system.locale, .autoupdatingCurrent)
+        XCTAssertEqual(AppLanguage.english.locale.identifier, "en")
+        XCTAssertEqual(AppLanguage.french.locale.identifier, "fr")
+    }
+
+    func testLanguageDefaultsToSystem() throws {
+        let suiteName = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        var model = AppModel(
+            client: GatewayClient(),
+            store: GatewayStore(defaults: defaults),
+            settingsDefaults: defaults
+        )
+        XCTAssertEqual(model.language, .system)
+
+        defaults.set("unsupported", forKey: "language")
+        model = AppModel(
+            client: GatewayClient(),
+            store: GatewayStore(defaults: defaults),
+            settingsDefaults: defaults
+        )
+        XCTAssertEqual(model.language, .system)
     }
 
     func testLightsOutUsesBlackCanvasWithDarkPalette() {

@@ -67,7 +67,7 @@ struct PairingView: View {
 
                     if let error = model.pairingError {
                         MobiusLabel(
-                            title: error,
+                            verbatim: error,
                             glyph: .warning,
                             iconColor: palette.danger
                         )

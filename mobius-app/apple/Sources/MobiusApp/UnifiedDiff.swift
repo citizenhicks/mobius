@@ -79,7 +79,7 @@ struct UnifiedDiffHunk: Equatable, Sendable {
     let added: Int
     let removed: Int
 
-    var title: String {
+    var title: LocalizedStringResource {
         let range = newRange.count >= oldRange.count ? newRange : oldRange
         guard range.count > 1 else { return "Line \(range.start)" }
         return "Lines \(range.start)–\(range.start + range.count - 1)"
@@ -377,6 +377,6 @@ private struct UnifiedDiffParser {
 
     private static func renderedText(_ text: Substring) -> String {
         guard text.count > maximumRenderedLineCharacters else { return String(text) }
-        return String(text.prefix(maximumRenderedLineCharacters)) + " … [line truncated]"
+        return String(text.prefix(maximumRenderedLineCharacters)) + " …"
     }
 }

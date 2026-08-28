@@ -62,7 +62,7 @@ enum ConnectionState: Equatable {
     case ready
     case failed(String)
 
-    var label: String {
+    var label: LocalizedStringResource {
         switch self {
         case .disconnected: "Offline"
         case .connecting: "Connecting"
@@ -280,7 +280,7 @@ enum AttachmentImportError: LocalizedError {
     case totalTooLarge(Int64)
     case changedWhileReading
 
-    var errorDescription: String? {
+    var localizedDescriptionResource: LocalizedStringResource {
         let byteLimit: (Int64) -> String = { bytes in
             let mebibyte: Int64 = 1024 * 1024
             return bytes.isMultiple(of: mebibyte)
@@ -296,6 +296,8 @@ enum AttachmentImportError: LocalizedError {
         case .changedWhileReading: "The file changed while möbius was reading it. Try again."
         }
     }
+
+    var errorDescription: String? { String(localized: localizedDescriptionResource) }
 }
 
 enum ThemePreference: String, CaseIterable, Identifiable {
@@ -305,6 +307,40 @@ enum ThemePreference: String, CaseIterable, Identifiable {
     case light
 
     var id: Self { self }
+
+    var label: LocalizedStringResource {
+        switch self {
+        case .system: "System"
+        case .dark: "Dark"
+        case .lightsOut: "Lights Out"
+        case .light: "Light"
+        }
+    }
+}
+
+enum AppLanguage: String, CaseIterable, Identifiable {
+    case system
+    case english = "en"
+    case french = "fr"
+
+    var id: Self { self }
+
+    var label: LocalizedStringResource {
+        switch self {
+        case .system: "System"
+        case .english: "English"
+        case .french: "French"
+        }
+    }
+
+    var locale: Locale {
+        switch self {
+        case .system:
+            .autoupdatingCurrent
+        case .english, .french:
+            Locale(identifier: rawValue)
+        }
+    }
 }
 
 enum FilesInspectorTab: String, CaseIterable, Identifiable {
@@ -325,19 +361,11 @@ enum ModifiedFilesScope: CaseIterable, Identifiable {
 }
 
 extension SessionRecord {
-    static let untitledDisplayTitle = "new conversation"
-
     var explicitTitle: String? {
         guard let title = title?.trimmingCharacters(in: .whitespacesAndNewlines),
               !title.isEmpty
         else { return nil }
         return title
-    }
-
-    var displayTitle: String {
-        explicitTitle
-            ?? ChatTitleWriter.preview(for: firstUserMessage)
-            ?? Self.untitledDisplayTitle
     }
 }
 
@@ -393,7 +421,7 @@ enum AppLockAuthenticationMethod: Equatable {
     case biometrics
     case unavailable
 
-    var settingTitle: String {
+    var settingTitle: LocalizedStringResource {
         switch self {
         case .faceID: "Require Face ID"
         case .touchID: "Require Touch ID"
@@ -402,7 +430,7 @@ enum AppLockAuthenticationMethod: Equatable {
         }
     }
 
-    var unlockTitle: String {
+    var unlockTitle: LocalizedStringResource {
         switch self {
         case .faceID: "Unlock with Face ID"
         case .touchID: "Unlock with Touch ID"
@@ -425,14 +453,14 @@ enum AppLockAuthenticationMethod: Equatable {
 @MainActor
 struct AppLockAuthenticator {
     private let methodProvider: () -> AppLockAuthenticationMethod
-    private let evaluator: (String) async -> Bool
+    private let evaluator: (String, String) async -> Bool
 
     init(
         method: @escaping () -> AppLockAuthenticationMethod,
         authenticate: @escaping (String) async -> Bool
     ) {
         methodProvider = method
-        evaluator = authenticate
+        evaluator = { reason, _ in await authenticate(reason) }
     }
 
     init() {
@@ -453,9 +481,9 @@ struct AppLockAuthenticator {
             @unknown default: .biometrics
             }
         }
-        evaluator = { reason in
+        evaluator = { reason, cancelTitle in
             let context = LAContext()
-            context.localizedCancelTitle = "Cancel"
+            context.localizedCancelTitle = cancelTitle
             context.localizedFallbackTitle = ""
             var error: NSError?
             guard context.canEvaluatePolicy(
@@ -473,8 +501,8 @@ struct AppLockAuthenticator {
 
     var method: AppLockAuthenticationMethod { methodProvider() }
 
-    func authenticate(reason: String) async -> Bool {
-        await evaluator(reason)
+    func authenticate(reason: String, cancelTitle: String) async -> Bool {
+        await evaluator(reason, cancelTitle)
     }
 }
 

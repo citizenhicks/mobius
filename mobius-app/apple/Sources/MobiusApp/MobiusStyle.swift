@@ -1,4 +1,36 @@
+import Foundation
 import SwiftUI
+
+/// Keeps app copy localizable while making server, user, and generated text explicitly
+/// verbatim. `Text` resolves resources from the active SwiftUI locale; `resolved` exists
+/// for the animated title renderer, which needs a concrete string.
+enum MobiusText {
+    case localized(LocalizedStringResource)
+    case verbatim(String)
+
+    var text: Text {
+        switch self {
+        case .localized(let resource): Text(resource)
+        case .verbatim(let value): Text(verbatim: value)
+        }
+    }
+
+    var isEmpty: Bool {
+        switch self {
+        case .localized(let resource): resource.key.isEmpty
+        case .verbatim(let value): value.isEmpty
+        }
+    }
+
+    func resolved(locale: Locale) -> String {
+        switch self {
+        case .localized(var resource):
+            resource.locale = locale
+            return String(localized: resource)
+        case .verbatim(let value): return value
+        }
+    }
+}
 
 /// Every gap in the app — stack spacing and padding alike — is one of these six steps.
 /// A gap that is not on the scale is drift: it reads as an accident beside the rows above
@@ -337,12 +369,18 @@ extension View {
     /// of list rows: the shimmer band is masked by the view it is attached to, and a list
     /// composites that mask into a single row, so only one line of the block ever lights.
     /// `SettingsLoadingRows` is the wrapper for form sections.
-    func mobiusLoadingPlaceholder(_ accessibilityLabel: String) -> some View {
+    func mobiusLoadingPlaceholder(
+        _ accessibilityLabel: LocalizedStringResource
+    ) -> some View {
+        mobiusLoadingPlaceholder(.localized(accessibilityLabel))
+    }
+
+    func mobiusLoadingPlaceholder(_ accessibilityLabel: MobiusText) -> some View {
         redacted(reason: .placeholder)
             .mobiusRunningShimmer(active: true)
             .allowsHitTesting(false)
             .accessibilityRepresentation {
-                ProgressView { Text(accessibilityLabel) }
+                ProgressView { accessibilityLabel.text }
             }
     }
 }
@@ -461,40 +499,52 @@ struct MobiusTitleText: View {
     private static let typingDuration: TimeInterval = 0.6
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    let title: String
+    @Environment(\.locale) private var locale
+    private let title: MobiusText
     let cursorColor: Color
-    @State private var displayedTitle: String
+    @State private var displayedTitle: String?
     @State private var progress = 1.0
     @State private var phase = MobiusTitleTypingPhase.settled
 
-    init(title: String, cursorColor: Color = .primary) {
-        self.title = title
+    init(title: LocalizedStringResource, cursorColor: Color = .primary) {
+        self.title = .localized(title)
         self.cursorColor = cursorColor
-        _displayedTitle = State(initialValue: title)
+    }
+
+    init(verbatim title: String, cursorColor: Color = .primary) {
+        self.title = .verbatim(title)
+        self.cursorColor = cursorColor
     }
 
     var body: some View {
-        Text(displayedTitle)
+        let resolvedTitle = title.resolved(locale: locale)
+        Text(verbatim: displayedTitle ?? resolvedTitle)
             .textRenderer(MobiusTitleTypingRenderer(
                 progress: progress,
                 showsCursor: phase != .settled,
                 cursorColor: cursorColor
             ))
-            .task(id: MobiusTitleTypingRequest(title: title, reduceMotion: reduceMotion)) {
-                await animateTitleChange()
+            .task(id: MobiusTitleTypingRequest(title: resolvedTitle, reduceMotion: reduceMotion)) {
+                await animateTitleChange(to: resolvedTitle)
             }
-            .accessibilityRepresentation { Text(title) }
+            .accessibilityRepresentation { title.text }
     }
 
     @MainActor
-    private func animateTitleChange() async {
+    private func animateTitleChange(to title: String) async {
+        guard let displayedTitle else {
+            self.displayedTitle = title
+            progress = 1
+            phase = .settled
+            return
+        }
         guard displayedTitle != title else {
             progress = 1
             phase = .settled
             return
         }
         guard !reduceMotion else {
-            displayedTitle = title
+            self.displayedTitle = title
             progress = 1
             phase = .settled
             return
@@ -505,7 +555,7 @@ struct MobiusTitleText: View {
             withAnimation(.linear(duration: Self.eraseDuration)) { progress = 0 }
             try await Task.sleep(for: .seconds(Self.eraseDuration))
 
-            displayedTitle = title
+            self.displayedTitle = title
             progress = 0
             await Task.yield()
             try Task.checkCancellation()
@@ -518,7 +568,7 @@ struct MobiusTitleText: View {
         } catch is CancellationError {
             // A newer title owns the next animation phase.
         } catch {
-            displayedTitle = title
+            self.displayedTitle = title
             progress = 1
             phase = .settled
         }
@@ -526,14 +576,38 @@ struct MobiusTitleText: View {
 }
 
 struct MobiusLabel: View {
-    let title: String
+    private let title: MobiusText
     let glyph: MobiusGlyph
     var iconColor: Color? = nil
     var iconSize = MobiusStyle.iconSize
 
+    nonisolated init(
+        title: LocalizedStringResource,
+        glyph: MobiusGlyph,
+        iconColor: Color? = nil,
+        iconSize: CGFloat = MobiusStyle.iconSize
+    ) {
+        self.title = .localized(title)
+        self.glyph = glyph
+        self.iconColor = iconColor
+        self.iconSize = iconSize
+    }
+
+    nonisolated init(
+        verbatim title: String,
+        glyph: MobiusGlyph,
+        iconColor: Color? = nil,
+        iconSize: CGFloat = MobiusStyle.iconSize
+    ) {
+        self.title = .verbatim(title)
+        self.glyph = glyph
+        self.iconColor = iconColor
+        self.iconSize = iconSize
+    }
+
     var body: some View {
         Label {
-            Text(title)
+            title.text
         } icon: {
             MobiusIcon(glyph, size: iconSize, foreground: iconColor)
         }
@@ -573,15 +647,39 @@ struct MobiusActionRow<Content: View>: View {
 }
 
 struct MobiusUnavailable: View {
-    let title: String
+    private let title: MobiusText
     let glyph: MobiusGlyph
-    var detail: String?
+    private let detail: MobiusText?
+
+    init(
+        title: LocalizedStringResource,
+        glyph: MobiusGlyph,
+        detail: LocalizedStringResource? = nil
+    ) {
+        self.title = .localized(title)
+        self.glyph = glyph
+        self.detail = detail.map(MobiusText.localized)
+    }
+
+    init(
+        verbatim title: String,
+        glyph: MobiusGlyph,
+        detail: LocalizedStringResource? = nil
+    ) {
+        self.title = .verbatim(title)
+        self.glyph = glyph
+        self.detail = detail.map(MobiusText.localized)
+    }
 
     var body: some View {
         ContentUnavailableView {
-            MobiusLabel(title: title, glyph: glyph, iconSize: 32)
+            Label {
+                title.text
+            } icon: {
+                MobiusIcon(glyph, size: 32)
+            }
         } description: {
-            if let detail { Text(detail) }
+            if let detail { detail.text }
         }
         // Reads as a page, not as a list row, when it stands in for a form's content.
         .listRowBackground(Color.clear)
@@ -591,13 +689,24 @@ struct MobiusUnavailable: View {
 
 extension Button where Label == MobiusLabel {
     init(
-        _ title: String,
+        _ title: LocalizedStringResource,
         glyph: MobiusGlyph,
         role: ButtonRole? = nil,
         action: @escaping () -> Void
     ) {
         self.init(role: role, action: action) {
             MobiusLabel(title: title, glyph: glyph)
+        }
+    }
+
+    init(
+        verbatim title: String,
+        glyph: MobiusGlyph,
+        role: ButtonRole? = nil,
+        action: @escaping () -> Void
+    ) {
+        self.init(role: role, action: action) {
+            MobiusLabel(verbatim: title, glyph: glyph)
         }
     }
 }

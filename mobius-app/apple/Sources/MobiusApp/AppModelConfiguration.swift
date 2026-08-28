@@ -354,9 +354,11 @@ extension AppModel {
     func saveProviderCredential() {
         let key = providerAPIKey
         guard var config = providerDraft, !key.isEmpty else {
-            let message = "Enter an API key. It will be sent once and never read back."
+            let message = localizedString(
+                "Enter an API key. It will be sent once and never read back."
+            )
             providerActionState = .failed(message)
-            showToast(message, tone: .error)
+            showToast(verbatim: message, tone: .error)
             return
         }
         config.endpointAuth = .providerDefault
@@ -461,7 +463,7 @@ extension AppModel {
         guard connectionState.isReady, gitCredentialRequestID == nil else { return }
         let target = target.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !target.isEmpty else {
-            gitCredentialError = "Enter an HTTPS Git host or URL."
+            gitCredentialError = localizedString("Enter an HTTPS Git host or URL.")
             return
         }
         let id = requestID("git-credential")
@@ -484,7 +486,9 @@ extension AppModel {
         let target = target.trimmingCharacters(in: .whitespacesAndNewlines)
         let username = username.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !target.isEmpty, !username.isEmpty, !token.isEmpty else {
-            gitCredentialError = "Enter the Git host, username, and access token."
+            gitCredentialError = localizedString(
+                "Enter the Git host, username, and access token."
+            )
             return
         }
         let id = requestID("git-credential")
@@ -681,6 +685,11 @@ extension AppModel {
         settingsDefaults.set(theme.rawValue, forKey: "theme")
     }
 
+    func setLanguage(_ language: AppLanguage) {
+        self.language = language
+        settingsDefaults.set(language.rawValue, forKey: "language")
+    }
+
     func setAccentTint(_ accentTint: AccentTint) {
         self.accentTint = accentTint
         settingsDefaults.set(accentTint.rawValue, forKey: "accent-tint")
@@ -725,7 +734,9 @@ extension AppModel {
 
     func unlockApp() async {
         guard appLockEnabled, isAppLocked, !isAppLockAuthenticating else { return }
-        guard await authenticateForAppLock(reason: "Authenticate to unlock möbius.") else {
+        guard await authenticateForAppLock(
+            reason: localizedString("Authenticate to unlock möbius.")
+        ) else {
             return
         }
         isAppLocked = appIsInBackground
@@ -734,15 +745,20 @@ extension AppModel {
     private func authenticateForAppLock(reason: String) async -> Bool {
         refreshAppLockAuthenticationMethod()
         guard appLockAuthenticationMethod.isAvailable else {
-            appLockError = "Biometric authentication is unavailable. Update Face ID or Touch ID, then try again."
+            appLockError = localizedString(
+                "Biometric authentication is unavailable. Update Face ID or Touch ID, then try again."
+            )
             return false
         }
         isAppLockAuthenticating = true
         appLockError = nil
-        let succeeded = await appLockAuthenticator.authenticate(reason: reason)
+        let succeeded = await appLockAuthenticator.authenticate(
+            reason: reason,
+            cancelTitle: localizedString("Cancel")
+        )
         isAppLockAuthenticating = false
         guard succeeded else {
-            appLockError = "Authentication wasn’t completed. Try again."
+            appLockError = localizedString("Authentication wasn’t completed. Try again.")
             return false
         }
         return true

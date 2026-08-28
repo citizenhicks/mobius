@@ -4,12 +4,20 @@ import HighlightSwift
 import UIKit
 
 struct InspectorLoadingView: View {
-    let title: String
+    let title: MobiusText
+
+    init(title: LocalizedStringResource) {
+        self.title = .localized(title)
+    }
+
+    init(verbatim title: String) {
+        self.title = .verbatim(title)
+    }
 
     var body: some View {
-        ProgressView(title)
+        ProgressView { title.text }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .accessibilityLabel(title)
+            .accessibilityLabel(title.text)
     }
 }
 
@@ -249,7 +257,7 @@ struct NumberedSourceText: View {
             LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(lines) { line in
                     HStack(alignment: .top, spacing: 0) {
-                        Text(String(line.id))
+                        Text(verbatim: String(line.id))
                             .font(MobiusStyle.metadataFont)
                             .monospacedDigit()
                             .foregroundStyle(.secondary)
@@ -475,13 +483,13 @@ struct PreviewTranscriptSheet: View {
 
     private var header: some View {
         HStack(spacing: MobiusSpace.s) {
-            Text(agentName)
+            Text(verbatim: agentName)
                 .font(MobiusStyle.controlFont.weight(.semibold))
                 .lineLimit(1)
                 .truncationMode(.middle)
             if let status = currentPreview.status {
                 headerSeparator
-                Text(status)
+                Text(verbatim: status)
                     .font(MobiusStyle.metadataFont)
                     .foregroundStyle(status == "errored" ? palette.danger : palette.muted)
                     .lineLimit(1)
@@ -489,7 +497,7 @@ struct PreviewTranscriptSheet: View {
             if let choice = modelChoice {
                 headerSeparator
                 MobiusMenuLabel(
-                    text: model.modelLabel(for: choice),
+                    verbatim: model.modelLabel(for: choice),
                     glyph: model.providerSymbol(for: choice)
                         .flatMap(MobiusSymbol.knownGlyph(for:)) ?? .robot,
                     detail: choice.reasoningEffort?.capitalized,
@@ -502,10 +510,10 @@ struct PreviewTranscriptSheet: View {
             Spacer(minLength: 0)
             if !currentPreview.context.isEmpty {
                 SettingsInfoButton(
-                    title: "Spawn context: \(currentPreview.context)",
-                    detail: spawnContextDetail,
+                    title: .localized("Spawn context: \(currentPreview.context)"),
+                    detail: .localized(spawnContextDetail),
                     glyph: spawnContextGlyph,
-                    accessibilityHint: "Explains the inherited conversation context"
+                    accessibilityHint: .localized("Explains the inherited conversation context")
                 )
             }
         }
@@ -557,7 +565,7 @@ struct PreviewTranscriptSheet: View {
         return .circleDotDashed
     }
 
-    private var spawnContextDetail: String {
+    private var spawnContextDetail: LocalizedStringResource {
         let context = currentPreview.context.lowercased()
         if context.hasPrefix("no ") || context == "none" {
             return "This agent started fresh with only its assigned task. It inherited none of the parent conversation."

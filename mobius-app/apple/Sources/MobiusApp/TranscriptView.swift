@@ -406,7 +406,7 @@ private struct TranscriptRow: View {
             if let target = entry.messageTarget {
                 ForEach(model.messageActionWidgets) { widget in
                     MessageActionButton(
-                        title: widget.widget.text,
+                        verbatim: widget.widget.text,
                         glyph: messageActionGlyph(widget)
                     ) {
                         model.submitMessageAction(widget, target: target)
@@ -427,7 +427,7 @@ private struct TranscriptRow: View {
         Button("Copy", glyph: .copy) { copyToPasteboard(entry.text) }
         if let target = entry.messageTarget {
             ForEach(model.messageActionWidgets) { widget in
-                Button(widget.widget.text, glyph: messageActionGlyph(widget)) {
+                Button(verbatim: widget.widget.text, glyph: messageActionGlyph(widget)) {
                     model.submitMessageAction(widget, target: target)
                 }
                 .disabled(!model.canModifySelectedSession)

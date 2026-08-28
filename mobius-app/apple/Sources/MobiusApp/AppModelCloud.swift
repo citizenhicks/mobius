@@ -366,7 +366,7 @@ extension AppModel {
         do {
             try cloudClient.signOut()
         } catch {
-            showToast(error.localizedDescription, tone: .error)
+            showToast(verbatim: localizedErrorDescription(error), tone: .error)
             return
         }
         clearCloudAccountState()
@@ -422,11 +422,17 @@ extension AppModel {
         } else {
             cloudIssue = nil
         }
-        let message = (error as? MobiusCloudError)?.localizedDescription
-            ?? (error as? MobiusCloudPurchaseError)?.localizedDescription
-            ?? "Couldn’t connect to möbius Cloud. Try again."
+        let message: String
+        if let error = error as? MobiusCloudError {
+            message = localizedString(error.localizedDescriptionResource)
+        } else if let resource = (error as? MobiusCloudPurchaseError)?
+            .localizedDescriptionResource {
+            message = localizedString(resource)
+        } else {
+            message = localizedString("Couldn’t connect to möbius Cloud. Try again.")
+        }
         cloudError = message
-        showToast(message, tone: .error)
+        showToast(verbatim: message, tone: .error)
     }
 
     private func clearCloudAccountState() {

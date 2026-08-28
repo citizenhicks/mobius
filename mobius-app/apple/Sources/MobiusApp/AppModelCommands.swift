@@ -37,7 +37,7 @@ extension AppModel {
             pairingCode = setup.code
             pairingError = nil
         } catch {
-            pairingError = error.localizedDescription
+            pairingError = localizedErrorDescription(error)
         }
     }
 
@@ -49,13 +49,18 @@ extension AppModel {
             let endpoint = try GatewayEndpoint(pairingEndpoint)
             let code = pairingCode.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !code.isEmpty else {
-                let message = "Enter the one-time code shown by the gateway."
+                let message = localizedString("Enter the one-time code shown by the gateway.")
                 pairingError = message
-                showToast(message, tone: .error)
+                showToast(verbatim: message, tone: .error)
                 return
             }
+            let endpointName = endpoint.displayName(locale: language.locale)
             let account = accounts.first(where: { $0.endpoint == endpoint })
-                ?? GatewayAccount(endpoint: endpoint)
+                ?? GatewayAccount(
+                    endpoint: endpoint,
+                    displayName: endpointName,
+                    machineName: endpointName
+                )
             let sameGateway = account.id == selectedAccountID
             let sessionID = sameGateway ? presentedChatSessionID : nil
             let generation = resetGatewayState(
@@ -73,8 +78,8 @@ extension AppModel {
                 ))
             }
         } catch {
-            pairingError = error.localizedDescription
-            showToast(error.localizedDescription, tone: .error)
+            pairingError = localizedErrorDescription(error)
+            showToast(verbatim: localizedErrorDescription(error), tone: .error)
         }
     }
 
@@ -90,7 +95,7 @@ extension AppModel {
             accounts[index] = renamed
             showToast("Gateway renamed.", tone: .success)
         } catch {
-            showToast(error.localizedDescription, tone: .error)
+            showToast(verbatim: localizedErrorDescription(error), tone: .error)
         }
     }
 
@@ -117,14 +122,14 @@ extension AppModel {
         }
         pairingEndpoint = account.endpoint.rawValue
         pairingCode = ""
-        pairingError = "Enter a new one-time code to repair this pairing."
+        pairingError = localizedString("Enter a new one-time code to repair this pairing.")
         showsPairing = true
     }
 
     func chooseWorkspace(_ selectedPath: String) {
         let path = selectedPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !path.isEmpty else {
-            workspaceError = "Choose a folder on the gateway host."
+            workspaceError = localizedString("Choose a folder on the gateway host.")
             return
         }
         guard canCreateSession else { return }
@@ -165,11 +170,11 @@ extension AppModel {
     func createWorkspaceDirectory(named rawName: String) {
         let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else {
-            directoryError = "Enter a folder name."
+            directoryError = localizedString("Enter a folder name.")
             return
         }
         guard name != ".", name != "..", !name.contains("/"), !name.contains("\\") else {
-            directoryError = "Enter a single folder name."
+            directoryError = localizedString("Enter a single folder name.")
             return
         }
         guard let parent = directoryListing?.path, canCreateSession else { return }
@@ -217,7 +222,7 @@ extension AppModel {
             showToast("Gateway removed.", tone: .info)
             return true
         } catch {
-            showToast(error.localizedDescription, tone: .error)
+            showToast(verbatim: localizedErrorDescription(error), tone: .error)
             return false
         }
     }
@@ -592,7 +597,7 @@ extension AppModel {
                 if currentBytes > attachmentDraftByteLimit - Int64(imported.data.count) {
                     showToast(
                         AttachmentImportError.totalTooLarge(attachmentDraftByteLimit)
-                            .localizedDescription,
+                            .localizedDescriptionResource,
                         tone: .error
                     )
                     continue
@@ -613,7 +618,11 @@ extension AppModel {
                 attachmentImportReservations -= 1
                 reservedCount -= 1
                 guard generation == attachmentImportGeneration else { return }
-                showToast(error.localizedDescription, tone: .error)
+                if let error = error as? AttachmentImportError {
+                    showToast(error.localizedDescriptionResource, tone: .error)
+                } else {
+                    showToast(verbatim: localizedErrorDescription(error), tone: .error)
+                }
             }
         }
         startNextSessionFileUpload()
@@ -689,7 +698,7 @@ extension AppModel {
             guard self?.sessionFileDownload?.requestID == id else { return }
             self?.sessionFileDownload = nil
             self?.isLoadingFilePresentation = false
-            self?.showToast(message, tone: .error)
+            self?.showToast(verbatim: message, tone: .error)
         }
     }
 
@@ -722,7 +731,7 @@ extension AppModel {
             guard self?.workspaceFilePreviewDownload?.requestID == id else { return }
             self?.workspaceFilePreviewDownload = nil
             self?.isLoadingFilePresentation = false
-            self?.showToast(message, tone: .error)
+            self?.showToast(verbatim: message, tone: .error)
         }
     }
 
@@ -762,7 +771,7 @@ extension AppModel {
             guard self?.workspaceFileWriteRequestID == id else { return }
             self?.workspaceFileWriteRequestID = nil
             self?.isSavingWorkspaceFile = false
-            self?.showToast(message, tone: .error)
+            self?.showToast(verbatim: message, tone: .error)
         }
     }
 
@@ -916,7 +925,7 @@ extension AppModel {
             else { return }
             if case .failure(let error) = result {
                 self.pendingWidgetEdit = nil
-                self.showToast(error.localizedDescription, tone: .error)
+                self.showToast(verbatim: self.localizedErrorDescription(error), tone: .error)
                 return
             }
             guard self.connectionState.isReady, self.selectedSessionID == sessionID else { return }
@@ -955,7 +964,7 @@ extension AppModel {
             else { return }
             if case .failure(let error) = result {
                 self.restoreComposerEditMode(requestID: requestID)
-                self.showToast(error.localizedDescription, tone: .error)
+                self.showToast(verbatim: self.localizedErrorDescription(error), tone: .error)
                 return
             }
             guard self.connectionState.isReady, self.selectedSessionID == sessionID else {

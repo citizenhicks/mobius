@@ -17,7 +17,7 @@ enum TranscriptWaitingNote {
 
     /// Present participles, one line each, scientific register played straight. Nothing here
     /// claims the model is doing a thing it cannot do, and nothing reads as an error.
-    static let messages = [
+    static let messages: [LocalizedStringResource] = [
         "hedging tail risk of being bored",
         "annealing a lukewarm take",
         "collapsing the superposition of drafts",
@@ -81,7 +81,10 @@ enum TranscriptWaitingNote {
             && !hasPendingPicker
     }
 
-    static func message(in order: [String], elapsed: TimeInterval) -> String {
+    static func message(
+        in order: [LocalizedStringResource],
+        elapsed: TimeInterval
+    ) -> LocalizedStringResource {
         let step = elapsed > 0 ? Int(elapsed / rotation) : 0
         return order[step % order.count]
     }

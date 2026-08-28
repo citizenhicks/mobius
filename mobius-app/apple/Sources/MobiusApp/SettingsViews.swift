@@ -3,13 +3,43 @@ import SwiftUI
 struct SettingsInfoButton: View {
     @Environment(\.mobiusPalette) private var palette
     @State private var showsDetail = false
-    let title: String
-    let detail: String
+    let title: MobiusText
+    let detail: MobiusText
     var glyph: MobiusGlyph = .info
-    var accessibilityHint = "Shows setting guidance"
+    var accessibilityHint: MobiusText = .localized("Shows setting guidance")
     /// Beside a section header or a stacked label, where a full 44pt target would push the
     /// rows under it down and leave that section sitting lower than every other one.
     var compact = false
+
+    init(
+        title: LocalizedStringResource,
+        detail: LocalizedStringResource,
+        glyph: MobiusGlyph = .info,
+        accessibilityHint: LocalizedStringResource = "Shows setting guidance",
+        compact: Bool = false
+    ) {
+        self.init(
+            title: .localized(title),
+            detail: .localized(detail),
+            glyph: glyph,
+            accessibilityHint: .localized(accessibilityHint),
+            compact: compact
+        )
+    }
+
+    init(
+        title: MobiusText,
+        detail: MobiusText,
+        glyph: MobiusGlyph = .info,
+        accessibilityHint: MobiusText = .localized("Shows setting guidance"),
+        compact: Bool = false
+    ) {
+        self.title = title
+        self.detail = detail
+        self.glyph = glyph
+        self.accessibilityHint = accessibilityHint
+        self.compact = compact
+    }
 
     var body: some View {
         Button {
@@ -23,15 +53,15 @@ struct SettingsInfoButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.mobiusPlain)
-        .accessibilityLabel("About \(title)")
-        .accessibilityHint(accessibilityHint)
-        .help("About \(title)")
+        .accessibilityLabel(aboutTitle)
+        .accessibilityHint(accessibilityHint.text)
+        .help(aboutTitle)
         .sensoryFeedback(.selection, trigger: showsDetail)
         .popover(isPresented: $showsDetail) {
             VStack(alignment: .leading, spacing: MobiusSpace.s) {
-                Text(title)
+                title.text
                     .font(MobiusStyle.controlFont.weight(.semibold))
-                Text(detail)
+                detail.text
                     .font(MobiusStyle.bodyFont)
                     .foregroundStyle(palette.muted)
                     .fixedSize(horizontal: false, vertical: true)
@@ -41,21 +71,82 @@ struct SettingsInfoButton: View {
             .presentationCompactAdaptation(.popover)
         }
     }
+
+    private var aboutTitle: Text {
+        switch title {
+        case .localized(let resource): Text("About \(resource)")
+        case .verbatim(let value): Text("About \(value)")
+        }
+    }
 }
 
 struct SettingsStatusAccessory: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    let subject: String
+    let subject: MobiusText
     let hasChanges: Bool
     let isSaving: Bool
     let saveDisabled: Bool
-    let statusLabel: String
-    let statusDetail: String
+    let statusLabel: MobiusText
+    let statusDetail: MobiusText
     let statusColor: Color
-    let saveLabel: String
-    var secondaryActionLabel: String?
+    let saveLabel: MobiusText
+    var secondaryActionLabel: MobiusText?
     var secondaryAction: (() -> Void)?
     let save: () -> Void
+
+    init(
+        subject: LocalizedStringResource,
+        hasChanges: Bool,
+        isSaving: Bool,
+        saveDisabled: Bool,
+        statusLabel: LocalizedStringResource,
+        statusDetail: LocalizedStringResource,
+        statusColor: Color,
+        saveLabel: LocalizedStringResource,
+        secondaryActionLabel: LocalizedStringResource? = nil,
+        secondaryAction: (() -> Void)? = nil,
+        save: @escaping () -> Void
+    ) {
+        self.init(
+            subject: .localized(subject),
+            hasChanges: hasChanges,
+            isSaving: isSaving,
+            saveDisabled: saveDisabled,
+            statusLabel: .localized(statusLabel),
+            statusDetail: .localized(statusDetail),
+            statusColor: statusColor,
+            saveLabel: .localized(saveLabel),
+            secondaryActionLabel: secondaryActionLabel.map { .localized($0) },
+            secondaryAction: secondaryAction,
+            save: save
+        )
+    }
+
+    init(
+        subject: MobiusText,
+        hasChanges: Bool,
+        isSaving: Bool,
+        saveDisabled: Bool,
+        statusLabel: MobiusText,
+        statusDetail: MobiusText,
+        statusColor: Color,
+        saveLabel: MobiusText,
+        secondaryActionLabel: MobiusText? = nil,
+        secondaryAction: (() -> Void)? = nil,
+        save: @escaping () -> Void
+    ) {
+        self.subject = subject
+        self.hasChanges = hasChanges
+        self.isSaving = isSaving
+        self.saveDisabled = saveDisabled
+        self.statusLabel = statusLabel
+        self.statusDetail = statusDetail
+        self.statusColor = statusColor
+        self.saveLabel = saveLabel
+        self.secondaryActionLabel = secondaryActionLabel
+        self.secondaryAction = secondaryAction
+        self.save = save
+    }
 
     var body: some View {
         HeaderActionGroup {
@@ -92,7 +183,7 @@ struct SettingsStatusAccessory: View {
     private var saveButton: some View {
         Button(action: save) {
             Label {
-                Text(saveLabel)
+                saveLabel.text
             } icon: {
                 Group {
                     if isSaving {
@@ -106,8 +197,8 @@ struct SettingsStatusAccessory: View {
         .labelStyle(.iconOnly)
         .groupedHeaderAction(prominent: true)
         .disabled(saveDisabled)
-        .accessibilityLabel(saveLabel)
-        .help(saveLabel)
+        .accessibilityLabel(saveLabel.text)
+        .help(saveLabel.text)
         .sensoryFeedback(.success, trigger: hasChanges) { was, now in was && !now }
     }
 }
@@ -116,12 +207,46 @@ struct SettingsStatusButton: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.mobiusPalette) private var palette
     @State private var showsStatus = false
-    let subject: String
-    let statusLabel: String
-    let statusDetail: String
+    let subject: MobiusText
+    let statusLabel: MobiusText
+    let statusDetail: MobiusText
     let statusColor: Color
-    var secondaryActionLabel: String?
+    var secondaryActionLabel: MobiusText?
     var secondaryAction: (() -> Void)?
+
+    init(
+        subject: LocalizedStringResource,
+        statusLabel: LocalizedStringResource,
+        statusDetail: LocalizedStringResource,
+        statusColor: Color,
+        secondaryActionLabel: LocalizedStringResource? = nil,
+        secondaryAction: (() -> Void)? = nil
+    ) {
+        self.init(
+            subject: .localized(subject),
+            statusLabel: .localized(statusLabel),
+            statusDetail: .localized(statusDetail),
+            statusColor: statusColor,
+            secondaryActionLabel: secondaryActionLabel.map { .localized($0) },
+            secondaryAction: secondaryAction
+        )
+    }
+
+    init(
+        subject: MobiusText,
+        statusLabel: MobiusText,
+        statusDetail: MobiusText,
+        statusColor: Color,
+        secondaryActionLabel: MobiusText? = nil,
+        secondaryAction: (() -> Void)? = nil
+    ) {
+        self.subject = subject
+        self.statusLabel = statusLabel
+        self.statusDetail = statusDetail
+        self.statusColor = statusColor
+        self.secondaryActionLabel = secondaryActionLabel
+        self.secondaryAction = secondaryAction
+    }
 
     var body: some View {
         Button {
@@ -136,22 +261,24 @@ struct SettingsStatusButton: View {
                     isActive: !reduceMotion
                 )
         }
-        .accessibilityLabel("\(subject) status")
-        .accessibilityValue(statusLabel)
-        .help("\(subject): \(statusLabel)")
+        .accessibilityLabel(statusAccessibilityLabel)
+        .accessibilityValue(statusLabel.text)
+        .help(statusHelp)
         .popover(isPresented: $showsStatus) {
             VStack(spacing: MobiusSpace.m) {
-                Text(statusLabel)
+                statusLabel.text
                     .font(MobiusStyle.controlFont.weight(.semibold))
                     .foregroundStyle(statusColor)
-                Text(statusDetail)
+                statusDetail.text
                     .font(MobiusStyle.bodyFont)
                     .foregroundStyle(palette.muted)
                 if let secondaryActionLabel, let secondaryAction {
                     Divider()
-                    Button(secondaryActionLabel) {
+                    Button {
                         showsStatus = false
                         secondaryAction()
+                    } label: {
+                        secondaryActionLabel.text
                     }
                 }
             }
@@ -159,6 +286,26 @@ struct SettingsStatusButton: View {
             .padding(MobiusSpace.l)
             .frame(width: 280)
             .presentationCompactAdaptation(.popover)
+        }
+    }
+
+    private var statusAccessibilityLabel: Text {
+        switch subject {
+        case .localized(let resource): Text("\(resource) status")
+        case .verbatim(let value): Text("\(value) status")
+        }
+    }
+
+    private var statusHelp: Text {
+        switch (subject, statusLabel) {
+        case (.localized(let subject), .localized(let status)):
+            Text("\(subject): \(status)")
+        case (.localized(let subject), .verbatim(let status)):
+            Text("\(subject): \(status)")
+        case (.verbatim(let subject), .localized(let status)):
+            Text("\(subject): \(status)")
+        case (.verbatim(let subject), .verbatim(let status)):
+            Text("\(subject): \(status)")
         }
     }
 }
@@ -186,7 +333,7 @@ struct GatewayView: View {
                     .accessibilityHint("Opens pairing with a self-hosted gateway")
                     .help("Pair gateway")
                     SettingsStatusButton(
-                        subject: "Gateway",
+                        subject: .localized("Gateway"),
                         statusLabel: status.label,
                         statusDetail: status.detail,
                         statusColor: status.color
@@ -204,7 +351,7 @@ struct GatewayView: View {
                         set: { model.selectAccount($0) }
                     )) {
                         ForEach(model.accounts) { account in
-                            Text(account.machineName)
+                            Text(verbatim: account.machineName)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                                 .tag(Optional(account.id))
@@ -258,20 +405,26 @@ struct GatewayView: View {
         }
     }
 
-    private var gatewayStatus: (label: String, detail: String, color: Color) {
+    private var gatewayStatus: (label: MobiusText, detail: MobiusText, color: Color) {
         switch model.connectionState {
         case .ready:
+            let detail: MobiusText
+            if let machineName = model.selectedAccount?.machineName {
+                detail = .localized("\(model.accounts.count) paired · \(machineName) selected")
+            } else {
+                detail = .localized("\(model.accounts.count) paired · no gateway selected")
+            }
             return (
-                model.connectionState.label,
-                "\(model.accounts.count) paired · \(model.selectedAccount?.machineName ?? "none") selected",
+                .localized(model.connectionState.label),
+                detail,
                 palette.signal
             )
         case .failed(let message):
-            return ("Needs attention", message, palette.danger)
+            return (.localized("Needs attention"), .verbatim(message), palette.danger)
         default:
             return (
-                model.connectionState.label,
-                "Pair a gateway to run chats on it.",
+                .localized(model.connectionState.label),
+                .localized("Pair a gateway to run chats on it."),
                 palette.warning
             )
         }
@@ -288,7 +441,7 @@ struct GatewayView: View {
                 }
             }
         ) {
-            SettingsRowLabel(title: account.machineName)
+            SettingsRowLabel(title: .verbatim(account.machineName))
         }
         .swipeActions(edge: .trailing) {
             Button {
@@ -379,8 +532,8 @@ struct GatewayDetailView: View {
     private func detail(_ account: GatewayAccount) -> some View {
         let isActive = account.id == model.selectedAccountID
         return PageScaffold(
-            title: account.machineName,
-            detail: "",
+            title: .verbatim(account.machineName),
+            detail: .verbatim(""),
             sharesHeaderBackground: true,
             headerAccessory: {
                 HeaderOptionsMenu(label: "Gateway actions") {
@@ -418,22 +571,24 @@ struct GatewayDetailView: View {
                 HStack(spacing: MobiusSpace.m) {
                     Text("Endpoint")
                     Spacer(minLength: MobiusSpace.s)
-                    Text(account.endpoint.rawValue)
+                    Text(verbatim: account.endpoint.rawValue)
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .frame(maxWidth: .infinity, alignment: .trailing)
                         .textSelection(.enabled)
                 }
-                LabeledContent("Transport", value: transportName(account))
-                LabeledContent("Name", value: account.displayName)
-                LabeledContent("Wire protocol", value: "v\(gatewayProtocolVersion)")
+                LabeledContent("Transport") { Text(transportName(account)) }
+                LabeledContent("Name") { Text(verbatim: account.displayName) }
+                LabeledContent("Wire protocol") {
+                    Text(verbatim: "v\(gatewayProtocolVersion)")
+                }
             }
 
             if isActive {
                 Section("Pair another device") {
                     SettingsCaption("Ask this gateway for a short-lived code, then enter it with the same gateway address on the other device.")
                     if let pairing = model.pairingCodeInfo {
-                        Text(pairing.code)
+                        Text(verbatim: pairing.code)
                             .font(MobiusStyle.codeFont)
                             .tracking(3)
                             .textSelection(.enabled)
@@ -468,12 +623,8 @@ struct GatewayDetailView: View {
                     .buttonStyle(.plain)
                     .disabled(!model.connectionState.isReady)
                     .accessibilityLabel("GitHub credentials")
-                    .accessibilityValue(gitCredentialSummary)
-                    .accessibilityHint(
-                        model.gitCredentialAvailable == true
-                            ? "Shows credential details"
-                            : "Adds a GitHub HTTPS credential to this gateway host"
-                    )
+                    .accessibilityValue(Text(gitCredentialSummary))
+                    .accessibilityHint(Text(gitCredentialHint))
 
                     Button {
                         hostCredentialSheet = .ssh
@@ -483,12 +634,8 @@ struct GatewayDetailView: View {
                     .buttonStyle(.plain)
                     .disabled(!model.connectionState.isReady)
                     .accessibilityLabel("SSH identities")
-                    .accessibilityValue(sshCredentialSummary)
-                    .accessibilityHint(
-                        model.sshIdentities?.isEmpty == false
-                            ? "Shows public identity details"
-                            : "Creates an SSH identity on this gateway host"
-                    )
+                    .accessibilityValue(sshCredentialSummary.text)
+                    .accessibilityHint(Text(sshCredentialHint))
                 }
             }
         }
@@ -516,7 +663,7 @@ struct GatewayDetailView: View {
         .contentShape(Rectangle())
     }
 
-    private var gitCredentialSummary: String {
+    private var gitCredentialSummary: LocalizedStringResource {
         if !model.connectionState.isReady { return "Connect to check this host." }
         if model.isCheckingGitCredential { return "Checking this host…" }
         if model.gitCredentialAvailable == true { return "Credential found on this host." }
@@ -524,9 +671,18 @@ struct GatewayDetailView: View {
         return "Couldn’t check this host."
     }
 
+    private var gitCredentialHint: LocalizedStringResource {
+        model.gitCredentialAvailable == true
+            ? "Shows credential details"
+            : "Adds a GitHub HTTPS credential to this gateway host"
+    }
+
     private var sshCredentialRow: some View {
         HStack(spacing: MobiusSpace.m) {
-            SettingsRowLabel(title: "SSH", detail: sshCredentialSummary) {
+            SettingsRowLabel(
+                title: .localized("SSH"),
+                detail: sshCredentialSummary
+            ) {
                 MobiusIcon(.fingerprint, size: MobiusStyle.glyphInline)
             }
             if model.isLoadingSshIdentities || model.isGeneratingSshIdentity {
@@ -545,17 +701,28 @@ struct GatewayDetailView: View {
         }
     }
 
-    private var sshCredentialSummary: String {
-        if !model.connectionState.isReady { return "Connect to check this host." }
-        if model.isLoadingSshIdentities { return "Checking this host…" }
-        if model.isGeneratingSshIdentity { return "Generating an Ed25519 key on this host…" }
-        if let error = model.sshIdentityError { return error }
-        guard let identities = model.sshIdentities else { return "Couldn’t check this host." }
-        if identities.isEmpty { return "No public identities found." }
-        return "\(identities.count) public \(identities.count == 1 ? "identity" : "identities") found."
+    private var sshCredentialSummary: MobiusText {
+        if !model.connectionState.isReady { return .localized("Connect to check this host.") }
+        if model.isLoadingSshIdentities { return .localized("Checking this host…") }
+        if model.isGeneratingSshIdentity {
+            return .localized("Generating an Ed25519 key on this host…")
+        }
+        if let error = model.sshIdentityError { return .verbatim(error) }
+        guard let identities = model.sshIdentities else {
+            return .localized("Couldn’t check this host.")
+        }
+        if identities.isEmpty { return .localized("No public identities found.") }
+        if identities.count == 1 { return .localized("1 public identity found.") }
+        return .localized("\(identities.count) public identities found.")
     }
 
-    private func transportName(_ account: GatewayAccount) -> String {
+    private var sshCredentialHint: LocalizedStringResource {
+        model.sshIdentities?.isEmpty == false
+            ? "Shows public identity details"
+            : "Creates an SSH identity on this gateway host"
+    }
+
+    private func transportName(_ account: GatewayAccount) -> LocalizedStringResource {
         if account.endpoint.usesWebSocket { return "WebSocket TLS" }
         return account.endpoint.usesTLS ? "TLS" : "Loopback TCP"
     }
@@ -572,11 +739,11 @@ private struct GitCredentialSheet: View {
         NavigationStack {
             Form {
                 Section("GitHub") {
-                    LabeledContent("Host", value: "github.com")
+                    LabeledContent("Host") { Text(verbatim: "github.com") }
                     if model.gitCredentialAvailable == true {
-                        LabeledContent("Status", value: "Available")
+                        LabeledContent("Status") { Text("Available") }
                         if let username = model.gitCredentialUsername {
-                            LabeledContent("Username", value: username)
+                            LabeledContent("Username") { Text(verbatim: username) }
                         }
                     }
                 }
@@ -597,7 +764,7 @@ private struct GitCredentialSheet: View {
                 }
 
                 if let error = model.gitCredentialError {
-                    Text(error)
+                    Text(verbatim: error)
                         .font(MobiusStyle.captionFont)
                         .foregroundStyle(palette.danger)
                 }
@@ -622,7 +789,7 @@ private struct GitCredentialSheet: View {
         if model.gitCredentialAvailable == true {
             Button("Done") { dismiss() }
         } else {
-            Button(model.isCheckingGitCredential ? "Saving…" : "Save") {
+            Button {
                 let value = token
                 token = ""
                 model.approveGitCredential(
@@ -630,6 +797,8 @@ private struct GitCredentialSheet: View {
                     username: username,
                     token: value
                 )
+            } label: {
+                Text(actionTitle)
             }
             .disabled(
                 model.isCheckingGitCredential
@@ -637,6 +806,10 @@ private struct GitCredentialSheet: View {
                     || token.isEmpty
             )
         }
+    }
+
+    private var actionTitle: LocalizedStringResource {
+        model.isCheckingGitCredential ? "Saving…" : "Save"
     }
 }
 
@@ -649,15 +822,17 @@ private struct SshCredentialSheet: View {
         NavigationStack {
             Form {
                 Section("SSH") {
-                    LabeledContent("Status", value: status)
+                    LabeledContent("Status") { Text(status) }
                 }
 
                 if let identities = model.sshIdentities, !identities.isEmpty {
                     Section("Public identities") {
                         ForEach(identities) { identity in
                             VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
-                                LabeledContent("Label", value: identity.label)
-                                LabeledContent("Algorithm", value: identity.algorithm)
+                                LabeledContent("Label") { Text(verbatim: identity.label) }
+                                LabeledContent("Algorithm") {
+                                    Text(verbatim: identity.algorithm)
+                                }
                                 Text(verbatim: identity.fingerprint)
                                     .font(MobiusStyle.metadataFont)
                                     .foregroundStyle(palette.muted)
@@ -666,7 +841,7 @@ private struct SshCredentialSheet: View {
                                     .textSelection(.enabled)
                             }
                             .accessibilityElement(children: .combine)
-                            .accessibilityLabel(identity.label)
+                            .accessibilityLabel(Text(verbatim: identity.label))
                             .accessibilityValue(
                                 "\(identity.algorithm), \(identity.fingerprint)"
                             )
@@ -700,7 +875,7 @@ private struct SshCredentialSheet: View {
                 }
 
                 if let error = model.sshIdentityError {
-                    Text(error)
+                    Text(verbatim: error)
                         .font(MobiusStyle.captionFont)
                         .foregroundStyle(palette.danger)
                 }
@@ -714,13 +889,17 @@ private struct SshCredentialSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     if model.sshIdentities == nil {
-                        Button(model.isLoadingSshIdentities ? "Checking…" : "Retry") {
+                        Button {
                             model.listSshIdentities()
+                        } label: {
+                            Text(checkActionTitle)
                         }
                         .disabled(model.isLoadingSshIdentities)
                     } else if model.sshIdentities?.isEmpty == true {
-                        Button(model.isGeneratingSshIdentity ? "Generating…" : "Generate") {
+                        Button {
                             model.generateSshIdentity()
+                        } label: {
+                            Text(generateActionTitle)
                         }
                         .disabled(model.isGeneratingSshIdentity)
                     } else {
@@ -735,24 +914,48 @@ private struct SshCredentialSheet: View {
         }
     }
 
-    private var status: String {
+    private var status: LocalizedStringResource {
         if model.isLoadingSshIdentities { return "Checking…" }
         if model.sshIdentityError != nil { return "Couldn’t check" }
         guard let identities = model.sshIdentities else { return "Unknown" }
         return identities.isEmpty ? "Not configured" : "Available"
     }
+
+    private var checkActionTitle: LocalizedStringResource {
+        model.isLoadingSshIdentities ? "Checking…" : "Retry"
+    }
+
+    private var generateActionTitle: LocalizedStringResource {
+        model.isGeneratingSshIdentity ? "Generating…" : "Generate"
+    }
 }
 
 struct PageScaffold<HeaderAccessory: View, Content: View>: View {
-    let title: String
-    let detail: String
+    let title: MobiusText
+    let detail: MobiusText
     let sharesHeaderBackground: Bool
     let headerAccessory: HeaderAccessory
     let content: Content
 
     init(
-        title: String,
-        detail: String,
+        title: LocalizedStringResource,
+        detail: LocalizedStringResource,
+        sharesHeaderBackground: Bool = false,
+        @ViewBuilder headerAccessory: () -> HeaderAccessory,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.init(
+            title: .localized(title),
+            detail: .localized(detail),
+            sharesHeaderBackground: sharesHeaderBackground,
+            headerAccessory: headerAccessory,
+            content: content
+        )
+    }
+
+    init(
+        title: MobiusText,
+        detail: MobiusText,
         sharesHeaderBackground: Bool = false,
         @ViewBuilder headerAccessory: () -> HeaderAccessory,
         @ViewBuilder content: () -> Content
@@ -781,7 +984,7 @@ struct PageScaffold<HeaderAccessory: View, Content: View>: View {
             .scrollContentBackground(.hidden)
             .scrollDismissesKeyboard(.interactively)
         }
-        .navigationTitle(title)
+        .navigationTitle(title.text)
         .toolbarTitleDisplayMode(.inline)
         .toolbar {
             if sharesHeaderBackground {
@@ -797,8 +1000,22 @@ struct PageScaffold<HeaderAccessory: View, Content: View>: View {
 
 extension PageScaffold where HeaderAccessory == EmptyView {
     init(
-        title: String,
-        detail: String,
+        title: LocalizedStringResource,
+        detail: LocalizedStringResource,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.init(
+            title: .localized(title),
+            detail: .localized(detail),
+            sharesHeaderBackground: false,
+            headerAccessory: EmptyView.init,
+            content: content
+        )
+    }
+
+    init(
+        title: MobiusText,
+        detail: MobiusText,
         @ViewBuilder content: () -> Content
     ) {
         self.init(
@@ -815,12 +1032,16 @@ extension PageScaffold where HeaderAccessory == EmptyView {
 /// The page description in `PageScaffold` reads at this step too, so a page stays one voice.
 struct SettingsCaption: View {
     @Environment(\.mobiusPalette) private var palette
-    let text: String
+    let content: MobiusText
 
-    init(_ text: String) { self.text = text }
+    init(_ text: LocalizedStringResource) { content = .localized(text) }
+
+    init(_ text: MobiusText) { content = text }
+
+    init(verbatim text: String) { content = .verbatim(text) }
 
     var body: some View {
-        Text(text)
+        content.text
             .font(MobiusStyle.captionFont)
             .foregroundStyle(palette.muted)
             .listRowSeparator(.hidden)
@@ -831,19 +1052,41 @@ struct SettingsCaption: View {
 struct SettingsRowLabel<Mark: View>: View {
     @Environment(\.mobiusPalette) private var palette
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    let title: String
-    var detail: String?
+    let title: MobiusText
+    var detail: MobiusText?
     @ViewBuilder let mark: Mark
+
+    init(
+        title: LocalizedStringResource,
+        detail: LocalizedStringResource? = nil,
+        @ViewBuilder mark: () -> Mark
+    ) {
+        self.init(
+            title: .localized(title),
+            detail: detail.map { .localized($0) },
+            mark: mark
+        )
+    }
+
+    init(
+        title: MobiusText,
+        detail: MobiusText? = nil,
+        @ViewBuilder mark: () -> Mark
+    ) {
+        self.title = title
+        self.detail = detail
+        self.mark = mark()
+    }
 
     var body: some View {
         HStack(spacing: MobiusSpace.s) {
             mark
             VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
-                Text(verbatim: title)
+                title.text
                     .lineLimit(1)
                     .truncationMode(.middle)
                 if let detail, !detail.isEmpty {
-                    Text(verbatim: detail)
+                    detail.text
                         .font(MobiusStyle.captionFont)
                         .foregroundStyle(palette.muted)
                         // At accessibility sizes two lines cannot hold a sentence, so the
@@ -859,7 +1102,17 @@ struct SettingsRowLabel<Mark: View>: View {
 }
 
 extension SettingsRowLabel where Mark == EmptyView {
-    init(title: String, detail: String? = nil) {
+    init(
+        title: LocalizedStringResource,
+        detail: LocalizedStringResource? = nil
+    ) {
+        self.init(
+            title: .localized(title),
+            detail: detail.map { .localized($0) }
+        ) { EmptyView() }
+    }
+
+    init(title: MobiusText, detail: MobiusText? = nil) {
         self.init(title: title, detail: detail) { EmptyView() }
     }
 }
@@ -870,8 +1123,23 @@ extension SettingsRowLabel where Mark == EmptyView {
 /// masked by the view it is applied to, so per-row placeholders light a single row in the
 /// middle instead of sweeping the section the way the chats list does.
 struct SettingsLoadingRows<Content: View>: View {
-    let label: String
+    let label: MobiusText
     @ViewBuilder let content: Content
+
+    init(
+        label: LocalizedStringResource,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.init(label: .localized(label), content: content)
+    }
+
+    init(
+        label: MobiusText,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.label = label
+        self.content = content()
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: MobiusSpace.m) {
@@ -887,14 +1155,36 @@ struct SettingsLoadingRows<Content: View>: View {
 /// reading and while being edited.
 struct SettingsStackedField<Content: View>: View {
     @Environment(\.mobiusPalette) private var palette
-    let title: String
-    var info: String?
+    let title: MobiusText
+    var info: MobiusText?
     @ViewBuilder let content: Content
+
+    init(
+        title: LocalizedStringResource,
+        info: LocalizedStringResource? = nil,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.init(
+            title: .localized(title),
+            info: info.map { .localized($0) },
+            content: content
+        )
+    }
+
+    init(
+        title: MobiusText,
+        info: MobiusText? = nil,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.title = title
+        self.info = info
+        self.content = content()
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
             HStack(spacing: MobiusSpace.xs) {
-                Text(title)
+                title.text
                 if let info {
                     SettingsInfoButton(title: title, detail: info, compact: true)
                 }
@@ -913,10 +1203,36 @@ struct SettingsStackedField<Content: View>: View {
 /// before the disclosure every one of these rows ends with.
 struct SettingsNavigationRow<Marks: View, Label: View>: View {
     @Environment(\.mobiusPalette) private var palette
-    let hint: String
+    let hint: MobiusText
     let open: () -> Void
     @ViewBuilder let marks: Marks
     @ViewBuilder let label: Label
+
+    init(
+        hint: LocalizedStringResource,
+        open: @escaping () -> Void,
+        @ViewBuilder marks: () -> Marks,
+        @ViewBuilder label: () -> Label
+    ) {
+        self.init(
+            hint: .localized(hint),
+            open: open,
+            marks: marks,
+            label: label
+        )
+    }
+
+    init(
+        hint: MobiusText,
+        open: @escaping () -> Void,
+        @ViewBuilder marks: () -> Marks,
+        @ViewBuilder label: () -> Label
+    ) {
+        self.hint = hint
+        self.open = open
+        self.marks = marks()
+        self.label = label()
+    }
 
     var body: some View {
         HStack(spacing: MobiusSpace.s) {
@@ -924,7 +1240,7 @@ struct SettingsNavigationRow<Marks: View, Label: View>: View {
                 label.contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityHint(hint)
+            .accessibilityHint(hint.text)
             marks
             MobiusIcon(.caretRight, size: MobiusStyle.glyphMark, foreground: palette.muted)
                 .accessibilityHidden(true)
@@ -958,22 +1274,54 @@ struct StatusBanner: View {
     enum Tone { case neutral, success, warning, error }
     @Environment(\.mobiusPalette) private var palette
     let tone: Tone
-    let title: String
-    let detail: String
+    let title: MobiusText
+    let detail: MobiusText
     var progress = false
-    var action: (String, @MainActor () -> Void)?
+    var action: (MobiusText, @MainActor () -> Void)?
+
+    init(
+        tone: Tone,
+        title: LocalizedStringResource,
+        detail: LocalizedStringResource,
+        progress: Bool = false,
+        action: (LocalizedStringResource, @MainActor () -> Void)? = nil
+    ) {
+        self.init(
+            tone: tone,
+            title: .localized(title),
+            detail: .localized(detail),
+            progress: progress,
+            action: action.map { (.localized($0.0), $0.1) }
+        )
+    }
+
+    init(
+        tone: Tone,
+        title: MobiusText,
+        detail: MobiusText,
+        progress: Bool = false,
+        action: (MobiusText, @MainActor () -> Void)? = nil
+    ) {
+        self.tone = tone
+        self.title = title
+        self.detail = detail
+        self.progress = progress
+        self.action = action
+    }
 
     var body: some View {
         HStack(spacing: MobiusSpace.m) {
             if progress { ProgressView().controlSize(.small) }
             else { MobiusIcon(glyph, foreground: color) }
             VStack(alignment: .leading, spacing: MobiusSpace.xs) {
-                Text(title).font(MobiusStyle.controlFont)
-                Text(detail).font(MobiusStyle.bodyFont).foregroundStyle(palette.muted)
+                title.text.font(MobiusStyle.controlFont)
+                detail.text.font(MobiusStyle.bodyFont).foregroundStyle(palette.muted)
             }
             Spacer()
             if let action {
-                Button(action.0, action: action.1)
+                Button(action: action.1) {
+                    action.0.text
+                }
                     .buttonStyle(.mobiusGlass)
                     .buttonBorderShape(.capsule)
             }
@@ -1006,8 +1354,20 @@ struct StatusBanner: View {
 }
 
 struct DisabledCapabilityNotice: View {
-    let title: String
-    let detail: String
+    let title: MobiusText
+    let detail: MobiusText
+
+    init(
+        title: LocalizedStringResource,
+        detail: LocalizedStringResource
+    ) {
+        self.init(title: .localized(title), detail: .localized(detail))
+    }
+
+    init(title: MobiusText, detail: MobiusText) {
+        self.title = title
+        self.detail = detail
+    }
 
     var body: some View {
         StatusBanner(tone: .neutral, title: title, detail: detail)

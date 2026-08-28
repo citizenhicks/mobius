@@ -23,7 +23,7 @@ struct ExtensionsView: View {
                     .accessibilityHint("Opens the extension installer")
                     .help("Install extension")
                     SettingsStatusButton(
-                        subject: "Extensions",
+                        subject: .localized("Extensions"),
                         statusLabel: status.label,
                         statusDetail: status.detail,
                         statusColor: status.color
@@ -53,7 +53,10 @@ struct ExtensionsView: View {
             if !model.extensionSkillReferences.isEmpty {
                 Section {
                     ForEach(model.extensionSkillReferences, id: \.value) { skill in
-                        SettingsRowLabel(title: skill.value, detail: skill.description)
+                        SettingsRowLabel(
+                            title: .verbatim(skill.value),
+                            detail: .verbatim(skill.description)
+                        )
                     }
                 } header: {
                     HStack(spacing: MobiusSpace.xs) {
@@ -94,14 +97,14 @@ struct ExtensionsView: View {
             SettingsLoadingRows(label: "Loading available extensions") {
                 ForEach(0..<3, id: \.self) { _ in
                     availableCatalogLabel(
-                        name: "Portable plugin",
-                        description: "Install a portable plugin from the catalog."
+                        name: .localized("Portable plugin"),
+                        description: .localized("Install a portable plugin from the catalog.")
                     )
                 }
             }
         } else if let error = model.extensionCatalogError {
             VStack(alignment: .leading, spacing: MobiusSpace.s) {
-                SettingsCaption(error)
+                SettingsCaption(verbatim: error)
                 Button("Retry", glyph: .arrowClockwise) {
                     Task { await model.refreshExtensionCatalog() }
                 }
@@ -118,8 +121,8 @@ struct ExtensionsView: View {
                     model.installExtension(item)
                 } label: {
                     availableCatalogLabel(
-                        name: item.name,
-                        description: item.description
+                        name: .verbatim(item.name),
+                        description: .verbatim(item.description)
                     )
                 }
                 .buttonStyle(.plain)
@@ -131,8 +134,8 @@ struct ExtensionsView: View {
     }
 
     private func availableCatalogLabel(
-        name: String,
-        description: String
+        name: MobiusText,
+        description: MobiusText
     ) -> some View {
         HStack(spacing: MobiusSpace.s) {
             SettingsRowLabel(title: name, detail: description) {
@@ -149,9 +152,8 @@ struct ExtensionsView: View {
 
     private var loadingInstalled: some View {
         SettingsLoadingRows(label: "Loading installed extensions") {
-            ForEach(["Extension name", "Another extension"], id: \.self) { name in
-                SettingsRowLabel(title: name, detail: "github.com/owner/repo · main")
-            }
+            SettingsRowLabel(title: "Extension name", detail: "github.com/owner/repo · main")
+            SettingsRowLabel(title: "Another extension", detail: "github.com/owner/repo · main")
         }
     }
 
@@ -169,40 +171,40 @@ struct ExtensionsView: View {
         }
     }
 
-    private var pageDetail: String {
+    private var pageDetail: LocalizedStringResource {
         model.connectionState.isReady
             ? "Portable plugins this gateway can use in a chat."
             : "Connect to a gateway to manage extensions."
     }
 
-    private var extensionStatus: (label: String, detail: String, color: Color) {
+    private var extensionStatus: (label: MobiusText, detail: MobiusText, color: Color) {
         if let action = model.extensionAction {
             return switch action {
             case .installing:
-                ("Installing extension", "The gateway is adding the package to its catalog.", palette.accent)
+                (.localized("Installing extension"), .localized("The gateway is adding the package to its catalog."), palette.accent)
             case .updating(let name):
-                ("Updating \(name)", "The gateway is replacing the installed snapshot.", palette.accent)
+                (.localized("Updating \(name)"), .localized("The gateway is replacing the installed snapshot."), palette.accent)
             case .uninstalling(let name):
-                ("Uninstalling \(name)", "The gateway is removing the package from its catalog.", palette.accent)
+                (.localized("Uninstalling \(name)"), .localized("The gateway is removing the package from its catalog."), palette.accent)
             case .trusting(let name):
-                ("Trusting \(name) hooks", "Trust is bound to the reviewed package digest.", palette.accent)
+                (.localized("Trusting \(name) hooks"), .localized("Trust is bound to the reviewed package digest."), palette.accent)
             case .untrusting(let name):
-                ("Disabling \(name) hooks", "The gateway is revoking executable-hook trust.", palette.accent)
+                (.localized("Disabling \(name) hooks"), .localized("The gateway is revoking executable-hook trust."), palette.accent)
             }
         }
         switch model.connectionState {
         case .ready:
             return (
-                "Catalog up to date",
-                "\(model.extensions.count) installed · \(model.extensionSkillReferences.count) discovered",
+                .localized("Catalog up to date"),
+                .localized("\(model.extensions.count) installed · \(model.extensionSkillReferences.count) discovered"),
                 palette.signal
             )
         case .failed(let message):
-            return ("Needs attention", message, palette.danger)
+            return (.localized("Needs attention"), .verbatim(message), palette.danger)
         default:
             return (
-                model.connectionState.label,
-                "Connect to a gateway to manage its extension catalog.",
+                .localized(model.connectionState.label),
+                .localized("Connect to a gateway to manage its extension catalog."),
                 palette.warning
             )
         }
@@ -219,7 +221,10 @@ struct ExtensionsView: View {
                 }
             }
         ) {
-            SettingsRowLabel(title: record.name, detail: record.qualifiers)
+            SettingsRowLabel(
+                title: .verbatim(record.name),
+                detail: record.qualifiers
+            )
         }
         .swipeActions(edge: .trailing) {
             Button {
@@ -323,8 +328,8 @@ struct ExtensionDetailView: View {
 
     private func detail(_ record: ExtensionRecord) -> some View {
         PageScaffold(
-            title: record.name,
-            detail: "",
+            title: .verbatim(record.name),
+            detail: .verbatim(""),
             sharesHeaderBackground: true,
             headerAccessory: {
                 HeaderOptionsMenu(label: "Extension actions") {
@@ -361,11 +366,14 @@ struct ExtensionDetailView: View {
             }
         ) {
             if !record.description.isEmpty {
-                Section { Text(record.description) }
+                Section { Text(verbatim: record.description) }
             }
 
             Section("Package") {
-                LabeledContent("Kind", value: record.kind == .plugin ? "Plugin" : "Skill")
+                LabeledContent("Kind") {
+                    if record.kind == .plugin { Text("Plugin") }
+                    else { Text("Skill") }
+                }
                 if let version = record.version {
                     LabeledContent("Version") { Text(verbatim: version) }
                 }
@@ -456,7 +464,11 @@ private struct ExtensionHookRow: View {
         VStack(alignment: .leading, spacing: MobiusSpace.s) {
             LabeledContent("Event") { Text(verbatim: shellSafe(hook.event)) }
             LabeledContent("Matcher") {
-                Text(verbatim: hook.matcher.map(shellSafe) ?? "Any")
+                if let matcher = hook.matcher {
+                    Text(verbatim: shellSafe(matcher))
+                } else {
+                    Text("Any")
+                }
             }
             LabeledContent("Timeout", value: "\(hook.timeoutSeconds.formatted())s")
             MonospacedValue(label: "Command", value: shellSafe(hook.command))
@@ -484,7 +496,7 @@ private struct IdentifiedExtensionHook: Identifiable {
 /// character: a digest, a revision, a command.
 private struct MonospacedValue: View {
     @Environment(\.mobiusPalette) private var palette
-    let label: String
+    let label: LocalizedStringResource
     let value: String
 
     var body: some View {
@@ -511,9 +523,12 @@ private func shellSafe(_ value: String) -> String {
 private extension ExtensionRecord {
     var needsHookTrust: Bool { !hooks.isEmpty && !hooksTrusted }
 
-    var qualifiers: String {
-        var parts = [kind == .plugin ? "Plugin" : "Skill"]
-        if let version { parts.append(version) }
-        return parts.joined(separator: " · ")
+    var qualifiers: MobiusText {
+        switch (kind, version) {
+        case (.plugin, .some(let version)): .localized("Plugin · \(version)")
+        case (.plugin, .none): .localized("Plugin")
+        case (.skill, .some(let version)): .localized("Skill · \(version)")
+        case (.skill, .none): .localized("Skill")
+        }
     }
 }

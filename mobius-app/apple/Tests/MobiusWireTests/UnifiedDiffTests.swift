@@ -130,7 +130,10 @@ final class UnifiedDiffTests: XCTestCase {
         guard case let .hunk(hunk) = swift.rows[0].kind else {
             return XCTFail("Expected a hunk header")
         }
-        XCTAssertEqual(hunk.title, "Lines 10–13")
+        XCTAssertEqual(
+            MobiusText.localized(hunk.title).resolved(locale: Locale(identifier: "en")),
+            "Lines 10–13"
+        )
         XCTAssertEqual(hunk.added, 2)
         XCTAssertEqual(hunk.removed, 1)
         XCTAssertEqual(swift.rows[1].oldNumber, 10)
@@ -155,7 +158,10 @@ final class UnifiedDiffTests: XCTestCase {
             added: 1,
             removed: 9
         )
-        XCTAssertEqual(deletionHeavyHunk.title, "Lines 128–138")
+        XCTAssertEqual(
+            MobiusText.localized(deletionHeavyHunk.title).resolved(locale: Locale(identifier: "en")),
+            "Lines 128–138"
+        )
     }
 
     func testKeepsMetadataOnlyFilesAndTruncation() throws {
@@ -248,6 +254,6 @@ final class UnifiedDiffTests: XCTestCase {
         let line = try XCTUnwrap(document.files.first?.rows.last)
 
         XCTAssertLessThan(line.text.count, 4_200)
-        XCTAssertTrue(line.text.hasSuffix("[line truncated]"))
+        XCTAssertTrue(line.text.hasSuffix("…"))
     }
 }

@@ -30,11 +30,15 @@ struct AppLockView: View {
                     : "Try Again"
             )
             .accessibilityValue(
-                model.isAppLockAuthenticating
-                    ? "Authenticating"
-                    : model.appLockError ?? "möbius is locked"
+                appLockAccessibilityValue
             )
         }
+    }
+
+    private var appLockAccessibilityValue: Text {
+        if model.isAppLockAuthenticating { return Text("Authenticating") }
+        if let error = model.appLockError { return Text(verbatim: error) }
+        return Text("möbius is locked")
     }
 }
 
@@ -139,13 +143,13 @@ private struct AppToastView: View {
         .contentShape(Rectangle())
     }
 
-    private var accessibilityLabel: String {
-        "\(toast.tone.title): \(toast.message)"
+    private var accessibilityLabel: Text {
+        Text("\(toast.tone.title): \(toast.message)")
     }
 }
 
 extension ToastTone {
-    var title: String {
+    var title: LocalizedStringResource {
         switch self {
         case .info: "Notice"
         case .success: "Done"

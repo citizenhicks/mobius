@@ -247,4 +247,16 @@ enum AccentTint: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 
     var label: String { rawValue.capitalized }
+
+    var localizedLabel: LocalizedStringResource {
+        switch self {
+        case .blue: "Blue"
+        case .teal: "Teal"
+        case .green: "Green"
+        case .yellow: "Yellow"
+        case .orange: "Orange"
+        case .red: "Red"
+        case .purple: "Purple"
+        }
+    }
 }

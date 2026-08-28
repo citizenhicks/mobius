@@ -372,7 +372,7 @@ extension AppModel {
         if let index = composerAttachments.firstIndex(where: { $0.id == localID }) {
             composerAttachments[index].state = .failed(message)
         }
-        if showsToast { showToast(message, tone: .error) }
+        if showsToast { showToast(verbatim: message, tone: .error) }
         startNextSessionFileUpload()
     }
 
@@ -460,7 +460,7 @@ extension AppModel {
                 guard self?.sessionFileDownload?.requestID == id else { return }
                 self?.sessionFileDownload = nil
                 self?.isLoadingFilePresentation = false
-                self?.showToast(message, tone: .error)
+                self?.showToast(verbatim: message, tone: .error)
             }
             return
         }
@@ -590,7 +590,7 @@ extension AppModel {
                 guard self?.workspaceFilePreviewDownload?.requestID == id else { return }
                 self?.workspaceFilePreviewDownload = nil
                 self?.isLoadingFilePresentation = false
-                self?.showToast(message, tone: .error)
+                self?.showToast(verbatim: message, tone: .error)
             }
             return
         }
@@ -666,7 +666,7 @@ extension AppModel {
             } catch {
                 guard let self, self.filePresentationGeneration == generation else { return }
                 self.isLoadingFilePresentation = false
-                self.showToast(error.localizedDescription, tone: .error)
+                self.showToast(verbatim: self.localizedErrorDescription(error), tone: .error)
             }
         }
     }
@@ -1003,7 +1003,7 @@ extension AppModel {
                 self.stashedComposerDraft = nil
                 self.cacheSelectedTranscript()
             case .failure(let error):
-                self.showToast(error.localizedDescription, tone: .error)
+                self.showToast(verbatim: self.localizedErrorDescription(error), tone: .error)
             }
         }
     }

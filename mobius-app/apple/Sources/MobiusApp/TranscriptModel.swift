@@ -291,7 +291,7 @@ struct TranscriptPresentationRow: Identifiable {
 
 struct TranscriptWaitingPhrase: Equatable {
     let startedAt: Date
-    let order: [String]
+    let order: [LocalizedStringResource]
 }
 
 /// Where the waiting phrase is drawn, if anywhere.
@@ -666,7 +666,7 @@ extension TranscriptEntry {
 
     /// "2 thoughts • 3 tool calls • 4 web searches • 1 approval • 2 events • 1 error", skipping
     /// the empty categories.
-    static func summary(for entries: [TranscriptEntry]) -> String {
+    static func summary(for entries: [TranscriptEntry]) -> LocalizedStringResource {
         var thoughts = 0
         var tools = 0
         var searches = 0
@@ -691,20 +691,33 @@ extension TranscriptEntry {
                 events += 1
             }
         }
-        return [
-            (thoughts, "thought"), (tools, "tool call"), (searches, "web search"),
-            (approvals, "approval"), (artifacts, "artifact"), (events, "event"),
-            (errors, "error")
-        ]
-        .filter { $0.0 > 0 }
-        .map { counted($0.0, $0.1) }
-        .joined(separator: " • ")
-    }
+        var parts: [LocalizedStringResource] = []
+        func appendCount(
+            _ count: Int,
+            singular: LocalizedStringResource,
+            plural: LocalizedStringResource
+        ) {
+            guard count > 0 else { return }
+            parts.append(count == 1 ? singular : plural)
+        }
 
-    private static func counted(_ count: Int, _ noun: String) -> String {
-        guard count != 1 else { return "1 \(noun)" }
-        let sibilant = ["ch", "sh", "s", "x"].contains { noun.hasSuffix($0) }
-        return "\(count) \(noun)\(sibilant ? "es" : "s")"
+        appendCount(thoughts, singular: "\(thoughts) thought", plural: "\(thoughts) thoughts")
+        appendCount(tools, singular: "\(tools) tool call", plural: "\(tools) tool calls")
+        appendCount(
+            searches,
+            singular: "\(searches) web search",
+            plural: "\(searches) web searches"
+        )
+        appendCount(approvals, singular: "\(approvals) approval", plural: "\(approvals) approvals")
+        appendCount(artifacts, singular: "\(artifacts) artifact", plural: "\(artifacts) artifacts")
+        appendCount(events, singular: "\(events) event", plural: "\(events) events")
+        appendCount(errors, singular: "\(errors) error", plural: "\(errors) errors")
+
+        guard var summary = parts.first else { return "" }
+        for part in parts.dropFirst() {
+            summary = "\(summary) • \(part)"
+        }
+        return summary
     }
 }
 

@@ -130,9 +130,7 @@ struct AppShell: View {
         }
         .onChange(of: model.toast?.id) { _, _ in
             guard let toast = model.toast else { return }
-            AccessibilityNotification.Announcement(
-                "\(toast.tone.title): \(toast.message)"
-            ).post()
+            announce(toast)
         }
         .sensoryFeedback(.impact(weight: .light), trigger: model.toast?.id) { _, id in id != nil }
         .sensoryFeedback(.impact(weight: .light), trigger: model.steeringDeliveryRevision)
@@ -150,10 +148,20 @@ struct AppShell: View {
             model.start()
             if scenePhase == .active { await model.appDidBecomeActive() }
         }
+        .environment(\.locale, model.language.locale)
     }
 
     private var filePresentationsAreSuppressed: Bool {
         model.isAppLocked || model.appLockEnabled && scenePhase != .active
+    }
+
+    private func announce(_ toast: AppToast) {
+        var announcement: LocalizedStringResource =
+            "\(toast.tone.title): \(toast.message)"
+        announcement.locale = model.language.locale
+        AccessibilityNotification.Announcement(
+            String(localized: announcement)
+        ).post()
     }
 
     private var presentedTextFilePreview: Binding<TextFilePreview?> {
@@ -250,7 +258,7 @@ struct AppShell: View {
         }
     }
 
-    private var iPadSidebarButtonTitle: String {
+    private var iPadSidebarButtonTitle: LocalizedStringResource {
         if horizontalSizeClass == .compact {
             return sidebarIsOpen ? "Hide sidebar" : "Show sidebar"
         }

@@ -25,7 +25,7 @@ struct ProvidersView: View {
                     .accessibilityHint("Opens the provider setup")
                     .help("Add provider")
                     SettingsStatusButton(
-                        subject: "Providers",
+                        subject: .localized("Providers"),
                         statusLabel: status.label,
                         statusDetail: status.detail,
                         statusColor: status.color
@@ -74,11 +74,13 @@ struct ProvidersView: View {
     /// looks like the page rather than like a spinner.
     private var loadingCatalog: some View {
         SettingsLoadingRows(label: "Loading providers") {
-            ForEach(["Provider account", "Another account"], id: \.self) { name in
-                SettingsRowLabel(title: name, detail: "Model service") {
-                    MobiusIcon(.hardDrives, size: MobiusStyle.glyphLead, foreground: palette.muted)
-                        .unredacted()
-                }
+            SettingsRowLabel(title: "Provider account", detail: "Model service") {
+                MobiusIcon(.hardDrives, size: MobiusStyle.glyphLead, foreground: palette.muted)
+                    .unredacted()
+            }
+            SettingsRowLabel(title: "Another account", detail: "Model service") {
+                MobiusIcon(.hardDrives, size: MobiusStyle.glyphLead, foreground: palette.muted)
+                    .unredacted()
             }
         }
     }
@@ -86,34 +88,34 @@ struct ProvidersView: View {
     private func providerLabel(_ instance: ProviderInstance) -> some View {
         let definition = model.providerStatuses.first { $0.provider == instance.provider }
         return SettingsRowLabel(
-            title: instance.label,
-            detail: definition?.label ?? instance.provider
+            title: .verbatim(instance.label),
+            detail: .verbatim(definition?.label ?? instance.provider)
         ) {
             ProviderMark(symbol: definition?.symbol, tint: instance.tint)
         }
     }
 
-    private var pageDetail: String {
+    private var pageDetail: LocalizedStringResource {
         model.connectionState.isReady
             ? "Model services this gateway can reach. One setup per account or endpoint."
             : "Connect to a gateway to manage providers."
     }
 
-    private var catalogStatus: (label: String, detail: String, color: Color) {
+    private var catalogStatus: (label: MobiusText, detail: MobiusText, color: Color) {
         switch model.connectionState {
         case .ready:
             let ready = model.providerInstances.filter(\.configured).count
             return (
-                "Catalog up to date",
-                "\(model.providerInstances.count) configured · \(ready) ready",
+                .localized("Catalog up to date"),
+                .localized("\(model.providerInstances.count) configured · \(ready) ready"),
                 palette.signal
             )
         case .failed(let message):
-            return ("Needs attention", message, palette.danger)
+            return (.localized("Needs attention"), .verbatim(message), palette.danger)
         default:
             return (
-                model.connectionState.label,
-                "Connect to a gateway to manage its providers.",
+                .localized(model.connectionState.label),
+                .localized("Connect to a gateway to manage its providers."),
                 palette.warning
             )
         }
@@ -224,8 +226,8 @@ private struct AddProviderSheet: View {
                 provider = status.provider
             } label: {
                 SettingsRowLabel(
-                    title: status.label,
-                    detail: status.description
+                    title: .verbatim(status.label),
+                    detail: .verbatim(status.description)
                 )
                 .contentShape(Rectangle())
             }
@@ -244,8 +246,8 @@ struct ProviderDetailView: View {
     var body: some View {
         if let record = model.providerInstances.first(where: { $0.instance == instance }) {
             PageScaffold(
-                title: record.label,
-                detail: "",
+                title: .verbatim(record.label),
+                detail: .verbatim(""),
                 sharesHeaderBackground: true,
                 headerAccessory: {
                     HeaderActionGroup {
@@ -353,7 +355,7 @@ private struct ProviderFormSections: View {
                         )
                         .lineLimit(1...4)
                     } else {
-                        readOnlyValue(status.models.map(\.id).joined(separator: ", "))
+                        readOnlyValue(.verbatim(status.models.map(\.id).joined(separator: ", ")))
                     }
                 }
                 SettingsStackedField(
@@ -385,7 +387,7 @@ private struct ProviderFormSections: View {
                         .autocorrectionDisabled()
                         .lineLimit(1...4)
                     } else {
-                        readOnlyValue("Provider managed")
+                        readOnlyValue(.localized("Provider managed"))
                     }
                 }
 
@@ -421,20 +423,22 @@ private struct ProviderFormSections: View {
         model.providerStatuses.first { $0.provider == provider }
     }
 
-    private func reasoningEfforts(for status: ProviderStatus) -> String {
+    private func reasoningEfforts(for status: ProviderStatus) -> MobiusText {
         let values = status.models
             .flatMap(\.reasoning)
             .map(\.id)
             .reduce(into: [String]()) { values, value in
                 if !values.contains(value) { values.append(value) }
             }
-        return values.isEmpty ? "Provider default" : values.joined(separator: ", ")
+        return values.isEmpty
+            ? .localized("Provider default")
+            : .verbatim(values.joined(separator: ", "))
     }
 
     /// Under a stacked label, so a long list wraps down the row rather than truncating in
     /// a trailing column. Font and colour come from the field.
-    private func readOnlyValue(_ value: String) -> some View {
-        Text(value)
+    private func readOnlyValue(_ value: MobiusText) -> some View {
+        value.text
             .fixedSize(horizontal: false, vertical: true)
     }
 
@@ -531,7 +535,11 @@ private struct ProviderFormSections: View {
         case .loginFinished(let provider):
             StatusBanner(tone: .success, title: "Sign-in complete", detail: "\(model.providerLabel(for: provider)) is ready on the gateway.")
         case .failed(let message):
-            StatusBanner(tone: .error, title: "Provider action failed", detail: message)
+            StatusBanner(
+                tone: .error,
+                title: .localized("Provider action failed"),
+                detail: .verbatim(message)
+            )
         }
     }
 
@@ -589,7 +597,7 @@ struct AccentTintPicker: View {
                             .contentShape(.rect)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel(tint.label)
+                    .accessibilityLabel(Text(tint.localizedLabel))
                     .accessibilityAddTraits(selection == tint ? [.isSelected] : [])
                 }
             }

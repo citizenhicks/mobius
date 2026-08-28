@@ -75,10 +75,10 @@ struct CollapsibleText: View {
     private var markedText: Text {
         let source = displayedText
         guard let end = source.lastIndex(where: { !$0.isNewline }) else {
-            return Text(source)
+            return Text(verbatim: source)
         }
         return Text(
-            "\(Text(source[..<end]))\(Text(source[end...]).customAttribute(CollapsibleTextEndAttribute()))"
+            "\(Text(verbatim: String(source[..<end])))\(Text(verbatim: String(source[end...])).customAttribute(CollapsibleTextEndAttribute()))"
         )
     }
 
@@ -163,7 +163,7 @@ struct TurnDiffCard: View {
                 }
             } label: {
                 HStack(spacing: MobiusSpace.s) {
-                    Text("\(files.count) file\(files.count == 1 ? "" : "s") changed")
+                    Text(changedFileCount(files.count))
                         .foregroundStyle(.primary)
                     Text("+\(document.added)")
                         .foregroundStyle(palette.signal)
@@ -180,11 +180,7 @@ struct TurnDiffCard: View {
             }
             .buttonStyle(.mobiusPlain)
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel(
-                "\(files.count) file\(files.count == 1 ? "" : "s") changed, "
-                    + "\(document.added) additions, "
-                    + "\(document.removed) removals"
-            )
+            .accessibilityLabel(turnDiffAccessibilityLabel(document))
             .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
             .accessibilityHint(isExpanded ? "Collapses the file list" : "Shows the file list")
 
@@ -218,7 +214,7 @@ struct TurnDiffCard: View {
 
     private func fileRow(_ file: UnifiedDiffFileChange) -> some View {
         HStack(spacing: MobiusSpace.s) {
-            Text(file.path)
+            Text(verbatim: file.path)
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: MobiusSpace.s)
@@ -234,12 +230,27 @@ struct TurnDiffCard: View {
         )
     }
 
-    private func detailsTitle(_ fileCount: Int) -> String {
+    private func detailsTitle(_ fileCount: Int) -> LocalizedStringResource {
         let remaining = fileCount - 3
-        return remaining > 0
-            ? "View \(remaining) more file\(remaining == 1 ? "" : "s")"
-            : "View all changes"
+        if remaining == 1 { return "View 1 more file" }
+        if remaining > 1 { return "View \(remaining) more files" }
+        return "View all changes"
     }
+}
+
+private func changedFileCount(_ count: Int) -> LocalizedStringResource {
+    count == 1 ? "1 file changed" : "\(count) files changed"
+}
+
+private func turnDiffAccessibilityLabel(_ document: UnifiedDiffDocument) -> Text {
+    let files = changedFileCount(document.fileChanges.count)
+    let additions: LocalizedStringResource = document.added == 1
+        ? "1 addition"
+        : "\(document.added) additions"
+    let removals: LocalizedStringResource = document.removed == 1
+        ? "1 removal"
+        : "\(document.removed) removals"
+    return Text("\(files), \(additions), \(removals)")
 }
 
 struct SessionFileCard: View {
@@ -339,7 +350,9 @@ private struct SessionFileCardLabel: View {
     var body: some View {
         FileCard(
             name: file.name,
-            detail: Text("\(Text(fileKind(name: file.name, mediaType: file.mediaType))) · \(Text(file.size, format: .byteCount(style: .file)))"),
+            detail: Text(
+                "\(fileKind(name: file.name, mediaType: file.mediaType).text) · \(Text(file.size, format: .byteCount(style: .file)))"
+            ),
             detailColor: palette.muted,
             thumbnail: thumbnail,
             size: cardSize
@@ -409,7 +422,7 @@ struct FileCard<Trailing: View>: View {
         ZStack {
             placeholder
             if let thumbnail {
-                Image(thumbnail, scale: 1, label: Text(name))
+                Image(thumbnail, scale: 1, label: Text(verbatim: name))
                     .resizable()
                     .scaledToFill()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -425,7 +438,7 @@ struct FileCard<Trailing: View>: View {
         VStack(spacing: 0) {
             MobiusIcon(.fileText, size: 26, foreground: palette.accent)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            Text(name)
+            Text(verbatim: name)
                 .font(MobiusStyle.badgeFont)
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -439,10 +452,13 @@ struct FileCard<Trailing: View>: View {
 }
 
 /// The extension reads faster than a media type, but a name without one still needs a word.
-private func fileKind(name: String, mediaType: String) -> String {
+private func fileKind(name: String, mediaType: String) -> MobiusText {
     let ext = URL(fileURLWithPath: name).pathExtension
-    if !ext.isEmpty { return ext.uppercased() }
-    return mediaType.split(separator: "/").last.map { $0.uppercased() } ?? "File"
+    if !ext.isEmpty { return .verbatim(ext.uppercased()) }
+    if let kind = mediaType.split(separator: "/").last {
+        return .verbatim(kind.uppercased())
+    }
+    return .localized("File")
 }
 
 extension FileCard where Trailing == EmptyView {
@@ -467,9 +483,29 @@ struct MessageActionButton: View {
     @Environment(\.mobiusPalette) private var palette
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
-    let title: String
+    let title: MobiusText
     let glyph: MobiusGlyph
     let action: () -> Void
+
+    init(
+        title: LocalizedStringResource,
+        glyph: MobiusGlyph,
+        action: @escaping () -> Void
+    ) {
+        self.title = .localized(title)
+        self.glyph = glyph
+        self.action = action
+    }
+
+    init(
+        verbatim title: String,
+        glyph: MobiusGlyph,
+        action: @escaping () -> Void
+    ) {
+        self.title = .verbatim(title)
+        self.glyph = glyph
+        self.action = action
+    }
 
     var body: some View {
         // Secondary actions, so a smaller glyph in a smaller box than a standalone icon button:
@@ -491,7 +527,7 @@ struct MessageActionButton: View {
         .buttonStyle(.mobiusPlain)
         .onHover { isHovered = $0 }
         .animation(.easeOut(duration: 0.12), value: isHovered)
-        .accessibilityLabel(title)
-        .help(title)
+        .accessibilityLabel(title.text)
+        .help(title.text)
     }
 }

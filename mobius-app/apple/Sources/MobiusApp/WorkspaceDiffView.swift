@@ -11,7 +11,7 @@ struct WorkspaceDiffView: View {
     let source: String
     let revision: Int
     let isLoading: Bool
-    let title: String
+    let title: LocalizedStringResource
 
     var body: some View {
         content
@@ -87,7 +87,7 @@ struct InlineUnifiedDiffView: View {
             EmptyView()
         } else if let document {
             if document.files.isEmpty {
-                Text(source)
+                Text(verbatim: source)
                     .font(MobiusStyle.metadataFont.monospaced())
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -117,10 +117,7 @@ struct InlineUnifiedDiffView: View {
                     }
                 }
                 .accessibilityElement(children: .contain)
-                .accessibilityLabel(
-                    "Code diff, \(document.files.count) files, "
-                        + "\(document.added) additions and \(document.removed) removals"
-                )
+                .accessibilityLabel(diffAccessibilityLabel(document))
             }
         } else {
             HStack(spacing: MobiusSpace.s) {
@@ -176,10 +173,7 @@ private struct UnifiedDiffView: View {
         .listRowSpacing(0)
         .scrollContentBackground(.hidden)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(
-            "Code diff, \(document.files.count) files, "
-                + "\(document.added) additions and \(document.removed) removals"
-        )
+        .accessibilityLabel(diffAccessibilityLabel(document))
     }
 
     private func toggle(_ id: Int) {
@@ -189,6 +183,19 @@ private struct UnifiedDiffView: View {
             expandedFileIDs.insert(id)
         }
     }
+}
+
+private func diffAccessibilityLabel(_ document: UnifiedDiffDocument) -> Text {
+    let files: LocalizedStringResource = document.files.count == 1
+        ? "1 file"
+        : "\(document.files.count) files"
+    let additions: LocalizedStringResource = document.added == 1
+        ? "1 addition"
+        : "\(document.added) additions"
+    let removals: LocalizedStringResource = document.removed == 1
+        ? "1 removal"
+        : "\(document.removed) removals"
+    return Text("Code diff, \(files), \(additions) and \(removals)")
 }
 
 private struct DiffTruncationWarning: View {
@@ -215,12 +222,12 @@ private struct DiffFileHeader: View {
             HStack(spacing: MobiusSpace.m) {
                 MobiusIcon(file.path.fileGlyph, size: MobiusStyle.glyphLead, foreground: palette.accent)
                 VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
-                    Text(file.name)
+                    Text(verbatim: file.name)
                         .font(MobiusStyle.metadataFont.weight(.semibold))
                         .lineLimit(1)
                         .truncationMode(.middle)
                     if let parentPath = file.parentPath {
-                        Text(parentPath)
+                        Text(verbatim: parentPath)
                             .font(MobiusStyle.metadataFont)
                             .foregroundStyle(palette.muted)
                             .lineLimit(1)
@@ -249,8 +256,10 @@ private struct DiffFileHeader: View {
         .accessibilityLabel(
             "File \(file.path), \(file.added) additions, \(file.removed) removals"
         )
-        .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
-        .accessibilityHint(isExpanded ? "Collapses this file" : "Shows changed lines")
+        .accessibilityValue(isExpanded ? Text("Expanded") : Text("Collapsed"))
+        .accessibilityHint(
+            isExpanded ? Text("Collapses this file") : Text("Shows changed lines")
+        )
     }
 
     private var headerShape: UnevenRoundedRectangle {
@@ -310,7 +319,7 @@ private struct DiffRowView: View {
         HStack(alignment: .top, spacing: 0) {
             gutter(row.oldNumber)
             gutter(row.newNumber)
-            Text(marker)
+            Text(verbatim: marker)
                 .font(MobiusStyle.metadataFont.weight(.bold))
                 .foregroundStyle(markerColor)
                 .frame(width: 24)
@@ -329,11 +338,11 @@ private struct DiffRowView: View {
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibilityLabel)
+        .accessibilityLabel(Text(accessibilityLabel))
     }
 
     private func gutter(_ number: Int?) -> some View {
-        Text(number.map(String.init) ?? "")
+        Text(verbatim: number.map(String.init) ?? "")
             .font(MobiusStyle.metadataFont)
             .monospacedDigit()
             .foregroundStyle(palette.muted)
@@ -387,15 +396,15 @@ private struct DiffRowView: View {
         }
     }
 
-    private var accessibilityLabel: String {
-        let location: String
+    private var accessibilityLabel: LocalizedStringResource {
+        let location: LocalizedStringResource
         switch (row.oldNumber, row.newNumber) {
         case let (old?, new?): location = "old line \(old), new line \(new)"
         case let (old?, nil): location = "old line \(old)"
         case let (nil, new?): location = "new line \(new)"
         default: location = "metadata"
         }
-        let change: String
+        let change: LocalizedStringResource
         switch row.kind {
         case .addition: change = "Added"
         case .removal: change = "Removed"

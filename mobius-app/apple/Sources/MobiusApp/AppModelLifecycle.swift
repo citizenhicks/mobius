@@ -46,7 +46,7 @@ extension AppModel {
         if cloudPairingContinuation != nil {
             completeCloudPairing(.failure(MobiusCloudError.provisioningFailed))
         }
-        if reconnectAttempt == 0 { showToast(message, tone: .error) }
+        if reconnectAttempt == 0 { showToast(verbatim: message, tone: .error) }
         scheduleReconnect()
     }
 

@@ -63,27 +63,40 @@ final class ChatTitleWriter {
         return preview + (isTruncated ? "…" : "")
     }
 
-    func title(for prompt: String, diagnostic: Diagnostic? = nil) async -> Outcome {
+    func title(
+        for prompt: String,
+        locale: Locale = .current,
+        diagnostic: Diagnostic? = nil
+    ) async -> Outcome {
         if let generator {
             guard let raw = await generator(prompt) else {
-                return .failed("Apple did not produce a chat title.")
+                return .failed(Self.localized("Apple did not produce a chat title.", locale: locale))
             }
             return Self.cleaned(raw).map(Outcome.title)
-                ?? .failed("Apple returned an unusable chat title.")
+                ?? .failed(Self.localized("Apple returned an unusable chat title.", locale: locale))
         }
         #if canImport(FoundationModels)
         switch SystemLanguageModel.default.availability {
         case .available:
             break
         case .unavailable(.modelNotReady):
-            diagnostic?("Apple's chat title model is not ready yet; waiting.")
-            if let failure = await waitForSystemModel() { return .failed(failure) }
+            diagnostic?(Self.localized("Apple's chat title model is not ready yet; waiting.", locale: locale))
+            if let failure = await waitForSystemModel(locale: locale) { return .failed(failure) }
         case .unavailable(.appleIntelligenceNotEnabled):
-            return .failed("Apple Intelligence is disabled, so the chat title was not rewritten.")
+            return .failed(Self.localized(
+                "Apple Intelligence is disabled, so the chat title was not rewritten.",
+                locale: locale
+            ))
         case .unavailable(.deviceNotEligible):
-            return .failed("This device does not support Apple's chat title model.")
+            return .failed(Self.localized(
+                "This device does not support Apple's chat title model.",
+                locale: locale
+            ))
         @unknown default:
-            return .failed("Apple's chat title model is unavailable.")
+            return .failed(Self.localized(
+                "Apple's chat title model is unavailable.",
+                locale: locale
+            ))
         }
         let session = LanguageModelSession {
             """
@@ -108,23 +121,32 @@ final class ChatTitleWriter {
                 options: GenerationOptions(temperature: 0.3)
             )
             return Self.cleaned(response.content.title).map(Outcome.title)
-                ?? .failed("Apple returned an unusable chat title.")
+                ?? .failed(Self.localized("Apple returned an unusable chat title.", locale: locale))
         } catch is CancellationError {
             return .cancelled
         } catch let error as LanguageModelSession.GenerationError {
-            return .failed("Apple chat title rewrite failed: \(error.localizedDescription)")
+            return .failed(Self.localized(
+                "Apple chat title rewrite failed: \(error.localizedDescription)",
+                locale: locale
+            ))
         } catch {
-            return .failed("Apple chat title rewrite failed: \(error.localizedDescription)")
+            return .failed(Self.localized(
+                "Apple chat title rewrite failed: \(error.localizedDescription)",
+                locale: locale
+            ))
         }
         #else
-        return .failed("Apple's chat title model is unavailable on this device.")
+        return .failed(Self.localized(
+            "Apple's chat title model is unavailable on this device.",
+            locale: locale
+        ))
         #endif
     }
 
     #if canImport(FoundationModels)
     /// A model download or warm-up is transient. Keep the deterministic preview visible while
     /// this suspends, then continue the same rewrite when Foundation Models becomes ready.
-    private func waitForSystemModel() async -> String? {
+    private func waitForSystemModel(locale: Locale) async -> String? {
         let model = SystemLanguageModel.default
         let availability = Observations<SystemLanguageModel.Availability, Never> {
             model.availability
@@ -136,16 +158,34 @@ final class ChatTitleWriter {
             case .unavailable(.modelNotReady):
                 continue
             case .unavailable(.appleIntelligenceNotEnabled):
-                return "Apple Intelligence was disabled before the chat title could be rewritten."
+                return Self.localized(
+                    "Apple Intelligence was disabled before the chat title could be rewritten.",
+                    locale: locale
+                )
             case .unavailable(.deviceNotEligible):
-                return "This device does not support Apple's chat title model."
+                return Self.localized(
+                    "This device does not support Apple's chat title model.",
+                    locale: locale
+                )
             @unknown default:
-                return "Apple's chat title model became unavailable."
+                return Self.localized(
+                    "Apple's chat title model became unavailable.",
+                    locale: locale
+                )
             }
         }
-        return "Apple's chat title model became unavailable."
+        return Self.localized("Apple's chat title model became unavailable.", locale: locale)
     }
     #endif
+
+    nonisolated private static func localized(
+        _ resource: LocalizedStringResource,
+        locale: Locale
+    ) -> String {
+        var resource = resource
+        resource.locale = locale
+        return String(localized: resource)
+    }
 
     /// Small models like to wrap titles in quotes, prefix them with "Title:", and end them
     /// with a full stop. None of that belongs in a sidebar row.

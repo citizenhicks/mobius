@@ -23,7 +23,11 @@ struct CronView: View {
             }
         ) {
             if let error = model.cronError {
-                StatusBanner(tone: .error, title: "Scheduled task rejected", detail: error)
+                StatusBanner(
+                    tone: .error,
+                    title: .localized("Scheduled task rejected"),
+                    detail: .verbatim(error)
+                )
                     .settingsStandaloneRow()
             }
 
@@ -86,31 +90,40 @@ struct CronView: View {
         }
         .compactMap { id, sessions in
             guard let source = sessions.max(by: { $0.updatedAt < $1.updatedAt }) else { return nil }
-            let path = source.sessionContext.workspaceLabel ?? "Workspace"
+            let path = source.sessionContext.workspaceLabel
+            let name = path.map { path in
+                let component = URL(fileURLWithPath: path).lastPathComponent
+                return component.isEmpty ? path : component
+            }
             return CronProject(
                 id: id,
                 sourceSessionID: source.sessionId,
-                name: URL(fileURLWithPath: path).lastPathComponent.isEmpty
-                    ? path
-                    : URL(fileURLWithPath: path).lastPathComponent
+                name: name.map(MobiusText.verbatim) ?? .localized("Workspace"),
+                sortName: name ?? ""
             )
         }
-        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        .sorted { $0.sortName.localizedCaseInsensitiveCompare($1.sortName) == .orderedAscending }
     }
 
-    private func projectName(for task: CronTask) -> String {
-        projectOptions.first { $0.sourceSessionID == task.sourceSessionId }?.name
-            ?? model.sessions.first { $0.sessionId == task.sourceSessionId }
-                .flatMap { $0.sessionContext.workspaceLabel }
-                .map { URL(fileURLWithPath: $0).lastPathComponent }
-            ?? "Workspace"
+    private func projectName(for task: CronTask) -> MobiusText {
+        if let name = projectOptions.first(where: {
+            $0.sourceSessionID == task.sourceSessionId
+        })?.name {
+            return name
+        }
+        if let path = model.sessions.first(where: { $0.sessionId == task.sourceSessionId })?
+            .sessionContext.workspaceLabel {
+            return .verbatim(URL(fileURLWithPath: path).lastPathComponent)
+        }
+        return .localized("Workspace")
     }
 }
 
-private struct CronProject: Identifiable, Hashable {
+private struct CronProject: Identifiable {
     let id: String
     let sourceSessionID: String
-    let name: String
+    let name: MobiusText
+    let sortName: String
 }
 
 private enum CronTaskSheet: Identifiable {
@@ -135,7 +148,7 @@ private struct CronTaskRow: View {
     @Environment(\.mobiusPalette) private var palette
     @State private var confirmsDeletion = false
     let task: CronTask
-    let projectName: String
+    let projectName: MobiusText
     let edit: () -> Void
 
     var body: some View {
@@ -154,12 +167,12 @@ private struct CronTaskRow: View {
                     .truncationMode(.middle)
             }
 
-            Text(task.task)
+            Text(verbatim: task.task)
                 .font(MobiusStyle.bodyFont.weight(.semibold))
                 .fixedSize(horizontal: false, vertical: true)
 
             HStack(alignment: .firstTextBaseline, spacing: MobiusSpace.s) {
-                Text(projectName)
+                projectName.text
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer(minLength: MobiusSpace.s)
@@ -171,8 +184,10 @@ private struct CronTaskRow: View {
         }
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(status.label) scheduled task: \(task.task)")
-        .accessibilityValue("\(schedule); workspace \(projectName); \(nextRun)")
+        .accessibilityLabel(Text("\(Text(status.label)) scheduled task: \(task.task)"))
+        .accessibilityValue(
+            Text("\(Text(schedule)); workspace \(projectName.text); \(Text(nextRun))")
+        )
         .mobiusSwipeActions {
             MobiusSwipeAction(title: "Delete", glyph: .trash, tone: "error") {
                 confirmsDeletion = true
@@ -196,25 +211,25 @@ private struct CronTaskRow: View {
         }
     }
 
-    private var taskStatus: (label: String, glyph: MobiusGlyph, color: Color) {
+    private var taskStatus: (
+        label: LocalizedStringResource,
+        glyph: MobiusGlyph,
+        color: Color
+    ) {
         if task.finished { return ("Finished", .checkCircle, palette.muted) }
         if task.enabled { return ("Active", .playFill, palette.signal) }
         return ("Paused", .stopFill, palette.warning)
     }
 
-    private var nextRunText: String {
+    private var nextRunText: LocalizedStringResource {
         guard let nextRunAt = task.nextRunAt else { return "Next —" }
         let date = Date(timeIntervalSince1970: TimeInterval(nextRunAt))
-        return "Next \(date.formatted(.relative(presentation: .numeric, unitsStyle: .abbreviated)))"
+        return "Next \(date, format: .relative(presentation: .numeric, unitsStyle: .abbreviated))"
     }
 
     @ViewBuilder
     private var nextRunLabel: some View {
-        if let nextRunAt = task.nextRunAt {
-            Text("Next \(Date(timeIntervalSince1970: TimeInterval(nextRunAt)), style: .relative)")
-        } else {
-            Text("Next —")
-        }
+        Text(nextRunText)
     }
 
     private func toggleEnabled() {
@@ -236,16 +251,17 @@ private struct CronRunRow: View {
     let open: () -> Void
 
     var body: some View {
+        let status = cronRunStatusLabel(run.status)
         Button(action: open) {
             HStack(alignment: .top, spacing: MobiusSpace.m) {
                 Circle().fill(statusColor).frame(width: 9, height: 9).padding(.top, MobiusSpace.xs)
                 VStack(alignment: .leading, spacing: MobiusSpace.xs) {
                     HStack {
-                        Text(taskName)
+                        Text(verbatim: taskName)
                             .font(MobiusStyle.bodyFont.weight(.semibold))
                             .lineLimit(1)
                         Spacer(minLength: MobiusSpace.s)
-                        Text(run.status.rawValue.capitalized)
+                        Text(status)
                             .font(MobiusStyle.metadataFont.weight(.bold))
                             .foregroundStyle(statusColor)
                     }
@@ -253,7 +269,7 @@ private struct CronRunRow: View {
                         .font(MobiusStyle.metadataFont)
                         .foregroundStyle(palette.muted)
                     if let message = run.message {
-                        Text(message)
+                        Text(verbatim: message)
                             .font(MobiusStyle.bodyFont)
                             .foregroundStyle(palette.muted)
                             .fixedSize(horizontal: false, vertical: true)
@@ -268,8 +284,8 @@ private struct CronRunRow: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
             run.sessionId == nil
-                ? "\(run.status.rawValue) run for \(taskName) has no transcript"
-                : "Open \(run.status.rawValue) run for \(taskName)"
+                ? Text("\(Text(status)) run for \(taskName) has no transcript")
+                : Text("Open \(Text(status)) run for \(taskName)")
         )
     }
 
@@ -283,10 +299,19 @@ private struct CronRunRow: View {
     }
 }
 
+private func cronRunStatusLabel(_ status: CronRunStatus) -> LocalizedStringResource {
+    switch status {
+    case .succeeded: "Succeeded"
+    case .failed: "Failed"
+    case .running: "Running"
+    case .skipped: "Skipped"
+    }
+}
+
 private enum CronScheduleMode: String, CaseIterable, Identifiable {
     case once, interval, daily, weekly, advanced
     var id: Self { self }
-    var title: String {
+    var title: LocalizedStringResource {
         switch self {
         case .once: "Once"
         case .interval: "Every"
@@ -300,7 +325,13 @@ private enum CronScheduleMode: String, CaseIterable, Identifiable {
 private enum CronIntervalUnit: String, CaseIterable, Identifiable {
     case seconds, minutes, hours
     var id: Self { self }
-    var title: String { rawValue.capitalized }
+    var title: LocalizedStringResource {
+        switch self {
+        case .seconds: "Seconds"
+        case .minutes: "Minutes"
+        case .hours: "Hours"
+        }
+    }
     var seconds: Int64 {
         switch self {
         case .seconds: 1
@@ -313,7 +344,7 @@ private enum CronIntervalUnit: String, CaseIterable, Identifiable {
 private enum CronEndMode: String, CaseIterable, Identifiable {
     case never, duration, date
     var id: Self { self }
-    var title: String {
+    var title: LocalizedStringResource {
         switch self {
         case .never: "Never"
         case .duration: "After duration"
@@ -325,7 +356,13 @@ private enum CronEndMode: String, CaseIterable, Identifiable {
 private enum CronDurationUnit: String, CaseIterable, Identifiable {
     case minutes, hours, days
     var id: Self { self }
-    var title: String { rawValue.capitalized }
+    var title: LocalizedStringResource {
+        switch self {
+        case .minutes: "Minutes"
+        case .hours: "Hours"
+        case .days: "Days"
+        }
+    }
     var seconds: TimeInterval {
         switch self {
         case .minutes: 60
@@ -349,6 +386,7 @@ private func cronDate(for schedule: SimpleCronSchedule, timeZone: TimeZone = .cu
 private struct CronTaskEditorSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.locale) private var locale
     let task: CronTask?
     let projects: [CronProject]
     @State private var sourceSessionID: String
@@ -410,13 +448,13 @@ private struct CronTaskEditorSheet: View {
     var body: some View {
         NavigationStack {
             PageScaffold(
-                title: task == nil ? "New scheduled task" : "Edit scheduled task",
+                title: .localized(editorTitle),
                 detail: summary
             ) {
                 Section("Workspace") {
                     Picker("Workspace", selection: $sourceSessionID) {
                         ForEach(projects) { project in
-                            Text(project.name).tag(project.sourceSessionID)
+                            project.name.text.tag(project.sourceSessionID)
                         }
                     }
                 }
@@ -449,7 +487,9 @@ private struct CronTaskEditorSheet: View {
                             }
                         }
                         if endMode == .duration {
-                            Stepper("After \(durationValue) \(durationUnit.rawValue)", value: $durationValue, in: 1...365)
+                            Stepper(value: $durationValue, in: 1...365) {
+                                Text(durationSummary)
+                            }
                             Picker("Unit", selection: $durationUnit) {
                                 ForEach(CronDurationUnit.allCases) { unit in
                                     Text(unit.title).tag(unit)
@@ -472,7 +512,7 @@ private struct CronTaskEditorSheet: View {
                     Button("Cancel", action: dismiss.callAsFunction)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(task == nil ? "Create" : "Save", action: save)
+                    Button(action: save) { Text(editorActionTitle) }
                         .disabled(!canSave)
                 }
             }
@@ -487,10 +527,9 @@ private struct CronTaskEditorSheet: View {
             DatePicker("Run at", selection: $onceDate, in: Date.now..., displayedComponents: [.date, .hourAndMinute])
         case .interval:
             Stepper(
-                "Every \(intervalValue) \(intervalUnit.rawValue)",
                 value: $intervalValue,
                 in: (intervalUnit == .seconds ? 60 : 1)...365
-            )
+            ) { Text(intervalSummary) }
             Picker("Unit", selection: $intervalUnit) {
                 ForEach(CronIntervalUnit.allCases) { unit in
                     Text(unit.title).tag(unit)
@@ -504,7 +543,7 @@ private struct CronTaskEditorSheet: View {
         case .weekly:
             Picker("Day", selection: $weekday) {
                 ForEach(1...7, id: \.self) { day in
-                    Text(Calendar.current.weekdaySymbols[day - 1]).tag(day)
+                    Text(verbatim: weekdayName(day)).tag(day)
                 }
             }
             DatePicker("Time", selection: $weeklyTime, displayedComponents: [.hourAndMinute])
@@ -557,10 +596,49 @@ private struct CronTaskEditorSheet: View {
             && (endsAt == nil || endsAt! > Int64(Date.now.timeIntervalSince1970))
     }
 
-    private var summary: String {
-        guard let schedule else { return "Choose a valid schedule." }
-        let end = endsAt.map { " · ends \(Date(timeIntervalSince1970: TimeInterval($0)).formatted(date: .abbreviated, time: .shortened))" } ?? ""
-        return cronScheduleSummary(schedule) + end
+    private var editorTitle: LocalizedStringResource {
+        task == nil ? "New scheduled task" : "Edit scheduled task"
+    }
+
+    private var editorActionTitle: LocalizedStringResource {
+        task == nil ? "Create" : "Save"
+    }
+
+    private var summary: MobiusText {
+        guard let schedule else { return .localized("Choose a valid schedule.") }
+        let scheduleResource = cronScheduleSummary(schedule)
+        guard let endsAt else { return .localized(scheduleResource) }
+        let scheduleText = MobiusText.localized(scheduleResource).resolved(locale: locale)
+        let date = Date(timeIntervalSince1970: TimeInterval(endsAt))
+        return .localized("\(scheduleText) · ends \(date, format: .dateTime.month(.abbreviated).day().hour().minute())")
+    }
+
+    private var intervalSummary: LocalizedStringResource {
+        switch (intervalUnit, intervalValue) {
+        case (.seconds, 1): "Every 1 second"
+        case (.seconds, _): "Every \(intervalValue) seconds"
+        case (.minutes, 1): "Every 1 minute"
+        case (.minutes, _): "Every \(intervalValue) minutes"
+        case (.hours, 1): "Every 1 hour"
+        case (.hours, _): "Every \(intervalValue) hours"
+        }
+    }
+
+    private var durationSummary: LocalizedStringResource {
+        switch (durationUnit, durationValue) {
+        case (.minutes, 1): "After 1 minute"
+        case (.minutes, _): "After \(durationValue) minutes"
+        case (.hours, 1): "After 1 hour"
+        case (.hours, _): "After \(durationValue) hours"
+        case (.days, 1): "After 1 day"
+        case (.days, _): "After \(durationValue) days"
+        }
+    }
+
+    private func weekdayName(_ day: Int) -> String {
+        var calendar = Calendar.current
+        calendar.locale = locale
+        return calendar.weekdaySymbols[day - 1]
     }
 
     private func cronExpression(for date: Date, weekday: Int?) -> String {
@@ -596,13 +674,18 @@ private struct CronTaskEditorSheet: View {
 struct ScheduledRunTranscriptSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
+    @Environment(\.locale) private var locale
 
     @ViewBuilder
     var body: some View {
         if let error = model.cronRunPreviewError {
             VStack(spacing: 0) {
                 header
-                StatusBanner(tone: .error, title: "Run transcript unavailable", detail: error)
+                StatusBanner(
+                    tone: .error,
+                    title: .localized("Run transcript unavailable"),
+                    detail: .verbatim(error)
+                )
                     .padding(MobiusSpace.l)
                 Spacer(minLength: 0)
             }
@@ -628,22 +711,20 @@ struct ScheduledRunTranscriptSheet: View {
         HStack(spacing: MobiusSpace.s) {
             VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
                 if let task = model.cronRunPreview?.task {
-                    Text(task.task)
+                    Text(verbatim: task.task)
                         .font(MobiusStyle.controlFont.weight(.semibold))
                         .lineLimit(1)
                 }
                 if let run = model.cronRunPreview?.run ?? model.presentedCronRun {
-                    Text("Run · \(run.status.rawValue.capitalized)")
+                    Text("Run · \(Text(cronRunStatusLabel(run.status)))")
                         .font(MobiusStyle.metadataFont)
                         .foregroundStyle(palette.muted)
                 }
             }
             Spacer(minLength: 0)
             SettingsInfoButton(
-                title: "Run transcript",
-                detail: model.cronRunPreview.map {
-                    "\(cronScheduleSummary($0.task.schedule)) · read-only run transcript"
-                } ?? "Read-only run transcript",
+                title: .localized("Run transcript"),
+                detail: runTranscriptDetail,
                 glyph: .info
             )
         }
@@ -653,30 +734,46 @@ struct ScheduledRunTranscriptSheet: View {
         .padding(.vertical, MobiusSpace.s)
         .accessibilityElement(children: .contain)
     }
+
+    private var runTranscriptDetail: MobiusText {
+        guard let preview = model.cronRunPreview else {
+            return .localized("Read-only run transcript")
+        }
+        let schedule = MobiusText.localized(cronScheduleSummary(preview.task.schedule))
+            .resolved(locale: locale)
+        return .localized("\(schedule) · read-only run transcript")
+    }
 }
 
-private func cronScheduleSummary(_ schedule: CronSchedule) -> String {
+private func cronScheduleSummary(_ schedule: CronSchedule) -> LocalizedStringResource {
     switch schedule.kind {
     case .once:
         guard let at = schedule.at else { return "Once" }
-        return "Once · \(Date(timeIntervalSince1970: TimeInterval(at)).formatted(date: .abbreviated, time: .shortened))"
+        let date = Date(timeIntervalSince1970: TimeInterval(at))
+        return "Once · \(date, format: .dateTime.month(.abbreviated).day().hour().minute())"
     case .interval:
         let seconds = schedule.everySeconds ?? 0
-        if seconds.isMultiple(of: 3_600) { return "Every \(seconds / 3_600) hour\(seconds == 3_600 ? "" : "s")" }
+        if seconds == 3_600 { return "Every 1 hour" }
+        if seconds.isMultiple(of: 3_600) { return "Every \(seconds / 3_600) hours" }
+        if seconds == 60 { return "Every 1 minute" }
         if seconds.isMultiple(of: 60) {
-            return "Every \(max(1, seconds / 60)) minute\(seconds == 60 ? "" : "s")"
+            return "Every \(max(1, seconds / 60)) minutes"
         }
+        if seconds == 1 { return "Every 1 second" }
         return "Every \(seconds) seconds"
     case .cron:
         guard let parsed = simpleCronSchedule(schedule.expression ?? "") else {
             return "Custom schedule"
         }
         let timeZone = TimeZone(identifier: schedule.timeZone ?? "") ?? .current
-        let formatter = DateFormatter()
-        formatter.timeZone = timeZone
-        formatter.timeStyle = .short
-        let time = formatter.string(from: cronDate(for: parsed, timeZone: timeZone))
-        guard let weekday = parsed.weekday else { return "Daily at \(time)" }
-        return "Every \(Calendar.current.weekdaySymbols[weekday]) at \(time)"
+        let date = cronDate(for: parsed, timeZone: timeZone)
+        var timeStyle = Date.FormatStyle(date: .omitted, time: .shortened)
+        timeStyle.timeZone = timeZone
+        guard parsed.weekday != nil else {
+            return "Daily at \(date, format: timeStyle)"
+        }
+        var weekdayStyle = Date.FormatStyle().weekday(.wide)
+        weekdayStyle.timeZone = timeZone
+        return "Every \(date, format: weekdayStyle) at \(date, format: timeStyle)"
     }
 }

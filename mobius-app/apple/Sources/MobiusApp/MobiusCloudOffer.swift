@@ -9,17 +9,19 @@ struct MobiusCloudOfferButton: View {
     // as a list row that happened to be capsule-shaped. The accent tint marks it as the
     // other path rather than a second copy of the pairing button.
     var body: some View {
+        let title: LocalizedStringResource = model.cloudAccount?.subscribed == true
+            ? "Connect Cloud gateway"
+            : model.hasCloudAccount
+                ? "Subscribe to möbius Cloud"
+                : "Connect to möbius Cloud"
+        let hint: LocalizedStringResource = model.cloudAccount?.subscribed == true
+            ? "Connects this device to your managed Cloud gateway"
+            : "Explains the managed möbius Cloud subscription"
         Button {
             model.showsCloudOffer = true
         } label: {
             Label {
-                Text(
-                    model.cloudAccount?.subscribed == true
-                        ? "Connect Cloud gateway"
-                        : model.hasCloudAccount
-                            ? "Subscribe to möbius Cloud"
-                            : "Connect to möbius Cloud"
-                )
+                Text(title)
                     // Glass takes a tint from its own material, not from the button's, so
                     // the accent has to be carried by the label for it to read at all.
                     .foregroundStyle(palette.accent)
@@ -39,11 +41,7 @@ struct MobiusCloudOfferButton: View {
         .buttonBorderShape(.capsule)
         .controlSize(.large)
         .buttonSizing(.flexible)
-        .accessibilityHint(
-            model.cloudAccount?.subscribed == true
-                ? "Connects this device to your managed Cloud gateway"
-                : "Explains the managed möbius Cloud subscription"
-        )
+        .accessibilityHint(Text(hint))
     }
 }
 
@@ -97,24 +95,22 @@ struct MobiusCloudOfferSheet: View {
     /// The offer hero becomes setup status while a Cloud action is running.
     private var hero: some View {
         let running = setupStage != nil
+        let title: LocalizedStringResource = running
+            ? "Setting up your möbius Cloud."
+            : "Your private gateway, managed by möbius."
+        let detail: LocalizedStringResource = running
+            ? "Keep this screen open. Nothing here needs your attention until it finishes."
+            : "Skip server setup without giving up control. We provision, secure, and maintain a gateway scoped to your account."
         return VStack(alignment: .leading, spacing: MobiusSpace.l) {
             // The app's own mark, not a stock globe.
             MobiusComposingOrb()
                 .frame(width: 64, height: 64)
                 .frame(maxWidth: .infinity)
                 .accessibilityHidden(true)
-            Text(
-                running
-                    ? "Setting up your möbius Cloud."
-                    : "Your private gateway, managed by möbius."
-            )
+            Text(title)
                 .font(.largeTitle.weight(.bold))
                 .fixedSize(horizontal: false, vertical: true)
-            Text(
-                running
-                    ? "Keep this screen open. Nothing here needs your attention until it finishes."
-                    : "Skip server setup without giving up control. We provision, secure, and maintain a gateway scoped to your account."
-            )
+            Text(detail)
                 .font(MobiusStyle.bodyFont)
                 .foregroundStyle(palette.muted)
                 .fixedSize(horizontal: false, vertical: true)
@@ -203,7 +199,7 @@ struct MobiusCloudOfferSheet: View {
     private var signupBoundary: some View {
         VStack(spacing: MobiusSpace.m) {
             if let cloudError = model.cloudError {
-                Text(cloudError)
+                Text(verbatim: cloudError)
                     .font(MobiusStyle.captionFont)
                     .foregroundStyle(palette.danger)
                     .multilineTextAlignment(.center)
@@ -300,7 +296,7 @@ struct MobiusCloudOfferSheet: View {
         }
     }
 
-    private func waitingButton(_ title: String) -> some View {
+    private func waitingButton(_ title: LocalizedStringResource) -> some View {
         Button {} label: {
             HStack(spacing: MobiusSpace.s) {
                 MobiusSpinner(size: MobiusStyle.glyphInline)
@@ -391,7 +387,7 @@ private enum CloudSetupStage: Int, CaseIterable, Identifiable {
 
     var id: Int { rawValue }
 
-    var title: String {
+    var title: LocalizedStringResource {
         switch self {
         case .signIn: "Account"
         case .subscription: "Subscription"
@@ -400,7 +396,7 @@ private enum CloudSetupStage: Int, CaseIterable, Identifiable {
         }
     }
 
-    func detail(slow: Bool) -> String {
+    func detail(slow: Bool) -> LocalizedStringResource {
         switch self {
         case .signIn: "Verifying your Apple account."
         case .subscription: "Confirming your App Store purchase."
@@ -437,7 +433,7 @@ private struct CloudSetupRow: View {
         }
         .padding(.vertical, MobiusSpace.m)
         .accessibilityElement(children: .combine)
-        .accessibilityValue(accessibilityStatus)
+        .accessibilityValue(Text(accessibilityStatus))
     }
 
     private var isPending: Bool { stage.rawValue > current.rawValue }
@@ -458,7 +454,7 @@ private struct CloudSetupRow: View {
         }
     }
 
-    private var accessibilityStatus: String {
+    private var accessibilityStatus: LocalizedStringResource {
         if isPending { return "Waiting" }
         return stage == current ? "In progress" : "Done"
     }
@@ -467,8 +463,8 @@ private struct CloudSetupRow: View {
 private struct CloudBenefit: View {
     @Environment(\.mobiusPalette) private var palette
     let glyph: MobiusGlyph
-    let title: String
-    let detail: String
+    let title: LocalizedStringResource
+    let detail: LocalizedStringResource
 
     var body: some View {
         HStack(alignment: .top, spacing: MobiusSpace.m) {

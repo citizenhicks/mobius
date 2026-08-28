@@ -6,14 +6,14 @@ private enum ChatOrganization: CaseIterable, Identifiable {
 
     var id: Self { self }
 
-    var title: String {
+    var title: LocalizedStringResource {
         switch self {
         case .byProject: "By project"
         case .chronological: "Chronological list"
         }
     }
 
-    var heading: String {
+    var heading: LocalizedStringResource {
         switch self {
         case .byProject: "Projects"
         case .chronological: "Recent chats"
@@ -75,7 +75,7 @@ struct ChatsView: View {
                                 set: { model.selectAccount($0) }
                             )) {
                                 ForEach(model.accounts) { account in
-                                    Text(account.machineName)
+                                    Text(verbatim: account.machineName)
                                         .tag(Optional(account.id))
                                 }
                             }
@@ -85,7 +85,7 @@ struct ChatsView: View {
                                 Circle()
                                     .fill(model.connectionState.tone.color(in: palette))
                                     .frame(width: 6, height: 6)
-                                Text(account.machineName)
+                                Text(verbatim: account.machineName)
                                     .font(MobiusStyle.captionFont)
                                     .lineLimit(1)
                                     .truncationMode(.middle)
@@ -103,7 +103,7 @@ struct ChatsView: View {
                         .sensoryFeedback(.selection, trigger: model.selectedAccountID)
                         .accessibilityLabel("Gateway")
                         .accessibilityValue(
-                            "\(account.machineName), \(model.connectionState.label)"
+                            Text("\(account.machineName), \(model.connectionState.label)")
                         )
                         .help("Switch gateway")
                     }
@@ -160,12 +160,12 @@ struct ChatsView: View {
             .accessibilityLabel(
                 "Filter chats needing attention"
             )
-            .accessibilityValue(showsAttentionOnly ? "On" : "Off")
+            .accessibilityValue(showsAttentionOnly ? Text("On") : Text("Off"))
             .accessibilityAddTraits(showsAttentionOnly ? .isSelected : [])
             .help(
                 showsAttentionOnly
-                    ? "Show all chats"
-                    : "Show active and unread chats"
+                    ? Text("Show all chats")
+                    : Text("Show active and unread chats")
             )
             .disabled(showsLoadingCatalog)
         }
@@ -202,7 +202,7 @@ struct ChatsView: View {
                 }
             }
         }
-        .accessibilityValue(organization.title)
+        .accessibilityValue(Text(organization.title))
     }
 
     private var newChatButton: some View {
@@ -236,7 +236,10 @@ struct ChatsView: View {
         .mobiusLoadingPlaceholder("Loading chats")
     }
 
-    private func loadingWorkspace(_ name: String, chats: [String]) -> some View {
+    private func loadingWorkspace(
+        _ name: LocalizedStringResource,
+        chats: [LocalizedStringResource]
+    ) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 0) {
                 HStack(spacing: MobiusSpace.s) {
@@ -257,7 +260,7 @@ struct ChatsView: View {
                     .frame(width: MobiusStyle.iconButtonSize, height: MobiusStyle.iconButtonSize)
             }
 
-            ForEach(chats, id: \.self) { title in
+            ForEach(chats, id: \.key) { title in
                 Text(title)
                     .font(MobiusStyle.bodyFont)
                     .lineLimit(1)
@@ -287,7 +290,7 @@ struct ChatsView: View {
         }
     }
 
-    private var emptySessionsMessage: String {
+    private var emptySessionsMessage: LocalizedStringResource {
         if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return "No chats match your search"
         }
@@ -392,7 +395,7 @@ struct ChatsView: View {
                             .id(isExpanded)
                             .transition(.opacity)
                         }
-                        Text(group.name)
+                        Text(verbatim: group.name)
                             .font(MobiusStyle.controlFont)
                             .lineLimit(1)
                             .truncationMode(.middle)
@@ -407,8 +410,8 @@ struct ChatsView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.mobiusPlain)
-                .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
-                .help(group.path)
+                .accessibilityValue(isExpanded ? Text("Expanded") : Text("Collapsed"))
+                .help(Text(verbatim: group.path))
 
                 Button {
                     model.chooseWorkspace(group.path)
@@ -467,14 +470,14 @@ struct ChatsView: View {
         let isUnread = model.unreadSessionIDs.contains(session.sessionId)
         let title = model.displayedTitle(for: session)
         let workspace = session.sessionContext.workspaceLabel.map(workspaceName) ?? ""
-        let activityValue: String
+        let activityValue: LocalizedStringResource?
         switch session.activity.state {
         case .running:
             activityValue = "In progress"
         case .awaitingApproval:
             activityValue = "Awaiting approval"
         case .idle:
-            activityValue = isUnread ? "Finished, unread" : ""
+            activityValue = isUnread ? "Finished, unread" : nil
         }
         return HStack(spacing: MobiusSpace.xs) {
             Button {
@@ -483,14 +486,14 @@ struct ChatsView: View {
                 HStack(spacing: MobiusSpace.s) {
                     VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
                         MobiusTitleText(
-                            title: title,
+                            verbatim: title,
                             cursorColor: isSelected ? palette.accent : .primary
                         )
                         .fontWeight(isSelected ? .semibold : nil)
                         .lineLimit(1)
                         .foregroundStyle(isSelected ? palette.accent : .primary)
                         if showsWorkspace && !workspace.isEmpty {
-                            Text(workspace)
+                            Text(verbatim: workspace)
                                 .font(MobiusStyle.captionFont)
                                 .foregroundStyle(palette.muted)
                                 .lineLimit(1)
@@ -517,9 +520,11 @@ struct ChatsView: View {
             .buttonStyle(.mobiusPlain)
             .disabled(!model.canOpenSession && session.sessionId != model.selectedSessionID)
             .accessibilityValue(
-                [showsWorkspace ? workspace : "", session.pinned ? "Pinned" : "", activityValue]
-                    .filter { !$0.isEmpty }
-                    .joined(separator: ", ")
+                sessionAccessibilityValue(
+                    workspace: showsWorkspace && !workspace.isEmpty ? workspace : nil,
+                    isPinned: session.pinned,
+                    activity: activityValue
+                )
             )
             .accessibilityAddTraits(isSelected ? .isSelected : [])
         }
@@ -535,6 +540,23 @@ struct ChatsView: View {
                 lineWidth: MobiusStyle.borderWidth
             )
             .allowsHitTesting(false)
+        }
+    }
+
+    private func sessionAccessibilityValue(
+        workspace: String?,
+        isPinned: Bool,
+        activity: LocalizedStringResource?
+    ) -> Text {
+        switch (workspace, isPinned, activity) {
+        case let (workspace?, true, activity?): Text("\(workspace), Pinned, \(activity)")
+        case let (workspace?, true, nil): Text("\(workspace), Pinned")
+        case let (workspace?, false, activity?): Text("\(workspace), \(activity)")
+        case let (workspace?, false, nil): Text(verbatim: workspace)
+        case let (nil, true, activity?): Text("Pinned, \(activity)")
+        case (nil, true, nil): Text("Pinned")
+        case let (nil, false, activity?): Text(activity)
+        case (nil, false, nil): Text(verbatim: "")
         }
     }
 }

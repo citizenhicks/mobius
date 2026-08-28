@@ -45,7 +45,7 @@ struct FilesView: View {
         .interactiveDismissDisabled(model.isLoadingFilePresentation)
     }
 
-    private var navigationTitle: String {
+    private var navigationTitle: LocalizedStringResource {
         if model.filesInspectorTab == .modified { return model.modifiedFilesScope.title }
         return model.filesInspectorTab.title
     }
@@ -181,7 +181,7 @@ private struct FilesInspectorTabPicker: View {
 }
 
 private extension FilesInspectorTab {
-    var title: String {
+    var title: LocalizedStringResource {
         switch self {
         case .modified: "Modified"
         case .allFiles: "All Files"
@@ -191,7 +191,7 @@ private extension FilesInspectorTab {
 }
 
 private extension ModifiedFilesScope {
-    var title: String {
+    var title: LocalizedStringResource {
         switch self {
         case .lastTurn: "Last turn"
         case .unstaged: "Unstaged"
@@ -403,7 +403,7 @@ private struct FileTreeRow: View {
                 size: 15,
                 foreground: node.isFolder ? palette.muted : palette.accent
             )
-            Text(node.name)
+            Text(verbatim: node.name)
                 .font(MobiusStyle.bodyFont)
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -434,12 +434,16 @@ private struct ChatFileList: View {
         List {
             fileSection(
                 "Agent files",
+                loadingTitle: "Loading agent files",
+                emptyTitle: "No agent files",
                 records: agentFiles,
                 emptyGlyph: .robot,
                 accessibilityOrigin: "agent"
             )
             fileSection(
                 "User uploads",
+                loadingTitle: "Loading user uploads",
+                emptyTitle: "No user uploads",
                 records: userFiles,
                 emptyGlyph: .fileUpload,
                 accessibilityOrigin: "user-uploaded"
@@ -450,16 +454,18 @@ private struct ChatFileList: View {
     }
 
     private func fileSection(
-        _ title: String,
+        _ title: LocalizedStringResource,
+        loadingTitle: LocalizedStringResource,
+        emptyTitle: LocalizedStringResource,
         records: [SessionFileRecord],
         emptyGlyph: MobiusGlyph,
-        accessibilityOrigin: String
+        accessibilityOrigin: LocalizedStringResource
     ) -> some View {
-        Section(title) {
+        Section {
             if model.isLoadingSessionFiles {
-                InspectorFileLoadingRows(title: "Loading \(title.lowercased())")
+                InspectorFileLoadingRows(title: loadingTitle)
             } else if records.isEmpty {
-                InspectorEmptyRow(title: "No \(title.lowercased())", glyph: emptyGlyph)
+                InspectorEmptyRow(title: emptyTitle, glyph: emptyGlyph)
             } else {
                 ForEach(records) { record in
                     SessionFileInspectorRow(
@@ -468,6 +474,8 @@ private struct ChatFileList: View {
                     )
                 }
             }
+        } header: {
+            Text(title)
         }
     }
 }
@@ -475,7 +483,7 @@ private struct ChatFileList: View {
 private struct SessionFileInspectorRow: View {
     @Environment(AppModel.self) private var model
     let file: SessionFileReference
-    let accessibilityLabel: String
+    let accessibilityLabel: LocalizedStringResource
 
     var body: some View {
         HStack(spacing: 0) {
@@ -489,7 +497,7 @@ private struct SessionFileInspectorRow: View {
                     showsDisclosure: false
                 )
             }
-            .accessibilityLabel(accessibilityLabel)
+            .accessibilityLabel(Text(accessibilityLabel))
 
             Menu {
                 Button("Preview", glyph: file.name.fileGlyph) {
@@ -513,7 +521,7 @@ private struct SessionFileInspectorRow: View {
 }
 
 private struct InspectorFileLoadingRows: View {
-    let title: String
+    let title: LocalizedStringResource
 
     var body: some View {
         // One row holding both, so the shimmer sweeps the block: applied per row, the band
@@ -532,14 +540,14 @@ private struct InspectorFileLoadingRows: View {
                 }
             }
         }
-        .mobiusLoadingPlaceholder(title)
+        .mobiusLoadingPlaceholder(.localized(title))
         .inspectorFileListRow()
     }
 }
 
 private struct InspectorEmptyRow: View {
     @Environment(\.mobiusPalette) private var palette
-    let title: String
+    let title: LocalizedStringResource
     let glyph: MobiusGlyph
 
     var body: some View {
@@ -585,11 +593,11 @@ private struct InspectorFileRow: View {
         HStack(spacing: MobiusSpace.m) {
             MobiusIcon(name.fileGlyph, foreground: palette.accent)
             VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
-                Text(name)
+                Text(verbatim: name)
                     .font(MobiusStyle.metadataFont.weight(.semibold))
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text(detail)
+                Text(verbatim: detail)
                     .font(MobiusStyle.metadataFont)
                     .foregroundStyle(palette.muted)
                     .lineLimit(1)

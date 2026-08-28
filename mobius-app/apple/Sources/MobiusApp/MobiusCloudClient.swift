@@ -117,7 +117,7 @@ enum MobiusCloudError: LocalizedError {
     case subscriptionAccountConflict
     case subscriptionRequired
 
-    var errorDescription: String? {
+    var localizedDescriptionResource: LocalizedStringResource {
         switch self {
         case .accountDeletionPending:
             "Your previous Cloud account is still being deleted. Try again shortly."
@@ -145,6 +145,8 @@ enum MobiusCloudError: LocalizedError {
         case .subscriptionRequired: "An active Cloud subscription is required."
         }
     }
+
+    var errorDescription: String? { String(localized: localizedDescriptionResource) }
 }
 
 private struct MobiusCloudCredential: Codable {

@@ -33,7 +33,7 @@ extension AppModel {
             } catch {
                 self.automaticReconnectBlocked = true
                 self.connectionState = .failed(error.localizedDescription)
-                self.showToast(error.localizedDescription, tone: .error)
+                self.showToast(verbatim: self.localizedErrorDescription(error), tone: .error)
                 if let storeError = error as? GatewayStore.StoreError,
                    case .missingToken = storeError {
                     self.repairSelectedGateway()
@@ -131,8 +131,8 @@ extension AppModel {
                 showToast("Gateway paired.", tone: .success)
                 completeCloudPairing(.success(()))
             } catch {
-                pairingError = error.localizedDescription
-                showToast(error.localizedDescription, tone: .error)
+                pairingError = localizedErrorDescription(error)
+                showToast(verbatim: localizedErrorDescription(error), tone: .error)
                 completeCloudPairing(.failure(error))
             }
         case .authenticated:
@@ -407,7 +407,7 @@ extension AppModel {
                 cancelReconnect()
                 repairSelectedGateway()
             }
-            showToast(failure.message, tone: .error)
+            showToast(verbatim: failure.message, tone: .error)
             if failure.fatal {
                 automaticReconnectBlocked = true
                 cancelReconnect()
@@ -547,7 +547,8 @@ extension AppModel {
                 navigationPath.removeLast()
             }
             providerActionState = .idle
-            showToast("\(removedProviderLabel ?? "Provider") removed.", tone: .success)
+            let provider = removedProviderLabel ?? localizedString("Provider")
+            showToast("\(provider) removed.", tone: .success)
         } else if requestID == providerRegistrationRequestID {
             providerRegistrationRequestID = nil
             providerActionState = .idle
@@ -781,11 +782,19 @@ extension AppModel {
             showToast("\(sessionTitle(sessionID)) is ready.", tone: .success, sessionID: sessionID)
         case .aborted:
             guard !isActiveChat else { return }
-            let detail = activity.message.map { ": \($0)" } ?? ""
-            showToast("\(sessionTitle(sessionID)) stopped\(detail).", tone: .warning)
+            let title = sessionTitle(sessionID)
+            if let message = activity.message {
+                showToast("\(title) stopped: \(message).", tone: .warning)
+            } else {
+                showToast("\(title) stopped.", tone: .warning)
+            }
         case .failed:
-            let detail = activity.message.map { ": \($0)" } ?? ""
-            showToast("\(sessionTitle(sessionID)) failed\(detail).", tone: .error)
+            let title = sessionTitle(sessionID)
+            if let message = activity.message {
+                showToast("\(title) failed: \(message).", tone: .error)
+            } else {
+                showToast("\(title) failed.", tone: .error)
+            }
         }
     }
 
@@ -872,7 +881,7 @@ extension AppModel {
         handleRejectedCapabilities(rejection)
         if !rejectedFileThumbnail || rejection.fatal {
             showToast(
-                rejection.message,
+                verbatim: rejection.message,
                 tone: rejection.code == "revision_conflict" || rejection.code == "agent_busy"
                     ? .warning
                     : .error

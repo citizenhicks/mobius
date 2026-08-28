@@ -9,8 +9,20 @@ enum UsageAggregation: String, CaseIterable, Identifiable {
 
     var id: Self { self }
 
-    var title: String {
-        rawValue.capitalized
+    var title: LocalizedStringResource {
+        switch self {
+        case .daily: "Daily"
+        case .weekly: "Weekly"
+        case .cumulative: "Cumulative"
+        }
+    }
+
+    var accessibilityLabel: LocalizedStringResource {
+        switch self {
+        case .daily: "Daily token usage by provider"
+        case .weekly: "Weekly token usage by provider"
+        case .cumulative: "Cumulative token usage by provider"
+        }
     }
 }
 
@@ -216,7 +228,7 @@ struct ProviderUsageChart: View {
                 .clipShape(MobiusStyle.controlShape)
         }
         .frame(height: 220)
-        .accessibilityLabel("\(aggregation.title) token usage by provider")
+        .accessibilityLabel(Text(aggregation.accessibilityLabel))
     }
 
     private func cumulativeChart(_ points: [ProviderUsagePoint]) -> some View {

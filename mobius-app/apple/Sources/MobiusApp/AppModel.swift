@@ -246,6 +246,7 @@ final class AppModel {
     var pairingCode = ""
     var pairingError: String?
     var theme: ThemePreference
+    var language: AppLanguage
     var accentTint: AccentTint
     var appLockEnabled: Bool
     var isAppLocked: Bool
@@ -414,6 +415,9 @@ final class AppModel {
         self.accounts = store.loadAccounts()
         self.selectedAccountID = store.selectedAccountID()
         self.theme = ThemePreference(rawValue: settingsDefaults.string(forKey: "theme") ?? "") ?? .system
+        self.language = AppLanguage(
+            rawValue: settingsDefaults.string(forKey: "language") ?? ""
+        ) ?? .system
         self.accentTint = AccentTint(
             rawValue: settingsDefaults.string(forKey: "accent-tint") ?? ""
         ) ?? .appDefault
@@ -526,7 +530,7 @@ final class AppModel {
             })
     }
 
-    var attachmentSubmissionUnavailableMessage: String {
+    var attachmentSubmissionUnavailableMessage: LocalizedStringResource {
         attachmentsEnabled
             ? "The selected model does not accept image attachments."
             : "File attachments are not enabled for this chat."
@@ -656,7 +660,40 @@ final class AppModel {
     }
 
     func showToast(
-        _ message: String,
+        _ message: LocalizedStringResource,
+        tone: ToastTone = .info,
+        sessionID: String? = nil
+    ) {
+        showToast(verbatim: localizedString(message), tone: tone, sessionID: sessionID)
+    }
+
+    func localizedString(_ resource: LocalizedStringResource) -> String {
+        var resource = resource
+        resource.locale = language.locale
+        return String(localized: resource)
+    }
+
+    func localizedErrorDescription(_ error: Error) -> String {
+        switch error {
+        case let error as AttachmentImportError:
+            localizedString(error.localizedDescriptionResource)
+        case let error as ComposerDictationError:
+            localizedString(error.localizedDescriptionResource)
+        case let error as GatewayWireError:
+            localizedString(error.localizedDescriptionResource)
+        case let error as GatewayStore.StoreError:
+            error.localizedDescriptionResource.map(localizedString) ?? error.localizedDescription
+        case let error as MobiusCloudError:
+            localizedString(error.localizedDescriptionResource)
+        case let error as MobiusCloudPurchaseError:
+            error.localizedDescriptionResource.map(localizedString) ?? error.localizedDescription
+        default:
+            error.localizedDescription
+        }
+    }
+
+    func showToast(
+        verbatim message: String,
         tone: ToastTone = .info,
         sessionID: String? = nil
     ) {
@@ -810,9 +847,10 @@ final class AppModel {
         )
         titleEligibleSessionIDs.remove(sessionID)
         let titleWriter = titleWriter
+        let locale = language.locale
         chatTitleTasks[sessionID] = Task { [weak self] in
-            let outcome = await titleWriter.title(for: prompt) { [weak self] message in
-                self?.showToast(message, tone: .warning)
+            let outcome = await titleWriter.title(for: prompt, locale: locale) { [weak self] message in
+                self?.showToast(verbatim: message, tone: .warning)
             }
             guard let self else { return }
             self.finishChatTitle(outcome, attempt: attempt)
@@ -831,7 +869,7 @@ final class AppModel {
         case .title(let title):
             pendingChatTitles[attempt.sessionID]?.generatedTitle = title
         case .failed(let message):
-            showToast(message, tone: .warning)
+            showToast(verbatim: message, tone: .warning)
         case .cancelled:
             break
         }
@@ -971,7 +1009,7 @@ final class AppModel {
     }
 
     var currentSessionTitle: String {
-        selectedSessionID.map(sessionTitle) ?? SessionRecord.untitledDisplayTitle
+        selectedSessionID.map(sessionTitle) ?? localizedString("new conversation")
     }
 
     var selectedSession: SessionRecord? {
@@ -989,7 +1027,12 @@ final class AppModel {
     }
 
     func displayedTitle(for session: SessionRecord) -> String {
-        pendingChatTitles[session.sessionId]?.displayTitle ?? session.displayTitle
+        if let title = pendingChatTitles[session.sessionId]?.displayTitle
+            ?? session.explicitTitle
+            ?? ChatTitleWriter.preview(for: session.firstUserMessage) {
+            return title
+        }
+        return localizedString("new conversation")
     }
 
     func sessionTitle(_ sessionID: String) -> String {
@@ -997,8 +1040,8 @@ final class AppModel {
             return pendingTitle
         }
         let session = sessions.first(where: { $0.sessionId == sessionID })
-        return session.map { String($0.displayTitle.prefix(72)) }
-            ?? SessionRecord.untitledDisplayTitle
+        return session.map { String(displayedTitle(for: $0).prefix(72)) }
+            ?? localizedString("new conversation")
     }
 
     var headerWidgets: [MountedWidget] { widgets(in: .header) }

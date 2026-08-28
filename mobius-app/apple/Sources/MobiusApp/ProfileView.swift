@@ -13,8 +13,8 @@ struct ProfileView: View {
             $0[$1.instance] = $1.tint
         }
         PageScaffold(
-            title: "Settings",
-            detail: "",
+            title: .localized("Settings"),
+            detail: .verbatim(""),
             headerAccessory: SettingsInformationButton.init
         ) {
             // Settings first, the dashboard last: this page is opened to change something,
@@ -157,14 +157,14 @@ private struct SettingsInformationButton: View {
         }
     }
 
-    private var versionDescription: String {
+    private var versionDescription: LocalizedStringResource {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
             as? String ?? "—"
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—"
         return "möbius v\(version) (\(build))"
     }
 
-    private func showPlaceholder(_ title: String) {
+    private func showPlaceholder(_ title: LocalizedStringResource) {
         showsInformation = false
         model.showToast("\(title) will be available before the cloud release.")
     }
@@ -172,7 +172,7 @@ private struct SettingsInformationButton: View {
 
 private struct SettingsInformationRow: View {
     @Environment(\.mobiusPalette) private var palette
-    let title: String
+    let title: LocalizedStringResource
     let glyph: MobiusGlyph
     let action: @MainActor () -> Void
 
@@ -211,9 +211,9 @@ private struct CloudAccountSettings: View {
             if let cloudError = model.cloudError {
                 StatusBanner(
                     tone: .error,
-                    title: "Cloud account unavailable",
-                    detail: cloudError,
-                    action: ("Retry", { Task { await model.refreshCloudAccount() } })
+                    title: .localized("Cloud account unavailable"),
+                    detail: .verbatim(cloudError),
+                    action: (.localized("Retry"), { Task { await model.refreshCloudAccount() } })
                 )
             }
             LabeledContent("Email") {
@@ -497,14 +497,14 @@ private struct UsageMetricGrid<Content: View>: View {
 
 private struct UsageMetric: View {
     @Environment(\.mobiusPalette) private var palette
-    let label: String
+    let label: LocalizedStringResource
     let value: String
 
     var body: some View {
         // Value first: a label that wraps to two lines would otherwise push its number
         // off the baseline its neighbours sit on, which is what made the grid look ragged.
         VStack(alignment: .leading, spacing: MobiusSpace.xs) {
-            Text(value)
+            Text(verbatim: value)
                 .font(MobiusStyle.titleFont)
                 .monospacedDigit()
                 .lineLimit(1)
@@ -589,8 +589,12 @@ private struct ProfileRecentRuns: View {
                                     !model.canOpenSession
                                         && group.sessionId != model.selectedSessionID
                                 )
-                                .accessibilityLabel("\(runOutcome(run)), \(group.title)")
-                                .accessibilityValue(runDetail(run))
+                                .accessibilityLabel(
+                                    Text(
+                                        "\(Text(runOutcome(run))), \(Text(verbatim: group.title))"
+                                    )
+                                )
+                                .accessibilityValue(Text(runDetail(run)))
                                 .accessibilityHint("Opens the chat for this run")
                             }
                         } label: {
@@ -629,15 +633,23 @@ private struct ProfileRecentRuns: View {
         )
     }
 
-    private func runDetail(_ run: RunSummary) -> String {
-        "\(formatMilliseconds(run.elapsedMs)) · \(run.modelCalls) model · \(run.toolCalls) tools · \(compact(run.usage.totalTokens)) tokens"
+    private func runDetail(_ run: RunSummary) -> LocalizedStringResource {
+        let elapsed = formatMilliseconds(run.elapsedMs)
+        let tokens = compact(run.usage.totalTokens)
+        return switch (run.modelCalls == 1, run.toolCalls == 1) {
+        case (true, true): "\(elapsed) · 1 model · 1 tool · \(tokens) tokens"
+        case (true, false): "\(elapsed) · 1 model · \(run.toolCalls) tools · \(tokens) tokens"
+        case (false, true): "\(elapsed) · \(run.modelCalls) models · 1 tool · \(tokens) tokens"
+        case (false, false):
+            "\(elapsed) · \(run.modelCalls) models · \(run.toolCalls) tools · \(tokens) tokens"
+        }
     }
 
     private func runDate(_ run: RunSummary) -> Date {
         Date(timeIntervalSince1970: TimeInterval(run.startedAtMs) / 1_000)
     }
 
-    private func runOutcome(_ run: RunSummary) -> String {
+    private func runOutcome(_ run: RunSummary) -> LocalizedStringResource {
         switch run.outcome {
         case .completed: "Completed"
         case .aborted: "Aborted"
@@ -788,7 +800,7 @@ private struct AppearanceSettings: View {
             get: { model.theme },
             set: { model.setTheme($0) }
         )) {
-            ForEach(ThemePreference.allCases) { Text($0.rawValue.capitalized).tag($0) }
+            ForEach(ThemePreference.allCases) { Text($0.label).tag($0) }
         }
         .pickerStyle(.segmented)
         .padding(.vertical, MobiusSpace.xs)
@@ -798,6 +810,15 @@ private struct AppearanceSettings: View {
             get: { model.accentTint },
             set: { model.setAccentTint($0) }
         ))
+
+        Picker("Language", selection: Binding(
+            get: { model.language },
+            set: { model.setLanguage($0) }
+        )) {
+            ForEach(AppLanguage.allCases) { Text($0.label).tag($0) }
+        }
+        .settingsPickerStyle()
+        .sensoryFeedback(.selection, trigger: model.language)
     }
 }
 
@@ -834,7 +855,7 @@ private struct AppLockSettings: View {
         }
     }
 
-    private var description: String {
+    private var description: LocalizedStringResource {
         if model.appLockAuthenticationMethod.isAvailable {
             return "Locks möbius when it enters the background. This setting stays on this device."
         }

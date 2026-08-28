@@ -33,12 +33,16 @@ enum MobiusCloudPurchaseError: LocalizedError {
     case pending
     case unavailable
 
-    var errorDescription: String? {
+    var localizedDescriptionResource: LocalizedStringResource? {
         switch self {
         case .cancelled: nil
         case .pending: "Purchase approval is pending."
         case .unavailable: "The App Store purchase could not be completed."
         }
+    }
+
+    var errorDescription: String? {
+        localizedDescriptionResource.map { String(localized: $0) }
     }
 }
 

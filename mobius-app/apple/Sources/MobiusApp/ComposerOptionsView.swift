@@ -43,18 +43,18 @@ private struct ComposerSettingMenu: View {
 
     var body: some View {
         Menu {
-            Picker(item.setting.label, selection: selection) {
+            Picker(selection: selection) {
                 if let unsetLabel = item.unsetLabel {
-                    Text(unsetLabel).tag(String?.none)
+                    Text(verbatim: unsetLabel).tag(String?.none)
                 }
                 ForEach(item.options) { option in
-                    Text(option.label).tag(Optional(option.value))
+                    Text(verbatim: option.label).tag(Optional(option.value))
                 }
-            }
+            } label: { Text(verbatim: item.setting.label) }
             .labelsHidden()
         } label: {
             MobiusLabel(
-                title: selectedLabel,
+                verbatim: selectedLabel,
                 glyph: selectedGlyph ?? .slidersHorizontal,
                 iconColor: palette.tone(selectedOption?.tone ?? "neutral"),
                 iconSize: MobiusStyle.glyphLead
@@ -66,11 +66,11 @@ private struct ComposerSettingMenu: View {
         .buttonStyle(.mobiusPlain)
         .sensoryFeedback(.selection, trigger: selectedValue)
         .disabled(!isEnabled)
-        .help(selectedLabel)
-        .accessibilityLabel(item.setting.label)
-        .accessibilityValue(selectedLabel)
+        .help(Text(verbatim: selectedLabel))
+        .accessibilityLabel(Text(verbatim: item.setting.label))
+        .accessibilityValue(Text(verbatim: selectedLabel))
         .confirmationDialog(
-            pendingDestructiveOption.map { "Enable \($0.label)?" } ?? "Confirm setting",
+            "Confirm setting",
             isPresented: destructiveConfirmationPresented,
             titleVisibility: .visible,
             presenting: pendingDestructiveOption
@@ -80,7 +80,7 @@ private struct ComposerSettingMenu: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: { option in
-            Text(option.description)
+            Text(verbatim: option.description)
         }
     }
 
@@ -238,9 +238,10 @@ struct ComposerOptionsView: View {
             Section("Reasoning") { reasoningMenuContent }
         } label: {
             MobiusMenuLabel(
-                text: currentChoice.map { model.modelLabel(for: $0) } ?? "Model",
+                text: currentChoice.map { .verbatim(model.modelLabel(for: $0)) }
+                    ?? .localized("Model"),
                 glyph: providerGlyph,
-                detail: currentChoice?.reasoningEffort?.capitalized,
+                detail: currentChoice?.reasoningEffort.map { .verbatim($0.capitalized) },
                 glyphSize: MobiusStyle.glyphLead,
                 glyphColor: providerTint?.color
             )
@@ -250,7 +251,7 @@ struct ComposerOptionsView: View {
         .buttonStyle(.mobiusPlain)
         .sensoryFeedback(.selection, trigger: model.selectedModelRoute)
         .accessibilityLabel("Model and reasoning")
-        .accessibilityValue(modelLabel)
+        .accessibilityValue(modelLabel.text)
     }
 
     @ViewBuilder
@@ -272,8 +273,11 @@ struct ComposerOptionsView: View {
     private var reasoningMenuContent: some View {
         Picker("Reasoning", selection: reasoningPickerSelection) {
             ForEach(reasoningChoices, id: \.route) { choice in
-                Text(choice.reasoningEffort?.capitalized ?? "Default")
-                    .tag(choice.route)
+                if let effort = choice.reasoningEffort {
+                    Text(verbatim: effort.capitalized).tag(choice.route)
+                } else {
+                    Text("Default").tag(choice.route)
+                }
             }
         }
         .labelsHidden()
@@ -288,9 +292,9 @@ struct ComposerOptionsView: View {
             if let providerSymbol,
                let glyph = MobiusSymbol.knownGlyph(for: providerSymbol),
                let image = glyph.menuImage(tint.color) {
-                Label { Text(title) } icon: { image }
+                Label { Text(verbatim: title) } icon: { image }
             } else {
-                Text(title)
+                Text(verbatim: title)
             }
         }
     }
@@ -312,9 +316,9 @@ struct ComposerOptionsView: View {
         .labelStyle(.iconOnly)
         .buttonStyle(MobiusIconButtonStyle(prominent: dictation.isRecording, bare: true))
         .disabled(!canToggleDictation)
-        .help(dictationLabel)
-        .accessibilityLabel(dictationLabel)
-        .accessibilityValue(dictationValue)
+        .help(Text(dictationLabel))
+        .accessibilityLabel(Text(dictationLabel))
+        .accessibilityValue(Text(dictationValue))
 
         Group {
             if model.activeTurnID != nil && !canSend {
@@ -323,7 +327,7 @@ struct ComposerOptionsView: View {
             } else {
                 Button(action: send) {
                     Label {
-                        Text(model.activeTurnID == nil ? "Send" : "Send steering message")
+                        Text(sendLabel)
                     } icon: {
                         if isWaitingForGateway {
                             MobiusSpinner(
@@ -340,7 +344,7 @@ struct ComposerOptionsView: View {
                     // `sendMessage()` also needs a session: a gateway with no chats left the
                     // button enabled and the tap silent.
                     .disabled(!canSend)
-                    .help(model.activeTurnID == nil ? "Send" : "Send steering message")
+                    .help(Text(sendLabel))
             }
         }
         .mobiusProminentIconButton()
@@ -351,7 +355,10 @@ struct ComposerOptionsView: View {
         case .success(let urls):
             Task { await model.importAttachments(urls) }
         case .failure(let error):
-            model.showToast(error.localizedDescription, tone: .error)
+            model.showToast(
+                verbatim: model.localizedErrorDescription(error),
+                tone: .error
+            )
         }
     }
 
@@ -426,9 +433,13 @@ struct ComposerOptionsView: View {
         }
     }
 
-    private var modelLabel: String {
-        guard let currentChoice else { return "Model" }
-        return "\(model.modelLabel(for: currentChoice)) · \(currentChoice.reasoningEffort?.capitalized ?? "Default")"
+    private var modelLabel: MobiusText {
+        guard let currentChoice else { return .localized("Model") }
+        let modelName = model.modelLabel(for: currentChoice)
+        if let effort = currentChoice.reasoningEffort {
+            return .localized("\(modelName) · \(effort.capitalized)")
+        }
+        return .localized("\(modelName) · Default")
     }
 
     private var providerTint: AccentTint? {
@@ -465,7 +476,7 @@ struct ComposerOptionsView: View {
                 && model.selectedSessionID != nil
     }
 
-    private var dictationLabel: String {
+    private var dictationLabel: LocalizedStringResource {
         switch dictation.state {
         case .idle: "Start dictation"
         case .preparing: "Preparing dictation"
@@ -474,13 +485,17 @@ struct ComposerOptionsView: View {
         }
     }
 
-    private var dictationValue: String {
+    private var dictationValue: LocalizedStringResource {
         switch dictation.state {
         case .idle: "Not listening"
         case .preparing: "Preparing speech recognition"
         case .recording: "Listening"
         case .stopping: "Finishing transcription"
         }
+    }
+
+    private var sendLabel: LocalizedStringResource {
+        model.activeTurnID == nil ? "Send" : "Send steering message"
     }
 
     private func toggleDictation() {
@@ -497,13 +512,18 @@ struct ComposerOptionsView: View {
                             selection = nil
                             model.composer = text
                         },
-                        reportError: { model.showToast($0, tone: .error) }
+                        reportError: {
+                            model.showToast($0.localizedDescriptionResource, tone: .error)
+                        }
                     )
                 }
             } catch is CancellationError {
                 return
             } catch {
-                model.showToast(error.localizedDescription, tone: .error)
+                model.showToast(
+                    verbatim: model.localizedErrorDescription(error),
+                    tone: .error
+                )
             }
         }
     }
@@ -525,12 +545,20 @@ private struct ComposerDictationControls: View {
                 .mobiusIconButton()
                 .disabled(dictation.state == .stopping)
 
-            Text(dictation.detectedLanguageCode ?? "—")
-                .font(MobiusStyle.badgeFont)
-                .foregroundStyle(palette.muted)
-                .frame(width: MobiusStyle.iconButtonSize, height: MobiusStyle.iconButtonSize)
-                .accessibilityLabel("Detected language")
-                .accessibilityValue(dictation.detectedLanguageCode ?? "Detecting")
+            Group {
+                if let languageCode = dictation.detectedLanguageCode {
+                    Text(verbatim: languageCode)
+                } else {
+                    Text(verbatim: "—")
+                }
+            }
+            .font(MobiusStyle.badgeFont)
+            .foregroundStyle(palette.muted)
+            .frame(width: MobiusStyle.iconButtonSize, height: MobiusStyle.iconButtonSize)
+            .accessibilityLabel("Detected language")
+            .accessibilityValue(
+                dictation.detectedLanguageCode.map { Text(verbatim: $0) } ?? Text("Detecting")
+            )
 
             ComposerDictationWaveform(samples: dictation.audioLevels)
                 .frame(maxWidth: .infinity)

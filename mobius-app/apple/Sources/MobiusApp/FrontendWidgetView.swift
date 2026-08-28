@@ -42,13 +42,18 @@ struct FrontendWidgetView: View {
     }
 
     /// Widget text can be as terse as a bare count, so the detail title carries the meaning.
-    private var accessibilityTitle: String {
-        widget.widget.content.map { "\($0.title) \(widget.widget.text)" } ?? widget.widget.text
+    private var accessibilityTitle: Text {
+        guard let title = widget.widget.content?.title else {
+            return Text(frontendPresentationText(widget.widget.text))
+        }
+        return Text(frontendPresentationText(title))
+            + Text(verbatim: " ")
+            + Text(frontendPresentationText(widget.widget.text))
     }
 
     private var badge: MobiusBadge {
         MobiusBadge(
-            text: widget.widget.iconOnly ? "" : widget.widget.text,
+            localized: frontendPresentationText(widget.widget.iconOnly ? "" : widget.widget.text),
             tone: widget.widget.tone,
             glyph: widget.widget.symbol.map { MobiusSymbol.glyph(for: $0) },
             progress: widget.widget.progress?.fraction,
@@ -70,7 +75,7 @@ private struct WidgetContentPopover: View {
     let select: (FrontendPickerOption) -> Void
 
     var body: some View {
-        BadgePopover(title: content.title) {
+        BadgePopover(localizedTitle: frontendPresentationText(content.title)) {
             FrontendWidgetContentView(content: content, select: select)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -114,10 +119,14 @@ struct FrontendWidgetContentView: View {
                     FrontendPickerOptionLabel(option: option)
                 }
                 .buttonStyle(.mobiusPlain)
-                .accessibilityLabel(option.label)
-                .accessibilityValue(option.showsDetail ? option.detail : option.description)
+                .accessibilityLabel(Text(verbatim: option.label))
+                .accessibilityValue(
+                    Text(verbatim: option.showsDetail ? option.detail : option.description)
+                )
                 .accessibilityHint(
-                    option.showsDetail ? option.description : "Activates this option"
+                    option.showsDetail
+                        ? Text(verbatim: option.description)
+                        : Text("Activates this option")
                 )
                 .disabled(!actionsEnabled)
             }
@@ -156,7 +165,7 @@ private struct FrontendActionListRow: View {
                 MobiusIcon(statusGlyph, size: MobiusStyle.glyphInline, foreground: statusColor)
                     .frame(height: MobiusStyle.rowTouch)
             }
-            Text(item.text)
+            Text(verbatim: item.text)
                 .font(MobiusStyle.bodyFont)
                 .foregroundStyle(item.state == .completed ? palette.muted : .primary)
                 .strikethrough(item.state == .completed, color: palette.muted)
@@ -170,7 +179,7 @@ private struct FrontendActionListRow: View {
                             activate(action)
                         } label: {
                             MobiusLabel(
-                                title: action.label,
+                                title: frontendPresentationText(action.label),
                                 glyph: MobiusSymbol.glyph(for: action.symbol)
                             )
                         }
@@ -190,12 +199,12 @@ private struct FrontendActionListRow: View {
             }
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(statusLabel): \(item.text)")
+        .accessibilityLabel(Text("\(statusLabel): \(item.text)"))
         .mobiusSwipeActions {
             if usesSwipeActions {
                 ForEach(item.actions.reversed()) { action in
                     MobiusSwipeAction(
-                        title: action.label,
+                        title: frontendPresentationText(action.label),
                         glyph: MobiusSymbol.glyph(for: action.symbol),
                         tone: action.tone,
                         isEnabled: actionsEnabled
@@ -206,7 +215,7 @@ private struct FrontendActionListRow: View {
             }
         }
         .alert(
-            pendingAction?.action.label ?? "",
+            frontendPresentationText(pendingAction?.action.label ?? ""),
             isPresented: isPresentingAction,
             presenting: pendingAction
         ) { pending in
@@ -225,15 +234,17 @@ private struct FrontendActionListRow: View {
                 )
             case .destructive:
                 Button("Cancel", role: .cancel) { pendingAction = nil }
-                Button(pending.action.label, role: .destructive) {
+                Button(role: .destructive) {
                     submit(pending.action.op)
                     pendingAction = nil
+                } label: {
+                    Text(frontendPresentationText(pending.action.label))
                 }
                 .disabled(!actionsEnabled)
             }
         } message: { pending in
             if pending.kind == .destructive {
-                Text(pending.itemText)
+                Text(verbatim: pending.itemText)
             }
         }
     }
@@ -279,7 +290,7 @@ private struct FrontendActionListRow: View {
         }
     }
 
-    private var statusLabel: String {
+    private var statusLabel: LocalizedStringResource {
         switch item.state {
         case .plain: "Item"
         case .pending: "Pending"
@@ -310,19 +321,19 @@ private struct FrontendPickerOptionLabel: View {
                let glyph = MobiusSymbol.knownGlyph(for: symbol) {
                 MobiusIcon(glyph, size: MobiusStyle.glyphInline, foreground: palette.accent)
             }
-            Text(option.label)
+            Text(verbatim: option.label)
                 .font(MobiusStyle.controlFont.weight(.semibold))
                 .foregroundStyle(palette.accent)
                 .lineLimit(1)
             if !option.description.isEmpty {
-                Text(option.description)
+                Text(verbatim: option.description)
                     .font(MobiusStyle.metadataFont)
                     .foregroundStyle(palette.muted)
                     .lineLimit(1)
             }
             Spacer(minLength: MobiusSpace.xs)
             if option.showsDetail, !option.detail.isEmpty {
-                Text(option.detail)
+                Text(verbatim: option.detail)
                     .font(MobiusStyle.metadataFont)
                     .foregroundStyle(palette.muted)
                     .lineLimit(1)
@@ -343,9 +354,12 @@ struct FrontendWidgetSheet: View {
         NavigationStack {
             List {
                 if !model.isCapabilityEnabled(widget.capability) {
+                    let name = frontendPresentationText(
+                        currentWidget?.widget.text ?? widget.widget.text
+                    )
                     DisabledCapabilityNotice(
-                        title: "\(currentWidget?.widget.text ?? widget.widget.text) is off",
-                        detail: "Saved content remains visible. Enable \(currentWidget?.widget.text ?? widget.widget.text) in this chat to make changes."
+                        title: "\(name) is off",
+                        detail: "Saved content remains visible. Enable \(name) in this chat to make changes."
                     )
                 }
                 if let content = currentWidget?.widget.content {
@@ -362,7 +376,9 @@ struct FrontendWidgetSheet: View {
                 }
             }
             .scrollContentBackground(.hidden)
-            .navigationTitle(currentWidget?.title ?? widget.title)
+            .navigationTitle(
+                Text(frontendPresentationText(currentWidget?.title ?? widget.title))
+            )
             .toolbarTitleDisplayMode(.inline)
         }
         .mobiusSheet()
@@ -382,7 +398,7 @@ struct FrontendPickerView: View {
         MobiusCard {
             VStack(alignment: .leading, spacing: MobiusSpace.m) {
                 HStack {
-                    Text(picker.title)
+                    Text(verbatim: picker.title)
                         .font(MobiusStyle.titleFont)
                     Spacer(minLength: MobiusSpace.s)
                     Button { model.pendingPicker = nil } label: {
@@ -405,10 +421,18 @@ struct FrontendPickerView: View {
                                 FrontendPickerOptionLabel(option: option)
                             }
                             .buttonStyle(.mobiusPlain)
-                            .accessibilityLabel(option.label)
-                            .accessibilityValue(option.showsDetail ? option.detail : option.description)
+                            .accessibilityLabel(Text(verbatim: option.label))
+                            .accessibilityValue(
+                                Text(
+                                    verbatim: option.showsDetail
+                                        ? option.detail
+                                        : option.description
+                                )
+                            )
                             .accessibilityHint(
-                                option.showsDetail ? option.description : "Activates this option"
+                                option.showsDetail
+                                    ? Text(verbatim: option.description)
+                                    : Text("Activates this option")
                             )
                         }
                     }
@@ -442,15 +466,18 @@ func formatDuration(_ interval: TimeInterval) -> String {
     return Duration.seconds(seconds).formatted(.time(pattern: .minuteSecond(padMinuteToLength: 1)))
 }
 
-private func diffTitle(_ diff: String) -> String {
+private func diffTitle(_ diff: String) -> String? {
     for line in diff.split(separator: "\n", omittingEmptySubsequences: false) {
         if line.hasPrefix("+++ b/") { return String(line.dropFirst(6)) }
         if line.hasPrefix("+++ ") { return String(line.dropFirst(4)) }
     }
-    return "Code changes"
+    return nil
 }
 
-func diffSummary(_ text: String) -> String {
+func diffSummary(_ text: String) -> MobiusText {
     let totals = diffTotals(text)
-    return "\(diffTitle(text))  ·  +\(totals.added) −\(totals.removed)"
+    if let title = diffTitle(text) {
+        return .localized("\(title)  ·  +\(totals.added) −\(totals.removed)")
+    }
+    return .localized("Code changes  ·  +\(totals.added) −\(totals.removed)")
 }

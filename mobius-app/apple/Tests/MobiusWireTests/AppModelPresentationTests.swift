@@ -4,6 +4,21 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testFrontendPresentationMetadataUsesTheAppLanguageCatalog() {
+        let french = Locale(identifier: "fr")
+        let values = [
+            "Scratchpad", "Global Scratchpad", "Chat Scratchpad", "Promote", "Edit", "Delete",
+            "Plugin title outside the app catalog",
+        ].map { value in
+            MobiusText.localized(frontendPresentationText(value)).resolved(locale: french)
+        }
+
+        XCTAssertEqual(values, [
+            "Bloc-notes", "Bloc-notes global", "Bloc-notes de la conversation",
+            "Promouvoir", "Modifier", "Supprimer", "Plugin title outside the app catalog",
+        ])
+    }
+
     func testCanonicalFrontendRenderIsCapabilityScopedAndAppliedOnce() throws {
         let app = try model()
         let first = renderEvent(

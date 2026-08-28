@@ -9,19 +9,51 @@ import SwiftUI
 struct ModelRoutePicker: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
-    let label: String
-    let detail: String
+    let label: MobiusText
+    let detail: MobiusText
     let choices: [ModelChoice]
     var unsetLabel: String?
     var isEnabled = true
     @Binding var route: String?
 
+    init(
+        label: LocalizedStringResource,
+        detail: LocalizedStringResource,
+        choices: [ModelChoice],
+        unsetLabel: String? = nil,
+        isEnabled: Bool = true,
+        route: Binding<String?>
+    ) {
+        self.label = .localized(label)
+        self.detail = .localized(detail)
+        self.choices = choices
+        self.unsetLabel = unsetLabel
+        self.isEnabled = isEnabled
+        _route = route
+    }
+
+    init(
+        verbatimLabel label: String,
+        detail: String,
+        choices: [ModelChoice],
+        unsetLabel: String? = nil,
+        isEnabled: Bool = true,
+        route: Binding<String?>
+    ) {
+        self.label = .verbatim(label)
+        self.detail = .verbatim(detail)
+        self.choices = choices
+        self.unsetLabel = unsetLabel
+        self.isEnabled = isEnabled
+        _route = route
+    }
+
     var body: some View {
         LabeledContent {
             Menu {
-                Picker(label, selection: modelSelection) {
+                Picker(selection: modelSelection) {
                     if let unsetLabel {
-                        Text(unsetLabel).tag(String?.none)
+                        Text(verbatim: unsetLabel).tag(String?.none)
                     }
                     ForEach(distinctModels, id: \.route) { choice in
                         optionLabel(
@@ -31,7 +63,7 @@ struct ModelRoutePicker: View {
                         )
                         .tag(Optional(choice.route))
                     }
-                }
+                } label: { label.text }
                 .labelsHidden()
             } label: {
                 menuLabel(selectedModelLabel, glyph: selectedGlyph)
@@ -39,11 +71,11 @@ struct ModelRoutePicker: View {
             .menuIndicator(.hidden)
             .buttonStyle(.mobiusPlain)
             .disabled(!isEnabled)
-            .accessibilityLabel(label)
-            .accessibilityValue(selectedModelLabel)
+            .accessibilityLabel(label.text)
+            .accessibilityValue(selectedModelLabel.text)
         } label: {
             HStack(spacing: MobiusSpace.xs) {
-                Text(label)
+                label.text
                 SettingsInfoButton(title: label, detail: detail)
             }
         }
@@ -54,23 +86,23 @@ struct ModelRoutePicker: View {
                 Menu {
                     Picker("Reasoning", selection: reasoningSelection) {
                         ForEach(reasoningChoices, id: \.route) { choice in
-                            Text(effortLabel(choice)).tag(choice.route)
+                            effortLabel(choice).text.tag(choice.route)
                         }
                     }
                     .labelsHidden()
                 } label: {
-                    menuLabel(selected.map(effortLabel) ?? "Default", glyph: nil)
+                    menuLabel(selectedEffortLabel, glyph: nil)
                 }
                 .menuIndicator(.hidden)
                 .buttonStyle(.mobiusPlain)
                 .disabled(!isEnabled)
                 .accessibilityLabel("Reasoning")
-                .accessibilityValue(selected.map(effortLabel) ?? "Default")
+                .accessibilityValue(selectedEffortLabel.text)
             }
         }
     }
 
-    private func menuLabel(_ text: String, glyph: MobiusGlyph?) -> some View {
+    private func menuLabel(_ text: MobiusText, glyph: MobiusGlyph?) -> some View {
         MobiusMenuLabel(
             text: text,
             glyph: glyph,
@@ -89,9 +121,9 @@ struct ModelRoutePicker: View {
         if let symbol,
            let glyph = MobiusSymbol.knownGlyph(for: symbol),
            let image = glyph.menuImage(tint.color) {
-            Label { Text(title) } icon: { image }
+            Label { Text(verbatim: title) } icon: { image }
         } else {
-            Text(title)
+            Text(verbatim: title)
         }
     }
 
@@ -99,9 +131,10 @@ struct ModelRoutePicker: View {
         choices.first { $0.route == route }
     }
 
-    private var selectedModelLabel: String {
-        guard let selected else { return unsetLabel ?? "Select" }
-        return model.modelLabel(for: selected)
+    private var selectedModelLabel: MobiusText {
+        if let selected { return .verbatim(model.modelLabel(for: selected)) }
+        if let unsetLabel { return .verbatim(unsetLabel) }
+        return .localized("Select")
     }
 
     private var selectedGlyph: MobiusGlyph? {
@@ -110,8 +143,14 @@ struct ModelRoutePicker: View {
             .flatMap { MobiusSymbol.knownGlyph(for: $0) }
     }
 
-    private func effortLabel(_ choice: ModelChoice) -> String {
-        choice.reasoningEffort?.capitalized ?? "Default"
+    private func effortLabel(_ choice: ModelChoice) -> MobiusText {
+        guard let effort = choice.reasoningEffort else { return .localized("Default") }
+        return .verbatim(effort.capitalized)
+    }
+
+    private var selectedEffortLabel: MobiusText {
+        guard let effort = selected?.reasoningEffort else { return .localized("Default") }
+        return .verbatim(effort.capitalized)
     }
 
     private var distinctModels: [ModelChoice] {

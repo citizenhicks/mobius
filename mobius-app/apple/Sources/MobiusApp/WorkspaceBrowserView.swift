@@ -24,7 +24,7 @@ struct WorkspaceBrowserView: View {
                     List {
                         ForEach(listing.entries) { entry in
                             Button { model.loadDirectory(entry.path) } label: {
-                                MobiusLabel(title: entry.name, glyph: .folder)
+                                MobiusLabel(verbatim: entry.name, glyph: .folder)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .contentShape(Rectangle())
                             }
@@ -38,7 +38,7 @@ struct WorkspaceBrowserView: View {
                         }
                         if let error = model.directoryError ?? model.workspaceError {
                             MobiusLabel(
-                                title: error,
+                                verbatim: error,
                                 glyph: .warning,
                                 iconColor: palette.danger
                             )
@@ -90,14 +90,14 @@ struct WorkspaceBrowserView: View {
 private struct DirectoryBrowserHeader: View {
     @Environment(\.mobiusPalette) private var palette
     let path: String
-    let title: String
+    let title: LocalizedStringResource
     let parent: String?
     let onParent: (String) -> Void
     let onCreateFolder: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: MobiusSpace.xs) {
-            Text(path)
+            Text(verbatim: path)
                 .font(MobiusStyle.metadataFont.weight(.bold))
                 .tracking(1)
                 .foregroundStyle(palette.accent)
@@ -127,11 +127,15 @@ struct FrontendContributionPage: View {
     let widget: MountedWidget
 
     var body: some View {
-        PageScaffold(title: widget.title, detail: detail) {
+        PageScaffold(
+            title: .localized(frontendPresentationText(widget.title)),
+            detail: .localized(frontendPresentationText(detail))
+        ) {
             if !model.isCapabilityEnabled(widget.capability) {
+                let name = frontendPresentationText(widget.widget.text)
                 DisabledCapabilityNotice(
-                    title: "\(widget.widget.text) is off",
-                    detail: "Saved content remains visible. Enable \(widget.widget.text) in this chat to make changes."
+                    title: "\(name) is off",
+                    detail: "Saved content remains visible. Enable \(name) in this chat to make changes."
                 )
             }
             if let content = widget.widget.content {
@@ -147,14 +151,14 @@ struct FrontendContributionPage: View {
             } else if widget.widget.action != nil {
                 Section {
                     Button(
-                        widget.widget.text,
+                        frontendPresentationText(widget.widget.text),
                         glyph: widget.glyph,
                         action: { model.submitWidget(widget) }
                     )
                 }
             } else {
                 MobiusUnavailable(
-                    title: widget.widget.text,
+                    title: frontendPresentationText(widget.widget.text),
                     glyph: widget.glyph,
                     detail: "No content is currently available."
                 )
@@ -175,7 +179,10 @@ struct ScratchpadView: View {
         Group {
             if let widget = model.globalScratchpadWidget,
                let content = widget.widget.content {
-                PageScaffold(title: widget.title, detail: "") {
+                PageScaffold(
+                    title: .localized(frontendPresentationText(widget.title)),
+                    detail: .verbatim("")
+                ) {
                     Section {
                         FrontendWidgetContentView(
                             content: content,
