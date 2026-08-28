@@ -2,6 +2,7 @@ use mobius::backend::checkpoint::{Checkpoint, sqlite::SqliteCheckpoint};
 use mobius::backend::model::provider::HostedWebSearch;
 
 use crate::provider_catalog::*;
+use crate::swarm::SwarmStore;
 
 use super::*;
 
@@ -398,6 +399,8 @@ async fn updating_the_chat_recipe_preserves_capability_metadata() {
         .replacing_agent(1, composition, &gateway, store.state_dir(), None)
         .expect("updated chat spec");
     let gateway = Arc::new(Mutex::new(gateway));
+    let (swarm, _deliveries) = SwarmStore::new(Arc::clone(&checkpoints));
+    let swarm: Arc<dyn SwarmBackend> = Arc::new(swarm);
 
     let built = assemble(
         gateway,
@@ -407,6 +410,7 @@ async fn updating_the_chat_recipe_preserves_capability_metadata() {
         Arc::clone(&checkpoints),
         ScratchpadStore::new(Arc::clone(&checkpoints)),
         SessionFileStore::new(store.state_dir()),
+        swarm,
         Some("chat".into()),
         "test",
         true,
@@ -536,6 +540,8 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
         Arc::new(SqliteCheckpoint::new(store.checkpoints_path()).expect("checkpoints"));
     let scratchpad = ScratchpadStore::new(Arc::clone(&checkpoints));
     let session_files = SessionFileStore::new(store.state_dir());
+    let (swarm, _deliveries) = SwarmStore::new(Arc::clone(&checkpoints));
+    let swarm: Arc<dyn SwarmBackend> = Arc::new(swarm);
     let backend: Arc<dyn SandboxBackend> =
         Arc::new(LocalSandbox::new(&workspace).expect("sandbox"));
     let discover = |resolved: &ResolvedExtensions| {
@@ -557,6 +563,7 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
         Arc::clone(&gateway),
         scratchpad.clone(),
         session_files.clone(),
+        Arc::clone(&swarm),
         Arc::clone(&backend),
         &active,
         Some(active_extensions),
@@ -568,6 +575,7 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
         gateway,
         scratchpad,
         session_files,
+        swarm,
         backend,
         &inactive,
         Some(inactive_extensions),

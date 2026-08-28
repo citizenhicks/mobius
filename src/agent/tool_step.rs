@@ -12,12 +12,12 @@ use super::input::Wait;
 use crate::Error;
 use crate::Result;
 use crate::backend::model::ToolCall;
+use crate::backend::model::ToolLoad;
 use crate::backend::model::tool_output;
 use crate::backend::sandbox::SandboxPermissions;
 use crate::middleware::PostToolUseContext;
 use crate::middleware::QueuedInputBaseline;
-use crate::middleware::tools::ToolResult;
-use crate::middleware::tools::execute_batch;
+use crate::middleware::tools::{BoundToolCall, Catalog, ToolResult, execute_batch};
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
 use crate::protocol::Submission;
@@ -33,7 +33,14 @@ impl Runner {
         calls: &[ToolCall],
         permissions: SandboxPermissions,
     ) -> Result<Wait<Vec<ToolResult>>> {
-        for call in calls {
+        let (available, searchable, materialized) = self.live_tool_sets().await?;
+        let (bound_calls, mut unavailable_results) =
+            bind_live_calls(&self.catalog, calls, &available, &searchable, &materialized);
+        let callable = bound_calls
+            .iter()
+            .map(|call| call.as_call().clone())
+            .collect::<Vec<_>>();
+        for call in &callable {
             self.emit(
                 submission_id,
                 EventMsg::ToolCallBegin(ToolCallBeginEvent {
@@ -46,10 +53,10 @@ impl Runner {
             .await?;
         }
         let catalog = self.catalog.clone();
-        let interrupt_on_active_input = catalog.interrupts_on_active_input(calls);
+        let interrupt_on_active_input = catalog.interrupts_on_active_input(&callable);
         let execution = execute_batch(
             &catalog,
-            calls,
+            &bound_calls,
             Arc::clone(&self.config.sandbox),
             &permissions,
             turn_id,
@@ -84,7 +91,7 @@ impl Runner {
                             self.persist_active_change(change).await?;
                             if interrupt_on_active_input {
                                 break Wait::Ready(interrupted_results(
-                                    calls,
+                                    &callable,
                                     "execution interrupted; result unknown after active input",
                                 ));
                             }
@@ -106,6 +113,8 @@ impl Runner {
                 return Ok(Wait::Interrupted { submission_id });
             }
         };
+        results.append(&mut unavailable_results);
+        results = order_results(calls, results);
         if !executed {
             return Ok(Wait::Ready(results));
         }
@@ -178,6 +187,15 @@ impl Runner {
                 &result.output,
                 result.is_error,
             ));
+            if !result.loaded_tools.is_empty() {
+                self.push_context(
+                    ToolLoad {
+                        catalog_revision: self.catalog.revision()?.into(),
+                        tools: std::mem::take(&mut result.loaded_tools),
+                    }
+                    .into_input(),
+                );
+            }
             self.extend_context(std::mem::take(&mut result.additional_input));
         }
         Ok(())
@@ -202,6 +220,31 @@ impl Runner {
     }
 }
 
+fn bind_live_calls(
+    catalog: &Catalog,
+    calls: &[ToolCall],
+    available: &BTreeSet<String>,
+    searchable: &BTreeSet<String>,
+    materialized: &BTreeSet<String>,
+) -> (Vec<BoundToolCall>, Vec<ToolResult>) {
+    let mut bound = Vec::with_capacity(calls.len());
+    let mut rejected = Vec::new();
+    for call in calls {
+        if !available.contains(&call.name) {
+            rejected.push(ToolResult::error(
+                call,
+                format!("tool `{}` is no longer available", call.name),
+            ));
+            continue;
+        }
+        match catalog.bind_call(call.clone(), materialized, searchable) {
+            Ok(call) => bound.push(call),
+            Err(error) => rejected.push(ToolResult::error(call, error.to_string())),
+        }
+    }
+    (bound, rejected)
+}
+
 fn tool_result_events(submission_id: &str, turn_id: &str, results: &[ToolResult]) -> Vec<Event> {
     results
         .iter()
@@ -222,6 +265,17 @@ fn interrupted_results(calls: &[ToolCall], message: &str) -> Vec<ToolResult> {
     calls
         .iter()
         .map(|call| ToolResult::error(call, message))
+        .collect()
+}
+
+fn order_results(calls: &[ToolCall], results: Vec<ToolResult>) -> Vec<ToolResult> {
+    let mut results = results
+        .into_iter()
+        .map(|result| (result.call_id.clone(), result))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    calls
+        .iter()
+        .filter_map(|call| results.remove(&call.call_id))
         .collect()
 }
 

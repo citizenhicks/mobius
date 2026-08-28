@@ -61,6 +61,48 @@ extension GatewayWireTests {
         XCTAssertNil(freshOpen["replay_epoch"])
     }
 
+    func testSwarmManagementRequestsEncodeGatewayOwnedIdentityInputs() throws {
+        let create = try requestObject(.createSwarm(
+            requestID: "swarm-create-1",
+            leaderSessionID: "chat-1",
+            memberSessionIDs: ["chat-1", "chat-2", "chat-3"]
+        ))
+        XCTAssertEqual(create["type"] as? String, "create_swarm")
+        XCTAssertEqual(create["request_id"] as? String, "swarm-create-1")
+        XCTAssertEqual(create["leader_session_id"] as? String, "chat-1")
+        XCTAssertEqual(
+            create["member_session_ids"] as? [String],
+            ["chat-1", "chat-2", "chat-3"]
+        )
+        XCTAssertNil(create["title"])
+        XCTAssertNil(create["handles"])
+
+        let add = try requestObject(.addSwarmMember(
+            requestID: "swarm-add-1",
+            swarmID: "swarm-1",
+            sessionID: "chat-4"
+        ))
+        XCTAssertEqual(add["type"] as? String, "add_swarm_member")
+        XCTAssertEqual(add["swarm_id"] as? String, "swarm-1")
+        XCTAssertEqual(add["session_id"] as? String, "chat-4")
+
+        let leave = try requestObject(.leaveSwarm(
+            requestID: "swarm-leave-1",
+            swarmID: "swarm-1",
+            sessionID: "chat-4"
+        ))
+        XCTAssertEqual(leave["type"] as? String, "leave_swarm")
+        XCTAssertEqual(leave["session_id"] as? String, "chat-4")
+
+        let disband = try requestObject(.disbandSwarm(
+            requestID: "swarm-disband-1",
+            swarmID: "swarm-1"
+        ))
+        XCTAssertEqual(disband["type"] as? String, "disband_swarm")
+        XCTAssertEqual(disband["swarm_id"] as? String, "swarm-1")
+        XCTAssertNil(disband["session_id"])
+    }
+
     func testSessionScopedRequestsEncodeSessionID() throws {
         let submission = Submission(
             id: "input-1",

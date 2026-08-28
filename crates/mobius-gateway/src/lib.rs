@@ -13,6 +13,7 @@ mod middleware_manifest;
 mod provider_catalog;
 pub mod sandbox;
 pub mod server;
+pub mod swarm;
 pub mod wire;
 
 /// Errors returned by the gateway library.

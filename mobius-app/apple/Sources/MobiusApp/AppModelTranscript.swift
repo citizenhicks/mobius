@@ -108,6 +108,9 @@ extension AppModel {
                 files: attachments
             )
             return true
+        case "peer_message":
+            appendPeerMessage(event.msg, record: record)
+            return true
         case "agent_message_content_delta":
             let phase = event.msg["phase"]?.stringValue
             guard let modelStepID = event.msg["modelStepId"]?.stringValue else { return true }
@@ -594,6 +597,37 @@ extension AppModel {
                 to: &entries
             )
         }
+    }
+
+    func appendPeerMessage(_ event: JSONValue, record: RecordedEvent) {
+        mutateTranscriptPreservingPrefix { entries in
+            appendPeerMessage(event, record: record, to: &entries)
+        }
+    }
+
+    func appendPeerMessage(
+        _ event: JSONValue,
+        record: RecordedEvent,
+        to entries: inout [TranscriptEntry]
+    ) {
+        guard let messageID = event["messageId"]?.stringValue,
+              let sourceSessionID = event["sourceSessionId"]?.stringValue,
+              let sourceHandle = event["sourceHandle"]?.stringValue,
+              let message = event["message"]?.stringValue
+        else { return }
+        entries.append(TranscriptEntry(
+            id: "peer:\(sourceSessionID.utf8.count):\(sourceSessionID):\(messageID)",
+            text: message,
+            kind: .peer,
+            capability: "swarm",
+            title: sourceHandle,
+            group: sourceSessionID,
+            format: "plain_text",
+            tone: "info",
+            pending: false,
+            sourceSequence: record.sequence,
+            recordedAtMs: record.recordedAtMs
+        ))
     }
 
     func appendText(

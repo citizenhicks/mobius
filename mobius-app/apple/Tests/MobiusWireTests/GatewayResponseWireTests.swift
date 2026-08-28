@@ -310,6 +310,27 @@ extension GatewayWireTests {
         XCTAssertEqual(listing.path, "/srv")
     }
 
+    func testSwarmCatalogResponseCarriesOptionalRequestID() throws {
+        let swarm = #"{"id":"swarm-1","title":"Quiet Foxes","leader_session_id":"chat-1","members":[{"session_id":"chat-1","handle":"@leader"},{"session_id":"chat-2","handle":"@builder"}],"messages":[],"updated_at_ms":200}"#
+        let mutation = try decodeEnvelope(
+            #"{"version":51,"type":"swarms","request_id":"swarm-create-1","swarms":[\#(swarm)]}"#
+        )
+        guard case .swarms(let requestID, let records) = mutation else {
+            return XCTFail("Expected correlated swarm catalog")
+        }
+        XCTAssertEqual(requestID, "swarm-create-1")
+        XCTAssertEqual(records.first?.leaderSessionId, "chat-1")
+        XCTAssertEqual(records.first?.members.last?.handle, "@builder")
+
+        let broadcast = try decodeEnvelope(
+            #"{"version":51,"type":"swarms","swarms":[\#(swarm)]}"#
+        )
+        guard case .swarms(let broadcastID, _) = broadcast else {
+            return XCTFail("Expected broadcast swarm catalog")
+        }
+        XCTAssertNil(broadcastID)
+    }
+
     func testPairedRejectedAndErrorResponsesDecode() throws {
         guard case .paired(let clientID, let token) = try decodeEnvelope(#"{"version":27,"type":"paired","client_id":"phone-7","token":"bearer"}"#) else {
             return XCTFail("Expected paired envelope")

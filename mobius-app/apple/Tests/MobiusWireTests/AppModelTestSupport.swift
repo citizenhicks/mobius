@@ -208,7 +208,9 @@ final class AppModelTests: XCTestCase {
     func providerStatus(
         for config: ProviderConfig,
         models: [ProviderModel] = [],
-        label: String = "OpenAI"
+        label: String = "OpenAI",
+        toolDiscovery: ToolDiscoveryMode = .rebuild,
+        customEndpointToolDiscovery: ToolDiscoveryMode? = nil
     ) -> ProviderStatus {
         ProviderStatus(
             provider: config.provider,
@@ -220,7 +222,9 @@ final class AppModelTests: XCTestCase {
             defaultApiKeyEnv: "OPENAI_API_KEY",
             models: models,
             modelIdsConfigurable: false,
-            webSearch: webSearchOptions(config.webSearch)
+            webSearch: webSearchOptions(config.webSearch),
+            toolDiscovery: toolDiscovery,
+            customEndpointToolDiscovery: customEndpointToolDiscovery
         )
     }
 
@@ -258,6 +262,7 @@ final class AppModelTests: XCTestCase {
         ReadyPayload(
             machineName: "snowwhite.local",
             sessions: sessions ?? [session(state: .idle)],
+            swarms: [],
             providers: [],
             providerInstances: [],
             defaultConfig: defaultConfig,
@@ -535,6 +540,7 @@ final class AppModelTests: XCTestCase {
         updatedAt: Int64 = 100,
         firstUserMessage: String? = "Review",
         title: String? = nil,
+        workspaceID: String = "workspace-1",
         workspaceLabel: String = "/srv/mobius",
         originLabel: String? = nil
     ) -> SessionRecord {
@@ -544,7 +550,7 @@ final class AppModelTests: XCTestCase {
                 tenantId: nil,
                 userId: nil,
                 userName: nil,
-                workspaceId: "workspace-1",
+                workspaceId: workspaceID,
                 workspaceLabel: workspaceLabel,
                 originLabel: originLabel
             ),

@@ -260,6 +260,21 @@ pub fn validate_submission(submission: &Submission) -> Result<()> {
     validate_identifier("submission ID", &submission.id, MAX_IDENTIFIER_BYTES)?;
     match &submission.op {
         Op::UserInput { text, attachments } => validate_user_input(text, attachments),
+        Op::PeerInput {
+            message_id,
+            source_session_id,
+            source_handle,
+            text,
+        } => {
+            validate_identifier("peer message ID", message_id, MAX_IDENTIFIER_BYTES)?;
+            validate_identifier(
+                "peer source session ID",
+                source_session_id,
+                MAX_IDENTIFIER_BYTES,
+            )?;
+            validate_identifier("peer source handle", source_handle, MAX_OPERATION_BYTES)?;
+            validate_peer_input(text)
+        }
         Op::ActiveInput {
             operation,
             turn_id,
@@ -305,6 +320,16 @@ pub fn validate_submission(submission: &Submission) -> Result<()> {
             validate_identifier("session ID", session_id, MAX_IDENTIFIER_BYTES)
         }
     }
+}
+
+fn validate_peer_input(text: &str) -> Result<()> {
+    if text.trim().is_empty() {
+        return Err(Error::Config("peer input cannot be empty".into()));
+    }
+    if text.len() > crate::protocol::MAX_USER_INPUT_BYTES {
+        return Err(Error::Config("peer input exceeds size limit".into()));
+    }
+    Ok(())
 }
 
 fn validate_user_input(
@@ -510,6 +535,26 @@ impl Runner {
                 Op::UserInput { text, attachments } => {
                     if let Err(error) = self
                         .start_turn(&mut commands, submission.id.clone(), text, attachments)
+                        .await
+                    {
+                        self.fail_turn(&submission.id, error).await?;
+                    }
+                }
+                Op::PeerInput {
+                    message_id,
+                    source_session_id,
+                    source_handle,
+                    text,
+                } => {
+                    if let Err(error) = self
+                        .start_peer_turn(
+                            &mut commands,
+                            submission.id.clone(),
+                            message_id,
+                            source_session_id,
+                            source_handle,
+                            text,
+                        )
                         .await
                     {
                         self.fail_turn(&submission.id, error).await?;

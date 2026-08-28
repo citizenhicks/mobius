@@ -34,6 +34,7 @@ final class AppModel {
         didSet { committedGitDiffRevision &+= 1 }
     }
     var sessions: [SessionRecord] = []
+    var swarms: [SwarmRecord] = []
     var cloudSession: MobiusCloudSession?
     var cloudAccount: MobiusCloudAccount?
     var cloudAction: MobiusCloudAction = .idle
@@ -307,6 +308,7 @@ final class AppModel {
     @ObservationIgnored var pendingCachedTranscript: CachedTranscript?
     @ObservationIgnored var pendingPresentedTranscript: [TranscriptEntry]?
     var sessionMutationRequestID: String?
+    var swarmMutationRequestID: String?
     @ObservationIgnored var pendingDeletedSessionID: String?
     @ObservationIgnored var pendingDeletedPresentedSessionID: String?
     @ObservationIgnored var sessionToRestoreID: String?
@@ -613,6 +615,10 @@ final class AppModel {
 
     var attentionSessionIDs: Set<String> {
         runningSessionIDs.union(unreadSessionIDs)
+    }
+
+    var canMutateSwarm: Bool {
+        connectionState.isReady && swarmMutationRequestID == nil
     }
 
     var isApplyingConfiguration: Bool {

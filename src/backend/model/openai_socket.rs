@@ -59,6 +59,7 @@ use crate::Error;
 use crate::ProviderError;
 use crate::Result;
 use crate::protocol::ModelInfo;
+use crate::protocol::ToolDiscoveryMode;
 
 mod connection;
 
@@ -135,7 +136,8 @@ impl OpenAiSocket {
         client: reqwest::Client,
     ) -> Result<Self> {
         let model = model.into();
-        let http = OpenAi::with_authorization(Arc::clone(&auth), http_url, model.clone(), client)?;
+        let http = OpenAi::with_authorization(Arc::clone(&auth), http_url, model.clone(), client)?
+            .with_tool_discovery(ToolDiscoveryMode::Native);
         Ok(Self {
             auth,
             socket_url: socket_url.into(),
@@ -345,7 +347,9 @@ impl OpenAiSocket {
                         prompt_cache: request.prompt_cache,
                         instructions: request.instructions,
                         input: &input,
+                        catalog_revision: request.catalog_revision,
                         tools: request.tools,
+                        deferred_tools: request.deferred_tools,
                         allow_hosted_tools: true,
                         allow_continuation: true,
                     },
@@ -501,6 +505,10 @@ impl Model for OpenAiSocket {
         }
     }
 
+    fn tool_discovery(&self) -> ToolDiscoveryMode {
+        ToolDiscoveryMode::Native
+    }
+
     fn pricing(&self) -> Option<ModelPricing> {
         self.http.pricing()
     }
@@ -535,7 +543,13 @@ fn response_body(
         "type": "response.create",
         "model": model,
         "instructions": request.instructions,
-        "input": wire_input_with_cache(input, true, explicit_prompt_cache)?,
+        "input": wire_input_with_cache(
+            input,
+            true,
+            explicit_prompt_cache,
+            request.catalog_revision,
+            request.deferred_tools,
+        )?,
         "tools": wire_tools(request.tools, hosted_tools, request.allow_hosted_tools),
         "tool_choice": "auto",
         "parallel_tool_calls": true,
@@ -566,6 +580,7 @@ fn envelope_fingerprint(
     let envelope = serde_json::json!({
         "model": model,
         "instructions": request.instructions,
+        "catalog_revision": request.catalog_revision,
         "tools": wire_tools(request.tools, hosted_tools, request.allow_hosted_tools),
         "reasoning_effort": reasoning_effort,
         "prompt_cache": request.prompt_cache.map(|cache| {
@@ -640,6 +655,10 @@ pub(super) const fn provider() -> ProviderDefinition {
         build_provider,
     )
     .with_image_input()
+    .with_tool_discovery(
+        manifest::TOOL_DISCOVERY,
+        manifest::CUSTOM_ENDPOINT_TOOL_DISCOVERY,
+    )
 }
 
 fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {

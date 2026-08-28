@@ -41,6 +41,10 @@ pub(super) const fn provider() -> ProviderDefinition {
         build_provider,
     )
     .with_image_input()
+    .with_tool_discovery(
+        manifest::TOOL_DISCOVERY,
+        manifest::CUSTOM_ENDPOINT_TOOL_DISCOVERY,
+    )
 }
 
 fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn super::Model>> {

@@ -210,6 +210,7 @@ struct AppShell: View {
                 .navigationDestination(for: AppRoute.self) { route in
                     switch route {
                     case .chat: ChatView()
+                    case .swarm(let id): SwarmView(swarmID: id)
                     case .settings(.gateway(let id)): GatewayDetailView(id: id)
                     case .settings(.provider(let instance)): ProviderDetailView(instance: instance)
                     case .settings(.extensionPackage(let id)): ExtensionDetailView(id: id)
@@ -331,6 +332,7 @@ struct AppShell: View {
               !model.showsWorkspaceBrowser,
               !model.showsInspector
         else { return false }
+        guard case .chat = model.navigationPath.last else { return false }
         // The drawer, not the split view's column, decides whether the chat is on screen in
         // compact: `compactColumn` no longer moves there, so reading it would report the chat
         // permanently hidden and stop delivering it as visible.

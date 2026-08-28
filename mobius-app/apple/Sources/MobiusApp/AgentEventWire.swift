@@ -47,6 +47,9 @@ private struct AgentEventValidator {
             try requireString("message")
             try validateAttachments()
             try validateMessageTarget()
+        case "peer_message":
+            try requireStrings(["messageId", "sourceSessionId", "sourceHandle", "message"])
+            try validateMessageTarget()
         case "session_configured":
             try requireString("sessionId")
             guard let context = msg["context"], let model = msg["model"] else {

@@ -302,6 +302,36 @@ fn session_creation_uses_a_gateway_host_workspace() {
 }
 
 #[test]
+fn swarm_management_frames_keep_request_correlation_out_of_broadcasts() {
+    let create = ClientFrame::new(ClientMessage::CreateSwarm {
+        request_id: "request-swarm".into(),
+        leader_session_id: "leader".into(),
+        member_session_ids: vec!["leader".into(), "reviewer".into()],
+    });
+    let broadcast = ServerFrame::new(ServerMessage::Swarms {
+        request_id: None,
+        swarms: Vec::new(),
+    });
+
+    assert_eq!(
+        serde_json::to_value(create).expect("encode swarm creation"),
+        serde_json::json!({
+            "version": PROTOCOL_VERSION,
+            "type": "create_swarm",
+            "request_id": "request-swarm",
+            "leader_session_id": "leader",
+            "member_session_ids": ["leader", "reviewer"]
+        })
+    );
+    assert!(
+        serde_json::to_value(broadcast)
+            .expect("encode swarm broadcast")
+            .get("request_id")
+            .is_none()
+    );
+}
+
+#[test]
 fn workspace_directory_creation_uses_a_gateway_host_parent_and_name() {
     let frame = ClientFrame::new(ClientMessage::CreateWorkspaceDirectory {
         request_id: "request-directory".into(),
@@ -827,6 +857,7 @@ fn gateway_ready_contains_no_selected_session() {
         payload: ReadyPayload {
             machine_name: "snowwhite.local".into(),
             sessions: Vec::new(),
+            swarms: Vec::new(),
             providers: Vec::new(),
             provider_instances: Vec::new(),
             default_config: Some(VersionedAgentConfig {

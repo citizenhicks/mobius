@@ -1,6 +1,7 @@
 [provider]
 label = "Codex"
 description = "Use a ChatGPT Plus or Pro subscription"
+tool_discovery = "native"
 
 [auth]
 label = "ChatGPT"

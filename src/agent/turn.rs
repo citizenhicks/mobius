@@ -9,12 +9,13 @@ use super::input::{ActiveRoute, ActiveTurnRouter, Wait};
 use super::unix_timestamp_ms;
 use crate::backend::checkpoint::{ActiveExecution, ExecutionOutcome};
 use crate::backend::model::{
-    has_prompt_cache_breakpoint, mark_prompt_cache_breakpoint, user_message_with_attachments,
+    has_prompt_cache_breakpoint, mark_prompt_cache_breakpoint, peer_message,
+    user_message_with_attachments,
 };
 use crate::middleware::{QueuedInputBaseline, TurnEndContext, UserPromptSubmitContext};
 use crate::protocol::{
-    ErrorEvent, Event, EventMsg, MessageTarget, Submission, TokenCountEvent, TokenUsageInfo,
-    TurnAbortedEvent, TurnCompleteEvent, TurnStartedEvent, UserMessageEvent,
+    ErrorEvent, Event, EventMsg, MessageTarget, PeerMessageEvent, Submission, TokenCountEvent,
+    TokenUsageInfo, TurnAbortedEvent, TurnCompleteEvent, TurnStartedEvent, UserMessageEvent,
 };
 use crate::{Error, Result};
 
@@ -80,21 +81,7 @@ impl Runner {
         message: String,
         attachments: Vec<crate::protocol::SessionFileReference>,
     ) -> Result<()> {
-        let turn_id = Uuid::new_v4().to_string();
-        if self.state.active_execution.is_some() {
-            return Err(Error::Checkpoint(
-                "cannot start a turn while another execution is active".into(),
-            ));
-        }
-        self.state.active_execution = Some(ActiveExecution {
-            submission_id: submission_id.clone(),
-            turn_id: turn_id.clone(),
-            started_at_ms: unix_timestamp_ms()?,
-            model_calls: 0,
-            tool_calls: 0,
-            failed_tool_calls: 0,
-            usage: crate::protocol::TokenUsage::default(),
-        });
+        let turn_id = self.begin_turn(&submission_id)?;
         let mut hook_messages = Vec::new();
         let (hook_input, rejection) = {
             let mut context = UserPromptSubmitContext {
@@ -174,6 +161,72 @@ impl Runner {
         ));
         self.persist_with_events(events, None).await?;
         self.continue_turn(commands, submission_id, turn_id).await
+    }
+
+    pub(super) async fn start_peer_turn(
+        &mut self,
+        commands: &mut mpsc::Receiver<Submission>,
+        submission_id: String,
+        message_id: String,
+        source_session_id: String,
+        source_handle: String,
+        text: String,
+    ) -> Result<()> {
+        let turn_id = self.begin_turn(&submission_id)?;
+        let mut input = peer_message(&message_id, &source_session_id, &source_handle, &text);
+        if !has_prompt_cache_breakpoint(&self.state.context) {
+            let _ = mark_prompt_cache_breakpoint(&mut input);
+        }
+        self.push_context(input);
+        let batch_item_count = self.transcript_delta.len();
+        let checkpoint_sequence = self
+            .state
+            .sequence
+            .checked_add(1)
+            .ok_or_else(|| Error::Checkpoint("checkpoint sequence overflow".into()))?;
+        let events = vec![
+            turn_event(
+                &submission_id,
+                EventMsg::TurnStarted(TurnStartedEvent {
+                    turn_id: turn_id.clone(),
+                    model_context_window: Some(self.config.context_window),
+                }),
+            ),
+            turn_event(
+                &submission_id,
+                EventMsg::PeerMessage(PeerMessageEvent {
+                    message_id,
+                    source_session_id,
+                    source_handle,
+                    message: text,
+                    message_target: Some(MessageTarget {
+                        checkpoint_sequence,
+                        batch_item_count,
+                    }),
+                }),
+            ),
+        ];
+        self.persist_with_events(events, None).await?;
+        self.continue_turn(commands, submission_id, turn_id).await
+    }
+
+    fn begin_turn(&mut self, submission_id: &str) -> Result<String> {
+        let turn_id = Uuid::new_v4().to_string();
+        if self.state.active_execution.is_some() {
+            return Err(Error::Checkpoint(
+                "cannot start a turn while another execution is active".into(),
+            ));
+        }
+        self.state.active_execution = Some(ActiveExecution {
+            submission_id: submission_id.into(),
+            turn_id: turn_id.clone(),
+            started_at_ms: unix_timestamp_ms()?,
+            model_calls: 0,
+            tool_calls: 0,
+            failed_tool_calls: 0,
+            usage: crate::protocol::TokenUsage::default(),
+        });
+        Ok(turn_id)
     }
 
     async fn drain_commands(

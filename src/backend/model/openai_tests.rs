@@ -12,9 +12,19 @@ fn model_request() -> ModelRequest<'static> {
         }),
         instructions: "Test instructions",
         input: &[],
+        catalog_revision: "catalog-1",
         tools: &[],
+        deferred_tools: &[],
         allow_hosted_tools: false,
         allow_continuation: false,
+    }
+}
+
+fn tool_definition(name: &str) -> ToolDefinition {
+    ToolDefinition {
+        name: name.into(),
+        description: format!("Use {name}"),
+        parameters: serde_json::json!({"type": "object"}),
     }
 }
 
@@ -147,7 +157,7 @@ fn responses_input_strips_only_top_level_provider_metadata() {
     ];
 
     assert_eq!(
-        wire_input_with_cache(&input, true, false).expect("wire input"),
+        wire_input_with_cache(&input, true, false, "catalog-1", &[]).expect("wire input"),
         vec![
             serde_json::json!({
                 "type": "function_call",
@@ -196,7 +206,9 @@ fn compatible_responses_are_implicit_while_first_party_breakpoints_are_explicit(
         }),
         instructions: "Instructions",
         input: &input,
+        catalog_revision: "catalog-1",
         tools: &[],
+        deferred_tools: &[],
         allow_hosted_tools: false,
         allow_continuation: true,
     };
@@ -219,7 +231,9 @@ fn compatible_responses_are_implicit_while_first_party_breakpoints_are_explicit(
         }),
         instructions: "Instructions",
         input: &input,
+        catalog_revision: "catalog-1",
         tools: &[],
+        deferred_tools: &[],
         allow_hosted_tools: false,
         allow_continuation: true,
     };
@@ -316,7 +330,7 @@ fn responses_converts_neutral_images_and_rejects_them_when_disabled() {
         ]
     })];
 
-    let wired = wire_input_with_cache(&input, true, false).expect("wire image");
+    let wired = wire_input_with_cache(&input, true, false, "catalog-1", &[]).expect("wire image");
     assert_eq!(
         wired[0]["content"][1],
         serde_json::json!({
@@ -325,7 +339,7 @@ fn responses_converts_neutral_images_and_rejects_them_when_disabled() {
         })
     );
     assert!(
-        wire_input_with_cache(&input, false, false)
+        wire_input_with_cache(&input, false, false, "catalog-1", &[])
             .expect_err("disabled image input")
             .to_string()
             .contains("does not support image attachments")
@@ -338,6 +352,147 @@ fn hosted_tools_can_be_disabled_per_request() {
 
     assert!(wire_tools(&[], &hosted, false).is_empty());
     assert_eq!(wire_tools(&[], &hosted, true), hosted);
+}
+
+#[test]
+fn rebuild_filters_tool_load_control_items() {
+    let loaded = [tool_definition("swarm_post")];
+    let input = [ToolLoad {
+        catalog_revision: "catalog-1".into(),
+        tools: vec!["swarm_post".into()],
+    }
+    .into_input()];
+    let body = OpenAi::new("test-key", "https://example.com/v1", "test-model")
+        .expect("provider")
+        .response_body(ModelRequest {
+            input: &input,
+            tools: &loaded,
+            ..model_request()
+        })
+        .expect("response body");
+
+    assert_eq!(
+        (&body["input"], &body["tools"][0]["name"]),
+        (&serde_json::json!([]), &serde_json::json!("swarm_post"))
+    );
+
+    let native = OpenAi::new("test-key", "https://api.openai.com/v1", "test-model")
+        .expect("provider")
+        .with_tool_discovery(ToolDiscoveryMode::Native)
+        .response_body(ModelRequest {
+            input: &input,
+            deferred_tools: &loaded,
+            ..model_request()
+        })
+        .expect("native response body");
+    assert_eq!(
+        native["input"][0]["type"],
+        serde_json::json!("additional_tools")
+    );
+}
+
+#[test]
+fn native_discovery_ignores_tool_loads_from_an_old_catalog() {
+    let deferred = [tool_definition("swarm_post")];
+    let input = [ToolLoad {
+        catalog_revision: "catalog-0".into(),
+        tools: vec!["swarm_post".into()],
+    }
+    .into_input()];
+
+    let body = OpenAi::new("test-key", "https://api.openai.com/v1", "test-model")
+        .expect("provider")
+        .with_tool_discovery(ToolDiscoveryMode::Native)
+        .response_body(ModelRequest {
+            input: &input,
+            deferred_tools: &deferred,
+            ..model_request()
+        })
+        .expect("response body");
+
+    assert_eq!(body["input"], serde_json::json!([]));
+}
+
+#[test]
+fn openrouter_defers_optional_tools_and_uses_hosted_search() {
+    let direct = [
+        tool_definition(TOOLS_SEARCH_NAME),
+        tool_definition("read_file"),
+    ];
+    let deferred = [tool_definition("swarm_post")];
+    let input = [ToolLoad {
+        catalog_revision: "catalog-1".into(),
+        tools: vec!["swarm_post".into()],
+    }
+    .into_input()];
+    let body = OpenAi::new("test-key", "https://openrouter.ai/api/v1", "test-model")
+        .expect("provider")
+        .with_openrouter_tool_search()
+        .response_body(ModelRequest {
+            input: &input,
+            tools: &direct,
+            deferred_tools: &deferred,
+            ..model_request()
+        })
+        .expect("response body");
+
+    assert_eq!(body["input"], serde_json::json!([]));
+    assert_eq!(
+        body["tools"],
+        serde_json::json!([
+            {"type": "openrouter:tool_search"},
+            {
+                "type": "function",
+                "name": "read_file",
+                "description": "Use read_file",
+                "parameters": {"type": "object"},
+                "strict": false
+            },
+            {
+                "type": "function",
+                "name": "swarm_post",
+                "description": "Use swarm_post",
+                "parameters": {"type": "object"},
+                "strict": false,
+                "defer_loading": true
+            }
+        ])
+    );
+}
+
+#[test]
+fn openrouter_materializes_only_deferred_tools_it_calls() {
+    let deferred = [
+        tool_definition("swarm_post"),
+        tool_definition("scratchpad_write"),
+    ];
+    let output = OpenAi::new("test-key", "https://openrouter.ai/api/v1", "test-model")
+        .expect("provider")
+        .with_openrouter_tool_search()
+        .decode_response(
+            serde_json::json!({
+                "output": [
+                    {
+                        "type": "openrouter:tool_search",
+                        "status": "completed",
+                        "query": "swarm"
+                    },
+                    {
+                        "type": "function_call",
+                        "call_id": "call-1",
+                        "name": "swarm_post",
+                        "arguments": "{\"message\":\"hello\"}"
+                    }
+                ]
+            }),
+            &deferred,
+        )
+        .expect("response");
+
+    assert_eq!(
+        output.materialized_tools(),
+        &std::collections::BTreeSet::from(["swarm_post".to_string()])
+    );
 }
 
 #[test]
@@ -694,7 +849,9 @@ fn compaction_shape_matches_the_responses_contract() {
             }),
             instructions: "Compact the conversation",
             input: &input,
+            catalog_revision: "catalog-1",
             tools: &tools,
+            deferred_tools: &[],
         })
         .expect("compact body");
 
@@ -719,6 +876,32 @@ fn compaction_shape_matches_the_responses_contract() {
             "reasoning": {"effort": "medium", "summary": "auto"}
         })
     );
+}
+
+#[test]
+fn native_compaction_ignores_tool_loads_from_an_old_catalog() {
+    let deferred = [tool_definition("swarm_post")];
+    let input = [ToolLoad {
+        catalog_revision: "catalog-0".into(),
+        tools: vec!["swarm_post".into()],
+    }
+    .into_input()];
+    let body = OpenAi::new("test-key", "https://api.openai.com/v1", "test-model")
+        .expect("provider")
+        .with_tool_discovery(ToolDiscoveryMode::Native)
+        .with_compaction_endpoint()
+        .compact_body(CompactRequest {
+            session_id: "test-session",
+            prompt_cache: None,
+            instructions: "Compact the conversation",
+            input: &input,
+            catalog_revision: "catalog-1",
+            tools: &[],
+            deferred_tools: &deferred,
+        })
+        .expect("compaction body");
+
+    assert_eq!(body["input"], serde_json::json!([]));
 }
 
 struct HttpRefreshingAuthorization {

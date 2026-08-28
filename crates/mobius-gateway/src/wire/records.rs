@@ -5,6 +5,7 @@ use super::*;
 pub struct ReadyPayload {
     pub machine_name: String,
     pub sessions: Vec<SessionRecord>,
+    pub swarms: Vec<SwarmRecord>,
     pub providers: Vec<ProviderStatus>,
     pub provider_instances: Vec<ProviderInstance>,
     pub default_config: Option<VersionedAgentConfig>,
@@ -15,6 +16,35 @@ pub struct ReadyPayload {
     pub contributions: Vec<FrontendContribution>,
     pub max_active_sessions: usize,
     pub session_file_limits: SessionFileLimits,
+}
+
+/// One gateway-managed group of ordinary visible sessions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SwarmRecord {
+    pub id: String,
+    pub title: String,
+    pub leader_session_id: String,
+    pub members: Vec<SwarmMemberRecord>,
+    pub messages: Vec<SwarmMessageRecord>,
+    pub updated_at_ms: i64,
+}
+
+/// Stable per-swarm identity for one member conversation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SwarmMemberRecord {
+    pub session_id: String,
+    pub handle: String,
+}
+
+/// One retained post on a swarm's shared message board.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SwarmMessageRecord {
+    pub id: String,
+    pub sequence: u64,
+    pub author_session_id: String,
+    pub author_handle: String,
+    pub body: String,
+    pub created_at_ms: i64,
 }
 
 /// Frontend-safe state for one opened session.
@@ -256,6 +286,8 @@ pub struct ProviderStatus {
     pub default_api_key_env: Option<String>,
     pub models: Vec<ProviderModel>,
     pub web_search: Vec<FrontendSettingOption>,
+    pub tool_discovery: ToolDiscoveryMode,
+    pub custom_endpoint_tool_discovery: Option<ToolDiscoveryMode>,
 }
 
 /// User-chosen accent for distinguishing provider instances in model selectors.
@@ -326,6 +358,7 @@ pub struct ProviderModel {
     pub context_window: i64,
     pub reasoning: Vec<ReasoningChoice>,
     pub default_reasoning: Option<String>,
+    pub tool_discovery: ToolDiscoveryMode,
 }
 
 /// One reasoning effort advertised for a provider model.

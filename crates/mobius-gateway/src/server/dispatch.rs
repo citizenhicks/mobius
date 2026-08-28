@@ -124,6 +124,51 @@ pub(super) async fn handle_message(
         } => {
             return delete_session(writer, &mut connection, request_id, session_id, gateway).await;
         }
+        ClientMessage::CreateSwarm {
+            request_id,
+            leader_session_id,
+            member_session_ids,
+        } => {
+            return write_swarms_result(
+                writer,
+                request_id,
+                gateway
+                    .create_swarm(leader_session_id, member_session_ids)
+                    .await,
+            )
+            .await;
+        }
+        ClientMessage::AddSwarmMember {
+            request_id,
+            swarm_id,
+            session_id,
+        } => {
+            return write_swarms_result(
+                writer,
+                request_id,
+                gateway.add_swarm_member(&swarm_id, session_id).await,
+            )
+            .await;
+        }
+        ClientMessage::LeaveSwarm {
+            request_id,
+            swarm_id,
+            session_id,
+        } => {
+            return write_swarms_result(
+                writer,
+                request_id,
+                gateway.leave_swarm(&swarm_id, &session_id).await,
+            )
+            .await;
+        }
+        ClientMessage::DisbandSwarm {
+            request_id,
+            swarm_id,
+        } => {
+            return write_swarms_result(writer, request_id, gateway.disband_swarm(&swarm_id).await)
+                .await;
+        }
         ClientMessage::Submit {
             session_id,
             submission,
@@ -555,6 +600,26 @@ async fn list_sessions(
     }
 }
 
+async fn write_swarms_result(
+    writer: &mut (impl AsyncWrite + Unpin),
+    request_id: String,
+    result: std::result::Result<Vec<crate::wire::SwarmRecord>, Rejection>,
+) -> Result<()> {
+    match result {
+        Ok(swarms) => {
+            write_frame(
+                writer,
+                &ServerFrame::new(ServerMessage::Swarms {
+                    request_id: Some(request_id),
+                    swarms,
+                }),
+            )
+            .await
+        }
+        Err(rejection) => write_rejection(writer, request_id, rejection).await,
+    }
+}
+
 async fn create_session(
     writer: &mut (impl AsyncWrite + Unpin),
     selected: &mut Option<SelectedChat>,
@@ -714,6 +779,18 @@ async fn submit(
         Ok(host) => host,
         Err(rejection) => return write_rejection(writer, request_id, rejection).await,
     };
+    if matches!(&submission.op, Op::PeerInput { .. }) {
+        return write_rejection(
+            writer,
+            request_id,
+            Rejection {
+                code: "invalid_submission",
+                message: "peer input is gateway-owned".into(),
+                fatal: false,
+            },
+        )
+        .await;
+    }
     if let Err(error) = validate_submission(&submission) {
         return write_rejection(
             writer,

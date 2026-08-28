@@ -153,4 +153,5 @@ fn run_git(workspace: &Path, args: &[&str]) {
 
 mod protocol;
 mod sessions;
+mod swarms;
 mod transport;

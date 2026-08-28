@@ -328,7 +328,7 @@ async fn disabled_agent_keeps_read_only_surfaces_without_prompt_or_tools() {
     middleware
         .register(&mut catalog, &runtime)
         .expect("disabled catalog");
-    assert!(catalog.definitions().is_empty());
+    assert!(catalog.registered_definitions().is_empty());
     assert_eq!(middleware.prompt_section(&runtime).expect("prompt"), None);
     let contribution = middleware.frontend();
     assert_eq!(contribution.commands.len(), 1);

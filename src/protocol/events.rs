@@ -135,6 +135,17 @@ pub struct UserMessageEvent {
     pub message_target: Option<MessageTarget>,
 }
 
+/// One advisory message delivered by another agent session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeerMessageEvent {
+    pub message_id: String,
+    pub source_session_id: String,
+    pub source_handle: String,
+    pub message: String,
+    #[serde(deserialize_with = "required_option")]
+    pub message_target: Option<MessageTarget>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentMessageEvent {
     pub session_id: String,

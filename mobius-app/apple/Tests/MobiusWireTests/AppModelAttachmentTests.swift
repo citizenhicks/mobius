@@ -33,7 +33,8 @@ extension AppModelTests {
             model: "gpt-5.6-sol",
             reasoningEffort: "high",
             contextWindow: 200_000,
-            supportsImageInput: true
+            supportsImageInput: true,
+            toolDiscovery: .native
         )
         model.modelChoices = [capableChoice]
         let attachmentContribution = FrontendContribution(
@@ -151,7 +152,8 @@ extension AppModelTests {
             model: "text-only",
             reasoningEffort: nil,
             contextWindow: 200_000,
-            supportsImageInput: false
+            supportsImageInput: false,
+            toolDiscovery: .rebuild
         )]
         XCTAssertTrue(model.canImportAttachments)
         XCTAssertFalse(model.canSendComposer)
@@ -230,7 +232,8 @@ extension AppModelTests {
             model: "text-only",
             reasoningEffort: nil,
             contextWindow: 200_000,
-            supportsImageInput: false
+            supportsImageInput: false,
+            toolDiscovery: .rebuild
         )]
         model.contributions = [fileAttachmentContribution()]
         let attachment = SessionFileReference(
@@ -370,7 +373,8 @@ extension AppModelTests {
             model: "gpt-5.6-sol",
             reasoningEffort: "high",
             contextWindow: 200_000,
-            supportsImageInput: true
+            supportsImageInput: true,
+            toolDiscovery: .native
         )]
         model.contributions = [FrontendContribution(
             capability: "files",

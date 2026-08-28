@@ -1,6 +1,6 @@
 use super::super::*;
 use super::support::model_request;
-use crate::backend::model::STREAM_RETRY_LIMIT;
+use crate::backend::model::{STREAM_RETRY_LIMIT, ToolDefinition, ToolLoad};
 
 #[test]
 fn implicit_prompt_cache_omits_options() {
@@ -29,6 +29,66 @@ fn implicit_prompt_cache_omits_options() {
             body.get("prompt_cache_options")
         ),
         (PromptCacheCapability::Implicit, None)
+    );
+}
+
+#[test]
+fn tool_load_becomes_additional_tools_at_its_context_position() {
+    let direct = [ToolDefinition {
+        name: "read_file".into(),
+        description: "Read a file".into(),
+        parameters: serde_json::json!({"type": "object"}),
+    }];
+    let deferred = [ToolDefinition {
+        name: "swarm_post".into(),
+        description: "Post to the swarm".into(),
+        parameters: serde_json::json!({"type": "object"}),
+    }];
+    let input = [
+        serde_json::json!({"role": "user", "content": "before"}),
+        ToolLoad {
+            catalog_revision: "catalog-1".into(),
+            tools: vec!["swarm_post".into()],
+        }
+        .into_input(),
+        serde_json::json!({"role": "user", "content": "after"}),
+    ];
+    let request = ModelRequest {
+        input: &input,
+        tools: &direct,
+        deferred_tools: &deferred,
+        ..model_request()
+    };
+
+    let body = response_body("test-model", &request, &input, None, None, &[], false)
+        .expect("response body");
+
+    assert_eq!(
+        (&body["input"], &body["tools"]),
+        (
+            &serde_json::json!([
+                {"role": "user", "content": "before"},
+                {
+                    "type": "additional_tools",
+                    "role": "developer",
+                    "tools": [{
+                        "type": "function",
+                        "name": "swarm_post",
+                        "description": "Post to the swarm",
+                        "parameters": {"type": "object"},
+                        "strict": false
+                    }]
+                },
+                {"role": "user", "content": "after"}
+            ]),
+            &serde_json::json!([{
+                "type": "function",
+                "name": "read_file",
+                "description": "Read a file",
+                "parameters": {"type": "object"},
+                "strict": false
+            }])
+        )
     );
 }
 
@@ -78,7 +138,7 @@ fn stream_failures_do_not_enable_http_fallback() {
 }
 
 #[test]
-fn continuation_sends_only_new_items_and_resets_on_rewrite() {
+fn continuation_ignores_searchable_inventory_and_resets_on_catalog_change() {
     let known = vec![
         serde_json::json!({"role": "user", "content": "one"}),
         serde_json::json!({"role": "assistant", "content": "two"}),
@@ -106,18 +166,43 @@ fn continuation_sends_only_new_items_and_resets_on_rewrite() {
         &[serde_json::json!({"type": "function_call_output"})]
     );
 
-    let changed_envelope = envelope_fingerprint(
+    let deferred_tools = [ToolDefinition {
+        name: "swarm_post".into(),
+        description: "Post to the swarm".into(),
+        parameters: serde_json::json!({"type": "object"}),
+    }];
+    let inventory_envelope = envelope_fingerprint(
         "test-model",
         &ModelRequest {
-            instructions: "Changed instructions",
+            deferred_tools: &deferred_tools,
             ..model_request()
         },
         None,
         &[],
     )
-    .expect("changed envelope fingerprint");
+    .expect("searchable inventory fingerprint");
+    assert_eq!(inventory_envelope, envelope);
+    let (response, input) = continuation_input(&mut state, &continued, inventory_envelope)
+        .expect("inventory continuation");
+    assert_eq!(response.as_deref(), Some("resp-1"));
+    assert_eq!(
+        input,
+        &[serde_json::json!({"type": "function_call_output"})]
+    );
+
+    let changed_envelope = envelope_fingerprint(
+        "test-model",
+        &ModelRequest {
+            catalog_revision: "catalog-2",
+            deferred_tools: &deferred_tools,
+            ..model_request()
+        },
+        None,
+        &[],
+    )
+    .expect("changed catalog fingerprint");
     let (response, input) =
-        continuation_input(&mut state, &continued, changed_envelope).expect("envelope reset");
+        continuation_input(&mut state, &continued, changed_envelope).expect("catalog reset");
     assert_eq!(response, None);
     assert_eq!(input, continued);
     assert!(state.continuation.is_none());

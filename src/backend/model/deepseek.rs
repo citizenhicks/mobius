@@ -32,6 +32,10 @@ pub(super) const fn provider() -> ProviderDefinition {
         manifest::SEARCH,
         build_provider,
     )
+    .with_tool_discovery(
+        manifest::TOOL_DISCOVERY,
+        manifest::CUSTOM_ENDPOINT_TOOL_DISCOVERY,
+    )
     .with_base_url(BASE_URL)
     .with_credentialless_endpoints()
 }

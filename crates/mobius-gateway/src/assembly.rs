@@ -24,6 +24,7 @@ use mobius::middleware::session_files::SessionFileStore;
 use mobius::middleware::sessions::Sessions;
 use mobius::middleware::steering::Steering;
 use mobius::middleware::subagents::{SubagentLaunch, SubagentLauncher, Subagents};
+use mobius::middleware::swarm::{Swarm, SwarmBackend};
 use mobius::middleware::tasks::Tasks;
 use mobius::middleware::tools::Tools;
 use mobius::middleware::{Middleware, MiddlewareStack};
@@ -64,6 +65,7 @@ pub(crate) async fn assemble(
     checkpoints: Arc<dyn CheckpointStore>,
     scratchpad: ScratchpadStore,
     session_files: SessionFileStore,
+    swarm: Arc<dyn SwarmBackend>,
     session_id: Option<String>,
     origin_label: &str,
     override_saved_model_route: bool,
@@ -167,6 +169,7 @@ pub(crate) async fn assemble(
         Arc::clone(&gateway),
         scratchpad,
         session_files,
+        swarm,
         backend,
         &resolved_extensions,
         extensions,
@@ -482,6 +485,7 @@ fn unavailable_models(
         reasoning_effort: effort,
         context_window: Some(context_window),
         supports_image_input: definition.supports_image_input(),
+        tool_discovery: definition.tool_discovery(&selection.model, selection.base_url.as_deref()),
     })?;
     Ok((Arc::new(router), context_window))
 }
@@ -496,6 +500,7 @@ fn build_middleware(
     gateway: Arc<Mutex<GatewayConfig>>,
     scratchpad: ScratchpadStore,
     session_files: SessionFileStore,
+    swarm: Arc<dyn SwarmBackend>,
     backend: Arc<dyn SandboxBackend>,
     resolved_extensions: &ResolvedExtensions,
     mut extensions: Option<Extensions>,
@@ -579,6 +584,7 @@ fn build_middleware(
             BuiltinMiddleware::Sessions => Arc::new(Sessions::new(
                 crate::middleware_manifest::usize_setting(settings, "sessions", "page_size")?,
             )?),
+            BuiltinMiddleware::Swarm => Arc::new(Swarm::new(Arc::clone(&swarm))),
         };
         entries.push(middleware);
     }

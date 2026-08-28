@@ -13,6 +13,7 @@ use crate::BoxFuture;
 use crate::Error;
 use crate::Result;
 use crate::protocol::FrontendSymbol;
+use crate::protocol::ToolDiscoveryMode;
 
 mod text {
     include!(concat!(
@@ -41,6 +42,7 @@ pub struct ModelPreset {
     pub context_window: i64,
     pub reasoning: &'static [ReasoningPreset],
     pub default_reasoning: Option<&'static str>,
+    pub tool_discovery: ToolDiscoveryMode,
 }
 
 /// Hosted search modes a provider may expose.
@@ -256,6 +258,8 @@ pub struct ProviderDefinition {
     default_model: Option<&'static str>,
     web_search: &'static [HostedWebSearch],
     supports_image_input: bool,
+    tool_discovery: ToolDiscoveryMode,
+    custom_endpoint_tool_discovery: Option<ToolDiscoveryMode>,
     default_base_url: Option<&'static str>,
     credentialless_endpoints: bool,
     builder: ProviderBuilder,
@@ -287,6 +291,8 @@ impl ProviderDefinition {
             default_model,
             web_search,
             supports_image_input: false,
+            tool_discovery: ToolDiscoveryMode::Rebuild,
+            custom_endpoint_tool_discovery: None,
             default_base_url: None,
             credentialless_endpoints: false,
             builder,
@@ -302,6 +308,17 @@ impl ProviderDefinition {
 
     pub(crate) const fn with_base_url(mut self, default_base_url: &'static str) -> Self {
         self.default_base_url = Some(default_base_url);
+        self
+    }
+
+    #[must_use]
+    pub(crate) const fn with_tool_discovery(
+        mut self,
+        mode: ToolDiscoveryMode,
+        custom_endpoint_mode: Option<ToolDiscoveryMode>,
+    ) -> Self {
+        self.tool_discovery = mode;
+        self.custom_endpoint_tool_discovery = custom_endpoint_mode;
         self
     }
 
@@ -357,6 +374,34 @@ impl ProviderDefinition {
     #[must_use]
     pub const fn supports_image_input(&self) -> bool {
         self.supports_image_input
+    }
+
+    /// Resolves cache behavior for one model and endpoint selection.
+    #[must_use]
+    pub fn tool_discovery(&self, model: &str, base_url: Option<&str>) -> ToolDiscoveryMode {
+        let mode = self
+            .model(model)
+            .map_or(self.tool_discovery, |preset| preset.tool_discovery);
+        if self.uses_default_endpoint(base_url) {
+            mode
+        } else {
+            self.custom_endpoint_tool_discovery.unwrap_or(mode)
+        }
+    }
+
+    /// Returns the tool-discovery behavior shown before endpoint setup.
+    #[must_use]
+    pub fn default_tool_discovery(&self) -> ToolDiscoveryMode {
+        self.tool_discovery(
+            self.default_model.unwrap_or_default(),
+            self.default_base_url,
+        )
+    }
+
+    /// Returns an endpoint-specific override exposed during provider setup.
+    #[must_use]
+    pub const fn custom_endpoint_tool_discovery(&self) -> Option<ToolDiscoveryMode> {
+        self.custom_endpoint_tool_discovery
     }
 
     #[must_use]
@@ -416,7 +461,15 @@ impl ProviderDefinition {
             config.reasoning_effort.as_deref(),
             config.web_search,
         )?;
-        (self.builder)(config)
+        let tool_discovery = self.tool_discovery(&config.model, config.base_url.as_deref());
+        let model = (self.builder)(config)?;
+        if model.tool_discovery() != tool_discovery {
+            return Err(Error::Config(format!(
+                "provider `{}` built a model with inconsistent tool discovery",
+                self.id
+            )));
+        }
+        Ok(model)
     }
 
     /// Validates provider-specific settings without resolving credentials.
@@ -604,6 +657,12 @@ mod tests {
             assert!(
                 !provider.supports_credentialless_endpoints() || provider.configurable_base_url(),
                 "provider `{}` allows credentialless endpoints without a configurable base URL",
+                provider.id()
+            );
+            assert!(
+                provider.custom_endpoint_tool_discovery().is_none()
+                    || provider.configurable_base_url(),
+                "provider `{}` declares custom-endpoint tool discovery without a configurable base URL",
                 provider.id()
             );
 

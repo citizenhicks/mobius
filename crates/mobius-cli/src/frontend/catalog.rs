@@ -709,6 +709,7 @@ mod tests {
     use super::*;
     use mobius::protocol::FrontendCommand;
     use mobius::protocol::FrontendReference;
+    use mobius::protocol::ToolDiscoveryMode;
 
     fn model_choices() -> Vec<ModelChoice> {
         vec![
@@ -719,6 +720,7 @@ mod tests {
                 reasoning_effort: Some("high".into()),
                 context_window: Some(1_048_576),
                 supports_image_input: true,
+                tool_discovery: ToolDiscoveryMode::Rebuild,
             },
             ModelChoice {
                 route: "kimi-low".into(),
@@ -727,6 +729,7 @@ mod tests {
                 reasoning_effort: Some("low".into()),
                 context_window: Some(1_048_576),
                 supports_image_input: true,
+                tool_discovery: ToolDiscoveryMode::Rebuild,
             },
         ]
     }

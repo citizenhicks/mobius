@@ -11,7 +11,9 @@ pub(super) fn model_request() -> ModelRequest<'static> {
         }),
         instructions: "Test instructions",
         input: &[],
+        catalog_revision: "catalog-1",
         tools: &[],
+        deferred_tools: &[],
         allow_hosted_tools: false,
         allow_continuation: false,
     }

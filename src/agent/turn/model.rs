@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -12,11 +13,11 @@ use crate::backend::checkpoint::{
     ActiveModelStep, Checkpoint, ContextRewrite, ContextRewriteReason, ExecutionOutcome,
 };
 use crate::backend::model::{
-    ModelEventSink, ModelOutput, ModelRequest, PromptCacheIdentity, STREAM_RETRY_LIMIT, ToolCall,
-    internal_user_message, prompt_cache_key,
+    ModelEventSink, ModelOutput, ModelRequest, PromptCacheIdentity, STREAM_RETRY_LIMIT,
+    TOOLS_SEARCH_NAME, ToolCall, ToolDefinition, ToolLoad, internal_user_message, prompt_cache_key,
 };
 use crate::backend::sandbox::SandboxAuthorization;
-use crate::middleware::tools::ToolResult;
+use crate::middleware::tools::{Catalog, ToolResult};
 use crate::middleware::{
     ModelContext, PreToolUseContext, QueuedInputBaseline, QueuedInputQueue, StopContext,
 };
@@ -41,13 +42,33 @@ enum PreparedModel {
     /// Proceed to the model request.
     Ready {
         input: Vec<Value>,
+        tools: PreparedTools,
         rewrite_reasons: Vec<crate::backend::checkpoint::ContextRewriteReason>,
     },
+}
+
+enum ModelHookOutcome {
+    Error(Error),
+    Interrupted(String),
+    Stopped(String),
+    Repeat,
+    Ready,
+}
+
+struct PreparedTools {
+    direct: Vec<ToolDefinition>,
+    deferred: Vec<ToolDefinition>,
+    available: BTreeSet<String>,
+    searchable: BTreeSet<String>,
+    materialized: BTreeSet<String>,
 }
 
 struct CompletedModelStep {
     started: ModelStepStartedEvent,
     output: ModelOutput,
+    available: BTreeSet<String>,
+    searchable: BTreeSet<String>,
+    materialized: BTreeSet<String>,
     pending_searches: Arc<Mutex<Vec<String>>>,
 }
 
@@ -115,6 +136,7 @@ impl Runner {
         let mut rewrite_reasons = Vec::new();
         let mut turn_stop = None;
         let mut request_input = self.state.context.clone();
+        let mut available_tools = exposed_tool_names(&self.catalog);
         let (control, mut queued_during_middleware, queue_changed) = {
             let mut queued_during_middleware = Vec::new();
             let mut queue_changed = false;
@@ -130,6 +152,7 @@ impl Runner {
                 instructions: &self.system_prompt,
                 checkpoint_sequence: self.state.sequence,
                 request_input: &mut request_input,
+                available_tools: &mut available_tools,
                 durable_input: &mut self.state.context,
                 transcript_delta: &mut self.transcript_delta,
                 context_epoch: &mut self.state.context_epoch,
@@ -197,11 +220,6 @@ impl Runner {
         self.state
             .pending_input
             .append(&mut queued_during_middleware);
-        let (hook_error, interrupted_by) = match control {
-            Wait::Ready(Ok(())) => (None, None),
-            Wait::Ready(Err(error)) => (Some(error), None),
-            Wait::Interrupted { submission_id } => (None, Some(submission_id)),
-        };
         let usage_changed = !middleware_usage.is_empty();
         if !rewrite_reasons.is_empty() {
             self.state.last_context_rewrite = Some(ContextRewrite {
@@ -217,62 +235,12 @@ impl Runner {
             }
         }
         checkpoint_changed |= usage_changed || had_queued_input || queue_changed;
-        if let Some(error) = hook_error {
-            self.persist_model_hook_changes(
-                submission_id,
-                middleware_events,
-                usage_changed,
-                checkpoint_changed,
-                provisional_target_sequence,
-            )
-            .await?;
-            return Err(error);
-        }
-        if let Some(interrupt_submission_id) = interrupted_by {
-            self.persist_model_hook_changes(
-                submission_id,
-                middleware_events,
-                usage_changed,
-                checkpoint_changed,
-                provisional_target_sequence,
-            )
-            .await?;
-            self.abort(
-                &interrupt_submission_id,
-                turn_id,
-                "interrupted",
-                ExecutionOutcome::Aborted,
-            )
-            .await?;
-            return Ok(PreparedModel::Aborted);
-        }
-        if let Some(reason) = turn_stop {
-            self.persist_model_hook_changes(
-                submission_id,
-                middleware_events,
-                usage_changed,
-                checkpoint_changed,
-                provisional_target_sequence,
-            )
-            .await?;
-            return Ok(PreparedModel::Stopped(reason));
-        }
-        if queue_changed {
-            self.persist_model_hook_changes(
-                submission_id,
-                middleware_events,
-                usage_changed,
-                true,
-                provisional_target_sequence,
-            )
-            .await?;
-            return Ok(PreparedModel::Repeat(rewrite_reasons));
-        }
-        if !self.state.pending_input.is_empty() {
-            return Err(Error::Config(
-                "queued active input was not consumed by its middleware".into(),
-            ));
-        }
+        let outcome = model_hook_outcome(
+            control,
+            turn_stop,
+            queue_changed,
+            !self.state.pending_input.is_empty(),
+        )?;
         self.persist_model_hook_changes(
             submission_id,
             middleware_events,
@@ -281,10 +249,97 @@ impl Runner {
             provisional_target_sequence,
         )
         .await?;
-        Ok(PreparedModel::Ready {
-            input: request_input,
-            rewrite_reasons,
+        match outcome {
+            ModelHookOutcome::Error(error) => Err(error),
+            ModelHookOutcome::Interrupted(interrupt_submission_id) => {
+                self.abort(
+                    &interrupt_submission_id,
+                    turn_id,
+                    "interrupted",
+                    ExecutionOutcome::Aborted,
+                )
+                .await?;
+                Ok(PreparedModel::Aborted)
+            }
+            ModelHookOutcome::Stopped(reason) => Ok(PreparedModel::Stopped(reason)),
+            ModelHookOutcome::Repeat => Ok(PreparedModel::Repeat(rewrite_reasons)),
+            ModelHookOutcome::Ready => Ok(PreparedModel::Ready {
+                tools: self.prepare_tools(&request_input, available_tools)?,
+                input: request_input,
+                rewrite_reasons,
+            }),
+        }
+    }
+
+    fn prepare_tools(
+        &self,
+        input: &[Value],
+        mut available: BTreeSet<String>,
+    ) -> Result<PreparedTools> {
+        let deferred = self
+            .catalog
+            .deferred_definitions()
+            .iter()
+            .filter(|tool| available.contains(&tool.name))
+            .cloned()
+            .collect::<Vec<_>>();
+        let searchable = deferred
+            .iter()
+            .map(|tool| tool.name.clone())
+            .collect::<BTreeSet<_>>();
+        if searchable.is_empty() {
+            available.remove(TOOLS_SEARCH_NAME);
+        }
+        let materialized = loaded_tools(input, self.catalog.revision()?, &searchable)?;
+        let mut direct = self
+            .catalog
+            .direct_definitions()
+            .iter()
+            .filter(|tool| available.contains(&tool.name))
+            .cloned()
+            .collect::<Vec<_>>();
+        let deferred = match self.config.model.tool_discovery(&self.config.provider)? {
+            crate::protocol::ToolDiscoveryMode::Native => deferred,
+            crate::protocol::ToolDiscoveryMode::Rebuild => {
+                direct.extend(
+                    deferred
+                        .iter()
+                        .filter(|tool| materialized.contains(&tool.name))
+                        .cloned(),
+                );
+                Vec::new()
+            }
+        };
+        Ok(PreparedTools {
+            direct,
+            deferred,
+            available,
+            searchable,
+            materialized,
         })
+    }
+
+    pub(in crate::agent) async fn live_tool_sets(
+        &self,
+    ) -> Result<(BTreeSet<String>, BTreeSet<String>, BTreeSet<String>)> {
+        let mut available = exposed_tool_names(&self.catalog);
+        self.config
+            .middleware
+            .resolve_tool_exposure(&self.config.session_id, &self.state.context, &mut available)
+            .await?;
+        let searchable = self
+            .catalog
+            .deferred_definitions()
+            .iter()
+            .filter(|tool| available.contains(&tool.name))
+            .map(|tool| tool.name.clone())
+            .collect::<BTreeSet<_>>();
+        if searchable.is_empty() {
+            available.remove(TOOLS_SEARCH_NAME);
+        }
+        let materialized =
+            loaded_tools(&self.state.context, self.catalog.revision()?, &searchable)?;
+        Ok((available, searchable, materialized))
     }
 
     async fn fail_model_step(
@@ -333,8 +388,8 @@ impl Runner {
         turn_id: &str,
         model_step: usize,
         request_input: &[Value],
+        tools: &PreparedTools,
     ) -> Result<Option<CompletedModelStep>> {
-        let tools = self.catalog.definitions();
         let model = Arc::clone(&self.config.model);
         let provider = self.config.provider.clone();
         let model_session_id = self.state.session_id.clone();
@@ -370,20 +425,9 @@ impl Runner {
             let event_model_step_id = started.model_step_id.clone();
             let pending_searches = Arc::new(Mutex::new(Vec::<String>::new()));
             let tracked_searches = Arc::clone(&pending_searches);
+            let catalog_revision = self.catalog.revision()?.to_owned();
             let stream: ModelEventSink = Arc::new(move |event| {
-                match &event {
-                    crate::protocol::ModelEvent::WebSearchStarted { call_id } => {
-                        if let Ok(mut pending) = tracked_searches.lock() {
-                            pending.push(call_id.clone());
-                        }
-                    }
-                    crate::protocol::ModelEvent::WebSearchCompleted { call_id, .. } => {
-                        if let Ok(mut pending) = tracked_searches.lock() {
-                            pending.retain(|open| open != call_id);
-                        }
-                    }
-                    _ => {}
-                }
+                track_pending_searches(&tracked_searches, &event);
                 let msg = event.into_event(&event_session_id, &event_turn_id, &event_model_step_id);
                 try_send_event(
                     &events,
@@ -403,7 +447,9 @@ impl Runner {
                     }),
                     instructions: &instructions,
                     input: request_input,
-                    tools: &tools,
+                    catalog_revision: &catalog_revision,
+                    tools: &tools.direct,
+                    deferred_tools: &tools.deferred,
                     allow_hosted_tools: true,
                     allow_continuation: true,
                 },
@@ -411,9 +457,26 @@ impl Runner {
             );
             match self.wait_active(commands, turn_id, response).await {
                 Ok(Wait::Ready(Ok(output))) => {
+                    if !output.materialized_tools().is_subset(&tools.searchable) {
+                        self.fail_model_step(
+                            submission_id,
+                            &started,
+                            ModelStepOutcome::Failed,
+                            &pending_searches,
+                        )
+                        .await?;
+                        return Err(Error::Provider(
+                            "provider materialized a tool outside the searchable catalog".into(),
+                        ));
+                    }
+                    let mut materialized = tools.materialized.clone();
+                    materialized.extend(output.materialized_tools().iter().cloned());
                     return Ok(Some(CompletedModelStep {
                         started,
                         output,
+                        available: tools.available.clone(),
+                        searchable: tools.searchable.clone(),
+                        materialized,
                         pending_searches,
                     }));
                 }
@@ -519,6 +582,16 @@ impl Runner {
         let mut hook_events = Vec::new();
         let mut hook_input = Vec::new();
         for call in &mut step.output.tool_calls {
+            if let Err(error) = bind_prepared_call(
+                &self.catalog,
+                call.clone(),
+                &step.available,
+                &step.materialized,
+                &step.searchable,
+            ) {
+                denied_results.push(ToolResult::error(call, error.to_string()));
+                continue;
+            }
             let mut context = PreToolUseContext {
                 turn: self.runtime.turn_identity(turn_id),
                 events: &mut hook_events,
@@ -545,7 +618,18 @@ impl Runner {
                     format!("tool call denied: {reason}"),
                 ));
             } else {
-                executable_calls.push(call.clone());
+                match bind_prepared_call(
+                    &self.catalog,
+                    call.clone(),
+                    &step.available,
+                    &step.materialized,
+                    &step.searchable,
+                ) {
+                    Ok(call) => executable_calls.push(call),
+                    Err(error) => {
+                        denied_results.push(ToolResult::error(call, error.to_string()));
+                    }
+                }
             }
         }
         if step.output.tool_calls != original_tool_calls
@@ -563,6 +647,15 @@ impl Runner {
         let context_before = self.state.context.len();
         let batch_before = self.transcript_delta.len();
         let mut durable_output = step.output.output.clone();
+        if !step.output.materialized_tools().is_empty() {
+            durable_output.push(
+                ToolLoad {
+                    catalog_revision: self.catalog.revision()?.into(),
+                    tools: step.output.materialized_tools().iter().cloned().collect(),
+                }
+                .into_input(),
+            );
+        }
         insert_pre_tool_input(&mut durable_output, hook_input);
         let message_index = durable_output.iter().rposition(has_visible_output_text);
         self.extend_context(durable_output);
@@ -819,10 +912,11 @@ impl Runner {
                     }
                     PreparedModel::Ready {
                         input,
+                        tools,
                         rewrite_reasons: reasons,
                     } => {
                         extend_rewrite_reasons(&mut rewrite_reasons, reasons);
-                        break input;
+                        break (input, tools);
                     }
                 }
             };
@@ -833,7 +927,8 @@ impl Runner {
                     &submission_id,
                     &turn_id,
                     model_step,
-                    &request_input,
+                    &request_input.0,
+                    &request_input.1,
                 )
                 .await?
             else {
@@ -873,6 +968,94 @@ impl Runner {
             }
         }
     }
+}
+
+fn loaded_tools(
+    input: &[Value],
+    catalog_revision: &str,
+    searchable: &BTreeSet<String>,
+) -> Result<BTreeSet<String>> {
+    let mut loaded = BTreeSet::new();
+    for item in input {
+        let Some(selection) = ToolLoad::from_input(item)? else {
+            continue;
+        };
+        if selection.catalog_revision == catalog_revision {
+            loaded.extend(
+                selection
+                    .tools
+                    .into_iter()
+                    .filter(|name| searchable.contains(name)),
+            );
+        }
+    }
+    Ok(loaded)
+}
+
+fn model_hook_outcome(
+    control: Wait<Result<()>>,
+    turn_stop: Option<String>,
+    queue_changed: bool,
+    has_pending_input: bool,
+) -> Result<ModelHookOutcome> {
+    match control {
+        Wait::Ready(Err(error)) => Ok(ModelHookOutcome::Error(error)),
+        Wait::Interrupted { submission_id } => Ok(ModelHookOutcome::Interrupted(submission_id)),
+        Wait::Ready(Ok(())) => {
+            if let Some(reason) = turn_stop {
+                Ok(ModelHookOutcome::Stopped(reason))
+            } else if queue_changed {
+                Ok(ModelHookOutcome::Repeat)
+            } else if has_pending_input {
+                Err(Error::Config(
+                    "queued active input was not consumed by its middleware".into(),
+                ))
+            } else {
+                Ok(ModelHookOutcome::Ready)
+            }
+        }
+    }
+}
+
+fn track_pending_searches(pending: &Mutex<Vec<String>>, event: &crate::protocol::ModelEvent) {
+    if let Ok(mut pending) = pending.lock() {
+        match event {
+            crate::protocol::ModelEvent::WebSearchStarted { call_id } => {
+                pending.push(call_id.clone());
+            }
+            crate::protocol::ModelEvent::WebSearchCompleted { call_id, .. } => {
+                pending.retain(|open| open != call_id);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn exposed_tool_names(catalog: &Catalog) -> BTreeSet<String> {
+    catalog
+        .direct_definitions()
+        .iter()
+        .chain(catalog.deferred_definitions().iter())
+        .map(|tool| tool.name.clone())
+        .collect()
+}
+
+fn bind_prepared_call(
+    catalog: &Catalog,
+    call: ToolCall,
+    available: &BTreeSet<String>,
+    materialized: &BTreeSet<String>,
+    searchable: &BTreeSet<String>,
+) -> Result<ToolCall> {
+    if !available.contains(&call.name) {
+        return Err(Error::Tool(format!(
+            "tool `{}` is unavailable for this model step",
+            call.name
+        )));
+    }
+    catalog
+        .bind_call(call, materialized, searchable)
+        .map(crate::middleware::tools::BoundToolCall::into_call)
 }
 
 fn model_step_completed_event(

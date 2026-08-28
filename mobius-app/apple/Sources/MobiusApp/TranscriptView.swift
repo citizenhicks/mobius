@@ -89,11 +89,12 @@ struct TranscriptRowsView: View {
                 elapsedMs: row.elapsedMs,
                 onExpand: onExpandActivityGroup
             )
-        case .user, .narrative:
+        case .user, .peer, .narrative:
             if let entry = row.records.first {
                 TranscriptRow(
                     entry: entry,
                     isUser: row.kind == .user,
+                    isPeer: row.kind == .peer,
                     speaker: speaker,
                     fileSessionID: fileSessionID,
                     turnDiff: turnDiff(entry)
@@ -337,6 +338,7 @@ private struct TranscriptRow: View {
     /// Activity never reaches this view: a run is a group row, whatever its length. The
     /// projection sends only what the reader wrote and what the agent said back.
     let isUser: Bool
+    let isPeer: Bool
     let speaker: MessageSpeaker
     let fileSessionID: String?
     let turnDiff: String
@@ -376,6 +378,34 @@ private struct TranscriptRow: View {
                     }
                 }
             }
+        } else if isPeer {
+            VStack(alignment: .leading, spacing: MobiusSpace.s) {
+                HStack(spacing: MobiusSpace.s) {
+                    MobiusIcon(
+                        .group01,
+                        size: MobiusStyle.glyphInline,
+                        foreground: palette.accent,
+                        gutter: false
+                    )
+                    Text(verbatim: entry.title)
+                        .font(MobiusStyle.controlFont)
+                        .lineLimit(1)
+                }
+                MobiusMarkdownText(entry.text, streaming: false)
+                    .equatable()
+            }
+            .padding(MobiusSpace.l)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(palette.accentSoft.opacity(0.45), in: MobiusStyle.cardShape)
+            .overlay {
+                MobiusStyle.cardShape.stroke(
+                    palette.accent.opacity(0.3),
+                    lineWidth: MobiusStyle.borderWidth
+                )
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(Text("Message from agent \(entry.title)"))
+            .accessibilityValue(Text(verbatim: entry.text))
         } else {
             VStack(alignment: .leading, spacing: MobiusSpace.s) {
                 TranscriptFileCards(files: entry.files, sessionID: fileSessionID)

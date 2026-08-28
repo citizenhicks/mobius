@@ -139,11 +139,12 @@ fn scheduled_call(call_id: &str, name: &str, after: &[&str]) -> ToolCall {
 }
 
 fn spawn_test_batch(
-    catalog: Catalog,
+    mut catalog: Catalog,
     calls: Vec<ToolCall>,
     permissions: SandboxPermissions,
 ) -> tokio::task::JoinHandle<Vec<ToolResult>> {
     let sandbox = test_sandbox();
+    let calls = finalize_and_bind(&mut catalog, &calls);
     tokio::spawn(
         async move { execute_batch(&catalog, &calls, sandbox, &permissions, "turn").await },
     )
@@ -321,54 +322,24 @@ async fn consecutive_exclusive_calls_remain_sequential() {
     assert!(results.iter().all(|result| !result.is_error), "{results:?}");
 }
 
-#[tokio::test]
-async fn unknown_tools_form_barriers_and_keep_their_error() {
-    let (harness, mut events) = SchedulerHarness::new(&["p1", "p2"]);
+#[test]
+fn unknown_tools_are_rejected_before_scheduling() {
+    let (harness, _events) = SchedulerHarness::new(&["p1"]);
     let mut catalog = Catalog::default();
     catalog
         .register(harness.tool("parallel", ExecutionMode::Parallel))
         .expect("register parallel tool");
-    let calls = vec![
-        scheduled_call("p1", "parallel", &[]),
-        scheduled_call("missing-call", "missing", &[]),
-        scheduled_call("p2", "parallel", &["p1"]),
-    ];
-    assert!(!is_parallel(&catalog, &calls[1]));
-    let execution = spawn_test_batch(catalog, calls, test_permissions(&[]));
-
-    assert_eq!(started_call(&mut events).await, "p1");
-    harness.release("p1");
-    assert_eq!(finished_call(&mut events).await, "p1");
-    assert_eq!(started_call(&mut events).await, "p2");
-    harness.release("p2");
+    catalog.finalize().expect("finalize catalog");
 
     assert_eq!(
-        batch_results(execution).await,
-        vec![
-            ToolResult {
-                call_id: "p1".into(),
-                name: "parallel".into(),
-                output: "p1".into(),
-                is_error: false,
-                handler_executed: true,
-                additional_input: Vec::new(),
-            },
-            ToolResult {
-                call_id: "missing-call".into(),
-                name: "missing".into(),
-                output: "unknown tool `missing`".into(),
-                is_error: true,
-                handler_executed: false,
-                additional_input: Vec::new(),
-            },
-            ToolResult {
-                call_id: "p2".into(),
-                name: "parallel".into(),
-                output: "p2".into(),
-                is_error: false,
-                handler_executed: true,
-                additional_input: Vec::new(),
-            },
-        ]
+        catalog
+            .bind_call(
+                scheduled_call("missing-call", "missing", &[]),
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+            )
+            .expect_err("unknown tool must not bind")
+            .to_string(),
+        "tool error: unknown tool `missing`"
     );
 }

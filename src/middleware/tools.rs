@@ -9,12 +9,14 @@ use diffy::Patch;
 use futures_util::FutureExt;
 use futures_util::future::join_all;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use super::manifest::MiddlewareManifest;
 use super::{Middleware, PromptSection};
 use crate::BoxFuture;
 use crate::Error;
 use crate::Result;
+use crate::backend::model::TOOLS_SEARCH_NAME;
 use crate::backend::model::ToolCall;
 use crate::backend::model::ToolDefinition;
 #[cfg(test)]
@@ -53,6 +55,8 @@ const MAX_TOOL_OUTPUT_BYTES: usize = 40_000;
 const MAX_TOOL_UI_BYTES: usize = 512;
 const MAX_TOOL_UI_LINES: usize = 5;
 const MAX_TOOL_NAME_BYTES: usize = 256;
+const MAX_TOOL_SEARCH_QUERY_BYTES: usize = 512;
+const MAX_TOOL_SEARCH_RESULTS: usize = 8;
 const MAX_MUTATION_BYTES: usize = 40_000;
 const MAX_COMMAND_BYTES: usize = 8_000;
 const MAX_PATCH_MATCH_WORK: usize = 32 * 1024 * 1024;
@@ -81,6 +85,17 @@ pub enum ApprovalRequirement {
     Always,
 }
 
+/// Whether a tool is initially visible to the model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolExposure {
+    /// Included in every model request.
+    Direct,
+    /// Discoverable through `tools_search` and callable only after materialization.
+    Deferred,
+    /// Registered for internal ownership but unavailable to the model.
+    Hidden,
+}
+
 /// Dependencies available only to terminal tool handlers.
 pub struct ToolContext {
     pub sandbox: Arc<Sandbox>,
@@ -101,6 +116,11 @@ pub struct HookIdentity {
 pub trait Tool: Send + Sync {
     /// Returns the provider-facing tool schema.
     fn definition(&self) -> ToolDefinition;
+
+    /// Declares how the tool is exposed to the model.
+    fn exposure(&self) -> ToolExposure {
+        ToolExposure::Deferred
+    }
 
     /// Declares whether calls may overlap.
     fn execution_mode(&self) -> ExecutionMode {
@@ -146,49 +166,235 @@ pub(crate) struct HookTool {
 #[derive(Clone)]
 struct RegisteredTool {
     definition: ToolDefinition,
+    exposure: ToolExposure,
     execution_mode: ExecutionMode,
     approval: ApprovalRequirement,
     interrupt_on_active_input: bool,
-    handler: Arc<dyn Tool>,
+    handler: RegisteredHandler,
+}
+
+#[derive(Clone)]
+enum RegisteredHandler {
+    Tool(Arc<dyn Tool>),
+    Search,
 }
 
 /// The validated tool registry built during agent creation.
 #[derive(Clone, Default)]
 pub struct Catalog {
     tools: BTreeMap<String, RegisteredTool>,
-    definitions: Arc<[ToolDefinition]>,
+    registered_definitions: Arc<[ToolDefinition]>,
+    direct_definitions: Arc<[ToolDefinition]>,
+    deferred_definitions: Arc<[ToolDefinition]>,
+    revision: String,
+    finalized: bool,
 }
 
 impl Catalog {
     /// Registers one tool and rejects invalid definitions or duplicate names.
     pub fn register(&mut self, tool: Arc<dyn Tool>) -> Result<()> {
+        if self.finalized {
+            return Err(Error::Config("tool catalog is already finalized".into()));
+        }
         let definition = tool.definition();
         validate_definition(&definition)?;
+        if definition.name == TOOLS_SEARCH_NAME {
+            return Err(Error::Config(format!(
+                "tool name `{TOOLS_SEARCH_NAME}` is reserved"
+            )));
+        }
         let name = definition.name.clone();
         let entry = RegisteredTool {
             definition,
+            exposure: tool.exposure(),
             execution_mode: tool.execution_mode(),
             approval: tool.approval(),
             interrupt_on_active_input: tool.interrupt_on_active_input(),
-            handler: tool,
+            handler: RegisteredHandler::Tool(tool),
         };
+        self.insert(name, entry)
+    }
+
+    /// Freezes the registry and installs `tools_search` when deferred tools exist.
+    pub fn finalize(&mut self) -> Result<()> {
+        if self.finalized {
+            return Err(Error::Config("tool catalog is already finalized".into()));
+        }
+        if !self.deferred_definitions.is_empty() {
+            let definition = tools_search_definition();
+            let name = definition.name.clone();
+            self.insert(
+                name,
+                RegisteredTool {
+                    definition,
+                    exposure: ToolExposure::Direct,
+                    execution_mode: ExecutionMode::Exclusive,
+                    approval: ApprovalRequirement::Never,
+                    interrupt_on_active_input: false,
+                    handler: RegisteredHandler::Search,
+                },
+            )?;
+        }
+        self.revision = catalog_revision(&self.tools);
+        self.finalized = true;
+        Ok(())
+    }
+
+    fn insert(&mut self, name: String, entry: RegisteredTool) -> Result<()> {
         if self.tools.contains_key(&name) {
             return Err(Error::Duplicate(format!("tool `{name}`")));
         }
         self.tools.insert(name, entry);
-        self.definitions = self
+        self.registered_definitions = self
             .tools
             .values()
+            .map(|tool| tool.definition.clone())
+            .collect::<Vec<_>>()
+            .into();
+        self.direct_definitions = self
+            .tools
+            .values()
+            .filter(|tool| tool.exposure == ToolExposure::Direct)
+            .map(|tool| tool.definition.clone())
+            .collect::<Vec<_>>()
+            .into();
+        self.deferred_definitions = self
+            .tools
+            .values()
+            .filter(|tool| tool.exposure == ToolExposure::Deferred)
             .map(|tool| tool.definition.clone())
             .collect::<Vec<_>>()
             .into();
         Ok(())
     }
 
-    /// Returns model-facing definitions in stable name order.
+    /// Returns all registered definitions in stable name order.
     #[must_use]
-    pub fn definitions(&self) -> Arc<[ToolDefinition]> {
-        Arc::clone(&self.definitions)
+    pub fn registered_definitions(&self) -> Arc<[ToolDefinition]> {
+        Arc::clone(&self.registered_definitions)
+    }
+
+    /// Returns definitions included in every model request in stable name order.
+    #[must_use]
+    pub fn direct_definitions(&self) -> Arc<[ToolDefinition]> {
+        Arc::clone(&self.direct_definitions)
+    }
+
+    /// Returns discoverable definitions in stable name order.
+    #[must_use]
+    pub fn deferred_definitions(&self) -> Arc<[ToolDefinition]> {
+        Arc::clone(&self.deferred_definitions)
+    }
+
+    /// Returns the stable schema and exposure fingerprint of this finalized catalog.
+    pub fn revision(&self) -> Result<&str> {
+        if self.finalized {
+            Ok(&self.revision)
+        } else {
+            Err(Error::Config(
+                "tool catalog must be finalized before reading its revision".into(),
+            ))
+        }
+    }
+
+    /// Searches currently deferred tools using deterministic name-first ranking.
+    pub fn search_deferred(
+        &self,
+        query: &str,
+        searchable: &BTreeSet<String>,
+    ) -> Result<Vec<ToolDefinition>> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Err(Error::Tool("tools_search query cannot be empty".into()));
+        }
+        if query.len() > MAX_TOOL_SEARCH_QUERY_BYTES {
+            return Err(Error::Tool(format!(
+                "tools_search query exceeds {MAX_TOOL_SEARCH_QUERY_BYTES} bytes"
+            )));
+        }
+        let query_lower = query.to_lowercase();
+        let mut matches = self
+            .tools
+            .values()
+            .filter(|tool| {
+                tool.exposure == ToolExposure::Deferred
+                    && searchable.contains(&tool.definition.name)
+            })
+            .filter_map(|tool| {
+                let name = tool.definition.name.to_lowercase();
+                let rank = if name == query_lower {
+                    0
+                } else if name.contains(&query_lower) {
+                    1
+                } else if tool
+                    .definition
+                    .description
+                    .to_lowercase()
+                    .contains(&query_lower)
+                {
+                    2
+                } else {
+                    return None;
+                };
+                Some((rank, &tool.definition))
+            })
+            .collect::<Vec<_>>();
+        matches.sort_by(|(left_rank, left), (right_rank, right)| {
+            left_rank
+                .cmp(right_rank)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        Ok(matches
+            .into_iter()
+            .take(MAX_TOOL_SEARCH_RESULTS)
+            .map(|(_, definition)| definition.clone())
+            .collect())
+    }
+
+    /// Validates a model-returned call against this catalog and its step materialization.
+    pub fn bind_call(
+        &self,
+        call: ToolCall,
+        materialized: &BTreeSet<String>,
+        searchable: &BTreeSet<String>,
+    ) -> Result<BoundToolCall> {
+        if !self.finalized {
+            return Err(Error::Config(
+                "tool catalog must be finalized before binding calls".into(),
+            ));
+        }
+        let Some(tool) = self.get(&call.name) else {
+            return Err(Error::Tool(format!("unknown tool `{}`", call.name)));
+        };
+        let materialized = match tool.exposure {
+            ToolExposure::Direct => false,
+            ToolExposure::Deferred if !searchable.contains(&call.name) => {
+                return Err(Error::Tool(format!(
+                    "tool `{}` is not available for this model step",
+                    call.name
+                )));
+            }
+            ToolExposure::Deferred if materialized.contains(&call.name) => true,
+            ToolExposure::Deferred => {
+                return Err(Error::Tool(format!(
+                    "tool `{}` was not materialized for this model step",
+                    call.name
+                )));
+            }
+            ToolExposure::Hidden => {
+                return Err(Error::Tool(format!(
+                    "tool `{}` is hidden from the model",
+                    call.name
+                )));
+            }
+        };
+        let search_scope =
+            matches!(&tool.handler, RegisteredHandler::Search).then(|| searchable.clone());
+        Ok(BoundToolCall {
+            call,
+            materialized,
+            search_scope,
+        })
     }
 
     /// Returns whether the named tool requires approval.
@@ -210,7 +416,11 @@ impl Catalog {
 
     pub(crate) fn hook_tool(&self, call: &ToolCall, description: Option<&str>) -> HookTool {
         let registered = self.get(&call.name);
-        let identity = registered.and_then(|tool| tool.handler.hook_identity());
+        let handler = registered.and_then(|tool| match &tool.handler {
+            RegisteredHandler::Tool(handler) => Some(handler),
+            RegisteredHandler::Search => None,
+        });
+        let identity = handler.and_then(|handler| handler.hook_identity());
         let name = identity.map_or_else(|| call.name.clone(), |identity| identity.name.into());
         let subjects = identity.map_or_else(
             || vec![call.name.clone()],
@@ -222,9 +432,9 @@ impl Catalog {
                     .collect()
             },
         );
-        let mut input = registered.map_or_else(
+        let mut input = handler.map_or_else(
             || call.arguments.clone(),
-            |tool| tool.handler.hook_input(&call.arguments),
+            |handler| handler.hook_input(&call.arguments),
         );
         if let Some(description) = description
             && let Some(input) = input.as_object_mut()
@@ -241,14 +451,80 @@ impl Catalog {
     }
 
     pub(crate) fn rewrite_hook_input(&self, name: &str, input: Value) -> Result<Value> {
-        match self.get(name) {
-            Some(tool) => tool.handler.rewrite_hook_input(input),
-            None => object_hook_input(input),
+        match self.get(name).map(|tool| &tool.handler) {
+            Some(RegisteredHandler::Tool(handler)) => handler.rewrite_hook_input(input),
+            Some(RegisteredHandler::Search) | None => object_hook_input(input),
         }
     }
 
     fn get(&self, name: &str) -> Option<&RegisteredTool> {
         self.tools.get(name)
+    }
+}
+
+fn catalog_revision(tools: &BTreeMap<String, RegisteredTool>) -> String {
+    let mut hasher = Sha256::new();
+    for tool in tools.values() {
+        hasher.update([match tool.exposure {
+            ToolExposure::Direct => 0,
+            ToolExposure::Deferred => 1,
+            ToolExposure::Hidden => 2,
+        }]);
+        hash_field(&mut hasher, tool.definition.name.as_bytes());
+        hash_field(&mut hasher, tool.definition.description.as_bytes());
+        hash_field(
+            &mut hasher,
+            tool.definition.parameters.to_string().as_bytes(),
+        );
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn hash_field(hasher: &mut Sha256, value: &[u8]) {
+    hasher.update((value.len() as u64).to_le_bytes());
+    hasher.update(value);
+}
+
+/// A tool call proven callable for one model step.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoundToolCall {
+    call: ToolCall,
+    materialized: bool,
+    search_scope: Option<BTreeSet<String>>,
+}
+
+impl BoundToolCall {
+    /// Returns the original provider call for hooks, approvals, and events.
+    #[must_use]
+    pub fn as_call(&self) -> &ToolCall {
+        &self.call
+    }
+
+    /// Returns the validated provider call.
+    #[must_use]
+    pub fn into_call(self) -> ToolCall {
+        self.call
+    }
+}
+
+/// Returns the core discovery tool schema.
+#[must_use]
+pub fn tools_search_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: TOOLS_SEARCH_NAME.into(),
+        description: "Find currently available tools by name or description and load matching tools for this session.".into(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": MAX_TOOL_SEARCH_QUERY_BYTES
+                }
+            },
+            "required": ["query"],
+            "additionalProperties": false
+        }),
     }
 }
 
@@ -288,6 +564,7 @@ pub struct ToolResult {
     pub output: String,
     pub is_error: bool,
     pub(crate) handler_executed: bool,
+    pub(crate) loaded_tools: Vec<String>,
     pub(crate) additional_input: Vec<Value>,
 }
 
@@ -299,6 +576,7 @@ impl ToolResult {
             output: capped(output.as_ref(), MAX_TOOL_OUTPUT_BYTES),
             is_error: true,
             handler_executed: false,
+            loaded_tools: Vec::new(),
             additional_input: Vec::new(),
         }
     }
@@ -309,10 +587,10 @@ impl ToolResult {
 }
 
 /// Executes maximal runs of parallel-safe calls concurrently.
-/// Exclusive and unknown calls form barriers and execute alone.
+/// Exclusive calls form barriers and execute alone.
 pub(crate) async fn execute_batch(
     catalog: &Catalog,
-    calls: &[ToolCall],
+    calls: &[BoundToolCall],
     sandbox: Arc<Sandbox>,
     permissions: &SandboxPermissions,
     turn_id: &str,
@@ -353,19 +631,24 @@ pub(crate) async fn execute_batch(
     results
 }
 
-fn is_parallel(catalog: &Catalog, call: &ToolCall) -> bool {
+fn is_parallel(catalog: &Catalog, call: &BoundToolCall) -> bool {
     catalog
-        .get(&call.name)
+        .get(&call.as_call().name)
         .is_some_and(|tool| tool.execution_mode == ExecutionMode::Parallel)
 }
 
 async fn execute_call(
     catalog: &Catalog,
-    call: ToolCall,
+    call: BoundToolCall,
     sandbox: &Arc<Sandbox>,
     permissions: &SandboxPermissions,
     turn_id: &str,
 ) -> ToolResult {
+    let BoundToolCall {
+        call,
+        materialized,
+        search_scope,
+    } = call;
     let context = ToolContext {
         sandbox: Arc::clone(sandbox),
         permissions: permissions.for_call(&call.call_id),
@@ -374,6 +657,25 @@ async fn execute_call(
     let Some(tool) = catalog.get(&call.name).cloned() else {
         return ToolResult::error(&call, format!("unknown tool `{}`", call.name));
     };
+    match tool.exposure {
+        ToolExposure::Direct => {}
+        ToolExposure::Deferred if materialized => {}
+        ToolExposure::Deferred => {
+            return ToolResult::error(
+                &call,
+                format!(
+                    "tool `{}` was not materialized for this model step",
+                    call.name
+                ),
+            );
+        }
+        ToolExposure::Hidden => {
+            return ToolResult::error(
+                &call,
+                format!("tool `{}` is hidden from the model", call.name),
+            );
+        }
+    }
     if tool.approval == ApprovalRequirement::Always && !context.permissions.allows_mutation() {
         return ToolResult::error(&call, "tool call is not authorized to mutate state");
     }
@@ -382,16 +684,31 @@ async fn execute_call(
         name,
         arguments,
     } = call;
-    let result = AssertUnwindSafe(async move { tool.handler.call(context, arguments).await })
-        .catch_unwind()
-        .await;
+    let search_catalog = catalog.clone();
+    let result = AssertUnwindSafe(async move {
+        match tool.handler {
+            RegisteredHandler::Tool(handler) => handler
+                .call(context, arguments)
+                .await
+                .map(ToolOutput::content),
+            RegisteredHandler::Search => {
+                let Some(search_scope) = search_scope else {
+                    return Err(Error::Tool("tools_search scope is unavailable".into()));
+                };
+                tools_search(&search_catalog, arguments, &search_scope)
+            }
+        }
+    })
+    .catch_unwind()
+    .await;
     match result {
         Ok(Ok(output)) => ToolResult {
             call_id,
             name,
-            output: capped(&output, MAX_TOOL_OUTPUT_BYTES),
+            output: capped(&output.content, MAX_TOOL_OUTPUT_BYTES),
             is_error: false,
             handler_executed: true,
+            loaded_tools: output.loaded_tools,
             additional_input: Vec::new(),
         },
         Ok(Err(error)) => ToolResult {
@@ -400,6 +717,7 @@ async fn execute_call(
             output: capped(&error.to_string(), MAX_TOOL_OUTPUT_BYTES),
             is_error: true,
             handler_executed: true,
+            loaded_tools: Vec::new(),
             additional_input: Vec::new(),
         },
         Err(_) => ToolResult {
@@ -408,9 +726,57 @@ async fn execute_call(
             output: "tool panicked".into(),
             is_error: true,
             handler_executed: true,
+            loaded_tools: Vec::new(),
             additional_input: Vec::new(),
         },
     }
+}
+
+struct ToolOutput {
+    content: String,
+    loaded_tools: Vec<String>,
+}
+
+impl ToolOutput {
+    fn content(content: String) -> Self {
+        Self {
+            content,
+            loaded_tools: Vec::new(),
+        }
+    }
+}
+
+fn tools_search(
+    catalog: &Catalog,
+    arguments: Value,
+    searchable: &BTreeSet<String>,
+) -> Result<ToolOutput> {
+    let Some(arguments) = arguments.as_object() else {
+        return Err(Error::Tool(
+            "tools_search arguments must be an object".into(),
+        ));
+    };
+    if arguments.len() != 1 {
+        return Err(Error::Tool(
+            "tools_search accepts only the `query` argument".into(),
+        ));
+    }
+    let query = arguments
+        .get("query")
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::Tool("tools_search requires a string `query`".into()))?;
+    let loaded_tools = catalog
+        .search_deferred(query, searchable)?
+        .into_iter()
+        .map(|definition| definition.name)
+        .collect::<Vec<_>>();
+    let content = serde_json::to_string(&serde_json::json!({
+        "loaded_tools": &loaded_tools
+    }))?;
+    Ok(ToolOutput {
+        content,
+        loaded_tools,
+    })
 }
 
 fn capped(output: &str, limit: usize) -> String {
@@ -486,7 +852,11 @@ impl Tools {
     /// Creates a tool middleware from explicit handlers.
     #[must_use]
     pub fn new(tools: Vec<Arc<dyn Tool>>) -> Self {
-        let names = tools.iter().map(|tool| tool.definition().name).collect();
+        let mut names = tools
+            .iter()
+            .map(|tool| tool.definition().name)
+            .collect::<BTreeSet<_>>();
+        names.insert(TOOLS_SEARCH_NAME.into());
         Self { tools, names }
     }
 

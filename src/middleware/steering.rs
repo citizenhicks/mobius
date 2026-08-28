@@ -254,7 +254,7 @@ impl Middleware for Steering {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;
     use std::sync::Mutex;
 
@@ -567,6 +567,7 @@ mod tests {
         let session_context = SessionContext::default();
         let tools = Catalog::default();
         let mut request_input = Vec::new();
+        let mut available_tools = BTreeSet::new();
         let mut durable_input = Vec::new();
         let mut transcript_delta = Vec::new();
         let mut context_epoch = 0;
@@ -606,6 +607,7 @@ mod tests {
                 instructions: "",
                 checkpoint_sequence: 0,
                 request_input: &mut request_input,
+                available_tools: &mut available_tools,
                 durable_input: &mut durable_input,
                 transcript_delta: &mut transcript_delta,
                 context_epoch: &mut context_epoch,

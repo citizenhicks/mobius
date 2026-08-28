@@ -20,6 +20,22 @@ fn advertised_web_search_modes_build() {
     }
 }
 
+#[test]
+fn equivalent_default_endpoint_preserves_native_tool_discovery() {
+    let model = provider()
+        .build(ProviderBuildConfig {
+            credential: ProviderCredential::ApiKey("test-key".into()),
+            model: "claude-haiku-4-5".into(),
+            base_url: Some("https://api.anthropic.com:443/v1/".into()),
+            reasoning_effort: None,
+            web_search: HostedWebSearch::Off,
+            http: reqwest::Client::new(),
+        })
+        .expect("equivalent default endpoint builds");
+
+    assert_eq!(model.tool_discovery(), ToolDiscoveryMode::Native);
+}
+
 #[tokio::test]
 async fn credentialless_post_uses_custom_path_and_omits_api_key() {
     let (address, server) = capture_http_request().await;
@@ -100,7 +116,7 @@ fn explicit_prompt_cache_breakpoint_is_sent_on_the_marked_content_block() {
     ));
 
     let body = provider
-        .request_body("instructions", &[input], &[], false)
+        .request_body("instructions", &[input], "catalog-1", &[], &[], false)
         .expect("request body");
 
     assert!(body.get("cache_control").is_none());
@@ -112,8 +128,166 @@ fn explicit_prompt_cache_breakpoint_is_sent_on_the_marked_content_block() {
 
 #[test]
 fn hosted_search_can_be_disabled_per_request() {
-    assert!(wire_tools(&[], false).is_empty());
-    assert_eq!(wire_tools(&[], true)[0]["name"], "web_search");
+    assert!(wire_tools(&[], &[], false).is_empty());
+    assert_eq!(wire_tools(&[], &[], true)[0]["name"], "web_search");
+}
+
+#[test]
+fn native_discovery_defers_schemas_and_replays_tool_references() {
+    let provider =
+        Anthropic::new("test-key", DEFAULT_BASE_URL, "claude-haiku-4-5").expect("provider");
+    let direct = [discovery_tool(TOOLS_SEARCH_NAME)];
+    let deferred = [discovery_tool("swarm_post")];
+    let input = discovery_history();
+
+    let body = provider
+        .request_body(
+            "instructions",
+            &input,
+            "catalog-1",
+            &direct,
+            &deferred,
+            false,
+        )
+        .expect("request body");
+
+    assert_eq!(
+        (
+            body["tools"][0].get("defer_loading"),
+            body["tools"][1]["defer_loading"].as_bool(),
+            body["messages"][2]["content"][0]["content"].clone(),
+            body.to_string().contains("tool_load"),
+        ),
+        (
+            None,
+            Some(true),
+            serde_json::json!([{"type": "tool_reference", "tool_name": "swarm_post"}]),
+            false,
+        )
+    );
+}
+
+#[test]
+fn native_discovery_replays_a_standalone_compacted_tool_load() {
+    let provider =
+        Anthropic::new("test-key", DEFAULT_BASE_URL, "claude-haiku-4-5").expect("provider");
+    let direct = [discovery_tool(TOOLS_SEARCH_NAME)];
+    let deferred = [discovery_tool("swarm_post")];
+    let input = [
+        user_message("Continue after compaction."),
+        ToolLoad {
+            catalog_revision: "catalog-1".into(),
+            tools: vec!["swarm_post".into()],
+        }
+        .into_input(),
+    ];
+
+    let body = provider
+        .request_body(
+            "instructions",
+            &input,
+            "catalog-1",
+            &direct,
+            &deferred,
+            false,
+        )
+        .expect("request body");
+
+    assert_eq!(
+        (
+            &body["messages"][1]["content"][0]["name"],
+            &body["messages"][2]["content"][0]["content"],
+        ),
+        (
+            &serde_json::json!(TOOLS_SEARCH_NAME),
+            &serde_json::json!([{"type": "tool_reference", "tool_name": "swarm_post"}]),
+        )
+    );
+}
+
+#[test]
+fn native_discovery_ignores_tool_loads_from_an_old_catalog() {
+    let provider =
+        Anthropic::new("test-key", DEFAULT_BASE_URL, "claude-haiku-4-5").expect("provider");
+    let direct = [discovery_tool(TOOLS_SEARCH_NAME)];
+    let deferred = [discovery_tool("swarm_post")];
+    let mut input = discovery_history();
+    input.last_mut().expect("tool load")["catalog_revision"] = "catalog-0".into();
+
+    let body = provider
+        .request_body(
+            "instructions",
+            &input,
+            "catalog-1",
+            &direct,
+            &deferred,
+            false,
+        )
+        .expect("request body");
+
+    assert_eq!(
+        body["messages"][2]["content"][0]["content"],
+        serde_json::json!("Found swarm_post")
+    );
+}
+
+#[test]
+fn rebuild_discovery_omits_deferred_schemas_and_internal_markers() {
+    let provider =
+        Anthropic::new("test-key", DEFAULT_BASE_URL, "claude-sonnet-5").expect("provider");
+    let direct = [discovery_tool(TOOLS_SEARCH_NAME)];
+    let deferred = [discovery_tool("swarm_post")];
+    let input = discovery_history();
+
+    let body = provider
+        .request_body(
+            "instructions",
+            &input,
+            "catalog-1",
+            &direct,
+            &deferred,
+            false,
+        )
+        .expect("request body");
+
+    assert_eq!(
+        (
+            body["tools"].as_array().map(Vec::len),
+            body["messages"][2]["content"][0]["content"].as_str(),
+            body.to_string().contains("tool_load"),
+        ),
+        (Some(1), Some("Found swarm_post"), false)
+    );
+}
+
+fn discovery_tool(name: &str) -> ToolDefinition {
+    ToolDefinition {
+        name: name.into(),
+        description: "test tool".into(),
+        parameters: serde_json::json!({"type": "object"}),
+    }
+}
+
+fn discovery_history() -> Vec<Value> {
+    vec![
+        user_message("Find a collaboration tool."),
+        serde_json::json!({
+            "type": "function_call",
+            "call_id": "search-1",
+            "name": TOOLS_SEARCH_NAME,
+            "arguments": "{\"query\":\"swarm\"}"
+        }),
+        serde_json::json!({
+            "type": "function_call_output",
+            "call_id": "search-1",
+            "output": "Found swarm_post"
+        }),
+        ToolLoad {
+            catalog_revision: "catalog-1".into(),
+            tools: vec!["swarm_post".into()],
+        }
+        .into_input(),
+    ]
 }
 
 #[test]
@@ -225,25 +399,30 @@ fn anthropic_web_search_with_an_empty_streamed_query_is_other() {
 
 #[test]
 fn responses_history_translates_to_anthropic_tool_messages() {
-    let messages = translate_messages(&[
-        user_message("inspect it"),
-        serde_json::json!({
-            "type": "message",
-            "role": "assistant",
-            "content": [{"type": "output_text", "text": "Checking."}]
-        }),
-        serde_json::json!({
-            "type": "function_call",
-            "call_id": "call_1",
-            "name": "read_file",
-            "arguments": "{\"path\":\"README.md\"}"
-        }),
-        serde_json::json!({
-            "type": "function_call_output",
-            "call_id": "call_1",
-            "output": "contents"
-        }),
-    ])
+    let messages = translate_messages(
+        &[
+            user_message("inspect it"),
+            serde_json::json!({
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "Checking."}]
+            }),
+            serde_json::json!({
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "read_file",
+                "arguments": "{\"path\":\"README.md\"}"
+            }),
+            serde_json::json!({
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": "contents"
+            }),
+        ],
+        ToolDiscoveryMode::Rebuild,
+        "catalog-1",
+        &[],
+    )
     .expect("translate history");
 
     assert_eq!(
@@ -280,13 +459,18 @@ fn responses_history_translates_to_anthropic_tool_messages() {
 
 #[test]
 fn neutral_image_becomes_anthropic_base64_source() {
-    let messages = translate_messages(&[serde_json::json!({
-        "role": "user",
-        "content": [
-            {"type": "input_text", "text": "Describe it."},
-            {"type": "input_image", "media_type": "image/webp", "data": "aGVsbG8="}
-        ]
-    })])
+    let messages = translate_messages(
+        &[serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "Describe it."},
+                {"type": "input_image", "media_type": "image/webp", "data": "aGVsbG8="}
+            ]
+        })],
+        ToolDiscoveryMode::Rebuild,
+        "catalog-1",
+        &[],
+    )
     .expect("translate image");
 
     assert_eq!(

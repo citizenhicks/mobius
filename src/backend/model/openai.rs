@@ -16,7 +16,9 @@ use super::ModelPricing;
 use super::ModelRequest;
 use super::PROMPT_CACHE_BREAKPOINT_FIELD;
 use super::PromptCacheCapability;
+use super::TOOLS_SEARCH_NAME;
 use super::ToolDefinition;
+use super::ToolLoad;
 use super::image_data_url;
 use super::image_input;
 use super::openai_auth::ApiKeyAuthorization;
@@ -41,6 +43,7 @@ use crate::Result;
 use crate::protocol::ModelEvent;
 use crate::protocol::ModelInfo;
 use crate::protocol::TokenUsage;
+use crate::protocol::ToolDiscoveryMode;
 use crate::protocol::WebSearchAction;
 
 mod manifest {
@@ -53,6 +56,22 @@ mod manifest {
 const MAX_JSON_BYTES: usize = 16 * 1024 * 1024;
 const MAX_STREAM_OUTPUT_ITEMS: usize = 1_024;
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolDiscoveryWire {
+    Rebuild,
+    AdditionalTools,
+    OpenRouter,
+}
+
+impl ToolDiscoveryWire {
+    const fn mode(self) -> ToolDiscoveryMode {
+        match self {
+            Self::Rebuild => ToolDiscoveryMode::Rebuild,
+            Self::AdditionalTools | Self::OpenRouter => ToolDiscoveryMode::Native,
+        }
+    }
+}
 
 fn openai_model_pricing(model: &str) -> Option<ModelPricing> {
     let pricing = match model {
@@ -76,6 +95,7 @@ pub struct OpenAi {
     compaction_endpoint: bool,
     image_input: bool,
     explicit_prompt_cache: bool,
+    tool_discovery: ToolDiscoveryWire,
 }
 
 impl OpenAi {
@@ -134,6 +154,7 @@ impl OpenAi {
             compaction_endpoint: false,
             image_input: true,
             explicit_prompt_cache: false,
+            tool_discovery: ToolDiscoveryWire::Rebuild,
         })
     }
 
@@ -195,12 +216,26 @@ impl OpenAi {
         self
     }
 
+    pub(super) fn with_tool_discovery(mut self, mode: ToolDiscoveryMode) -> Self {
+        self.tool_discovery = match mode {
+            ToolDiscoveryMode::Native => ToolDiscoveryWire::AdditionalTools,
+            ToolDiscoveryMode::Rebuild => ToolDiscoveryWire::Rebuild,
+        };
+        self
+    }
+
+    pub(super) fn with_openrouter_tool_search(mut self) -> Self {
+        self.tool_discovery = ToolDiscoveryWire::OpenRouter;
+        self
+    }
+
     async fn send_response(
         &self,
         request: ModelRequest<'_>,
         events: ModelEventSink,
     ) -> Result<ModelOutput> {
         let session_id = request.session_id;
+        let deferred_tools = request.deferred_tools;
         let body = self.response_body(request)?;
         let mut response = self
             .send_authorized("responses", &body, true, Some(session_id))
@@ -235,19 +270,8 @@ impl OpenAi {
                 if emit_text_event(&event, &mut commentary, &events)? {
                     continue;
                 }
-                match event.get("type").and_then(Value::as_str) {
-                    Some("response.completed") => {
-                        let response = event
-                            .get("response")
-                            .cloned()
-                            .map(|response| attach_stream_output(response, &output))
-                            .ok_or_else(|| Error::Provider("completion omitted response".into()))?;
-                        return decode_response(response);
-                    }
-                    Some("error" | "response.failed" | "response.incomplete") => {
-                        return Err(Error::Provider(response_error(&event).into()));
-                    }
-                    _ => {}
+                if let Some(response) = self.finish_stream_event(&event, &output, deferred_tools)? {
+                    return Ok(response);
                 }
             }
             if bytes.len() > MAX_SSE_FRAME_BYTES {
@@ -259,7 +283,33 @@ impl OpenAi {
         ))
     }
 
+    fn finish_stream_event(
+        &self,
+        event: &Value,
+        output: &BTreeMap<u64, Value>,
+        deferred_tools: &[ToolDefinition],
+    ) -> Result<Option<ModelOutput>> {
+        match event.get("type").and_then(Value::as_str) {
+            Some("response.completed") => {
+                let response = event
+                    .get("response")
+                    .cloned()
+                    .map(|response| attach_stream_output(response, output))
+                    .ok_or_else(|| Error::Provider("completion omitted response".into()))?;
+                self.decode_response(response, deferred_tools).map(Some)
+            }
+            Some("error" | "response.failed" | "response.incomplete") => {
+                Err(Error::Provider(response_error(event).into()))
+            }
+            _ => Ok(None),
+        }
+    }
+
     fn response_body(&self, request: ModelRequest<'_>) -> Result<Value> {
+        let additional_tools = match self.tool_discovery {
+            ToolDiscoveryWire::AdditionalTools => request.deferred_tools,
+            ToolDiscoveryWire::Rebuild | ToolDiscoveryWire::OpenRouter => &[],
+        };
         let mut body = serde_json::json!({
             "model": self.model,
             "instructions": request.instructions,
@@ -267,8 +317,10 @@ impl OpenAi {
                 request.input,
                 self.image_input,
                 self.explicit_prompt_cache,
+                request.catalog_revision,
+                additional_tools,
             )?,
-            "tools": wire_tools(request.tools, &self.hosted_tools, request.allow_hosted_tools),
+            "tools": self.wire_request_tools(&request),
             "tool_choice": "auto",
             "parallel_tool_calls": true,
             "include": ["reasoning.encrypted_content"],
@@ -285,6 +337,56 @@ impl OpenAi {
             body["reasoning"] = reasoning;
         }
         Ok(body)
+    }
+
+    fn wire_request_tools(&self, request: &ModelRequest<'_>) -> Vec<Value> {
+        if self.tool_discovery != ToolDiscoveryWire::OpenRouter {
+            return wire_tools(
+                request.tools,
+                &self.hosted_tools,
+                request.allow_hosted_tools,
+            );
+        }
+
+        let mut tools = vec![serde_json::json!({"type": "openrouter:tool_search"})];
+        tools.extend(
+            request
+                .tools
+                .iter()
+                .filter(|tool| tool.name != TOOLS_SEARCH_NAME)
+                .map(wire_function_tool),
+        );
+        tools.extend(request.deferred_tools.iter().map(|tool| {
+            let mut tool = wire_function_tool(tool);
+            tool["defer_loading"] = Value::Bool(true);
+            tool
+        }));
+        if request.allow_hosted_tools {
+            tools.extend_from_slice(&self.hosted_tools);
+        }
+        tools
+    }
+
+    fn decode_response(
+        &self,
+        response: Value,
+        deferred_tools: &[ToolDefinition],
+    ) -> Result<ModelOutput> {
+        let output = decode_response(response)?;
+        if self.tool_discovery != ToolDiscoveryWire::OpenRouter {
+            return Ok(output);
+        }
+        let deferred = deferred_tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<BTreeSet<_>>();
+        let loaded = output
+            .tool_calls
+            .iter()
+            .filter(|call| deferred.contains(call.name.as_str()))
+            .map(|call| call.name.clone())
+            .collect::<Vec<_>>();
+        output.with_materialized_tools(loaded)
     }
 
     async fn compact_response(&self, request: CompactRequest<'_>) -> Result<CompactOutput> {
@@ -339,6 +441,10 @@ impl OpenAi {
     }
 
     fn compact_body(&self, request: CompactRequest<'_>) -> Result<Value> {
+        let additional_tools = match self.tool_discovery {
+            ToolDiscoveryWire::AdditionalTools => request.deferred_tools,
+            ToolDiscoveryWire::Rebuild | ToolDiscoveryWire::OpenRouter => &[],
+        };
         let mut body = serde_json::json!({
             "model": self.model,
             "instructions": request.instructions,
@@ -346,6 +452,8 @@ impl OpenAi {
                 request.input,
                 self.image_input,
                 self.explicit_prompt_cache,
+                request.catalog_revision,
+                additional_tools,
             )?,
             "tools": wire_tools(request.tools, &self.hosted_tools, true),
             "parallel_tool_calls": true,
@@ -397,6 +505,10 @@ impl Model for OpenAi {
         }
     }
 
+    fn tool_discovery(&self) -> ToolDiscoveryMode {
+        self.tool_discovery.mode()
+    }
+
     fn pricing(&self) -> Option<ModelPricing> {
         (self.base_url == DEFAULT_BASE_URL)
             .then(|| openai_model_pricing(&self.model))
@@ -424,14 +536,36 @@ pub(super) fn wire_input_with_cache(
     input: &[Value],
     allow_images: bool,
     explicit_prompt_cache: bool,
+    catalog_revision: &str,
+    additional_tools: &[ToolDefinition],
 ) -> Result<Vec<Value>> {
-    let mut input = input.to_vec();
-    for item in &mut input {
+    let mut wired = Vec::with_capacity(input.len());
+    for item in input {
+        if let Some(load) = ToolLoad::from_input(item)? {
+            if load.catalog_revision == catalog_revision {
+                let tools = load
+                    .tools
+                    .iter()
+                    .filter_map(|name| additional_tools.iter().find(|tool| tool.name == *name))
+                    .map(wire_function_tool)
+                    .collect::<Vec<_>>();
+                if !tools.is_empty() {
+                    wired.push(serde_json::json!({
+                        "type": "additional_tools",
+                        "role": "developer",
+                        "tools": tools,
+                    }));
+                }
+            }
+            continue;
+        }
+        let mut item = item.clone();
         if let Some(fields) = item.as_object_mut() {
             fields.retain(|name, _| !name.starts_with('_'));
         }
-        strip_replay_wire_metadata(item);
+        strip_replay_wire_metadata(&mut item);
         let Some(content) = item.get_mut("content").and_then(Value::as_array_mut) else {
+            wired.push(item);
             continue;
         };
         for part in content {
@@ -464,8 +598,9 @@ pub(super) fn wire_input_with_cache(
                 "image_url": image_data_url(media_type, data)
             });
         }
+        wired.push(item);
     }
-    Ok(input)
+    Ok(wired)
 }
 
 pub(super) fn collect_stream_output(
@@ -512,22 +647,21 @@ pub(super) fn wire_tools(
     hosted_tools: &[Value],
     allow_hosted_tools: bool,
 ) -> Vec<Value> {
-    let mut tools = tools
-        .iter()
-        .map(|tool| {
-            serde_json::json!({
-                "type": "function",
-                "name": tool.name,
-                "description": tool.description,
-                "parameters": tool.parameters,
-                "strict": false
-            })
-        })
-        .collect::<Vec<_>>();
+    let mut tools = tools.iter().map(wire_function_tool).collect::<Vec<_>>();
     if allow_hosted_tools {
         tools.extend_from_slice(hosted_tools);
     }
     tools
+}
+
+fn wire_function_tool(tool: &ToolDefinition) -> Value {
+    serde_json::json!({
+        "type": "function",
+        "name": tool.name,
+        "description": tool.description,
+        "parameters": tool.parameters,
+        "strict": false
+    })
 }
 
 pub(super) const fn generic_provider() -> ProviderDefinition {
@@ -543,6 +677,10 @@ pub(super) const fn generic_provider() -> ProviderDefinition {
         build_generic,
     )
     .with_image_input()
+    .with_tool_discovery(
+        manifest::TOOL_DISCOVERY,
+        manifest::CUSTOM_ENDPOINT_TOOL_DISCOVERY,
+    )
     .with_base_url(DEFAULT_BASE_URL)
     .with_credentialless_endpoints()
 }

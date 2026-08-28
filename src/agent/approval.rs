@@ -179,7 +179,7 @@ impl Runner {
             &self.state.context,
             calls,
             &request.call_ids,
-            &self.catalog.definitions(),
+            &self.catalog.registered_definitions(),
         ) else {
             return Ok(Some(AutomaticReviewOutcome::Escalated(
                 ApprovalReviewEscalation::ReviewDataUnavailable,
@@ -192,6 +192,7 @@ impl Runner {
         let model = Arc::clone(&self.config.model);
         let review_session_id = self.review_session_id.clone();
         let cache_key = prompt_cache_key(&review_session_id);
+        let catalog_revision = self.catalog.revision()?.to_owned();
         let response = model.respond(
             &route,
             ModelRequest {
@@ -202,7 +203,9 @@ impl Runner {
                 }),
                 instructions: &instructions,
                 input: &input,
+                catalog_revision: &catalog_revision,
                 tools: &[],
+                deferred_tools: &[],
                 allow_hosted_tools: false,
                 allow_continuation: false,
             },

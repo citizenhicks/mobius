@@ -126,6 +126,7 @@ extension AppModel {
         pendingCachedTranscript = nil
         pendingPresentedTranscript = nil
         sessionMutationRequestID = nil
+        swarmMutationRequestID = nil
         pendingDeletedSessionID = nil
         pendingDeletedPresentedSessionID = nil
         if preservingSession {
@@ -168,6 +169,7 @@ extension AppModel {
             titleEligibleSessionIDs.removeAll()
             pendingChatTitles.removeAll()
             sessions = []
+            swarms = []
             gatewayMachineName = ""
             selectedSessionID = nil
             navigationPath = []

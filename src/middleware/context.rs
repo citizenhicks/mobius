@@ -16,8 +16,9 @@ use crate::backend::checkpoint::{
 use crate::backend::model::{ModelRouter, ToolCall};
 use crate::backend::sandbox::ApprovalPolicy;
 use crate::protocol::{
-    EventMsg, FrontendEvent, MAX_CAPABILITY_INPUT_BYTES, MessageTarget, ReviewDecision,
-    SessionContext, SessionFileReference, TokenUsage,
+    EventMsg, FrontendEvent, MAX_CAPABILITY_INPUT_BYTES, MessageTarget, PEER_MESSAGE_MARKER,
+    ReviewDecision, SessionContext, SessionFileReference, TokenUsage, internal_message_kind,
+    is_internal_message,
 };
 use crate::{Error, Result};
 
@@ -387,6 +388,7 @@ pub struct ModelContext<'a> {
     pub instructions: &'a str,
     pub(crate) checkpoint_sequence: u64,
     pub(crate) request_input: &'a mut Vec<Value>,
+    pub(crate) available_tools: &'a mut BTreeSet<String>,
     pub(crate) durable_input: &'a mut Vec<Value>,
     pub(crate) transcript_delta: &'a mut Vec<Value>,
     pub(crate) context_epoch: &'a mut u64,
@@ -402,6 +404,36 @@ pub struct ModelContext<'a> {
     pub(crate) checkpoint_changed: &'a mut bool,
     pub(crate) runtime: &'a RuntimeContext,
     pub(crate) hooks: &'a MiddlewareStack,
+}
+
+/// Live capability state used to hide registered tools at a model boundary.
+pub struct ToolExposureContext<'a> {
+    pub session_id: &'a str,
+    pub(crate) input: &'a [Value],
+    pub(crate) available: &'a mut BTreeSet<String>,
+}
+
+impl ToolExposureContext<'_> {
+    /// Reports whether the active turn was started by a peer message.
+    #[must_use]
+    pub fn peer_input(&self) -> bool {
+        self.input
+            .iter()
+            .rev()
+            .find(|item| {
+                item.get("role").and_then(Value::as_str) == Some("user")
+                    && (!is_internal_message(item)
+                        || internal_message_kind(item) == Some(PEER_MESSAGE_MARKER))
+            })
+            .is_some_and(|item| internal_message_kind(item) == Some(PEER_MESSAGE_MARKER))
+    }
+
+    /// Hides registered tools for this boundary.
+    pub fn hide(&mut self, names: &[&str]) {
+        for name in names {
+            self.available.remove(*name);
+        }
+    }
 }
 
 impl ModelContext<'_> {

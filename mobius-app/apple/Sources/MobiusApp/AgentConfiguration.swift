@@ -285,7 +285,21 @@ struct ProviderStatus: Identifiable, Decodable, Equatable, Sendable {
     let models: [ProviderModel]
     let modelIdsConfigurable: Bool
     let webSearch: [FrontendSettingOption]
+    let toolDiscovery: ToolDiscoveryMode
+    let customEndpointToolDiscovery: ToolDiscoveryMode?
+}
 
+extension ProviderStatus {
+    func resolvedToolDiscovery(
+        model: String?,
+        baseURL: String?
+    ) -> ToolDiscoveryMode {
+        let endpoint = baseURL ?? defaultBaseUrl
+        if endpoint != defaultBaseUrl, let customEndpointToolDiscovery {
+            return customEndpointToolDiscovery
+        }
+        return models.first(where: { $0.id == model })?.toolDiscovery ?? toolDiscovery
+    }
 }
 
 /// One durable setup of a provider, named by the user.
@@ -327,6 +341,18 @@ enum ProviderAuthKind: String, Codable, Sendable {
     case deviceCode = "device_code"
 }
 
+enum ToolDiscoveryMode: String, Codable, Hashable, Sendable {
+    case native
+    case rebuild
+
+    var label: LocalizedStringResource {
+        switch self {
+        case .native: "Native dynamic tools"
+        case .rebuild: "Rebuilds context · cache miss"
+        }
+    }
+}
+
 struct ProviderModel: Identifiable, Codable, Equatable, Sendable {
     let id: String
     let label: String
@@ -334,6 +360,7 @@ struct ProviderModel: Identifiable, Codable, Equatable, Sendable {
     let contextWindow: Int64
     let reasoning: [ReasoningChoice]
     let defaultReasoning: String?
+    let toolDiscovery: ToolDiscoveryMode
 }
 
 struct ReasoningChoice: Identifiable, Codable, Equatable, Sendable {

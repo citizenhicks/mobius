@@ -9,6 +9,7 @@ use crate::protocol::AgentMessagePhase;
 use crate::protocol::AgentReasoningContentDeltaEvent;
 use crate::protocol::EventMsg;
 use crate::protocol::MessageTarget;
+use crate::protocol::PeerMessageEvent;
 use crate::protocol::ToolCallBeginEvent;
 use crate::protocol::ToolCallEndEvent;
 use crate::protocol::UserMessageEvent;
@@ -16,6 +17,8 @@ use crate::protocol::UserMessageEvent;
 pub(crate) const INTERNAL_MESSAGE_FIELD: &str = "_mobius_internal";
 pub(crate) const CONTEXT_COMPACTED_MARKER: &str = "context_compacted";
 pub(crate) const ATTACHMENT_CONTEXT_MARKER: &str = "attachments";
+pub(crate) const PEER_MESSAGE_MARKER: &str = "peer_message";
+pub(crate) const PEER_METADATA_FIELD: &str = "_mobius_peer";
 pub(crate) const ATTACHMENTS_FIELD: &str = "_mobius_attachments";
 pub(crate) const REPLAY_REASONING_FIELD: &str = "_mobius_reasoning";
 pub(crate) const TOOL_ERROR_FIELD: &str = "_mobius_is_error";
@@ -66,7 +69,17 @@ pub(crate) fn tool_complete_boundaries<'a>(
                     .map_or_else(|| format!("missing-{index}"), str::to_string);
                 open_calls.insert(call_id);
             }
-            Some("function_call_output") => {
+            Some("tool_search_call")
+                if item.get("execution").and_then(Value::as_str) != Some("server") =>
+            {
+                let call_id = item
+                    .get("call_id")
+                    .and_then(Value::as_str)
+                    .filter(|call_id| !call_id.is_empty())
+                    .map_or_else(|| format!("missing-{index}"), str::to_string);
+                open_calls.insert(call_id);
+            }
+            Some("function_call_output" | "tool_search_output") => {
                 if let Some(call_id) = item.get("call_id").and_then(Value::as_str) {
                     open_calls.remove(call_id);
                 }
@@ -97,6 +110,12 @@ pub fn events(context: &[(MessageTarget, Value)], session_id: &str) -> Vec<Event
             .then_some(*target);
         let item_id = replay_id(target);
         if value.get("role").and_then(Value::as_str) == Some("user") {
+            if internal_message_kind(value) == Some(PEER_MESSAGE_MARKER) {
+                if let Some(message) = peer_message_event(value, message_target) {
+                    events.push(EventMsg::PeerMessage(message));
+                }
+                continue;
+            }
             let attachments = attachment_references(value);
             let message = message_text(value, "user").unwrap_or_default();
             if !is_internal_message(value) && (!message.is_empty() || !attachments.is_empty()) {
@@ -167,6 +186,27 @@ pub fn events(context: &[(MessageTarget, Value)], session_id: &str) -> Vec<Event
         }
     }
     events
+}
+
+fn peer_message_event(
+    value: &Value,
+    message_target: Option<MessageTarget>,
+) -> Option<PeerMessageEvent> {
+    let metadata = value.get(PEER_METADATA_FIELD)?;
+    let field = |name| {
+        metadata
+            .get(name)
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string)
+    };
+    Some(PeerMessageEvent {
+        message_id: field("message_id")?,
+        source_session_id: field("source_session_id")?,
+        source_handle: field("source_handle")?,
+        message: field("text")?,
+        message_target,
+    })
 }
 
 fn attachment_references(value: &Value) -> Vec<crate::protocol::SessionFileReference> {
@@ -474,5 +514,20 @@ mod tests {
             [EventMsg::ToolCallBegin(begin), EventMsg::ToolCallEnd(end)]
                 if begin.turn_id == "history-7-1" && end.turn_id == begin.turn_id
         ));
+    }
+
+    #[test]
+    fn hosted_tool_search_is_complete_without_a_client_output() {
+        let input = [
+            serde_json::json!({
+                "type": "tool_search_call",
+                "execution": "server",
+                "call_id": null,
+                "status": "completed"
+            }),
+            serde_json::json!({"role": "assistant", "content": "done"}),
+        ];
+
+        assert_eq!(tool_complete_boundaries(&input), [1, 2]);
     }
 }

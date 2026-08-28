@@ -6,3 +6,5 @@ use super::*;
 mod lifecycle;
 mod projection;
 mod replay;
+mod swarm_delivery;
+mod swarm_management;

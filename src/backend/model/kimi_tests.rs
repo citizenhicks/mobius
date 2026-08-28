@@ -78,7 +78,9 @@ fn responses_history_becomes_kimi_messages_and_tools() {
         }),
         instructions: "Be precise.",
         input: &input,
+        catalog_revision: "catalog-1",
         tools: &tools,
+        deferred_tools: &[],
         allow_hosted_tools: true,
         allow_continuation: true,
     };

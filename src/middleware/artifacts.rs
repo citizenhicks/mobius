@@ -234,7 +234,10 @@ mod tests {
             .register(&mut second, &second_runtime)
             .expect("second session catalog");
 
-        assert_eq!(first.definitions(), second.definitions());
+        assert_eq!(
+            first.registered_definitions(),
+            second.registered_definitions()
+        );
     }
 
     #[tokio::test]

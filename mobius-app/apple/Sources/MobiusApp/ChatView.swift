@@ -18,6 +18,7 @@ struct ChatView: View {
     @State private var isAtBottom = true
     @State private var scrollToBottomRequest = 0
     @State private var presentedWidget: MountedWidget?
+    @State private var swarmCreation: SwarmCreationSelection?
     @State private var showsChatAgentSettings = false
     @State private var hasEntered = false
     @State private var transcriptPresentationID = UUID()
@@ -89,6 +90,7 @@ struct ChatView: View {
                     newChatButton
                     ChatOptionsMenu(
                         presentedWidget: $presentedWidget,
+                        swarmCreation: $swarmCreation,
                         showsAgentSettings: $showsChatAgentSettings
                     )
                 }
@@ -96,6 +98,10 @@ struct ChatView: View {
         }
         .sheet(item: $model.presentedPreview, content: PreviewTranscriptSheet.init)
         .sheet(item: $presentedWidget, content: FrontendWidgetSheet.init)
+        .sheet(item: $swarmCreation) { selection in
+            SwarmCreationPicker(selection: selection)
+                .mobiusSheet()
+        }
         .sheet(isPresented: $showsChatAgentSettings) {
             NavigationStack {
                 AgentSettingsView(scope: .currentChat)
@@ -140,6 +146,7 @@ struct ChatView: View {
 private struct ChatOptionsMenu: View {
     @Environment(AppModel.self) private var model
     @Binding var presentedWidget: MountedWidget?
+    @Binding var swarmCreation: SwarmCreationSelection?
     @Binding var showsAgentSettings: Bool
 
     var body: some View {
@@ -214,6 +221,7 @@ private struct ChatOptionsMenu: View {
                 .disabled(!model.canCreateSession)
             }
             if let session = model.selectedSession {
+                SwarmMenuSection(session: session, swarmCreation: $swarmCreation)
                 Section {
                     Button {
                         model.setSessionPinned(session, pinned: !session.pinned)
@@ -249,5 +257,168 @@ private struct ChatOptionsMenu: View {
         if widget.widget.content != nil {
             presentedWidget = widget
         }
+    }
+}
+
+private struct SwarmMenuSection: View {
+    @Environment(AppModel.self) private var model
+    @State private var confirmsDisband = false
+    let session: SessionRecord
+    @Binding var swarmCreation: SwarmCreationSelection?
+
+    @ViewBuilder
+    var body: some View {
+        if let swarm = model.swarm(containing: session.sessionId) {
+            Section("Swarm") {
+                if swarm.leaderSessionId == session.sessionId {
+                    Button(role: .destructive) {
+                        confirmsDisband = true
+                    } label: {
+                        MobiusLabel(title: "Disband Swarm", glyph: .trash)
+                    }
+                } else {
+                    Button {
+                        model.leaveSwarm(swarm, sessionID: session.sessionId)
+                    } label: {
+                        MobiusLabel(title: "Leave Swarm", glyph: .x)
+                    }
+                }
+            }
+            .disabled(!model.canMutateSwarm)
+            .alert("Disband this swarm?", isPresented: $confirmsDisband) {
+                Button("Disband Swarm", role: .destructive) {
+                    model.disbandSwarm(swarm, leaderSessionID: session.sessionId)
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This permanently deletes the shared swarm board.")
+            }
+        } else {
+            availableActions
+        }
+    }
+
+    @ViewBuilder
+    private var availableActions: some View {
+        let candidates = model.swarmCreationCandidates(for: session)
+        let swarms = model.availableSwarms(for: session)
+        if !candidates.isEmpty || !swarms.isEmpty {
+            Section("Swarm") {
+                if !candidates.isEmpty {
+                    Button {
+                        swarmCreation = SwarmCreationSelection(
+                            leader: session,
+                            candidates: candidates
+                        )
+                    } label: {
+                        MobiusLabel(title: "Create Swarm…", glyph: .group01)
+                    }
+                }
+                if !swarms.isEmpty {
+                    Menu {
+                        ForEach(swarms) { swarm in
+                            Button {
+                                model.addSwarmMember(session, to: swarm)
+                            } label: {
+                                MobiusLabel(verbatim: swarm.title, glyph: .group01)
+                            }
+                        }
+                    } label: {
+                        MobiusLabel(title: "Add to Swarm", glyph: .plus)
+                    }
+                }
+            }
+            .disabled(!model.canMutateSwarm)
+        }
+    }
+}
+
+private struct SwarmCreationSelection: Identifiable {
+    var id: String { leader.sessionId }
+
+    let leader: SessionRecord
+    let candidates: [SessionRecord]
+}
+
+private struct SwarmCreationPicker: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.mobiusPalette) private var palette
+    @State private var selectedMemberIDs: Set<String> = []
+    let selection: SwarmCreationSelection
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Leader") {
+                    chatRow(selection.leader, selected: true)
+                }
+                Section {
+                    ForEach(selection.candidates) { session in
+                        Button {
+                            if !selectedMemberIDs.insert(session.sessionId).inserted {
+                                selectedMemberIDs.remove(session.sessionId)
+                            }
+                        } label: {
+                            chatRow(
+                                session,
+                                selected: selectedMemberIDs.contains(session.sessionId)
+                            )
+                        }
+                        .buttonStyle(.mobiusPlain)
+                        .accessibilityValue(
+                            selectedMemberIDs.contains(session.sessionId)
+                                ? Text("Selected")
+                                : Text("Not selected")
+                        )
+                        .accessibilityHint("Double-tap to toggle this coworker")
+                    }
+                } header: {
+                    Text("Coworkers")
+                } footer: {
+                    Text("Choose one or more chats from this folder.")
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(palette.canvas)
+            .navigationTitle("Create Swarm")
+            .toolbarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Create") {
+                        model.createSwarm(
+                            leaderSessionID: selection.leader.sessionId,
+                            memberSessionIDs: selectedMemberIDs
+                        )
+                        dismiss()
+                    }
+                    .disabled(selectedMemberIDs.isEmpty || !model.canMutateSwarm)
+                }
+            }
+        }
+    }
+
+    private func chatRow(_ session: SessionRecord, selected: Bool) -> some View {
+        HStack(spacing: MobiusSpace.s) {
+            MobiusIcon(
+                .chatCircle,
+                foreground: selected ? palette.accent : palette.muted
+            )
+            MobiusTitleText(verbatim: model.displayedTitle(for: session))
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            SessionActivityIndicator(
+                state: session.activity.state,
+                isUnread: model.unreadSessionIDs.contains(session.sessionId)
+            )
+            if selected {
+                MobiusIcon(.check, foreground: palette.accent)
+                    .accessibilityHidden(true)
+            }
+        }
+        .contentShape(Rectangle())
     }
 }

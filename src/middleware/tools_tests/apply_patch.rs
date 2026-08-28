@@ -79,9 +79,8 @@ async fn apply_patch_returns_a_unified_diff_after_writing() {
         crate::backend::sandbox::NetworkAccess::Denied,
         ["call-1".into(), "call-2".into()],
     );
-
-    let result = execute_batch(
-        &catalog,
+    let calls = finalize_and_bind(
+        &mut catalog,
         &[ToolCall {
             call_id: "call-1".into(),
             name: "apply_patch".into(),
@@ -89,13 +88,12 @@ async fn apply_patch_returns_a_unified_diff_after_writing() {
                 "patch": "*** Begin Patch\n*** Update File: note.txt\n@@\n first\n-old\n+new\n last\n*** End Patch\n"
             }),
         }],
-        Arc::clone(&sandbox),
-        &permissions,
-        "turn",
-    )
-    .await
-    .pop()
-    .expect("tool result");
+    );
+
+    let result = execute_batch(&catalog, &calls, Arc::clone(&sandbox), &permissions, "turn")
+        .await
+        .pop()
+        .expect("tool result");
 
     assert!(!result.is_error, "{}", result.output);
     let patch = diffy::Patch::from_str(&result.output).expect("unified diff");
@@ -113,22 +111,23 @@ async fn apply_patch_returns_a_unified_diff_after_writing() {
         "first\nnew\nlast\n"
     );
 
-    let no_op = execute_batch(
-        &catalog,
-        &[ToolCall {
-            call_id: "call-2".into(),
-            name: "apply_patch".into(),
-            arguments: serde_json::json!({
-                "patch": "*** Begin Patch\n*** Update File: note.txt\n@@\n first\n-new\n+new\n last\n*** End Patch\n"
-            }),
-        }],
-        sandbox,
-        &permissions,
-        "turn",
-    )
-    .await
-    .pop()
-    .expect("no-op result");
+    let no_op_call = catalog
+        .bind_call(
+            ToolCall {
+                call_id: "call-2".into(),
+                name: "apply_patch".into(),
+                arguments: serde_json::json!({
+                    "patch": "*** Begin Patch\n*** Update File: note.txt\n@@\n first\n-new\n+new\n last\n*** End Patch\n"
+                }),
+            },
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+        )
+        .expect("bind no-op call");
+    let no_op = execute_batch(&catalog, &[no_op_call], sandbox, &permissions, "turn")
+        .await
+        .pop()
+        .expect("no-op result");
     assert!(no_op.is_error);
     assert_eq!(
         no_op.output,

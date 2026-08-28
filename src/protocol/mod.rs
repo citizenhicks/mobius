@@ -7,8 +7,9 @@ use serde::Serialize;
 pub use self::replay::events as replay_events;
 pub(crate) use self::replay::{
     ATTACHMENT_CONTEXT_MARKER, ATTACHMENTS_FIELD, CONTEXT_COMPACTED_MARKER, INTERNAL_MESSAGE_FIELD,
-    REPLAY_REASONING_FIELD, TOOL_ERROR_FIELD, internal_message_kind, is_internal_message,
-    strip_attachment_references, tool_complete_boundaries,
+    PEER_MESSAGE_MARKER, PEER_METADATA_FIELD, REPLAY_REASONING_FIELD, TOOL_ERROR_FIELD,
+    internal_message_kind, is_internal_message, strip_attachment_references,
+    tool_complete_boundaries,
 };
 
 mod events;
@@ -106,6 +107,17 @@ pub struct ModelInfo {
     pub reasoning_effort: Option<String>,
 }
 
+/// How a model route makes newly discovered tool schemas available.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolDiscoveryMode {
+    /// Append tool schemas at the discovery point without rebuilding the cached prefix.
+    Native,
+    /// Reissue the active context with a changed top-level tool envelope.
+    #[default]
+    Rebuild,
+}
+
 /// One selectable runtime model route.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelChoice {
@@ -115,6 +127,7 @@ pub struct ModelChoice {
     pub reasoning_effort: Option<String>,
     pub context_window: Option<i64>,
     pub supports_image_input: bool,
+    pub tool_discovery: ToolDiscoveryMode,
 }
 
 /// Commands supported by the agent.
@@ -126,6 +139,13 @@ pub enum Op {
     UserInput {
         text: String,
         attachments: Vec<SessionFileReference>,
+    },
+    /// Start a turn from advisory input sent by another agent session.
+    PeerInput {
+        message_id: String,
+        source_session_id: String,
+        source_handle: String,
+        text: String,
     },
     /// Submit capability-owned input while a turn is active.
     ActiveInput {
@@ -191,6 +211,7 @@ pub enum EventMsg {
     TurnComplete(TurnCompleteEvent),
     TurnAborted(TurnAbortedEvent),
     UserMessage(UserMessageEvent),
+    PeerMessage(PeerMessageEvent),
     AgentMessage(AgentMessageEvent),
     AgentMessageContentDelta(AgentMessageContentDeltaEvent),
     AgentReasoningContentDelta(AgentReasoningContentDeltaEvent),

@@ -3,6 +3,7 @@ mod runtime;
 
 use super::*;
 use mobius::backend::model::provider::provider;
+use mobius::middleware::swarm::SwarmBackend;
 
 pub(super) type SessionWidgets = Vec<((String, String), mobius::protocol::FrontendWidget)>;
 const CRON_EXECUTION_METADATA_KEY: &str = "mobius_gateway.cron_execution";
@@ -10,6 +11,14 @@ const CRON_EXECUTION_METADATA_KEY: &str = "mobius_gateway.cron_execution";
 #[derive(Clone)]
 pub(crate) struct HostHandle {
     pub(super) inner: Arc<HostInner>,
+}
+
+impl Drop for HostHandle {
+    fn drop(&mut self) {
+        if Arc::strong_count(&self.inner) == 2 {
+            let _ = self.inner.commands.try_send(HostCommand::CapacityChanged);
+        }
+    }
 }
 
 pub(super) struct HostInner {
@@ -29,6 +38,7 @@ struct HostState {
     checkpoints: Arc<dyn CheckpointStore>,
     scratchpad: ScratchpadStore,
     session_files: SessionFileStore,
+    swarm: Arc<SwarmStore>,
     accepts_file_attachments: Arc<AtomicBool>,
     alive: Arc<AtomicBool>,
     catalog_lock: Arc<Mutex<()>>,
@@ -169,6 +179,7 @@ pub(super) enum HostCommand {
     WaitIdle {
         reply: oneshot::Sender<()>,
     },
+    CapacityChanged,
     StopIfIdle {
         reply: oneshot::Sender<bool>,
     },
@@ -206,6 +217,7 @@ impl HostHandle {
         checkpoints: Arc<dyn CheckpointStore>,
         scratchpad: ScratchpadStore,
         session_files: SessionFileStore,
+        swarm: Arc<SwarmStore>,
         catalog_lock: Arc<Mutex<()>>,
         session_mutations: Arc<RwLock<()>>,
         provider_epoch: Arc<AtomicU64>,
@@ -229,6 +241,7 @@ impl HostHandle {
             Arc::clone(&checkpoints),
             scratchpad.clone(),
             session_files.clone(),
+            Arc::clone(&swarm),
             session_id.clone(),
             origin_label,
             false,
@@ -257,6 +270,7 @@ impl HostHandle {
             checkpoints,
             scratchpad,
             session_files,
+            swarm,
             accepts_file_attachments: Arc::clone(&accepts_file_attachments),
             alive: Arc::clone(&alive),
             catalog_lock,
@@ -281,6 +295,7 @@ impl HostHandle {
             idle_waiters: Vec::new(),
         };
         state.reconcile_loaded_startup().await?;
+        state.acknowledge_replayed_peer_messages().await?;
         tokio::spawn(state.run());
         Ok(Self {
             inner: Arc::new(HostInner {
@@ -621,12 +636,14 @@ async fn start_agent(
     checkpoints: Arc<dyn CheckpointStore>,
     scratchpad: ScratchpadStore,
     session_files: SessionFileStore,
+    swarm: Arc<SwarmStore>,
     session_id: String,
     origin_label: &str,
     override_saved_model_route: bool,
     reusable_model_router: Option<ReusableModelRouter>,
     provider_epoch: Arc<AtomicU64>,
 ) -> Result<RunningAgent> {
+    let swarm: Arc<dyn SwarmBackend> = swarm;
     let reusable_provider_epoch = reusable_model_router
         .as_ref()
         .map(|reusable| reusable.provider_epoch);
@@ -643,6 +660,7 @@ async fn start_agent(
         checkpoints,
         scratchpad,
         session_files,
+        swarm,
         Some(session_id),
         origin_label,
         override_saved_model_route,

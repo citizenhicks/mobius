@@ -36,7 +36,10 @@ extension GatewayWireTests {
         XCTAssertEqual(payload.providers.first?.auth, .apiKey)
         XCTAssertEqual(payload.providers.first?.models.first?.label, "Sol")
         XCTAssertEqual(payload.providers.first?.models.first?.defaultReasoning, "medium")
+        XCTAssertEqual(payload.providers.first?.models.first?.toolDiscovery, .native)
         XCTAssertEqual(payload.providers.first?.modelIdsConfigurable, false)
+        XCTAssertEqual(payload.providers.first?.toolDiscovery, .native)
+        XCTAssertEqual(payload.providers.first?.customEndpointToolDiscovery, .rebuild)
         XCTAssertEqual(payload.providerInstances.first?.instance, "openai-work")
         XCTAssertEqual(payload.providerInstances.first?.provider, "openai_socket")
         XCTAssertEqual(payload.providerInstances.first?.tint, .blue)
@@ -52,6 +55,7 @@ extension GatewayWireTests {
         XCTAssertEqual(payload.defaultConfig?.config.maxModelSteps, 256)
         XCTAssertEqual(payload.models.first?.route, "openai_socket/gpt-5.6-sol")
         XCTAssertEqual(payload.models.first?.supportsImageInput, true)
+        XCTAssertEqual(payload.models.first?.toolDiscovery, .native)
         XCTAssertEqual(payload.modelProviders["openai_socket/gpt-5.6-sol"], "openai-work")
         XCTAssertEqual(payload.middlewareFeatures.first?.id, "extensions")
         XCTAssertEqual(payload.extensions.first?.id, "plugin:ponytail")
@@ -117,6 +121,14 @@ extension GatewayWireTests {
         )
         XCTAssertThrowsError(try decodeEnvelope(
             #"{"version":28,"type":"ready","payload":\#(invalidLimits)}"#
+        ))
+
+        let invalidToolDiscovery = readyPayloadJSON.replacingOccurrences(
+            of: #""tool_discovery":"native""#,
+            with: #""tool_discovery":"unknown""#
+        )
+        XCTAssertThrowsError(try decodeEnvelope(
+            #"{"version":28,"type":"ready","payload":\#(invalidToolDiscovery)}"#
         ))
     }
 

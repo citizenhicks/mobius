@@ -3,4 +3,5 @@
 .env
 xcuserdata/
 /mobius-app/apple/DerivedData*/
+.DS_Store
 *.profraw

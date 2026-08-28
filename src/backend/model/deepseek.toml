@@ -2,6 +2,7 @@
 label = "DeepSeek"
 description = "DeepSeek Responses API"
 default_model = "deepseek-v4-flash"
+tool_discovery = "rebuild"
 web_search = ["off", "live"]
 
 [[reasoning]]

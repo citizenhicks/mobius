@@ -153,6 +153,7 @@ extension UIFont {
 final class TranscriptEntry: Identifiable {
     enum Kind: String, Codable, Sendable {
         case user
+        case peer
         case assistant
         case commentary
         case reasoning
@@ -244,7 +245,7 @@ extension TranscriptEntry.Kind {
         case .assistant: "final_answer"
         case .commentary: "commentary"
         case .reasoning: "reasoning"
-        case .user, .event, .error: nil
+        case .user, .peer, .event, .error: nil
         }
     }
 }
@@ -263,6 +264,7 @@ enum TranscriptRowSizing: Equatable {
 struct TranscriptPresentationRow: Identifiable {
     enum Kind: Equatable {
         case user
+        case peer
         case narrative
         case activityGroup
         case workedGroup
@@ -518,12 +520,16 @@ struct TranscriptProjection {
                 continue
             }
             appendActivity()
-            let isUser = entry.kind == .user
+            let rowKind: TranscriptPresentationRow.Kind = switch entry.kind {
+            case .user: .user
+            case .peer: .peer
+            default: .narrative
+            }
             rows.append(TranscriptPresentationRow(
                 id: entry.presentationID,
                 records: [entry],
                 sizing: .intrinsic,
-                kind: isUser ? .user : .narrative
+                kind: rowKind
             ))
         }
         appendActivity()
@@ -588,6 +594,7 @@ struct TranscriptProjection {
         _ rows: [TranscriptPresentationRow],
         turnID: String
     ) -> [TranscriptPresentationRow] {
+        guard !rows.contains(where: { $0.kind == .peer }) else { return rows }
         let terminalRows = rows.filter { row in
             row.records.contains(where: \.turnTerminal)
         }

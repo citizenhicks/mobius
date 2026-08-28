@@ -20,6 +20,14 @@ enum GatewayRequest: Encodable, Sendable {
     case renameSession(requestID: String, sessionID: String, title: String)
     case setSessionPinned(requestID: String, sessionID: String, pinned: Bool)
     case deleteSession(requestID: String, sessionID: String)
+    case createSwarm(
+        requestID: String,
+        leaderSessionID: String,
+        memberSessionIDs: [String]
+    )
+    case addSwarmMember(requestID: String, swarmID: String, sessionID: String)
+    case leaveSwarm(requestID: String, swarmID: String, sessionID: String)
+    case disbandSwarm(requestID: String, swarmID: String)
     case submit(sessionID: String, submission: Submission)
     case submitGlobalScratchpad(requestID: String, operation: AgentOperation)
     case configureSession(
@@ -193,6 +201,25 @@ enum GatewayRequest: Encodable, Sendable {
             try container.encode("delete_session", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
             try container.encode(sessionID, forKey: "sessionId")
+        case .createSwarm(let requestID, let leaderSessionID, let memberSessionIDs):
+            try container.encode("create_swarm", forKey: "type")
+            try container.encode(requestID, forKey: "requestId")
+            try container.encode(leaderSessionID, forKey: "leaderSessionId")
+            try container.encode(memberSessionIDs, forKey: "memberSessionIds")
+        case .addSwarmMember(let requestID, let swarmID, let sessionID):
+            try container.encode("add_swarm_member", forKey: "type")
+            try container.encode(requestID, forKey: "requestId")
+            try container.encode(swarmID, forKey: "swarmId")
+            try container.encode(sessionID, forKey: "sessionId")
+        case .leaveSwarm(let requestID, let swarmID, let sessionID):
+            try container.encode("leave_swarm", forKey: "type")
+            try container.encode(requestID, forKey: "requestId")
+            try container.encode(swarmID, forKey: "swarmId")
+            try container.encode(sessionID, forKey: "sessionId")
+        case .disbandSwarm(let requestID, let swarmID):
+            try container.encode("disband_swarm", forKey: "type")
+            try container.encode(requestID, forKey: "requestId")
+            try container.encode(swarmID, forKey: "swarmId")
         case .submit(let sessionID, let submission):
             try container.encode("submit", forKey: "type")
             try container.encode(sessionID, forKey: "sessionId")
@@ -439,6 +466,7 @@ enum GatewayEnvelope: Decodable, Sendable {
         record: RecordedEvent
     )
     case sessions(requestID: String?, sessions: [SessionRecord])
+    case swarms(requestID: String?, swarms: [SwarmRecord])
     case clients(requestID: String, currentClientID: String, clients: [ClientStatus])
     case providerCredentialSaved(requestID: String, instance: String, provider: String)
     case pairingCode(requestID: String, code: String, expiresAt: Int64)
@@ -580,6 +608,11 @@ enum GatewayEnvelope: Decodable, Sendable {
             self = .sessions(
                 requestID: try container.decodeIfPresent(String.self, forKey: "requestId"),
                 sessions: try container.decode([SessionRecord].self, forKey: "sessions")
+            )
+        case "swarms":
+            self = .swarms(
+                requestID: try container.decodeIfPresent(String.self, forKey: "requestId"),
+                swarms: try container.decode([SwarmRecord].self, forKey: "swarms")
             )
         case "clients":
             self = .clients(
@@ -755,6 +788,7 @@ struct SessionFileLimits: Decodable, Equatable, Sendable {
 struct ReadyPayload: Decodable, Sendable {
     let machineName: String
     let sessions: [SessionRecord]
+    let swarms: [SwarmRecord]
     let providers: [ProviderStatus]
     let providerInstances: [ProviderInstance]
     let defaultConfig: VersionedAgentConfig?
@@ -925,6 +959,31 @@ struct SessionRecord: Identifiable, Decodable, Hashable, Sendable {
     let updatedAt: Int64
 }
 
+struct SwarmMemberRecord: Identifiable, Codable, Hashable, Sendable {
+    var id: String { sessionId }
+
+    let sessionId: String
+    let handle: String
+}
+
+struct SwarmMessageRecord: Identifiable, Codable, Hashable, Sendable {
+    let id: String
+    let sequence: UInt64
+    let authorSessionId: String
+    let authorHandle: String
+    let body: String
+    let createdAtMs: Int64
+}
+
+struct SwarmRecord: Identifiable, Codable, Hashable, Sendable {
+    let id: String
+    let title: String
+    let leaderSessionId: String
+    let members: [SwarmMemberRecord]
+    let messages: [SwarmMessageRecord]
+    let updatedAtMs: Int64
+}
+
 struct SessionActivity: Codable, Hashable, Sendable {
     let state: SessionActivityState
     let turnId: String?
@@ -948,6 +1007,7 @@ enum SessionOutcome: String, Codable, Hashable, Sendable {
 struct ModelChoice: Identifiable, Codable, Hashable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case route, group, model, reasoningEffort, contextWindow, supportsImageInput
+        case toolDiscovery
     }
 
     var id: String { route }
@@ -958,6 +1018,7 @@ struct ModelChoice: Identifiable, Codable, Hashable, Sendable {
     let reasoningEffort: String?
     let contextWindow: Int64?
     let supportsImageInput: Bool
+    let toolDiscovery: ToolDiscoveryMode
 
     init(
         route: String,
@@ -965,7 +1026,8 @@ struct ModelChoice: Identifiable, Codable, Hashable, Sendable {
         model: String,
         reasoningEffort: String?,
         contextWindow: Int64?,
-        supportsImageInput: Bool
+        supportsImageInput: Bool,
+        toolDiscovery: ToolDiscoveryMode
     ) {
         self.route = route
         self.group = group
@@ -973,6 +1035,7 @@ struct ModelChoice: Identifiable, Codable, Hashable, Sendable {
         self.reasoningEffort = reasoningEffort
         self.contextWindow = contextWindow
         self.supportsImageInput = supportsImageInput
+        self.toolDiscovery = toolDiscovery
     }
 
     init(from decoder: Decoder) throws {
@@ -986,7 +1049,8 @@ struct ModelChoice: Identifiable, Codable, Hashable, Sendable {
             supportsImageInput: try container.decode(
                 Bool.self,
                 forKey: .supportsImageInput
-            )
+            ),
+            toolDiscovery: try container.decode(ToolDiscoveryMode.self, forKey: .toolDiscovery)
         )
     }
 }

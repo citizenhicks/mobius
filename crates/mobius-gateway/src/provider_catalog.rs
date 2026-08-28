@@ -197,6 +197,7 @@ pub(crate) fn catalog_routes(
                         preset.map_or(DEFAULT_CONTEXT_WINDOW, |preset| preset.context_window),
                     ),
                     supports_image_input: definition.supports_image_input(),
+                    tool_discovery: definition.tool_discovery(model, selection.base_url.as_deref()),
                 },
                 provider,
             });
@@ -282,6 +283,7 @@ fn provider_status(definition: &ProviderDefinition) -> ProviderStatus {
                     })
                     .collect(),
                 default_reasoning: model.default_reasoning.map(str::to_string),
+                tool_discovery: model.tool_discovery,
             })
             .collect(),
         web_search: definition
@@ -295,13 +297,15 @@ fn provider_status(definition: &ProviderDefinition) -> ProviderStatus {
                 tone: FrontendTone::Neutral,
             })
             .collect(),
+        tool_discovery: definition.default_tool_discovery(),
+        custom_endpoint_tool_discovery: definition.custom_endpoint_tool_discovery(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use mobius::backend::model::provider::provider;
-    use mobius::protocol::{FrontendSymbol, FrontendTone};
+    use mobius::protocol::{FrontendSymbol, FrontendTone, ToolDiscoveryMode};
 
     use super::*;
 
@@ -313,6 +317,8 @@ mod tests {
         assert_eq!(status.label, "OpenAI");
         assert_eq!(status.symbol, FrontendSymbol::Custom("chat_gpt".into()));
         assert_eq!(status.models[0].id, "gpt-5.6-sol");
+        assert_eq!(status.tool_discovery, ToolDiscoveryMode::Native);
+        assert_eq!(status.models[0].tool_discovery, ToolDiscoveryMode::Native);
         assert_eq!(
             status.default_api_key_env.as_deref(),
             Some("OPENAI_API_KEY")
@@ -338,6 +344,7 @@ mod tests {
             Some("https://api.openai.com/v1")
         );
         assert_eq!(custom.default_api_key_env, None);
+        assert_eq!(custom.tool_discovery, ToolDiscoveryMode::Rebuild);
 
         let openrouter = provider_status(provider("openrouter").expect("provider"));
         assert!(openrouter.models.is_empty());
@@ -346,5 +353,58 @@ mod tests {
             openrouter.default_base_url.as_deref(),
             Some("https://openrouter.ai/api/v1")
         );
+        assert_eq!(openrouter.tool_discovery, ToolDiscoveryMode::Native);
+        assert_eq!(
+            openrouter.custom_endpoint_tool_discovery,
+            Some(ToolDiscoveryMode::Rebuild)
+        );
+    }
+
+    #[test]
+    fn catalog_routes_resolve_model_and_endpoint_tool_discovery() {
+        let anthropic = provider("anthropic").expect("anthropic");
+        assert_eq!(
+            anthropic.tool_discovery("claude-sonnet-5", anthropic.default_base_url()),
+            ToolDiscoveryMode::Rebuild
+        );
+        assert_eq!(
+            anthropic.tool_discovery("claude-opus-4-8", anthropic.default_base_url()),
+            ToolDiscoveryMode::Native
+        );
+        assert_eq!(
+            anthropic.tool_discovery("claude-opus-4-8", Some("https://proxy.example/v1")),
+            ToolDiscoveryMode::Rebuild
+        );
+
+        let openrouter = provider("openrouter").expect("openrouter");
+        assert_eq!(
+            openrouter.tool_discovery("openai/gpt-5.6-luna", openrouter.default_base_url()),
+            ToolDiscoveryMode::Native
+        );
+        assert_eq!(
+            openrouter.tool_discovery("openai/gpt-5.6-luna", Some("https://proxy.example/v1")),
+            ToolDiscoveryMode::Rebuild
+        );
+    }
+
+    #[test]
+    fn every_built_in_provider_advertises_a_discovery_mode() {
+        let expected = [
+            ("openai_socket", ToolDiscoveryMode::Native),
+            ("openai_codex", ToolDiscoveryMode::Native),
+            ("deepseek", ToolDiscoveryMode::Rebuild),
+            ("kimi", ToolDiscoveryMode::Rebuild),
+            ("openrouter", ToolDiscoveryMode::Native),
+            ("anthropic", ToolDiscoveryMode::Rebuild),
+            ("responses", ToolDiscoveryMode::Rebuild),
+        ];
+
+        for (id, expected) in expected {
+            assert_eq!(
+                provider_status(provider(id).expect("provider")).tool_discovery,
+                expected,
+                "provider {id}"
+            );
+        }
     }
 }

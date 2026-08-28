@@ -2,6 +2,7 @@
 label = "Kimi"
 description = "Kimi Chat Completions API"
 default_model = "kimi-k3"
+tool_discovery = "rebuild"
 web_search = ["off"]
 
 [[reasoning]]

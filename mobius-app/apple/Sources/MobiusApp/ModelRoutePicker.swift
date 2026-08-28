@@ -57,7 +57,7 @@ struct ModelRoutePicker: View {
                     }
                     ForEach(distinctModels, id: \.route) { choice in
                         optionLabel(
-                            model.modelGroupLabel(for: choice),
+                            "\(model.modelGroupLabel(for: choice)) · \(String(localized: choice.toolDiscovery.label))",
                             symbol: model.providerSymbol(for: choice),
                             tint: model.providerTint(for: choice)
                         )

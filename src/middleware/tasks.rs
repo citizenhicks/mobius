@@ -336,6 +336,7 @@ mod tests {
         let tasks = Tasks;
         let mut catalog = Catalog::default();
         tasks.register(&mut catalog, &runtime).expect("register");
+        catalog.finalize().expect("finalize catalog");
         let sandbox = Arc::new(Sandbox::new(
             Arc::new(LocalSandbox::new(temporary.path()).expect("sandbox")),
             ApprovalPolicy::Ask,
@@ -347,23 +348,25 @@ mod tests {
             Vec::new(),
         );
 
-        let result = execute_batch(
-            &catalog,
-            &[ToolCall {
-                call_id: "write".into(),
-                name: "write_todos".into(),
-                arguments: serde_json::json!({"todos": [
-                    {"content": " inspect seams ", "status": "completed"},
-                    {"content": "Implement tasks", "status": "in_progress"}
-                ]}),
-            }],
-            sandbox,
-            &permissions,
-            "turn-a",
-        )
-        .await
-        .pop()
-        .expect("tool result");
+        let searchable = std::collections::BTreeSet::from(["write_todos".into()]);
+        let bound = catalog
+            .bind_call(
+                ToolCall {
+                    call_id: "write".into(),
+                    name: "write_todos".into(),
+                    arguments: serde_json::json!({"todos": [
+                        {"content": " inspect seams ", "status": "completed"},
+                        {"content": "Implement tasks", "status": "in_progress"}
+                    ]}),
+                },
+                &searchable,
+                &searchable,
+            )
+            .expect("bind call");
+        let result = execute_batch(&catalog, &[bound], sandbox, &permissions, "turn-a")
+            .await
+            .pop()
+            .expect("tool result");
 
         assert!(!result.is_error, "{}", result.output);
         assert_eq!(

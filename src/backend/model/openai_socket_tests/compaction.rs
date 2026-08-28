@@ -91,7 +91,9 @@ async fn native_compaction_reuses_the_websocket_with_a_v2_trigger() {
                 }),
                 instructions: "Test instructions",
                 input: &initial_input,
+                catalog_revision: "catalog-1",
                 tools: &[],
+                deferred_tools: &[],
                 allow_hosted_tools: false,
                 allow_continuation: true,
             },
@@ -111,7 +113,9 @@ async fn native_compaction_reuses_the_websocket_with_a_v2_trigger() {
             }),
             instructions: "Test instructions",
             input: &input,
+            catalog_revision: "catalog-1",
             tools: &[],
+            deferred_tools: &[],
         })
         .await
         .expect("native compaction");
@@ -204,7 +208,9 @@ async fn native_compaction_retries_an_interrupted_websocket() {
             }),
             instructions: "Test instructions",
             input: &input,
+            catalog_revision: "catalog-1",
             tools: &[],
+            deferred_tools: &[],
         })
         .await
         .expect("retried native compaction");

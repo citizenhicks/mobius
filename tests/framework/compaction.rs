@@ -243,6 +243,7 @@ async fn compaction_uses_the_context_window_of_a_new_model_route() {
                 reasoning_effort: None,
                 context_window: Some(context_window),
                 supports_image_input: true,
+                tool_discovery: ToolDiscoveryMode::Rebuild,
             })
             .expect("route metadata");
     }

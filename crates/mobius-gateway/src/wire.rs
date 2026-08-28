@@ -15,7 +15,7 @@ use mobius::protocol::{
     Event, EventMsg, FrontendContribution, FrontendPreviewUpdate, FrontendSettingOption,
     FrontendSettingValue, FrontendSymbol, FrontendWidget, MiddlewareFeature, ModelChoice, Op,
     RenderedBlock, SessionConfiguredEvent, SessionFileLimits, SessionFileRecord,
-    SessionFileReference, Submission, TokenUsage,
+    SessionFileReference, Submission, TokenUsage, ToolDiscoveryMode,
 };
 use serde::de::{DeserializeOwned, Error as _};
 use serde::{Deserialize, Serialize};
@@ -57,7 +57,7 @@ mod base64_bytes {
 }
 
 /// Current gateway protocol version.
-pub const PROTOCOL_VERSION: u16 = 49;
+pub const PROTOCOL_VERSION: u16 = 51;
 /// Maximum encoded JSON payload accepted in one frame.
 pub const MAX_FRAME_BYTES: usize = 50 * 1024 * 1024;
 const WEBSOCKET_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);

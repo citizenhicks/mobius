@@ -1,4 +1,6 @@
 [provider]
 label = "OpenRouter"
 description = "Responses API across multiple model vendors"
+tool_discovery = "native"
+custom_endpoint_tool_discovery = "rebuild"
 web_search = ["off", "live"]

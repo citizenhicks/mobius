@@ -2,6 +2,7 @@
 label = "OpenAI"
 description = "Persistent Responses WebSocket with native compaction"
 default_model = "gpt-5.6-sol"
+tool_discovery = "native"
 web_search = ["off", "cached", "live"]
 
 [[reasoning]]

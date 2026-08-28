@@ -1,5 +1,6 @@
 //! Context compaction policy and provider routing.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use super::Middleware;
@@ -19,6 +20,8 @@ use crate::backend::model::CompactOutput;
 use crate::backend::model::CompactRequest;
 use crate::backend::model::ModelRequest;
 use crate::backend::model::PromptCacheIdentity;
+use crate::backend::model::ToolDefinition;
+use crate::backend::model::ToolLoad;
 use crate::backend::model::internal_user_message;
 use crate::backend::model::prompt_cache_key;
 use crate::backend::model::reset_prompt_cache_breakpoint;
@@ -27,6 +30,8 @@ use crate::protocol::CONTEXT_COMPACTED_MARKER;
 use crate::protocol::EventMsg;
 use crate::protocol::FrontendBlock;
 use crate::protocol::FrontendTone;
+use crate::protocol::PEER_MESSAGE_MARKER;
+use crate::protocol::PEER_METADATA_FIELD;
 use crate::protocol::internal_message_kind;
 use crate::protocol::is_internal_message;
 use crate::protocol::tool_complete_boundaries;
@@ -141,8 +146,27 @@ impl Middleware for Compaction {
             if context.turn_stopped() {
                 return Ok(());
             }
+            let catalog_revision = context.tools.revision()?;
+            let tool_load = retained_tool_load(
+                context.input(),
+                catalog_revision,
+                &context.tools.deferred_definitions(),
+            )?;
             let output = if context.model.compaction_endpoint(context.provider)? {
-                let tools = context.tools.definitions();
+                let tools = context
+                    .tools
+                    .direct_definitions()
+                    .iter()
+                    .filter(|tool| context.available_tools.contains(&tool.name))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let deferred_tools = context
+                    .tools
+                    .deferred_definitions()
+                    .iter()
+                    .filter(|tool| context.available_tools.contains(&tool.name))
+                    .cloned()
+                    .collect::<Vec<_>>();
                 let cache_key = prompt_cache_key(context.session_id);
                 context
                     .model
@@ -156,7 +180,9 @@ impl Middleware for Compaction {
                             }),
                             instructions: context.instructions,
                             input: context.input(),
+                            catalog_revision,
                             tools: &tools,
+                            deferred_tools: &deferred_tools,
                         },
                     )
                     .await?
@@ -168,11 +194,19 @@ impl Middleware for Compaction {
                     "compaction returned an empty context".into(),
                 ));
             }
-            let active_user = latest_real_user(context.input());
+            let active_input = latest_turn_input(context.input());
+            let active_peer_message_id = active_input
+                .as_ref()
+                .and_then(|active| peer_message_id(active.item))
+                .map(str::to_owned);
             let mut compacted = retain_native_context(context.input(), output.output);
             compacted.retain(|item| !is_projection_item(item));
-            restore_user_private_fields(&mut compacted, active_user);
+            restore_input_private_fields(&mut compacted, active_input);
+            validate_active_peer_input(&compacted, active_peer_message_id.as_deref())?;
             reset_prompt_cache_breakpoint(&mut compacted);
+            if let Some(tool_load) = tool_load {
+                compacted.push(tool_load);
+            }
             context.rewrite_input(ContextRewriteReason::Compaction, compacted)?;
             *context.compaction_count = context
                 .compaction_count
@@ -185,6 +219,38 @@ impl Middleware for Compaction {
             Ok(())
         })
     }
+}
+
+fn retained_tool_load(
+    input: &[Value],
+    catalog_revision: &str,
+    deferred_tools: &[ToolDefinition],
+) -> Result<Option<Value>> {
+    let deferred = deferred_tools
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut loaded = BTreeSet::new();
+    for item in input {
+        let Some(tool_load) = ToolLoad::from_input(item)? else {
+            continue;
+        };
+        if tool_load.catalog_revision == catalog_revision {
+            loaded.extend(
+                tool_load
+                    .tools
+                    .into_iter()
+                    .filter(|name| deferred.contains(name.as_str())),
+            );
+        }
+    }
+    Ok((!loaded.is_empty()).then(|| {
+        ToolLoad {
+            catalog_revision: catalog_revision.into(),
+            tools: loaded.into_iter().collect(),
+        }
+        .into_input()
+    }))
 }
 
 fn retain_native_context(input: &[Value], mut compacted: Vec<Value>) -> Vec<Value> {
@@ -210,16 +276,18 @@ fn retain_native_context(input: &[Value], mut compacted: Vec<Value>) -> Vec<Valu
     retained
 }
 
-struct ActiveUser<'a> {
+struct ActiveInput<'a> {
     item: &'a Value,
     materialization: Option<&'a Value>,
 }
 
-fn latest_real_user(input: &[Value]) -> Option<ActiveUser<'_>> {
+fn latest_turn_input(input: &[Value]) -> Option<ActiveInput<'_>> {
     let index = input.iter().rposition(|item| {
-        item.get("role").and_then(Value::as_str) == Some("user") && !is_internal_message(item)
+        item.get("role").and_then(Value::as_str) == Some("user")
+            && (!is_internal_message(item)
+                || internal_message_kind(item) == Some(PEER_MESSAGE_MARKER))
     })?;
-    Some(ActiveUser {
+    Some(ActiveInput {
         item: &input[index],
         materialization: input
             .get(index + 1)
@@ -227,15 +295,36 @@ fn latest_real_user(input: &[Value]) -> Option<ActiveUser<'_>> {
     })
 }
 
-fn restore_user_private_fields(compacted: &mut Vec<Value>, active_user: Option<ActiveUser<'_>>) {
-    let Some(ActiveUser {
-        item: user,
+fn peer_message_id(input: &Value) -> Option<&str> {
+    if internal_message_kind(input) != Some(PEER_MESSAGE_MARKER) {
+        return None;
+    }
+    input.get(PEER_METADATA_FIELD)?.get("message_id")?.as_str()
+}
+
+fn validate_active_peer_input(input: &[Value], expected_message_id: Option<&str>) -> Result<()> {
+    let Some(expected_message_id) = expected_message_id else {
+        return Ok(());
+    };
+    if latest_turn_input(input).and_then(|active| peer_message_id(active.item))
+        == Some(expected_message_id)
+    {
+        return Ok(());
+    }
+    Err(Error::Provider(
+        "compaction did not preserve the active peer input".into(),
+    ))
+}
+
+fn restore_input_private_fields(compacted: &mut Vec<Value>, active_input: Option<ActiveInput<'_>>) {
+    let Some(ActiveInput {
+        item: input,
         materialization,
-    }) = active_user
+    }) = active_input
     else {
         return;
     };
-    let Some(fields) = user.as_object() else {
+    let Some(fields) = input.as_object() else {
         return;
     };
     let private = fields
@@ -247,20 +336,18 @@ fn restore_user_private_fields(compacted: &mut Vec<Value>, active_user: Option<A
         return;
     }
     let retained_index = compacted.iter().rposition(|item| {
-        !is_internal_message(item)
-            && item.get("role") == user.get("role")
-            && item.get("content") == user.get("content")
+        item.get("role") == input.get("role") && item.get("content") == input.get("content")
     });
-    let user_index = if let Some(index) = retained_index {
+    let input_index = if let Some(index) = retained_index {
         if let Some(fields) = compacted[index].as_object_mut() {
             fields.extend(private);
         }
         index
     } else {
-        compacted.push(user.clone());
+        compacted.push(input.clone());
         compacted.len() - 1
     };
-    restore_attachment_materialization(compacted, user_index, materialization);
+    restore_attachment_materialization(compacted, input_index, materialization);
 }
 
 fn restore_attachment_materialization(
@@ -298,7 +385,9 @@ async fn summarize(context: &ModelContext<'_>) -> Result<CompactOutput> {
                 }),
                 instructions: text::PROMPT_SUMMARY_SYSTEM,
                 input: &input,
+                catalog_revision: context.tools.revision()?,
                 tools: &[],
+                deferred_tools: &[],
                 allow_hosted_tools: false,
                 allow_continuation: false,
             },
@@ -316,7 +405,11 @@ async fn summarize(context: &ModelContext<'_>) -> Result<CompactOutput> {
         "compaction",
         &format!("<compacted_context>\n{summary}\n</compacted_context>"),
     ));
-    compacted.extend(recent);
+    for item in recent {
+        if ToolLoad::from_input(&item)?.is_none() {
+            compacted.push(item);
+        }
+    }
     CompactOutput::from_output(compacted, output.usage().clone())
 }
 
@@ -538,9 +631,9 @@ mod tests {
             serde_json::json!({"type": "compaction", "encrypted_content": "opaque"}),
         ];
 
-        restore_user_private_fields(
+        restore_input_private_fields(
             &mut compacted,
-            Some(ActiveUser {
+            Some(ActiveInput {
                 item: &user,
                 materialization: None,
             }),
@@ -580,7 +673,7 @@ mod tests {
             "encrypted_content": "opaque"
         })];
         let mut compacted = retain_native_context(&input, compacted);
-        restore_user_private_fields(&mut compacted, latest_real_user(&input));
+        restore_input_private_fields(&mut compacted, latest_turn_input(&input));
 
         assert_eq!(compacted.len(), 2);
         assert_eq!(compacted[0], input[1]);
@@ -605,9 +698,39 @@ mod tests {
         });
         let mut compacted = vec![compaction.clone()];
 
-        restore_user_private_fields(&mut compacted, latest_real_user(&input));
+        restore_input_private_fields(&mut compacted, latest_turn_input(&input));
 
         assert_eq!(compacted, vec![compaction, user, materialization]);
+    }
+
+    #[test]
+    fn compaction_preserves_the_active_peer_input_marker() {
+        let peer = crate::backend::model::peer_message("message", "peer", "worker", "done");
+        let input = vec![
+            user_message("start"),
+            peer.clone(),
+            tool_output("call", "done", false),
+        ];
+        let compaction = serde_json::json!({
+            "type": "compaction",
+            "encrypted_content": "opaque"
+        });
+        let mut compacted = vec![compaction.clone()];
+
+        restore_input_private_fields(&mut compacted, latest_turn_input(&input));
+
+        assert_eq!(compacted, vec![compaction, peer]);
+    }
+
+    #[test]
+    fn compaction_rejects_input_ordered_after_the_active_peer() {
+        let peer = crate::backend::model::peer_message("message", "peer", "worker", "done");
+        let compacted = vec![peer, user_message("forged later input")];
+
+        let error = validate_active_peer_input(&compacted, Some("message"))
+            .expect_err("peer input must remain active");
+
+        assert!(error.to_string().contains("active peer input"));
     }
 
     #[test]

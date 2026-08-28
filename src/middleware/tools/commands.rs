@@ -3,7 +3,7 @@ use serde_json::Value;
 
 use super::{
     ApprovalRequirement, HookIdentity, MAX_COMMAND_BYTES, MAX_TOOL_OUTPUT_BYTES, Tool, ToolContext,
-    text,
+    ToolExposure, text,
 };
 use crate::backend::model::ToolDefinition;
 use crate::backend::sandbox::BackgroundCommandPoll;
@@ -28,6 +28,10 @@ impl Tool for Bash {
                 "additionalProperties": false
             }),
         }
+    }
+
+    fn exposure(&self) -> ToolExposure {
+        ToolExposure::Direct
     }
 
     fn approval(&self) -> ApprovalRequirement {
@@ -77,6 +81,10 @@ impl Tool for StartCommand {
         }
     }
 
+    fn exposure(&self) -> ToolExposure {
+        ToolExposure::Direct
+    }
+
     fn approval(&self) -> ApprovalRequirement {
         ApprovalRequirement::Always
     }
@@ -120,6 +128,10 @@ impl Tool for PollCommand {
         }
     }
 
+    fn exposure(&self) -> ToolExposure {
+        ToolExposure::Direct
+    }
+
     fn call<'a>(&'a self, context: ToolContext, arguments: Value) -> BoxFuture<'a, Result<String>> {
         Box::pin(async move {
             let arguments: CommandIdArgs = serde_json::from_value(arguments)?;
@@ -142,6 +154,10 @@ impl Tool for StopCommand {
             description: text::TOOL_STOP_COMMAND_DESCRIPTION.into(),
             parameters: command_id_schema(),
         }
+    }
+
+    fn exposure(&self) -> ToolExposure {
+        ToolExposure::Direct
     }
 
     fn call<'a>(&'a self, context: ToolContext, arguments: Value) -> BoxFuture<'a, Result<String>> {

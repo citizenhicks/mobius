@@ -90,6 +90,7 @@ async fn each_call_receives_its_own_permissions() {
             arguments: serde_json::json!({"label": "second"}),
         },
     ];
+    let calls = finalize_and_bind(&mut catalog, &calls);
 
     assert_eq!(
         execute_batch(
@@ -107,6 +108,7 @@ async fn each_call_receives_its_own_permissions() {
                 output: "first:false".into(),
                 is_error: false,
                 handler_executed: true,
+                loaded_tools: Vec::new(),
                 additional_input: Vec::new(),
             },
             ToolResult {
@@ -115,6 +117,7 @@ async fn each_call_receives_its_own_permissions() {
                 output: "second:true".into(),
                 is_error: false,
                 handler_executed: true,
+                loaded_tools: Vec::new(),
                 additional_input: Vec::new(),
             },
         ]
@@ -132,6 +135,7 @@ async fn parallel_tool_panic_preserves_call_identity() {
         name: "panicking".into(),
         arguments: serde_json::json!({}),
     }];
+    let calls = finalize_and_bind(&mut catalog, &calls);
     let backend =
         Arc::new(crate::backend::sandbox::local::LocalSandbox::new(".").expect("local sandbox"));
     let sandbox = Arc::new(crate::backend::sandbox::Sandbox::new(
@@ -153,6 +157,7 @@ async fn parallel_tool_panic_preserves_call_identity() {
             output: "tool panicked".into(),
             is_error: true,
             handler_executed: true,
+            loaded_tools: Vec::new(),
             additional_input: Vec::new(),
         }]
     );
@@ -169,6 +174,7 @@ async fn approval_required_handler_cannot_run_without_exact_call_authority() {
         name: "approval_required".into(),
         arguments: serde_json::json!({}),
     }];
+    let calls = finalize_and_bind(&mut catalog, &calls);
     let sandbox = Arc::new(crate::backend::sandbox::Sandbox::new(
         Arc::new(crate::backend::sandbox::local::LocalSandbox::new(".").expect("sandbox")),
         crate::backend::sandbox::ApprovalPolicy::Ask,

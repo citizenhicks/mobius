@@ -104,6 +104,7 @@ pub(super) fn catalog(workspace: &std::path::Path) -> UiCatalog {
             reasoning_effort: Some("high".into()),
             context_window: Some(1_048_576),
             supports_image_input: true,
+            tool_discovery: mobius::protocol::ToolDiscoveryMode::Rebuild,
         }],
         workspace,
     )

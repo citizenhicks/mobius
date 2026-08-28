@@ -71,6 +71,106 @@ extension AppModelTests {
         XCTAssertNotNil(request)
     }
 
+    func testCreatingSwarmUsesEligibleChatsInSameFolderAndWaitsForCatalog() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model { request in await recorder.record(request) }
+        let leader = session(sessionID: "chat-1", state: .idle)
+        let coworker = session(sessionID: "chat-2", state: .running)
+        let elsewhere = session(
+            sessionID: "chat-3",
+            state: .idle,
+            workspaceID: "workspace-2",
+            workspaceLabel: "/srv/another-project"
+        )
+        model.sessions = [leader, coworker, elsewhere]
+        model.connectionState = .ready
+
+        XCTAssertEqual(model.swarmCreationCandidates(for: leader).map(\.sessionId), ["chat-2"])
+
+        model.createSwarm(
+            leaderSessionID: leader.sessionId,
+            memberSessionIDs: [coworker.sessionId]
+        )
+        let request = await recorder.firstRequest(after: 0) { request in
+            if case .createSwarm = request { return true }
+            return false
+        }
+        guard case .createSwarm(
+            let requestID,
+            let leaderSessionID,
+            let memberSessionIDs
+        ) = try XCTUnwrap(request) else {
+            return XCTFail("Expected swarm creation")
+        }
+        XCTAssertEqual(leaderSessionID, "chat-1")
+        XCTAssertEqual(memberSessionIDs, ["chat-1", "chat-2"])
+        XCTAssertEqual(model.swarmMutationRequestID, requestID)
+        XCTAssertFalse(model.canMutateSwarm)
+
+        let swarm = SwarmRecord(
+            id: "swarm-1",
+            title: "Quiet Foxes",
+            leaderSessionId: "chat-1",
+            members: [
+                SwarmMemberRecord(sessionId: "chat-1", handle: "@leader"),
+                SwarmMemberRecord(sessionId: "chat-2", handle: "@builder"),
+            ],
+            messages: [],
+            updatedAtMs: 200
+        )
+        model.handle(.swarms(requestID: requestID, swarms: [swarm]))
+
+        XCTAssertNil(model.swarmMutationRequestID)
+        XCTAssertTrue(model.canMutateSwarm)
+        XCTAssertEqual(model.swarm(containing: "chat-2")?.title, "Quiet Foxes")
+        XCTAssertTrue(model.swarmCreationCandidates(for: leader).isEmpty)
+    }
+
+    func testApplyingSwarmsRejectsMissingLeadersAndUnorderedMessages() throws {
+        let model = try model { _ in }
+        let leader = SwarmMemberRecord(sessionId: "chat-1", handle: "leader")
+        let message = { (id: String, sequence: UInt64) in
+            SwarmMessageRecord(
+                id: id,
+                sequence: sequence,
+                authorSessionId: leader.sessionId,
+                authorHandle: leader.handle,
+                body: id,
+                createdAtMs: Int64(sequence)
+            )
+        }
+        let valid = SwarmRecord(
+            id: "swarm-1",
+            title: "Quiet Foxes",
+            leaderSessionId: leader.sessionId,
+            members: [leader],
+            messages: [message("one", 1), message("two", 2)],
+            updatedAtMs: 2
+        )
+        model.applySwarms([valid])
+
+        model.applySwarms([SwarmRecord(
+            id: "swarm-1",
+            title: valid.title,
+            leaderSessionId: leader.sessionId,
+            members: [],
+            messages: [],
+            updatedAtMs: 3
+        )])
+        XCTAssertEqual(model.swarms, [valid])
+
+        model.applySwarms([SwarmRecord(
+            id: "swarm-1",
+            title: valid.title,
+            leaderSessionId: leader.sessionId,
+            members: [leader],
+            messages: [message("two", 2), message("one", 1)],
+            updatedAtMs: 3
+        )])
+        XCTAssertEqual(model.swarms, [valid])
+        XCTAssertEqual(model.toast?.message, "The gateway returned invalid swarm state.")
+    }
+
     func testNewWorkspaceBrowserUsesCloudWorkingDirectoryOnly() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }

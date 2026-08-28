@@ -119,6 +119,8 @@ extension AppModel {
                 files: attachments,
                 to: &entries
             )
+        case "peer_message":
+            appendPeerMessage(event, record: record, to: &entries)
         case "agent_message_content_delta", "agent_reasoning_content_delta":
             reduceHistoryDelta(
                 type: type,

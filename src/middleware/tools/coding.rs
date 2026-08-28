@@ -5,7 +5,7 @@ use serde_json::Value;
 use super::patch::{apply_patch_document, parse_patch_document};
 use super::{
     ApprovalRequirement, ExecutionMode, HookIdentity, MAX_MUTATION_BYTES, MAX_TOOL_OUTPUT_BYTES,
-    Tool, ToolContext, text,
+    Tool, ToolContext, ToolExposure, text,
 };
 use crate::backend::model::ToolDefinition;
 use crate::{BoxFuture, Error, Result};
@@ -34,6 +34,10 @@ impl Tool for ReadFile {
                 "additionalProperties": false
             }),
         }
+    }
+
+    fn exposure(&self) -> ToolExposure {
+        ToolExposure::Direct
     }
 
     fn execution_mode(&self) -> ExecutionMode {
@@ -71,6 +75,10 @@ impl Tool for WriteFile {
                 "additionalProperties": false
             }),
         }
+    }
+
+    fn exposure(&self) -> ToolExposure {
+        ToolExposure::Direct
     }
 
     fn approval(&self) -> ApprovalRequirement {
@@ -123,6 +131,10 @@ impl Tool for ApplyPatch {
                 "additionalProperties": false
             }),
         }
+    }
+
+    fn exposure(&self) -> ToolExposure {
+        ToolExposure::Direct
     }
 
     fn approval(&self) -> ApprovalRequirement {

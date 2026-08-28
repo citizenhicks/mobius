@@ -246,6 +246,48 @@ extension AppModel {
         navigationPath = [.chat(.session(sessionID))]
     }
 
+    func openSwarm(_ swarmID: String) {
+        guard swarms.contains(where: { $0.id == swarmID }) else { return }
+        destination = .chats
+        navigationPath = [.swarm(swarmID)]
+    }
+
+    func swarm(containing sessionID: String) -> SwarmRecord? {
+        swarms.first { swarm in
+            swarm.leaderSessionId == sessionID
+                || swarm.members.contains { $0.sessionId == sessionID }
+        }
+    }
+
+    func swarmCreationCandidates(for leader: SessionRecord) -> [SessionRecord] {
+        guard leader.parentSessionId == nil,
+              swarm(containing: leader.sessionId) == nil,
+              let workspace = swarmWorkspace(for: leader)
+        else { return [] }
+        return sessions.filter { session in
+            session.sessionId != leader.sessionId
+                && session.parentSessionId == nil
+                && swarm(containing: session.sessionId) == nil
+                && swarmWorkspace(for: session) == workspace
+        }
+        .sorted {
+            if $0.updatedAt != $1.updatedAt { return $0.updatedAt > $1.updatedAt }
+            return $0.sessionId < $1.sessionId
+        }
+    }
+
+    func availableSwarms(for session: SessionRecord) -> [SwarmRecord] {
+        guard session.parentSessionId == nil,
+              swarm(containing: session.sessionId) == nil,
+              let workspace = swarmWorkspace(for: session)
+        else { return [] }
+        return swarms.filter { swarmWorkspace(for: $0) == workspace }
+            .sorted {
+                if $0.updatedAtMs != $1.updatedAtMs { return $0.updatedAtMs > $1.updatedAtMs }
+                return $0.id < $1.id
+            }
+    }
+
     func openSession(_ sessionID: String) {
         guard canOpenSession, sessionID != selectedSessionID else { return }
         let generation = UUID()
@@ -462,6 +504,86 @@ extension AppModel {
         else { return }
         navigationPath = [.chat(.session(sessionID))]
         restoreSession(sessionID)
+    }
+
+    func createSwarm(leaderSessionID: String, memberSessionIDs: Set<String>) {
+        guard canMutateSwarm,
+              let leader = sessions.first(where: { $0.sessionId == leaderSessionID })
+        else { return }
+        let candidates = swarmCreationCandidates(for: leader)
+        let allowed = Set(candidates.map(\.sessionId))
+        guard !memberSessionIDs.isEmpty, memberSessionIDs.isSubset(of: allowed) else {
+            showToast("Those chats can no longer form a swarm.", tone: .warning)
+            return
+        }
+        let selectedCoworkers = candidates.compactMap { candidate in
+            memberSessionIDs.contains(candidate.sessionId) ? candidate.sessionId : nil
+        }
+        sendSwarmMutation("swarm-create") { requestID in
+            .createSwarm(
+                requestID: requestID,
+                leaderSessionID: leaderSessionID,
+                memberSessionIDs: [leaderSessionID] + selectedCoworkers
+            )
+        }
+    }
+
+    func addSwarmMember(_ session: SessionRecord, to swarm: SwarmRecord) {
+        guard availableSwarms(for: session).contains(where: { $0.id == swarm.id }) else {
+            showToast("That chat can no longer join this swarm.", tone: .warning)
+            return
+        }
+        sendSwarmMutation("swarm-add") { requestID in
+            .addSwarmMember(
+                requestID: requestID,
+                swarmID: swarm.id,
+                sessionID: session.sessionId
+            )
+        }
+    }
+
+    func leaveSwarm(_ swarm: SwarmRecord, sessionID: String) {
+        guard swarm.leaderSessionId != sessionID,
+              self.swarm(containing: sessionID)?.id == swarm.id
+        else { return }
+        sendSwarmMutation("swarm-leave") { requestID in
+            .leaveSwarm(requestID: requestID, swarmID: swarm.id, sessionID: sessionID)
+        }
+    }
+
+    func disbandSwarm(_ swarm: SwarmRecord, leaderSessionID: String) {
+        guard swarm.leaderSessionId == leaderSessionID,
+              self.swarm(containing: leaderSessionID)?.id == swarm.id
+        else { return }
+        sendSwarmMutation("swarm-disband") { requestID in
+            .disbandSwarm(requestID: requestID, swarmID: swarm.id)
+        }
+    }
+
+    private func sendSwarmMutation(
+        _ requestPrefix: String,
+        request: (String) -> GatewayRequest
+    ) {
+        guard canMutateSwarm else { return }
+        let id = requestID(requestPrefix)
+        swarmMutationRequestID = id
+        transmit(request(id)) { [weak self] _ in
+            if self?.swarmMutationRequestID == id { self?.swarmMutationRequestID = nil }
+        }
+    }
+
+    private func swarmWorkspace(for session: SessionRecord) -> String? {
+        session.sessionContext.workspaceId
+    }
+
+    private func swarmWorkspace(for swarm: SwarmRecord) -> String? {
+        let memberIDs = [swarm.leaderSessionId] + swarm.members.map(\.sessionId)
+        return memberIDs.lazy.compactMap { sessionID in
+            guard let session = self.sessions.first(where: { $0.sessionId == sessionID }) else {
+                return nil
+            }
+            return self.swarmWorkspace(for: session)
+        }.first
     }
 
     func refreshWorkspaceChanges() {

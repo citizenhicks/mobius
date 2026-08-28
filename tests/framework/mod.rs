@@ -59,6 +59,7 @@ use mobius::protocol::Op;
 use mobius::protocol::ReviewDecision;
 use mobius::protocol::SessionFileReference;
 use mobius::protocol::TokenUsage;
+use mobius::protocol::ToolDiscoveryMode;
 use serde_json::Value;
 use tempfile::TempDir;
 use tokio::sync::Notify;

@@ -59,9 +59,9 @@ use crate::middleware::compaction::Compaction;
 use crate::middleware::steering::Steering;
 use crate::middleware::tools::ApprovalRequirement;
 use crate::middleware::tools::Catalog;
-use crate::middleware::tools::Tool;
 use crate::middleware::tools::ToolContext;
 use crate::middleware::tools::Tools;
+use crate::middleware::tools::{Tool, ToolExposure};
 use crate::protocol::ApprovalReviewEscalation;
 use crate::protocol::ApprovalReviewStatus;
 use crate::protocol::ErrorKind;
@@ -625,6 +625,10 @@ impl Tool for ApprovalRequiredTestTool {
         }
     }
 
+    fn exposure(&self) -> ToolExposure {
+        ToolExposure::Direct
+    }
+
     fn approval(&self) -> ApprovalRequirement {
         ApprovalRequirement::Always
     }
@@ -817,9 +821,13 @@ mod configuration;
 mod input_validation;
 #[path = "runtime_tests/model_steps.rs"]
 mod model_steps;
+#[path = "runtime_tests/peer_input.rs"]
+mod peer_input;
 #[path = "runtime_tests/recorder.rs"]
 mod recorder;
 #[path = "runtime_tests/resume_and_recovery.rs"]
 mod resume_and_recovery;
+#[path = "runtime_tests/tool_discovery.rs"]
+mod tool_discovery;
 #[path = "runtime_tests/usage_and_approval.rs"]
 mod usage_and_approval;

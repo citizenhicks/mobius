@@ -139,6 +139,7 @@ fn event_index(event: &EventMsg) -> Result<EventIndex<'_>> {
         EventMsg::TurnComplete(_) => plain("task_complete"),
         EventMsg::TurnAborted(_) => plain("turn_aborted"),
         EventMsg::UserMessage(_) => plain("user_message"),
+        EventMsg::PeerMessage(_) => plain("peer_message"),
         EventMsg::AgentMessage(message) => step("agent_message", &message.model_step_id),
         EventMsg::AgentMessageContentDelta(delta) => EventIndex {
             kind: "agent_message_content_delta",

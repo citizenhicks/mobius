@@ -23,6 +23,9 @@ impl HostState {
         {
             return Ok(false);
         }
+        if let EventMsg::PeerMessage(message) = &event.msg {
+            self.acknowledge_peer_message(&message.message_id).await?;
+        }
         let next_activity = self.activity_for_event(&event.msg)?;
         match &event.msg {
             EventMsg::ExecApprovalRequest(_) => self.approval_active = true,
@@ -58,6 +61,61 @@ impl HostState {
             }
         }
         Ok(restart)
+    }
+
+    pub(super) async fn acknowledge_replayed_peer_messages(&self) -> Result<()> {
+        let pending = self
+            .swarm
+            .pending_deliveries(&self.running.session_id)
+            .await?;
+        if pending.is_empty() {
+            return Ok(());
+        }
+        let replayed = self
+            .replay
+            .iter()
+            .filter_map(|frame| match &frame.message {
+                ServerMessage::AgentEvent { record, .. } => match &record.event.msg {
+                    EventMsg::PeerMessage(message) => Some(message.message_id.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect::<HashSet<_>>();
+        for delivery in pending {
+            if replayed.contains(&delivery.entry.id) {
+                self.acknowledge_peer_message(&delivery.entry.id).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn acknowledge_peer_message(&self, message_id: &str) -> Result<()> {
+        let pending = self
+            .swarm
+            .pending_deliveries(&self.running.session_id)
+            .await?;
+        if !pending
+            .iter()
+            .any(|delivery| delivery.entry.id == message_id)
+        {
+            self.swarm
+                .notify_acknowledged(message_id, &self.running.session_id);
+            return Ok(());
+        }
+        match self
+            .swarm
+            .acknowledge(message_id, &self.running.session_id)
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(Error::Config(_)) => {
+                self.swarm
+                    .notify_acknowledged(message_id, &self.running.session_id);
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
     }
 
     pub(super) fn project_and_publish(
@@ -246,6 +304,7 @@ impl HostState {
         let sessions = session_catalog(&self.checkpoints, &self.activities)
             .await
             .map_err(internal)?;
+        self.swarm.retry_pending();
         let _ = self
             .gateway_events
             .send(ServerFrame::new(ServerMessage::Sessions {

@@ -87,6 +87,25 @@ pub enum ClientMessage {
         request_id: String,
         session_id: String,
     },
+    CreateSwarm {
+        request_id: String,
+        leader_session_id: String,
+        member_session_ids: Vec<String>,
+    },
+    AddSwarmMember {
+        request_id: String,
+        swarm_id: String,
+        session_id: String,
+    },
+    LeaveSwarm {
+        request_id: String,
+        swarm_id: String,
+        session_id: String,
+    },
+    DisbandSwarm {
+        request_id: String,
+        swarm_id: String,
+    },
     Submit {
         session_id: String,
         submission: Submission,
@@ -400,6 +419,11 @@ pub enum ServerMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         request_id: Option<String>,
         sessions: Vec<SessionRecord>,
+    },
+    Swarms {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
+        swarms: Vec<SwarmRecord>,
     },
     Clients {
         request_id: String,

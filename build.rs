@@ -122,6 +122,8 @@ struct ProviderText {
     label: String,
     description: String,
     default_model: Option<String>,
+    tool_discovery: ToolDiscoveryResource,
+    custom_endpoint_tool_discovery: Option<ToolDiscoveryResource>,
     #[serde(default)]
     web_search: Vec<SearchMode>,
 }
@@ -150,6 +152,23 @@ struct ModelResource {
     #[serde(default)]
     reasoning: Vec<String>,
     default_reasoning: Option<String>,
+    tool_discovery: Option<ToolDiscoveryResource>,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ToolDiscoveryResource {
+    Native,
+    Rebuild,
+}
+
+impl ToolDiscoveryResource {
+    const fn rust_variant(self) -> &'static str {
+        match self {
+            Self::Native => "Native",
+            Self::Rebuild => "Rebuild",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Deserialize, Eq, Ord, PartialEq, PartialOrd)]
@@ -188,6 +207,18 @@ fn generate_provider_manifest(path: &Path, output: &Path) {
         "PROVIDER_DESCRIPTION",
         &resource.provider.description,
     );
+    writeln!(
+        generated,
+        "pub const TOOL_DISCOVERY: crate::protocol::ToolDiscoveryMode = crate::protocol::ToolDiscoveryMode::{};",
+        resource.provider.tool_discovery.rust_variant()
+    )
+    .expect("write provider tool discovery");
+    writeln!(
+        generated,
+        "pub const CUSTOM_ENDPOINT_TOOL_DISCOVERY: Option<crate::protocol::ToolDiscoveryMode> = {};",
+        tool_discovery_option_literal(resource.provider.custom_endpoint_tool_discovery)
+    )
+    .expect("write custom endpoint tool discovery");
     if let Some(auth) = &resource.auth {
         write_string(&mut generated, "AUTH_LABEL", &auth.label);
     }
@@ -235,6 +266,15 @@ fn generate_provider_manifest(path: &Path, output: &Path) {
                 option_literal(model.default_reasoning.as_deref())
             )
             .expect("write default reasoning");
+            writeln!(
+                generated,
+                "        tool_discovery: crate::protocol::ToolDiscoveryMode::{},",
+                model
+                    .tool_discovery
+                    .unwrap_or(resource.provider.tool_discovery)
+                    .rust_variant()
+            )
+            .expect("write model tool discovery");
             generated.push_str("    },\n");
         }
         generated.push_str("];\n");
@@ -275,6 +315,18 @@ fn write_reasoning_preset(generated: &mut String, preset: &ReasoningResource, in
 
 fn option_literal(value: Option<&str>) -> String {
     value.map_or_else(|| "None".into(), |value| format!("Some({value:?})"))
+}
+
+fn tool_discovery_option_literal(value: Option<ToolDiscoveryResource>) -> String {
+    value.map_or_else(
+        || "None".into(),
+        |value| {
+            format!(
+                "Some(crate::protocol::ToolDiscoveryMode::{})",
+                value.rust_variant()
+            )
+        },
+    )
 }
 
 fn validate_provider_manifest(resource: &ProviderResource, path: &Path) {

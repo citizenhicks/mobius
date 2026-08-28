@@ -102,7 +102,7 @@ extension AppModel {
         case .sessionOpened, .sessionReplayComplete, .sessionHistory, .sessionChanged:
             handleSessionEnvelope(envelope)
         case .gatewayConfigured, .globalScratchpadChanged, .accepted, .rejected,
-             .agentEvent, .sessions, .clients:
+             .agentEvent, .sessions, .swarms, .clients:
             handleGatewayUpdateEnvelope(envelope)
         case .providerCredentialSaved, .pairingCode, .providerLoginStarted,
              .providerLoginFinished, .gitCredentialStatus, .sshIdentities,
@@ -208,6 +208,9 @@ extension AppModel {
                 pendingDeletedPresentedSessionID = nil
             }
             applySessions(sessions)
+        case .swarms(let requestID, let swarms):
+            if requestID == swarmMutationRequestID { swarmMutationRequestID = nil }
+            applySwarms(swarms)
         case .clients:
             break
         default:
@@ -588,6 +591,7 @@ extension AppModel {
         middlewareFeatures = payload.middlewareFeatures
         extensions = payload.extensions
         gatewayContributions = payload.contributions
+        applySwarms(payload.swarms)
         defaultAgentSnapshot = payload.defaultConfig
         defaultAgentDraft = payload.defaultConfig.map { incomingSnapshot in
             pendingDefaultDraft ?? refreshedAgentDraft(
@@ -739,6 +743,23 @@ extension AppModel {
               sessionRequestID == nil
         else { return }
         clearSelectedSession()
+    }
+
+    func applySwarms(_ records: [SwarmRecord]) {
+        guard Set(records.map(\.id)).count == records.count,
+              records.allSatisfy({ swarm in
+                  let orderedMessages = zip(swarm.messages, swarm.messages.dropFirst())
+                      .allSatisfy { pair in pair.0.sequence < pair.1.sequence }
+                  return Set(swarm.members.map(\.sessionId)).count == swarm.members.count
+                      && swarm.members.contains { $0.sessionId == swarm.leaderSessionId }
+                      && Set(swarm.messages.map(\.id)).count == swarm.messages.count
+                      && orderedMessages
+              })
+        else {
+            showToast("The gateway returned invalid swarm state.", tone: .error)
+            return
+        }
+        swarms = records
     }
 
     private func applyExecutionStats(_ stats: ExecutionStats) {
@@ -1055,6 +1076,9 @@ extension AppModel {
     }
 
     private func handleRejectedCapabilities(_ rejection: GatewayRejection) {
+        if rejection.requestId == swarmMutationRequestID {
+            swarmMutationRequestID = nil
+        }
         if rejection.requestId == pendingProviderCredential?.requestID {
             providerActionState = .failed(rejection.message)
             pendingProviderCredential = nil

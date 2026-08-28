@@ -16,6 +16,7 @@ use crate::protocol::ModelChoice;
 use crate::protocol::ModelStepDiagnostics;
 use crate::protocol::PromptCacheDiagnostics;
 use crate::protocol::TokenUsage;
+use crate::protocol::ToolDiscoveryMode;
 
 /// Selects a model Adapter by a stable provider ID.
 pub struct ModelRouter {
@@ -103,6 +104,7 @@ impl ModelRouter {
             .find(|current| current.choice.route == choice.route)
             .ok_or_else(|| Error::Unknown(format!("model route `{}`", choice.route)))?;
         choice.supports_image_input = current.provider.supports_image_input();
+        choice.tool_discovery = current.provider.tool_discovery();
         current.choice = choice;
         Ok(())
     }
@@ -131,6 +133,11 @@ impl ModelRouter {
     /// Reports whether one route accepts native image input.
     pub fn supports_image_input(&self, provider: &str) -> Result<bool> {
         Ok(self.provider(provider)?.supports_image_input())
+    }
+
+    /// Reports deferred-tool cache behavior for one route.
+    pub fn tool_discovery(&self, provider: &str) -> Result<ToolDiscoveryMode> {
+        Ok(self.provider(provider)?.tool_discovery())
     }
 
     /// Reports prompt-cache support for one route.
@@ -208,5 +215,6 @@ fn inferred_choice(route: &str, provider: &dyn Model) -> ModelChoice {
         reasoning_effort: info.reasoning_effort,
         context_window: None,
         supports_image_input: provider.supports_image_input(),
+        tool_discovery: provider.tool_discovery(),
     }
 }

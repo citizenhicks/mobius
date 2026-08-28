@@ -19,7 +19,9 @@ use super::PROMPT_CACHE_BREAKPOINT_FIELD;
 use super::PromptCacheCapability;
 use super::REPLAY_REASONING_FIELD;
 use super::TOOL_ERROR_FIELD;
+use super::TOOLS_SEARCH_NAME;
 use super::ToolDefinition;
+use super::ToolLoad;
 use super::image_input;
 use super::provider::HostedWebSearch;
 use super::provider::ProviderAuth;
@@ -42,6 +44,7 @@ use crate::protocol::ModelStepAnnotation;
 use crate::protocol::ModelStepContent;
 use crate::protocol::ModelStepContentPhase;
 use crate::protocol::TokenUsage;
+use crate::protocol::ToolDiscoveryMode;
 use crate::protocol::WebSearchAction;
 
 mod manifest {
@@ -83,6 +86,7 @@ pub struct Anthropic {
     api_key: Option<String>,
     base_url: String,
     model: String,
+    tool_discovery: ToolDiscoveryMode,
     reasoning_effort: Option<String>,
     web_search: bool,
 }
@@ -112,11 +116,13 @@ impl Anthropic {
         if model.trim().is_empty() {
             return Err(Error::Config("Anthropic model is empty".into()));
         }
+        let tool_discovery = provider().tool_discovery(&model, Some(&base_url));
         Ok(Self {
             client,
             api_key,
             base_url,
             model,
+            tool_discovery,
             reasoning_effort: None,
             web_search: false,
         })
@@ -154,7 +160,9 @@ impl Anthropic {
         let body = self.request_body(
             request.instructions,
             request.input,
+            request.catalog_revision,
             request.tools,
+            request.deferred_tools,
             request.allow_hosted_tools,
         )?;
         let mut response = self.post(&body).await?;
@@ -187,15 +195,27 @@ impl Anthropic {
         &self,
         instructions: &str,
         input: &[Value],
+        catalog_revision: &str,
         tools: &[ToolDefinition],
+        deferred_tools: &[ToolDefinition],
         allow_hosted_tools: bool,
     ) -> Result<Value> {
+        let discovery = self.tool_discovery();
         let mut body = serde_json::json!({
             "model": self.model,
             "max_tokens": MAX_OUTPUT_TOKENS,
             "system": instructions,
-            "messages": translate_messages(input)?,
-            "tools": wire_tools(tools, self.web_search && allow_hosted_tools),
+            "messages": translate_messages(
+                input,
+                discovery,
+                catalog_revision,
+                deferred_tools,
+            )?,
+            "tools": wire_tools(
+                tools,
+                if discovery == ToolDiscoveryMode::Native { deferred_tools } else { &[] },
+                self.web_search && allow_hosted_tools,
+            ),
             "stream": true
         });
         self.apply_reasoning(&mut body);
@@ -240,6 +260,10 @@ impl Model for Anthropic {
 
     fn prompt_cache_capability(&self) -> PromptCacheCapability {
         PromptCacheCapability::Explicit
+    }
+
+    fn tool_discovery(&self) -> ToolDiscoveryMode {
+        self.tool_discovery
     }
 
     fn pricing(&self) -> Option<ModelPricing> {
@@ -680,10 +704,20 @@ impl Usage {
     }
 }
 
-fn translate_messages(input: &[Value]) -> Result<Vec<Value>> {
+fn translate_messages(
+    input: &[Value],
+    discovery: ToolDiscoveryMode,
+    catalog_revision: &str,
+    deferred_tools: &[ToolDefinition],
+) -> Result<Vec<Value>> {
     let mut messages = Vec::new();
     let mut preserved_tools = BTreeSet::new();
-    for item in input {
+    let mut search_calls = BTreeSet::new();
+    let deferred_tool_names = deferred_tools
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect::<BTreeSet<_>>();
+    for (index, item) in input.iter().enumerate() {
         let kind = item
             .get("type")
             .and_then(Value::as_str)
@@ -751,6 +785,8 @@ fn translate_messages(input: &[Value]) -> Result<Vec<Value>> {
             }
             Some("function_call") => {
                 let call_id = required_string(item, "call_id")?;
+                let name = required_string(item, "name")?;
+                remember_search_call(&mut search_calls, call_id, name);
                 if !preserved_tools.contains(call_id) {
                     push_message(
                         &mut messages,
@@ -758,7 +794,7 @@ fn translate_messages(input: &[Value]) -> Result<Vec<Value>> {
                         vec![serde_json::json!({
                             "type": "tool_use",
                             "id": call_id,
-                            "name": required_string(item, "name")?,
+                            "name": name,
                             "input": serde_json::from_str::<Value>(required_string(item, "arguments")?)?
                         })],
                     );
@@ -767,12 +803,23 @@ fn translate_messages(input: &[Value]) -> Result<Vec<Value>> {
             Some("function_call_output") => push_message(
                 &mut messages,
                 "user",
-                vec![serde_json::json!({
-                    "type": "tool_result",
-                    "tool_use_id": required_string(item, "call_id")?,
-                    "content": string_field(item, "output")?,
-                    "is_error": item.get(TOOL_ERROR_FIELD).and_then(Value::as_bool).unwrap_or(false)
-                })],
+                vec![tool_result_block(
+                    item,
+                    input.get(index + 1),
+                    discovery,
+                    catalog_revision,
+                    &search_calls,
+                    &deferred_tool_names,
+                )?],
+            ),
+            Some("tool_load") => replay_standalone_tool_load(
+                &mut messages,
+                ToolLoad::from_input(item)?,
+                follows_search_result(input.get(index.saturating_sub(1)), &search_calls),
+                index,
+                discovery,
+                catalog_revision,
+                &deferred_tool_names,
             ),
             None | Some(_) => {}
         }
@@ -781,6 +828,109 @@ fn translate_messages(input: &[Value]) -> Result<Vec<Value>> {
         return Err(Error::Provider("Anthropic request has no messages".into()));
     }
     Ok(messages)
+}
+
+fn remember_search_call(search_calls: &mut BTreeSet<String>, call_id: &str, name: &str) {
+    if name == TOOLS_SEARCH_NAME {
+        search_calls.insert(call_id.to_string());
+    }
+}
+
+fn tool_result_block(
+    item: &Value,
+    next: Option<&Value>,
+    discovery: ToolDiscoveryMode,
+    catalog_revision: &str,
+    search_calls: &BTreeSet<String>,
+    deferred_tool_names: &BTreeSet<&str>,
+) -> Result<Value> {
+    let call_id = required_string(item, "call_id")?;
+    let load = next.map(ToolLoad::from_input).transpose()?.flatten();
+    let references = load
+        .filter(|_| discovery == ToolDiscoveryMode::Native && search_calls.contains(call_id))
+        .map_or_else(Vec::new, |load| {
+            tool_references(load, catalog_revision, deferred_tool_names)
+        });
+    let content = if references.is_empty() {
+        Value::String(string_field(item, "output")?.to_string())
+    } else {
+        Value::Array(references)
+    };
+    Ok(serde_json::json!({
+        "type": "tool_result",
+        "tool_use_id": call_id,
+        "content": content,
+        "is_error": item.get(TOOL_ERROR_FIELD).and_then(Value::as_bool).unwrap_or(false)
+    }))
+}
+
+fn follows_search_result(previous: Option<&Value>, search_calls: &BTreeSet<String>) -> bool {
+    previous
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some("function_call_output"))
+        .and_then(|item| item.get("call_id").and_then(Value::as_str))
+        .is_some_and(|call_id| search_calls.contains(call_id))
+}
+
+fn replay_standalone_tool_load(
+    messages: &mut Vec<Value>,
+    load: Option<ToolLoad>,
+    follows_search_result: bool,
+    index: usize,
+    discovery: ToolDiscoveryMode,
+    catalog_revision: &str,
+    deferred_tool_names: &BTreeSet<&str>,
+) {
+    let Some(load) = load else {
+        return;
+    };
+    if discovery != ToolDiscoveryMode::Native || follows_search_result {
+        return;
+    }
+    let references = tool_references(load, catalog_revision, deferred_tool_names);
+    if references.is_empty() {
+        return;
+    }
+    let call_id = format!("mobius-tool-load-{index}");
+    push_message(
+        messages,
+        "assistant",
+        vec![serde_json::json!({
+            "type": "tool_use",
+            "id": call_id,
+            "name": TOOLS_SEARCH_NAME,
+            "input": {"query": "restore loaded session tools"}
+        })],
+    );
+    push_message(
+        messages,
+        "user",
+        vec![serde_json::json!({
+            "type": "tool_result",
+            "tool_use_id": call_id,
+            "content": references,
+            "is_error": false
+        })],
+    );
+}
+
+fn tool_references(
+    load: ToolLoad,
+    catalog_revision: &str,
+    deferred_tool_names: &BTreeSet<&str>,
+) -> Vec<Value> {
+    if load.catalog_revision != catalog_revision {
+        return Vec::new();
+    }
+    load.tools
+        .into_iter()
+        .filter(|name| deferred_tool_names.contains(name.as_str()))
+        .map(|name| {
+            serde_json::json!({
+                "type": "tool_reference",
+                "tool_name": name
+            })
+        })
+        .collect()
 }
 
 fn push_message(messages: &mut Vec<Value>, role: &str, blocks: Vec<Value>) {
@@ -797,15 +947,25 @@ fn push_message(messages: &mut Vec<Value>, role: &str, blocks: Vec<Value>) {
     messages.push(serde_json::json!({"role": role, "content": blocks}));
 }
 
-fn wire_tools(tools: &[ToolDefinition], web_search: bool) -> Vec<Value> {
+fn wire_tools(
+    tools: &[ToolDefinition],
+    deferred_tools: &[ToolDefinition],
+    web_search: bool,
+) -> Vec<Value> {
     let mut output = tools
         .iter()
-        .map(|tool| {
-            serde_json::json!({
+        .map(|tool| (tool, false))
+        .chain(deferred_tools.iter().map(|tool| (tool, true)))
+        .map(|(tool, deferred)| {
+            let mut wire = serde_json::json!({
                 "name": tool.name,
                 "description": tool.description,
                 "input_schema": tool.parameters
-            })
+            });
+            if deferred {
+                wire["defer_loading"] = Value::Bool(true);
+            }
+            wire
         })
         .collect::<Vec<_>>();
     if web_search {
@@ -871,6 +1031,10 @@ pub(super) const fn provider() -> ProviderDefinition {
     )
     .with_image_input()
     .with_base_url(DEFAULT_BASE_URL)
+    .with_tool_discovery(
+        manifest::TOOL_DISCOVERY,
+        manifest::CUSTOM_ENDPOINT_TOOL_DISCOVERY,
+    )
     .with_credentialless_endpoints()
 }
 

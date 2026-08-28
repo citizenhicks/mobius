@@ -9,6 +9,7 @@ extension AppModelTests {
         model.applyGatewayCatalog(ReadyPayload(
             machineName: "snowwhite.local",
             sessions: [],
+            swarms: [],
             providers: [ProviderStatus(
                 provider: "openai_socket",
                 label: "OpenAI",
@@ -27,10 +28,13 @@ extension AppModelTests {
                         label: "High",
                         description: "Deep reasoning"
                     )],
-                    defaultReasoning: "high"
+                    defaultReasoning: "high",
+                    toolDiscovery: .native
                 )],
                 modelIdsConfigurable: false,
-                webSearch: webSearchOptions(.off, .cached, .live)
+                webSearch: webSearchOptions(.off, .cached, .live),
+                toolDiscovery: .native,
+                customEndpointToolDiscovery: nil
             )],
             providerInstances: [],
             defaultConfig: nil,
@@ -223,6 +227,7 @@ extension AppModelTests {
             payload: ReadyPayload(
                 machineName: "snowwhite.local",
                 sessions: [],
+                swarms: [],
                 providers: [providerStatus(for: selection)],
                 providerInstances: [],
                 defaultConfig: nil,
@@ -283,7 +288,8 @@ extension AppModelTests {
                         label: "Maximum",
                         description: "Maximum reasoning"
                     )],
-                    defaultReasoning: "max"
+                    defaultReasoning: "max",
+                    toolDiscovery: .rebuild
                 ),
                 ProviderModel(
                     id: "kimi-k2.7-code",
@@ -291,11 +297,14 @@ extension AppModelTests {
                     description: "Coding model",
                     contextWindow: 262_144,
                     reasoning: [],
-                    defaultReasoning: nil
+                    defaultReasoning: nil,
+                    toolDiscovery: .rebuild
                 )
             ],
             modelIdsConfigurable: false,
-            webSearch: webSearchOptions(.off)
+            webSearch: webSearchOptions(.off),
+            toolDiscovery: .rebuild,
+            customEndpointToolDiscovery: nil
         )]
 
         model.addProviderInstance("kimi")
@@ -303,6 +312,43 @@ extension AppModelTests {
         XCTAssertEqual(model.providerDraft?.model, "kimi-k3")
         XCTAssertEqual(model.providerDraft?.reasoningEffort, "max")
         XCTAssertEqual(model.providerDraft?.webSearch, .off)
+    }
+
+    func testProviderToolDiscoveryUsesCustomEndpointOverride() {
+        let config = ProviderConfig(
+            provider: "openrouter",
+            model: "openai/gpt-5.6-luna",
+            baseUrl: "https://openrouter.ai/api/v1",
+            reasoningEffort: "high",
+            webSearch: .live
+        )
+        let status = providerStatus(
+            for: config,
+            models: [ProviderModel(
+                id: config.model,
+                label: "Luna",
+                description: "Test model",
+                contextWindow: 200_000,
+                reasoning: [],
+                defaultReasoning: nil,
+                toolDiscovery: .native
+            )],
+            toolDiscovery: .rebuild,
+            customEndpointToolDiscovery: .rebuild
+        )
+
+        XCTAssertEqual(status.resolvedToolDiscovery(model: config.model, baseURL: nil), .native)
+        XCTAssertEqual(
+            status.resolvedToolDiscovery(model: config.model, baseURL: config.baseUrl),
+            .native
+        )
+        XCTAssertEqual(
+            status.resolvedToolDiscovery(
+                model: config.model,
+                baseURL: "https://proxy.example/v1"
+            ),
+            .rebuild
+        )
     }
 
     func testConfigurableProviderCanonicalizesAndSavesModelAndReasoningCatalogs() async throws {
@@ -326,7 +372,9 @@ extension AppModelTests {
             defaultApiKeyEnv: nil,
             models: [],
             modelIdsConfigurable: true,
-            webSearch: webSearchOptions(.off)
+            webSearch: webSearchOptions(.off),
+            toolDiscovery: .rebuild,
+            customEndpointToolDiscovery: nil
         )]
         model.providerDraft = selection
         model.providerLabelDraft = "Local"
@@ -372,7 +420,8 @@ extension AppModelTests {
             model: target.model,
             reasoningEffort: target.reasoningEffort,
             contextWindow: 1_048_576,
-            supportsImageInput: true
+            supportsImageInput: true,
+            toolDiscovery: .rebuild
         )
         let original = composition()
         model.agentSnapshot = VersionedAgentConfig(revision: 1, config: original)
@@ -431,7 +480,8 @@ extension AppModelTests {
                 model: work.model,
                 reasoningEffort: "medium",
                 contextWindow: nil,
-                supportsImageInput: true
+                supportsImageInput: true,
+                toolDiscovery: .native
             ),
             ModelChoice(
                 route: "work-high",
@@ -439,7 +489,8 @@ extension AppModelTests {
                 model: work.model,
                 reasoningEffort: "high",
                 contextWindow: nil,
-                supportsImageInput: true
+                supportsImageInput: true,
+                toolDiscovery: .native
             ),
             ModelChoice(
                 route: "personal-medium",
@@ -447,7 +498,8 @@ extension AppModelTests {
                 model: personal.model,
                 reasoningEffort: "medium",
                 contextWindow: nil,
-                supportsImageInput: true
+                supportsImageInput: true,
+                toolDiscovery: .native
             ),
         ]
         model.modelChoices = choices
@@ -488,7 +540,8 @@ extension AppModelTests {
             model: config.model,
             reasoningEffort: config.reasoningEffort,
             contextWindow: 128_000,
-            supportsImageInput: true
+            supportsImageInput: true,
+            toolDiscovery: .native
         )
         let canonicalChoice = ModelChoice(
             route: "openrouter-route",
@@ -496,7 +549,8 @@ extension AppModelTests {
             model: "openai/gpt-5.6-luna",
             reasoningEffort: "high",
             contextWindow: 128_000,
-            supportsImageInput: true
+            supportsImageInput: true,
+            toolDiscovery: .native
         )
         model.modelProviders = [
             choice.route: config.instance,
@@ -508,14 +562,16 @@ extension AppModelTests {
             description: "Coding model",
             contextWindow: 128_000,
             reasoning: [],
-            defaultReasoning: "high"
+            defaultReasoning: "high",
+            toolDiscovery: .native
         ), ProviderModel(
             id: "gpt-5.6-luna",
             label: "Luna",
             description: "Fast coding model",
             contextWindow: 128_000,
             reasoning: [],
-            defaultReasoning: "high"
+            defaultReasoning: "high",
+            toolDiscovery: .native
         )])]
         model.providerInstances = [ProviderInstance(
             label: "Work",
@@ -541,7 +597,8 @@ extension AppModelTests {
                 model: "custom-model",
                 reasoningEffort: nil,
                 contextWindow: nil,
-                supportsImageInput: false
+                supportsImageInput: false,
+                toolDiscovery: .rebuild
             )
         ), "custom-model")
     }
@@ -627,6 +684,7 @@ extension AppModelTests {
         model.applyGatewayCatalog(ReadyPayload(
             machineName: "snowwhite.local",
             sessions: [],
+            swarms: [],
             providers: [],
             providerInstances: [],
             defaultConfig: VersionedAgentConfig(revision: 8, config: gatewayDefault),

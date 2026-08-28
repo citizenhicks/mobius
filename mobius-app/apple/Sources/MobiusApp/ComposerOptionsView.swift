@@ -259,7 +259,7 @@ struct ComposerOptionsView: View {
         Picker("Model", selection: modelPickerSelection) {
             ForEach(distinctModels, id: \.route) { choice in
                 modelMenuOptionLabel(
-                    model.modelGroupLabel(for: choice),
+                    "\(model.modelGroupLabel(for: choice)) · \(String(localized: choice.toolDiscovery.label))",
                     providerSymbol: model.providerSymbol(for: choice),
                     tint: model.providerTint(for: choice)
                 )

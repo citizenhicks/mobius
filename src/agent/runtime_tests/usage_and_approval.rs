@@ -262,13 +262,12 @@ async fn post_tool_hook_context_follows_only_executed_tool_outputs() {
         [
             ("pre_tool_hook", None),
             ("pre_tool_hook", None),
-            ("pre_tool_hook", None),
             ("function_call", Some("call-1")),
             ("function_call", Some("call-2")),
             ("function_call", Some("call-3")),
+            ("function_call_output", Some("call-2")),
             ("function_call_output", Some("call-1")),
             ("post_tool_hook", None),
-            ("function_call_output", Some("call-2")),
             ("function_call_output", Some("call-3")),
             ("post_tool_hook", None),
         ]

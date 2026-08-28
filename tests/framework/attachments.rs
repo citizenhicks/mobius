@@ -36,6 +36,7 @@ async fn attachment_hydration_runs_after_native_compaction_replaces_context() {
         workspace.path(),
         Arc::clone(&model),
         vec![
+            Arc::new(Tools::new(Vec::new())),
             Arc::new(Attachments::new(store)),
             Arc::new(Compaction::new(1_000).expect("compaction")),
         ],
@@ -86,17 +87,25 @@ async fn video_attachments_are_exposed_as_workspace_files() {
     let attachment =
         upload_attachment(&store, session_id, "clip.mov", "video/quicktime", video).await;
     let model = Arc::new(ScriptedModel::new(vec![
+        tool_response(
+            "search-attachments",
+            mobius::backend::model::TOOLS_SEARCH_NAME,
+            serde_json::json!({"query": "attachments"}),
+        ),
         tool_response("list-video", "list_attachments", serde_json::json!({})),
         text_response("done"),
     ]));
     let config = test_config(
         workspace.path(),
         Arc::clone(&model),
-        vec![Arc::new(
-            Attachments::new(store.clone())
-                .with_workspace(workspace.path())
-                .expect("configure attachment workspace"),
-        )],
+        vec![
+            Arc::new(Tools::new(Vec::new())),
+            Arc::new(
+                Attachments::new(store.clone())
+                    .with_workspace(workspace.path())
+                    .expect("configure attachment workspace"),
+            ),
+        ],
     )
     .session_id(session_id);
     let mut agent = create_agent(config).await.expect("create agent");
@@ -112,24 +121,38 @@ async fn video_attachments_are_exposed_as_workspace_files() {
     assert_eq!(final_message(&mut agent).await, "done");
     {
         let requests = model.requests.lock().expect("requests");
-        assert_eq!(requests.len(), 2);
+        assert_eq!(requests.len(), 3);
         assert_eq!(
             requests[0]
                 .tools
                 .iter()
                 .map(|tool| tool.name.as_str())
                 .collect::<Vec<_>>(),
-            ["list_attachments"]
+            [mobius::backend::model::TOOLS_SEARCH_NAME]
+        );
+        assert_eq!(
+            requests[1]
+                .tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                mobius::backend::model::TOOLS_SEARCH_NAME,
+                "list_attachments"
+            ]
         );
         assert_eq!(request_image_count(&requests[0].input), 0);
         let input = serde_json::to_string(&requests[0].input).expect("serialize request");
         assert!(input.contains("User-attached files available"));
         assert!(input.contains(&attachment.id));
         assert!(input.contains("path: .mobius/attachments/"));
-        let tool_output = requests[1]
+        let tool_output = requests[2]
             .input
             .iter()
-            .find(|item| item.get("type").and_then(Value::as_str) == Some("function_call_output"))
+            .find(|item| {
+                item.get("type").and_then(Value::as_str) == Some("function_call_output")
+                    && item.get("call_id").and_then(Value::as_str) == Some("list-video")
+            })
             .and_then(|item| item.get("output"))
             .and_then(Value::as_str)
             .expect("attachment list output");
@@ -199,7 +222,10 @@ async fn materialized_image_keeps_an_exact_prefix_on_later_turns() {
     let config = test_config(
         workspace.path(),
         Arc::clone(&model),
-        vec![Arc::new(Attachments::new(store))],
+        vec![
+            Arc::new(Tools::new(Vec::new())),
+            Arc::new(Attachments::new(store)),
+        ],
     )
     .session_id(session_id);
     let mut agent = create_agent(config).await.expect("create agent");
@@ -274,7 +300,10 @@ async fn over_budget_current_image_fails_but_does_not_poison_later_turns() {
     let config = test_config(
         workspace.path(),
         Arc::clone(&model),
-        vec![Arc::new(Attachments::new(store))],
+        vec![
+            Arc::new(Tools::new(Vec::new())),
+            Arc::new(Attachments::new(store)),
+        ],
     )
     .session_id(session_id);
     let mut agent = create_agent(config).await.expect("create agent");

@@ -138,8 +138,10 @@ impl HostState {
         for waiter in self.idle_waiters.drain(..) {
             let _ = waiter.send(());
         }
+        let session_id = self.running.session_id.clone();
         shutdown_agent(self.running).await;
         self.alive.store(false, Ordering::Release);
+        self.swarm.notify_pending(&session_id);
     }
 
     pub(super) async fn handle(&mut self, command: HostCommand) -> bool {
@@ -303,6 +305,7 @@ impl HostState {
                     self.idle_waiters.push(reply);
                 }
             }
+            HostCommand::CapacityChanged => self.swarm.retry_pending(),
             HostCommand::StopIfIdle { reply } => {
                 let idle = self.is_idle();
                 let _ = reply.send(idle);
@@ -498,7 +501,7 @@ impl HostState {
         submission: Submission,
         scheduled: bool,
     ) -> std::result::Result<(), Rejection> {
-        let starts_turn = matches!(submission.op, Op::UserInput { .. });
+        let starts_turn = matches!(submission.op, Op::UserInput { .. } | Op::PeerInput { .. });
         let resolves_approval = matches!(submission.op, Op::ExecApproval { .. });
         if starts_turn && self.active_cron.is_some() && !scheduled {
             return Err(Rejection {
@@ -632,6 +635,7 @@ impl HostState {
             Arc::clone(&self.checkpoints),
             self.scratchpad.clone(),
             self.session_files.clone(),
+            Arc::clone(&self.swarm),
             session_id,
             "mobius-gateway",
             true,
@@ -650,6 +654,7 @@ impl HostState {
                     Arc::clone(&self.checkpoints),
                     self.scratchpad.clone(),
                     self.session_files.clone(),
+                    Arc::clone(&self.swarm),
                     self.running.session_id.clone(),
                     "mobius-gateway-rollback",
                     true,
@@ -762,6 +767,7 @@ impl HostState {
             Arc::clone(&self.checkpoints),
             self.scratchpad.clone(),
             self.session_files.clone(),
+            Arc::clone(&self.swarm),
             session_id,
             origin_label,
             false,

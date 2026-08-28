@@ -46,7 +46,7 @@ struct ChatsView: View {
                 catalogHeading
                 if showsLoadingCatalog {
                     loadingCatalog
-                } else if displayedSessions.isEmpty {
+                } else if displayedSessions.isEmpty && catalogSwarms.isEmpty {
                     emptyState
                 } else {
                     catalog
@@ -182,7 +182,7 @@ struct ChatsView: View {
             }
         case .chronological:
             ForEach(chronologicalSessions) { session in
-                sessionRow(session, showsWorkspace: true)
+                SessionCatalogRow(session: session, showsWorkspace: true)
             }
         }
     }
@@ -218,6 +218,7 @@ struct ChatsView: View {
     private var showsLoadingCatalog: Bool {
         model.connectionState.isLoading
             && model.sessions.isEmpty
+            && model.swarms.isEmpty
             && !showsAttentionOnly
             && searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -327,26 +328,94 @@ struct ChatsView: View {
     }
 
     private var sessionGroups: [WorkspaceSessions] {
-        Dictionary(grouping: displayedSessions) {
-            $0.sessionContext.workspaceId ?? $0.sessionContext.workspaceLabel ?? "workspace"
-        }
-        .map { id, sessions in
-            let path = sessions.first?.sessionContext.workspaceLabel ?? "Workspace"
+        let claimedSessionIDs = Set(
+            catalogSwarms.flatMap { $0.members.map(\.session.sessionId) }
+        )
+        let sessionsByWorkspace = Dictionary(
+            grouping: displayedSessions.filter {
+                !claimedSessionIDs.contains($0.sessionId)
+            },
+            by: workspaceID
+        )
+        let swarmsByWorkspace = Dictionary(grouping: catalogSwarms, by: \.workspaceID)
+        return Set(sessionsByWorkspace.keys).union(swarmsByWorkspace.keys)
+        .map { id in
+            let sessions = sessionsByWorkspace[id, default: []]
+            let swarms = swarmsByWorkspace[id, default: []]
+            let reference = sessions.first ?? swarms.first?.members.first?.session
+            let path = reference?.sessionContext.workspaceLabel ?? "Workspace"
             return WorkspaceSessions(
                 id: id,
                 name: workspaceName(path),
                 path: path,
-                sessions: sessions.sorted(by: pinnedThenRecent)
+                sessions: sessions.sorted(by: pinnedThenRecent),
+                swarms: swarms.sorted {
+                    if $0.record.updatedAtMs != $1.record.updatedAtMs {
+                        return $0.record.updatedAtMs > $1.record.updatedAtMs
+                    }
+                    return $0.record.id < $1.record.id
+                }
             )
         }
         .sorted {
             if $0.id == model.workspace?.id { return true }
             if $1.id == model.workspace?.id { return false }
-            let firstUpdated = $0.sessions.first?.updatedAt ?? 0
-            let secondUpdated = $1.sessions.first?.updatedAt ?? 0
+            let firstUpdated = $0.latestUpdatedAt
+            let secondUpdated = $1.latestUpdatedAt
             if firstUpdated != secondUpdated { return firstUpdated > secondUpdated }
             return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
+    }
+
+    private var catalogSwarms: [WorkspaceSwarm] {
+        let sessionsByID = Dictionary(
+            model.sessions.map { ($0.sessionId, $0) },
+            uniquingKeysWith: { _, latest in latest }
+        )
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return model.swarms.compactMap { swarm in
+            let members = orderedMemberIDs(for: swarm).compactMap { sessionID -> SwarmCatalogMember? in
+                guard let session = sessionsByID[sessionID] else { return nil }
+                let handle = swarm.members.first(where: { $0.sessionId == sessionID })?.handle
+                    ?? sessionID
+                return SwarmCatalogMember(session: session, handle: handle)
+            }
+            if showsAttentionOnly,
+               !members.contains(where: {
+                   model.attentionSessionIDs.contains($0.session.sessionId)
+               }) {
+                return nil
+            }
+            if !query.isEmpty,
+               !swarm.title.localizedCaseInsensitiveContains(query),
+               !swarm.id.localizedCaseInsensitiveContains(query),
+               !members.contains(where: {
+                   $0.handle.localizedCaseInsensitiveContains(query)
+                       || model.displayedTitle(for: $0.session)
+                           .localizedCaseInsensitiveContains(query)
+               }) {
+                return nil
+            }
+            let reference = members.first?.session
+            return WorkspaceSwarm(
+                record: swarm,
+                workspaceID: reference.map(workspaceID) ?? "workspace",
+                members: members
+            )
+        }
+    }
+
+    private func orderedMemberIDs(for swarm: SwarmRecord) -> [String] {
+        var seen: Set<String> = []
+        return ([swarm.leaderSessionId] + swarm.members.map(\.sessionId)).filter {
+            seen.insert($0).inserted
+        }
+    }
+
+    private func workspaceID(_ session: SessionRecord) -> String {
+        session.sessionContext.workspaceId
+            ?? session.sessionContext.workspaceLabel
+            ?? "workspace"
     }
 
     private func pinnedThenRecent(_ first: SessionRecord, _ second: SessionRecord) -> Bool {
@@ -432,8 +501,11 @@ struct ChatsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             if isExpanded {
+                ForEach(group.swarms) { swarm in
+                    swarmSection(swarm)
+                }
                 ForEach(group.sessions.prefix(visibleCount)) { session in
-                    sessionRow(session)
+                    SessionCatalogRow(session: session)
                 }
                 if visibleCount < group.sessions.count {
                     Button {
@@ -462,38 +534,83 @@ struct ChatsView: View {
         }
     }
 
-    private func sessionRow(
-        _ session: SessionRecord,
-        showsWorkspace: Bool = false
-    ) -> some View {
+    private func swarmSection(_ swarm: WorkspaceSwarm) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                model.openSwarm(swarm.id)
+            } label: {
+                HStack(spacing: MobiusSpace.s) {
+                    MobiusIcon(.group01, foreground: palette.accent)
+                    MobiusTitleText(verbatim: swarm.record.title)
+                        .font(MobiusStyle.controlFont)
+                        .lineLimit(1)
+                    Text(verbatim: "\u{2022}")
+                        .foregroundStyle(palette.muted)
+                        .accessibilityHidden(true)
+                    Text("\(swarm.activeCount) active")
+                        .font(MobiusStyle.metadataFont)
+                        .foregroundStyle(palette.muted)
+                    Spacer(minLength: 0)
+                    MobiusIcon(.caretRight, size: 12, foreground: palette.muted)
+                }
+                .frame(
+                    maxWidth: .infinity,
+                    minHeight: MobiusStyle.iconButtonSize,
+                    alignment: .leading
+                )
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.mobiusPlain)
+            .accessibilityLabel(Text("Swarm, \(swarm.record.title)"))
+            .accessibilityValue(Text("\(swarm.activeCount) active agents"))
+            .accessibilityHint("Show roster and message board")
+            .padding(.horizontal, MobiusSpace.s)
+
+            ForEach(Array(swarm.members.enumerated()), id: \.element.id) { index, member in
+                SessionCatalogRow(
+                    session: member.session,
+                    detail: member.handle,
+                    connector: .init(isLast: index == swarm.members.count - 1)
+                )
+            }
+        }
+    }
+
+}
+
+struct SessionCatalogRow: View {
+    struct Connector {
+        let isLast: Bool
+    }
+
+    @Environment(AppModel.self) private var model
+    @Environment(\.mobiusPalette) private var palette
+    let session: SessionRecord
+    var showsWorkspace = false
+    var detail: String?
+    var connector: Connector?
+
+    var body: some View {
         let isSelected = session.sessionId == model.selectedSessionID
         let isUnread = model.unreadSessionIDs.contains(session.sessionId)
-        let title = model.displayedTitle(for: session)
-        let workspace = session.sessionContext.workspaceLabel.map(workspaceName) ?? ""
-        let activityValue: LocalizedStringResource?
-        switch session.activity.state {
-        case .running:
-            activityValue = "In progress"
-        case .awaitingApproval:
-            activityValue = "Awaiting approval"
-        case .idle:
-            activityValue = isUnread ? "Finished, unread" : nil
-        }
-        return HStack(spacing: MobiusSpace.xs) {
+        HStack(spacing: MobiusSpace.xs) {
+            if let connector {
+                SwarmMemberConnector(isLast: connector.isLast)
+            }
             Button {
                 model.openChat(session.sessionId)
             } label: {
                 HStack(spacing: MobiusSpace.s) {
                     VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
                         MobiusTitleText(
-                            verbatim: title,
+                            verbatim: model.displayedTitle(for: session),
                             cursorColor: isSelected ? palette.accent : .primary
                         )
                         .fontWeight(isSelected ? .semibold : nil)
                         .lineLimit(1)
                         .foregroundStyle(isSelected ? palette.accent : .primary)
-                        if showsWorkspace && !workspace.isEmpty {
-                            Text(verbatim: workspace)
+                        if let secondaryText, !secondaryText.isEmpty {
+                            Text(verbatim: secondaryText)
                                 .font(MobiusStyle.captionFont)
                                 .foregroundStyle(palette.muted)
                                 .lineLimit(1)
@@ -519,13 +636,7 @@ struct ChatsView: View {
             }
             .buttonStyle(.mobiusPlain)
             .disabled(!model.canOpenSession && session.sessionId != model.selectedSessionID)
-            .accessibilityValue(
-                sessionAccessibilityValue(
-                    workspace: showsWorkspace && !workspace.isEmpty ? workspace : nil,
-                    isPinned: session.pinned,
-                    activity: activityValue
-                )
-            )
+            .accessibilityValue(accessibilityValue(isUnread: isUnread))
             .accessibilityAddTraits(isSelected ? .isSelected : [])
         }
         .padding(.horizontal, MobiusSpace.s)
@@ -543,25 +654,43 @@ struct ChatsView: View {
         }
     }
 
-    private func sessionAccessibilityValue(
-        workspace: String?,
-        isPinned: Bool,
-        activity: LocalizedStringResource?
-    ) -> Text {
-        switch (workspace, isPinned, activity) {
-        case let (workspace?, true, activity?): Text("\(workspace), Pinned, \(activity)")
-        case let (workspace?, true, nil): Text("\(workspace), Pinned")
-        case let (workspace?, false, activity?): Text("\(workspace), \(activity)")
-        case let (workspace?, false, nil): Text(verbatim: workspace)
-        case let (nil, true, activity?): Text("Pinned, \(activity)")
-        case (nil, true, nil): Text("Pinned")
-        case let (nil, false, activity?): Text(activity)
-        case (nil, false, nil): Text(verbatim: "")
+    private var secondaryText: String? {
+        if let detail { return detail }
+        guard showsWorkspace, let path = session.sessionContext.workspaceLabel else { return nil }
+        let name = URL(fileURLWithPath: path).lastPathComponent
+        return name.isEmpty ? path : name
+    }
+
+    private func accessibilityValue(isUnread: Bool) -> Text {
+        let state: String? = switch session.activity.state {
+        case .running: "In progress"
+        case .awaitingApproval: "Awaiting approval"
+        case .idle: isUnread ? "Finished, unread" : nil
         }
+        return Text(verbatim: [secondaryText, session.pinned ? "Pinned" : nil, state]
+            .compactMap { $0 }
+            .joined(separator: ", "))
     }
 }
 
-private struct SessionActivityIndicator: View {
+private struct SwarmMemberConnector: View {
+    @Environment(\.mobiusPalette) private var palette
+    let isLast: Bool
+
+    var body: some View {
+        Path { path in
+            path.move(to: CGPoint(x: 5, y: 0))
+            path.addLine(to: CGPoint(x: 5, y: isLast ? 22 : 44))
+            path.move(to: CGPoint(x: 5, y: 22))
+            path.addLine(to: CGPoint(x: 17, y: 22))
+        }
+        .stroke(palette.line, style: StrokeStyle(lineWidth: 1, lineCap: .round))
+        .frame(width: 18, height: 44)
+        .accessibilityHidden(true)
+    }
+}
+
+struct SessionActivityIndicator: View {
     @Environment(\.mobiusPalette) private var palette
     let state: SessionActivityState
     let isUnread: Bool
@@ -600,4 +729,31 @@ private struct WorkspaceSessions: Identifiable {
     let name: String
     let path: String
     let sessions: [SessionRecord]
+    let swarms: [WorkspaceSwarm]
+
+    var latestUpdatedAt: Int64 {
+        max(
+            sessions.first?.updatedAt ?? 0,
+            swarms.first?.record.updatedAtMs ?? 0
+        )
+    }
+}
+
+private struct WorkspaceSwarm: Identifiable {
+    var id: String { record.id }
+
+    let record: SwarmRecord
+    let workspaceID: String
+    let members: [SwarmCatalogMember]
+
+    var activeCount: Int {
+        members.count { $0.session.activity.state != .idle }
+    }
+}
+
+private struct SwarmCatalogMember: Identifiable {
+    var id: String { session.sessionId }
+
+    let session: SessionRecord
+    let handle: String
 }

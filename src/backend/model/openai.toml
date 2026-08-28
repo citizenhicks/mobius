@@ -1,4 +1,5 @@
 [provider]
 label = "Local"
 description = "Any local or remote OpenAI-compatible Responses endpoint"
+tool_discovery = "rebuild"
 web_search = ["off"]

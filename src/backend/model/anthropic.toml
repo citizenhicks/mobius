@@ -2,6 +2,8 @@
 label = "Anthropic"
 description = "Native Messages API with adaptive thinking"
 default_model = "claude-sonnet-5"
+tool_discovery = "rebuild"
+custom_endpoint_tool_discovery = "rebuild"
 web_search = ["off", "live"]
 
 [[reasoning]]
@@ -44,9 +46,11 @@ description = "Highest-capability Anthropic model"
 context_window = 1000000
 reasoning = ["low", "medium", "high", "xhigh", "max"]
 default_reasoning = "high"
+tool_discovery = "native"
 
 [[models]]
 id = "claude-haiku-4-5"
 label = "Claude Haiku 4.5"
 description = "Fast, economical Anthropic model"
 context_window = 200000
+tool_discovery = "native"

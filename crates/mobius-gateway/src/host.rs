@@ -45,12 +45,13 @@ use crate::provider_catalog::{
     provider_instances, provider_statuses,
 };
 use crate::sandbox::GatewaySandbox;
+use crate::swarm::{SwarmDelivery, SwarmStore, validate_swarm_members};
 use crate::wire::{
     AgentComposition, CronRunStatus, GitDiffScope, MAX_FRAME_BYTES, ProfileSnapshot,
     ProviderConfig, ReadyPayload, RecordedEvent, RenderedEvent, RenderedPreview, RunStats,
     RunSummary, ServerFrame, ServerMessage, SessionActivity, SessionActivityState, SessionOutcome,
     SessionReadyPayload, SessionRecord, SessionRunGroup, SessionWidget, SshIdentityRecord,
-    VersionedAgentConfig, WorkspaceFileScope, validate_session_id,
+    SwarmRecord, VersionedAgentConfig, WorkspaceFileScope, validate_session_id,
 };
 use crate::{Error, Result};
 
@@ -106,6 +107,7 @@ struct GatewayState {
     checkpoints: Arc<dyn CheckpointStore>,
     scratchpad: ScratchpadStore,
     session_files: SessionFileStore,
+    swarm: Arc<SwarmStore>,
     contributions: Vec<FrontendContribution>,
     // ponytail: one lock is enough for at most 32 tiny catalog writes.
     catalog_lock: Arc<Mutex<()>>,
@@ -150,8 +152,10 @@ impl GatewayHost {
             Arc::new(SqliteCheckpoint::new(store.checkpoints_path())?);
         let scratchpad = ScratchpadStore::new(Arc::clone(&checkpoints));
         let session_files = SessionFileStore::new(store.state_dir());
+        let (swarm, deliveries) = SwarmStore::new(Arc::clone(&checkpoints));
+        let swarm = Arc::new(swarm);
         let (events, _) = broadcast::channel(BROADCAST_CAPACITY);
-        Ok(Self {
+        let host = Self {
             state: Arc::new(Mutex::new(GatewayState {
                 store,
                 config: Arc::new(StdMutex::new(config)),
@@ -160,6 +164,7 @@ impl GatewayHost {
                 checkpoints,
                 scratchpad,
                 session_files,
+                swarm,
                 contributions,
                 catalog_lock: Arc::new(Mutex::new(())),
                 session_mutations: Arc::new(RwLock::new(())),
@@ -170,7 +175,9 @@ impl GatewayHost {
                 sessions: HashMap::new(),
             })),
             events,
-        })
+        };
+        host.spawn_swarm_deliveries(deliveries);
+        Ok(host)
     }
 
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<ServerFrame> {
@@ -227,6 +234,91 @@ impl GatewayHost {
         session_catalog(&state.checkpoints, &state.activities)
             .await
             .map_err(internal)
+    }
+
+    pub(crate) async fn create_swarm(
+        &self,
+        leader_session_id: String,
+        member_session_ids: Vec<String>,
+    ) -> std::result::Result<Vec<SwarmRecord>, Rejection> {
+        validate_swarm_members(&leader_session_id, &member_session_ids).map_err(invalid_swarm)?;
+        let swarms = {
+            let state = self.state.lock().await;
+            require_swarm_sessions(&state, &member_session_ids).await?;
+            state
+                .swarm
+                .create(leader_session_id, member_session_ids)
+                .await
+                .map_err(invalid_swarm)?;
+            state.swarm.records().await.map_err(internal)?
+        };
+        self.broadcast_swarms(&swarms);
+        Ok(swarms)
+    }
+
+    pub(crate) async fn add_swarm_member(
+        &self,
+        swarm_id: &str,
+        session_id: String,
+    ) -> std::result::Result<Vec<SwarmRecord>, Rejection> {
+        let swarms = {
+            let state = self.state.lock().await;
+            let swarm = state
+                .swarm
+                .summaries()
+                .await
+                .map_err(internal)?
+                .into_iter()
+                .find(|swarm| swarm.id == swarm_id)
+                .ok_or_else(|| invalid_swarm(format!("unknown swarm `{swarm_id}`")))?;
+            let mut member_session_ids = swarm
+                .members
+                .into_iter()
+                .map(|member| member.session_id)
+                .collect::<Vec<_>>();
+            member_session_ids.push(session_id.clone());
+            require_swarm_sessions(&state, &member_session_ids).await?;
+            state
+                .swarm
+                .join(swarm_id, session_id)
+                .await
+                .map_err(invalid_swarm)?;
+            state.swarm.records().await.map_err(internal)?
+        };
+        self.broadcast_swarms(&swarms);
+        Ok(swarms)
+    }
+
+    pub(crate) async fn leave_swarm(
+        &self,
+        swarm_id: &str,
+        session_id: &str,
+    ) -> std::result::Result<Vec<SwarmRecord>, Rejection> {
+        let swarms = {
+            let state = self.state.lock().await;
+            require_catalog_session(&state, session_id).await?;
+            state
+                .swarm
+                .leave(swarm_id, session_id)
+                .await
+                .map_err(invalid_swarm)?;
+            state.swarm.records().await.map_err(internal)?
+        };
+        self.broadcast_swarms(&swarms);
+        Ok(swarms)
+    }
+
+    pub(crate) async fn disband_swarm(
+        &self,
+        swarm_id: &str,
+    ) -> std::result::Result<Vec<SwarmRecord>, Rejection> {
+        let swarms = {
+            let state = self.state.lock().await;
+            state.swarm.disband(swarm_id).await.map_err(invalid_swarm)?;
+            state.swarm.records().await.map_err(internal)?
+        };
+        self.broadcast_swarms(&swarms);
+        Ok(swarms)
     }
 
     pub(crate) async fn probe_git_credential(
@@ -295,6 +387,7 @@ impl GatewayHost {
             Arc::clone(&state.checkpoints),
             state.scratchpad.clone(),
             state.session_files.clone(),
+            state.swarm.clone(),
             Arc::clone(&state.catalog_lock),
             Arc::clone(&state.session_mutations),
             Arc::clone(&state.provider_epoch),
@@ -338,9 +431,12 @@ impl GatewayHost {
         &self,
         session_id: &str,
     ) -> std::result::Result<HostHandle, Rejection> {
-        self.open_session_with_cache(session_id, true)
+        let host = self
+            .open_session_with_cache(session_id, true)
             .await
-            .map(|(host, _)| host)
+            .map(|(host, _)| host)?;
+        self.state.lock().await.swarm.notify_pending(session_id);
+        Ok(host)
     }
 
     async fn open_session_with_cache(
@@ -389,6 +485,7 @@ impl GatewayHost {
             Arc::clone(&state.checkpoints),
             state.scratchpad.clone(),
             state.session_files.clone(),
+            state.swarm.clone(),
             Arc::clone(&state.catalog_lock),
             Arc::clone(&state.session_mutations),
             Arc::clone(&state.provider_epoch),
@@ -405,6 +502,195 @@ impl GatewayHost {
         Ok((host, !cache))
     }
 
+    fn spawn_swarm_deliveries(&self, mut deliveries: mpsc::UnboundedReceiver<SwarmDelivery>) {
+        let state = Arc::downgrade(&self.state);
+        let events = self.events.clone();
+        tokio::spawn(async move {
+            let Some(gateway_state) = state.upgrade() else {
+                return;
+            };
+            let swarm = Arc::clone(&gateway_state.lock().await.swarm);
+            let startup = match swarm.pending_recipient_session_ids().await {
+                Ok(startup) => startup,
+                Err(error) => {
+                    let _ = events.send(ServerFrame::new(ServerMessage::Error {
+                        code: "swarm_delivery".into(),
+                        message: error.to_string(),
+                        fatal: false,
+                    }));
+                    Vec::new()
+                }
+            };
+            drop(gateway_state);
+
+            let mut in_flight = HashMap::new();
+            for target_session_id in startup {
+                let Some(gateway_state) = state.upgrade() else {
+                    return;
+                };
+                let gateway = Self {
+                    state: gateway_state,
+                    events: events.clone(),
+                };
+                gateway
+                    .handle_swarm_delivery(
+                        SwarmDelivery::Pending { target_session_id },
+                        &mut in_flight,
+                    )
+                    .await;
+            }
+
+            while let Some(delivery) = deliveries.recv().await {
+                let Some(gateway_state) = state.upgrade() else {
+                    return;
+                };
+                let gateway = Self {
+                    state: gateway_state,
+                    events: events.clone(),
+                };
+                gateway
+                    .handle_swarm_delivery(delivery, &mut in_flight)
+                    .await;
+            }
+        });
+    }
+
+    async fn handle_swarm_delivery(
+        &self,
+        delivery: SwarmDelivery,
+        in_flight: &mut HashMap<String, String>,
+    ) {
+        if matches!(&delivery, SwarmDelivery::Changed) {
+            let swarm = Arc::clone(&self.state.lock().await.swarm);
+            match swarm.records().await {
+                Ok(swarms) => self.broadcast_swarms(&swarms),
+                Err(error) => {
+                    let _ = self.events.send(ServerFrame::new(ServerMessage::Error {
+                        code: "swarm_delivery".into(),
+                        message: error.to_string(),
+                        fatal: false,
+                    }));
+                }
+            }
+            return;
+        }
+        if matches!(&delivery, SwarmDelivery::RetryPending) {
+            let swarm = Arc::clone(&self.state.lock().await.swarm);
+            match swarm.pending_recipient_session_ids().await {
+                Ok(targets) => {
+                    for target_session_id in targets {
+                        swarm.notify_pending(&target_session_id);
+                    }
+                }
+                Err(error) => {
+                    let _ = self.events.send(ServerFrame::new(ServerMessage::Error {
+                        code: "swarm_delivery".into(),
+                        message: error.to_string(),
+                        fatal: false,
+                    }));
+                }
+            }
+            return;
+        }
+        let target_session_id = match delivery {
+            SwarmDelivery::Changed | SwarmDelivery::RetryPending => {
+                unreachable!("handled above")
+            }
+            SwarmDelivery::Acknowledged {
+                target_session_id,
+                message_id,
+            } => {
+                if in_flight
+                    .get(&target_session_id)
+                    .is_some_and(|current| current != &message_id)
+                {
+                    return;
+                }
+                in_flight.remove(&target_session_id);
+                target_session_id
+            }
+            SwarmDelivery::Pending { target_session_id } => {
+                if in_flight.contains_key(&target_session_id) {
+                    let alive = self
+                        .state
+                        .lock()
+                        .await
+                        .sessions
+                        .get(&target_session_id)
+                        .is_some_and(HostHandle::is_alive);
+                    if alive {
+                        return;
+                    }
+                    in_flight.remove(&target_session_id);
+                }
+                target_session_id
+            }
+        };
+        if let Err(rejection) = self
+            .deliver_next_swarm_message(&target_session_id, in_flight)
+            .await
+        {
+            let _ = self.events.send(ServerFrame::new(ServerMessage::Error {
+                code: "swarm_delivery".into(),
+                message: rejection.message,
+                fatal: false,
+            }));
+        }
+    }
+
+    async fn deliver_next_swarm_message(
+        &self,
+        target_session_id: &str,
+        in_flight: &mut HashMap<String, String>,
+    ) -> std::result::Result<(), Rejection> {
+        let swarm = Arc::clone(&self.state.lock().await.swarm);
+        if swarm
+            .pending_deliveries(target_session_id)
+            .await
+            .map_err(internal)?
+            .is_empty()
+        {
+            return Ok(());
+        }
+        let (host, _) = self
+            .open_session_with_cache(target_session_id, true)
+            .await?;
+        let Some(delivery) = swarm
+            .pending_deliveries(target_session_id)
+            .await
+            .map_err(internal)?
+            .into_iter()
+            .next()
+        else {
+            return Ok(());
+        };
+        let message_id = delivery.entry.id;
+        let submission = Submission {
+            id: format!("swarm-{message_id}"),
+            op: Op::PeerInput {
+                message_id: message_id.clone(),
+                source_session_id: delivery.entry.author.session_id,
+                source_handle: delivery.entry.author.handle,
+                text: delivery.entry.text,
+            },
+        };
+        match host.submit(submission).await {
+            Ok(()) => {
+                in_flight.insert(target_session_id.to_owned(), message_id);
+                Ok(())
+            }
+            Err(rejection) if matches!(rejection.code, "agent_busy" | "agent_stopped") => {
+                let target_session_id = target_session_id.to_owned();
+                tokio::spawn(async move {
+                    host.wait_idle().await;
+                    swarm.notify_pending(&target_session_id);
+                });
+                Ok(())
+            }
+            Err(rejection) => Err(rejection),
+        }
+    }
+
     pub(crate) async fn delete_session(
         &self,
         session_id: &str,
@@ -414,6 +700,21 @@ impl GatewayHost {
             .await
             .map_err(internal)?;
         let session_ids = session_tree_ids(session_id, &summaries).ok_or_else(unknown_session)?;
+        for id in &session_ids {
+            if state
+                .swarm
+                .snapshot_for_session(id)
+                .await
+                .map_err(internal)?
+                .is_some()
+            {
+                return Err(Rejection {
+                    code: "session_in_swarm",
+                    message: "leave or disband the swarm before deleting this chat".into(),
+                    fatal: false,
+                });
+            }
+        }
         for id in &session_ids {
             let Some(host) = state.sessions.get(id).cloned() else {
                 continue;
@@ -679,6 +980,7 @@ impl GatewayHost {
             Arc::clone(&state.checkpoints),
             state.scratchpad.clone(),
             state.session_files.clone(),
+            state.swarm.clone(),
             Arc::clone(&state.catalog_lock),
             Arc::clone(&state.session_mutations),
             Arc::clone(&state.provider_epoch),
@@ -758,12 +1060,20 @@ impl GatewayHost {
         let sessions = session_catalog(&state.checkpoints, &state.activities)
             .await
             .map_err(internal)?;
+        state.swarm.retry_pending();
         drop(state);
         let _ = self.events.send(ServerFrame::new(ServerMessage::Sessions {
             request_id: None,
             sessions,
         }));
         Ok(())
+    }
+
+    fn broadcast_swarms(&self, swarms: &[SwarmRecord]) {
+        let _ = self.events.send(ServerFrame::new(ServerMessage::Swarms {
+            request_id: None,
+            swarms: swarms.to_vec(),
+        }));
     }
 }
 
@@ -781,6 +1091,7 @@ impl GatewayState {
         for (id, host) in candidates {
             if host.stop_if_idle().await {
                 self.sessions.remove(&id);
+                self.swarm.retry_pending();
                 if self.sessions.len() < MAX_ACTIVE_SESSIONS {
                     return Ok(());
                 }
@@ -853,6 +1164,13 @@ async fn require_cron_source(
     state: &GatewayState,
     session_id: &str,
 ) -> std::result::Result<(), Rejection> {
+    require_catalog_session(state, session_id).await
+}
+
+async fn require_catalog_session(
+    state: &GatewayState,
+    session_id: &str,
+) -> std::result::Result<(), Rejection> {
     validate_session_id(session_id).map_err(|_| invalid_session_id())?;
     let checkpoint = state
         .checkpoints
@@ -864,6 +1182,45 @@ async fn require_cron_source(
         return Err(unknown_session());
     }
     Ok(())
+}
+
+async fn require_swarm_sessions(
+    state: &GatewayState,
+    session_ids: &[String],
+) -> std::result::Result<(), Rejection> {
+    let sessions = session_catalog(&state.checkpoints, &state.activities)
+        .await
+        .map_err(internal)?;
+    let mut workspace_id = None;
+    for session_id in session_ids {
+        let session = sessions
+            .iter()
+            .find(|session| &session.session_id == session_id)
+            .ok_or_else(unknown_session)?;
+        if session.parent_session_id.is_some() {
+            return Err(invalid_swarm("a swarm can contain only top-level chats"));
+        }
+        let current_workspace = session
+            .session_context
+            .workspace_id
+            .as_deref()
+            .ok_or_else(|| invalid_swarm("a swarm chat has no workspace identity"))?;
+        if workspace_id.is_some_and(|workspace| workspace != current_workspace) {
+            return Err(invalid_swarm(
+                "all swarm chats must belong to the same workspace",
+            ));
+        }
+        workspace_id = Some(current_workspace);
+    }
+    Ok(())
+}
+
+fn invalid_swarm(error: impl std::fmt::Display) -> Rejection {
+    Rejection {
+        code: "invalid_swarm",
+        message: error.to_string(),
+        fatal: false,
+    }
 }
 
 fn invalid_session_id() -> Rejection {

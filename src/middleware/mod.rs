@@ -39,6 +39,7 @@ pub mod session_files;
 pub mod sessions;
 pub mod steering;
 pub mod subagents;
+pub mod swarm;
 pub mod tasks;
 pub mod tools;
 
@@ -48,7 +49,8 @@ pub use context::{
     FrontendEventSink, MiddlewareCommandContext, ModelContext, ModelRequestContext,
     PermissionRequestContext, PostToolUseContext, PreToolUseContext, QueuedInputQueue,
     QueuedInputSnapshot, QueuedInputValue, QueuedInputView, RuntimeContext, SessionStartContext,
-    SessionStartSource, StopContext, TurnEndContext, TurnIdentity, UserPromptSubmitContext,
+    SessionStartSource, StopContext, ToolExposureContext, TurnEndContext, TurnIdentity,
+    UserPromptSubmitContext,
 };
 
 use tools::Catalog;
@@ -234,6 +236,14 @@ pub trait Middleware: Send + Sync {
         Box::pin(async { Ok(()) })
     }
 
+    /// Hides registered tools whose capability is unavailable at this boundary.
+    fn tool_exposure<'a>(
+        &'a self,
+        _context: &'a mut ToolExposureContext<'_>,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
     /// Intercepts one normalized tool call before authorization and persistence.
     fn pre_tool_use<'a>(
         &'a self,
@@ -366,15 +376,36 @@ impl MiddlewareStack {
     pub fn catalog(&self, runtime: &RuntimeContext) -> Result<Catalog> {
         let mut catalog = Catalog::default();
         for entry in &self.entries {
-            let registered = catalog.definitions();
+            let registered = catalog
+                .registered_definitions()
+                .iter()
+                .map(|definition| definition.name.clone())
+                .collect::<BTreeSet<_>>();
             entry.register(&mut catalog, runtime)?;
-            for definition in catalog.definitions().iter().filter(|definition| {
-                !registered
-                    .iter()
-                    .any(|registered| registered.name == definition.name)
-            }) {
+            for definition in catalog
+                .registered_definitions()
+                .iter()
+                .filter(|definition| !registered.contains(&definition.name))
+            {
                 validate_tool_rendering(entry.as_ref(), &definition.name, &runtime.session_id)?;
             }
+        }
+        catalog.finalize()?;
+        if catalog
+            .registered_definitions()
+            .iter()
+            .any(|definition| definition.name == crate::backend::model::TOOLS_SEARCH_NAME)
+        {
+            let tools = self
+                .entries
+                .iter()
+                .find(|entry| entry.name() == tools::MANIFEST.id)
+                .ok_or_else(|| Error::Config("tools_search has no owning middleware".into()))?;
+            validate_tool_rendering(
+                tools.as_ref(),
+                crate::backend::model::TOOLS_SEARCH_NAME,
+                &runtime.session_id,
+            )?;
         }
         Ok(catalog)
     }
@@ -533,6 +564,12 @@ impl MiddlewareStack {
     }
 
     pub(crate) async fn prepare_model(&self, mut context: ModelContext<'_>) -> Result<()> {
+        self.resolve_tool_exposure(
+            context.session_id,
+            context.durable_input,
+            context.available_tools,
+        )
+        .await?;
         for entry in &self.entries {
             context.queued_input.scope(entry.name());
             entry.pre_model(&mut context).await?;
@@ -550,6 +587,24 @@ impl MiddlewareStack {
                 input: context.request_input,
             };
             entry.model_request(&mut request).await?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn resolve_tool_exposure(
+        &self,
+        session_id: &str,
+        input: &[Value],
+        available: &mut BTreeSet<String>,
+    ) -> Result<()> {
+        for entry in &self.entries {
+            entry
+                .tool_exposure(&mut ToolExposureContext {
+                    session_id,
+                    input,
+                    available,
+                })
+                .await?;
         }
         Ok(())
     }

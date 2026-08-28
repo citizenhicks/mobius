@@ -100,6 +100,11 @@ async fn async_subagent_uses_configured_model_reasoning_and_durable_fork() {
     let workspace = TempDir::new().expect("create workspace");
     let root_model = Arc::new(ScriptedModel::new(vec![
         tool_response(
+            "call-search",
+            mobius::backend::model::TOOLS_SEARCH_NAME,
+            serde_json::json!({"query": "agent"}),
+        ),
+        tool_response(
             "call-spawn",
             "spawn_agent",
             serde_json::json!({
@@ -135,6 +140,7 @@ async fn async_subagent_uses_configured_model_reasoning_and_durable_fork() {
             reasoning_effort: None,
             context_window: None,
             supports_image_input: true,
+            tool_discovery: ToolDiscoveryMode::Rebuild,
         },
         ModelChoice {
             route: "child".into(),
@@ -143,6 +149,7 @@ async fn async_subagent_uses_configured_model_reasoning_and_durable_fork() {
             reasoning_effort: Some("low".into()),
             context_window: None,
             supports_image_input: true,
+            tool_discovery: ToolDiscoveryMode::Rebuild,
         },
         ModelChoice {
             route: "child-high".into(),
@@ -151,6 +158,7 @@ async fn async_subagent_uses_configured_model_reasoning_and_durable_fork() {
             reasoning_effort: Some("high".into()),
             context_window: None,
             supports_image_input: true,
+            tool_discovery: ToolDiscoveryMode::Rebuild,
         },
     ] {
         routes
@@ -187,13 +195,16 @@ async fn async_subagent_uses_configured_model_reasoning_and_durable_fork() {
         Arc::new(routes),
         sandbox,
         checkpoints,
-        MiddlewareStack::new(vec![Arc::new(
-            Subagents::new(1, 21, 64, launcher)
-                .expect("subagents")
-                .default_model("child")
-                .default_reasoning("high")
-                .expect("subagent reasoning"),
-        )])
+        MiddlewareStack::new(vec![
+            Arc::new(Tools::new(Vec::new())),
+            Arc::new(
+                Subagents::new(1, 21, 64, launcher)
+                    .expect("subagents")
+                    .default_model("child")
+                    .default_reasoning("high")
+                    .expect("subagent reasoning"),
+            ),
+        ])
         .expect("middleware"),
         "test system prompt",
     )

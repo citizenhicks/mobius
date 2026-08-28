@@ -227,7 +227,9 @@ private struct AddProviderSheet: View {
             } label: {
                 SettingsRowLabel(
                     title: .verbatim(status.label),
-                    detail: .verbatim(status.description)
+                    detail: .verbatim(
+                        "\(status.description) · \(String(localized: status.toolDiscovery.label))"
+                    )
                 )
                 .contentShape(Rectangle())
             }
@@ -389,6 +391,16 @@ private struct ProviderFormSections: View {
                     } else {
                         readOnlyValue(.localized("Provider managed"))
                     }
+                }
+
+                SettingsStackedField(
+                    title: "Tool discovery",
+                    info: "Native discovery keeps the cached context. Rebuild mode supports the same tools but starts a new cache prefix when the tool set changes."
+                ) {
+                    Text(status.resolvedToolDiscovery(
+                        model: model.providerDraft?.model,
+                        baseURL: model.providerDraft?.baseUrl
+                    ).label)
                 }
 
                 Picker("Hosted web search", selection: providerWebSearch) {

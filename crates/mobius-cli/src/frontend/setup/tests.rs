@@ -1,7 +1,7 @@
 use mobius::backend::model::provider::HostedWebSearch;
 use mobius::protocol::{
     FrontendSetting, FrontendSettingKind, FrontendSettingOption, FrontendSettingValue,
-    FrontendSymbol, MiddlewareFeature,
+    FrontendSymbol, MiddlewareFeature, ToolDiscoveryMode,
 };
 use mobius_gateway::wire::{
     AgentComposition, ExtensionHookRecord, ExtensionKind, ExtensionRecord, ProviderAuthKind,
@@ -63,6 +63,8 @@ fn status(provider: &str) -> ProviderStatus {
         default_api_key_env,
         models,
         web_search,
+        tool_discovery: ToolDiscoveryMode::Rebuild,
+        custom_endpoint_tool_discovery: None,
     }
 }
 
@@ -91,6 +93,7 @@ fn model(id: &str, label: &str, default_reasoning: Option<&str>) -> ProviderMode
             })
             .collect(),
         default_reasoning: default_reasoning.map(str::to_string),
+        tool_discovery: ToolDiscoveryMode::Rebuild,
     }
 }
 

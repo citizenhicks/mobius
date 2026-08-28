@@ -866,6 +866,7 @@ async fn provider_replacement_retry_migrates_a_stale_resident_router() {
                     };
                     let _ = reply.send(result);
                 }
+                HostCommand::CapacityChanged => {}
                 _ => panic!("unexpected command during provider cutover"),
             }
         }

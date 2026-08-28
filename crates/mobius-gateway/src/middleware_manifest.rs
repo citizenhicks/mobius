@@ -23,6 +23,7 @@ pub(crate) enum BuiltinMiddleware {
     Compaction,
     Scratchpad,
     Sessions,
+    Swarm,
 }
 
 pub(crate) struct MiddlewareRegistration {
@@ -30,7 +31,7 @@ pub(crate) struct MiddlewareRegistration {
     pub(crate) manifest: &'static MiddlewareManifest,
 }
 
-pub(crate) const MIDDLEWARE: [MiddlewareRegistration; 13] = [
+pub(crate) const MIDDLEWARE: [MiddlewareRegistration; 14] = [
     MiddlewareRegistration {
         kind: BuiltinMiddleware::Sandbox,
         manifest: &mobius::backend::sandbox::MANIFEST,
@@ -82,6 +83,10 @@ pub(crate) const MIDDLEWARE: [MiddlewareRegistration; 13] = [
     MiddlewareRegistration {
         kind: BuiltinMiddleware::Sessions,
         manifest: &mobius::middleware::sessions::MANIFEST,
+    },
+    MiddlewareRegistration {
+        kind: BuiltinMiddleware::Swarm,
+        manifest: &mobius::middleware::swarm::MANIFEST,
     },
 ];
 
@@ -276,7 +281,7 @@ mod tests {
                 .filter(|feature| feature.required)
                 .map(|feature| feature.id.as_str())
                 .collect::<BTreeSet<_>>(),
-            BTreeSet::from(["sandbox", "sessions", "steering", "tools"])
+            BTreeSet::from(["sandbox", "sessions", "steering", "swarm", "tools"])
         );
 
         let mut invalid = config;
@@ -305,6 +310,7 @@ mod tests {
             reasoning_effort: Some("high".into()),
             context_window: Some(200_000),
             supports_image_input: true,
+            tool_discovery: mobius::protocol::ToolDiscoveryMode::Native,
         }];
         let subagents = features(&models)
             .into_iter()
