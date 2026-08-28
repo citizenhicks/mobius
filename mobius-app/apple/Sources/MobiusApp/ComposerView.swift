@@ -455,7 +455,9 @@ private struct SessionStatsBadge: View {
                 let elapsed = model.sessionElapsed(at: timeline.date)
                 Button { showsDetail = true } label: {
                     MobiusBadge(
-                        verbatim: "\(model.contextFillPercent)% · \(formatDuration(elapsed))",
+                        text: .verbatim(
+                            "\(model.contextFillPercent)% · \(formatDuration(elapsed))"
+                        ),
                         progress: model.contextFillFraction,
                         interactive: true
                     )

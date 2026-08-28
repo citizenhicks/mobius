@@ -713,7 +713,9 @@ extension TranscriptEntry {
         appendCount(events, singular: "\(events) event", plural: "\(events) events")
         appendCount(errors, singular: "\(errors) error", plural: "\(errors) errors")
 
-        guard var summary = parts.first else { return "" }
+        guard var summary = parts.first else {
+            return LocalizedStringResource(String.LocalizationValue(String()))
+        }
         for part in parts.dropFirst() {
             summary = "\(summary) • \(part)"
         }

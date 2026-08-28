@@ -24,27 +24,13 @@ struct MobiusBadge: View {
     var interactive = false
 
     init(
-        verbatim text: String,
+        text: MobiusText,
         tone: String = "neutral",
         glyph: MobiusGlyph? = nil,
         progress: Double? = nil,
         interactive: Bool = false
     ) {
-        self.text = .verbatim(text)
-        self.tone = tone
-        self.glyph = glyph
-        self.progress = progress
-        self.interactive = interactive
-    }
-
-    init(
-        localized text: LocalizedStringResource,
-        tone: String = "neutral",
-        glyph: MobiusGlyph? = nil,
-        progress: Double? = nil,
-        interactive: Bool = false
-    ) {
-        self.text = .localized(text)
+        self.text = text
         self.tone = tone
         self.glyph = glyph
         self.progress = progress

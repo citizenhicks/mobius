@@ -46,14 +46,16 @@ struct FrontendWidgetView: View {
         guard let title = widget.widget.content?.title else {
             return Text(frontendPresentationText(widget.widget.text))
         }
-        return Text(frontendPresentationText(title))
-            + Text(verbatim: " ")
-            + Text(frontendPresentationText(widget.widget.text))
+        return Text(
+            "\(Text(frontendPresentationText(title))) \(Text(frontendPresentationText(widget.widget.text)))"
+        )
     }
 
     private var badge: MobiusBadge {
         MobiusBadge(
-            localized: frontendPresentationText(widget.widget.iconOnly ? "" : widget.widget.text),
+            text: widget.widget.iconOnly
+                ? .verbatim("")
+                : .localized(frontendPresentationText(widget.widget.text)),
             tone: widget.widget.tone,
             glyph: widget.widget.symbol.map { MobiusSymbol.glyph(for: $0) },
             progress: widget.widget.progress?.fraction,
@@ -215,7 +217,8 @@ private struct FrontendActionListRow: View {
             }
         }
         .alert(
-            frontendPresentationText(pendingAction?.action.label ?? ""),
+            pendingAction.map { Text(frontendPresentationText($0.action.label)) }
+                ?? Text(verbatim: ""),
             isPresented: isPresentingAction,
             presenting: pendingAction
         ) { pending in
