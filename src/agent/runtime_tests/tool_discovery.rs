@@ -154,12 +154,20 @@ async fn rebuild_discovers_then_exposes_an_optional_tool() {
             attachments: Vec::new(),
         })
         .expect("submit input");
-    while !matches!(
-        agent.next_event().await.expect("agent event").msg,
-        EventMsg::TurnComplete(_)
-    ) {}
+    let mut load_event = None;
+    loop {
+        match agent.next_event().await.expect("agent event").msg {
+            EventMsg::ToolLoad(load) => load_event = Some(load),
+            EventMsg::TurnComplete(_) => break,
+            _ => {}
+        }
+    }
 
     assert_eq!(executions.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        load_event.expect("tool load event").tools,
+        ["optional_work"]
+    );
     let requests = model.requests.lock().expect("requests");
     assert_eq!(requests.len(), 3);
     assert_eq!(requests[0].0, [crate::backend::model::TOOLS_SEARCH_NAME]);
@@ -208,12 +216,20 @@ async fn native_materialization_can_call_a_deferred_tool_in_the_same_step() {
             attachments: Vec::new(),
         })
         .expect("submit input");
-    while !matches!(
-        agent.next_event().await.expect("agent event").msg,
-        EventMsg::TurnComplete(_)
-    ) {}
+    let mut load_event = None;
+    loop {
+        match agent.next_event().await.expect("agent event").msg {
+            EventMsg::ToolLoad(load) => load_event = Some(load),
+            EventMsg::TurnComplete(_) => break,
+            _ => {}
+        }
+    }
 
     assert_eq!(executions.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        load_event.expect("tool load event").tools,
+        ["optional_work"]
+    );
     let requests = model.requests.lock().expect("requests");
     assert_eq!(requests[0].0, [crate::backend::model::TOOLS_SEARCH_NAME]);
     assert_eq!(requests[0].1, ["optional_work"]);

@@ -23,6 +23,7 @@ use crate::protocol::EventMsg;
 use crate::protocol::Submission;
 use crate::protocol::ToolCallBeginEvent;
 use crate::protocol::ToolCallEndEvent;
+use crate::protocol::ToolLoadEvent;
 
 impl Runner {
     pub(super) async fn execute_tools(
@@ -160,7 +161,7 @@ impl Runner {
         if results.is_empty() {
             return Ok(());
         }
-        let events = tool_result_events(submission_id, turn_id, &results);
+        let events = tool_result_events(submission_id, turn_id, self.catalog.revision()?, &results);
         self.append_tool_results(results)?;
         self.persist_with_events(events, None).await?;
         Ok(())
@@ -245,10 +246,15 @@ fn bind_live_calls(
     (bound, rejected)
 }
 
-fn tool_result_events(submission_id: &str, turn_id: &str, results: &[ToolResult]) -> Vec<Event> {
-    results
-        .iter()
-        .map(|result| Event {
+fn tool_result_events(
+    submission_id: &str,
+    turn_id: &str,
+    catalog_revision: &str,
+    results: &[ToolResult],
+) -> Vec<Event> {
+    let mut events = Vec::with_capacity(results.len() * 2);
+    for result in results {
+        events.push(Event {
             submission_id: Some(submission_id.to_string()),
             msg: EventMsg::ToolCallEnd(ToolCallEndEvent {
                 turn_id: turn_id.to_string(),
@@ -257,8 +263,20 @@ fn tool_result_events(submission_id: &str, turn_id: &str, results: &[ToolResult]
                 output: result.output.clone(),
                 is_error: result.is_error,
             }),
-        })
-        .collect()
+        });
+        if !result.loaded_tools.is_empty() {
+            events.push(Event {
+                submission_id: Some(submission_id.to_string()),
+                msg: EventMsg::ToolLoad(ToolLoadEvent {
+                    turn_id: turn_id.to_string(),
+                    load_id: result.call_id.clone(),
+                    catalog_revision: catalog_revision.into(),
+                    tools: result.loaded_tools.clone(),
+                }),
+            });
+        }
+    }
+    events
 }
 
 fn interrupted_results(calls: &[ToolCall], message: &str) -> Vec<ToolResult> {

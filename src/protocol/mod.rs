@@ -222,6 +222,7 @@ pub enum EventMsg {
     SessionResumeRequested(SessionResumeRequestedEvent),
     ToolCallBegin(ToolCallBeginEvent),
     ToolCallEnd(ToolCallEndEvent),
+    ToolLoad(ToolLoadEvent),
     ExecApprovalRequest(ExecApprovalRequestEvent),
     ExecApprovalReview(ExecApprovalReviewEvent),
     TokenCount(TokenCountEvent),

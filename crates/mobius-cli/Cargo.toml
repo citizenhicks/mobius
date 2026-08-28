@@ -25,8 +25,8 @@ doc = false
 arboard = { version = "3", features = ["wayland-data-control"] }
 diffy = "0.4.2"
 image = { version = "0.25", default-features = false, features = ["png"] }
-mobius = { version = "=0.9.15", path = "../.." }
-mobius-gateway = { version = "=0.9.21", path = "../mobius-gateway" }
+mobius = { version = "=0.9.16", path = "../.." }
+mobius-gateway = { version = "=0.9.22", path = "../mobius-gateway" }
 pulldown-cmark = { version = "0.10", default-features = false }
 ratatui = { version = "0.30.2", features = [
     "scrolling-regions",

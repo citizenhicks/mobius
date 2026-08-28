@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
+use crate::backend::model::ToolLoad;
 use crate::protocol::AgentMessageEvent;
 use crate::protocol::AgentMessagePhase;
 use crate::protocol::AgentReasoningContentDeltaEvent;
@@ -12,6 +13,7 @@ use crate::protocol::MessageTarget;
 use crate::protocol::PeerMessageEvent;
 use crate::protocol::ToolCallBeginEvent;
 use crate::protocol::ToolCallEndEvent;
+use crate::protocol::ToolLoadEvent;
 use crate::protocol::UserMessageEvent;
 
 pub(crate) const INTERNAL_MESSAGE_FIELD: &str = "_mobius_internal";
@@ -180,6 +182,17 @@ pub fn events(context: &[(MessageTarget, Value)], session_id: &str) -> Vec<Event
                         .and_then(Value::as_bool)
                         .unwrap_or(false),
                     output,
+                }));
+            }
+            Some("tool_load") => {
+                let Ok(Some(load)) = ToolLoad::from_input(value) else {
+                    continue;
+                };
+                events.push(EventMsg::ToolLoad(ToolLoadEvent {
+                    turn_id: item_id.clone(),
+                    load_id: item_id,
+                    catalog_revision: load.catalog_revision,
+                    tools: load.tools,
                 }));
             }
             Some(_) | None => {}
@@ -513,6 +526,32 @@ mod tests {
             replayed.as_slice(),
             [EventMsg::ToolCallBegin(begin), EventMsg::ToolCallEnd(end)]
                 if begin.turn_id == "history-7-1" && end.turn_id == begin.turn_id
+        ));
+    }
+
+    #[test]
+    fn replay_preserves_tool_loads() {
+        let history = [(
+            MessageTarget {
+                checkpoint_sequence: 11,
+                batch_item_count: 2,
+            },
+            ToolLoad {
+                catalog_revision: "catalog-1".into(),
+                tools: vec!["swarm_post".into(), "swarm_read".into()],
+            }
+            .into_input(),
+        )];
+
+        let replayed = events(&history, "session");
+
+        assert!(matches!(
+            replayed.as_slice(),
+            [EventMsg::ToolLoad(load)]
+                if load.turn_id == "history-11-2"
+                    && load.load_id == load.turn_id
+                    && load.catalog_revision == "catalog-1"
+                    && load.tools == ["swarm_post", "swarm_read"]
         ));
     }
 

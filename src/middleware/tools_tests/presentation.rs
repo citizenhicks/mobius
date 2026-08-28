@@ -77,3 +77,37 @@ fn generic_tool_renderer_does_not_infer_coding_presentation() {
     assert_eq!(block.group, None);
     assert_eq!(block.update, crate::protocol::FrontendBlockUpdate::Append);
 }
+
+#[test]
+fn tool_load_uses_the_standard_tool_presentation() {
+    let block = Tools::coding()
+        .render(
+            &EventMsg::ToolLoad(crate::protocol::ToolLoadEvent {
+                turn_id: "turn".into(),
+                load_id: "step".into(),
+                catalog_revision: "catalog".into(),
+                tools: vec!["swarm_post".into(), "swarm_read".into()],
+            }),
+            "session",
+        )
+        .expect("tool load rendering");
+
+    assert_eq!(
+        (
+            block.id.as_deref(),
+            block.state,
+            block.role,
+            block.title.as_str(),
+            block.text.as_str(),
+            block.tone,
+        ),
+        (
+            Some("turn/step/load"),
+            FrontendBlockState::Complete,
+            FrontendBlockRole::Tool,
+            "Loaded tools",
+            "swarm_post\nswarm_read",
+            FrontendTone::Success,
+        )
+    );
+}

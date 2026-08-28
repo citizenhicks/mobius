@@ -23,8 +23,8 @@ use crate::middleware::{
 };
 use crate::protocol::{
     AgentMessageEvent, AgentMessagePhase, Event, EventMsg, MessageTarget, ModelStepCompletedEvent,
-    ModelStepDiagnostics, ModelStepOutcome, ModelStepStartedEvent, Submission, WebSearchAction,
-    WebSearchEndEvent, tool_complete_boundaries,
+    ModelStepDiagnostics, ModelStepOutcome, ModelStepStartedEvent, Submission, ToolLoadEvent,
+    WebSearchAction, WebSearchEndEvent, tool_complete_boundaries,
 };
 use crate::{Error, Result};
 
@@ -647,15 +647,22 @@ impl Runner {
         let context_before = self.state.context.len();
         let batch_before = self.transcript_delta.len();
         let mut durable_output = step.output.output.clone();
-        if !step.output.materialized_tools().is_empty() {
-            durable_output.push(
-                ToolLoad {
-                    catalog_revision: self.catalog.revision()?.into(),
-                    tools: step.output.materialized_tools().iter().cloned().collect(),
-                }
-                .into_input(),
-            );
-        }
+        let tool_load_event = if step.output.materialized_tools().is_empty() {
+            None
+        } else {
+            let load = ToolLoad {
+                catalog_revision: self.catalog.revision()?.into(),
+                tools: step.output.materialized_tools().iter().cloned().collect(),
+            };
+            let event = ToolLoadEvent {
+                turn_id: turn_id.into(),
+                load_id: step.started.model_step_id.clone(),
+                catalog_revision: load.catalog_revision.clone(),
+                tools: load.tools.clone(),
+            };
+            durable_output.push(load.into_input());
+            Some(event)
+        };
         insert_pre_tool_input(&mut durable_output, hook_input);
         let message_index = durable_output.iter().rposition(has_visible_output_text);
         self.extend_context(durable_output);
@@ -697,6 +704,9 @@ impl Runner {
             },
             Some(diagnostics),
         )?];
+        if let Some(event) = tool_load_event {
+            model_events.push(turn_event(submission_id, EventMsg::ToolLoad(event)));
+        }
         model_events.extend(
             hook_events
                 .into_iter()

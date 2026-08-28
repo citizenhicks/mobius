@@ -382,6 +382,15 @@ pub struct ToolCallEndEvent {
     pub is_error: bool,
 }
 
+/// Deferred tool schemas materialized at one model-context position.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolLoadEvent {
+    pub turn_id: String,
+    pub load_id: String,
+    pub catalog_revision: String,
+    pub tools: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExecApprovalRequestEvent {
     pub id: String,

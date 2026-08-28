@@ -903,6 +903,21 @@ impl Middleware for Tools {
     }
 
     fn render(&self, event: &EventMsg, _session_id: &str) -> Option<FrontendBlock> {
+        if let EventMsg::ToolLoad(load) = event {
+            return Some(FrontendBlock {
+                id: Some(format!("{}/{}/load", load.turn_id, load.load_id)),
+                group: None,
+                update: FrontendBlockUpdate::Replace,
+                state: FrontendBlockState::Complete,
+                role: FrontendBlockRole::Tool,
+                title: text::RENDER_LOAD.into(),
+                text: load.tools.join("\n"),
+                symbol: None,
+                files: Vec::new(),
+                format: FrontendBlockFormat::PlainText,
+                tone: FrontendTone::Success,
+            });
+        }
         let mut block = render_tool_event(event, |name| self.names.contains(name), tool_heading)?;
         match event {
             EventMsg::ToolCallBegin(call) if call.name == "read_file" => {

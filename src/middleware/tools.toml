@@ -13,6 +13,7 @@ bash = "Bash"
 start_command = "Start"
 poll_command = "Poll"
 stop_command = "Stop"
+load = "Loaded tools"
 
 [tool.read_file]
 description = "Read a UTF-8 text file. Use a workspace-relative path such as `src/main.rs`; absolute paths work only for explicitly allowed read roots, and paths outside the sandbox are rejected."

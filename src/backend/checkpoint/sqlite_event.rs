@@ -171,6 +171,7 @@ fn event_index(event: &EventMsg) -> Result<EventIndex<'_>> {
         EventMsg::SessionResumeRequested(_) => plain("session_resume_requested"),
         EventMsg::ToolCallBegin(_) => plain("tool_call_begin"),
         EventMsg::ToolCallEnd(_) => plain("tool_call_end"),
+        EventMsg::ToolLoad(_) => plain("tool_load"),
         EventMsg::ExecApprovalRequest(_) => plain("exec_approval_request"),
         EventMsg::ExecApprovalReview(_) => plain("exec_approval_review"),
         EventMsg::TokenCount(_) => plain("token_count"),
