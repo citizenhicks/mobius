@@ -29,8 +29,6 @@
 		200000000000000000000034 /* ChatsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000026 /* ChatsView.swift */; };
 		200000000000000000000066 /* SwarmView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000047 /* SwarmView.swift */; };
 		200000000000000000000067 /* SwarmStats.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000048 /* SwarmStats.swift */; };
-		200000000000000000000069 /* MarkdownPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000049 /* MarkdownPreview.swift */; };
-		20000000000000000000006A /* MarkdownPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000049 /* MarkdownPreview.swift */; };
 		200000000000000000000003 /* FilesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000003 /* FilesView.swift */; };
 		200000000000000000000050 /* FilePreviewViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000003A /* FilePreviewViews.swift */; };
 		200000000000000000000004 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000004 /* ChatView.swift */; };
@@ -179,7 +177,6 @@
 		100000000000000000000026 /* ChatsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatsView.swift; sourceTree = "<group>"; };
 		100000000000000000000047 /* SwarmView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwarmView.swift; sourceTree = "<group>"; };
 		100000000000000000000048 /* SwarmStats.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwarmStats.swift; sourceTree = "<group>"; };
-		100000000000000000000049 /* MarkdownPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownPreview.swift; sourceTree = "<group>"; };
 		100000000000000000000003 /* FilesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilesView.swift; sourceTree = "<group>"; };
 		10000000000000000000003A /* FilePreviewViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePreviewViews.swift; sourceTree = "<group>"; };
 		100000000000000000000004 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
@@ -333,7 +330,6 @@
 				100000000000000000000026 /* ChatsView.swift */,
 				100000000000000000000047 /* SwarmView.swift */,
 				100000000000000000000048 /* SwarmStats.swift */,
-				100000000000000000000049 /* MarkdownPreview.swift */,
 				100000000000000000000003 /* FilesView.swift */,
 				10000000000000000000003A /* FilePreviewViews.swift */,
 				100000000000000000000004 /* ChatView.swift */,
@@ -565,7 +561,6 @@
 				200000000000000000000034 /* ChatsView.swift in Sources */,
 				200000000000000000000066 /* SwarmView.swift in Sources */,
 				200000000000000000000067 /* SwarmStats.swift in Sources */,
-				200000000000000000000069 /* MarkdownPreview.swift in Sources */,
 				200000000000000000000003 /* FilesView.swift in Sources */,
 				200000000000000000000050 /* FilePreviewViews.swift in Sources */,
 				200000000000000000000004 /* ChatView.swift in Sources */,
@@ -639,7 +634,6 @@
 				B20000000000000000000005 /* MobiusCloudTests.swift in Sources */,
 				20000000000000000000005F /* AppState.swift in Sources */,
 				200000000000000000000068 /* SwarmStats.swift in Sources */,
-				20000000000000000000006A /* MarkdownPreview.swift in Sources */,
 				200000000000000000000052 /* TranscriptModel.swift in Sources */,
 				200000000000000000000057 /* AppModelCommands.swift in Sources */,
 				200000000000000000000060 /* AppModelConfiguration.swift in Sources */,

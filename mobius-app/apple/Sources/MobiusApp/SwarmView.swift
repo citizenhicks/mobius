@@ -269,11 +269,11 @@ private struct SwarmMessageRow: View {
                 header
                 // Mentions are emphasised inside the body rather than repeated beside it, so
                 // the post reads as the sentence the agent actually wrote.
-                CollapsibleText(
-                    text: swarmHighlightedBody(message.body, roster: roster),
-                    rendersMarkdown: true,
-                    collapsedLineLimit: 6
+                MobiusMarkdownText(
+                    swarmHighlightedBody(message.body, roster: roster),
+                    streaming: false
                 )
+                .equatable()
             }
             .padding(.bottom, isLast ? 0 : MobiusSpace.l)
         }
