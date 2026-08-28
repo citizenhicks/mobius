@@ -1,4 +1,7 @@
+@testable import Mobius
 import Foundation
+import SwiftUI
+import UIKit
 import XCTest
 
 final class SwarmStatsTests: XCTestCase {
@@ -101,6 +104,47 @@ final class SwarmStatsTests: XCTestCase {
         let source = "```\nline one\nline two\n```"
 
         XCTAssertEqual(String(inlineMarkdownPreview(source).characters), source)
+    }
+
+    @MainActor
+    func testShortSwarmPostDoesNotReserveReadMoreRow() async throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene)
+        let source = "**@basil** done"
+        let proposed = CGSize(width: 320, height: 1_000)
+        let baselineHeight = try await settledHeight(
+            Mobius.MobiusMarkdownText(source, streaming: false),
+            in: window,
+            proposed: proposed
+        )
+        let collapsedHeight = try await settledHeight(
+            Mobius.CollapsibleText(
+                text: source,
+                rendersMarkdown: true,
+                collapsedLineLimit: 6
+            ),
+            in: window,
+            proposed: proposed
+        )
+
+        XCTAssertEqual(collapsedHeight, baselineHeight, accuracy: 1)
+        withExtendedLifetime(window) {}
+    }
+
+    @MainActor
+    private func settledHeight<Content: View>(
+        _ content: Content,
+        in window: UIWindow,
+        proposed: CGSize
+    ) async throws -> CGFloat {
+        let host = UIHostingController(rootView: content)
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        for _ in 0..<50 {
+            _ = host.sizeThatFits(in: proposed)
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        return host.sizeThatFits(in: proposed).height
     }
 
     private func message(

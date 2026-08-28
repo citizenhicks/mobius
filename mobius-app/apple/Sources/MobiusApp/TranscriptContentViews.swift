@@ -13,7 +13,6 @@ struct CollapsibleText: View {
     @State private var isExpanded = false
     @State private var isTruncated = false
     @State private var hasMeasured = false
-    @State private var measuredWidth: CGFloat?
     let text: String
     var rendersMarkdown = false
     var streaming = false
@@ -42,18 +41,6 @@ struct CollapsibleText: View {
             hasMeasured = false
             isTruncated = false
         }
-        // Truncation is a function of the width the text was laid out in, so a measurement
-        // taken at one width cannot be trusted at another. A lazy stack lays its rows out
-        // before the final width settles, which otherwise latches "Read more" onto every
-        // row and leaves it there, expanding to reveal nothing.
-        .onGeometryChange(for: CGFloat.self) { proxy in
-            proxy.size.width
-        } action: { width in
-            guard !isExpanded, width != measuredWidth else { return }
-            measuredWidth = width
-            hasMeasured = false
-            isTruncated = false
-        }
     }
 
     @ViewBuilder
@@ -61,8 +48,17 @@ struct CollapsibleText: View {
         if rendersMarkdown && (isExpanded || (hasMeasured && !isTruncated)) {
             MobiusMarkdownText(text, streaming: streaming)
                 .equatable()
+                .background {
+                    if !isExpanded {
+                        measuredText
+                            .lineLimit(collapsedLineLimit)
+                            .truncationMode(.tail)
+                            .hidden()
+                            .onPreferenceChange(Text.LayoutKey.self, perform: measureTruncation)
+                    }
+                }
         } else {
-            markedText
+            measuredText
                 .lineLimit(isExpanded ? nil : collapsedLineLimit)
                 .truncationMode(.tail)
                 .textSelection(.enabled)
@@ -72,38 +68,32 @@ struct CollapsibleText: View {
 
     private func measureTruncation(_ layouts: Text.LayoutKey.Value) {
         guard !isExpanded, !layouts.isEmpty else { return }
-        if hidesBoundedSuffix {
-            isTruncated = true
-            hasMeasured = true
-            return
-        }
-        let reachedEnd = layouts.contains { proxy in
+        let reachedEnd = !hasVisibleEnd || layouts.contains { proxy in
             proxy.layout.contains { line in
                 line.contains { run in
                     run[CollapsibleTextEndAttribute.self] != nil
                 }
             }
         }
-        isTruncated = !reachedEnd
+        isTruncated = hidesBoundedSuffix
+            || layouts.contains { $0.layout.isTruncated }
+            || !reachedEnd
         hasMeasured = true
     }
 
-    private var markedText: Text {
-        let source = displayedText
-        guard let end = source.lastIndex(where: { !$0.isNewline }) else {
-            return Text(verbatim: source)
+    private var measuredText: Text {
+        let content = rendersMarkdown
+            ? inlineMarkdownPreview(displayedText)
+            : AttributedString(displayedText)
+        guard let end = content.characters.lastIndex(where: { !$0.isNewline }) else {
+            return Text(content)
         }
-        if rendersMarkdown {
-            let contentEnd = source.index(after: end)
-            let content = Text(inlineMarkdownPreview(String(source[..<contentEnd])))
-            let marker = Text(verbatim: "\u{200B}")
-                .customAttribute(CollapsibleTextEndAttribute())
-            let trailing = Text(verbatim: String(source[contentEnd...]))
-            return Text("\(content)\(marker)\(trailing)")
-        }
-        return Text(
-            "\(Text(verbatim: String(source[..<end])))\(Text(verbatim: String(source[end...])).customAttribute(CollapsibleTextEndAttribute()))"
-        )
+        let afterEnd = content.characters.index(after: end)
+        let prefix = Text(AttributedString(content[..<end]))
+        let markedEnd = Text(AttributedString(content[end..<afterEnd]))
+            .customAttribute(CollapsibleTextEndAttribute())
+        let trailing = Text(AttributedString(content[afterEnd...]))
+        return Text("\(prefix)\(markedEnd)\(trailing)")
     }
 
     private var displayedText: String {
@@ -115,6 +105,10 @@ struct CollapsibleText: View {
 
     private var hidesBoundedSuffix: Bool {
         text.prefix(Self.collapsedCharacterLimit).endIndex != text.endIndex
+    }
+
+    private var hasVisibleEnd: Bool {
+        displayedText.contains { !$0.isNewline }
     }
 }
 
