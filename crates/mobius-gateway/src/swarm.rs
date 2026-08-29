@@ -26,7 +26,7 @@ const MAX_SWARM_MEMBERS: usize = 100;
 // ponytail: one 8 MiB catalog; split board storage and wire pages if real usage reaches it.
 const MAX_CATALOG_BYTES: usize = 8 * 1024 * 1024;
 const MAX_TOOL_READ_BYTES: usize = 32_000;
-const MAX_TOOL_READ_BODY_BYTES: usize = 4_000;
+const MAX_TOOL_READ_TEXT_BYTES: usize = 4_000;
 
 /// One conversation participating in a swarm.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,6 +136,20 @@ pub(crate) enum SwarmDelivery {
         target_session_id: String,
         message_id: String,
     },
+    /// A target rejected an attempted delivery before accepting it into its queue.
+    Rejected {
+        target_session_id: String,
+        message_id: String,
+    },
+    /// A target consumed a queued message and may accept a previously rejected delivery.
+    CapacityAvailable { target_session_id: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AcknowledgeOutcome {
+    Acknowledged,
+    AlreadyAcknowledged,
+    MessageGone,
 }
 
 /// Cloneable access to the gateway's durable swarm catalog.
@@ -211,7 +225,7 @@ impl SwarmStore {
                         sequence: entry.sequence,
                         author_session_id: entry.author.session_id.clone(),
                         author_handle: entry.author.handle.clone(),
-                        body: entry.text.clone(),
+                        text: entry.text.clone(),
                         created_at_ms: entry.created_at_ms,
                     })
                     .collect::<Vec<_>>();
@@ -601,23 +615,40 @@ impl SwarmStore {
         });
     }
 
+    pub(crate) fn notify_rejected(&self, message_id: &str, target_session_id: &str) {
+        let _ = self.deliveries.send(SwarmDelivery::Rejected {
+            target_session_id: target_session_id.to_owned(),
+            message_id: message_id.to_owned(),
+        });
+    }
+
+    pub(crate) fn notify_capacity_available(&self, target_session_id: &str) {
+        let _ = self.deliveries.send(SwarmDelivery::CapacityAvailable {
+            target_session_id: target_session_id.to_owned(),
+        });
+    }
+
     /// Acknowledges one target's message delivery.
-    ///
-    /// Returns `false` when that target already acknowledged the entry.
-    pub async fn acknowledge(&self, message_id: &str, target_session_id: &str) -> Result<bool> {
+    pub(crate) async fn acknowledge(
+        &self,
+        message_id: &str,
+        target_session_id: &str,
+    ) -> Result<AcknowledgeOutcome> {
         validate_message_id(message_id)?;
         validate_session_id(target_session_id)?;
         let message_id = message_id.to_owned();
         let target_session_id = target_session_id.to_owned();
         let acknowledged_message = message_id.clone();
         let acknowledged_target = target_session_id.clone();
-        let was_pending = self
-            .mutate(move |catalog| {
-                let entry = catalog
+        let outcome = self
+            .mutate_if_some(move |catalog| {
+                let Some(entry) = catalog
                     .swarms
                     .values_mut()
                     .find_map(|swarm| swarm.board.iter_mut().find(|entry| entry.id == message_id))
-                    .ok_or_else(|| config(format!("unknown swarm message `{message_id}`")))?;
+                else {
+                    return Ok(None);
+                };
                 if !entry
                     .mentioned_recipient_session_ids
                     .iter()
@@ -637,23 +668,40 @@ impl SwarmStore {
                 for swarm in catalog.swarms.values_mut() {
                     trim_acknowledged(&mut swarm.board);
                 }
-                Ok(was_pending)
+                Ok(Some(if was_pending {
+                    AcknowledgeOutcome::Acknowledged
+                } else {
+                    AcknowledgeOutcome::AlreadyAcknowledged
+                }))
             })
-            .await?;
+            .await?
+            .unwrap_or(AcknowledgeOutcome::MessageGone);
         self.notify_acknowledged(&acknowledged_message, &acknowledged_target);
-        Ok(was_pending)
+        Ok(outcome)
     }
 
     async fn mutate<T>(&self, mutation: impl FnOnce(&mut Catalog) -> Result<T>) -> Result<T> {
+        Ok(self
+            .mutate_if_some(|catalog| mutation(catalog).map(Some))
+            .await?
+            .expect("required mutation returns a value"))
+    }
+
+    async fn mutate_if_some<T>(
+        &self,
+        mutation: impl FnOnce(&mut Catalog) -> Result<Option<T>>,
+    ) -> Result<Option<T>> {
         let mut state = self.lock_loaded().await?;
         let mut candidate = state.as_ref().expect("swarm catalog loaded").clone();
-        let output = mutation(&mut candidate)?;
+        let Some(output) = mutation(&mut candidate)? else {
+            return Ok(None);
+        };
         validate_catalog(&candidate)?;
         self.checkpoints
             .save_state(STATE_SCOPE, STATE_KEY, &serde_json::to_value(&candidate)?)
             .await?;
         *state = Some(candidate);
-        Ok(output)
+        Ok(Some(output))
     }
 
     async fn lock_loaded(&self) -> Result<MutexGuard<'_, Option<Catalog>>> {
@@ -738,16 +786,16 @@ impl SwarmBackend for SwarmStore {
             for entry in page.entries {
                 let end = entry
                     .text
-                    .floor_char_boundary(MAX_TOOL_READ_BODY_BYTES.min(entry.text.len()));
-                let body = &entry.text[..end];
+                    .floor_char_boundary(MAX_TOOL_READ_TEXT_BYTES.min(entry.text.len()));
+                let text = &entry.text[..end];
                 entries.push(serde_json::json!({
                     "id": entry.id,
                     "sequence": entry.sequence,
                     "created_at_ms": entry.created_at_ms,
                     "author_session_id": entry.author.session_id,
                     "author_handle": entry.author.handle,
-                    "body": body,
-                    "body_truncated": body.len() != entry.text.len(),
+                    "text": text,
+                    "text_truncated": text.len() != entry.text.len(),
                 }));
                 if serde_json::to_vec(&serde_json::json!({
                     "entries": &entries,
@@ -772,10 +820,10 @@ impl SwarmBackend for SwarmStore {
     fn post<'a>(
         &'a self,
         session_id: &'a str,
-        message: String,
+        text: String,
     ) -> mobius::BoxFuture<'a, mobius::Result<String>> {
         Box::pin(async move {
-            let post = SwarmStore::post(self, session_id, message)
+            let post = SwarmStore::post(self, session_id, text)
                 .await
                 .map_err(mobius_error)?;
             serde_json::to_string(&post).map_err(Into::into)
@@ -1177,8 +1225,8 @@ mod tests {
             .expect_err("unknown mention");
         assert!(unknown.to_string().contains("@missing"));
 
-        let body = format!("Can @{reviewer_handle} check this?");
-        let post = store.post("leader", body.clone()).await.expect("post");
+        let text = format!("Can @{reviewer_handle} check this?");
+        let post = store.post("leader", text.clone()).await.expect("post");
         assert_eq!(deliveries.recv().await, Some(SwarmDelivery::Changed));
         assert_eq!(
             deliveries.recv().await,
@@ -1191,7 +1239,7 @@ mod tests {
         assert_eq!(post.entry.author.handle, leader_handle);
         assert_eq!(post.resolved_recipient_session_ids, ["reviewer"]);
         let records = store.records().await.expect("wire records");
-        assert_eq!(records[0].messages[0].body, body);
+        assert_eq!(records[0].messages[0].text, text);
         assert!(
             SwarmBackend::active(&store, "reviewer")
                 .await
@@ -1206,11 +1254,12 @@ mod tests {
             1
         );
 
-        assert!(
+        assert_eq!(
             store
                 .acknowledge(&post.entry.id, "reviewer")
                 .await
-                .expect("acknowledge")
+                .expect("acknowledge"),
+            AcknowledgeOutcome::Acknowledged
         );
         assert_eq!(
             deliveries.recv().await,
@@ -1219,11 +1268,12 @@ mod tests {
                 message_id: post.entry.id.clone(),
             })
         );
-        assert!(
-            !store
+        assert_eq!(
+            store
                 .acknowledge(&post.entry.id, "reviewer")
                 .await
-                .expect("idempotent acknowledge")
+                .expect("idempotent acknowledge"),
+            AcknowledgeOutcome::AlreadyAcknowledged
         );
         assert_eq!(
             deliveries.recv().await,
@@ -1305,6 +1355,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn acknowledgement_is_idempotent_after_its_board_is_gone() {
+        let (_directory, checkpoints, store, _deliveries) = store();
+        let swarm = create_swarm(&store).await;
+        let reviewer_handle = swarm
+            .members
+            .iter()
+            .find(|member| member.session_id == "reviewer")
+            .expect("reviewer")
+            .handle
+            .clone();
+        let post = store
+            .post("leader", format!("@{reviewer_handle} review this"))
+            .await
+            .expect("post");
+        store.disband(&swarm.id).await.expect("disband");
+        let (reloaded, mut deliveries) = SwarmStore::new(checkpoints);
+
+        let outcome = reloaded
+            .acknowledge(&post.entry.id, "reviewer")
+            .await
+            .expect("acknowledge removed board");
+
+        assert_eq!(outcome, AcknowledgeOutcome::MessageGone);
+        assert_eq!(
+            deliveries.recv().await,
+            Some(SwarmDelivery::Acknowledged {
+                target_session_id: "reviewer".into(),
+                message_id: post.entry.id,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn acknowledgement_rejects_a_non_recipient_of_a_retained_message() {
+        let (_directory, _checkpoints, store, _deliveries) = store();
+        create_swarm(&store).await;
+        let post = store
+            .post("leader", "Board-only update".into())
+            .await
+            .expect("post");
+
+        let error = store
+            .acknowledge(&post.entry.id, "reviewer")
+            .await
+            .expect_err("non-recipient acknowledgement");
+
+        assert!(error.to_string().contains("is not a recipient"));
+    }
+
+    #[tokio::test]
     async fn board_only_posts_signal_catalog_changes_without_peer_delivery() {
         let (_directory, _checkpoints, store, mut deliveries) = store();
         create_swarm(&store).await;
@@ -1336,7 +1436,7 @@ mod tests {
         let output: serde_json::Value = serde_json::from_str(&output).expect("valid JSON output");
 
         assert!(serde_json::to_vec(&output).expect("encoded output").len() <= MAX_TOOL_READ_BYTES);
-        assert_eq!(output["entries"][0]["body_truncated"], true);
+        assert_eq!(output["entries"][0]["text_truncated"], true);
         assert_eq!(output["has_older"], false);
     }
 

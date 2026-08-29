@@ -15,6 +15,7 @@ use cap_std::fs::Dir;
 use serde_json::Value;
 
 use super::CompactContext;
+use super::MessageSubmitContext;
 use super::Middleware;
 use super::PermissionRequestContext;
 use super::PostToolUseContext;
@@ -24,7 +25,6 @@ use super::RuntimeContext;
 use super::SessionStartContext;
 use super::SessionStartSource;
 use super::StopContext;
-use super::UserPromptSubmitContext;
 use super::manifest::MiddlewareManifest;
 use crate::BoxFuture;
 use crate::Error;
@@ -683,11 +683,14 @@ impl Middleware for Extensions {
         })
     }
 
-    fn user_prompt_submit<'a>(
+    fn message_submit<'a>(
         &'a self,
-        context: &'a mut UserPromptSubmitContext<'_>,
+        context: &'a mut MessageSubmitContext<'_>,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
+            if !matches!(context.author, crate::protocol::MessageAuthor::User) {
+                return Ok(());
+            }
             let mut input = hook_input(
                 context.turn.session_id,
                 context.turn.model,
@@ -1013,7 +1016,6 @@ impl Middleware for Extensions {
                     description: skill.description.clone(),
                 })
                 .collect(),
-            active_input: None,
         }
     }
 }
@@ -1342,6 +1344,7 @@ printf '%s\n' '{"systemMessage":"PONYTAIL:FULL","hookSpecificOutput":{"hookEvent
         let notices = Arc::new(Mutex::new(Vec::new()));
         let captured = Arc::clone(&notices);
         let runtime = RuntimeContext {
+            sender: crate::agent::test_sender(),
             checkpoints: Arc::new(
                 SqliteCheckpoint::new(temporary.path().join("checkpoints.sqlite3"))
                     .expect("checkpoints"),
@@ -1362,7 +1365,7 @@ printf '%s\n' '{"systemMessage":"PONYTAIL:FULL","hookSpecificOutput":{"hookEvent
         let mut context = SessionStartContext {
             runtime: &runtime,
             source: SessionStartSource::Startup,
-            queued_input: Default::default(),
+            queued_messages: Default::default(),
             input: &mut input,
             input_changed: false,
             stop_reason: None,

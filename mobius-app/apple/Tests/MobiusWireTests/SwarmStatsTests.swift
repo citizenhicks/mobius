@@ -56,48 +56,48 @@ final class SwarmStatsTests: XCTestCase {
         let roster: Set<String> = ["basil", "amber"]
 
         XCTAssertEqual(
-            swarmHighlightedBody("@basil ping @nobody and mail@basil", roster: roster),
+            swarmHighlightedText("@basil ping @nobody and mail@basil", roster: roster),
             "**@basil** ping @nobody and mail@basil"
         )
         // An @handle in a code span is source the agent posted, not an address.
         XCTAssertEqual(
-            swarmHighlightedBody("run `curl @basil` then ask @amber", roster: roster),
+            swarmHighlightedText("run `curl @basil` then ask @amber", roster: roster),
             "run `curl @basil` then ask **@amber**"
         )
         XCTAssertEqual(
-            swarmHighlightedBody("run ``curl @basil`` then ask @amber", roster: roster),
+            swarmHighlightedText("run ``curl @basil`` then ask @amber", roster: roster),
             "run ``curl @basil`` then ask **@amber**"
         )
         XCTAssertEqual(
-            swarmHighlightedBody(
+            swarmHighlightedText(
                 "run ``code\n@basil\ncode`` then ask @amber",
                 roster: roster
             ),
             "run ``code\n@basil\ncode`` then ask **@amber**"
         )
         XCTAssertEqual(
-            swarmHighlightedBody("```\n@basil\n```\n@basil", roster: roster),
+            swarmHighlightedText("```\n@basil\n```\n@basil", roster: roster),
             "```\n@basil\n```\n**@basil**"
         )
         XCTAssertEqual(
-            swarmHighlightedBody("```swift\n@basil\n~~~\n@amber\n```\n@amber", roster: roster),
+            swarmHighlightedText("```swift\n@basil\n~~~\n@amber\n```\n@amber", roster: roster),
             "```swift\n@basil\n~~~\n@amber\n```\n**@amber**"
         )
-        XCTAssertEqual(swarmHighlightedBody("nothing here", roster: roster), "nothing here")
+        XCTAssertEqual(swarmHighlightedText("nothing here", roster: roster), "nothing here")
     }
 
     private func message(
         _ sequence: UInt64,
         _ sessionID: String,
         _ handle: String,
-        _ body: String
+        _ text: String
     ) -> SwarmMessageRecord {
         SwarmMessageRecord(
             id: "m\(sequence)",
             sequence: sequence,
             authorSessionId: sessionID,
             authorHandle: handle,
-            body: body,
+            text: text,
             createdAtMs: Int64(sequence) * 1_000
         )
     }

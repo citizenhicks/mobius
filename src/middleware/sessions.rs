@@ -128,7 +128,6 @@ impl Middleware for Sessions {
                 }),
             }],
             references: Vec::new(),
-            active_input: None,
         }
     }
 
@@ -234,14 +233,14 @@ fn fork_options(
         .rev()
         .filter_map(|event| {
             let (description, message, target) = match event {
-                EventMsg::UserMessage(message) => (
+                EventMsg::Message(message) => (
                     text::PICKER_USER_MESSAGE,
-                    message.message,
+                    message.text,
                     message.message_target?,
                 ),
-                EventMsg::AgentMessage(message) => (
+                EventMsg::AssistantMessage(message) => (
                     text::PICKER_ASSISTANT_MESSAGE,
-                    message.message,
+                    assistant_message_text(&message.content)?,
                     message.message_target?,
                 ),
                 _ => return None,
@@ -277,8 +276,8 @@ fn fork_prefix(
     if !replay_events(prefix, session_id)
         .into_iter()
         .any(|event| match event {
-            EventMsg::UserMessage(message) => message.message_target.as_ref() == Some(target),
-            EventMsg::AgentMessage(message) => message.message_target.as_ref() == Some(target),
+            EventMsg::Message(message) => message.message_target.as_ref() == Some(target),
+            EventMsg::AssistantMessage(message) => message.message_target.as_ref() == Some(target),
             _ => false,
         })
     {
@@ -305,6 +304,22 @@ fn compact_message(message: &str) -> String {
         .collect::<String>()
         .trim_end()
         .into()
+}
+
+fn assistant_message_text(content: &[crate::protocol::ModelStepContent]) -> Option<String> {
+    [
+        crate::protocol::ModelStepContentPhase::FinalAnswer,
+        crate::protocol::ModelStepContentPhase::Commentary,
+    ]
+    .into_iter()
+    .find_map(|phase| {
+        let text = content
+            .iter()
+            .filter(|item| item.phase == phase)
+            .map(|item| item.text.as_str())
+            .collect::<String>();
+        (!text.is_empty()).then_some(text)
+    })
 }
 
 fn manual_fork_checkpoint(parent: &Checkpoint, context: Vec<serde_json::Value>) -> Checkpoint {
@@ -485,7 +500,14 @@ mod tests {
     #[test]
     fn fork_picker_lists_only_safe_user_and_assistant_messages() {
         let items = [
-            serde_json::json!({"role": "user", "content": "Start here"}),
+            crate::backend::model::message_input(&crate::protocol::MessageEvent {
+                author: crate::protocol::MessageAuthor::User,
+                delivery: crate::protocol::MessageDelivery::Turn,
+                text: "Start here".into(),
+                attachments: Vec::new(),
+                message_target: None,
+            })
+            .expect("message input"),
             serde_json::json!({"type": "function_call", "call_id": "call-1", "name": "read"}),
             serde_json::json!({"type": "function_call_output", "call_id": "call-1", "output": "done"}),
             serde_json::json!({"role": "assistant", "content": "Finished"}),

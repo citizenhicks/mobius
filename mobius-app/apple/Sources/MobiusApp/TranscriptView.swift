@@ -374,37 +374,33 @@ private struct TranscriptRow: View {
                             .contentShape(MobiusStyle.cardShape)
                             .contextMenu { transcriptActions }
                     }
+                    messageMetadata
                 }
             }
         } else if isPeer {
-            VStack(alignment: .trailing, spacing: MobiusSpace.s) {
-                HStack(spacing: MobiusSpace.s) {
-                    MobiusIcon(
-                        .swarm,
-                        size: MobiusStyle.glyphInline,
-                        foreground: .primary,
-                        gutter: false
-                    )
-                    Text(verbatim: entry.title)
-                        .font(MobiusStyle.controlFont)
-                        .lineLimit(1)
+            HStack {
+                Spacer(minLength: 42)
+                VStack(alignment: .trailing, spacing: MobiusSpace.s) {
+                    TranscriptFileCards(files: entry.files, sessionID: fileSessionID)
+                    if !entry.text.isEmpty {
+                        MobiusMarkdownText(entry.text, streaming: false)
+                            .equatable()
+                            .multilineTextAlignment(.leading)
+                            .padding(MobiusSpace.l)
+                            .background(
+                                palette.accentSoft.opacity(0.45),
+                                in: MobiusStyle.cardShape
+                            )
+                            .overlay {
+                                MobiusStyle.cardShape.stroke(
+                                    palette.accent.opacity(0.3),
+                                    lineWidth: MobiusStyle.borderWidth
+                                )
+                            }
+                    }
+                    messageMetadata
                 }
-                MobiusMarkdownText(entry.text, streaming: false)
-                    .equatable()
-                    .multilineTextAlignment(.leading)
             }
-            .padding(MobiusSpace.l)
-            .background(palette.accentSoft.opacity(0.45), in: MobiusStyle.cardShape)
-            .overlay {
-                MobiusStyle.cardShape.stroke(
-                    palette.accent.opacity(0.3),
-                    lineWidth: MobiusStyle.borderWidth
-                )
-            }
-            .padding(.leading, 42)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(Text("Message from agent \(entry.title)"))
-            .accessibilityValue(Text(verbatim: entry.text))
         } else {
             VStack(alignment: .leading, spacing: MobiusSpace.s) {
                 TranscriptFileCards(files: entry.files, sessionID: fileSessionID)
@@ -414,6 +410,13 @@ private struct TranscriptRow: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    @ViewBuilder
+    private var messageMetadata: some View {
+        if let metadata = entry.messageMetadata {
+            MessageMetadata(author: metadata.author, delivery: metadata.delivery)
         }
     }
 
@@ -466,5 +469,56 @@ private struct TranscriptRow: View {
 
     private func messageActionGlyph(_ widget: MountedWidget) -> MobiusGlyph {
         widget.widget.symbol.map { MobiusSymbol.glyph(for: $0) } ?? .dotsThree
+    }
+}
+
+private struct MessageMetadata: View {
+    @Environment(\.mobiusPalette) private var palette
+    let author: MessageAuthor
+    let delivery: MessageDelivery
+
+    var body: some View {
+        HStack(spacing: MobiusSpace.xs) {
+            MobiusIcon(
+                glyph,
+                size: MobiusStyle.glyphMark,
+                foreground: palette.muted,
+                gutter: false
+            )
+            Text(label)
+            if let handle = author.peerFields?.handle {
+                Text(verbatim: "· \(handle)")
+            }
+        }
+        .font(MobiusStyle.metadataFont)
+        .foregroundStyle(palette.muted)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var glyph: MobiusGlyph {
+        switch delivery {
+        case .steer: .arrowUpRight01
+        case .queue: .clock
+        case .turn: author == .user ? .userFocus : .swarm
+        }
+    }
+
+    private var label: LocalizedStringResource {
+        switch delivery {
+        case .steer: "Steer"
+        case .queue: "Queued"
+        case .turn: author == .user ? "User message" : "Peer agent message"
+        }
+    }
+
+    private var accessibilityLabel: Text {
+        guard let handle = author.peerFields?.handle else { return Text(label) }
+        let label: LocalizedStringResource = switch delivery {
+        case .steer: "Steer from \(handle)"
+        case .queue: "Queued message from \(handle)"
+        case .turn: "Peer agent message from \(handle)"
+        }
+        return Text(label)
     }
 }

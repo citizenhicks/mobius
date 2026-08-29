@@ -16,17 +16,14 @@ async fn idle_session_start_stop_does_not_consume_the_next_prompt() {
             SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
                 .expect("checkpoint store"),
         ),
-        MiddlewareStack::new(vec![Arc::new(StoppingSessionStart)]).expect("middleware"),
+        test_middleware(vec![Arc::new(StoppingSessionStart)]),
         "test prompt",
     )
     .session_id("startup-session-stop");
     let mut agent = create_agent(config).await.expect("create agent");
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "first".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_op("first"))
         .expect("submit first input");
     while !matches!(
         agent.next_event().await.expect("agent event").msg,
@@ -51,23 +48,22 @@ async fn rejected_prompt_aborts_without_persisting_or_wedging_the_next_turn() {
             ApprovalPolicy::Ask,
         )),
         checkpoints.clone(),
-        MiddlewareStack::new(vec![Arc::new(RejectFirstPrompt(AtomicBool::new(false)))])
-            .expect("middleware"),
+        test_middleware(vec![Arc::new(RejectFirstPrompt(AtomicBool::new(false)))]),
         "test prompt",
     )
     .session_id("rejected-prompt");
     let mut agent = create_agent(config).await.expect("create agent");
     let rejected_submission = agent
         .sender()
-        .submit(Op::UserInput {
-            text: "do not persist this secret".into(),
-            attachments: vec![SessionFileReference {
+        .submit(user_op_with_attachments(
+            "do not persist this secret",
+            vec![SessionFileReference {
                 id: "da913625-36d8-4624-815f-5523eb93b95f".into(),
                 name: "secret.txt".into(),
                 size: 6,
                 media_type: "text/plain".into(),
             }],
-        })
+        ))
         .expect("submit rejected input");
     let mut events = Vec::new();
     loop {
@@ -82,11 +78,15 @@ async fn rejected_prompt_aborts_without_persisting_or_wedging_the_next_turn() {
         }
     }
 
-    assert!(matches!(events.first(), Some(EventMsg::TurnStarted(_))));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, EventMsg::TurnStarted(_)))
+    );
     assert!(matches!(events.last(), Some(EventMsg::TurnAborted(_))));
     assert!(!events.iter().any(|event| matches!(
         event,
-        EventMsg::UserMessage(_) | EventMsg::ModelStepStarted(_) | EventMsg::TurnComplete(_)
+        EventMsg::Message(_) | EventMsg::ModelStepStarted(_) | EventMsg::TurnComplete(_)
     )));
     let checkpoint = checkpoints
         .load("rejected-prompt")
@@ -99,10 +99,7 @@ async fn rejected_prompt_aborts_without_persisting_or_wedging_the_next_turn() {
 
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "continue".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_op("continue"))
         .expect("submit accepted input");
     while !matches!(
         agent.next_event().await.expect("agent event").msg,
@@ -131,21 +128,17 @@ async fn pre_tool_hook_context_is_durable_before_open_call_at_approval() {
             ApprovalPolicy::Ask,
         )),
         checkpoint_store,
-        MiddlewareStack::new(vec![
+        test_middleware(vec![
             Arc::new(Tools::new(vec![Arc::new(ApprovalRequiredTestTool)])),
             Arc::new(ToolHookContext),
-        ])
-        .expect("middleware"),
+        ]),
         "test prompt",
     )
     .session_id("pre-tool-hook-approval");
     let mut agent = create_agent(config).await.expect("create agent");
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "run it".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_op("run it"))
         .expect("submit input");
     while !matches!(
         agent.next_event().await.expect("agent event").msg,
@@ -217,21 +210,17 @@ async fn post_tool_hook_context_follows_only_executed_tool_outputs() {
             ApprovalPolicy::Allow,
         )),
         checkpoints,
-        MiddlewareStack::new(vec![
+        test_middleware(vec![
             Arc::new(Tools::new(vec![Arc::new(ApprovalRequiredTestTool)])),
             Arc::new(ToolHookContext),
-        ])
-        .expect("middleware"),
+        ]),
         "test prompt",
     )
     .session_id("tool-hook-context");
     let mut agent = create_agent(config).await.expect("create agent");
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "run it".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_op("run it"))
         .expect("submit input");
     while !matches!(
         agent.next_event().await.expect("agent event").msg,
@@ -293,21 +282,17 @@ async fn assert_compaction_stop(
             ApprovalPolicy::Ask,
         )),
         checkpoints.clone(),
-        MiddlewareStack::new(vec![
+        test_middleware(vec![
             Arc::new(Compaction::new(1).expect("compaction middleware")),
             Arc::new(StoppingCompaction(boundary)),
-        ])
-        .expect("middleware"),
+        ]),
         "test prompt",
     )
     .session_id(session_id);
     let mut agent = create_agent(config).await.expect("create agent");
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "hello".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_op("hello"))
         .expect("submit input");
     let mut reason = None;
     loop {
@@ -392,20 +377,16 @@ async fn compaction_marker_survives_transcript_replay() {
             ApprovalPolicy::Ask,
         )),
         checkpoint_store,
-        MiddlewareStack::new(vec![Arc::new(
+        test_middleware(vec![Arc::new(
             Compaction::new(1).expect("compaction middleware"),
-        )])
-        .expect("middleware"),
+        )]),
         "test prompt",
     )
     .session_id("durable-compaction");
     let mut agent = create_agent(config).await.expect("create agent");
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "hello".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_op("hello"))
         .expect("submit input");
 
     let mut live_markers = 0;
@@ -500,10 +481,7 @@ async fn provider_failure_records_one_failed_execution() {
     .expect("create agent");
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "fail".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_op("fail"))
         .expect("submit input");
     while !matches!(
         agent.next_event().await.expect("agent event").msg,
@@ -565,6 +543,7 @@ async fn automatic_approval_counts_isolated_review_usage_without_replacing_prima
         checkpoint_store,
         model.clone(),
         "auto-review",
+        Vec::new(),
     )
     .usage_observer(move |route, usage| {
         usage_observer
@@ -576,10 +555,7 @@ async fn automatic_approval_counts_isolated_review_usage_without_replacing_prima
     let mut agent = create_agent(config).await.expect("create agent");
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "do it".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_op("do it"))
         .expect("submit input");
     let mut usage_events = Vec::new();
     let mut review_events = Vec::new();
@@ -661,6 +637,55 @@ async fn automatic_approval_counts_isolated_review_usage_without_replacing_prima
 }
 
 #[tokio::test]
+async fn automatic_approval_still_obeys_the_permission_hook() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
+        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
+            .expect("checkpoint store"),
+    );
+    let model = Arc::new(ScriptedModel {
+        outputs: Mutex::new(VecDeque::from([
+            scripted_tool_call(),
+            scripted_message("{\"decision\":\"approve\",\"call_ids\":[\"reviewed-call\"]}"),
+            scripted_message("done"),
+        ])),
+        tool_counts: Mutex::new(Vec::new()),
+        inputs: Mutex::new(Vec::new()),
+    });
+    let mut agent = create_agent(auto_review_config(
+        workspace.path(),
+        checkpoints,
+        model,
+        "auto-review-hook",
+        vec![Arc::new(DenyPermission)],
+    ))
+    .await
+    .expect("create agent");
+    agent
+        .sender()
+        .submit(user_op("do it"))
+        .expect("submit input");
+    let mut approval_requested = false;
+    let mut tool_output = None;
+    loop {
+        match agent.next_event().await.expect("agent event").msg {
+            EventMsg::ExecApprovalRequest(_) => approval_requested = true,
+            EventMsg::ToolCallEnd(event) if event.call_id == "reviewed-call" => {
+                tool_output = Some(event.output)
+            }
+            EventMsg::TurnComplete(_) => break,
+            _ => {}
+        }
+    }
+
+    assert!(!approval_requested);
+    assert_eq!(
+        tool_output.as_deref(),
+        Some("tool denied: blocked by middleware")
+    );
+}
+
+#[tokio::test]
 async fn cloned_agent_config_inherits_route_aware_usage_observer() {
     let workspace = tempfile::tempdir().expect("workspace");
     let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
@@ -685,7 +710,7 @@ async fn cloned_agent_config_inherits_route_aware_usage_observer() {
             ApprovalPolicy::Ask,
         )),
         checkpoints,
-        MiddlewareStack::new(Vec::new()).expect("middleware"),
+        test_middleware(Vec::new()),
         "test prompt",
     )
     .usage_observer(move |route, usage| {
@@ -703,10 +728,7 @@ async fn cloned_agent_config_inherits_route_aware_usage_observer() {
     let mut agent = create_agent(config).await.expect("create child agent");
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "hello".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_op("hello"))
         .expect("submit input");
     while !matches!(
         agent.next_event().await.expect("agent event").msg,
@@ -742,7 +764,7 @@ async fn failing_usage_observer_aborts_before_checkpoint_usage_is_committed() {
             ApprovalPolicy::Ask,
         )),
         checkpoint_store,
-        MiddlewareStack::new(Vec::new()).expect("middleware"),
+        test_middleware(Vec::new()),
         "test prompt",
     )
     .session_id("usage-observer-failure")
@@ -750,10 +772,7 @@ async fn failing_usage_observer_aborts_before_checkpoint_usage_is_committed() {
     let mut agent = create_agent(config).await.expect("create agent");
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "hello".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_op("hello"))
         .expect("submit input");
     while !matches!(
         agent.next_event().await.expect("agent event").msg,
@@ -806,15 +825,13 @@ async fn malformed_automatic_review_durably_asks_without_dropping_network_access
         checkpoint_store,
         model.clone(),
         "review-escalation",
+        Vec::new(),
     ))
     .await
     .expect("create agent");
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "do it".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_op("do it"))
         .expect("submit input");
     let review_events = tokio::time::timeout(std::time::Duration::from_secs(2), async {
         let mut review_events = Vec::new();
@@ -913,15 +930,13 @@ async fn escalated_review_and_deferred_approval_are_saved_atomically() {
         checkpoint_store,
         model,
         "review-atomicity",
+        Vec::new(),
     ))
     .await
     .expect("create agent");
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "do it".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_op("do it"))
         .expect("submit input");
     while agent.next_event().await.is_some() {}
 

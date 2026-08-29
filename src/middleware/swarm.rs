@@ -10,7 +10,7 @@ use super::tools::{Catalog, ExecutionMode, Tool, ToolContext, render_tool_event}
 use super::{Middleware, PromptSection, RuntimeContext, ToolExposureContext};
 use crate::agent::AgentRole;
 use crate::backend::model::ToolDefinition;
-use crate::protocol::{EventMsg, FrontendBlock};
+use crate::protocol::{EventMsg, FrontendBlock, MessageAuthor};
 use crate::{BoxFuture, Result};
 
 mod text {
@@ -39,7 +39,7 @@ pub trait SwarmBackend: Send + Sync {
     fn read<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<String>>;
 
     /// Durably posts a message and schedules any mentioned peers for delivery.
-    fn post<'a>(&'a self, session_id: &'a str, message: String) -> BoxFuture<'a, Result<String>>;
+    fn post<'a>(&'a self, session_id: &'a str, text: String) -> BoxFuture<'a, Result<String>>;
 }
 
 /// Installs swarm discovery, board, and peer-message tools in an ordinary session.
@@ -84,7 +84,10 @@ impl Middleware for Swarm {
         Box::pin(async move {
             if !self.backend.active(context.session_id).await? {
                 context.hide(&["swarm_roster", "swarm_read", "swarm_post"]);
-            } else if context.peer_input() {
+            } else if matches!(
+                context.latest_message().map(|message| message.author),
+                Some(MessageAuthor::Peer { .. })
+            ) {
                 context.hide(&["swarm_post"]);
             }
             Ok(())
@@ -104,7 +107,7 @@ impl Middleware for Swarm {
                 }
                 .into(),
                 detail: arguments
-                    .get("message")
+                    .get("text")
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .into(),
@@ -170,7 +173,7 @@ struct SwarmPost(ToolScope);
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PostArgs {
-    message: String,
+    text: String,
 }
 
 impl Tool for SwarmPost {
@@ -180,8 +183,8 @@ impl Tool for SwarmPost {
             description: text::TOOL_POST_DESCRIPTION.into(),
             parameters: serde_json::json!({
                 "type": "object",
-                "properties": {"message": {"type": "string"}},
-                "required": ["message"],
+                "properties": {"text": {"type": "string"}},
+                "required": ["text"],
                 "additionalProperties": false
             }),
         }
@@ -196,7 +199,7 @@ impl Tool for SwarmPost {
             let arguments: PostArgs = serde_json::from_value(arguments)?;
             self.0
                 .backend
-                .post(&self.0.session_id, arguments.message)
+                .post(&self.0.session_id, arguments.text)
                 .await
         })
     }
@@ -247,10 +250,28 @@ mod tests {
         fn post<'a>(
             &'a self,
             _session_id: &'a str,
-            _message: String,
+            _text: String,
         ) -> BoxFuture<'a, Result<String>> {
             Box::pin(async { unreachable!() })
         }
+    }
+
+    #[test]
+    fn post_tool_uses_text_as_its_payload_name() {
+        let tool = SwarmPost(ToolScope {
+            backend: Arc::new(Membership(true)),
+            session_id: "chat".into(),
+        });
+
+        assert_eq!(
+            tool.definition().parameters,
+            serde_json::json!({
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+                "required": ["text"],
+                "additionalProperties": false
+            })
+        );
     }
 
     #[tokio::test]
@@ -286,7 +307,18 @@ mod tests {
             .expect("active membership");
         assert_eq!(available, names());
 
-        let peer = crate::backend::model::peer_message("message", "peer", "worker", "done");
+        let peer = crate::backend::model::message_input(&crate::protocol::MessageEvent {
+            author: MessageAuthor::Peer {
+                message_id: "message".into(),
+                session_id: "peer".into(),
+                handle: "worker".into(),
+            },
+            delivery: crate::protocol::MessageDelivery::Turn,
+            text: "done".into(),
+            attachments: Vec::new(),
+            message_target: None,
+        })
+        .expect("peer message");
         let mut peer_available = names();
         active
             .tool_exposure(&mut ToolExposureContext {

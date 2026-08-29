@@ -22,7 +22,6 @@ use self::view::bounded_terminal_text;
 use self::view::initial_widgets;
 use super::catalog::{MenuItem, UiCatalog};
 use super::terminal::terminal_text;
-use mobius::protocol::AgentMessagePhase;
 #[cfg(test)]
 use mobius::protocol::EventMsg;
 use mobius::protocol::FrontendBlockFormat;
@@ -207,7 +206,9 @@ impl PreviewState {
         Self {
             title: bounded_title(&title),
             subtitle: bounded_title(&subtitle),
-            content: PreviewContent::Snapshot(SnapshotPreview::new(id, page_id, transcript, next)),
+            content: PreviewContent::Snapshot(Box::new(SnapshotPreview::new(
+                id, page_id, transcript, next,
+            ))),
             viewport: Viewport::default(),
         }
     }
@@ -215,7 +216,7 @@ impl PreviewState {
 
 enum PreviewContent {
     LiveTranscript,
-    Snapshot(SnapshotPreview),
+    Snapshot(Box<SnapshotPreview>),
 }
 
 struct SnapshotPreview {
@@ -268,10 +269,9 @@ struct TuiState {
     transcript: VecDeque<TranscriptEntry>,
     transcript_viewport: Viewport,
     streaming: String,
-    streaming_phase: Option<AgentMessagePhase>,
+    streaming_phase: Option<ModelStepContentPhase>,
     reasoning: String,
     streamed_step_phases: BTreeMap<String, StreamedStepPhases>,
-    completed_model_steps: BTreeSet<String>,
     input: String,
     cursor: usize,
     pastes: BTreeMap<char, String>,
@@ -321,7 +321,6 @@ impl TuiState {
             streaming_phase: None,
             reasoning: String::new(),
             streamed_step_phases: BTreeMap::new(),
-            completed_model_steps: BTreeSet::new(),
             input: String::new(),
             cursor: 0,
             pastes: BTreeMap::new(),
@@ -511,7 +510,7 @@ impl TuiState {
             .insert(phase);
     }
 
-    fn append_stream(&mut self, delta: &str, phase: AgentMessagePhase) {
+    fn append_stream(&mut self, delta: &str, phase: ModelStepContentPhase) {
         self.commit_reasoning();
         if self.streaming_phase.is_some_and(|current| current != phase) {
             self.commit_stream();
@@ -555,7 +554,7 @@ impl TuiState {
     }
 
     fn commit_commentary_stream(&mut self) {
-        if self.streaming_phase == Some(AgentMessagePhase::Commentary) {
+        if self.streaming_phase == Some(ModelStepContentPhase::Commentary) {
             self.commit_stream();
         }
     }
@@ -600,7 +599,6 @@ impl TuiState {
         self.commit_reasoning();
         self.commit_stream();
         self.streamed_step_phases.clear();
-        self.completed_model_steps.clear();
         self.active_turn = None;
         self.turn_started_at = None;
         self.clear_approval();

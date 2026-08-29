@@ -477,7 +477,7 @@ extension AppModel {
 
     private func shouldCacheTranscript(after event: AgentEventRecord) -> Bool {
         switch event.msg["type"]?.stringValue {
-        case "task_complete", "turn_aborted": true
+        case "turn_complete", "turn_aborted": true
         default: false
         }
     }
@@ -688,8 +688,6 @@ extension AppModel {
         runStats = payload.runStats
         sessionCompactionCount = payload.compactionCount
         activeTurnID = payload.runStats.active?.turnId
-        awaitsSteeringDelivery = false
-        activeOperation = payload.contributions.compactMap(\.activeInput?.operation).first
         agentDraft = refreshedAgentDraft(
             currentDraft: agentDraft,
             currentSnapshot: agentSnapshot,

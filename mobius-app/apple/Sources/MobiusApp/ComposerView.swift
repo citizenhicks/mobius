@@ -96,7 +96,7 @@ private struct ComposerSurface: View {
                 ComposerOptionsView(
                     dictation: dictation,
                     selection: $selection,
-                    send: { _ = submit() }
+                    send: { _ = submit(delivery: $0) }
                 )
                 .padding(.horizontal, MobiusStyle.iconRowPadding)
                 .padding(.bottom, MobiusStyle.iconRowPadding)
@@ -178,8 +178,8 @@ private struct ComposerSurface: View {
         composerHeight > UIFont.preferredFont(forTextStyle: .body).lineHeight * 2.5
     }
 
-    private func submit() -> Bool {
-        guard !dictation.isActive, model.sendMessage() else { return false }
+    private func submit(delivery: ActiveMessageDelivery? = nil) -> Bool {
+        guard !dictation.isActive, model.sendMessage(delivery: delivery) else { return false }
         selection = nil
         return true
     }
@@ -242,7 +242,7 @@ private struct ExpandedComposerSheet: View {
     @Binding var selection: TextSelection?
     let suggestions: ReferenceSuggestions?
     let completeReference: (MountedReference, ReferenceSuggestions) -> Void
-    let submit: () -> Bool
+    let submit: (ActiveMessageDelivery?) -> Bool
     let insertLineBreak: () -> Void
     @FocusState private var isComposerFocused: Bool
 
@@ -305,8 +305,8 @@ private struct ExpandedComposerSheet: View {
         .mobiusSheet(detents: [.fraction(0.75)])
     }
 
-    private func submitAndDismiss() {
-        if submit() { dismiss() }
+    private func submitAndDismiss(delivery: ActiveMessageDelivery? = nil) {
+        if submit(delivery) { dismiss() }
     }
 }
 

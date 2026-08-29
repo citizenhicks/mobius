@@ -44,17 +44,23 @@ use mobius::middleware::RuntimeContext;
 use mobius::middleware::attachments::Attachments;
 use mobius::middleware::compaction::Compaction;
 use mobius::middleware::extensions::Extensions;
+use mobius::middleware::messages::Messages;
 use mobius::middleware::session_files::{SessionFileStore, session_file_limits};
-use mobius::middleware::steering::Steering;
 use mobius::middleware::subagents::SubagentLaunch;
 use mobius::middleware::subagents::SubagentLauncher;
 use mobius::middleware::subagents::Subagents;
 use mobius::middleware::tools::Tools;
+use mobius::protocol::ActiveMessageDelivery;
+use mobius::protocol::AssistantMessageEvent;
 use mobius::protocol::Event;
 use mobius::protocol::EventMsg;
+use mobius::protocol::MessageAuthor;
+use mobius::protocol::MessageDelivery;
+use mobius::protocol::MessageSubmission;
 use mobius::protocol::MessageTarget;
 use mobius::protocol::ModelChoice;
 use mobius::protocol::ModelEvent;
+use mobius::protocol::ModelStepContentPhase;
 use mobius::protocol::Op;
 use mobius::protocol::ReviewDecision;
 use mobius::protocol::SessionFileReference;
@@ -369,8 +375,9 @@ where
 fn test_config_with_router(
     workspace: &std::path::Path,
     model: ModelRouter,
-    middleware: Vec<Arc<dyn Middleware>>,
+    mut middleware: Vec<Arc<dyn Middleware>>,
 ) -> AgentConfig {
+    middleware.insert(0, Arc::new(Messages::default()));
     let checkpoints: Arc<dyn CheckpointStore> = Arc::new(MemoryCheckpoints::default());
     let sandbox = Arc::new(Sandbox::new(
         Arc::new(LocalSandbox::new(workspace).expect("local sandbox")),
@@ -385,17 +392,57 @@ fn test_config_with_router(
     )
 }
 
+fn user_message(text: impl Into<String>) -> Op {
+    user_message_with_attachments(text, Vec::new())
+}
+
+fn user_message_with_attachments(
+    text: impl Into<String>,
+    attachments: Vec<SessionFileReference>,
+) -> Op {
+    Op::Message {
+        message: MessageSubmission {
+            author: MessageAuthor::User,
+            text: text.into(),
+            attachments,
+            requested_delivery: None,
+            target_turn_id: None,
+        },
+    }
+}
+
+fn steer_message(turn_id: impl Into<String>, text: impl Into<String>) -> Op {
+    Op::Message {
+        message: MessageSubmission {
+            author: MessageAuthor::User,
+            text: text.into(),
+            attachments: Vec::new(),
+            requested_delivery: Some(ActiveMessageDelivery::Steer),
+            target_turn_id: Some(turn_id.into()),
+        },
+    }
+}
+
 async fn final_message(agent: &mut mobius::agent::Agent) -> String {
     let mut message = String::new();
     while let Some(event) = agent.next_event().await {
         match event.msg {
-            EventMsg::AgentMessage(event) => message = event.message,
+            EventMsg::AssistantMessage(event) => message = assistant_final_text(event),
             EventMsg::TurnComplete(_) => return message,
             EventMsg::Error(error) => panic!("{}", error.message),
             _ => {}
         }
     }
     panic!("agent disconnected")
+}
+
+fn assistant_final_text(event: AssistantMessageEvent) -> String {
+    event
+        .content
+        .into_iter()
+        .filter(|item| item.phase == ModelStepContentPhase::FinalAnswer)
+        .map(|item| item.text)
+        .collect()
 }
 
 async fn failed_turn(agent: &mut mobius::agent::Agent) -> String {

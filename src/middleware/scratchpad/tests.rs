@@ -1,10 +1,7 @@
 use super::*;
 use crate::backend::checkpoint::sqlite::SqliteCheckpoint;
 use crate::middleware::tools::{ApprovalRequirement, Tool};
-use crate::middleware::{
-    ActiveCommandContext, ActiveSubmissionResult, FrontendEventSink, QueuedInputBaseline,
-    QueuedInputQueue,
-};
+use crate::middleware::{ActiveCommandContext, FrontendEventSink, MessageQueue, SubmissionResult};
 use crate::protocol::{
     FrontendEvent, FrontendSlot, FrontendWidgetContent, Op, internal_message_kind,
 };
@@ -35,7 +32,7 @@ async fn active_command(
     command: &str,
     arguments: &str,
     input: Option<&str>,
-) -> (Option<ActiveSubmissionResult>, Vec<EventMsg>) {
+) -> (Option<SubmissionResult>, Vec<EventMsg>) {
     let metadata = std::collections::BTreeMap::new();
     let mut queued = Vec::new();
     let mut events = Vec::new();
@@ -48,7 +45,7 @@ async fn active_command(
         arguments,
         input,
         target: None,
-        queued_input: QueuedInputQueue::new(&mut queued, QueuedInputBaseline::default()),
+        queued_messages: MessageQueue::new(&mut queued),
         events: &mut events,
     };
     let result = middleware
@@ -236,7 +233,7 @@ async fn active_edit_applies_immediately_and_refreshes_widgets() {
     let (result, events) =
         active_command(&middleware, "scratchpad", &arguments, Some("revised note")).await;
 
-    assert_eq!(result, Some(ActiveSubmissionResult::Handled));
+    assert_eq!(result, Some(SubmissionResult::Handled));
     assert!(
         events
             .iter()
@@ -268,7 +265,7 @@ async fn active_promote_applies_immediately() {
     )
     .await;
 
-    assert_eq!(result, Some(ActiveSubmissionResult::Handled));
+    assert_eq!(result, Some(SubmissionResult::Handled));
     assert!(
         events
             .iter()
@@ -310,6 +307,7 @@ async fn disabled_agent_keeps_read_only_surfaces_without_prompt_or_tools() {
     let frontend_events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let captured_events = Arc::clone(&frontend_events);
     let runtime = RuntimeContext {
+        sender: crate::agent::test_sender(),
         checkpoints: Arc::clone(&store.checkpoints),
         session_id: "session".into(),
         model_route: "model".into(),
@@ -338,7 +336,7 @@ async fn disabled_agent_keeps_read_only_surfaces_without_prompt_or_tools() {
     let mut start = crate::middleware::SessionStartContext {
         runtime: &runtime,
         source: crate::middleware::SessionStartSource::Startup,
-        queued_input: Default::default(),
+        queued_messages: Default::default(),
         input: &mut input,
         input_changed: false,
         stop_reason: None,
@@ -419,6 +417,7 @@ async fn disabled_agent_keeps_read_only_surfaces_without_prompt_or_tools() {
 
 fn runtime(store: &ScratchpadStore, session_id: &str) -> RuntimeContext {
     RuntimeContext {
+        sender: crate::agent::test_sender(),
         checkpoints: Arc::clone(&store.checkpoints),
         session_id: session_id.into(),
         model_route: "model".into(),
@@ -444,7 +443,7 @@ async fn new_session_seeds_one_bounded_baseline_projection() {
     let mut start = crate::middleware::SessionStartContext {
         runtime: &runtime,
         source: crate::middleware::SessionStartSource::Startup,
-        queued_input: Default::default(),
+        queued_messages: Default::default(),
         input: &mut seeded,
         input_changed: false,
         stop_reason: None,
@@ -485,7 +484,7 @@ async fn startup_keeps_one_inherited_baseline_projection() {
     let mut start = crate::middleware::SessionStartContext {
         runtime: &runtime,
         source: crate::middleware::SessionStartSource::Startup,
-        queued_input: Default::default(),
+        queued_messages: Default::default(),
         input: &mut input,
         input_changed: false,
         stop_reason: None,

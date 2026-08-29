@@ -1,4 +1,7 @@
-use mobius::protocol::{EventMsg, Op, ReviewDecision, Submission};
+use mobius::protocol::{
+    EventMsg, MessageAuthor, MessageSubmission, ModelStepContentPhase, Op, ReviewDecision,
+    Submission,
+};
 use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayEvents, GatewaySender};
 use mobius_gateway::wire::{ClientMessage, ServerMessage};
@@ -16,9 +19,14 @@ pub async fn run(
             session_id: session_id.clone(),
             submission: Submission {
                 id: submission_id.clone(),
-                op: Op::UserInput {
-                    text: task,
-                    attachments: Vec::new(),
+                op: Op::Message {
+                    message: MessageSubmission {
+                        author: MessageAuthor::User,
+                        text: task,
+                        attachments: Vec::new(),
+                        requested_delivery: None,
+                        target_turn_id: None,
+                    },
                 },
             },
         })
@@ -28,7 +36,7 @@ pub async fn run(
     let mut turn_id = None;
     let mut first_error = None;
     let mut approval_error = None;
-    let mut last_agent_message = None;
+    let mut last_assistant_message = None;
     loop {
         let frame =
             events.next().await.map_err(gateway_error)?.ok_or_else(|| {
@@ -80,10 +88,18 @@ pub async fn run(
             {
                 first_error.get_or_insert(error.message);
             }
-            EventMsg::AgentMessage(message)
+            EventMsg::AssistantMessage(message)
                 if turn_id.as_deref() == Some(message.turn_id.as_str()) =>
             {
-                last_agent_message = Some(message.message);
+                let final_answer = message
+                    .content
+                    .into_iter()
+                    .filter(|item| item.phase == ModelStepContentPhase::FinalAnswer)
+                    .map(|item| item.text)
+                    .collect::<String>();
+                if !final_answer.is_empty() {
+                    last_assistant_message = Some(final_answer);
+                }
             }
             EventMsg::TurnComplete(turn) if turn_id.as_deref() == Some(turn.turn_id.as_str()) => {
                 if let Some(error) = approval_error {
@@ -92,7 +108,7 @@ pub async fn run(
                 if let Some(error) = first_error {
                     return Err(Error::Stopped(error));
                 }
-                return Ok(last_agent_message);
+                return Ok(last_assistant_message);
             }
             EventMsg::TurnAborted(turn) if turn_id.as_deref() == Some(turn.turn_id.as_str()) => {
                 return Err(approval_error

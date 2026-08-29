@@ -60,14 +60,14 @@ fn quick_cloudflare_config_round_trips_without_a_token() {
 
 #[test]
 fn opening_unmigratable_versions_never_rewrites_config() {
-    for (version, invalid) in [(18, false), (19, false), (21, false), (20, true)] {
+    for (version, invalid) in [(19, false), (20, false), (22, false), (21, true)] {
         let root = tempfile::tempdir().expect("temporary directory");
         let state = root.path().join("state");
         ConfigStore::initialize(state.clone(), DEFAULT_LISTEN, None).expect("initialize gateway");
         let path = state.join(CONFIG_FILE);
         let mut contents = fs::read_to_string(&path)
             .expect("read gateway config")
-            .replacen("version = 20", &format!("version = {version}"), 1);
+            .replacen("version = 21", &format!("version = {version}"), 1);
         if invalid {
             contents = contents.replacen("127.0.0.1:8741", "127.0.0.1:0", 1);
         }
@@ -112,10 +112,12 @@ fn generated_toml_round_trips_manifest_settings() {
     let contents = fs::read_to_string(state.join(CONFIG_FILE)).expect("read config");
     let (_, restored) = ConfigStore::open(state).expect("open config");
 
-    assert!(contents.starts_with("version = 20"));
+    assert!(contents.starts_with("version = 21"));
     assert!(contents.contains("max_model_steps = 2042"));
     assert!(contents.contains("[default_agent.config.middleware.settings.context_offloading]"));
     assert!(contents.contains("[default_agent.config.middleware.settings.sessions]"));
+    assert!(contents.contains("[default_agent.config.middleware.settings.messages]"));
+    assert!(contents.contains("delivery = \"steer\""));
     assert_eq!(restored, config);
 }
 

@@ -1,0 +1,1 @@
+Ship protocol 55 with swarm rosters and boards, peer-message delivery, queued or steering messages, and durable session recovery. Gateway configuration version 21 and chat specification 10 are required; version 20/9 files are not migrated.

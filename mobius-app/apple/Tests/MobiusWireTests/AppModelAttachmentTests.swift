@@ -43,8 +43,7 @@ extension AppModelTests {
             count: nil,
             commands: [],
             widgets: [],
-            references: [],
-            activeInput: nil
+            references: []
         )
         model.contributions = [attachmentContribution]
 
@@ -171,23 +170,16 @@ extension AppModelTests {
         }
         let submit = try XCTUnwrap(submitRequest)
         guard case .submit(_, let submission) = submit,
-              case .userInput(let text, let attachments) = submission.op
+              case .message(let message) = submission.op
         else { return XCTFail("Expected attachment submission") }
-        XCTAssertEqual(text, "")
-        XCTAssertEqual(attachments, [attachment])
+        XCTAssertEqual(message.text, "")
+        XCTAssertEqual(message.attachments, [attachment])
 
         model.reduce(
-            event: AgentEventRecord(submissionId: nil, msg: .object([
-                "type": .string("user_message"),
-                "message": .string(""),
-                "attachments": .array([.object([
-                    "id": .string("file-1"),
-                    "name": .string("scan.png"),
-                    "size": .number(3),
-                    "mediaType": .string("image/png")
-                ])]),
-                "messageTarget": .null
-            ])),
+            event: AgentEventRecord(
+                submissionId: nil,
+                msg: testMessageEvent(text: "", attachments: [attachment])
+            ),
             blocks: [],
             preview: nil
         )
@@ -261,10 +253,10 @@ extension AppModelTests {
         guard case .submit(_, let submission) = try XCTUnwrap(request) else {
             return XCTFail("Expected attachment submission")
         }
-        guard case .userInput(_, let attachments) = submission.op else {
+        guard case .message(let message) = submission.op else {
             return XCTFail("Expected attachment submission")
         }
-        XCTAssertEqual(attachments, [attachment])
+        XCTAssertEqual(message.attachments, [attachment])
     }
 
     func testSessionFileUploadRejectsKnownResponseWithWrongPhase() async throws {
@@ -382,8 +374,7 @@ extension AppModelTests {
             count: nil,
             commands: [],
             widgets: [],
-            references: [],
-            activeInput: nil
+            references: []
         )]
         let fileSize: Int64 = 25 * 1024 * 1024
         model.composerAttachments = (0..<4).map { index in

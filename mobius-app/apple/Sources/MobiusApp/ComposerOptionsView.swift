@@ -155,7 +155,7 @@ struct ComposerOptionsView: View {
     @Environment(\.mobiusPalette) private var palette
     let dictation: ComposerDictation
     @Binding var selection: TextSelection?
-    let send: () -> Void
+    let send: (ActiveMessageDelivery?) -> Void
     @State private var isFileImporterPresented = false
     @State private var isPhotoPickerPresented = false
     @State private var photoSelection: [PhotosPickerItem] = []
@@ -325,7 +325,7 @@ struct ComposerOptionsView: View {
                 Button("Stop", glyph: .stopFill) { model.interrupt() }
                     .help("Stop")
             } else {
-                Button(action: send) {
+                Button(action: { send(nil) }) {
                     Label {
                         Text(sendLabel)
                     } icon: {
@@ -335,9 +335,7 @@ struct ComposerOptionsView: View {
                                 foreground: palette.onAccent
                             )
                         } else {
-                            MobiusIcon(
-                                model.activeTurnID == nil ? .arrowUp02 : .arrowUpRight01
-                            )
+                            MobiusIcon(sendGlyph)
                         }
                     }
                 }
@@ -345,6 +343,15 @@ struct ComposerOptionsView: View {
                     // button enabled and the tap silent.
                     .disabled(!canSend)
                     .help(Text(sendLabel))
+                    .accessibilityLabel(Text(sendLabel))
+                    .accessibilityHint(Text(sendHint))
+                    .contextMenu {
+                        if model.activeTurnID != nil {
+                            Button(alternateSendLabel, glyph: alternateSendGlyph) {
+                                send(alternateDelivery)
+                            }
+                        }
+                    }
             }
         }
         .mobiusProminentIconButton()
@@ -495,7 +502,32 @@ struct ComposerOptionsView: View {
     }
 
     private var sendLabel: LocalizedStringResource {
-        model.activeTurnID == nil ? "Send" : "Send steering message"
+        guard model.activeTurnID != nil else { return "Send" }
+        return model.activeMessageDelivery == .steer ? "Send as Steer" : "Send as Queue"
+    }
+
+    private var sendHint: LocalizedStringResource {
+        guard model.activeTurnID != nil else { return "Starts a new turn" }
+        return model.activeMessageDelivery == .steer
+            ? "Long press to send after this turn"
+            : "Long press to steer the active turn"
+    }
+
+    private var sendGlyph: MobiusGlyph {
+        guard model.activeTurnID != nil else { return .arrowUp02 }
+        return model.activeMessageDelivery == .steer ? .arrowUpRight01 : .clock
+    }
+
+    private var alternateDelivery: ActiveMessageDelivery {
+        model.activeMessageDelivery == .steer ? .queue : .steer
+    }
+
+    private var alternateSendLabel: LocalizedStringResource {
+        alternateDelivery == .steer ? "Send as Steer" : "Send as Queue"
+    }
+
+    private var alternateSendGlyph: MobiusGlyph {
+        alternateDelivery == .steer ? .arrowUpRight01 : .clock
     }
 
     private func toggleDictation() {

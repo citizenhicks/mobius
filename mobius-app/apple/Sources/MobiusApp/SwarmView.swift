@@ -270,7 +270,7 @@ private struct SwarmMessageRow: View {
                 // Mentions are emphasised inside the body rather than repeated beside it, so
                 // the post reads as the sentence the agent actually wrote.
                 MobiusMarkdownText(
-                    swarmHighlightedBody(message.body, roster: roster),
+                    swarmHighlightedText(message.text, roster: roster),
                     streaming: false
                 )
                 .equatable()

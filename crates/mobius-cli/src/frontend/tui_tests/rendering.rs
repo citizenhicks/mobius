@@ -161,7 +161,7 @@ fn transcript_tail_widgets_render_after_live_output_in_arrival_order() {
     state.streaming = "working".into();
     let widget = |id: &str, text: &str| {
         EventMsg::Frontend(FrontendEvent::Widget {
-            capability: "steering".into(),
+            capability: "messages".into(),
             item: FrontendWidget {
                 id: id.into(),
                 slot: FrontendSlot::TranscriptTail,
@@ -182,21 +182,18 @@ fn transcript_tail_widgets_render_after_live_output_in_arrival_order() {
 
     assert_eq!(
         rendered_text(&lines),
-        "◉ working\n\n┊ Steering message\n┊ older\n\n┊ Steering message\n┊ newer"
+        "◉ working\n\n┊ Messages\n┊ older\n\n┊ Messages\n┊ newer"
     );
 
     state.handle_agent_event(
         EventMsg::Frontend(FrontendEvent::RemoveWidget {
-            capability: "steering".into(),
+            capability: "messages".into(),
             id: "z-older".into(),
         }),
         Vec::new(),
     );
     let lines = view::live_transcript_lines(&mut state, 0, 80);
-    assert_eq!(
-        rendered_text(&lines),
-        "◉ working\n\n┊ Steering message\n┊ newer"
-    );
+    assert_eq!(rendered_text(&lines), "◉ working\n\n┊ Messages\n┊ newer");
 }
 
 #[test]
@@ -316,12 +313,17 @@ fn block_identity_is_scoped_by_explicit_capability() {
 #[test]
 fn gateway_history_preserves_child_diff_rendering() {
     let mut state = state();
-    let message = EventMsg::AgentMessage(mobius::protocol::AgentMessageEvent {
+    let message = EventMsg::AssistantMessage(mobius::protocol::AssistantMessageEvent {
         session_id: "session".into(),
         turn_id: "turn".into(),
         model_step_id: "step".into(),
-        message: "changed the file".into(),
-        phase: AgentMessagePhase::FinalAnswer,
+        content: vec![ModelStepContent {
+            output_index: 0,
+            part_index: 0,
+            phase: ModelStepContentPhase::FinalAnswer,
+            text: "changed the file".into(),
+            annotations: Vec::new(),
+        }],
         message_target: None,
     });
     events::handle_gateway_history(
@@ -384,8 +386,10 @@ fn sent_attachment_only_message_is_visible_in_the_transcript() {
     let mut state = state();
     state.transcript.clear();
     state.handle_agent_event(
-        EventMsg::UserMessage(mobius::protocol::UserMessageEvent {
-            message: String::new(),
+        EventMsg::Message(MessageEvent {
+            author: MessageAuthor::User,
+            delivery: MessageDelivery::Turn,
+            text: String::new(),
             attachments: vec![mobius::protocol::SessionFileReference {
                 id: "3d46beff-7e84-46ea-859a-e66b4614a79b".into(),
                 name: "photo.png".into(),
@@ -400,6 +404,34 @@ fn sent_attachment_only_message_is_visible_in_the_transcript() {
     assert_eq!(
         state.transcript.front().map(|entry| entry.text.as_str()),
         Some("› [file] photo.png · 42 bytes")
+    );
+}
+
+#[test]
+fn peer_message_renders_its_handle_without_entering_composer_history() {
+    let mut state = state();
+    state.transcript.clear();
+    state.handle_agent_event(
+        EventMsg::Message(MessageEvent {
+            author: MessageAuthor::Peer {
+                message_id: "message".into(),
+                session_id: "session".into(),
+                handle: "curie".into(),
+            },
+            delivery: MessageDelivery::Steer,
+            text: "Check the protocol boundary".into(),
+            attachments: Vec::new(),
+            message_target: None,
+        }),
+        Vec::new(),
+    );
+
+    assert_eq!(
+        (
+            state.transcript.front().map(|entry| entry.text.as_str()),
+            state.composer_history.len(),
+        ),
+        (Some("@curie › Check the protocol boundary"), 0)
     );
 }
 

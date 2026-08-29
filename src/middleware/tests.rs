@@ -1,6 +1,9 @@
+use std::collections::BTreeMap;
+
 use super::context::provisional_message_target;
 use super::*;
-use crate::backend::checkpoint::MAX_QUEUED_INPUTS;
+use crate::backend::checkpoint::MAX_QUEUED_MESSAGES;
+use crate::backend::checkpoint::QueuedMessageBoundary;
 use crate::backend::checkpoint::sqlite::SqliteCheckpoint;
 use crate::backend::model::ToolDefinition;
 use crate::middleware::tools::Tool;
@@ -8,6 +11,8 @@ use crate::middleware::tools::ToolContext;
 use crate::protocol::FrontendAction;
 use crate::protocol::FrontendReference;
 use crate::protocol::FrontendSymbol;
+use crate::protocol::MessageAuthor;
+use crate::protocol::MessageEvent;
 use crate::protocol::Op;
 use crate::protocol::SessionContext;
 
@@ -83,6 +88,7 @@ fn lifecycle_probe(
 
 fn lifecycle_runtime(path: &std::path::Path) -> RuntimeContext {
     RuntimeContext {
+        sender: crate::agent::test_sender(),
         checkpoints: Arc::new(
             SqliteCheckpoint::new(path.join("checkpoints.sqlite3")).expect("checkpoint store"),
         ),
@@ -245,7 +251,7 @@ fn lifecycle_stop_decisions_keep_the_first_reason() {
     let mut start = SessionStartContext {
         runtime: &runtime,
         source: SessionStartSource::Startup,
-        queued_input: QueuedInputSnapshot::default(),
+        queued_messages: QueuedMessageSnapshot::default(),
         input: &mut input,
         input_changed: false,
         stop_reason: None,
@@ -306,88 +312,93 @@ fn pre_tool_rewrite_rejects_invalid_calls_without_mutation() {
     }
 }
 
-fn queued(owner: &str, id: &str, text: &str) -> DurableQueuedInput {
-    DurableQueuedInput::new(owner, id, text).expect("valid queued input")
+fn queued(owner: &str, id: &str, text: &str) -> DurableQueuedMessage {
+    let event = MessageEvent {
+        author: MessageAuthor::User,
+        delivery: crate::protocol::MessageDelivery::Turn,
+        text: text.into(),
+        attachments: Vec::new(),
+        message_target: None,
+    };
+    DurableQueuedMessage::new(owner, id, QueuedMessageBoundary::Turn, event)
+        .expect("valid queued message")
 }
 
 fn scoped_queue<'a>(
-    items: &'a mut Vec<DurableQueuedInput>,
+    items: &'a mut Vec<DurableQueuedMessage>,
     owner: &'static str,
-    baseline: QueuedInputBaseline,
-) -> QueuedInputQueue<'a> {
-    let mut queue = QueuedInputQueue::new(items, baseline);
+) -> MessageQueue<'a> {
+    let mut queue = MessageQueue::new(items);
     queue.scope(owner);
     queue
 }
 
+fn enqueue(queue: &mut MessageQueue<'_>, id: &str, text: &str) -> Result<bool> {
+    let event = MessageEvent {
+        author: MessageAuthor::User,
+        delivery: crate::protocol::MessageDelivery::Turn,
+        text: text.into(),
+        attachments: Vec::new(),
+        message_target: None,
+    };
+    queue.enqueue(id, QueuedMessageBoundary::Turn, event)
+}
+
 #[test]
-fn queued_input_queue_cannot_observe_or_drain_another_owner() {
+fn queued_message_queue_cannot_observe_or_consume_another_owner() {
     let mut items = vec![
         queued("alpha", "one", "first"),
         queued("beta", "one", "private"),
     ];
-    let drained = {
-        let mut queue = scoped_queue(
-            &mut items,
-            "alpha",
-            QueuedInputBaseline::from_items(&[
-                queued("alpha", "prior-one", "prior"),
-                queued("alpha", "prior-two", "prior"),
-                queued("beta", "prior-private", "prior"),
-            ]),
-        );
-        assert_eq!(queue.count(), 3);
+    let prepared = {
+        let mut queue = scoped_queue(&mut items, "alpha");
+        assert_eq!(queue.count(), 1);
         assert_eq!(queue.latest().map(|item| item.id()), Some("one"));
-        queue.drain()
+        let prepared = queue
+            .next_turn()
+            .expect("valid queued message")
+            .expect("owned next turn");
+        queue
+            .consume_next_turn(&prepared.submission_id)
+            .expect("consume prepared turn");
+        prepared
     };
 
-    assert_eq!(drained[0].text(), "first");
+    assert_eq!(prepared.submission_id, "one");
     assert_eq!(items, vec![queued("beta", "one", "private")]);
 }
 
 #[test]
-fn queued_input_enqueue_rejects_duplicates_without_mutation() {
+fn queued_message_enqueue_rejects_duplicates_without_mutation() {
     let mut items = vec![queued("alpha", "one", "first")];
     let original = items.clone();
-    let inserted = scoped_queue(&mut items, "alpha", QueuedInputBaseline::default())
-        .enqueue("one", "replacement")
-        .expect("valid input");
+    let inserted =
+        enqueue(&mut scoped_queue(&mut items, "alpha"), "one", "replacement").expect("valid input");
 
     assert!(!inserted);
     assert_eq!(items, original);
 }
 
 #[test]
-fn queued_input_enqueue_honors_the_in_flight_baseline() {
-    let baseline = QueuedInputBaseline::from_items(&[
-        queued("alpha", "one", "being consumed"),
-        queued("beta", "one", "another owner"),
-    ]);
-    let mut items = Vec::new();
-    let inserted = scoped_queue(&mut items, "alpha", baseline)
-        .enqueue("one", "duplicate")
-        .expect("valid input");
-
-    assert!(!inserted);
-    assert!(items.is_empty());
-}
-
-#[test]
-fn queued_input_take_is_exact_and_owner_scoped() {
+fn queued_message_find_and_next_turn_are_owner_scoped() {
     let mut items = vec![
         queued("alpha", "one", "first"),
         queued("alpha", "two", "second"),
         queued("beta", "private", "other owner"),
     ];
     {
-        let mut queue = scoped_queue(&mut items, "alpha", QueuedInputBaseline::default());
-        assert!(queue.take("stale").expect("stale comparison").is_none());
-        let taken = queue
-            .take("one")
-            .expect("valid comparison")
-            .expect("matching item");
-        assert_eq!(taken.text(), "first");
-        assert!(queue.take("one").expect("already taken").is_none());
+        let mut queue = scoped_queue(&mut items, "alpha");
+        assert!(queue.find("stale").is_none());
+        assert_eq!(queue.find("one").map(|item| item.id()), Some("one"));
+        assert_eq!(
+            queue
+                .next_turn()
+                .expect("valid queued message")
+                .map(|message| message.submission_id),
+            Some("one".into())
+        );
+        queue.consume_next_turn("one").expect("consume next turn");
+        assert!(queue.find("one").is_none());
     }
 
     assert_eq!(
@@ -400,49 +411,43 @@ fn queued_input_take_is_exact_and_owner_scoped() {
 }
 
 #[test]
-fn queued_input_invalid_mutations_are_atomic() {
+fn queued_message_invalid_mutations_are_atomic() {
     let mut items = vec![queued("alpha", "one", "first")];
     let original = items.clone();
     {
-        let mut queue = scoped_queue(&mut items, "alpha", QueuedInputBaseline::default());
-        assert!(queue.enqueue("", "second").is_err());
-        assert!(queue.enqueue("two", "   ").is_err());
+        let mut queue = scoped_queue(&mut items, "alpha");
+        assert!(enqueue(&mut queue, "", "second").is_err());
         assert!(
-            queue
-                .enqueue(
-                    "two",
-                    &"x".repeat(crate::protocol::MAX_CAPABILITY_INPUT_BYTES + 1),
-                )
-                .is_err()
+            enqueue(
+                &mut queue,
+                "two",
+                &"x".repeat(crate::protocol::MAX_MESSAGE_BYTES + 1),
+            )
+            .is_err()
         );
-        assert!(queue.replace("one", "edit-one", "   ").is_err());
+        let invalid = queued("owner", "edit-one", "replacement");
+        let (_, event) = invalid.into_parts();
+        assert!(queue.replace("one", "", event.clone()).is_err());
         assert!(
             !queue
-                .replace("missing", "edit-one", "replacement")
+                .replace("missing", "edit-one", event)
                 .expect("stale replacement")
         );
-        assert!(queue.take("").expect("stale comparison").is_none());
     }
 
     assert_eq!(items, original);
 }
 
 #[test]
-fn queued_input_enqueue_enforces_the_core_item_bound() {
-    let baseline_items: Vec<_> = (0..MAX_QUEUED_INPUTS)
+fn queued_message_enqueue_enforces_the_core_item_bound() {
+    let mut items: Vec<_> = (0..MAX_QUEUED_MESSAGES)
         .map(|index| queued("alpha", &index.to_string(), "item"))
         .collect();
-    let mut items = Vec::new();
-    let inserted = scoped_queue(
-        &mut items,
-        "alpha",
-        QueuedInputBaseline::from_items(&baseline_items),
-    )
-    .enqueue("overflow", "item")
-    .expect("valid input");
+    let inserted =
+        enqueue(&mut scoped_queue(&mut items, "alpha"), "overflow", "item").expect("valid input");
 
     assert!(!inserted);
-    assert!(items.is_empty());
+    assert_eq!(items.len(), MAX_QUEUED_MESSAGES);
 }
 
 struct UnrenderedTool;
@@ -505,6 +510,7 @@ impl Middleware for CatchAllRenderer {
 fn catalog_requires_the_registering_middleware_to_render_its_tools() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let runtime = RuntimeContext {
+        sender: crate::agent::test_sender(),
         checkpoints: Arc::new(
             SqliteCheckpoint::new(temporary.path().join("checkpoints.sqlite3"))
                 .expect("checkpoint store"),
@@ -550,7 +556,6 @@ impl Middleware for Extension {
                 value: "item".into(),
                 description: String::new(),
             }],
-            active_input: None,
         }
     }
 }
@@ -586,7 +591,6 @@ fn frontend_surfaces_require_generic_content() {
             action: None,
         }],
         references: Vec::new(),
-        active_input: None,
     };
 
     assert!(validate_frontend(&[contribution]).is_err());
@@ -646,7 +650,6 @@ fn widget_ids_are_unique_per_capability_across_slots() {
         commands: Vec::new(),
         widgets: vec![navigation, chat_menu],
         references: Vec::new(),
-        active_input: None,
     };
 
     assert!(validate_frontend(&[contribution]).is_err());

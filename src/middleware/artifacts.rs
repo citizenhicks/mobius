@@ -212,6 +212,7 @@ mod tests {
         );
         let middleware = Artifacts::new(SessionFileStore::new(state.path()));
         let runtime = RuntimeContext {
+            sender: crate::agent::test_sender(),
             checkpoints,
             session_id: "session-a".into(),
             model_route: "model".into(),

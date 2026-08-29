@@ -23,6 +23,7 @@ use super::EventPage;
 use super::EventPageRequest;
 use super::ExecutionPage;
 use super::ExecutionPageRequest;
+use super::ExecutionPhase;
 use super::ExecutionRecord;
 use super::ExecutionStats;
 use super::JournalEvent;
@@ -667,7 +668,7 @@ impl CheckpointStore for SqliteCheckpoint {
         let clean = checkpoint.sequence == 0
             && checkpoint.active_execution.is_none()
             && checkpoint.pending_approval.is_none()
-            && checkpoint.pending_input.is_empty();
+            && checkpoint.pending_messages.is_empty();
         let validation = validate_checkpoint(checkpoint);
         let catalog_visible = checkpoint.catalog_visible;
         let checkpoint = checkpoint.clone();
@@ -967,6 +968,22 @@ fn validate_checkpoint(checkpoint: &Checkpoint) -> Result<()> {
                 "active execution failed-tool count exceeds tool count".into(),
             ));
         }
+        if matches!(&active.phase, ExecutionPhase::Completion { .. })
+            && (checkpoint.active_model_step.is_some()
+                || !checkpoint.pending_tools.is_empty()
+                || checkpoint.pending_approval.is_some())
+        {
+            return Err(Error::Checkpoint(
+                "turn completion conflicts with pending model or tool work".into(),
+            ));
+        }
+    } else if checkpoint.active_model_step.is_some()
+        || !checkpoint.pending_tools.is_empty()
+        || checkpoint.pending_approval.is_some()
+    {
+        return Err(Error::Checkpoint(
+            "pending model or tool work has no active execution".into(),
+        ));
     }
     if let Some(step) = &checkpoint.active_model_step {
         let execution = checkpoint
@@ -984,21 +1001,21 @@ fn validate_checkpoint(checkpoint: &Checkpoint) -> Result<()> {
             ));
         }
     }
-    if checkpoint.pending_input.len() > super::MAX_QUEUED_INPUTS {
+    if checkpoint.pending_messages.len() > super::MAX_QUEUED_MESSAGES {
         return Err(Error::Checkpoint(
-            "queued input exceeds the durable item limit".into(),
+            "queued messages exceed the durable item limit".into(),
         ));
     }
     let mut pending_ids = BTreeSet::new();
-    for input in &checkpoint.pending_input {
-        input
+    for message in &checkpoint.pending_messages {
+        message
             .validate()
-            .map_err(|message| Error::Checkpoint(message.into()))?;
-        if !pending_ids.insert((input.owner(), input.id())) {
+            .map_err(|error| Error::Checkpoint(error.to_string()))?;
+        if !pending_ids.insert((message.owner(), message.id())) {
             return Err(Error::Checkpoint(format!(
-                "duplicate queued input `{}/{}`",
-                input.owner(),
-                input.id(),
+                "duplicate queued message `{}/{}`",
+                message.owner(),
+                message.id(),
             )));
         }
     }

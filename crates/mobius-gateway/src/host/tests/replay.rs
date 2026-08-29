@@ -166,33 +166,32 @@ fn completed_step_compacts_only_its_progressive_replay_frames() {
     let mut replay = VecDeque::from([
         frame(
             1,
-            EventMsg::AgentMessageContentDelta(mobius::protocol::AgentMessageContentDeltaEvent {
+            EventMsg::AssistantContentDelta(mobius::protocol::AssistantContentDeltaEvent {
                 session_id: "session".into(),
                 turn_id: "turn".into(),
                 model_step_id: "completed".into(),
                 delta: "answer".into(),
-                phase: mobius::protocol::AgentMessagePhase::FinalAnswer,
+                phase: mobius::protocol::ModelStepContentPhase::FinalAnswer,
             }),
         ),
         frame(
             2,
-            EventMsg::AgentReasoningContentDelta(
-                mobius::protocol::AgentReasoningContentDeltaEvent {
-                    session_id: "session".into(),
-                    turn_id: "turn".into(),
-                    model_step_id: "completed".into(),
-                    delta: "reasoning".into(),
-                },
-            ),
+            EventMsg::AssistantContentDelta(mobius::protocol::AssistantContentDeltaEvent {
+                session_id: "session".into(),
+                turn_id: "turn".into(),
+                model_step_id: "completed".into(),
+                delta: "reasoning".into(),
+                phase: mobius::protocol::ModelStepContentPhase::Reasoning,
+            }),
         ),
         frame(
             3,
-            EventMsg::AgentMessageContentDelta(mobius::protocol::AgentMessageContentDeltaEvent {
+            EventMsg::AssistantContentDelta(mobius::protocol::AssistantContentDeltaEvent {
                 session_id: "session".into(),
                 turn_id: "turn".into(),
                 model_step_id: "active".into(),
                 delta: "partial".into(),
-                phase: mobius::protocol::AgentMessagePhase::FinalAnswer,
+                phase: mobius::protocol::ModelStepContentPhase::FinalAnswer,
             }),
         ),
     ]);

@@ -1,9 +1,51 @@
 use std::time::Duration;
 
+use mobius::protocol::MessageDelivery;
+
 use super::*;
 
+#[test]
+fn peer_submission_uses_the_board_id_and_defers_delivery_policy() {
+    let message_id = Uuid::new_v4().to_string();
+    let entry = BoardEntry {
+        id: message_id.clone(),
+        sequence: 1,
+        created_at_ms: 1,
+        author: crate::swarm::SwarmMember {
+            session_id: "source".into(),
+            handle: "agent_source".into(),
+            joined_at_ms: 1,
+        },
+        text: "Review this".into(),
+        mentioned_recipient_session_ids: vec!["target".into()],
+        pending_recipient_session_ids: vec!["target".into()],
+    };
+
+    let submission = peer_message_submission(entry);
+
+    assert_eq!(submission.id, message_id);
+    assert!(matches!(
+        submission.op,
+        Op::Message {
+            message: MessageSubmission {
+                author: MessageAuthor::Peer {
+                    message_id: peer_message_id,
+                    session_id,
+                    handle,
+                },
+                text,
+                requested_delivery: None,
+                ..
+            },
+        } if peer_message_id == message_id
+            && session_id == "source"
+            && handle == "agent_source"
+            && text == "Review this"
+    ));
+}
+
 #[tokio::test]
-async fn stale_acknowledgement_does_not_clear_a_newer_in_flight_message() {
+async fn stale_acknowledgement_does_not_clear_a_newer_delivery_attempt() {
     let root = tempfile::tempdir().expect("root");
     let listen = "127.0.0.1:8741".parse().expect("listen address");
     let (store, config) =
@@ -12,7 +54,10 @@ async fn stale_acknowledgement_does_not_clear_a_newer_in_flight_message() {
         Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
     let cron = Arc::new(CronStore::open(store.state_dir()).expect("cron"));
     let gateway = GatewayHost::start(store, config, credentials, cron).expect("gateway");
-    let mut in_flight = HashMap::from([("target".into(), "new-message".into())]);
+    let mut attempts = HashMap::from([(
+        "target".into(),
+        SwarmDeliveryAttempt::Submitted("new-message".into()),
+    )]);
 
     gateway
         .handle_swarm_delivery(
@@ -20,18 +65,66 @@ async fn stale_acknowledgement_does_not_clear_a_newer_in_flight_message() {
                 target_session_id: "target".into(),
                 message_id: "old-message".into(),
             },
-            &mut in_flight,
+            &mut attempts,
         )
         .await;
 
     assert_eq!(
-        in_flight.get("target").map(String::as_str),
-        Some("new-message")
+        attempts.get("target"),
+        Some(&SwarmDeliveryAttempt::Submitted("new-message".into()))
     );
 }
 
 #[tokio::test]
-async fn mentioned_stopped_chat_reopens_records_peer_input_and_acknowledges_delivery() {
+async fn rejected_delivery_waits_for_message_capacity_before_retrying() {
+    let root = tempfile::tempdir().expect("root");
+    let listen = "127.0.0.1:8741".parse().expect("listen address");
+    let (store, config) =
+        ConfigStore::initialize(root.path().join("state"), listen, None).expect("config");
+    let credentials =
+        Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
+    let cron = Arc::new(CronStore::open(store.state_dir()).expect("cron"));
+    let gateway = GatewayHost::start(store, config, credentials, cron).expect("gateway");
+    let mut attempts = HashMap::from([(
+        "target".into(),
+        SwarmDeliveryAttempt::Submitted("message-1".into()),
+    )]);
+
+    gateway
+        .handle_swarm_delivery(
+            SwarmDelivery::Rejected {
+                target_session_id: "target".into(),
+                message_id: "message-1".into(),
+            },
+            &mut attempts,
+        )
+        .await;
+    assert_eq!(
+        attempts.get("target"),
+        Some(&SwarmDeliveryAttempt::Rejected("message-1".into()))
+    );
+
+    gateway
+        .handle_swarm_delivery(SwarmDelivery::RetryPending, &mut attempts)
+        .await;
+    assert!(matches!(
+        attempts.get("target"),
+        Some(SwarmDeliveryAttempt::Rejected(message_id)) if message_id == "message-1"
+    ));
+
+    gateway
+        .handle_swarm_delivery(
+            SwarmDelivery::CapacityAvailable {
+                target_session_id: "target".into(),
+            },
+            &mut attempts,
+        )
+        .await;
+    assert!(!attempts.contains_key("target"));
+}
+
+#[tokio::test]
+async fn mentioned_stopped_chat_reopens_records_peer_message_and_acknowledges_delivery() {
     let root = tempfile::tempdir().expect("root");
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).expect("workspace");
@@ -134,11 +227,21 @@ async fn mentioned_stopped_chat_reopens_records_peer_input_and_acknowledges_deli
     assert!(page.events.iter().any(|record| {
         matches!(
             &record.event.msg,
-            EventMsg::PeerMessage(message)
-                if message.message_id == post.entry.id
-                    && message.source_session_id == source_session_id
-                    && message.source_handle == post.entry.author.handle
-                    && message.message == text
+            EventMsg::Message(MessageEvent {
+                author: MessageAuthor::Peer {
+                    message_id,
+                    session_id,
+                    handle,
+                },
+                delivery,
+                text: message_text,
+                ..
+            }) if record.event.submission_id.as_deref() == Some(post.entry.id.as_str())
+                && message_id == &post.entry.id
+                && session_id == &source_session_id
+                && handle == &post.entry.author.handle
+                && delivery == &MessageDelivery::Turn
+                && message_text == &text
         )
     }));
 }
@@ -213,12 +316,16 @@ async fn startup_acknowledges_a_peer_event_persisted_before_the_previous_gateway
             &target_session_id,
             1,
             &Event {
-                submission_id: Some(format!("swarm-{}", post.entry.id)),
-                msg: EventMsg::PeerMessage(mobius::protocol::PeerMessageEvent {
-                    message_id: post.entry.id.clone(),
-                    source_session_id: source_session_id.clone(),
-                    source_handle: post.entry.author.handle.clone(),
-                    message: text,
+                submission_id: Some(post.entry.id.clone()),
+                msg: EventMsg::Message(MessageEvent {
+                    author: MessageAuthor::Peer {
+                        message_id: post.entry.id.clone(),
+                        session_id: source_session_id.clone(),
+                        handle: post.entry.author.handle.clone(),
+                    },
+                    delivery: MessageDelivery::Turn,
+                    text,
+                    attachments: Vec::new(),
                     message_target: None,
                 }),
             },
@@ -265,7 +372,10 @@ async fn startup_acknowledges_a_peer_event_persisted_before_the_previous_gateway
             .iter()
             .filter(|record| matches!(
                 &record.event.msg,
-                EventMsg::PeerMessage(message) if message.message_id == post.entry.id
+                EventMsg::Message(MessageEvent {
+                    author: MessageAuthor::Peer { message_id, .. },
+                    ..
+                }) if message_id == &post.entry.id
             ))
             .count(),
         1,

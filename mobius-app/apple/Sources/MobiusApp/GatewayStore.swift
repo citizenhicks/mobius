@@ -2,17 +2,38 @@ import Foundation
 import Security
 
 struct CachedTranscript: Codable, Sendable {
-    static let currentSchemaVersion = 2
+    static let currentSchemaVersion = 4
 
     private struct HistoryState: Codable, Sendable {
         let nextBeforeSequence: UInt64?
+    }
+
+    private enum EntryIdentity: Codable, Sendable {
+        case message(TranscriptMessageMetadata)
+        case narrative(TranscriptEntry.Kind)
+
+        init(_ entry: TranscriptEntry) {
+            self = entry.messageMetadata.map(Self.message) ?? .narrative(entry.kind)
+        }
+
+        var kind: TranscriptEntry.Kind {
+            switch self {
+            case .message(let metadata): metadata.kind
+            case .narrative(let kind): kind
+            }
+        }
+
+        var messageMetadata: TranscriptMessageMetadata? {
+            guard case .message(let metadata) = self else { return nil }
+            return metadata
+        }
     }
 
     private struct Entry: Codable, Sendable {
         let id: String
         let presentationID: String?
         let text: String
-        let kind: TranscriptEntry.Kind
+        let identity: EntryIdentity
         let capability: String?
         let role: FrontendBlockRole?
         let title: String
@@ -35,7 +56,7 @@ struct CachedTranscript: Codable, Sendable {
             id = entry.id
             presentationID = entry.presentationID
             text = entry.text
-            kind = entry.kind
+            identity = EntryIdentity(entry)
             capability = entry.capability
             role = entry.role
             title = entry.title
@@ -60,7 +81,7 @@ struct CachedTranscript: Codable, Sendable {
                 id: id,
                 presentationID: presentationID,
                 text: text,
-                kind: kind,
+                kind: identity.kind,
                 capability: capability,
                 role: role,
                 title: title,
@@ -77,7 +98,8 @@ struct CachedTranscript: Codable, Sendable {
                 sourceSequence: sourceSequence,
                 recordedAtMs: recordedAtMs,
                 messageTarget: messageTarget,
-                files: files
+                files: files,
+                messageMetadata: identity.messageMetadata
             )
         }
     }
@@ -128,6 +150,9 @@ struct CachedTranscript: Codable, Sendable {
                   consume(entry.turnID),
                   consume(entry.format),
                   consume(entry.tone),
+                  consume(entry.identity.messageMetadata?.author.peerFields?.messageID),
+                  consume(entry.identity.messageMetadata?.author.peerFields?.sessionID),
+                  consume(entry.identity.messageMetadata?.author.peerFields?.handle),
                   entry.files.allSatisfy({ file in
                       consume(file.id)
                           && consume(file.name)

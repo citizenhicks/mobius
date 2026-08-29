@@ -10,11 +10,11 @@ use std::sync::atomic::Ordering;
 
 use super::Agent;
 use super::AgentConfig;
-use super::AgentSender;
 use super::EVENT_QUEUE_CAPACITY;
 use super::EventRecorder;
 use super::create_agent;
 use super::send_event;
+use super::submission_channel;
 use super::try_send_event;
 use crate::BoxFuture;
 use crate::Error;
@@ -24,7 +24,8 @@ use crate::backend::checkpoint::CheckpointStore;
 use crate::backend::checkpoint::EventPageRequest;
 use crate::backend::checkpoint::ExecutionOutcome;
 use crate::backend::checkpoint::ExecutionPageRequest;
-use crate::backend::checkpoint::QueuedInput;
+use crate::backend::checkpoint::QueuedMessage;
+use crate::backend::checkpoint::QueuedMessageBoundary;
 use crate::backend::checkpoint::TranscriptPageRequest;
 use crate::backend::checkpoint::sqlite::SqliteCheckpoint;
 use crate::backend::model::CompactOutput;
@@ -39,13 +40,11 @@ use crate::backend::model::STREAM_RETRY_LIMIT;
 use crate::backend::model::TOOL_ERROR_FIELD;
 use crate::backend::model::ToolCall;
 use crate::backend::model::ToolDefinition;
-use crate::backend::model::user_message;
 use crate::backend::sandbox::Sandbox;
 use crate::backend::sandbox::local::LocalSandbox;
 use crate::backend::sandbox::{ApprovalPolicy, ApprovalReviewerConfig};
-use crate::middleware::ActiveSubmissionContext;
-use crate::middleware::ActiveSubmissionResult;
 use crate::middleware::CompactContext;
+use crate::middleware::MessageSubmitContext;
 use crate::middleware::Middleware;
 use crate::middleware::MiddlewareStack;
 use crate::middleware::ModelContext;
@@ -54,24 +53,25 @@ use crate::middleware::PostToolUseContext;
 use crate::middleware::PreToolUseContext;
 use crate::middleware::RuntimeContext;
 use crate::middleware::SessionStartContext;
-use crate::middleware::UserPromptSubmitContext;
 use crate::middleware::compaction::Compaction;
-use crate::middleware::steering::Steering;
+use crate::middleware::messages::Messages;
 use crate::middleware::tools::ApprovalRequirement;
 use crate::middleware::tools::Catalog;
 use crate::middleware::tools::ToolContext;
 use crate::middleware::tools::Tools;
 use crate::middleware::tools::{Tool, ToolExposure};
+use crate::protocol::ActiveMessageDelivery;
 use crate::protocol::ApprovalReviewEscalation;
 use crate::protocol::ApprovalReviewStatus;
 use crate::protocol::ErrorKind;
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
 use crate::protocol::FrontendEvent;
-use crate::protocol::FrontendSlot;
-use crate::protocol::FrontendTone;
-use crate::protocol::FrontendWidget;
-use crate::protocol::MAX_USER_INPUT_BYTES;
+use crate::protocol::MAX_MESSAGE_BYTES;
+use crate::protocol::MessageAuthor;
+use crate::protocol::MessageDelivery;
+use crate::protocol::MessageEvent;
+use crate::protocol::MessageSubmission;
 use crate::protocol::ModelEvent;
 use crate::protocol::ModelStepContent;
 use crate::protocol::ModelStepContentPhase;
@@ -145,17 +145,11 @@ struct FailingBeforeModel;
 
 struct ApprovalRequiredTestTool;
 
+struct DenyPermission;
+
 struct ToolHookContext;
 
 struct SaturatingMiddleware;
-
-struct QueueingMiddleware;
-
-struct BlockingBeforeModelMiddleware {
-    started: Arc<Notify>,
-    release: Arc<Notify>,
-    blocked: AtomicBool,
-}
 
 struct BlockingTailMiddleware {
     started: Arc<Notify>,
@@ -169,106 +163,74 @@ struct BlockingModel {
     calls: AtomicUsize,
 }
 
-const QUEUE_OPERATION: &str = "queue";
-const QUEUE_OPERATIONS: &[&str] = &[QUEUE_OPERATION];
-
-fn accept_queued_input(
-    context: &mut ActiveSubmissionContext<'_>,
-) -> Result<ActiveSubmissionResult> {
-    if !context
-        .queued_input
-        .enqueue(context.submission_id, context.text)?
-    {
-        return Ok(ActiveSubmissionResult::Rejected(
-            "active input could not be queued".into(),
-        ));
+fn user_submission(text: impl Into<String>) -> MessageSubmission {
+    MessageSubmission {
+        author: MessageAuthor::User,
+        text: text.into(),
+        attachments: Vec::new(),
+        requested_delivery: None,
+        target_turn_id: None,
     }
-    context
-        .events
-        .push(EventMsg::Frontend(FrontendEvent::Widget {
-            capability: "queueing".into(),
-            item: FrontendWidget {
-                id: "queued".into(),
-                slot: FrontendSlot::TranscriptTail,
-                text: context.text.into(),
-                tone: FrontendTone::Neutral,
-                symbol: None,
-                icon_only: false,
-                progress: None,
-                content: None,
-                action: None,
+}
+
+fn user_op(text: impl Into<String>) -> Op {
+    Op::Message {
+        message: user_submission(text),
+    }
+}
+
+fn user_op_with_attachments(text: impl Into<String>, attachments: Vec<SessionFileReference>) -> Op {
+    let mut message = user_submission(text);
+    message.attachments = attachments;
+    Op::Message { message }
+}
+
+fn active_user_op(
+    text: impl Into<String>,
+    turn_id: impl Into<String>,
+    delivery: ActiveMessageDelivery,
+) -> Op {
+    let mut message = user_submission(text);
+    message.requested_delivery = Some(delivery);
+    message.target_turn_id = Some(turn_id.into());
+    Op::Message { message }
+}
+
+fn peer_op(
+    message_id: impl Into<String>,
+    session_id: impl Into<String>,
+    handle: impl Into<String>,
+    text: impl Into<String>,
+) -> Op {
+    Op::Message {
+        message: MessageSubmission {
+            author: MessageAuthor::Peer {
+                message_id: message_id.into(),
+                session_id: session_id.into(),
+                handle: handle.into(),
             },
-        }));
-    Ok(ActiveSubmissionResult::Accepted)
-}
-
-fn consume_queued_input(context: &mut ModelContext<'_>) {
-    let queued = context.queued_input.drain();
-    if !queued.is_empty() {
-        context
-            .events
-            .push(EventMsg::Frontend(FrontendEvent::RemoveWidget {
-                capability: "queueing".into(),
-                id: "queued".into(),
-            }));
-    }
-    for item in queued {
-        context
-            .push_input(crate::backend::model::user_message(item.text()))
-            .expect("provisional target");
+            text: text.into(),
+            attachments: Vec::new(),
+            requested_delivery: None,
+            target_turn_id: None,
+        },
     }
 }
 
-impl Middleware for QueueingMiddleware {
-    fn name(&self) -> &'static str {
-        "queueing"
-    }
-
-    fn active_operations(&self) -> &'static [&'static str] {
-        QUEUE_OPERATIONS
-    }
-
-    fn active_submission(
-        &self,
-        context: &mut ActiveSubmissionContext<'_>,
-    ) -> Result<ActiveSubmissionResult> {
-        accept_queued_input(context)
-    }
-
-    fn pre_model<'a>(&'a self, context: &'a mut ModelContext<'_>) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            consume_queued_input(context);
-            Ok(())
-        })
-    }
+fn queued_user_message(id: &str, text: &str, boundary: QueuedMessageBoundary) -> QueuedMessage {
+    let event = MessageEvent {
+        author: MessageAuthor::User,
+        delivery: boundary.delivery(),
+        text: text.into(),
+        attachments: Vec::new(),
+        message_target: None,
+    };
+    QueuedMessage::new("messages", id, boundary, event).expect("queued message")
 }
 
-impl Middleware for BlockingBeforeModelMiddleware {
-    fn name(&self) -> &'static str {
-        "queueing"
-    }
-
-    fn active_operations(&self) -> &'static [&'static str] {
-        QUEUE_OPERATIONS
-    }
-
-    fn active_submission(
-        &self,
-        context: &mut ActiveSubmissionContext<'_>,
-    ) -> Result<ActiveSubmissionResult> {
-        accept_queued_input(context)
-    }
-
-    fn pre_model<'a>(&'a self, context: &'a mut ModelContext<'_>) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            if !self.blocked.swap(true, Ordering::SeqCst) {
-                self.started.notify_one();
-                self.release.notified().await;
-            }
-            consume_queued_input(context);
-            Ok(())
-        })
-    }
+fn test_middleware(mut entries: Vec<Arc<dyn Middleware>>) -> MiddlewareStack {
+    entries.insert(0, Arc::new(Messages::default()));
+    MiddlewareStack::new(entries).expect("middleware")
 }
 
 impl Middleware for BlockingTailMiddleware {
@@ -420,9 +382,9 @@ impl Middleware for RejectFirstPrompt {
         "reject_first_prompt"
     }
 
-    fn user_prompt_submit<'a>(
+    fn message_submit<'a>(
         &'a self,
-        context: &'a mut UserPromptSubmitContext<'_>,
+        context: &'a mut MessageSubmitContext<'_>,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             if !self.0.swap(true, Ordering::SeqCst) {
@@ -642,6 +604,19 @@ impl Tool for ApprovalRequiredTestTool {
     }
 }
 
+impl Middleware for DenyPermission {
+    fn name(&self) -> &'static str {
+        "deny_permission"
+    }
+
+    fn permission_request<'a>(
+        &'a self,
+        context: &'a mut crate::middleware::PermissionRequestContext<'_>,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move { context.deny("blocked by middleware") })
+    }
+}
+
 fn scripted_usage() -> TokenUsage {
     TokenUsage {
         input_tokens: 1,
@@ -695,6 +670,7 @@ fn auto_review_config(
     checkpoints: Arc<dyn CheckpointStore>,
     model: Arc<ScriptedModel>,
     session_id: &str,
+    mut middleware: Vec<Arc<dyn Middleware>>,
 ) -> AgentConfig {
     let mut models = ModelRouter::new("main", model.clone());
     models
@@ -703,6 +679,10 @@ fn auto_review_config(
     let reviewer = ApprovalReviewerConfig::default()
         .model_route("reviewer")
         .expect("reviewer route");
+    middleware.insert(
+        0,
+        Arc::new(Tools::new(vec![Arc::new(ApprovalRequiredTestTool)])),
+    );
     AgentConfig::new(
         Arc::new(models),
         Arc::new(
@@ -713,10 +693,7 @@ fn auto_review_config(
             .approval_reviewer(reviewer),
         ),
         checkpoints,
-        MiddlewareStack::new(vec![Arc::new(Tools::new(vec![Arc::new(
-            ApprovalRequiredTestTool,
-        )]))])
-        .expect("middleware"),
+        test_middleware(middleware),
         "test prompt",
     )
     .session_id(session_id)
@@ -759,7 +736,7 @@ fn config_with_model(
             ApprovalPolicy::Ask,
         )),
         checkpoints,
-        MiddlewareStack::new(Vec::new()).expect("middleware"),
+        test_middleware(Vec::new()),
         "test prompt",
     )
     .session_id(session_id)
@@ -783,7 +760,7 @@ fn config_with_two_routes(
             ApprovalPolicy::Ask,
         )),
         checkpoints,
-        MiddlewareStack::new(Vec::new()).expect("middleware"),
+        test_middleware(Vec::new()),
         "test prompt",
     )
     .session_id(session_id)
@@ -803,7 +780,7 @@ fn config_with_metadata_probe(
             ApprovalPolicy::Ask,
         )),
         checkpoints,
-        MiddlewareStack::new(vec![Arc::new(MetadataProbe { observed })]).expect("middleware"),
+        test_middleware(vec![Arc::new(MetadataProbe { observed })]),
         "test prompt",
     )
     .session_id(session_id);
@@ -813,16 +790,16 @@ fn config_with_metadata_probe(
     }
 }
 
-#[path = "runtime_tests/active_input.rs"]
-mod active_input;
 #[path = "runtime_tests/configuration.rs"]
 mod configuration;
 #[path = "runtime_tests/input_validation.rs"]
 mod input_validation;
+#[path = "runtime_tests/message_delivery.rs"]
+mod message_delivery;
 #[path = "runtime_tests/model_steps.rs"]
 mod model_steps;
-#[path = "runtime_tests/peer_input.rs"]
-mod peer_input;
+#[path = "runtime_tests/peer_messages.rs"]
+mod peer_messages;
 #[path = "runtime_tests/recorder.rs"]
 mod recorder;
 #[path = "runtime_tests/resume_and_recovery.rs"]

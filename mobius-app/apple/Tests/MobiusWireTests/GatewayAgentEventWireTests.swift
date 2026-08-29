@@ -2,6 +2,25 @@ import Foundation
 import XCTest
 
 extension GatewayWireTests {
+    func testSubmissionRejectedRequiresMessage() throws {
+        let fixture = #"{"version":55,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1234,"event":{"submission_id":"input-1","msg":{"type":"submission_rejected","message":"Message queue is full"}},"stream_metrics":[],"blocks":[],"preview":null}}"#
+        guard case .agentEvent(_, let record) = try decodeEnvelope(fixture) else {
+            return XCTFail("Expected submission rejection event")
+        }
+        XCTAssertEqual(record.event.msg["message"]?.stringValue, "Message queue is full")
+
+        let malformed = fixture.replacingOccurrences(
+            of: ",\"message\":\"Message queue is full\"",
+            with: ""
+        )
+        XCTAssertThrowsError(try decodeEnvelope(malformed)) { error in
+            XCTAssertEqual(
+                error as? GatewayWireError,
+                .invalidFrame("submission_rejected has invalid message")
+            )
+        }
+    }
+
     func testAgentEventFixtureIncludesSessionScope() throws {
         let fixture = #"{"version":28,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1234,"event":{"submission_id":"input-1","msg":{"type":"context_compacted"}},"stream_metrics":[{"phase":"reasoning","first_delta_at_ms":1000,"last_delta_at_ms":1200,"chunk_count":3,"utf8_bytes":12,"longest_gap_ms":150}],"blocks":[],"preview":null}}"#
         let envelope = try decodeEnvelope(fixture)
@@ -54,7 +73,7 @@ extension GatewayWireTests {
 
     func testTypedModelCompletionAndWebActionDecode() throws {
         let completion = try decodeEnvelope(
-            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1400,"event":{"msg":{"type":"model_step_completed","session_id":"chat-1","turn_id":"turn-1","model_step_id":"step-1","step_index":0,"started_at_ms":1000,"completed_at_ms":1400,"outcome":{"status":"completed","end_turn":true,"tool_call_ids":["call-1"],"usage":{"input_tokens":10,"cached_input_tokens":2,"cache_write_input_tokens":0,"output_tokens":3,"reasoning_output_tokens":1,"total_tokens":13},"content":[{"output_index":0,"part_index":0,"phase":"reasoning","text":"Checked","annotations":[]},{"output_index":1,"part_index":0,"phase":"final_answer","text":"Done","annotations":[{"type":"url_citation","url":"https://example.com","title":"Example","start_index":0,"end_index":4}]}]}}},"stream_metrics":[{"phase":"reasoning","first_delta_at_ms":1100,"last_delta_at_ms":1200,"chunk_count":2,"utf8_bytes":7,"longest_gap_ms":100},{"phase":"final_answer","first_delta_at_ms":1300,"last_delta_at_ms":1350,"chunk_count":1,"utf8_bytes":4,"longest_gap_ms":0}],"blocks":[],"preview":null}}"#
+            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1400,"event":{"msg":{"type":"model_step_completed","session_id":"chat-1","turn_id":"turn-1","model_step_id":"step-1","step_index":0,"started_at_ms":1000,"completed_at_ms":1400,"outcome":{"status":"completed","end_turn":true,"tool_call_ids":["call-1"],"usage":{"input_tokens":10,"cached_input_tokens":2,"cache_write_input_tokens":0,"output_tokens":3,"reasoning_output_tokens":1,"total_tokens":13}}}},"stream_metrics":[{"phase":"reasoning","first_delta_at_ms":1100,"last_delta_at_ms":1200,"chunk_count":2,"utf8_bytes":7,"longest_gap_ms":100},{"phase":"final_answer","first_delta_at_ms":1300,"last_delta_at_ms":1350,"chunk_count":1,"utf8_bytes":4,"longest_gap_ms":0}],"blocks":[],"preview":null}}"#
         )
         guard case .agentEvent(_, let completionRecord) = completion else {
             return XCTFail("Expected model completion")
@@ -66,6 +85,14 @@ extension GatewayWireTests {
         XCTAssertEqual(completionRecord.streamMetrics.map(\.phase), [.reasoning, .finalAnswer])
         XCTAssertEqual(completionRecord.streamMetrics.last?.utf8Bytes, 4)
 
+        let assistant = try decodeEnvelope(
+            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":9,"recorded_at_ms":1401,"event":{"msg":{"type":"assistant_message","session_id":"chat-1","turn_id":"turn-1","model_step_id":"step-1","content":[{"output_index":0,"part_index":0,"phase":"reasoning","text":"Checked","annotations":[]},{"output_index":1,"part_index":0,"phase":"final_answer","text":"Done","annotations":[{"type":"url_citation","url":"https://example.com","title":"Example","start_index":0,"end_index":4}]}],"message_target":null}},"stream_metrics":[],"blocks":[],"preview":null}}"#
+        )
+        guard case .agentEvent(_, let assistantRecord) = assistant else {
+            return XCTFail("Expected assistant message")
+        }
+        XCTAssertEqual(assistantRecord.event.msg["content"]?.arrayValue?.count, 2)
+
         let retry = try decodeEnvelope(
             #"{"version":28,"type":"agent_event","session_id":"chat-1","record":{"sequence":9,"recorded_at_ms":1450,"event":{"msg":{"type":"model_step_completed","session_id":"chat-1","turn_id":"turn-1","model_step_id":"step-1","step_index":0,"started_at_ms":1000,"completed_at_ms":1450,"outcome":{"status":"retrying"}}},"stream_metrics":[],"blocks":[],"preview":null}}"#
         )
@@ -74,12 +101,12 @@ extension GatewayWireTests {
         }
         XCTAssertEqual(retryRecord.event.msg["outcome"]?["status"]?.stringValue, "retrying")
 
-        let unknownCitation = #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1400,"event":{"msg":{"type":"model_step_completed","session_id":"chat-1","turn_id":"turn-1","model_step_id":"step-1","step_index":0,"started_at_ms":1000,"completed_at_ms":1400,"outcome":{"status":"completed","end_turn":true,"tool_call_ids":[],"usage":{"input_tokens":1,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0,"total_tokens":2},"content":[{"output_index":0,"part_index":0,"phase":"final_answer","text":"Done","annotations":[{"type":"future"}]}]}}},"stream_metrics":[],"blocks":[],"preview":null}}"#
+        let unknownCitation = #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1400,"event":{"msg":{"type":"assistant_message","session_id":"chat-1","turn_id":"turn-1","model_step_id":"step-1","content":[{"output_index":0,"part_index":0,"phase":"final_answer","text":"Done","annotations":[{"type":"future"}]}],"message_target":null}},"stream_metrics":[],"blocks":[],"preview":null}}"#
         XCTAssertThrowsError(try decodeEnvelope(unknownCitation)) { error in
             XCTAssertEqual(
                 error as? GatewayWireError,
                 .invalidFrame(
-                    "model_step_completed has unknown content annotation future"
+                    "assistant_message has unknown content annotation future"
                 )
             )
         }
@@ -109,7 +136,6 @@ extension GatewayWireTests {
     func testGatewayOnlyEventInvariantsAreRejected() {
         let fixtures = [
             #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"session_history","events":[]}},"stream_metrics":[],"blocks":[],"preview":null}}"#,
-            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"agent_message_content_delta","session_id":"chat-1","turn_id":"turn-1","item_id":"old","delta":"x","phase":"final_answer"}},"stream_metrics":[],"blocks":[],"preview":null}}"#,
         ]
 
         for fixture in fixtures {
@@ -154,7 +180,7 @@ extension GatewayWireTests {
     }
 
     func testUnknownRenderedPresentationValuesAreRejected() {
-        let outerBlock = #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"task_complete","turn_id":"turn-1"}},"stream_metrics":[],"blocks":[{"capability":"tools","block":{"id":null,"group":null,"update":"replace","state":"complete","role":"tool","title":"Done","text":"","symbol":null,"format":"future_format","tone":"neutral","files":[]}}],"preview":null}}"#
+        let outerBlock = #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"turn_complete","turn_id":"turn-1"}},"stream_metrics":[],"blocks":[{"capability":"tools","block":{"id":null,"group":null,"update":"replace","state":"complete","role":"tool","title":"Done","text":"","symbol":null,"format":"future_format","tone":"neutral","files":[]}}],"preview":null}}"#
         XCTAssertThrowsError(try decodeEnvelope(outerBlock))
 
         let invalidWidgetPayload = sessionReadyPayloadJSON.replacingOccurrences(

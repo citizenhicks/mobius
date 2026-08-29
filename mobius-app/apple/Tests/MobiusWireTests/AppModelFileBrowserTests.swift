@@ -156,7 +156,7 @@ extension AppModelTests {
         requestCount = await recorder.requestCount()
         model.reduce(
             event: AgentEventRecord(submissionId: nil, msg: .object([
-                "type": .string("task_complete")
+                "type": .string("turn_complete")
             ])),
             blocks: [],
             preview: nil

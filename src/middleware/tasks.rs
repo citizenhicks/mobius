@@ -320,6 +320,7 @@ mod tests {
         let frontend_events = Arc::new(Mutex::new(Vec::new()));
         let events = Arc::clone(&frontend_events);
         let runtime = RuntimeContext {
+            sender: crate::agent::test_sender(),
             checkpoints: Arc::clone(&checkpoints),
             session_id: "session-a".into(),
             model_route: "default".into(),

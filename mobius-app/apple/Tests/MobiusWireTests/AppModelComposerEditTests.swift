@@ -4,7 +4,7 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
-    func testQueuedWidgetEditIsTakenBeforeTheComposerResubmitsFreshActiveInput() async throws {
+    func testQueuedWidgetEditIsTakenBeforeTheComposerResubmitsFreshMessage() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model(requestSender: { request in
             await recorder.record(request)
@@ -50,7 +50,6 @@ extension AppModelTests {
         model.connectionState = .ready
         model.selectedSessionID = "chat-1"
         model.activeTurnID = "turn-1"
-        model.activeOperation = "steer"
         model.mountedWidgets = [queued, sibling]
         model.composer = "Keep this draft"
         let focusRequest = model.composerFocusRequest
@@ -109,16 +108,17 @@ extension AppModelTests {
             guard case .submit(_, let submission) = request else { return nil }
             return submission
         })
-        guard case .activeInput(let operation, let turnID, let text) = editedSubmission.op
-        else { return XCTFail("Expected fresh active input") }
-        XCTAssertEqual(operation, "steer")
-        XCTAssertEqual(turnID, "turn-1")
-        XCTAssertEqual(text, "Edited input")
+        guard case .message(let message) = editedSubmission.op
+        else { return XCTFail("Expected fresh active message") }
+        XCTAssertEqual(message.author, .user)
+        XCTAssertNil(message.requestedDelivery)
+        XCTAssertEqual(message.targetTurnId, "turn-1")
+        XCTAssertEqual(message.text, "Edited input")
         XCTAssertEqual(model.composer, "Keep this draft")
 
         model.reduce(
             event: AgentEventRecord(submissionId: editedSubmission.id, msg: .object([
-                "type": .string("task_started"),
+                "type": .string("turn_started"),
                 "turnId": .string("turn-1")
             ])),
             blocks: [],
@@ -202,10 +202,10 @@ extension AppModelTests {
             guard case .submit(_, let submission) = request else { return nil }
             return submission
         }
-        guard case .userInput(let text, _) = try XCTUnwrap(submissions.last).op else {
-            return XCTFail("Expected recovered user input")
+        guard case .message(let message) = try XCTUnwrap(submissions.last).op else {
+            return XCTFail("Expected recovered user message")
         }
-        XCTAssertEqual(text, "Edited after relaunch")
+        XCTAssertEqual(message.text, "Edited after relaunch")
         XCTAssertEqual(model.composer, "Displaced draft")
     }
 
@@ -270,15 +270,13 @@ extension AppModelTests {
         model.handle(.agentEvent(
             sessionID: "chat-1",
             sequence: 11,
-            event: AgentEventRecord(submissionId: nil, msg: .object([
-                "type": .string("user_message"),
-                "message": .string("Edited input"),
-                "attachments": .array([]),
-                "messageTarget": .object([
-                    "checkpointSequence": .number(11),
-                    "batchItemCount": .number(1)
-                ])
-            ])),
+            event: AgentEventRecord(
+                submissionId: nil,
+                msg: testMessageEvent(
+                    text: "Edited input",
+                    messageTarget: MessageTarget(checkpointSequence: 11, batchItemCount: 1)
+                )
+            ),
             blocks: [],
             history: nil,
             preview: nil
@@ -371,8 +369,8 @@ extension AppModelTests {
             requestSender: { request in
                 await recorder.record(request)
                 if case .submit(_, let submission) = request,
-                   case .userInput(let text, _) = submission.op,
-                   text == "New gateway message" {
+                   case .message(let message) = submission.op,
+                   message.text == "New gateway message" {
                     ordinaryMessageSent.fulfill()
                 }
             }
@@ -401,10 +399,10 @@ extension AppModelTests {
             guard case .submit(_, let submission) = request else { return nil }
             return submission
         }
-        guard case .userInput(let text, _) = try XCTUnwrap(submissions.last).op else {
+        guard case .message(let message) = try XCTUnwrap(submissions.last).op else {
             return XCTFail("Expected an ordinary new-gateway message")
         }
-        XCTAssertEqual(text, "New gateway message")
+        XCTAssertEqual(message.text, "New gateway message")
     }
 
     func testDeletingSelectedSessionInvalidatesItsInMemoryComposerEdit() async throws {
@@ -434,10 +432,10 @@ extension AppModelTests {
             guard case .submit(_, let submission) = request else { return nil }
             return submission
         }
-        guard case .userInput(let text, _) = try XCTUnwrap(submissions.last).op else {
+        guard case .message(let message) = try XCTUnwrap(submissions.last).op else {
             return XCTFail("Expected an ordinary message after deletion")
         }
-        XCTAssertEqual(text, "Replacement message")
+        XCTAssertEqual(message.text, "Replacement message")
     }
 
     func testSwitchingGatewayImmediatelyPersistsTheLatestComposerEdit() async throws {

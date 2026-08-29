@@ -135,7 +135,7 @@ extension AppModelTests {
                 sequence: sequence,
                 authorSessionId: leader.sessionId,
                 authorHandle: leader.handle,
-                body: id,
+                text: id,
                 createdAtMs: Int64(sequence)
             )
         }
@@ -445,7 +445,6 @@ extension AppModelTests {
         model.destination = .chats
         model.navigationPath = [.chat(.session(selected.sessionId))]
         model.activeTurnID = "turn-1"
-        model.activeOperation = "steer"
         model.composer = "Keep working"
 
         model.sendMessage()
@@ -476,14 +475,17 @@ extension AppModelTests {
         XCTAssertEqual(model.navigationPath, [.chat(.session("chat-1"))])
     }
 
-    func testTaskCompleteFlushesPendingReasoning() throws {
+    func testTurnCompleteFlushesPendingReasoning() throws {
         let model = try model()
 
         for delta in ["think", "ing"] {
             model.reduce(
                 event: AgentEventRecord(submissionId: nil, msg: .object([
-                    "type": .string("agent_reasoning_content_delta"),
+                    "type": .string("assistant_content_delta"),
+                    "sessionId": .string("chat-1"),
+                    "turnId": .string("turn-1"),
                     "modelStepId": .string("reasoning-1"),
+                    "phase": .string("reasoning"),
                     "delta": .string(delta)
                 ])),
                 blocks: [],
@@ -494,7 +496,7 @@ extension AppModelTests {
 
         model.reduce(
             event: AgentEventRecord(submissionId: nil, msg: .object([
-                "type": .string("task_complete")
+                "type": .string("turn_complete")
             ])),
             blocks: [],
             preview: nil
@@ -504,24 +506,20 @@ extension AppModelTests {
         XCTAssertFalse(try XCTUnwrap(model.transcript.first).pending)
     }
 
-    func testTaskCompleteCollapsesCompactionIntoFinishedTurnWork() throws {
+    func testTurnCompleteCollapsesCompactionAndSteeringIntoFinishedTurnWork() throws {
         let model = try model()
         let turnID = "turn-1"
         model.reduce(record: recorded(1, .object([
-            "type": .string("task_started"),
+            "type": .string("turn_started"),
             "turnId": .string(turnID),
         ])))
-        model.reduce(record: recorded(2, .object([
-            "type": .string("user_message"),
-            "message": .string("Start"),
-        ])))
-        model.reduce(record: recorded(3, .object([
-            "type": .string("agent_message"),
-            "turnId": .string(turnID),
-            "modelStepId": .string("step-1"),
-            "phase": .string("commentary"),
-            "message": .string("Checking"),
-        ])))
+        model.reduce(record: recorded(2, testMessageEvent(text: "Start")))
+        model.reduce(record: recorded(3, testAssistantMessage(
+            turnID: turnID,
+            modelStepID: "step-1",
+            phase: "commentary",
+            text: "Checking"
+        )))
         model.reduce(record: recorded(4, .object([
             "type": .string("context_compacted"),
         ]), blocks: [RenderedBlock(capability: "compaction", block: FrontendBlock(
@@ -537,25 +535,32 @@ extension AppModelTests {
             tone: "neutral",
             files: []
         ))]))
-        model.reduce(record: recorded(5, .object([
-            "type": .string("user_message"),
-            "message": .string("Also check tests"),
-        ])))
-        model.reduce(record: recorded(6, .object([
-            "type": .string("agent_message"),
-            "turnId": .string(turnID),
-            "modelStepId": .string("step-2"),
-            "phase": .string("final_answer"),
-            "message": .string("Done"),
-        ])))
+        model.reduce(record: recorded(5, testMessageEvent(
+            delivery: .steer,
+            text: "Also check tests"
+        )))
+        model.reduce(record: recorded(6, testMessageEvent(
+            author: .peer(
+                messageID: "message-1",
+                sessionID: "chat-reviewer",
+                handle: "@reviewer"
+            ),
+            delivery: .steer,
+            text: "The parser boundary is covered."
+        )))
+        model.reduce(record: recorded(7, testAssistantMessage(
+            turnID: turnID,
+            modelStepID: "step-2",
+            text: "Done"
+        )))
 
         XCTAssertEqual(
             model.transcriptProjection(breakBefore: nil).rows.map(\.kind),
-            [.user, .narrative, .activityGroup, .user, .narrative]
+            [.user, .narrative, .activityGroup, .user, .peer, .narrative]
         )
 
-        model.reduce(record: recorded(7, .object([
-            "type": .string("task_complete"),
+        model.reduce(record: recorded(8, .object([
+            "type": .string("turn_complete"),
             "turnId": .string(turnID),
         ])))
 
@@ -563,55 +568,113 @@ extension AppModelTests {
         XCTAssertEqual(projection.rows.map(\.kind), [.user, .workedGroup, .narrative])
         XCTAssertEqual(
             projection.rows[1].records.map(\.text),
-            ["Checking", "", "Also check tests"]
+            ["Checking", "", "Also check tests", "The parser boundary is covered."]
         )
-        XCTAssertEqual(projection.rows[1].records.map(\.title), ["", "context compacted", ""])
-        XCTAssertEqual(projection.rows[1].elapsedMs, 500)
-        XCTAssertEqual(model.transcript.map(\.turnID), Array(repeating: turnID, count: 5))
-        XCTAssertEqual(model.transcript.map(\.startsTurn), [true, false, false, false, false])
+        XCTAssertEqual(
+            projection.rows[1].records.map(\.title),
+            ["", "context compacted", "", ""]
+        )
+        XCTAssertEqual(
+            projection.rows[1].records.compactMap { $0.messageMetadata?.delivery },
+            [.steer, .steer]
+        )
+        XCTAssertEqual(projection.rows[1].elapsedMs, 600)
+        XCTAssertEqual(model.transcript.map(\.turnID), Array(repeating: turnID, count: 6))
+        XCTAssertEqual(
+            model.transcript.map(\.startsTurn),
+            [true, false, false, false, false, false]
+        )
         XCTAssertEqual(TranscriptProjection.turnCount(in: model.transcript), 1)
-        XCTAssertEqual(model.transcript.last?.turnElapsedMs, 500)
+        XCTAssertEqual(model.transcript.last?.turnElapsedMs, 600)
     }
 
-    func testPeerMessageStartsAndCollapsesACompletedTurnLikeUserInput() throws {
+    func testPeerMessageStartsAndCollapsesACompletedTurnLikeUserMessage() throws {
         let model = try model()
         let turnID = "peer-turn"
         model.reduce(record: recorded(1, .object([
-            "type": .string("task_started"),
+            "type": .string("turn_started"),
             "turnId": .string(turnID),
         ])))
-        model.reduce(record: recorded(2, .object([
-            "type": .string("peer_message"),
-            "messageId": .string("message-1"),
-            "sourceSessionId": .string("chat-reviewer"),
-            "sourceHandle": .string("@reviewer"),
-            "message": .string("Review the parser boundary."),
-        ])))
-        model.reduce(record: recorded(3, .object([
-            "type": .string("agent_message"),
-            "turnId": .string(turnID),
-            "modelStepId": .string("step-1"),
-            "phase": .string("commentary"),
-            "message": .string("Checking"),
-        ])))
-        model.reduce(record: recorded(4, .object([
-            "type": .string("agent_message"),
-            "turnId": .string(turnID),
-            "modelStepId": .string("step-2"),
-            "phase": .string("final_answer"),
-            "message": .string("Done"),
-        ])))
+        model.reduce(record: recorded(2, testMessageEvent(
+            author: .peer(
+                messageID: "message-1",
+                sessionID: "chat-reviewer",
+                handle: "@reviewer"
+            ),
+            text: "Review the parser boundary."
+        )))
+        model.reduce(record: recorded(3, testAssistantMessage(
+            turnID: turnID,
+            modelStepID: "step-1",
+            phase: "commentary",
+            text: "Checking"
+        )))
+        model.reduce(record: recorded(4, testAssistantMessage(
+            turnID: turnID,
+            modelStepID: "step-2",
+            text: "Done"
+        )))
         model.reduce(record: recorded(5, .object([
-            "type": .string("task_complete"),
+            "type": .string("turn_complete"),
             "turnId": .string(turnID),
         ])))
 
         XCTAssertEqual(model.transcript.map(\.turnID), Array(repeating: turnID, count: 3))
         XCTAssertEqual(model.transcript.map(\.startsTurn), [true, false, false])
+        XCTAssertEqual(model.transcript.first?.messageMetadata?.delivery, .turn)
+        XCTAssertEqual(
+            model.transcript.first?.messageMetadata?.author,
+            .peer(
+                messageID: "message-1",
+                sessionID: "chat-reviewer",
+                handle: "@reviewer"
+            )
+        )
         XCTAssertEqual(
             model.transcriptProjection(breakBefore: nil).rows.map(\.kind),
             [.peer, .workedGroup, .narrative]
         )
+    }
+
+    func testQueuedMessageStartsTheNextTranscriptTurn() throws {
+        let model = try model()
+        for (sequence, turnID, delivery, text) in [
+            (UInt64(1), "turn-1", MessageDelivery.turn, "Start"),
+            (UInt64(5), "turn-2", MessageDelivery.queue, "Follow up"),
+        ] {
+            model.reduce(record: recorded(sequence, .object([
+                "type": .string("turn_started"),
+                "turnId": .string(turnID),
+            ])))
+            model.reduce(record: recorded(
+                sequence + 1,
+                testMessageEvent(delivery: delivery, text: text)
+            ))
+            model.reduce(record: recorded(
+                sequence + 2,
+                testAssistantMessage(
+                    turnID: turnID,
+                    modelStepID: "step-\(turnID)",
+                    text: "Done \(turnID)"
+                )
+            ))
+            model.reduce(record: recorded(sequence + 3, .object([
+                "type": .string("turn_complete"),
+                "turnId": .string(turnID),
+            ])))
+        }
+
+        XCTAssertEqual(
+            model.transcript
+                .filter { $0.kind == .user }
+                .compactMap { $0.messageMetadata?.delivery },
+            [.turn, .queue]
+        )
+        XCTAssertEqual(
+            model.transcript.filter { $0.kind == .user }.map(\.startsTurn),
+            [true, true]
+        )
+        XCTAssertEqual(TranscriptProjection.turnCount(in: model.transcript), 2)
     }
 
     func testOnlyLatestActivityStepIsActiveDuringTurn() throws {

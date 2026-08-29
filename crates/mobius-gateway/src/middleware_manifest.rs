@@ -18,7 +18,7 @@ pub(crate) enum BuiltinMiddleware {
     Extensions,
     Tasks,
     Subagents,
-    Steering,
+    Messages,
     ContextOffloading,
     Compaction,
     Scratchpad,
@@ -65,8 +65,8 @@ pub(crate) const MIDDLEWARE: [MiddlewareRegistration; 14] = [
         manifest: &mobius::middleware::subagents::MANIFEST,
     },
     MiddlewareRegistration {
-        kind: BuiltinMiddleware::Steering,
-        manifest: &mobius::middleware::steering::MANIFEST,
+        kind: BuiltinMiddleware::Messages,
+        manifest: &mobius::middleware::messages::MANIFEST,
     },
     MiddlewareRegistration {
         kind: BuiltinMiddleware::ContextOffloading,
@@ -276,12 +276,16 @@ mod tests {
             DEFAULT_STALE_AFTER_TOKENS,
         );
         assert_eq!(
+            config.setting("messages", "delivery"),
+            Some(&FrontendSettingValue::String("steer".into()))
+        );
+        assert_eq!(
             features
                 .iter()
                 .filter(|feature| feature.required)
                 .map(|feature| feature.id.as_str())
                 .collect::<BTreeSet<_>>(),
-            BTreeSet::from(["sandbox", "sessions", "steering", "swarm", "tools"])
+            BTreeSet::from(["sandbox", "sessions", "messages", "swarm", "tools"])
         );
 
         let mut invalid = config;

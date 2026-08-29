@@ -1,37 +1,54 @@
-use std::collections::VecDeque;
 use std::future::Future;
-
-use tokio::sync::mpsc;
 
 use crate::Error;
 use crate::Result;
-use crate::backend::checkpoint::QueuedInput;
+use crate::backend::checkpoint::QueuedMessage;
 use crate::middleware::ActiveCommandContext;
-use crate::middleware::ActiveSubmissionContext;
-use crate::middleware::ActiveSubmissionResult;
+use crate::middleware::MessageQueue;
+use crate::middleware::MessageRouteContext;
 use crate::middleware::MiddlewareStack;
-use crate::middleware::QueuedInputBaseline;
-use crate::middleware::QueuedInputQueue;
+use crate::middleware::SubmissionResult;
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
+use crate::protocol::MessageSubmission;
 use crate::protocol::Op;
 use crate::protocol::ReviewDecision;
 use crate::protocol::Submission;
+use crate::protocol::SubmissionRejectedEvent;
 use crate::protocol::WarningEvent;
 
 use super::EventRecorder;
-use super::MAX_DEFERRED_SUBMISSIONS;
 use super::Runner;
+use super::SubmissionInbox;
 use super::send_event;
 
 pub(super) enum Wait<T> {
-    Ready(T),
+    Ready { value: T, input_changed: bool },
     Interrupted { submission_id: String },
 }
 
 pub(super) enum ActiveRoute {
+    Continue {
+        input_changed: bool,
+    },
+    Interrupted {
+        submission_id: String,
+    },
+    Approval {
+        submission_id: String,
+        decision: ReviewDecision,
+    },
+}
+
+struct ActiveChange {
+    submission_id: String,
+    pending_messages: Vec<QueuedMessage>,
+    events: Vec<EventMsg>,
+    input_changed: bool,
+}
+
+enum UncommittedRoute {
     Continue,
-    Accepted(ActiveChange),
     Changed(ActiveChange),
     Interrupted {
         submission_id: String,
@@ -42,39 +59,51 @@ pub(super) enum ActiveRoute {
     },
 }
 
-pub(super) struct ActiveChange {
-    submission_id: String,
-    events: Vec<EventMsg>,
-}
-
-impl ActiveChange {
-    pub(super) fn into_events(self) -> Vec<Event> {
-        self.events
-            .into_iter()
-            .map(|msg| Event {
-                submission_id: Some(self.submission_id.clone()),
-                msg,
-            })
-            .collect()
-    }
-}
-
-pub(super) struct ActiveTurnRouter<'a> {
+struct ActiveTurnRouter<'a> {
     pub middleware: &'a MiddlewareStack,
     pub session_id: &'a str,
     pub metadata: &'a std::collections::BTreeMap<String, serde_json::Value>,
     pub turn_id: &'a str,
-    pub queued_input: &'a mut Vec<QueuedInput>,
-    pub queued_before: QueuedInputBaseline,
-    pub deferred: &'a mut VecDeque<Submission>,
+    pub queued_messages: &'a mut Vec<QueuedMessage>,
     pub events: &'a EventRecorder,
     pub expected_approval: Option<&'a str>,
 }
 
 impl Runner {
+    pub(super) async fn route_idle_message(
+        &mut self,
+        submission_id: String,
+        message: MessageSubmission,
+    ) -> Result<()> {
+        let mut pending_messages = self.state.pending_messages.clone();
+        let mut messages = Vec::new();
+        let result = self
+            .config
+            .middleware
+            .route_message(&mut MessageRouteContext {
+                submission_id: &submission_id,
+                message: &message,
+                active_turn_id: None,
+                queued_messages: MessageQueue::new(&mut pending_messages),
+                events: &mut messages,
+            })?;
+        if let Some(change) = route_submission_result(
+            &self.events,
+            submission_id,
+            result,
+            pending_messages,
+            messages,
+        )
+        .await?
+        {
+            self.persist_submission_change(change).await?;
+        }
+        Ok(())
+    }
+
     pub(super) async fn wait_active<F, T>(
         &mut self,
-        commands: &mut mpsc::Receiver<Submission>,
+        inbox: &mut SubmissionInbox,
         turn_id: &str,
         future: F,
     ) -> Result<Wait<T>>
@@ -82,66 +111,125 @@ impl Runner {
         F: Future<Output = T>,
     {
         tokio::pin!(future);
+        let mut input_changed = false;
         loop {
             tokio::select! {
-                output = &mut future => return Ok(Wait::Ready(output)),
-                submission = commands.recv() => {
+                biased;
+                submission = inbox.recv() => {
                     let Some(submission) = submission else {
                         return Err(Error::Stopped("frontend disconnected".into()));
                     };
-                    let route = (ActiveTurnRouter {
-                        middleware: &self.config.middleware,
-                        session_id: &self.config.session_id,
-                        metadata: &self.config.metadata,
-                        turn_id,
-                        queued_input: &mut self.state.pending_input,
-                        queued_before: QueuedInputBaseline::default(),
-                        deferred: &mut self.deferred,
-                        events: &self.events,
-                        expected_approval: None,
-                    })
-                    .route(submission)
-                    .await?;
-                    match route {
-                        ActiveRoute::Accepted(change) | ActiveRoute::Changed(change) => {
-                            self.persist_active_change(change).await?;
-                        }
+                    match self.route_active_submission(submission, turn_id, None).await? {
                         ActiveRoute::Interrupted { submission_id } => {
                             return Ok(Wait::Interrupted { submission_id });
                         }
-                        ActiveRoute::Continue | ActiveRoute::Approval { .. } => {}
+                        ActiveRoute::Continue { input_changed: changed } => {
+                            input_changed |= changed;
+                        }
+                        ActiveRoute::Approval { .. } => {}
                     }
                 }
+                value = &mut future => return Ok(Wait::Ready { value, input_changed }),
             }
         }
     }
 
-    pub(super) async fn persist_active_change(&mut self, change: ActiveChange) -> Result<()> {
-        self.persist_with_events(change.into_events(), None).await?;
-        Ok(())
+    async fn persist_submission_change(&mut self, change: ActiveChange) -> Result<()> {
+        let ActiveChange {
+            submission_id,
+            pending_messages,
+            events,
+            ..
+        } = change;
+        let events = events
+            .into_iter()
+            .map(|msg| Event {
+                submission_id: Some(submission_id.clone()),
+                msg,
+            })
+            .collect();
+        let previous = std::mem::replace(&mut self.state.pending_messages, pending_messages);
+        match self.persist_with_events(events, None).await {
+            Ok(_) => Ok(()),
+            Err(error) => {
+                self.state.pending_messages = previous;
+                Err(error)
+            }
+        }
+    }
+
+    pub(super) async fn route_active_submission(
+        &mut self,
+        submission: Submission,
+        turn_id: &str,
+        expected_approval: Option<&str>,
+    ) -> Result<ActiveRoute> {
+        let route = (ActiveTurnRouter {
+            middleware: &self.config.middleware,
+            session_id: &self.config.session_id,
+            metadata: &self.config.metadata,
+            turn_id,
+            queued_messages: &mut self.state.pending_messages,
+            events: &self.events,
+            expected_approval,
+        })
+        .route(submission)
+        .await?;
+        match route {
+            UncommittedRoute::Changed(change) => {
+                let input_changed = change.input_changed;
+                self.persist_submission_change(change).await?;
+                Ok(ActiveRoute::Continue { input_changed })
+            }
+            UncommittedRoute::Continue => Ok(ActiveRoute::Continue {
+                input_changed: false,
+            }),
+            UncommittedRoute::Interrupted { submission_id } => {
+                Ok(ActiveRoute::Interrupted { submission_id })
+            }
+            UncommittedRoute::Approval {
+                submission_id,
+                decision,
+            } => Ok(ActiveRoute::Approval {
+                submission_id,
+                decision,
+            }),
+        }
     }
 }
 
 impl ActiveTurnRouter<'_> {
-    pub async fn route(&mut self, submission: Submission) -> Result<ActiveRoute> {
+    async fn route(&mut self, submission: Submission) -> Result<UncommittedRoute> {
         let Submission { id, op } = submission;
         match op {
-            op @ (Op::UserInput { .. } | Op::PeerInput { .. }) => {
-                defer_submission(self.deferred, self.events, Submission { id, op }).await?;
-                Ok(ActiveRoute::Continue)
+            Op::Message { message } => {
+                let mut pending_messages = self.queued_messages.clone();
+                let mut messages = Vec::new();
+                let result = self.middleware.route_message(&mut MessageRouteContext {
+                    submission_id: &id,
+                    message: &message,
+                    active_turn_id: Some(self.turn_id),
+                    queued_messages: MessageQueue::new(&mut pending_messages),
+                    events: &mut messages,
+                })?;
+                Ok(
+                    route_submission_result(self.events, id, result, pending_messages, messages)
+                        .await?
+                        .map_or(UncommittedRoute::Continue, UncommittedRoute::Changed),
+                )
             }
             Op::Interrupt { turn_id } if turn_id == self.turn_id => {
-                Ok(ActiveRoute::Interrupted { submission_id: id })
+                Ok(UncommittedRoute::Interrupted { submission_id: id })
             }
             Op::Interrupt { .. } => {
                 warn(self.events, id, "interrupt targeted a stale turn").await?;
-                Ok(ActiveRoute::Continue)
+                Ok(UncommittedRoute::Continue)
             }
             Op::ExecApproval {
                 id: approval_id,
                 decision,
             } if self.expected_approval == Some(approval_id.as_str()) => {
-                Ok(ActiveRoute::Approval {
+                Ok(UncommittedRoute::Approval {
                     submission_id: id,
                     decision,
                 })
@@ -153,7 +241,7 @@ impl ActiveTurnRouter<'_> {
                     "approval response targeted a stale request",
                 )
                 .await?;
-                Ok(ActiveRoute::Continue)
+                Ok(UncommittedRoute::Continue)
             }
             Op::CapabilityCommand {
                 capability,
@@ -162,6 +250,7 @@ impl ActiveTurnRouter<'_> {
                 input,
                 target,
             } => {
+                let mut pending_messages = self.queued_messages.clone();
                 let mut messages = Vec::new();
                 let result = self
                     .middleware
@@ -176,99 +265,68 @@ impl ActiveTurnRouter<'_> {
                             arguments: &arguments,
                             input: input.as_deref(),
                             target,
-                            queued_input: QueuedInputQueue::new(
-                                self.queued_input,
-                                self.queued_before.clone(),
-                            ),
+                            queued_messages: MessageQueue::new(&mut pending_messages),
                             events: &mut messages,
                         },
                     )
                     .await?;
                 let Some(result) = result else {
-                    defer_submission(
-                        self.deferred,
+                    warn(
                         self.events,
-                        Submission {
-                            id,
-                            op: Op::CapabilityCommand {
-                                capability,
-                                command,
-                                arguments,
-                                input,
-                                target,
-                            },
-                        },
+                        id,
+                        "command is unavailable during an active turn",
                     )
                     .await?;
-                    return Ok(ActiveRoute::Continue);
+                    return Ok(UncommittedRoute::Continue);
                 };
-                match result {
-                    ActiveSubmissionResult::Accepted => Ok(ActiveRoute::Changed(ActiveChange {
-                        submission_id: id,
-                        events: messages,
-                    })),
-                    ActiveSubmissionResult::Handled => {
-                        send_messages(self.events, &id, messages).await?;
-                        Ok(ActiveRoute::Continue)
-                    }
-                    ActiveSubmissionResult::Rejected(message) => {
-                        send_messages(self.events, &id, messages).await?;
-                        warn(self.events, id, &message).await?;
-                        Ok(ActiveRoute::Continue)
-                    }
-                }
+                Ok(
+                    route_submission_result(self.events, id, result, pending_messages, messages)
+                        .await?
+                        .map_or(UncommittedRoute::Continue, UncommittedRoute::Changed),
+                )
             }
-            op @ (Op::SetModel { .. } | Op::ResumeSession { .. }) => {
-                defer_submission(self.deferred, self.events, Submission { id, op }).await?;
-                Ok(ActiveRoute::Continue)
+            Op::SetModel { .. } | Op::ResumeSession { .. } => {
+                warn(
+                    self.events,
+                    id,
+                    "operation is unavailable during an active turn",
+                )
+                .await?;
+                Ok(UncommittedRoute::Continue)
             }
-            Op::ActiveInput {
-                operation,
-                turn_id,
-                text,
-            } => {
-                let mut messages = Vec::new();
-                let result = self
-                    .middleware
-                    .active_submission(&mut ActiveSubmissionContext {
-                        submission_id: &id,
-                        operation: &operation,
-                        active_turn_id: self.turn_id,
-                        target_turn_id: &turn_id,
-                        text: &text,
-                        queued_input: QueuedInputQueue::new(
-                            self.queued_input,
-                            self.queued_before.clone(),
-                        ),
-                        events: &mut messages,
-                    })?;
-                match result {
-                    Some(ActiveSubmissionResult::Accepted) => {
-                        Ok(ActiveRoute::Accepted(ActiveChange {
-                            submission_id: id,
-                            events: messages,
-                        }))
-                    }
-                    Some(ActiveSubmissionResult::Handled) => {
-                        send_messages(self.events, &id, messages).await?;
-                        Ok(ActiveRoute::Continue)
-                    }
-                    Some(ActiveSubmissionResult::Rejected(message)) => {
-                        send_messages(self.events, &id, messages).await?;
-                        warn(self.events, id, &message).await?;
-                        Ok(ActiveRoute::Continue)
-                    }
-                    None => {
-                        warn(
-                            self.events,
-                            id,
-                            "active operation middleware is not installed",
-                        )
-                        .await?;
-                        Ok(ActiveRoute::Continue)
-                    }
-                }
-            }
+        }
+    }
+}
+
+async fn route_submission_result(
+    events: &EventRecorder,
+    submission_id: String,
+    result: SubmissionResult,
+    pending_messages: Vec<QueuedMessage>,
+    messages: Vec<EventMsg>,
+) -> Result<Option<ActiveChange>> {
+    match result {
+        SubmissionResult::Accepted { input_changed } => Ok(Some(ActiveChange {
+            submission_id,
+            pending_messages,
+            events: messages,
+            input_changed,
+        })),
+        SubmissionResult::Handled => {
+            send_messages(events, &submission_id, messages).await?;
+            Ok(None)
+        }
+        SubmissionResult::Rejected(message) => {
+            send_messages(events, &submission_id, messages).await?;
+            send_event(
+                events,
+                Event {
+                    submission_id: Some(submission_id),
+                    msg: EventMsg::SubmissionRejected(SubmissionRejectedEvent { message }),
+                },
+            )
+            .await?;
+            Ok(None)
         }
     }
 }
@@ -291,19 +349,6 @@ async fn send_messages(
     Ok(())
 }
 
-pub(super) async fn defer_submission(
-    deferred: &mut VecDeque<Submission>,
-    events: &EventRecorder,
-    submission: Submission,
-) -> Result<()> {
-    if deferred.len() >= MAX_DEFERRED_SUBMISSIONS {
-        warn(events, submission.id, "deferred command queue is full").await?;
-        return Ok(());
-    }
-    deferred.push_back(submission);
-    Ok(())
-}
-
 async fn warn(events: &EventRecorder, id: String, message: &str) -> Result<()> {
     send_event(
         events,
@@ -321,6 +366,8 @@ async fn warn(events: &EventRecorder, id: String, message: &str) -> Result<()> {
 mod tests {
     use std::sync::Arc;
 
+    use tokio::sync::mpsc;
+
     use super::*;
     use crate::backend::checkpoint::Checkpoint;
     use crate::backend::checkpoint::CheckpointStore;
@@ -329,6 +376,15 @@ mod tests {
     use crate::middleware::Middleware;
 
     struct EditableMiddleware;
+
+    #[derive(Clone, Copy)]
+    enum MutatingRoute {
+        Handled,
+        Rejected,
+        Failed,
+    }
+
+    struct MutatingMessageMiddleware(MutatingRoute);
 
     async fn event_recorder() -> (
         tempfile::TempDir,
@@ -356,8 +412,24 @@ mod tests {
         fn active_command<'a>(
             &'a self,
             context: &'a mut ActiveCommandContext<'_>,
-        ) -> crate::BoxFuture<'a, Result<Option<ActiveSubmissionResult>>> {
+        ) -> crate::BoxFuture<'a, Result<Option<SubmissionResult>>> {
             Box::pin(async move {
+                if context.command == "queue" {
+                    context.queued_messages.enqueue(
+                        context.submission_id,
+                        crate::backend::checkpoint::QueuedMessageBoundary::Queue,
+                        crate::protocol::MessageEvent {
+                            author: crate::protocol::MessageAuthor::User,
+                            delivery: crate::protocol::MessageDelivery::Queue,
+                            text: "queued".into(),
+                            attachments: Vec::new(),
+                            message_target: None,
+                        },
+                    )?;
+                    return Ok(Some(SubmissionResult::Accepted {
+                        input_changed: false,
+                    }));
+                }
                 if context.command == "preview" {
                     context.events.push(EventMsg::Frontend(
                         crate::protocol::FrontendEvent::Preview {
@@ -370,7 +442,7 @@ mod tests {
                             next: None,
                         },
                     ));
-                    return Ok(Some(ActiveSubmissionResult::Handled));
+                    return Ok(Some(SubmissionResult::Handled));
                 }
                 if context.command != "edit" {
                     return Ok(None);
@@ -384,16 +456,47 @@ mod tests {
                     })
                 );
                 if context.input.is_none() {
-                    return Ok(Some(ActiveSubmissionResult::Rejected(
+                    return Ok(Some(SubmissionResult::Rejected(
                         "edit requires text".into(),
                     )));
                 }
-                if context.queued_input.take(context.arguments)?.is_some() {
-                    Ok(Some(ActiveSubmissionResult::Accepted))
-                } else {
-                    Ok(Some(ActiveSubmissionResult::Rejected("stale edit".into())))
-                }
+                context.events.push(EventMsg::ContextCompacted);
+                Ok(Some(SubmissionResult::Accepted {
+                    input_changed: false,
+                }))
             })
+        }
+    }
+
+    impl Middleware for MutatingMessageMiddleware {
+        fn name(&self) -> &'static str {
+            "mutating_message"
+        }
+
+        fn handles_messages(&self) -> bool {
+            true
+        }
+
+        fn route_message(
+            &self,
+            context: &mut crate::middleware::MessageRouteContext<'_>,
+        ) -> Result<SubmissionResult> {
+            context.queued_messages.enqueue(
+                context.submission_id,
+                crate::backend::checkpoint::QueuedMessageBoundary::Turn,
+                crate::protocol::MessageEvent {
+                    author: crate::protocol::MessageAuthor::User,
+                    delivery: crate::protocol::MessageDelivery::Turn,
+                    text: context.message.text.clone(),
+                    attachments: Vec::new(),
+                    message_target: None,
+                },
+            )?;
+            match self.0 {
+                MutatingRoute::Handled => Ok(SubmissionResult::Handled),
+                MutatingRoute::Rejected => Ok(SubmissionResult::Rejected("rejected".into())),
+                MutatingRoute::Failed => Err(Error::Config("failed".into())),
+            }
         }
     }
 
@@ -401,9 +504,7 @@ mod tests {
     async fn active_capability_command_changes_state_without_signaling_new_input() {
         let middleware =
             MiddlewareStack::new(vec![Arc::new(EditableMiddleware)]).expect("middleware stack");
-        let mut queued =
-            vec![QueuedInput::new("editable", "message-1", "original").expect("queued input")];
-        let mut deferred = VecDeque::new();
+        let mut queued = Vec::new();
         let (_directory, events, _receiver) = event_recorder().await;
 
         let route = (ActiveTurnRouter {
@@ -411,9 +512,7 @@ mod tests {
             session_id: "session-1",
             metadata: &std::collections::BTreeMap::new(),
             turn_id: "turn-1",
-            queued_input: &mut queued,
-            queued_before: QueuedInputBaseline::default(),
-            deferred: &mut deferred,
+            queued_messages: &mut queued,
             events: &events,
             expected_approval: None,
         })
@@ -433,17 +532,15 @@ mod tests {
         .await
         .expect("route command");
 
-        assert!(matches!(route, ActiveRoute::Changed(_)));
+        assert!(matches!(route, UncommittedRoute::Changed(_)));
         assert!(queued.is_empty());
-        assert!(deferred.is_empty());
     }
 
     #[tokio::test]
-    async fn handled_active_command_publishes_without_being_deferred() {
+    async fn handled_active_command_publishes_immediately() {
         let middleware =
             MiddlewareStack::new(vec![Arc::new(EditableMiddleware)]).expect("middleware stack");
         let mut queued = Vec::new();
-        let mut deferred = VecDeque::new();
         let (_directory, events, mut receiver) = event_recorder().await;
 
         let route = (ActiveTurnRouter {
@@ -451,9 +548,7 @@ mod tests {
             session_id: "session-1",
             metadata: &std::collections::BTreeMap::new(),
             turn_id: "turn-1",
-            queued_input: &mut queued,
-            queued_before: QueuedInputBaseline::default(),
-            deferred: &mut deferred,
+            queued_messages: &mut queued,
             events: &events,
             expected_approval: None,
         })
@@ -471,8 +566,7 @@ mod tests {
         .expect("route command");
         let event = receiver.recv().await.expect("preview event").event;
 
-        assert!(matches!(route, ActiveRoute::Continue));
-        assert!(deferred.is_empty());
+        assert!(matches!(route, UncommittedRoute::Continue));
         assert!(matches!(
             event,
             Event {
@@ -483,12 +577,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unrelated_capability_command_remains_deferred() {
+    async fn unavailable_active_capability_command_is_rejected_immediately() {
         let middleware =
             MiddlewareStack::new(vec![Arc::new(EditableMiddleware)]).expect("middleware stack");
         let mut queued = Vec::new();
-        let mut deferred = VecDeque::new();
-        let (_directory, events, _receiver) = event_recorder().await;
+        let (_directory, events, mut receiver) = event_recorder().await;
         let submission = Submission {
             id: "command-1".into(),
             op: Op::CapabilityCommand {
@@ -505,9 +598,7 @@ mod tests {
             session_id: "session-1",
             metadata: &std::collections::BTreeMap::new(),
             turn_id: "turn-1",
-            queued_input: &mut queued,
-            queued_before: QueuedInputBaseline::default(),
-            deferred: &mut deferred,
+            queued_messages: &mut queued,
             events: &events,
             expected_approval: None,
         })
@@ -515,7 +606,94 @@ mod tests {
         .await
         .expect("route command");
 
-        assert!(matches!(route, ActiveRoute::Continue));
-        assert_eq!(deferred, VecDeque::from([submission]));
+        assert!(matches!(route, UncommittedRoute::Continue));
+        assert!(matches!(
+            receiver.recv().await.expect("warning").event,
+            Event {
+                submission_id: Some(id),
+                msg: EventMsg::Warning(WarningEvent { message }),
+            } if id == submission.id && message == "command is unavailable during an active turn"
+        ));
+    }
+
+    #[tokio::test]
+    async fn non_message_capability_cannot_enqueue_conversation_messages() {
+        let middleware =
+            MiddlewareStack::new(vec![Arc::new(EditableMiddleware)]).expect("middleware stack");
+        let mut queued = Vec::new();
+        let (_directory, events, _receiver) = event_recorder().await;
+
+        let result = (ActiveTurnRouter {
+            middleware: &middleware,
+            session_id: "session-1",
+            metadata: &std::collections::BTreeMap::new(),
+            turn_id: "turn-1",
+            queued_messages: &mut queued,
+            events: &events,
+            expected_approval: None,
+        })
+        .route(Submission {
+            id: "queue-1".into(),
+            op: Op::CapabilityCommand {
+                capability: "editable".into(),
+                command: "queue".into(),
+                arguments: String::new(),
+                input: None,
+                target: None,
+            },
+        })
+        .await;
+
+        assert!(matches!(result, Err(Error::Config(_))));
+        assert!(queued.is_empty());
+    }
+
+    #[tokio::test]
+    async fn unaccepted_message_routes_cannot_mutate_the_durable_queue() {
+        for outcome in [
+            MutatingRoute::Handled,
+            MutatingRoute::Rejected,
+            MutatingRoute::Failed,
+        ] {
+            let middleware =
+                MiddlewareStack::new(vec![Arc::new(MutatingMessageMiddleware(outcome))])
+                    .expect("middleware stack");
+            let mut queued = Vec::new();
+            let (_directory, events, mut receiver) = event_recorder().await;
+            let result = (ActiveTurnRouter {
+                middleware: &middleware,
+                session_id: "session-1",
+                metadata: &std::collections::BTreeMap::new(),
+                turn_id: "turn-1",
+                queued_messages: &mut queued,
+                events: &events,
+                expected_approval: None,
+            })
+            .route(Submission {
+                id: "message-1".into(),
+                op: Op::Message {
+                    message: crate::protocol::MessageSubmission {
+                        author: crate::protocol::MessageAuthor::User,
+                        text: "hello".into(),
+                        attachments: Vec::new(),
+                        requested_delivery: None,
+                        target_turn_id: None,
+                    },
+                },
+            })
+            .await;
+
+            assert!(queued.is_empty());
+            assert_eq!(result.is_err(), matches!(outcome, MutatingRoute::Failed));
+            if matches!(outcome, MutatingRoute::Rejected) {
+                assert!(matches!(
+                    receiver.recv().await.expect("rejection event").event,
+                    Event {
+                        submission_id: Some(id),
+                        msg: EventMsg::SubmissionRejected(SubmissionRejectedEvent { message }),
+                    } if id == "message-1" && message == "rejected"
+                ));
+            }
+        }
     }
 }

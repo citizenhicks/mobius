@@ -3,13 +3,12 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use super::AgentStatus;
-use super::MAX_MAILBOX_ITEMS;
 use super::MAX_MESSAGE_BYTES;
+use super::MAX_PENDING_UPDATES;
 use super::OnPersistFailure;
 use super::Shared;
 use super::Stage;
-use super::coordination::Mail;
-use super::coordination::MailBody;
+use super::coordination::CompletionUpdate;
 use super::subagent_error_notice;
 use crate::Error;
 use crate::Result;
@@ -95,17 +94,15 @@ impl Shared {
                         entry.status = AgentStatus::Errored;
                         entry.last_message = Some(failure.clone());
                     }
-                    if let Some(mail) = candidate
+                    if let Some(update) = candidate
                         .tree
-                        .mailbox
+                        .updates
                         .iter_mut()
                         .rev()
-                        .find(|mail| mail.from == repair_path)
+                        .find(|update| update.agent == repair_path)
                     {
-                        mail.body = MailBody::Finished {
-                            status: AgentStatus::Errored.label().into(),
-                            message: Some(failure.clone()),
-                        };
+                        update.status = AgentStatus::Errored.label().into();
+                        update.text = Some(failure.clone());
                     }
                     (
                         format!("{repair_path} state persistence retry failed"),
@@ -156,17 +153,15 @@ fn push_finished(
     status: &AgentStatus,
     message: Option<String>,
 ) {
-    if root.tree.mailbox.len() >= MAX_MAILBOX_ITEMS {
-        root.tree.mailbox.pop_front();
+    if root.tree.updates.len() >= MAX_PENDING_UPDATES {
+        root.tree.updates.pop_front();
     }
-    root.tree.mailbox.push_back(Mail {
+    root.tree.updates.push_back(CompletionUpdate {
         id: Uuid::new_v4().to_string(),
         recipient: parent,
-        from: path.into(),
-        body: MailBody::Finished {
-            status: status.label().into(),
-            message,
-        },
+        agent: path.into(),
+        status: status.label().into(),
+        text: message,
     });
 }
 
@@ -183,9 +178,21 @@ pub(in crate::middleware::subagents) async fn monitor_agent(
                 last_message = None;
                 shared.turn_started(&root_id, &path, turn.turn_id).await
             }
-            EventMsg::AgentMessage(message) => {
-                last_message = Some(message.message.clone());
-                shared.message(&root_id, &path, message.message).await
+            EventMsg::AssistantMessage(message) => {
+                let message = message
+                    .content
+                    .iter()
+                    .filter(|content| {
+                        content.phase == crate::protocol::ModelStepContentPhase::FinalAnswer
+                    })
+                    .map(|content| content.text.as_str())
+                    .collect::<String>();
+                if message.is_empty() {
+                    Ok(())
+                } else {
+                    last_message = Some(message.clone());
+                    shared.message(&root_id, &path, message).await
+                }
             }
             EventMsg::ExecApprovalRequest(request) => {
                 async {

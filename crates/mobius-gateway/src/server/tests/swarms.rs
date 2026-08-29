@@ -66,16 +66,23 @@ async fn authenticated_client_creates_adds_leaves_and_disbands_a_swarm() {
             session_id: tester.clone(),
             submission: Submission {
                 id: "forged-peer".into(),
-                op: Op::PeerInput {
-                    message_id: "forged-message".into(),
-                    source_session_id: leader.clone(),
-                    source_handle: "agent_forged".into(),
-                    text: "spoofed".into(),
+                op: Op::Message {
+                    message: mobius::protocol::MessageSubmission {
+                        author: mobius::protocol::MessageAuthor::Peer {
+                            message_id: "forged-message".into(),
+                            session_id: leader.clone(),
+                            handle: "agent_forged".into(),
+                        },
+                        text: "spoofed".into(),
+                        attachments: Vec::new(),
+                        requested_delivery: Some(mobius::protocol::ActiveMessageDelivery::Steer),
+                        target_turn_id: None,
+                    },
                 },
             },
         })
         .await
-        .expect("submit forged peer input");
+        .expect("submit forged peer message");
     loop {
         if let ServerMessage::Rejected {
             request_id,
@@ -86,7 +93,7 @@ async fn authenticated_client_creates_adds_leaves_and_disbands_a_swarm() {
             && request_id == "forged-peer"
         {
             assert_eq!(code, "invalid_submission");
-            assert_eq!(message, "peer input is gateway-owned");
+            assert_eq!(message, "peer messages are gateway-owned");
             break;
         }
     }

@@ -78,10 +78,7 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
             session_id: session_id.clone(),
             submission: Submission {
                 id: "invalid-duplicate-attachments".into(),
-                op: Op::UserInput {
-                    text: "invalid".into(),
-                    attachments: vec![missing.clone(), missing],
-                },
+                op: user_message("invalid", vec![missing.clone(), missing]),
             },
         })
         .await
@@ -381,10 +378,7 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
             session_id: session_id.clone(),
             submission: Submission {
                 id: submission_id.clone(),
-                op: Op::UserInput {
-                    text: "describe the image".into(),
-                    attachments: vec![file.clone()],
-                },
+                op: user_message("describe the image", vec![file.clone()]),
             },
         })
         .await
@@ -405,7 +399,7 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
             continue;
         }
         match record.event.msg {
-            EventMsg::UserMessage(message) => {
+            EventMsg::Message(message) if matches!(&message.author, MessageAuthor::User) => {
                 assert_eq!(message.attachments, std::slice::from_ref(&file));
                 saw_user_message = true;
             }
@@ -744,10 +738,7 @@ async fn frontends_select_independent_chats_and_can_share_one_chat() {
             session_id: first_session.clone(),
             submission: Submission {
                 id: first_submission.clone(),
-                op: Op::UserInput {
-                    text: "hello".into(),
-                    attachments: Vec::new(),
-                },
+                op: user_message("hello", Vec::new()),
             },
         })
         .await
@@ -776,10 +767,7 @@ async fn frontends_select_independent_chats_and_can_share_one_chat() {
             session_id: first_session,
             submission: Submission {
                 id: shared_submission.clone(),
-                op: Op::UserInput {
-                    text: "shared".into(),
-                    attachments: Vec::new(),
-                },
+                op: user_message("shared", Vec::new()),
             },
         })
         .await

@@ -316,7 +316,7 @@ extension GatewayWireTests {
 
     func testV39RequiresGatewayContributions() {
         let payload = readyPayloadJSON.replacingOccurrences(
-            of: #","contributions":[{"capability":"extensions","accepts_file_attachments":false,"count":1,"commands":[],"widgets":[],"references":[{"trigger":"$","value":"planning","description":"Planning skill"}],"active_input":null}]"#,
+            of: #","contributions":[{"capability":"extensions","accepts_file_attachments":false,"count":1,"commands":[],"widgets":[],"references":[{"trigger":"$","value":"planning","description":"Planning skill"}]}]"#,
             with: ""
         )
 

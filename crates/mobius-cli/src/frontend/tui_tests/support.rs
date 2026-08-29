@@ -45,8 +45,10 @@ pub(super) fn preview_record(
                 .iter()
                 .map(|message| RenderedEvent {
                     recorded_at_ms: 0,
-                    event: EventMsg::UserMessage(mobius::protocol::UserMessageEvent {
-                        message: (*message).into(),
+                    event: EventMsg::Message(MessageEvent {
+                        author: MessageAuthor::User,
+                        delivery: MessageDelivery::Turn,
+                        text: (*message).into(),
                         attachments: Vec::new(),
                         message_target: None,
                     }),
@@ -88,15 +90,8 @@ pub(super) fn preview_continuation(arguments: &str) -> Op {
 }
 
 pub(super) fn catalog(workspace: &std::path::Path) -> UiCatalog {
-    let steering = FrontendContribution {
-        capability: "steering".into(),
-        active_input: Some(FrontendActiveInput {
-            operation: "steer".into(),
-        }),
-        ..FrontendContribution::default()
-    };
     UiCatalog::build(
-        &[steering],
+        &[],
         &[ModelChoice {
             route: "kimi".into(),
             group: "kimi".into(),

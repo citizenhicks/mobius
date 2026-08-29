@@ -8,139 +8,75 @@ use super::MiddlewareStack;
 use super::approximate_tokens;
 use super::tools::Catalog;
 use super::tools::ToolResult;
-use crate::agent::AgentRole;
+use crate::agent::{AgentRole, WeakAgentSender};
 use crate::backend::checkpoint::{
-    Checkpoint, CheckpointStore, ContextRewriteReason, ExecutionOutcome, MAX_QUEUED_INPUTS,
-    QueuedInput as DurableQueuedInput,
+    Checkpoint, CheckpointStore, ContextRewriteReason, ExecutionOutcome, MAX_QUEUED_MESSAGES,
+    QueuedMessage as DurableQueuedMessage, QueuedMessageBoundary,
 };
-use crate::backend::model::{ModelRouter, ToolCall};
+use crate::backend::model::{ModelRouter, ToolCall, message_input};
 use crate::backend::sandbox::ApprovalPolicy;
 use crate::protocol::{
-    EventMsg, FrontendEvent, MAX_CAPABILITY_INPUT_BYTES, MessageTarget, PEER_MESSAGE_MARKER,
-    ReviewDecision, SessionContext, SessionFileReference, TokenUsage, internal_message_kind,
-    is_internal_message,
+    EventMsg, FrontendEvent, MAX_CAPABILITY_INPUT_BYTES, MessageAuthor, MessageEvent,
+    MessageSubmission, MessageTarget, ReviewDecision, SessionContext, SessionFileReference,
+    TokenUsage, message_metadata,
 };
 use crate::{Error, Result};
 
 /// Sends middleware-owned UI updates without depending on a concrete frontend.
 pub type FrontendEventSink = Arc<dyn Fn(FrontendEvent) -> Result<()> + Send + Sync>;
 
-/// Read-only queued input owned by the middleware receiving it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct QueuedInputView<'a> {
-    id: &'a str,
-    text: &'a str,
+/// Read-only queued message owned by the middleware receiving it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct QueuedMessageView<'a> {
+    item: &'a DurableQueuedMessage,
 }
 
-impl<'a> QueuedInputView<'a> {
+impl<'a> QueuedMessageView<'a> {
     /// Returns the identity token required by a conditional queue mutation.
     #[must_use]
     pub fn id(&self) -> &'a str {
-        self.id
+        self.item.id()
     }
 
-    /// Returns the exact queued text.
+    /// Returns the prepared presentation event.
     #[must_use]
-    pub fn text(&self) -> &'a str {
-        self.text
+    pub fn event(&self) -> MessageEvent {
+        self.item.event()
     }
 }
 
-/// One queued input removed by its owning middleware.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct QueuedInputValue {
-    id: String,
-    text: String,
-}
-
-impl QueuedInputValue {
-    /// Returns the identity token for this queued input.
-    #[must_use]
-    pub fn id(&self) -> &str {
-        &self.id
-    }
-
-    /// Returns the exact queued text.
-    #[must_use]
-    pub fn text(&self) -> &str {
-        &self.text
-    }
-
-    /// Consumes the item and returns its text.
-    #[must_use]
-    pub fn into_text(self) -> String {
-        self.text
-    }
-}
-
-/// Read-only startup snapshot containing only one middleware's queued input.
+/// Read-only startup snapshot containing only one middleware's queued messages.
 #[derive(Clone, Default)]
-pub struct QueuedInputSnapshot {
-    items: Vec<QueuedInputValue>,
+pub struct QueuedMessageSnapshot {
+    items: Vec<DurableQueuedMessage>,
 }
 
-impl QueuedInputSnapshot {
+impl QueuedMessageSnapshot {
     /// Returns every queued item owned by this middleware, oldest first.
-    pub fn views(&self) -> impl Iterator<Item = QueuedInputView<'_>> {
-        self.items.iter().map(|item| QueuedInputView {
-            id: &item.id,
-            text: item.text(),
-        })
+    pub fn views(&self) -> impl Iterator<Item = QueuedMessageView<'_>> {
+        self.items.iter().map(|item| QueuedMessageView { item })
     }
 
-    pub(super) fn for_owner(owner: &str, items: &[DurableQueuedInput]) -> Self {
+    pub(super) fn for_owner(owner: &str, items: &[DurableQueuedMessage]) -> Self {
         Self {
             items: items
                 .iter()
                 .filter(|item| item.owner() == owner)
-                .map(|item| QueuedInputValue {
-                    id: item.id().into(),
-                    text: item.text().into(),
-                })
+                .cloned()
                 .collect(),
         }
     }
 }
 
-#[derive(Clone, Default)]
-pub(crate) struct QueuedInputBaseline {
-    ids_by_owner: BTreeMap<String, BTreeSet<String>>,
-    total_count: usize,
-}
-
-impl QueuedInputBaseline {
-    pub(crate) fn from_items(items: &[DurableQueuedInput]) -> Self {
-        let mut ids_by_owner: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        for item in items {
-            ids_by_owner
-                .entry(item.owner().to_string())
-                .or_default()
-                .insert(item.id().to_string());
-        }
-        Self {
-            ids_by_owner,
-            total_count: items.len(),
-        }
-    }
-}
-
-/// Mutable scoped view of active input retained until the next model boundary.
-pub struct QueuedInputQueue<'a> {
-    items: &'a mut Vec<DurableQueuedInput>,
-    baseline: QueuedInputBaseline,
+/// Mutable scoped view of messages retained until their delivery boundary.
+pub struct MessageQueue<'a> {
+    items: &'a mut Vec<DurableQueuedMessage>,
     owner: Option<&'static str>,
 }
 
-impl<'a> QueuedInputQueue<'a> {
-    pub(crate) fn new(
-        items: &'a mut Vec<DurableQueuedInput>,
-        baseline: QueuedInputBaseline,
-    ) -> Self {
-        Self {
-            items,
-            baseline,
-            owner: None,
-        }
+impl<'a> MessageQueue<'a> {
+    pub(crate) fn new(items: &'a mut Vec<DurableQueuedMessage>) -> Self {
+        Self { items, owner: None }
     }
 
     pub(super) fn scope(&mut self, owner: &'static str) {
@@ -149,57 +85,58 @@ impl<'a> QueuedInputQueue<'a> {
 
     fn owner(&self) -> Result<&'static str> {
         self.owner
-            .ok_or_else(|| Error::Config("queued input is not scoped to a middleware".into()))
+            .ok_or_else(|| Error::Config("message queue is not scoped to a middleware".into()))
     }
 
-    /// Returns the total queue size, including input being drained concurrently.
+    /// Returns the number of queued items owned by this middleware.
     #[must_use]
     pub fn count(&self) -> usize {
         let Some(owner) = self.owner else {
             return 0;
         };
-        self.baseline
-            .ids_by_owner
-            .get(owner)
-            .map_or(0, BTreeSet::len)
-            .saturating_add(
-                self.items
-                    .iter()
-                    .filter(|item| item.owner() == owner)
-                    .count(),
-            )
+        self.items
+            .iter()
+            .filter(|item| item.owner() == owner)
+            .count()
     }
 
-    /// Returns the newest input available to this context.
+    /// Returns the newest message available to this context.
     #[must_use]
-    pub fn latest(&self) -> Option<QueuedInputView<'_>> {
+    pub fn latest(&self) -> Option<QueuedMessageView<'_>> {
         let owner = self.owner?;
         self.items
             .iter()
             .rev()
             .find(|item| item.owner() == owner)
-            .map(|item| QueuedInputView {
-                id: item.id(),
-                text: item.text(),
-            })
+            .map(|item| QueuedMessageView { item })
     }
 
-    /// Appends one correlated active input, or returns `false` when it is full or duplicated.
-    pub fn enqueue(&mut self, id: &str, text: &str) -> Result<bool> {
+    /// Returns one owned item by its revision identity.
+    #[must_use]
+    pub fn find(&self, id: &str) -> Option<QueuedMessageView<'_>> {
+        let owner = self.owner?;
+        self.items
+            .iter()
+            .find(|item| item.owner() == owner && item.id() == id)
+            .map(|item| QueuedMessageView { item })
+    }
+
+    /// Appends one prepared message, or returns `false` when it is full or duplicated.
+    pub fn enqueue(
+        &mut self,
+        id: &str,
+        boundary: QueuedMessageBoundary,
+        event: MessageEvent,
+    ) -> Result<bool> {
         let owner = self.owner()?;
-        let item = DurableQueuedInput::new(owner, id, text)?;
-        if self.baseline.total_count.saturating_add(self.items.len()) >= MAX_QUEUED_INPUTS {
+        let item = DurableQueuedMessage::new(owner, id, boundary, event)?;
+        if self.items.len() >= MAX_QUEUED_MESSAGES {
             return Ok(false);
         }
         if self
-            .baseline
-            .ids_by_owner
-            .get(owner)
-            .is_some_and(|ids| ids.contains(id))
-            || self
-                .items
-                .iter()
-                .any(|item| item.owner() == owner && item.id() == id)
+            .items
+            .iter()
+            .any(|item| item.owner() == owner && item.id() == id)
         {
             return Ok(false);
         }
@@ -207,22 +144,8 @@ impl<'a> QueuedInputQueue<'a> {
         Ok(true)
     }
 
-    /// Removes the item with the matching identity.
-    pub fn take(&mut self, id: &str) -> Result<Option<QueuedInputValue>> {
-        let owner = self.owner()?;
-        let Some(index) = self
-            .items
-            .iter()
-            .position(|item| item.owner() == owner && item.id() == id)
-        else {
-            return Ok(None);
-        };
-        let (id, text) = self.items.remove(index).into_id_and_text();
-        Ok(Some(QueuedInputValue { id, text }))
-    }
-
     /// Atomically replaces one owned item while preserving its queue position.
-    pub fn replace(&mut self, id: &str, replacement_id: &str, text: &str) -> Result<bool> {
+    pub fn replace(&mut self, id: &str, replacement_id: &str, event: MessageEvent) -> Result<bool> {
         let owner = self.owner()?;
         let Some(index) = self
             .items
@@ -231,40 +154,103 @@ impl<'a> QueuedInputQueue<'a> {
         else {
             return Ok(false);
         };
-        let replacement = DurableQueuedInput::new(owner, replacement_id, text)?;
-        if self
-            .baseline
-            .ids_by_owner
-            .get(owner)
-            .is_some_and(|ids| ids.contains(replacement_id))
-            || self.items.iter().enumerate().any(|(candidate, item)| {
-                candidate != index && item.owner() == owner && item.id() == replacement_id
-            })
-        {
+        if self.items.iter().enumerate().any(|(candidate, item)| {
+            candidate != index && item.owner() == owner && item.id() == replacement_id
+        }) {
             return Ok(false);
         }
-        self.items[index] = replacement;
+        self.items[index].replace(replacement_id, event)?;
         Ok(true)
     }
 
-    /// Removes and returns every item owned by this middleware.
-    pub fn drain(&mut self) -> Vec<QueuedInputValue> {
+    pub(crate) fn stage_model_messages(&mut self, turn_id: &str) -> Result<Vec<PreparedMessage>> {
         let Some(owner) = self.owner else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
         self.items
-            .extract_if(.., |item| item.owner() == owner)
-            .map(|item| {
-                let (id, text) = item.into_id_and_text();
-                QueuedInputValue { id, text }
+            .extract_if(.., |item| {
+                item.owner() == owner
+                    && matches!(
+                        item.boundary(),
+                        QueuedMessageBoundary::Steer { turn_id: target }
+                            if target == turn_id
+                    )
             })
+            .map(PreparedMessage::try_from)
             .collect()
+    }
+
+    pub(crate) fn next_turn(&self) -> Result<Option<PreparedMessage>> {
+        let owner = self.owner()?;
+        self.items
+            .iter()
+            .find(|item| item.owner() == owner && item.boundary().starts_turn())
+            .cloned()
+            .map(PreparedMessage::try_from)
+            .transpose()
+    }
+
+    pub(crate) fn consume_next_turn(&mut self, id: &str) -> Result<()> {
+        let owner = self.owner()?;
+        let index = self
+            .items
+            .iter()
+            .position(|item| {
+                item.owner() == owner && item.id() == id && item.boundary().starts_turn()
+            })
+            .ok_or_else(|| Error::Checkpoint("prepared message is no longer queued".into()))?;
+        self.items.remove(index);
+        Ok(())
+    }
+
+    pub(crate) fn promote_failed_turn(&mut self, turn_id: &str) -> Result<()> {
+        let owner = self.owner()?;
+        for item in self.items.iter_mut().filter(|item| {
+            item.owner() == owner
+                && matches!(
+                    item.boundary(),
+                    QueuedMessageBoundary::Steer { turn_id: target }
+                        if target == turn_id
+                )
+        }) {
+            item.promote_to_next_turn()?;
+        }
+        Ok(())
+    }
+}
+
+/// One queued message prepared for its model boundary.
+pub(crate) struct PreparedMessage {
+    pub(crate) submission_id: String,
+    pub(crate) input: Value,
+    pub(crate) event: EventMsg,
+    pub(crate) title_seed: Option<String>,
+    pub(crate) boundary_events: Vec<EventMsg>,
+}
+
+impl TryFrom<DurableQueuedMessage> for PreparedMessage {
+    type Error = Error;
+
+    fn try_from(message: DurableQueuedMessage) -> Result<Self> {
+        let (submission_id, event) = message.into_parts();
+        let input = message_input(&event)?;
+        let title_seed = matches!(event.author, MessageAuthor::User)
+            .then(|| event.text.trim().to_string())
+            .filter(|title| !title.is_empty());
+        Ok(Self {
+            submission_id,
+            input,
+            event: EventMsg::Message(event),
+            title_seed,
+            boundary_events: Vec::new(),
+        })
     }
 }
 
 /// Durable runtime identity exposed while middleware starts a session.
 #[derive(Clone)]
 pub struct RuntimeContext {
+    pub sender: WeakAgentSender,
     pub checkpoints: Arc<dyn CheckpointStore>,
     pub session_id: String,
     pub model_route: String,
@@ -308,7 +294,7 @@ pub enum SessionStartSource {
 pub struct SessionStartContext<'a> {
     pub runtime: &'a RuntimeContext,
     pub(crate) source: SessionStartSource,
-    pub(crate) queued_input: QueuedInputSnapshot,
+    pub(crate) queued_messages: QueuedMessageSnapshot,
     pub(crate) input: &'a mut Vec<Value>,
     pub(crate) input_changed: bool,
     pub(crate) stop_reason: Option<String>,
@@ -321,8 +307,8 @@ impl SessionStartContext<'_> {
     }
 
     #[must_use]
-    pub fn queued_input(&self) -> &QueuedInputSnapshot {
-        &self.queued_input
+    pub fn queued_messages(&self) -> &QueuedMessageSnapshot {
+        &self.queued_messages
     }
 
     /// Appends hidden provider context produced while the session starts.
@@ -349,9 +335,10 @@ impl SessionStartContext<'_> {
     }
 }
 
-/// Mutable state exposed before a submitted user prompt enters durable context.
-pub struct UserPromptSubmitContext<'a> {
+/// Mutable state exposed before a prepared next-turn message enters durable context.
+pub struct MessageSubmitContext<'a> {
     pub turn: TurnIdentity<'a>,
+    pub author: &'a MessageAuthor,
     pub message: &'a str,
     pub attachments: &'a [SessionFileReference],
     pub events: &'a mut Vec<EventMsg>,
@@ -359,8 +346,8 @@ pub struct UserPromptSubmitContext<'a> {
     pub(crate) rejection: Option<String>,
 }
 
-impl UserPromptSubmitContext<'_> {
-    /// Adds provider-neutral context immediately before the submitted user message.
+impl MessageSubmitContext<'_> {
+    /// Adds provider-neutral context immediately before the submitted message.
     pub fn push_input(&mut self, item: Value) {
         self.input.push(item);
     }
@@ -373,6 +360,11 @@ impl UserPromptSubmitContext<'_> {
         }
         Ok(())
     }
+}
+
+pub(crate) struct MessageSubmitResult {
+    pub(crate) input: Vec<Value>,
+    pub(crate) rejection: Option<String>,
 }
 
 /// Mutable state exposed immediately before a model request.
@@ -395,7 +387,7 @@ pub struct ModelContext<'a> {
     pub(crate) compaction_count: &'a mut u64,
     pub(crate) rewrite_reasons: &'a mut Vec<ContextRewriteReason>,
     pub(crate) turn_stop: &'a mut Option<String>,
-    pub queued_input: QueuedInputQueue<'a>,
+    pub(crate) queued_messages: Vec<DurableQueuedMessage>,
     pub last_usage: Option<&'a TokenUsage>,
     pub tools: &'a Catalog,
     pub events: &'a mut Vec<EventMsg>,
@@ -414,18 +406,10 @@ pub struct ToolExposureContext<'a> {
 }
 
 impl ToolExposureContext<'_> {
-    /// Reports whether the active turn was started by a peer message.
+    /// Returns the most recent typed conversation message in model context.
     #[must_use]
-    pub fn peer_input(&self) -> bool {
-        self.input
-            .iter()
-            .rev()
-            .find(|item| {
-                item.get("role").and_then(Value::as_str) == Some("user")
-                    && (!is_internal_message(item)
-                        || internal_message_kind(item) == Some(PEER_MESSAGE_MARKER))
-            })
-            .is_some_and(|item| internal_message_kind(item) == Some(PEER_MESSAGE_MARKER))
+    pub fn latest_message(&self) -> Option<MessageEvent> {
+        self.input.iter().rev().find_map(message_metadata)
     }
 
     /// Hides registered tools for this boundary.
@@ -536,7 +520,7 @@ impl ModelContext<'_> {
         let start = hooks
             .session_start(
                 self.runtime,
-                self.queued_input.items,
+                &self.queued_messages,
                 SessionStartSource::Compact,
                 self.durable_input,
             )
@@ -802,14 +786,12 @@ impl Write for ByteCounter {
     }
 }
 
-/// Mutable turn state exposed to the middleware owning an active operation.
-pub struct ActiveSubmissionContext<'a> {
+/// Mutable state exposed to the middleware preparing conversation messages.
+pub struct MessageRouteContext<'a> {
     pub submission_id: &'a str,
-    pub operation: &'a str,
-    pub active_turn_id: &'a str,
-    pub target_turn_id: &'a str,
-    pub text: &'a str,
-    pub queued_input: QueuedInputQueue<'a>,
+    pub message: &'a MessageSubmission,
+    pub active_turn_id: Option<&'a str>,
+    pub queued_messages: MessageQueue<'a>,
     pub events: &'a mut Vec<EventMsg>,
 }
 
@@ -823,14 +805,16 @@ pub struct ActiveCommandContext<'a> {
     pub arguments: &'a str,
     pub input: Option<&'a str>,
     pub target: Option<MessageTarget>,
-    pub queued_input: QueuedInputQueue<'a>,
+    pub queued_messages: MessageQueue<'a>,
     pub events: &'a mut Vec<EventMsg>,
 }
 
-/// Result of a middleware-owned active operation.
+/// Result of one middleware-owned submission.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ActiveSubmissionResult {
-    Accepted,
+pub enum SubmissionResult {
+    Accepted {
+        input_changed: bool,
+    },
     /// The operation completed without changing durable turn state; publish its events now.
     Handled,
     Rejected(String),
@@ -841,7 +825,7 @@ pub struct TurnEndContext<'a> {
     pub session_id: &'a str,
     pub turn_id: &'a str,
     pub(crate) outcome: ExecutionOutcome,
-    pub(crate) queued_input: &'a [DurableQueuedInput],
+    pub(crate) queued_messages: &'a [DurableQueuedMessage],
     pub(crate) owner: Option<&'static str>,
     pub events: &'a mut Vec<EventMsg>,
 }
@@ -852,16 +836,13 @@ impl TurnEndContext<'_> {
         self.outcome
     }
 
-    /// Returns queued input still pending for this middleware, oldest first.
-    pub fn queued_input(&self) -> impl Iterator<Item = QueuedInputView<'_>> {
+    /// Returns queued messages still pending for this middleware, oldest first.
+    pub fn queued_messages(&self) -> impl Iterator<Item = QueuedMessageView<'_>> {
         let owner = self.owner;
-        self.queued_input
+        self.queued_messages
             .iter()
             .filter(move |item| owner.is_some_and(|owner| item.owner() == owner))
-            .map(|item| QueuedInputView {
-                id: item.id(),
-                text: item.text(),
-            })
+            .map(|item| QueuedMessageView { item })
     }
 }
 

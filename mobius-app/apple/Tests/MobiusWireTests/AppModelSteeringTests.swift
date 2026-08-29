@@ -3,7 +3,7 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
-    func testSteeringDraftSettlesOnSuccessAndRestoresOnWarning() async throws {
+    func testSteeringDraftSettlesOnSuccessAndRestoresOnSubmissionRejection() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model(requestSender: { request in
             await recorder.record(request)
@@ -11,7 +11,6 @@ extension AppModelTests {
         model.connectionState = .ready
         model.selectedSessionID = "chat-1"
         model.activeTurnID = "turn-1"
-        model.activeOperation = "steer"
         model.composer = "Use the smaller patch"
 
         var requestCount = await recorder.requestCount()
@@ -28,7 +27,7 @@ extension AppModelTests {
             event: AgentEventRecord(submissionId: first.id, msg: .object([
                 "type": .string("frontend"),
                 "frontendType": .string("widget"),
-                "capability": .string("steering"),
+                "capability": .string("messages"),
                 "item": .object([
                     "id": .string(first.id),
                     "slot": .string("transcript_tail"),
@@ -40,7 +39,7 @@ extension AppModelTests {
                     "content": .null,
                     "action": .object([
                         "type": .string("capability_command"),
-                        "capability": .string("steering"),
+                        "capability": .string("messages"),
                         "command": .string("edit"),
                         "arguments": .string(first.id),
                         "input": .string("Use the smaller patch"),
@@ -79,7 +78,7 @@ extension AppModelTests {
         })
         model.reduce(
             event: AgentEventRecord(submissionId: second.id, msg: .object([
-                "type": .string("warning"),
+                "type": .string("submission_rejected"),
                 "message": .string("Steering queue is full")
             ])),
             blocks: [],
@@ -96,7 +95,7 @@ extension AppModelTests {
                 event: AgentEventRecord(submissionId: id, msg: .object([
                     "type": .string("frontend"),
                     "frontendType": .string("widget"),
-                    "capability": .string("steering"),
+                    "capability": .string("messages"),
                     "item": .object([
                         "id": .string(id),
                         "slot": .string("transcript_tail"),
@@ -120,7 +119,7 @@ extension AppModelTests {
             event: AgentEventRecord(submissionId: "input-1", msg: .object([
                 "type": .string("frontend"),
                 "frontendType": .string("remove_widget"),
-                "capability": .string("steering"),
+                "capability": .string("messages"),
                 "id": .string("steer-1")
             ])),
             blocks: [],
@@ -133,7 +132,7 @@ extension AppModelTests {
             event: AgentEventRecord(submissionId: "input-1", msg: .object([
                 "type": .string("frontend"),
                 "frontendType": .string("remove_widget"),
-                "capability": .string("steering"),
+                "capability": .string("messages"),
                 "id": .string("steer-2")
             ])),
             blocks: [],
@@ -143,35 +142,24 @@ extension AppModelTests {
         XCTAssertTrue(model.transcriptTailWidgets.isEmpty)
     }
 
-    func testSteeringFeedbackWaitsUntilTheQueuedMessageReachesTheAgent() throws {
+    func testSteeringFeedbackFiresWhenTheMessageReachesModelInput() throws {
         let model = try model()
-        model.contributions = [FrontendContribution(
-            capability: "steering",
-            acceptsFileAttachments: false,
-            count: nil,
-            commands: [],
-            widgets: [],
-            references: [],
-            activeInput: FrontendActiveInput(operation: "steer")
-        )]
         model.reduce(
             event: AgentEventRecord(submissionId: "input-1", msg: .object([
-                "type": .string("task_started"),
+                "type": .string("turn_started"),
                 "turnId": .string("turn-1")
             ])),
             blocks: [],
             preview: nil
         )
         model.reduce(
-            event: AgentEventRecord(submissionId: "input-1", msg: .object([
-                "type": .string("user_message"),
-                "message": .string("Start"),
-                "attachments": .array([]),
-                "messageTarget": .object([
-                    "checkpointSequence": .number(1),
-                    "batchItemCount": .number(1)
-                ])
-            ])),
+            event: AgentEventRecord(
+                submissionId: "input-1",
+                msg: testMessageEvent(
+                    text: "Start",
+                    messageTarget: MessageTarget(checkpointSequence: 1, batchItemCount: 1)
+                )
+            ),
             blocks: [],
             preview: nil
         )
@@ -179,7 +167,7 @@ extension AppModelTests {
             event: AgentEventRecord(submissionId: "input-1", msg: .object([
                 "type": .string("frontend"),
                 "frontendType": .string("remove_widget"),
-                "capability": .string("steering"),
+                "capability": .string("messages"),
                 "id": .string("steering-1")
             ])),
             blocks: [],
@@ -189,20 +177,79 @@ extension AppModelTests {
         XCTAssertEqual(model.steeringDeliveryRevision, 0)
 
         model.reduce(
-            event: AgentEventRecord(submissionId: "input-1", msg: .object([
-                "type": .string("user_message"),
-                "message": .string("Use the smaller patch"),
-                "attachments": .array([]),
-                "messageTarget": .object([
-                    "checkpointSequence": .number(2),
-                    "batchItemCount": .number(1)
-                ])
-            ])),
+            event: AgentEventRecord(
+                submissionId: "input-1",
+                msg: testMessageEvent(
+                    delivery: .steer,
+                    text: "Use the smaller patch",
+                    messageTarget: MessageTarget(checkpointSequence: 2, batchItemCount: 1)
+                )
+            ),
             blocks: [],
             preview: nil
         )
 
         XCTAssertEqual(model.steeringDeliveryRevision, 1)
+    }
+
+    func testActiveMessageOmitsMiddlewareDefaultAndAllowsTheOppositeOverride() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model(requestSender: { request in
+            await recorder.record(request)
+        })
+        var composition = composition()
+        composition.middleware.settings["messages"] = ["delivery": .string("queue")]
+        model.agentDraft = composition
+        model.connectionState = .ready
+        model.selectedSessionID = "chat-1"
+        model.activeTurnID = "turn-1"
+
+        model.composer = "Handle this next"
+        var requestCount = await recorder.requestCount()
+        XCTAssertTrue(model.sendMessage())
+        let queuedRequest = await recorder.firstRequest(after: requestCount) { request in
+            if case .submit = request { return true }
+            return false
+        }
+        guard case .submit(_, let queuedSubmission) = try XCTUnwrap(queuedRequest),
+              case .message(let queuedMessage) = queuedSubmission.op
+        else {
+            return XCTFail("Expected a queued message submission")
+        }
+        XCTAssertEqual(queuedMessage.author, .user)
+        XCTAssertNil(queuedMessage.requestedDelivery)
+        XCTAssertEqual(queuedMessage.targetTurnId, "turn-1")
+
+        model.composer = "Use this immediately"
+        requestCount = await recorder.requestCount()
+        XCTAssertTrue(model.sendMessage(delivery: .steer))
+        let steeringRequest = await recorder.firstRequest(after: requestCount) { request in
+            if case .submit = request { return true }
+            return false
+        }
+        guard case .submit(_, let steeringSubmission) = try XCTUnwrap(steeringRequest),
+              case .message(let steeringMessage) = steeringSubmission.op
+        else {
+            return XCTFail("Expected a steering message submission")
+        }
+        XCTAssertEqual(steeringMessage.requestedDelivery, .steer)
+        XCTAssertEqual(steeringMessage.targetTurnId, "turn-1")
+
+        model.activeTurnID = nil
+        model.composer = "Start another turn"
+        requestCount = await recorder.requestCount()
+        XCTAssertTrue(model.sendMessage(delivery: .queue))
+        let turnRequest = await recorder.firstRequest(after: requestCount) { request in
+            if case .submit = request { return true }
+            return false
+        }
+        guard case .submit(_, let turnSubmission) = try XCTUnwrap(turnRequest),
+              case .message(let turnMessage) = turnSubmission.op
+        else {
+            return XCTFail("Expected a new-turn message submission")
+        }
+        XCTAssertNil(turnMessage.requestedDelivery)
+        XCTAssertNil(turnMessage.targetTurnId)
     }
 
 }

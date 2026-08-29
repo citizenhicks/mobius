@@ -48,15 +48,11 @@ async fn failing_turn_end_hook_runs_once_with_the_original_outcome() {
         model,
     );
     agent_config.middleware =
-        MiddlewareStack::new(vec![Arc::new(FailFirstTurnEnd(Arc::clone(&outcomes)))])
-            .expect("middleware");
+        test_middleware(vec![Arc::new(FailFirstTurnEnd(Arc::clone(&outcomes)))]);
     let mut agent = create_agent(agent_config).await.expect("create agent");
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "hello".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_op("hello"))
         .expect("submit input");
     while !matches!(
         agent.next_event().await.expect("agent event").msg,
@@ -78,8 +74,7 @@ async fn middleware_event_saturation_fails_agent_creation_instead_of_dropping_up
     );
     let checkpoint_store: Arc<dyn CheckpointStore> = checkpoints.clone();
     let mut agent_config = config(workspace.path(), checkpoint_store, "saturating-events");
-    agent_config.middleware =
-        MiddlewareStack::new(vec![Arc::new(SaturatingMiddleware)]).expect("middleware");
+    agent_config.middleware = test_middleware(vec![Arc::new(SaturatingMiddleware)]);
 
     let Err(error) = create_agent(agent_config).await else {
         panic!("agent creation should report the full event queue");
@@ -151,7 +146,7 @@ async fn request_only_input_reaches_the_model_without_entering_the_checkpoint() 
             ApprovalPolicy::Ask,
         )),
         checkpoint_store,
-        MiddlewareStack::new(vec![Arc::new(RequestOnlyMiddleware)]).expect("middleware"),
+        test_middleware(vec![Arc::new(RequestOnlyMiddleware)]),
         "test prompt",
     )
     .session_id("request-only");
@@ -160,10 +155,7 @@ async fn request_only_input_reaches_the_model_without_entering_the_checkpoint() 
     agent.next_event().await.expect("sandbox widget");
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "hello".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_op("hello"))
         .expect("submit input");
     loop {
         if matches!(
@@ -216,7 +208,7 @@ async fn configured_model_step_limit_stops_after_primary_model_calls() {
             ApprovalPolicy::Ask,
         )),
         checkpoint_store,
-        MiddlewareStack::new(Vec::new()).expect("middleware"),
+        test_middleware(Vec::new()),
         "test prompt",
     )
     .session_id("model-step-limit")
@@ -226,10 +218,7 @@ async fn configured_model_step_limit_stops_after_primary_model_calls() {
     agent.next_event().await.expect("sandbox widget");
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "continue".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_op("continue"))
         .expect("submit input");
     let message = loop {
         if let EventMsg::Error(error) = agent.next_event().await.expect("agent event").msg {
@@ -282,11 +271,10 @@ async fn completed_pre_model_effects_are_settled_when_a_later_hook_fails() {
             ApprovalPolicy::Ask,
         )),
         checkpoint_store,
-        MiddlewareStack::new(vec![
+        test_middleware(vec![
             Arc::new(DurableBeforeModel),
             Arc::new(FailingBeforeModel),
-        ])
-        .expect("middleware"),
+        ]),
         "test prompt",
     )
     .session_id("settled-hooks")
@@ -302,10 +290,7 @@ async fn completed_pre_model_effects_are_settled_when_a_later_hook_fails() {
     agent.next_event().await.expect("sandbox widget");
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "hello".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_op("hello"))
         .expect("submit input");
     let mut saw_effect = false;
     loop {

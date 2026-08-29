@@ -47,6 +47,7 @@ struct HostState {
     activities: SessionActivities,
     running: RunningAgent,
     pending_turns: usize,
+    pending_messages: HashSet<String>,
     approval_active: bool,
     turn_error: Option<String>,
     restart_after_turn: bool,
@@ -226,12 +227,16 @@ impl HostHandle {
         session_id: String,
         origin_label: &str,
     ) -> Result<Self> {
-        let spec = {
+        let (spec, override_saved_model_route) = {
             let config = gateway
                 .lock()
                 .map_err(|_| Error::Config("gateway configuration lock is poisoned".into()))?
                 .clone();
-            spec.normalizing_provider_catalog(&config, store.state_dir(), config.tls.as_ref())?
+            let normalized =
+                spec.normalizing_provider_catalog(&config, store.state_dir(), config.tls.as_ref())?;
+            let override_saved_model_route =
+                normalized.agent.config.provider != spec.agent.config.provider;
+            (normalized, override_saved_model_route)
         };
         let running = start_agent(
             Arc::clone(&gateway),
@@ -244,7 +249,7 @@ impl HostHandle {
             Arc::clone(&swarm),
             session_id.clone(),
             origin_label,
-            false,
+            override_saved_model_route,
             None,
             Arc::clone(&provider_epoch),
         )
@@ -279,6 +284,7 @@ impl HostHandle {
             activities,
             running,
             pending_turns: 0,
+            pending_messages: HashSet::new(),
             approval_active: false,
             turn_error: None,
             restart_after_turn: false,

@@ -7,7 +7,6 @@ use std::sync::OnceLock;
 
 use mobius::Error;
 use mobius::Result;
-use mobius::protocol::FrontendActiveInput;
 use mobius::protocol::FrontendContribution;
 use mobius::protocol::FrontendEvent;
 use mobius::protocol::FrontendPickerOption;
@@ -30,7 +29,6 @@ pub(crate) struct UiCatalog {
     reference_triggers: Vec<char>,
     widgets: Vec<(String, FrontendWidget)>,
     model_choices: Vec<ModelChoice>,
-    active_input: Option<FrontendActiveInput>,
     accepts_file_attachments: bool,
     workspace: PathBuf,
     workspace_references: Arc<OnceLock<Vec<UiReference>>>,
@@ -159,9 +157,6 @@ impl UiCatalog {
             reference_triggers,
             widgets,
             model_choices: model_choices.to_vec(),
-            active_input: contributions
-                .iter()
-                .find_map(|contribution| contribution.active_input.clone()),
             accepts_file_attachments: contributions
                 .iter()
                 .any(|contribution| contribution.accepts_file_attachments),
@@ -211,10 +206,6 @@ impl UiCatalog {
 
     pub(crate) fn workspace(&self) -> &Path {
         &self.workspace
-    }
-
-    pub(crate) fn active_input(&self) -> Option<&FrontendActiveInput> {
-        self.active_input.as_ref()
     }
 
     pub(crate) const fn accepts_file_attachments(&self) -> bool {
@@ -747,7 +738,6 @@ mod tests {
             }],
             widgets: Vec::new(),
             references: Vec::new(),
-            active_input: None,
         }
     }
 

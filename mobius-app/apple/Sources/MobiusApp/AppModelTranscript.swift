@@ -5,11 +5,18 @@ extension AppModel {
         pinTranscriptWindowIfNeeded()
         let event = record.event
         let type = event.msg["type"]?.stringValue ?? "unknown"
+        let message = type == "message" ? try? MessageEventPayload(json: event.msg) : nil
         let turnID = event.msg["turnId"]?.stringValue ?? activeTurnID
-        prepareTranscriptEvent(event, type: type)
+        prepareTranscriptEvent(event, type: type, message: message)
         let wasRendered = applyPresentation(from: record, turnID: turnID)
 
-        if handleNarrativeEvent(type, event: event, record: record, turnID: turnID, wasRendered: wasRendered) {
+        if handleNarrativeEvent(
+            type,
+            event: event,
+            message: message,
+            record: record,
+            turnID: turnID
+        ) {
             return
         }
         if handleTurnEvent(type, event: event, record: record, turnID: turnID, wasRendered: wasRendered) {
@@ -18,26 +25,29 @@ extension AppModel {
         _ = handleTranscriptStateEvent(type, event: event)
     }
 
-    private func prepareTranscriptEvent(_ event: AgentEventRecord, type: String) {
-        // Queue removal also happens for edits and turn cleanup; only the immediately
-        // following targeted user message proves that steering reached the model input.
-        let confirmsSteeringDelivery = awaitsSteeringDelivery
-            && replayRequestID == nil
-            && type == "user_message"
+    private func prepareTranscriptEvent(
+        _ event: AgentEventRecord,
+        type: String,
+        message: MessageEventPayload?
+    ) {
+        let confirmsSteeringDelivery = replayRequestID == nil
+            && message?.author == .user
+            && message?.delivery == .steer
             && event.submissionId != nil
-            && messageTarget(from: event.msg) != nil
-        awaitsSteeringDelivery = false
+            && message?.messageTarget != nil
         if confirmsSteeringDelivery { steeringDeliveryRevision &+= 1 }
         // Anything that is not a delta may read or finalize the streams the buffer feeds,
         // so buffered text must land first to keep transcript order exact.
-        if type != "agent_message_content_delta", type != "agent_reasoning_content_delta" {
+        if type != "assistant_content_delta" {
             flushStreamDeltas()
         }
-        if type == "user_message", let submissionID = event.submissionId {
+        if message?.delivery == .turn,
+           message?.author == .user,
+           let submissionID = event.submissionId {
             confirmChatTitle(submissionID: submissionID)
         }
         if let submissionID = event.submissionId {
-            if type == "warning" || type == "error" {
+            if type == "warning" || type == "error" || type == "submission_rejected" {
                 if let draft = pendingDrafts.removeValue(forKey: submissionID) { restoreDraft(draft) }
                 previewSelections.removeValue(forKey: submissionID)
                 if previewPageRequestID == submissionID {
@@ -47,7 +57,7 @@ extension AppModel {
                 rejectComposerEdit(requestID: submissionID)
             } else {
                 pendingDrafts.removeValue(forKey: submissionID)
-                if type == "user_message"
+                if message?.author == .user
                     || (type == "frontend"
                         && event.msg["frontendType"]?.stringValue == "widget") {
                     completeSubmittedComposerEdit(requestID: submissionID)
@@ -85,54 +95,32 @@ extension AppModel {
     private func handleNarrativeEvent(
         _ type: String,
         event: AgentEventRecord,
+        message: MessageEventPayload?,
         record: RecordedEvent,
-        turnID: String?,
-        wasRendered: Bool
+        turnID: String?
     ) -> Bool {
         switch type {
-        case "user_message":
-            let attachments = event.msg["attachments"]?.arrayValue?.compactMap {
-                try? SessionFileReference(json: $0)
-            } ?? []
-            appendText(
-                event.msg["message"]?.stringValue,
-                kind: .user,
-                id: "event:\(record.sequence):user",
-                turnID: turnID,
-                startsTurn: consumeInitialTurnMarker(turnID),
-                sourceSequence: record.sequence,
-                recordedAtMs: record.recordedAtMs,
-                messageTarget: messageTarget(from: event.msg),
-                files: attachments
-            )
-            return true
-        case "peer_message":
-            appendPeerMessage(
-                event.msg,
+        case "message":
+            guard let message else { return true }
+            appendMessage(
+                message,
                 record: record,
                 turnID: turnID,
-                startsTurn: consumeInitialTurnMarker(turnID)
+                startsTurn: message.delivery.startsTurn && consumeInitialTurnMarker(turnID)
             )
             return true
-        case "agent_message_content_delta":
+        case "assistant_content_delta":
             let phase = event.msg["phase"]?.stringValue
             guard let modelStepID = event.msg["modelStepId"]?.stringValue else { return true }
-            let commentary = phase == "commentary"
+            let kind: TranscriptEntry.Kind = switch phase {
+            case "reasoning": .reasoning
+            case "commentary": .commentary
+            default: .assistant
+            }
             appendStream(
                 id: streamID(modelStepID: modelStepID, phase: phase ?? "final_answer"),
                 delta: event.msg["delta"]?.stringValue ?? "",
-                kind: commentary ? .commentary : .assistant,
-                modelStepID: modelStepID,
-                turnID: turnID,
-                record: record
-            )
-            return true
-        case "agent_reasoning_content_delta":
-            guard let modelStepID = event.msg["modelStepId"]?.stringValue else { return true }
-            appendStream(
-                id: streamID(modelStepID: modelStepID, phase: "reasoning"),
-                delta: event.msg["delta"]?.stringValue ?? "",
-                kind: .reasoning,
+                kind: kind,
                 modelStepID: modelStepID,
                 turnID: turnID,
                 record: record
@@ -141,37 +129,8 @@ extension AppModel {
         case "model_step_completed":
             applyModelStepCompletion(event.msg, turnID: turnID, record: record)
             return true
-        case "agent_message":
-            let phase = event.msg["phase"]?.stringValue
-            let kind: TranscriptEntry.Kind = phase == "commentary" ? .commentary : .assistant
-            if let modelStepID = event.msg["modelStepId"]?.stringValue,
-               transcript.contains(where: {
-                   $0.modelStepID == modelStepID && $0.kind == kind && !$0.pending
-               }) {
-                if let index = transcript.lastIndex(where: {
-                    $0.modelStepID == modelStepID && $0.kind == kind
-                }) {
-                    if let turnID, transcript[index].turnID != turnID {
-                        transcript[index].turnID = turnID
-                        invalidateTranscriptProjection()
-                    }
-                    if let messageTarget = messageTarget(from: event.msg) {
-                        transcript[index].messageTarget = messageTarget
-                    }
-                }
-            } else if wasRendered {
-                transcript.removeAll { $0.pending && $0.kind == kind }
-            } else {
-                completeStream(
-                    text: event.msg["message"]?.stringValue ?? "",
-                    kind: kind,
-                    modelStepID: event.msg["modelStepId"]?.stringValue,
-                    turnID: turnID,
-                    messageTarget: messageTarget(from: event.msg),
-                    sourceSequence: record.sequence,
-                    recordedAtMs: record.recordedAtMs
-                )
-            }
+        case "assistant_message":
+            applyAssistantMessage(event.msg, turnID: turnID, record: record)
             return true
         default:
             return false
@@ -179,8 +138,8 @@ extension AppModel {
     }
 
     private func consumeInitialTurnMarker(_ turnID: String?) -> Bool {
-        guard turnID != nil, awaitingInitialUserTurnID == turnID else { return false }
-        awaitingInitialUserTurnID = nil
+        guard turnID != nil, awaitingInitialMessageTurnID == turnID else { return false }
+        awaitingInitialMessageTurnID = nil
         return true
     }
 
@@ -194,9 +153,9 @@ extension AppModel {
         switch type {
         case "model_step_started":
             if replayRequestID == nil { runStats.active?.modelCalls += 1 }
-        case "task_started":
+        case "turn_started":
             activeTurnID = event.msg["turnId"]?.stringValue
-            awaitingInitialUserTurnID = activeTurnID
+            awaitingInitialMessageTurnID = activeTurnID
             if replayRequestID == nil,
                let turnID = activeTurnID,
                runStats.active?.turnId != turnID {
@@ -217,11 +176,11 @@ extension AppModel {
             if let window = event.msg["modelContextWindow"]?.intValue {
                 modelContextWindow = Int64(window)
             }
-        case "task_complete":
+        case "turn_complete":
             finishTranscriptTurn(record, turnID: turnID, aborted: false, wasRendered: wasRendered)
         case "turn_aborted":
             finishTranscriptTurn(record, turnID: turnID, aborted: true, wasRendered: wasRendered)
-        case "web_search_begin", "web_search_end", "warning", "error":
+        case "web_search_begin", "web_search_end", "warning", "error", "submission_rejected":
             break
         case "tool_call_begin":
             if replayRequestID == nil { runStats.active?.toolCalls += 1 }
@@ -250,7 +209,7 @@ extension AppModel {
                 in: &transcript
             )
         }
-        awaitingInitialUserTurnID = nil
+        awaitingInitialMessageTurnID = nil
         activeTurnID = nil
         if replayRequestID == nil { runStats.active = nil }
         refreshWorkspaceChanges()
@@ -316,12 +275,6 @@ extension AppModel {
                   let id = event["id"]?.stringValue
             else { return }
             mountedWidgets.removeAll { $0.capability == capability && $0.widget.id == id }
-            if replayRequestID == nil,
-               contributions.contains(where: {
-                   $0.capability == capability && $0.activeInput != nil
-               }) {
-                awaitsSteeringDelivery = true
-            }
             acknowledgeWidgetEdit(
                 submissionID: submissionID,
                 capability: capability,
@@ -608,15 +561,15 @@ extension AppModel {
         }
     }
 
-    func appendPeerMessage(
-        _ event: JSONValue,
+    func appendMessage(
+        _ message: MessageEventPayload,
         record: RecordedEvent,
         turnID: String?,
         startsTurn: Bool
     ) {
         mutateTranscriptPreservingPrefix { entries in
-            appendPeerMessage(
-                event,
+            appendMessage(
+                message,
                 record: record,
                 turnID: turnID,
                 startsTurn: startsTurn,
@@ -625,32 +578,42 @@ extension AppModel {
         }
     }
 
-    func appendPeerMessage(
-        _ event: JSONValue,
+    func appendMessage(
+        _ message: MessageEventPayload,
         record: RecordedEvent,
         turnID: String?,
         startsTurn: Bool,
+        recordID: String? = nil,
         to entries: inout [TranscriptEntry]
     ) {
-        guard let messageID = event["messageId"]?.stringValue,
-              let sourceSessionID = event["sourceSessionId"]?.stringValue,
-              let sourceHandle = event["sourceHandle"]?.stringValue,
-              let message = event["message"]?.stringValue
-        else { return }
+        guard !message.text.isEmpty || !message.attachments.isEmpty else { return }
+        let id: String
+        if let peer = message.author.peerFields {
+            id = "message:peer:\(peer.sessionID.utf8.count):\(peer.sessionID):\(peer.messageID)"
+        } else if let submissionID = record.event.submissionId {
+            id = "message:submission:\(submissionID.utf8.count):\(submissionID)"
+        } else if let recordID {
+            id = "message:record:\(recordID.utf8.count):\(recordID)"
+        } else {
+            id = "message:record:\(record.sequence)"
+        }
+        let kind: TranscriptEntry.Kind = message.author == .user ? .user : .peer
         entries.append(TranscriptEntry(
-            id: "peer:\(sourceSessionID.utf8.count):\(sourceSessionID):\(messageID)",
-            text: message,
-            kind: .peer,
-            capability: "swarm",
-            title: sourceHandle,
-            group: sourceSessionID,
+            id: id,
+            text: message.text,
+            kind: kind,
             format: "plain_text",
-            tone: "info",
             pending: false,
             turnID: turnID,
             startsTurn: startsTurn,
             sourceSequence: record.sequence,
-            recordedAtMs: record.recordedAtMs
+            recordedAtMs: record.recordedAtMs,
+            messageTarget: message.messageTarget,
+            files: message.attachments,
+            messageMetadata: TranscriptMessageMetadata(
+                author: message.author,
+                delivery: message.delivery
+            )
         ))
     }
 
@@ -799,35 +762,51 @@ extension AppModel {
               let outcome = event["outcome"],
               let status = outcome["status"]?.stringValue
         else { return }
-        guard status == "completed" else {
-            // Block source ids are namespaced by model step, so a step that ends without
-            // completing can never finish its pending blocks. The backend closes live
-            // ones with its own end events; this sweep only keeps replay after a crash
-            // from stranding them.
-            for entry in entries
-            where entry.pending
-                && entry.capability.map({ capability in
-                    entry.id.hasPrefix(
-                        scopedBlockID(capability: capability, sourceID: "\(modelStepID)/")
-                    )
-                }) == true
-            {
-                entry.pending = false
-                if entry.turnID == nil { entry.turnID = turnID }
-                entry.tone = "warning"
-                entry.sourceSequence = record.sequence
-                entry.recordedAtMs = record.recordedAtMs
-            }
-            for entry in entries where entry.modelStepID == modelStepID && entry.pending {
-                entry.pending = false
-                if entry.turnID == nil { entry.turnID = turnID }
-                if status == "retrying" { entry.tone = "warning" }
-                entry.sourceSequence = record.sequence
-                entry.recordedAtMs = record.recordedAtMs
-            }
-            return
+        guard status != "completed" else { return }
+        // Block source ids are namespaced by model step, so a step that ends without
+        // completing can never finish its pending blocks. The backend closes live
+        // ones with its own end events; this sweep only keeps replay after a crash
+        // from stranding them.
+        for entry in entries
+        where entry.pending
+            && entry.capability.map({ capability in
+                entry.id.hasPrefix(
+                    scopedBlockID(capability: capability, sourceID: "\(modelStepID)/")
+                )
+            }) == true
+        {
+            entry.pending = false
+            if entry.turnID == nil { entry.turnID = turnID }
+            entry.tone = "warning"
+            entry.sourceSequence = record.sequence
+            entry.recordedAtMs = record.recordedAtMs
         }
+        for entry in entries where entry.modelStepID == modelStepID && entry.pending {
+            entry.pending = false
+            if entry.turnID == nil { entry.turnID = turnID }
+            if status == "retrying" { entry.tone = "warning" }
+            entry.sourceSequence = record.sequence
+            entry.recordedAtMs = record.recordedAtMs
+        }
+    }
 
+    func applyAssistantMessage(
+        _ event: JSONValue,
+        turnID: String?,
+        record: RecordedEvent
+    ) {
+        applyAssistantMessage(event, turnID: turnID, record: record, to: &transcript)
+    }
+
+    func applyAssistantMessage(
+        _ event: JSONValue,
+        turnID: String?,
+        record: RecordedEvent,
+        to entries: inout [TranscriptEntry]
+    ) {
+        guard let modelStepID = event["modelStepId"]?.stringValue,
+              let content = event["content"]?.arrayValue
+        else { return }
         let previousSnapshotIndex = entries.firstIndex(where: {
             $0.modelStepID == modelStepID && !$0.pending
                 && [.reasoning, .commentary, .assistant].contains($0.kind)
@@ -836,10 +815,12 @@ extension AppModel {
             $0.modelStepID == modelStepID
                 && [.reasoning, .commentary, .assistant].contains($0.kind)
         }
-        guard let content = outcome["content"]?.arrayValue else { return }
-
+        let targetItem = content.lastIndex(where: {
+            $0["phase"]?.stringValue != "reasoning" && $0["text"]?.stringValue?.isEmpty == false
+        })
+        let messageTarget = messageTarget(from: event)
         var nextPresentationOrdinal: [String: Int] = [:]
-        let snapshotEntries = content.compactMap { item -> TranscriptEntry? in
+        let snapshotEntries = content.enumerated().compactMap { index, item -> TranscriptEntry? in
             guard let outputIndex = item["outputIndex"]?.intValue,
                   let partIndex = item["partIndex"]?.intValue,
                   let phase = item["phase"]?.stringValue,
@@ -875,7 +856,9 @@ extension AppModel {
                 modelStepID: modelStepID,
                 turnID: turnID,
                 sourceSequence: record.sequence,
-                recordedAtMs: record.recordedAtMs
+                recordedAtMs: record.recordedAtMs,
+                messageTarget: index == targetItem ? messageTarget : nil,
+                annotations: item["annotations"]?.arrayValue ?? []
             )
         }
         guard !snapshotEntries.isEmpty else { return }

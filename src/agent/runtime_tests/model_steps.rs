@@ -25,10 +25,7 @@ async fn model_step_lifecycle_preserves_correlation_usage_and_content() {
     .expect("create agent");
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "hello".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_op("hello"))
         .expect("submit input");
 
     let mut started = None;
@@ -38,7 +35,7 @@ async fn model_step_lifecycle_preserves_correlation_usage_and_content() {
         match event.msg {
             EventMsg::ModelStepStarted(event) => started = Some(event),
             EventMsg::ModelStepCompleted(event) => completed = Some(event),
-            EventMsg::AgentMessage(event) => message = Some(event),
+            EventMsg::AssistantMessage(event) => message = Some(event),
             EventMsg::TurnComplete(_) => break,
             _ => {}
         }
@@ -74,14 +71,17 @@ async fn model_step_lifecycle_preserves_correlation_usage_and_content() {
             end_turn: true,
             tool_call_ids: Vec::new(),
             usage: scripted_usage(),
-            content: vec![ModelStepContent {
-                output_index: 0,
-                part_index: 0,
-                phase: ModelStepContentPhase::FinalAnswer,
-                text: "Done.".into(),
-                annotations: Vec::new(),
-            }],
         }
+    );
+    assert_eq!(
+        message.content,
+        vec![ModelStepContent {
+            output_index: 0,
+            part_index: 0,
+            phase: ModelStepContentPhase::FinalAnswer,
+            text: "Done.".into(),
+            annotations: Vec::new(),
+        }]
     );
     assert_eq!(message.session_id, started.session_id);
     assert_eq!(message.turn_id, started.turn_id);
@@ -111,10 +111,7 @@ async fn interrupted_stream_retries_in_a_fresh_model_step() {
     .expect("create agent");
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "hello".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_op("hello"))
         .expect("submit input");
 
     let mut started = Vec::new();
@@ -128,8 +125,8 @@ async fn interrupted_stream_retries_in_a_fresh_model_step() {
         match event.msg {
             EventMsg::ModelStepStarted(event) => started.push(event),
             EventMsg::ModelStepCompleted(event) => completed.push(event),
-            EventMsg::AgentMessageContentDelta(event) => delta = Some(event),
-            EventMsg::AgentMessage(event) => message = Some(event),
+            EventMsg::AssistantContentDelta(event) => delta = Some(event),
+            EventMsg::AssistantMessage(event) => message = Some(event),
             EventMsg::ToolCallBegin(_) => tool_begins += 1,
             EventMsg::WebSearchBegin(event) => web_search = Some(event),
             EventMsg::WebSearchEnd(event) => web_search_ends.push(event),
@@ -185,6 +182,68 @@ async fn interrupted_stream_retries_in_a_fresh_model_step() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn steer_during_stream_retry_rebuilds_the_request_input() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
+        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
+            .expect("checkpoint store"),
+    );
+    let model = Arc::new(RecoveringStreamModel {
+        calls: AtomicUsize::new(0),
+        inputs: Mutex::new(Vec::new()),
+    });
+    let mut agent = create_agent(config_with_model(
+        workspace.path(),
+        checkpoints,
+        "stream-retry-steer",
+        "test",
+        model.clone(),
+    ))
+    .await
+    .expect("create agent");
+    agent
+        .sender()
+        .submit(user_op("hello"))
+        .expect("submit input");
+    let turn_id = loop {
+        if let EventMsg::ModelStepCompleted(completed) =
+            agent.next_event().await.expect("retry event").msg
+            && completed.outcome == ModelStepOutcome::Retrying
+        {
+            break completed.turn_id;
+        }
+    };
+    let steer_id = agent
+        .sender()
+        .submit(active_user_op(
+            "new direction",
+            turn_id,
+            ActiveMessageDelivery::Steer,
+        ))
+        .expect("submit steer");
+    loop {
+        if let EventMsg::Frontend(FrontendEvent::Widget { item, .. }) =
+            agent.next_event().await.expect("steer acknowledgement").msg
+            && item.id == steer_id
+        {
+            break;
+        }
+    }
+    tokio::time::advance(std::time::Duration::from_secs(1)).await;
+    while !matches!(
+        agent.next_event().await.expect("completed turn").msg,
+        EventMsg::TurnComplete(_)
+    ) {}
+
+    let inputs = model.inputs.lock().expect("stream input lock");
+    assert_eq!(inputs.len(), 2);
+    let first = serde_json::to_string(&inputs[0]).expect("first input");
+    let retried = serde_json::to_string(&inputs[1]).expect("retried input");
+    assert!(!first.contains("new direction"));
+    assert!(retried.contains("new direction"));
+}
+
+#[tokio::test(start_paused = true)]
 async fn interrupted_stream_exhaustion_surfaces_only_the_safe_provider_error() {
     let workspace = tempfile::tempdir().expect("workspace");
     let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
@@ -206,10 +265,7 @@ async fn interrupted_stream_exhaustion_surfaces_only_the_safe_provider_error() {
     .expect("create agent");
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "hello".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_op("hello"))
         .expect("submit input");
 
     let mut started = Vec::new();
@@ -269,10 +325,7 @@ async fn interrupt_during_stream_retry_backoff_cancels_the_retry() {
     .expect("create agent");
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "hello".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_op("hello"))
         .expect("submit input");
     let turn_id = loop {
         if let EventMsg::ModelStepCompleted(completed) =
@@ -316,10 +369,7 @@ async fn failed_model_step_retains_provider_retry_metadata() {
     .expect("create agent");
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "hello".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_op("hello"))
         .expect("submit input");
 
     let mut terminal = None;
@@ -369,10 +419,7 @@ async fn interrupted_model_request_emits_one_terminal_step() {
     .expect("create agent");
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "hello".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_op("hello"))
         .expect("submit input");
     let started = loop {
         if let EventMsg::ModelStepStarted(started) =

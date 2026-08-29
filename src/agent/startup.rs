@@ -1,16 +1,12 @@
-use std::collections::VecDeque;
 use std::sync::Arc;
-
-use tokio::sync::mpsc;
 
 use super::Agent;
 use super::AgentConfig;
-use super::AgentRole;
-use super::AgentSender;
-use super::COMMAND_QUEUE_CAPACITY;
 use super::EventRecorder;
 use super::Runner;
+use super::SUBMISSION_QUEUE_CAPACITY;
 use super::send_event;
+use super::submission_channel;
 use super::try_send_event;
 use super::unix_timestamp_ms;
 use crate::Error;
@@ -20,7 +16,6 @@ use crate::backend::checkpoint::Checkpoint;
 use crate::backend::checkpoint::ExecutionOutcome;
 use crate::backend::checkpoint::ExecutionRecord;
 use crate::backend::checkpoint::TranscriptPageRequest;
-use crate::backend::model::user_message;
 use crate::middleware::FrontendExtensions;
 use crate::middleware::RuntimeContext;
 use crate::middleware::SessionStartSource;
@@ -37,35 +32,10 @@ use crate::protocol::TokenCountEvent;
 use crate::protocol::TokenUsageInfo;
 use crate::protocol::ToolCallEndEvent;
 use crate::protocol::TurnAbortedEvent;
-use crate::protocol::UserMessageEvent;
 use crate::protocol::replay_events;
 
-fn drain_pending_input(
-    state: &mut Checkpoint,
-    recovery_delta: &mut Vec<serde_json::Value>,
-    recovery_events: &mut Vec<Event>,
-) {
-    for message in std::mem::take(&mut state.pending_input) {
-        let message = message.into_text();
-        let item = user_message(&message);
-        state.context.push(item.clone());
-        recovery_delta.push(item);
-        recovery_events.push(Event {
-            submission_id: state
-                .active_execution
-                .as_ref()
-                .map(|execution| execution.submission_id.clone()),
-            msg: EventMsg::UserMessage(UserMessageEvent {
-                message,
-                attachments: Vec::new(),
-                message_target: None,
-            }),
-        });
-    }
-}
-
-fn initial_hook_source(is_new: bool, sequence: u64, role: &AgentRole) -> SessionStartSource {
-    if is_new || (sequence == 0 && matches!(role, AgentRole::Subagent { .. })) {
+fn initial_hook_source(is_new: bool) -> SessionStartSource {
+    if is_new {
         SessionStartSource::Startup
     } else {
         SessionStartSource::Resume
@@ -96,6 +66,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
     config.middleware = config
         .middleware
         .with_sandbox(Arc::clone(&config.sandbox))?;
+    config.middleware.require_message_handler()?;
     let (mut state, is_new) = match config.checkpoints.load(&config.session_id).await? {
         Some(state) => (state, false),
         None => (Checkpoint::empty(&config.session_id), true),
@@ -105,6 +76,9 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
             "checkpoint does not match the requested session".into(),
         ));
     }
+    config
+        .middleware
+        .validate_message_queue(&state.pending_messages)?;
     let mut metadata_changed = false;
     if is_new {
         state.session_context.clone_from(&config.session_context);
@@ -155,15 +129,13 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
     let mut recovery_delta = Vec::new();
     let mut recovery_execution: Option<ExecutionRecord> = None;
     let mut recovery_events = Vec::new();
-    let recovery_queued_input = state.pending_input.clone();
-    let route = if config.model_route_configured {
+    let route = if config.model_route_configured || is_new {
         config.provider.clone()
     } else {
         state
             .model_route
             .clone()
-            .filter(|route| config.model.choices().any(|choice| choice.route == *route))
-            .unwrap_or_else(|| config.provider.clone())
+            .ok_or_else(|| Error::Checkpoint("saved session has no model route".into()))?
     };
     let choice = config.select_model(&route)?;
     let route = choice.route.clone();
@@ -171,7 +143,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         model: choice.model,
         reasoning_effort: choice.reasoning_effort,
     };
-    let (command_tx, command_rx) = mpsc::channel(COMMAND_QUEUE_CAPACITY);
+    let (sender, inbox) = submission_channel(SUBMISSION_QUEUE_CAPACITY);
     let (event_tx, event_rx) =
         EventRecorder::spawn(Arc::clone(&config.checkpoints), config.session_id.clone());
     let session = SessionConfiguredEvent {
@@ -192,6 +164,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
     let pending_frontend = Arc::new(std::sync::Mutex::new(Some(Vec::new())));
     let queued_frontend = Arc::clone(&pending_frontend);
     let runtime = RuntimeContext {
+        sender: sender.downgrade(),
         checkpoints: Arc::clone(&config.checkpoints),
         session_id: config.session_id.clone(),
         model_route: route.clone(),
@@ -236,8 +209,8 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
             .pending_approval
             .as_ref()
             .is_none_or(|pending| pending.decision_received);
-    let interrupted_execution =
-        uncertain_tools || (state.pending_approval.is_none() && state.active_execution.is_some());
+    let interrupted_model_step = state.active_model_step.is_some();
+    let interrupted_execution = uncertain_tools || interrupted_model_step;
     if interrupted_execution && let Some(step) = state.active_model_step.take() {
         let active = state
             .active_execution
@@ -284,8 +257,12 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
                 }),
             });
         }
-        drain_pending_input(&mut state, &mut recovery_delta, &mut recovery_events);
         state.pending_approval = None;
+        config.middleware.finish_message_turn(
+            &mut state.pending_messages,
+            &recovered_turn,
+            ExecutionOutcome::Aborted,
+        )?;
         let active = state
             .active_execution
             .as_mut()
@@ -301,18 +278,27 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         recovery_execution =
             Some(state.finish_execution(ExecutionOutcome::Aborted, unix_timestamp_ms()?)?);
         state_changed = true;
-    } else if state.pending_approval.is_none() && state.active_execution.is_some() {
-        drain_pending_input(&mut state, &mut recovery_delta, &mut recovery_events);
+    } else if interrupted_model_step {
+        let recovered_turn = state
+            .active_execution
+            .as_ref()
+            .map(|execution| execution.turn_id.clone())
+            .ok_or_else(|| Error::Checkpoint("active model step has no execution".into()))?;
+        config.middleware.finish_message_turn(
+            &mut state.pending_messages,
+            &recovered_turn,
+            ExecutionOutcome::Aborted,
+        )?;
         recovery_execution =
             Some(state.finish_execution(ExecutionOutcome::Aborted, unix_timestamp_ms()?)?);
         state_changed = true;
     }
-    let start_source = initial_hook_source(is_new, state.sequence, &config.role);
+    let start_source = initial_hook_source(is_new);
     let session_start = config
         .middleware
         .session_start(
             &runtime,
-            &state.pending_input,
+            &state.pending_messages,
             start_source,
             &mut state.context,
         )
@@ -327,7 +313,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
                 session_id: &config.session_id,
                 turn_id: &execution.turn_id,
                 outcome: ExecutionOutcome::Aborted,
-                queued_input: &recovery_queued_input,
+                queued_messages: &state.pending_messages,
                 owner: None,
                 events: &mut messages,
             })
@@ -372,7 +358,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
             .lock()
             .map_err(|_| Error::Stopped("middleware frontend queue poisoned".into()))?
             .take()
-            .unwrap_or_default();
+            .ok_or_else(|| Error::Stopped("middleware frontend queue already drained".into()))?;
         for update in frontend_events {
             send_event(
                 &event_tx,
@@ -383,17 +369,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
             )
             .await?;
         }
-        if config.initial_replay_batches == 0 {
-            for msg in replay {
-                try_send_event(
-                    &event_tx,
-                    Event {
-                        submission_id: None,
-                        msg,
-                    },
-                )?;
-            }
-        } else if !replay.is_empty() {
+        if !replay.is_empty() {
             try_send_event(
                 &event_tx,
                 Event {
@@ -434,15 +410,22 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         state,
         review_session_id: uuid::Uuid::new_v4().to_string(),
         transcript_delta: Vec::new(),
-        deferred: VecDeque::new(),
         pending_session_start_stop,
         turn_end_turn_id: None,
         events: event_tx.clone(),
     };
     tokio::spawn(async move {
-        let run = runner.run(command_rx).await;
+        let run = runner.run(inbox).await;
         let session_end = runner.config.middleware.session_end(&runner.runtime).await;
-        if let Some(error) = run.err().or_else(|| session_end.err()) {
+        let error = match (run, session_end) {
+            (Err(primary), Err(rollback)) => Some(Error::Rollback {
+                primary: Box::new(primary),
+                rollback: Box::new(rollback),
+            }),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Some(error),
+            (Ok(()), Ok(())) => None,
+        };
+        if let Some(error) = error {
             let _ = send_event(
                 &event_tx,
                 Event {
@@ -454,9 +437,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         }
     });
     Ok(Agent {
-        sender: AgentSender {
-            commands: command_tx,
-        },
+        sender,
         events: event_rx,
         model_router,
         frontend,
@@ -473,23 +454,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_forked_subagent_starts_before_it_resumes() {
-        let child = AgentRole::Subagent {
-            parent_session_id: "parent".into(),
-            parent_turn_id: "turn".into(),
-        };
-
-        assert_eq!(
-            initial_hook_source(false, 0, &child),
-            SessionStartSource::Startup
-        );
-        assert_eq!(
-            initial_hook_source(false, 1, &child),
-            SessionStartSource::Resume
-        );
-        assert_eq!(
-            initial_hook_source(false, 0, &AgentRole::Main),
-            SessionStartSource::Resume
-        );
+    fn an_empty_checkpoint_starts_before_it_resumes() {
+        assert_eq!(initial_hook_source(true), SessionStartSource::Startup);
+        assert_eq!(initial_hook_source(false), SessionStartSource::Resume);
     }
 }

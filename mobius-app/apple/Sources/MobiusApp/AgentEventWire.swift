@@ -41,15 +41,10 @@ private struct AgentEventValidator {
             try requireBool("retryable")
             try optionalInteger("status")
             try optionalString("retryAfter")
-        case "warning":
+        case "warning", "submission_rejected":
             try requireString("message")
-        case "user_message":
-            try requireString("message")
-            try validateAttachments()
-            try validateMessageTarget()
-        case "peer_message":
-            try requireStrings(["messageId", "sourceSessionId", "sourceHandle", "message"])
-            try validateMessageTarget()
+        case "message":
+            _ = try MessageEventPayload(json: msg)
         case "session_configured":
             try requireString("sessionId")
             guard let context = msg["context"], let model = msg["model"] else {
@@ -79,24 +74,24 @@ private struct AgentEventValidator {
 
     private func validateModelEvent() throws -> Bool {
         switch type {
-        case "task_started":
+        case "turn_started":
             try requireString("turnId")
             try optionalInteger("modelContextWindow")
-        case "task_complete":
+        case "turn_complete":
             try requireString("turnId")
         case "turn_aborted":
             try requireString("turnId")
             try requireString("reason")
-        case "agent_message":
+        case "assistant_message":
             try requireStrings(["sessionId", "turnId", "modelStepId"])
-            try requireString("message")
-            try validatePhase()
+            guard let content = msg["content"]?.arrayValue, !content.isEmpty else {
+                throw GatewayWireError.invalidFrame("assistant_message has invalid content")
+            }
+            try validateAssistantContent(content)
             try validateMessageTarget()
-        case "agent_message_content_delta":
+        case "assistant_content_delta":
             try requireStrings(["sessionId", "turnId", "modelStepId", "delta"])
             try validatePhase()
-        case "agent_reasoning_content_delta":
-            try requireStrings(["sessionId", "turnId", "modelStepId", "delta"])
         case "model_step_started":
             try requireStrings(["sessionId", "turnId", "modelStepId"])
             try requireInteger("stepIndex")
@@ -216,7 +211,7 @@ private struct AgentEventValidator {
     private func validatePhase(in value: JSONValue? = nil) throws {
         let value = value ?? msg
         guard let phase = value["phase"]?.stringValue,
-            ["commentary", "final_answer"].contains(phase)
+            ["reasoning", "commentary", "final_answer"].contains(phase)
         else {
             throw GatewayWireError.invalidFrame("\(type) has invalid phase")
         }
@@ -243,15 +238,6 @@ private struct AgentEventValidator {
         )
     }
 
-    private func validateAttachments() throws {
-        guard let attachments = msg["attachments"]?.arrayValue,
-            attachments.count <= maximumWireSessionFileReferences
-        else {
-            throw GatewayWireError.invalidFrame("\(type) has invalid attachments")
-        }
-        try attachments.forEach { _ = try SessionFileReference(json: $0) }
-    }
-
     private func validateModelStepCompletion() throws {
         try requireStrings(["sessionId", "turnId", "modelStepId"])
         try requireIntegers(["stepIndex", "startedAtMs", "completedAtMs"])
@@ -262,7 +248,6 @@ private struct AgentEventValidator {
         case "completed":
             try requireBool("endTurn", in: outcome)
             guard let usage = outcome["usage"],
-                let content = outcome["content"]?.arrayValue,
                 let toolCallIDs = outcome["toolCallIds"]?.arrayValue,
                 toolCallIDs.allSatisfy({ $0.stringValue != nil })
             else {
@@ -271,23 +256,6 @@ private struct AgentEventValidator {
                 )
             }
             try validateUsage(usage)
-            for item in content {
-                try requireIntegers(["outputIndex", "partIndex"], in: item)
-                guard let phase = item["phase"]?.stringValue,
-                    ["reasoning", "commentary", "final_answer"].contains(phase)
-                else {
-                    throw GatewayWireError.invalidFrame(
-                        "model_step_completed has invalid content phase"
-                    )
-                }
-                try requireString("text", in: item)
-                guard let annotations = item["annotations"]?.arrayValue else {
-                    throw GatewayWireError.invalidFrame(
-                        "model_step_completed has invalid content annotations"
-                    )
-                }
-                try annotations.forEach(validateModelStepAnnotation)
-            }
         case "failed", "interrupted", "retrying":
             break
         default:
@@ -297,12 +265,26 @@ private struct AgentEventValidator {
         }
     }
 
+    private func validateAssistantContent(_ content: [JSONValue]) throws {
+        for item in content {
+            try requireIntegers(["outputIndex", "partIndex"], in: item)
+            try validatePhase(in: item)
+            try requireString("text", in: item)
+            guard let annotations = item["annotations"]?.arrayValue else {
+                throw GatewayWireError.invalidFrame(
+                    "assistant_message has invalid content annotations"
+                )
+            }
+            try annotations.forEach(validateModelStepAnnotation)
+        }
+    }
+
     private func validateModelStepAnnotation(_ annotation: JSONValue) throws {
         guard annotation.objectValue != nil,
             let annotationType = annotation["type"]?.stringValue
         else {
             throw GatewayWireError.invalidFrame(
-                "model_step_completed has invalid content annotation"
+                "assistant_message has invalid content annotation"
             )
         }
         switch annotationType {
@@ -343,7 +325,7 @@ private struct AgentEventValidator {
             try optionalString("title", in: annotation)
         default:
             throw GatewayWireError.invalidFrame(
-                "model_step_completed has unknown content annotation \(annotationType)"
+                "assistant_message has unknown content annotation \(annotationType)"
             )
         }
     }

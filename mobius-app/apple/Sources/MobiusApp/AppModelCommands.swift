@@ -947,7 +947,7 @@ extension AppModel {
     }
 
     @discardableResult
-    func sendMessage() -> Bool {
+    func sendMessage(delivery requestedDelivery: ActiveMessageDelivery? = nil) -> Bool {
         guard connectionState.isReady,
               sessionRequestID == nil,
               let sessionID = selectedSessionID
@@ -974,20 +974,30 @@ extension AppModel {
             return false
         }
         let id = requestID("input")
+        let targetTurnID = activeTurnID
+        let delivery = targetTurnID == nil ? nil : requestedDelivery
+        let operation = AgentOperation.message(MessageSubmission(
+            author: .user,
+            text: text,
+            attachments: attachments,
+            requestedDelivery: delivery,
+            targetTurnId: targetTurnID
+        ))
         // Past every guard, so a rejected send leaves the keyboard up with the text still
         // there to fix. The send button and the return key both land here, which is why this
         // belongs on the model rather than in the composer's own submit path.
         dismissComposerFocus()
         if pendingWidgetEdit?.recovery.phase == .editing {
-            submitComposerEdit(sessionID: sessionID, requestID: id, text: text)
+            submitComposerEdit(
+                sessionID: sessionID,
+                requestID: id,
+                text: text,
+                operation: operation
+            )
             return true
         }
         let stashedText = stashedComposerDraft
-        let op: AgentOperation
-        if let activeTurnID, let activeOperation {
-            op = .activeInput(operation: activeOperation, turnID: activeTurnID, text: text)
-        } else {
-            op = .userInput(text: text, attachments: attachments)
+        if targetTurnID == nil {
             startChatTitle(prompt: text, submissionID: id, sessionID: sessionID)
         }
         pendingDrafts[id] = PendingComposerDraft(text: text, attachments: attachments)
@@ -1001,7 +1011,10 @@ extension AppModel {
         composer = ""
         suppressesComposerDraftSave = false
         composerAttachments = []
-        transmit(.submit(sessionID: sessionID, submission: Submission(id: id, op: op))) { [weak self] _ in
+        transmit(.submit(
+            sessionID: sessionID,
+            submission: Submission(id: id, op: operation)
+        )) { [weak self] _ in
             guard let self else { return }
             self.restoreDraft(id: id)
             self.cancelChatTitle(submissionID: id, rearm: true)
@@ -1010,6 +1023,22 @@ extension AppModel {
             composer = stashedText
         }
         return true
+    }
+
+    var activeMessageDelivery: ActiveMessageDelivery {
+        for feature in middlewareFeatures {
+            for setting in feature.settings where setting.composer {
+                guard case .select(let options, _) = setting.kind,
+                      Set(options.compactMap { ActiveMessageDelivery(rawValue: $0.value) })
+                        == Set(ActiveMessageDelivery.allCases),
+                      let value = agentDraft?.middleware.settings[feature.id]?[setting.id],
+                      case .string(let rawValue) = value,
+                      let delivery = ActiveMessageDelivery(rawValue: rawValue)
+                else { continue }
+                return delivery
+            }
+        }
+        return .steer
     }
 
     func editWidgetInputInComposer(_ mounted: MountedWidget) {
@@ -1059,18 +1088,17 @@ extension AppModel {
         }
     }
 
-    private func submitComposerEdit(sessionID: String, requestID: String, text: String) {
+    private func submitComposerEdit(
+        sessionID: String,
+        requestID: String,
+        text: String,
+        operation: AgentOperation
+    ) {
         guard var pending = pendingWidgetEdit,
               let accountID = selectedAccountID,
               pending.owner == ComposerDraftOwner(accountID: accountID, sessionID: sessionID),
               pending.recovery.phase == .editing
         else { return }
-        let operation: AgentOperation
-        if let activeTurnID, let activeOperation {
-            operation = .activeInput(operation: activeOperation, turnID: activeTurnID, text: text)
-        } else {
-            operation = .userInput(text: text, attachments: [])
-        }
         pending.recovery.editedInput = text
         pending.recovery.requestID = requestID
         pending.recovery.submissionBaselineSequence = latestSequence

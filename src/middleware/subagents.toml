@@ -61,7 +61,7 @@ description = "Registered route; defaults to the child route, then parent."
 description = "Reasoning effort for the selected model; defaults to middleware configuration."
 
 [tool.send_message]
-description = "Queue a message without starting a turn."
+description = "Send collaboration context to a running agent."
 
 [tool.followup_task]
 description = "Send follow-up work, starting a turn if idle."

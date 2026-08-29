@@ -1,5 +1,6 @@
 //! Stable model route selection and route diagnostics.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use super::CompactOutput;
@@ -10,6 +11,9 @@ use super::ModelOutput;
 use super::ModelPricing;
 use super::ModelRequest;
 use super::PromptCacheCapability;
+use super::ToolDefinition;
+use super::has_prompt_cache_breakpoint;
+use super::mark_prompt_cache_breakpoint;
 use crate::Error;
 use crate::Result;
 use crate::protocol::ModelChoice;
@@ -138,6 +142,39 @@ impl ModelRouter {
     /// Reports deferred-tool cache behavior for one route.
     pub fn tool_discovery(&self, provider: &str) -> Result<ToolDiscoveryMode> {
         Ok(self.provider(provider)?.tool_discovery())
+    }
+
+    /// Prepares the provider-owned direct/deferred tool envelope for one request.
+    pub(crate) fn prepare_tool_definitions(
+        &self,
+        provider: &str,
+        mut direct: Vec<ToolDefinition>,
+        deferred: Vec<ToolDefinition>,
+        materialized: &BTreeSet<String>,
+    ) -> Result<(Vec<ToolDefinition>, Vec<ToolDefinition>)> {
+        match self.provider(provider)?.tool_discovery() {
+            ToolDiscoveryMode::Native => Ok((direct, deferred)),
+            ToolDiscoveryMode::Rebuild => {
+                direct.extend(
+                    deferred
+                        .iter()
+                        .filter(|tool| materialized.contains(&tool.name))
+                        .cloned(),
+                );
+                Ok((direct, Vec::new()))
+            }
+        }
+    }
+
+    /// Applies transport-owned metadata to the first input of a new turn.
+    pub(crate) fn prepare_turn_input(
+        &self,
+        context: &[serde_json::Value],
+        input: &mut serde_json::Value,
+    ) {
+        if !has_prompt_cache_breakpoint(context) {
+            let _ = mark_prompt_cache_breakpoint(input);
+        }
     }
 
     /// Reports prompt-cache support for one route.

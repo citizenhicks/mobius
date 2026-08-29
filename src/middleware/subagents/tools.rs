@@ -12,7 +12,9 @@ use super::{
 };
 use crate::backend::model::ToolDefinition;
 use crate::middleware::tools::{HookIdentity, Tool, ToolContext};
-use crate::protocol::{Op, is_internal_message, strip_attachment_references};
+use crate::protocol::{
+    MessageAuthor, MessageSubmission, Op, is_internal_message, strip_attachment_references,
+};
 use crate::{BoxFuture, Error, Result};
 
 pub(super) struct SpawnAgent {
@@ -26,7 +28,7 @@ pub(super) struct SpawnAgent {
 #[serde(deny_unknown_fields)]
 struct SpawnArgs {
     task_name: String,
-    message: String,
+    text: String,
     fork_turns: Option<String>,
     model: Option<String>,
     reasoning_effort: Option<String>,
@@ -44,7 +46,7 @@ impl Tool for SpawnAgent {
                         "type": "string",
                         "description": text::TOOL_SPAWN_AGENT_PARAMETER_TASK_NAME_DESCRIPTION
                     },
-                    "message": {"type": "string"},
+                    "text": {"type": "string"},
                     "fork_turns": {
                         "type": "string",
                         "description": text::TOOL_SPAWN_AGENT_PARAMETER_FORK_TURNS_DESCRIPTION
@@ -58,7 +60,7 @@ impl Tool for SpawnAgent {
                         "description": text::TOOL_SPAWN_AGENT_PARAMETER_REASONING_EFFORT_DESCRIPTION
                     }
                 },
-                "required": ["task_name", "message"],
+                "required": ["task_name", "text"],
                 "additionalProperties": false
             }),
         }
@@ -75,7 +77,7 @@ impl Tool for SpawnAgent {
         Box::pin(async move {
             let arguments: SpawnArgs = serde_json::from_value(arguments)?;
             validate_task_name(&arguments.task_name)?;
-            let message = validate_message("message", arguments.message)?;
+            let text = validate_text(arguments.text)?;
             let turns = parse_fork_turns(arguments.fork_turns.as_deref())?;
             let model = arguments
                 .model
@@ -92,6 +94,7 @@ impl Tool for SpawnAgent {
             let session_id = Uuid::new_v4().to_string();
             let shared = Arc::clone(&self.shared);
             let scope = Arc::clone(&self.scope);
+            let submission = peer_submission(&scope.session_id, &scope.agent_path, text);
             supervise(async move {
                 shared
                     .reserve(
@@ -132,9 +135,8 @@ impl Tool for SpawnAgent {
                     .await
                     .and_then(|()| {
                         sender
-                            .submit(Op::UserInput {
-                                text: message,
-                                attachments: Vec::new(),
+                            .submit(Op::Message {
+                                message: submission,
                             })
                             .map(|_| ())
                     })
@@ -171,7 +173,7 @@ pub(super) struct FollowupTask {
 #[serde(deny_unknown_fields)]
 struct MessageArgs {
     target: String,
-    message: String,
+    text: String,
 }
 
 impl Tool for SendMessage {
@@ -186,12 +188,17 @@ impl Tool for SendMessage {
     ) -> BoxFuture<'a, Result<String>> {
         Box::pin(async move {
             let arguments: MessageArgs = serde_json::from_value(arguments)?;
+            let message = peer_submission(
+                &self.scope.session_id,
+                &self.scope.agent_path,
+                validate_text(arguments.text)?,
+            );
             self.shared
-                .queue_message(
+                .submit_message(
                     &self.scope.root_session_id,
                     &self.scope.agent_path,
                     &arguments.target,
-                    validate_message("message", arguments.message)?,
+                    message,
                 )
                 .await?;
             Ok(String::new())
@@ -207,26 +214,22 @@ impl Tool for FollowupTask {
     fn call<'a>(&'a self, context: ToolContext, arguments: Value) -> BoxFuture<'a, Result<String>> {
         Box::pin(async move {
             let arguments: MessageArgs = serde_json::from_value(arguments)?;
-            let message = validate_message("message", arguments.message)?;
+            let message = peer_submission(
+                &self.scope.session_id,
+                &self.scope.agent_path,
+                validate_text(arguments.text)?,
+            );
             let shared = Arc::clone(&self.shared);
             let scope = Arc::clone(&self.scope);
             supervise(async move {
                 let followup = shared
-                    .prepare_followup(
-                        &scope.root_session_id,
-                        &scope.agent_path,
-                        &arguments.target,
-                        message.clone(),
-                    )
+                    .prepare_followup(&scope.root_session_id, &scope.agent_path, &arguments.target)
                     .await?;
-                let Followup::Start {
+                let Followup {
                     record,
                     sender,
                     previous,
-                } = followup
-                else {
-                    return Ok(String::new());
-                };
+                } = followup;
                 let (sender, events, model) = match sender {
                     Some(sender) => (sender, None, None),
                     None => {
@@ -267,14 +270,7 @@ impl Tool for FollowupTask {
                         model,
                     )
                     .await
-                    .and_then(|()| {
-                        sender
-                            .submit(Op::UserInput {
-                                text: message,
-                                attachments: Vec::new(),
-                            })
-                            .map(|_| ())
-                    })
+                    .and_then(|()| sender.submit(Op::Message { message }).map(|_| ()))
                 {
                     return Err(cleanup_error(
                         error,
@@ -306,9 +302,9 @@ fn message_definition(name: &str, description: &str) -> ToolDefinition {
             "type": "object",
             "properties": {
                 "target": {"type": "string"},
-                "message": {"type": "string"}
+                "text": {"type": "string"}
             },
-            "required": ["target", "message"],
+            "required": ["target", "text"],
             "additionalProperties": false
         }),
     }
@@ -418,7 +414,7 @@ impl Tool for WaitAgent {
         }
     }
 
-    fn interrupt_on_active_input(&self) -> bool {
+    fn cancel_on_input(&self) -> bool {
         true
     }
 
@@ -525,16 +521,30 @@ fn validate_task_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_message(name: &str, message: String) -> Result<String> {
-    if message.trim().is_empty() {
-        return Err(Error::Tool(format!("{name} cannot be empty")));
+fn validate_text(text: String) -> Result<String> {
+    if text.trim().is_empty() {
+        return Err(Error::Tool("text cannot be empty".into()));
     }
-    if message.len() > MAX_MESSAGE_BYTES {
+    if text.len() > MAX_MESSAGE_BYTES {
         return Err(Error::Tool(format!(
-            "{name} exceeded {MAX_MESSAGE_BYTES} bytes"
+            "text exceeded {MAX_MESSAGE_BYTES} bytes"
         )));
     }
-    Ok(message)
+    Ok(text)
+}
+
+fn peer_submission(session_id: &str, agent_path: &str, text: String) -> MessageSubmission {
+    MessageSubmission {
+        author: MessageAuthor::Peer {
+            message_id: Uuid::new_v4().to_string(),
+            session_id: session_id.into(),
+            handle: agent_path.rsplit('/').next().unwrap_or(agent_path).into(),
+        },
+        text,
+        attachments: Vec::new(),
+        requested_delivery: None,
+        target_turn_id: None,
+    }
 }
 
 pub(super) fn cleanup_error(error: Error, cleanup: Result<()>) -> Error {
@@ -556,4 +566,43 @@ where
     tokio::spawn(operation)
         .await
         .map_err(|error| Error::Stopped(format!("subagent lifecycle task failed: {error}")))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn peer_submission_preserves_agent_provenance() {
+        let submission = peer_submission(
+            "session-reviewer",
+            "/root/team/reviewer",
+            "Review the parser".into(),
+        );
+
+        assert!(matches!(
+            submission,
+            MessageSubmission {
+                author: MessageAuthor::Peer {
+                    session_id,
+                    handle,
+                    ..
+                },
+                text,
+                ..
+            } if session_id == "session-reviewer"
+                && handle == "reviewer"
+                && text == "Review the parser"
+        ));
+    }
+
+    #[test]
+    fn message_tool_schema_names_message_content_text() {
+        let definition = message_definition("send_message", "send");
+
+        assert_eq!(
+            definition.parameters["required"],
+            serde_json::json!(["target", "text"])
+        );
+    }
 }

@@ -1,0 +1,1 @@
+Add canonical typed messages, provider-aware dynamic tool discovery, durable turn recovery, swarm collaboration, and unified assistant output events. Checkpoint version 9 is required; older checkpoints are not migrated.

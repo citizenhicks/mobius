@@ -48,8 +48,10 @@ fn snapshot_preview_scrolls_with_the_mouse_wheel() {
                 events: (0..30)
                     .map(|index| RenderedEvent {
                         recorded_at_ms: i64::from(index),
-                        event: EventMsg::UserMessage(mobius::protocol::UserMessageEvent {
-                            message: format!("subagent row {index}"),
+                        event: EventMsg::Message(MessageEvent {
+                            author: MessageAuthor::User,
+                            delivery: MessageDelivery::Turn,
+                            text: format!("subagent row {index}"),
                             attachments: Vec::new(),
                             message_target: None,
                         }),

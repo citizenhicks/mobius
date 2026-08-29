@@ -2,7 +2,7 @@
 
 use crate::agent::validate_submission;
 use crate::middleware::session_files::session_file_limits;
-use crate::protocol::{Op, SessionFileReference, Submission};
+use crate::protocol::{MessageAuthor, MessageSubmission, Op, SessionFileReference, Submission};
 
 fn attachment(index: usize, size: u64) -> SessionFileReference {
     SessionFileReference {
@@ -16,9 +16,14 @@ fn attachment(index: usize, size: u64) -> SessionFileReference {
 fn submission(attachments: Vec<SessionFileReference>) -> Submission {
     Submission {
         id: "submission".into(),
-        op: Op::UserInput {
-            text: String::new(),
-            attachments,
+        op: Op::Message {
+            message: MessageSubmission {
+                author: MessageAuthor::User,
+                text: String::new(),
+                attachments,
+                requested_delivery: None,
+                target_turn_id: None,
+            },
         },
     }
 }

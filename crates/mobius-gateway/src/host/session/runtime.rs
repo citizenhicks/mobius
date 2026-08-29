@@ -188,7 +188,7 @@ impl HostState {
                     );
                     let result = match &submission.op {
                         Op::SetModel { route } => self.set_model(route).await,
-                        _ => self.submit(submission, false),
+                        _ => self.submit(submission),
                     };
                     if result.is_ok()
                         && resumes_approval
@@ -477,12 +477,17 @@ impl HostState {
         });
         let submission = Submission {
             id: submission_id,
-            op: Op::UserInput {
-                text: input,
-                attachments: Vec::new(),
+            op: Op::Message {
+                message: MessageSubmission {
+                    author: MessageAuthor::User,
+                    text: input,
+                    attachments: Vec::new(),
+                    requested_delivery: None,
+                    target_turn_id: None,
+                },
             },
         };
-        if let Err(rejection) = self.submit(submission, true) {
+        if let Err(rejection) = self.submit(submission) {
             let active = self.active_cron.take().expect("active cron was just set");
             self.cron
                 .finish_run(
@@ -496,20 +501,10 @@ impl HostState {
         Ok(())
     }
 
-    pub(super) fn submit(
-        &mut self,
-        submission: Submission,
-        scheduled: bool,
-    ) -> std::result::Result<(), Rejection> {
-        let starts_turn = matches!(submission.op, Op::UserInput { .. } | Op::PeerInput { .. });
+    pub(super) fn submit(&mut self, submission: Submission) -> std::result::Result<(), Rejection> {
+        let message_submission_id =
+            matches!(submission.op, Op::Message { .. }).then(|| submission.id.clone());
         let resolves_approval = matches!(submission.op, Op::ExecApproval { .. });
-        if starts_turn && self.active_cron.is_some() && !scheduled {
-            return Err(Rejection {
-                code: "agent_busy",
-                message: "wait for the scheduled run to finish".into(),
-                fatal: false,
-            });
-        }
         self.running
             .sender
             .as_ref()
@@ -524,7 +519,10 @@ impl HostState {
                 message: error.to_string(),
                 fatal: matches!(error, mobius::Error::Stopped(_)),
             })?;
-        self.pending_turns += usize::from(starts_turn);
+        if let Some(submission_id) = message_submission_id {
+            self.pending_turns += 1;
+            self.pending_messages.insert(submission_id);
+        }
         if resolves_approval {
             self.approval_active = false;
         }
@@ -787,6 +785,7 @@ impl HostState {
             .await
             .map_err(internal)?;
         self.pending_turns = 0;
+        self.pending_messages.clear();
         self.approval_active = false;
         self.turn_error = None;
         Ok(())

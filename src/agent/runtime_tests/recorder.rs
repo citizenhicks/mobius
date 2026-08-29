@@ -4,38 +4,57 @@ use super::*;
 
 #[test]
 fn sender_rejects_oversized_input_before_queueing() {
-    let (commands, _receiver) = tokio::sync::mpsc::channel(1);
-    let sender = AgentSender { commands };
+    let (sender, _inbox) = submission_channel(1);
 
     assert!(
         sender
-            .submit(Op::UserInput {
-                text: "x".repeat(MAX_USER_INPUT_BYTES + 1),
-                attachments: Vec::new(),
-            })
+            .submit(user_op("x".repeat(MAX_MESSAGE_BYTES + 1)))
             .is_err()
     );
 }
 
 #[test]
 fn sender_reports_a_full_live_queue_as_busy() {
-    let (commands, _receiver) = tokio::sync::mpsc::channel(1);
-    let sender = AgentSender { commands };
-    sender
-        .submit(Op::UserInput {
-            text: "first".into(),
-            attachments: Vec::new(),
-        })
-        .expect("fill queue");
+    let (sender, _inbox) = submission_channel(1);
+    sender.submit(user_op("first")).expect("fill queue");
 
     let error = sender
-        .submit(Op::UserInput {
-            text: "second".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_op("second"))
         .expect_err("queue should be full");
 
     assert!(matches!(error, Error::Busy(_)));
+}
+
+#[tokio::test]
+async fn submission_cutoff_excludes_later_messages() {
+    let (sender, mut inbox) = submission_channel(2);
+    sender
+        .submit(user_op("before"))
+        .expect("submit before cutoff");
+    let cutoff = inbox.cutoff().expect("capture cutoff");
+    sender
+        .submit(user_op("after"))
+        .expect("submit after cutoff");
+
+    let before = inbox.recv().await.expect("submission before cutoff");
+
+    assert_eq!(inbox.last_sequence, cutoff);
+    assert_eq!(before.op, user_op("before"));
+    assert_eq!(
+        inbox.recv().await.expect("submission after cutoff").op,
+        user_op("after")
+    );
+}
+
+#[tokio::test]
+async fn weak_sender_does_not_keep_the_submission_channel_open() {
+    let (sender, mut inbox) = submission_channel(1);
+    let weak = sender.downgrade();
+
+    drop(sender);
+
+    assert!(weak.upgrade().is_none());
+    assert!(inbox.recv().await.is_none());
 }
 
 #[tokio::test]
@@ -217,7 +236,7 @@ async fn recorder_flush_reports_a_prior_unacknowledged_failure() {
 }
 
 #[tokio::test]
-async fn recorder_flush_fails_instead_of_blocking_on_a_full_delivery_queue() {
+async fn recorder_flush_backpressures_until_ordered_delivery_resumes() {
     let directory = tempfile::tempdir().expect("checkpoint directory");
     let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
         SqliteCheckpoint::new(directory.path().join("checkpoints.sqlite3"))
@@ -227,7 +246,7 @@ async fn recorder_flush_fails_instead_of_blocking_on_a_full_delivery_queue() {
         .save(&Checkpoint::empty("session"), &[], None)
         .await
         .expect("initial checkpoint");
-    let (events, _receiver) = EventRecorder::spawn(checkpoints, "session".into());
+    let (events, mut receiver) = EventRecorder::spawn(checkpoints, "session".into());
 
     for index in 0..EVENT_QUEUE_CAPACITY {
         send_event(
@@ -247,18 +266,31 @@ async fn recorder_flush_fails_instead_of_blocking_on_a_full_delivery_queue() {
         Event {
             submission_id: None,
             msg: EventMsg::Warning(WarningEvent {
-                message: "overflow".into(),
+                message: EVENT_QUEUE_CAPACITY.to_string(),
             }),
         },
     )
     .expect("queue overflow event");
 
-    let error = tokio::time::timeout(std::time::Duration::from_secs(1), events.flush())
+    let flush_events = events.clone();
+    let mut flush = tokio::spawn(async move { flush_events.flush().await });
+    tokio::task::yield_now().await;
+    assert!(!flush.is_finished(), "flush must wait for event delivery");
+
+    let mut delivered = vec![receiver.recv().await.expect("first delivered event")];
+    tokio::time::timeout(std::time::Duration::from_secs(1), &mut flush)
         .await
-        .expect("flush must not block")
-        .expect_err("full delivery queue must fail");
-    assert_eq!(
-        error.to_string(),
-        "agent stopped: event delivery queue is full"
-    );
+        .expect("draining one event should release flush")
+        .expect("flush task")
+        .expect("flush event recorder");
+    for _ in 0..EVENT_QUEUE_CAPACITY {
+        delivered.push(receiver.recv().await.expect("ordered delivered event"));
+    }
+
+    for (index, recorded) in delivered.iter().enumerate() {
+        let EventMsg::Warning(warning) = &recorded.event.msg else {
+            panic!("expected warning event");
+        };
+        assert_eq!(warning.message, index.to_string());
+    }
 }

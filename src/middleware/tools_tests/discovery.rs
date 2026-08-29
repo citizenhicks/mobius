@@ -407,6 +407,10 @@ async fn tools_search_executes_as_a_normal_bound_tool_and_reports_loaded_names()
     .pop()
     .expect("search result");
 
-    assert_eq!(result.loaded_tools, ["swarm_post"]);
+    let load = ToolLoad::from_input(&result.additional_input[0])
+        .expect("valid load")
+        .expect("tool load");
+    assert_eq!(load.tools, ["swarm_post"]);
+    assert!(matches!(result.events.as_slice(), [EventMsg::ToolLoad(_)]));
     assert_eq!(result.output, r#"{"loaded_tools":["swarm_post"]}"#);
 }

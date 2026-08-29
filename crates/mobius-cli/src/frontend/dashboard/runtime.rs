@@ -1,7 +1,7 @@
 use std::io;
 use std::path::PathBuf;
 
-use mobius::protocol::{EventMsg, FrontendWidgetContent, MAX_USER_INPUT_BYTES, Op, Submission};
+use mobius::protocol::{EventMsg, FrontendWidgetContent, MAX_MESSAGE_BYTES, Op, Submission};
 use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayClient, GatewayEvents, GatewaySender};
 use mobius_gateway::wire::{
@@ -441,14 +441,14 @@ pub(super) fn handle_overlay_paste(state: &mut DashboardState, value: &str) {
 
 pub(super) fn insert_action_input(input: &mut ActionInput, value: &str) {
     let value = terminal_text(value);
-    let available = MAX_USER_INPUT_BYTES.saturating_sub(input.text.len());
+    let available = MAX_MESSAGE_BYTES.saturating_sub(input.text.len());
     let value = truncate_to_bytes(&value, available);
     input.text.insert_str(input.cursor, value);
     input.cursor += value.len();
 }
 
 pub(super) fn truncate_input(mut value: String) -> String {
-    value.truncate(truncate_to_bytes(&value, MAX_USER_INPUT_BYTES).len());
+    value.truncate(truncate_to_bytes(&value, MAX_MESSAGE_BYTES).len());
     value
 }
 

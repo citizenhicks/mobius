@@ -872,8 +872,9 @@ extension AppModel {
         guard replayRequestID != nil else { return }
         let event = buffered.record.event
         let type = event.msg["type"]?.stringValue
+        let message = type == "message" ? try? MessageEventPayload(json: event.msg) : nil
         if let submissionID = event.submissionId,
-           type == "user_message"
+           message?.author == .user
                || (type == "frontend"
                    && event.msg["frontendType"]?.stringValue == "widget"),
            replayCompletionSubmissionIDs.count < maximumObservedReplaySubmissions
@@ -882,10 +883,10 @@ extension AppModel {
         }
 
         var messages: [ReplayUserMessage] = []
-        if type == "user_message", let text = event.msg["message"]?.stringValue {
-            let sequence = messageTarget(from: event.msg)?.checkpointSequence
+        if let message, message.author == .user {
+            let sequence = message.messageTarget?.checkpointSequence
                 ?? buffered.record.sequence
-            messages.append(ReplayUserMessage(sequence: sequence, text: text))
+            messages.append(ReplayUserMessage(sequence: sequence, text: message.text))
         }
         guard !messages.isEmpty else { return }
         replayUserMessages.append(contentsOf: messages.suffix(maximumObservedReplaySubmissions))

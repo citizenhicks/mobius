@@ -5,6 +5,7 @@ use serde::Deserializer;
 use serde::Serialize;
 
 use super::EventMsg;
+use super::MessageAuthor;
 use super::SessionContext;
 use super::SessionFileReference;
 use super::WebSearchAction;
@@ -79,6 +80,12 @@ pub struct WarningEvent {
     pub message: String,
 }
 
+/// A submission the agent rejected without changing durable turn state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubmissionRejectedEvent {
+    pub message: String,
+}
+
 /// Immutable session data emitted once when an agent starts or resumes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionConfiguredEvent {
@@ -127,51 +134,43 @@ where
     Ok(value)
 }
 
+/// How one accepted message actually entered the conversation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageDelivery {
+    Turn,
+    Steer,
+    Queue,
+}
+
+/// One accepted conversation message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UserMessageEvent {
-    pub message: String,
+pub struct MessageEvent {
+    pub author: MessageAuthor,
+    pub delivery: MessageDelivery,
+    pub text: String,
     pub attachments: Vec<SessionFileReference>,
     #[serde(deserialize_with = "required_option")]
     pub message_target: Option<MessageTarget>,
 }
 
-/// One advisory message delivered by another agent session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PeerMessageEvent {
-    pub message_id: String,
-    pub source_session_id: String,
-    pub source_handle: String,
-    pub message: String,
+pub struct AssistantMessageEvent {
+    pub session_id: String,
+    pub turn_id: String,
+    pub model_step_id: String,
+    pub content: Vec<ModelStepContent>,
     #[serde(deserialize_with = "required_option")]
     pub message_target: Option<MessageTarget>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentMessageEvent {
-    pub session_id: String,
-    pub turn_id: String,
-    pub model_step_id: String,
-    pub message: String,
-    pub phase: AgentMessagePhase,
-    #[serde(deserialize_with = "required_option")]
-    pub message_target: Option<MessageTarget>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentMessageContentDeltaEvent {
+pub struct AssistantContentDeltaEvent {
     pub session_id: String,
     pub turn_id: String,
     pub model_step_id: String,
     pub delta: String,
-    pub phase: AgentMessagePhase,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentReasoningContentDeltaEvent {
-    pub session_id: String,
-    pub turn_id: String,
-    pub model_step_id: String,
-    pub delta: String,
+    pub phase: ModelStepContentPhase,
 }
 
 /// One provider request becoming active within a turn.
@@ -244,7 +243,6 @@ pub enum ModelStepOutcome {
         end_turn: bool,
         tool_call_ids: Vec<String>,
         usage: TokenUsage,
-        content: Vec<ModelStepContent>,
     },
     Failed,
     Interrupted,
@@ -355,14 +353,6 @@ pub struct ModelChangedEvent {
 pub struct SessionResumeRequestedEvent {
     pub session_id: String,
     pub context: SessionContext,
-}
-
-/// Assistant message phases understood by frontends.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentMessagePhase {
-    Commentary,
-    FinalAnswer,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

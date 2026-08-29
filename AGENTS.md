@@ -75,7 +75,7 @@ construction branch in `crates/mobius-gateway/src/assembly.rs`. Do not edit the
 agent loop or any frontend for capability-specific behavior.
 
 Approval-required tools are always handled by the sandbox.
-Only one steering-handling middleware may be installed.
+Only one messages-handling middleware may be installed.
 
 ### Tool
 

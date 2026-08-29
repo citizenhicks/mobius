@@ -1,6 +1,5 @@
 //! Ordered middleware and capability registration.
 
-use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -9,7 +8,7 @@ use serde_json::Value;
 use crate::BoxFuture;
 use crate::Error;
 use crate::Result;
-use crate::backend::checkpoint::QueuedInput as DurableQueuedInput;
+use crate::backend::checkpoint::{ExecutionOutcome, QueuedMessage as DurableQueuedMessage};
 use crate::backend::sandbox::Sandbox;
 use crate::protocol::EventMsg;
 use crate::protocol::FrontendActionListItem;
@@ -34,24 +33,23 @@ pub mod context_offloading;
 pub mod extensions;
 pub mod instructions;
 pub mod manifest;
+pub mod messages;
 pub mod scratchpad;
 pub mod session_files;
 pub mod sessions;
-pub mod steering;
 pub mod subagents;
 pub mod swarm;
 pub mod tasks;
 pub mod tools;
 
-pub(crate) use context::QueuedInputBaseline;
 pub use context::{
-    ActiveCommandContext, ActiveSubmissionContext, ActiveSubmissionResult, CompactContext,
-    FrontendEventSink, MiddlewareCommandContext, ModelContext, ModelRequestContext,
-    PermissionRequestContext, PostToolUseContext, PreToolUseContext, QueuedInputQueue,
-    QueuedInputSnapshot, QueuedInputValue, QueuedInputView, RuntimeContext, SessionStartContext,
-    SessionStartSource, StopContext, ToolExposureContext, TurnEndContext, TurnIdentity,
-    UserPromptSubmitContext,
+    ActiveCommandContext, CompactContext, FrontendEventSink, MessageQueue, MessageRouteContext,
+    MessageSubmitContext, MiddlewareCommandContext, ModelContext, ModelRequestContext,
+    PermissionRequestContext, PostToolUseContext, PreToolUseContext, QueuedMessageSnapshot,
+    QueuedMessageView, RuntimeContext, SessionStartContext, SessionStartSource, StopContext,
+    SubmissionResult, ToolExposureContext, TurnEndContext, TurnIdentity,
 };
+pub(crate) use context::{MessageSubmitResult, PreparedMessage};
 
 use tools::Catalog;
 
@@ -187,39 +185,41 @@ pub trait Middleware: Send + Sync {
         Box::pin(async { Ok(()) })
     }
 
-    /// Intercepts a user prompt before it enters durable context.
-    fn user_prompt_submit<'a>(
-        &'a self,
-        _context: &'a mut UserPromptSubmitContext<'_>,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async { Ok(()) })
+    /// Reports whether this middleware is the session's conversation-message preparer.
+    fn handles_messages(&self) -> bool {
+        false
     }
 
-    /// Declares active-turn operations owned by this middleware.
-    fn active_operations(&self) -> &'static [&'static str] {
-        &[]
-    }
-
-    /// Handles one declared active-turn operation.
-    fn active_submission(
-        &self,
-        _context: &mut ActiveSubmissionContext<'_>,
-    ) -> Result<ActiveSubmissionResult> {
+    /// Validates and prepares one conversation message for its lifecycle boundary.
+    fn route_message(&self, _context: &mut MessageRouteContext<'_>) -> Result<SubmissionResult> {
         Err(Error::Config(format!(
-            "middleware `{}` declared but did not handle an active operation",
+            "middleware `{}` claimed messages but did not prepare them",
             self.name()
         )))
+    }
+
+    /// Produces capability UI cleanup when one queued message reaches its boundary.
+    fn message_boundary_events(&self, _submission_id: &str) -> Vec<EventMsg> {
+        Vec::new()
+    }
+
+    /// Intercepts a prepared conversation message at its delivery boundary.
+    fn message_submit<'a>(
+        &'a self,
+        _context: &'a mut MessageSubmitContext<'_>,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
     }
 
     /// Handles a capability command while a turn is active.
     ///
     /// The active model, tool, or hook future is not polled until this returns. Implementations
     /// must keep work bounded and must not await a resource held by that active future. Return
-    /// `None` when the command should retain the default after-turn behavior.
+    /// `None` when the command is unavailable during the active turn.
     fn active_command<'a>(
         &'a self,
         _context: &'a mut ActiveCommandContext<'_>,
-    ) -> BoxFuture<'a, Result<Option<ActiveSubmissionResult>>> {
+    ) -> BoxFuture<'a, Result<Option<SubmissionResult>>> {
         Box::pin(async { Ok(None) })
     }
 
@@ -343,24 +343,18 @@ impl MiddlewareStack {
     /// Creates a stack and rejects duplicate middleware IDs.
     pub fn new(entries: Vec<Arc<dyn Middleware>>) -> Result<Self> {
         let mut names = BTreeSet::new();
-        let mut active_operations = BTreeMap::new();
+        let mut message_handler = None;
         for entry in &entries {
             if !names.insert(entry.name()) {
                 return Err(Error::Duplicate(format!("middleware `{}`", entry.name())));
             }
-            for operation in entry.active_operations() {
-                if operation.is_empty() || operation.chars().any(char::is_whitespace) {
-                    return Err(Error::Config(format!(
-                        "middleware `{}` declared invalid active operation `{operation}`",
-                        entry.name()
-                    )));
-                }
-                if let Some(owner) = active_operations.insert(*operation, entry.name()) {
-                    return Err(Error::Config(format!(
-                        "active operation `{operation}` is owned by both `{owner}` and `{}`",
-                        entry.name()
-                    )));
-                }
+            if entry.handles_messages()
+                && let Some(owner) = message_handler.replace(entry.name())
+            {
+                return Err(Error::Config(format!(
+                    "conversation messages are owned by both `{owner}` and `{}`",
+                    entry.name()
+                )));
             }
         }
         Ok(Self { entries })
@@ -453,7 +447,6 @@ impl MiddlewareStack {
                 && contribution.commands.is_empty()
                 && contribution.widgets.is_empty()
                 && contribution.references.is_empty()
-                && contribution.active_input.is_none()
             {
                 continue;
             }
@@ -464,53 +457,161 @@ impl MiddlewareStack {
                     contribution.capability
                 )));
             }
-            if let Some(input) = &contribution.active_input
-                && !entry
-                    .active_operations()
-                    .contains(&input.operation.as_str())
-            {
-                return Err(Error::Config(format!(
-                    "middleware `{}` exported undeclared active input `{}`",
-                    entry.name(),
-                    input.operation
-                )));
-            }
             contributions.push(contribution);
         }
         Ok(contributions)
     }
 
-    pub(crate) fn active_submission(
+    fn message_handler(&self) -> Option<&Arc<dyn Middleware>> {
+        self.entries.iter().find(|entry| entry.handles_messages())
+    }
+
+    fn message_handler_required(&self) -> Result<&Arc<dyn Middleware>> {
+        self.message_handler()
+            .ok_or_else(|| Error::Config("conversation message middleware is not installed".into()))
+    }
+
+    pub(crate) fn require_message_handler(&self) -> Result<()> {
+        self.message_handler_required().map(|_| ())
+    }
+
+    pub(crate) fn validate_message_queue(&self, queued: &[DurableQueuedMessage]) -> Result<()> {
+        let owner = self.message_handler_required()?.name();
+        if queued.iter().all(|item| item.owner() == owner) {
+            Ok(())
+        } else {
+            Err(Error::Checkpoint(
+                "queued message is owned by unavailable middleware".into(),
+            ))
+        }
+    }
+
+    pub(crate) fn route_message(
         &self,
-        context: &mut ActiveSubmissionContext<'_>,
-    ) -> Result<Option<ActiveSubmissionResult>> {
-        let entry = self
-            .entries
-            .iter()
-            .find(|entry| entry.active_operations().contains(&context.operation));
-        let Some(entry) = entry else {
-            return Ok(None);
-        };
-        context.queued_input.scope(entry.name());
-        entry.active_submission(context).map(Some)
+        context: &mut MessageRouteContext<'_>,
+    ) -> Result<SubmissionResult> {
+        let entry = self.message_handler_required()?;
+        context.queued_messages.scope(entry.name());
+        entry.route_message(context)
     }
 
     pub(crate) async fn active_command(
         &self,
         middleware: &str,
         context: &mut ActiveCommandContext<'_>,
-    ) -> Result<Option<ActiveSubmissionResult>> {
+    ) -> Result<Option<SubmissionResult>> {
         let Some(entry) = self.entries.iter().find(|entry| entry.name() == middleware) else {
             return Ok(None);
         };
-        context.queued_input.scope(entry.name());
+        if entry.handles_messages() {
+            context.queued_messages.scope(entry.name());
+        }
         entry.active_command(context).await
+    }
+
+    pub(crate) fn stage_model_messages(
+        &self,
+        queued_messages: &mut Vec<DurableQueuedMessage>,
+        turn_id: &str,
+    ) -> Result<Vec<PreparedMessage>> {
+        let entry = self.message_handler_required()?;
+        let mut queue = MessageQueue::new(queued_messages);
+        queue.scope(entry.name());
+        let mut messages = queue.stage_model_messages(turn_id)?;
+        for message in &mut messages {
+            message.boundary_events = entry.message_boundary_events(&message.submission_id);
+        }
+        Ok(messages)
+    }
+
+    pub(crate) fn messages_ready(
+        &self,
+        queued_messages: &[DurableQueuedMessage],
+        turn_id: &str,
+    ) -> Result<bool> {
+        let entry = self.message_handler_required()?;
+        Ok(queued_messages.iter().any(|item| {
+            item.owner() == entry.name()
+                && matches!(
+                    item.boundary(),
+                    crate::backend::checkpoint::QueuedMessageBoundary::Steer {
+                        turn_id: target
+                    } if target == turn_id
+                )
+        }))
+    }
+
+    pub(crate) fn next_turn(
+        &self,
+        queued_messages: &mut Vec<DurableQueuedMessage>,
+    ) -> Result<Option<PreparedMessage>> {
+        let entry = self.message_handler_required()?;
+        let mut queue = MessageQueue::new(queued_messages);
+        queue.scope(entry.name());
+        Ok(queue.next_turn()?.map(|mut message| {
+            message.boundary_events = entry.message_boundary_events(&message.submission_id);
+            message
+        }))
+    }
+
+    pub(crate) fn consume_next_turn(
+        &self,
+        queued_messages: &mut Vec<DurableQueuedMessage>,
+        submission_id: &str,
+    ) -> Result<()> {
+        let entry = self.message_handler_required()?;
+        let mut queue = MessageQueue::new(queued_messages);
+        queue.scope(entry.name());
+        queue.consume_next_turn(submission_id)
+    }
+
+    pub(crate) async fn message_submit(
+        &self,
+        turn: TurnIdentity<'_>,
+        message: &PreparedMessage,
+        events: &mut Vec<EventMsg>,
+    ) -> Result<MessageSubmitResult> {
+        let event = message
+            .event
+            .message()
+            .ok_or_else(|| Error::Checkpoint("prepared event is not a message".into()))?;
+        let mut context = MessageSubmitContext {
+            turn,
+            author: &event.author,
+            message: &event.text,
+            attachments: &event.attachments,
+            events,
+            input: Vec::new(),
+            rejection: None,
+        };
+        for entry in &self.entries {
+            entry.message_submit(&mut context).await?;
+        }
+        Ok(MessageSubmitResult {
+            input: context.input,
+            rejection: context.rejection,
+        })
+    }
+
+    pub(crate) fn finish_message_turn(
+        &self,
+        queued_messages: &mut Vec<DurableQueuedMessage>,
+        turn_id: &str,
+        outcome: ExecutionOutcome,
+    ) -> Result<()> {
+        let entry = self.message_handler_required()?;
+        if outcome == ExecutionOutcome::Completed {
+            return Ok(());
+        }
+        let mut queue = MessageQueue::new(queued_messages);
+        queue.scope(entry.name());
+        queue.promote_failed_turn(turn_id)
     }
 
     pub(crate) async fn session_start(
         &self,
         runtime: &RuntimeContext,
-        queued_input: &[DurableQueuedInput],
+        queued_messages: &[DurableQueuedMessage],
         source: SessionStartSource,
         input: &mut Vec<Value>,
     ) -> Result<SessionStartResult> {
@@ -518,13 +619,14 @@ impl MiddlewareStack {
         let mut context = SessionStartContext {
             runtime,
             source,
-            queued_input: QueuedInputSnapshot::default(),
+            queued_messages: QueuedMessageSnapshot::default(),
             input,
             input_changed: false,
             stop_reason: None,
         };
         for (index, entry) in self.entries.iter().enumerate() {
-            context.queued_input = QueuedInputSnapshot::for_owner(entry.name(), queued_input);
+            context.queued_messages =
+                QueuedMessageSnapshot::for_owner(entry.name(), queued_messages);
             if let Err(error) = entry.session_start(&mut context).await {
                 if let Some(input) = compact_input {
                     *context.input = input;
@@ -553,16 +655,6 @@ impl MiddlewareStack {
         })
     }
 
-    pub(crate) async fn user_prompt_submit(
-        &self,
-        context: &mut UserPromptSubmitContext<'_>,
-    ) -> Result<()> {
-        for entry in &self.entries {
-            entry.user_prompt_submit(context).await?;
-        }
-        Ok(())
-    }
-
     pub(crate) async fn prepare_model(&self, mut context: ModelContext<'_>) -> Result<()> {
         self.resolve_tool_exposure(
             context.session_id,
@@ -571,7 +663,6 @@ impl MiddlewareStack {
         )
         .await?;
         for entry in &self.entries {
-            context.queued_input.scope(entry.name());
             entry.pre_model(&mut context).await?;
         }
         if context.turn_stopped() {
@@ -756,7 +847,6 @@ fn validate_frontend(contributions: &[FrontendContribution]) -> Result<()> {
     let mut commands = BTreeSet::new();
     let mut widgets = BTreeSet::new();
     let mut references = BTreeSet::new();
-    let mut active_input = false;
     for contribution in contributions {
         for command in &contribution.commands {
             if command.name.is_empty() || command.name.chars().any(char::is_whitespace) {
@@ -811,9 +901,6 @@ fn validate_frontend(contributions: &[FrontendContribution]) -> Result<()> {
                     reference.trigger, reference.value
                 )));
             }
-        }
-        if contribution.active_input.is_some() && std::mem::replace(&mut active_input, true) {
-            return Err(Error::Duplicate("frontend active input".into()));
         }
     }
     Ok(())

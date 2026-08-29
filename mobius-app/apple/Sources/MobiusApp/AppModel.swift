@@ -151,7 +151,6 @@ final class AppModel {
     var toast: AppToast?
     var showsAppUpdateAlert = false
     var activeTurnID: String?
-    var activeOperation: String?
     var steeringDeliveryRevision = 0
     var contextTokens = 0
     var sessionCompactionCount: UInt64 = 0
@@ -272,7 +271,7 @@ final class AppModel {
     @ObservationIgnored var automaticReconnectBlocked = false
     @ObservationIgnored var cloudPairingContinuation: CheckedContinuation<Void, Error>?
     @ObservationIgnored var deltaFlushTask: Task<Void, Never>?
-    @ObservationIgnored var awaitingInitialUserTurnID: String?
+    @ObservationIgnored var awaitingInitialMessageTurnID: String?
     @ObservationIgnored var bufferedDeltas:
         [(
             id: String,
@@ -294,7 +293,6 @@ final class AppModel {
     @ObservationIgnored var replayCompletionSubmissionIDs: Set<String> = []
     @ObservationIgnored var replayUserMessages: [ReplayUserMessage] = []
     @ObservationIgnored var completedComposerEditReplay = false
-    @ObservationIgnored var awaitsSteeringDelivery = false
     @ObservationIgnored var composerDraftOwner: ComposerDraftOwner?
     @ObservationIgnored var composerDraftGeneration = UUID()
     @ObservationIgnored var composerDraftSaveTask: Task<Void, Never>?

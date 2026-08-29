@@ -43,7 +43,7 @@ pub struct SwarmMessageRecord {
     pub sequence: u64,
     pub author_session_id: String,
     pub author_handle: String,
-    pub body: String,
+    pub text: String,
     pub created_at_ms: i64,
 }
 

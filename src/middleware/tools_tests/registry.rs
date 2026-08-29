@@ -42,7 +42,7 @@ impl Tool for InterruptibleTool {
         }
     }
 
-    fn interrupt_on_active_input(&self) -> bool {
+    fn cancel_on_input(&self) -> bool {
         self.interruptible
     }
 
@@ -124,7 +124,7 @@ fn tools_search_name_is_reserved_for_the_catalog() {
 }
 
 #[test]
-fn only_wholly_interruptible_batches_stop_for_active_input() {
+fn only_wholly_cancellable_batches_stop_for_new_input() {
     let mut catalog = Catalog::default();
     for (name, interruptible) in [("wait", true), ("write", false)] {
         catalog
@@ -140,9 +140,9 @@ fn only_wholly_interruptible_batches_stop_for_active_input() {
         arguments: serde_json::json!({}),
     };
 
-    assert!(catalog.interrupts_on_active_input(&[call("wait")]));
-    assert!(!catalog.interrupts_on_active_input(&[call("wait"), call("write"),]));
-    assert!(!catalog.interrupts_on_active_input(&[]));
+    assert!(catalog.cancels_on_input(&[call("wait")]));
+    assert!(!catalog.cancels_on_input(&[call("wait"), call("write"),]));
+    assert!(!catalog.cancels_on_input(&[]));
 }
 
 #[test]

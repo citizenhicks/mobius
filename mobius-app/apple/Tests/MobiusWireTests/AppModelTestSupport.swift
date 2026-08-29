@@ -2,6 +2,70 @@ import Foundation
 import Observation
 import XCTest
 
+func testMessageEvent(
+    author: MessageAuthor = .user,
+    delivery: MessageDelivery = .turn,
+    text: String,
+    attachments: [SessionFileReference] = [],
+    messageTarget: MessageTarget? = nil
+) -> JSONValue {
+    let author: JSONValue = switch author {
+    case .user:
+        .object(["type": .string("user")])
+    case .peer(let messageID, let sessionID, let handle):
+        .object([
+            "type": .string("peer"),
+            "messageId": .string(messageID),
+            "sessionId": .string(sessionID),
+            "handle": .string(handle)
+        ])
+    }
+    let attachments = attachments.map { file in
+        JSONValue.object([
+            "id": .string(file.id),
+            "name": .string(file.name),
+            "size": .number(Double(file.size)),
+            "mediaType": .string(file.mediaType)
+        ])
+    }
+    let target: JSONValue = messageTarget.map { target in
+        .object([
+            "checkpointSequence": .number(Double(target.checkpointSequence)),
+            "batchItemCount": .number(Double(target.batchItemCount))
+        ])
+    } ?? .null
+    return .object([
+        "type": .string("message"),
+        "author": author,
+        "delivery": .string(delivery.rawValue),
+        "text": .string(text),
+        "attachments": .array(attachments),
+        "messageTarget": target
+    ])
+}
+
+func testAssistantMessage(
+    turnID: String,
+    modelStepID: String,
+    phase: String = "final_answer",
+    text: String
+) -> JSONValue {
+    .object([
+        "type": .string("assistant_message"),
+        "sessionId": .string("chat-1"),
+        "turnId": .string(turnID),
+        "modelStepId": .string(modelStepID),
+        "content": .array([.object([
+            "outputIndex": .number(0),
+            "partIndex": .number(0),
+            "phase": .string(phase),
+            "text": .string(text),
+            "annotations": .array([]),
+        ])]),
+        "messageTarget": .null,
+    ])
+}
+
 actor GatewayRequestRecorder {
     private var recorded: [GatewayRequest] = []
 
@@ -309,8 +373,7 @@ final class AppModelTests: XCTestCase {
             count: nil,
             commands: [],
             widgets: [],
-            references: [],
-            activeInput: nil
+            references: []
         )
     }
 

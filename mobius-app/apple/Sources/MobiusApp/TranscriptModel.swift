@@ -164,7 +164,14 @@ final class TranscriptEntry: Identifiable {
     let id: String
     let presentationID: String
     var text: String
-    var kind: Kind
+    private var storedKind: Kind
+    var kind: Kind {
+        get { messageMetadata?.kind ?? storedKind }
+        set {
+            precondition(messageMetadata == nil, "message kind is derived from its author")
+            storedKind = newValue
+        }
+    }
     var capability: String?
     var role: FrontendBlockRole?
     var update: FrontendBlockUpdate?
@@ -183,6 +190,8 @@ final class TranscriptEntry: Identifiable {
     var recordedAtMs: Int64?
     var messageTarget: MessageTarget?
     var files: [SessionFileReference]
+    var annotations: [JSONValue]
+    let messageMetadata: TranscriptMessageMetadata?
 
     init(
         id: String,
@@ -206,12 +215,14 @@ final class TranscriptEntry: Identifiable {
         sourceSequence: UInt64? = nil,
         recordedAtMs: Int64? = nil,
         messageTarget: MessageTarget? = nil,
-        files: [SessionFileReference] = []
+        files: [SessionFileReference] = [],
+        annotations: [JSONValue] = [],
+        messageMetadata: TranscriptMessageMetadata? = nil
     ) {
         self.id = id
         self.presentationID = presentationID ?? id
         self.text = text
-        self.kind = kind
+        storedKind = kind
         self.capability = capability
         self.role = role
         self.update = update
@@ -230,7 +241,16 @@ final class TranscriptEntry: Identifiable {
         self.recordedAtMs = recordedAtMs
         self.messageTarget = messageTarget
         self.files = files
+        self.annotations = annotations
+        self.messageMetadata = messageMetadata
     }
+}
+
+struct TranscriptMessageMetadata: Codable, Equatable, Sendable {
+    let author: MessageAuthor
+    let delivery: MessageDelivery
+
+    var kind: TranscriptEntry.Kind { author == .user ? .user : .peer }
 }
 
 extension TranscriptEntry.Kind {

@@ -61,7 +61,8 @@ extension AppModel {
                 sourceSequence: entry.sourceSequence,
                 recordedAtMs: entry.recordedAtMs,
                 messageTarget: entry.messageTarget,
-                files: entry.files
+                files: entry.files,
+                messageMetadata: entry.messageMetadata
             )
         }
     }
@@ -101,37 +102,22 @@ extension AppModel {
         }
 
         switch type {
-        case "user_message":
-            let startsTurn = turnID != nil && turnState.awaitingInitialUserTurnID == turnID
-            if startsTurn { turnState.awaitingInitialUserTurnID = nil }
-            let attachments = event["attachments"]?.arrayValue?.compactMap {
-                try? SessionFileReference(json: $0)
-            } ?? []
-            appendText(
-                event["message"]?.stringValue,
-                kind: .user,
-                id: "event:\(recordID ?? String(record.sequence)):user",
-                turnID: turnID,
-                startsTurn: startsTurn,
-                sourceSequence: record.sequence,
-                recordedAtMs: record.recordedAtMs,
-                messageTarget: messageTarget(from: event),
-                files: attachments,
-                to: &entries
-            )
-        case "peer_message":
-            let startsTurn = turnID != nil && turnState.awaitingInitialUserTurnID == turnID
-            if startsTurn { turnState.awaitingInitialUserTurnID = nil }
-            appendPeerMessage(
-                event,
+        case "message":
+            guard let message = try? MessageEventPayload(json: event) else { break }
+            let startsTurn = message.delivery.startsTurn
+                && turnID != nil
+                && turnState.awaitingInitialMessageTurnID == turnID
+            if startsTurn { turnState.awaitingInitialMessageTurnID = nil }
+            appendMessage(
+                message,
                 record: record,
                 turnID: turnID,
                 startsTurn: startsTurn,
+                recordID: recordID,
                 to: &entries
             )
-        case "agent_message_content_delta", "agent_reasoning_content_delta":
+        case "assistant_content_delta":
             reduceHistoryDelta(
-                type: type,
                 event: event,
                 record: record,
                 turnID: turnID,
@@ -139,29 +125,9 @@ extension AppModel {
             )
         case "model_step_completed":
             applyModelStepCompletion(event, turnID: turnID, record: record, to: &entries)
-        case "agent_message":
-            let kind: TranscriptEntry.Kind = event["phase"]?.stringValue == "commentary"
-                ? .commentary
-                : .assistant
-            if let modelStepID = event["modelStepId"]?.stringValue,
-               let index = entries.lastIndex(where: {
-                   $0.modelStepID == modelStepID && $0.kind == kind && !$0.pending
-               }) {
-                if entries[index].turnID == nil { entries[index].turnID = turnID }
-                entries[index].messageTarget = messageTarget(from: event)
-            } else {
-                completeStream(
-                    text: event["message"]?.stringValue ?? "",
-                    kind: kind,
-                    modelStepID: event["modelStepId"]?.stringValue,
-                    turnID: turnID,
-                    messageTarget: messageTarget(from: event),
-                    sourceSequence: record.sequence,
-                    recordedAtMs: record.recordedAtMs,
-                    in: &entries
-                )
-            }
-        case "task_complete":
+        case "assistant_message":
+            applyAssistantMessage(event, turnID: turnID, record: record, to: &entries)
+        case "turn_complete":
             finishHistoryTurn(record, turnID: turnID, aborted: false, entries: &entries)
             turnState = TranscriptHistoryTurnState()
         case "turn_aborted":
@@ -179,10 +145,10 @@ extension AppModel {
         turnState: inout TranscriptHistoryTurnState
     ) -> String? {
         let explicitTurnID = event["turnId"]?.stringValue
-        if type == "task_started" {
+        if type == "turn_started" {
             turnState = TranscriptHistoryTurnState(
                 turnID: explicitTurnID,
-                awaitingInitialUserTurnID: explicitTurnID
+                awaitingInitialMessageTurnID: explicitTurnID
             )
         } else if let explicitTurnID {
             if turnState.turnID == nil,
@@ -192,7 +158,9 @@ extension AppModel {
                     entries[index].turnID = explicitTurnID
                 }
                 if let firstInput = entries[start...].firstIndex(where: {
-                    ($0.kind == .user || $0.kind == .peer) && !$0.startsTurn
+                    ($0.kind == .user || $0.kind == .peer)
+                        && $0.messageMetadata?.delivery.startsTurn == true
+                        && !$0.startsTurn
                 }) {
                     entries[firstInput].startsTurn = true
                 }
@@ -204,20 +172,19 @@ extension AppModel {
     }
 
     private func reduceHistoryDelta(
-        type: String,
         event: JSONValue,
         record: RecordedEvent,
         turnID: String?,
         entries: inout [TranscriptEntry]
     ) {
         guard let modelStepID = event["modelStepId"]?.stringValue else { return }
-        let reasoning = type == "agent_reasoning_content_delta"
-        let commentary = event["phase"]?.stringValue == "commentary"
-        let phase = reasoning ? "reasoning" : (commentary ? "commentary" : "final_answer")
+        let phase = event["phase"]?.stringValue ?? "final_answer"
         let id = streamID(modelStepID: modelStepID, phase: phase)
-        let kind: TranscriptEntry.Kind = reasoning
-            ? .reasoning
-            : (commentary ? .commentary : .assistant)
+        let kind: TranscriptEntry.Kind = switch phase {
+        case "reasoning": .reasoning
+        case "commentary": .commentary
+        default: .assistant
+        }
         let delta = event["delta"]?.stringValue ?? ""
         guard !delta.isEmpty else { return }
         if let index = entries.lastIndex(where: { $0.id == id }) {

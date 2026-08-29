@@ -46,18 +46,15 @@ async fn attachment_hydration_runs_after_native_compaction_replaces_context() {
 
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "first".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_message("first"))
         .expect("submit first turn");
     assert_eq!(final_message(&mut agent).await, "draft");
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "inspect".into(),
-            attachments: vec![attachment.clone()],
-        })
+        .submit(user_message_with_attachments(
+            "inspect",
+            vec![attachment.clone()],
+        ))
         .expect("submit attachment turn");
     assert_eq!(final_message(&mut agent).await, "done");
 
@@ -112,10 +109,10 @@ async fn video_attachments_are_exposed_as_workspace_files() {
 
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "read it".into(),
-            attachments: vec![attachment.clone()],
-        })
+        .submit(user_message_with_attachments(
+            "read it",
+            vec![attachment.clone()],
+        ))
         .expect("submit attachment turn");
 
     assert_eq!(final_message(&mut agent).await, "done");
@@ -232,18 +229,12 @@ async fn materialized_image_keeps_an_exact_prefix_on_later_turns() {
 
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "inspect".into(),
-            attachments: vec![attachment],
-        })
+        .submit(user_message_with_attachments("inspect", vec![attachment]))
         .expect("submit image turn");
     assert_eq!(final_message(&mut agent).await, "first");
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "continue".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_message("continue"))
         .expect("submit later turn");
     assert_eq!(final_message(&mut agent).await, "second");
 
@@ -310,29 +301,26 @@ async fn over_budget_current_image_fails_but_does_not_poison_later_turns() {
 
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "too large".into(),
-            attachments: vec![oversized.clone()],
-        })
+        .submit(user_message_with_attachments(
+            "too large",
+            vec![oversized.clone()],
+        ))
         .expect("submit oversized image");
     assert!(failed_turn(&mut agent).await.contains("8 MiB"));
     assert!(model.requests.lock().expect("requests").is_empty());
 
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "continue without it".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_message("continue without it"))
         .expect("submit recovery turn");
     assert_eq!(final_message(&mut agent).await, "text recovered");
 
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "use this smaller image".into(),
-            attachments: vec![current.clone()],
-        })
+        .submit(user_message_with_attachments(
+            "use this smaller image",
+            vec![current.clone()],
+        ))
         .expect("submit current image");
     assert_eq!(final_message(&mut agent).await, "image recovered");
 

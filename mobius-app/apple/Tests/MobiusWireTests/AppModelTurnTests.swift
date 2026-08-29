@@ -66,7 +66,7 @@ extension AppModelTests {
 
         model.reduce(
             event: AgentEventRecord(submissionId: "input-1", msg: .object([
-                "type": .string("task_started"),
+                "type": .string("turn_started"),
                 "turnId": .string("turn-1")
             ])),
             blocks: [],
@@ -99,7 +99,7 @@ extension AppModelTests {
 
         model.reduce(
             event: AgentEventRecord(submissionId: nil, msg: .object([
-                "type": .string("task_complete")
+                "type": .string("turn_complete")
             ])),
             blocks: [],
             preview: nil
@@ -153,7 +153,9 @@ extension AppModelTests {
         for _ in 0..<100 {
             model.reduce(
                 event: AgentEventRecord(submissionId: nil, msg: .object([
-                    "type": .string("agent_message_content_delta"),
+                    "type": .string("assistant_content_delta"),
+                    "sessionId": .string("chat-1"),
+                    "turnId": .string("turn-1"),
                     "modelStepId": .string("answer-1"),
                     "phase": .string("final_answer"),
                     "delta": .string("x")
@@ -173,10 +175,14 @@ extension AppModelTests {
         XCTAssertTrue(try XCTUnwrap(model.transcript.first).pending)
 
         model.reduce(
-            event: AgentEventRecord(submissionId: nil, msg: .object([
-                "type": .string("agent_message"),
-                "message": .string("Canonical **Markdown**")
-            ])),
+            event: AgentEventRecord(
+                submissionId: nil,
+                msg: testAssistantMessage(
+                    turnID: "turn-1",
+                    modelStepID: "answer-1",
+                    text: "Canonical **Markdown**"
+                )
+            ),
             blocks: [],
             preview: nil
         )
@@ -191,7 +197,9 @@ extension AppModelTests {
         for (phase, delta) in [("commentary", "Checking **the workspace**"), ("final_answer", "Done")] {
             model.reduce(
                 event: AgentEventRecord(submissionId: nil, msg: .object([
-                    "type": .string("agent_message_content_delta"),
+                    "type": .string("assistant_content_delta"),
+                    "sessionId": .string("chat-1"),
+                    "turnId": .string("turn-1"),
                     "modelStepId": .string("response-1"),
                     "phase": .string(phase),
                     "delta": .string(delta)
@@ -201,17 +209,33 @@ extension AppModelTests {
             )
         }
 
-        for (phase, message) in [("commentary", "Checking **the workspace**"), ("final_answer", "Done")] {
-            model.reduce(
-                event: AgentEventRecord(submissionId: nil, msg: .object([
-                    "type": .string("agent_message"),
-                    "phase": .string(phase),
-                    "message": .string(message)
-                ])),
-                blocks: [],
-                preview: nil
-            )
-        }
+        model.reduce(
+            event: AgentEventRecord(submissionId: nil, msg: .object([
+                "type": .string("assistant_message"),
+                "sessionId": .string("chat-1"),
+                "turnId": .string("turn-1"),
+                "modelStepId": .string("response-1"),
+                "content": .array([
+                    .object([
+                        "outputIndex": .number(0),
+                        "partIndex": .number(0),
+                        "phase": .string("commentary"),
+                        "text": .string("Checking **the workspace**"),
+                        "annotations": .array([]),
+                    ]),
+                    .object([
+                        "outputIndex": .number(1),
+                        "partIndex": .number(0),
+                        "phase": .string("final_answer"),
+                        "text": .string("Done"),
+                        "annotations": .array([]),
+                    ]),
+                ]),
+                "messageTarget": .null,
+            ])),
+            blocks: [],
+            preview: nil
+        )
 
         XCTAssertEqual(model.transcript.map(\.text), ["Checking **the workspace**", "Done"])
         XCTAssertEqual(model.transcript.map(\.kind), [.commentary, .assistant])
@@ -222,20 +246,20 @@ extension AppModelTests {
         let live = try model()
         let replay = try model()
         let stepID = "step-1"
-        let deltas: [(String, String, String?)] = [
-            ("agent_reasoning_content_delta", "Reason", nil),
-            ("agent_message_content_delta", "Checking", "commentary"),
-            ("agent_message_content_delta", "Done", "final_answer"),
+        let deltas = [
+            ("reasoning", "Reason"),
+            ("commentary", "Checking"),
+            ("final_answer", "Done"),
         ]
         for (offset, delta) in deltas.enumerated() {
-            var fields: [String: JSONValue] = [
-                "type": .string(delta.0),
+            let fields: [String: JSONValue] = [
+                "type": .string("assistant_content_delta"),
                 "sessionId": .string("chat-1"),
                 "turnId": .string("turn-1"),
                 "modelStepId": .string(stepID),
+                "phase": .string(delta.0),
                 "delta": .string(delta.1),
             ]
-            if let phase = delta.2 { fields["phase"] = .string(phase) }
             live.reduce(record: recorded(UInt64(offset + 1), .object(fields)))
         }
         let completion = recorded(4, .object([
@@ -258,34 +282,43 @@ extension AppModelTests {
                     "reasoningOutputTokens": .number(1),
                     "totalTokens": .number(13),
                 ]),
-                "content": .array([
-                    .object([
-                        "outputIndex": .number(0),
-                        "partIndex": .number(0),
-                        "phase": .string("reasoning"),
-                        "text": .string("Reason"),
-                        "annotations": .array([]),
-                    ]),
-                    .object([
-                        "outputIndex": .number(1),
-                        "partIndex": .number(0),
-                        "phase": .string("commentary"),
-                        "text": .string("Checking"),
-                        "annotations": .array([]),
-                    ]),
-                    .object([
-                        "outputIndex": .number(1),
-                        "partIndex": .number(1),
-                        "phase": .string("final_answer"),
-                        "text": .string("Done"),
-                        "annotations": .array([]),
-                    ]),
+            ]),
+        ]))
+        let snapshot = recorded(5, .object([
+            "type": .string("assistant_message"),
+            "sessionId": .string("chat-1"),
+            "turnId": .string("turn-1"),
+            "modelStepId": .string(stepID),
+            "content": .array([
+                .object([
+                    "outputIndex": .number(0),
+                    "partIndex": .number(0),
+                    "phase": .string("reasoning"),
+                    "text": .string("Reason"),
+                    "annotations": .array([]),
+                ]),
+                .object([
+                    "outputIndex": .number(1),
+                    "partIndex": .number(0),
+                    "phase": .string("commentary"),
+                    "text": .string("Checking"),
+                    "annotations": .array([]),
+                ]),
+                .object([
+                    "outputIndex": .number(1),
+                    "partIndex": .number(1),
+                    "phase": .string("final_answer"),
+                    "text": .string("Done"),
+                    "annotations": .array([]),
                 ]),
             ]),
+            "messageTarget": .null,
         ]))
 
         live.reduce(record: completion)
         replay.reduce(record: completion)
+        live.reduce(record: snapshot)
+        replay.reduce(record: snapshot)
 
         let liveProjection = live.transcript.map {
             [$0.id, $0.kind.rawValue, $0.text, String($0.pending), $0.modelStepID ?? ""]
@@ -312,7 +345,7 @@ extension AppModelTests {
         let stepID = "step-1"
 
         live.reduce(record: recorded(1, .object([
-            "type": .string("agent_message_content_delta"),
+            "type": .string("assistant_content_delta"),
             "sessionId": .string("chat-1"),
             "turnId": .string("turn-1"),
             "modelStepId": .string(stepID),
@@ -345,34 +378,43 @@ extension AppModelTests {
                     "reasoningOutputTokens": .number(0),
                     "totalTokens": .number(3),
                 ]),
-                "content": .array([
-                    .object([
-                        "outputIndex": .number(0),
-                        "partIndex": .number(0),
-                        "phase": .string("commentary"),
-                        "text": .string("First"),
-                        "annotations": .array([]),
-                    ]),
-                    .object([
-                        "outputIndex": .number(0),
-                        "partIndex": .number(1),
-                        "phase": .string("commentary"),
-                        "text": .string("Second"),
-                        "annotations": .array([]),
-                    ]),
-                    .object([
-                        "outputIndex": .number(1),
-                        "partIndex": .number(0),
-                        "phase": .string("final_answer"),
-                        "text": .string("Done"),
-                        "annotations": .array([]),
-                    ]),
+            ]),
+        ]))
+        let snapshot = recorded(3, .object([
+            "type": .string("assistant_message"),
+            "sessionId": .string("chat-1"),
+            "turnId": .string("turn-1"),
+            "modelStepId": .string(stepID),
+            "content": .array([
+                .object([
+                    "outputIndex": .number(0),
+                    "partIndex": .number(0),
+                    "phase": .string("commentary"),
+                    "text": .string("First"),
+                    "annotations": .array([]),
+                ]),
+                .object([
+                    "outputIndex": .number(0),
+                    "partIndex": .number(1),
+                    "phase": .string("commentary"),
+                    "text": .string("Second"),
+                    "annotations": .array([]),
+                ]),
+                .object([
+                    "outputIndex": .number(1),
+                    "partIndex": .number(0),
+                    "phase": .string("final_answer"),
+                    "text": .string("Done"),
+                    "annotations": .array([]),
                 ]),
             ]),
+            "messageTarget": .null,
         ]))
 
         live.reduce(record: completion)
         replay.reduce(record: completion)
+        live.reduce(record: snapshot)
+        replay.reduce(record: snapshot)
 
         let expected = [
             "step-1:commentary:0",
@@ -399,10 +441,11 @@ extension AppModelTests {
     func testFailedModelStepKeepsItsPartialDelta() throws {
         let model = try model()
         model.reduce(record: recorded(1, .object([
-            "type": .string("agent_reasoning_content_delta"),
+            "type": .string("assistant_content_delta"),
             "sessionId": .string("chat-1"),
             "turnId": .string("turn-1"),
             "modelStepId": .string("step-1"),
+            "phase": .string("reasoning"),
             "delta": .string("Partial reasoning"),
         ])))
         model.reduce(record: recorded(2, .object([
@@ -423,7 +466,7 @@ extension AppModelTests {
     func testRetryingModelStepSeparatesPartialOutputAndClosesSearch() throws {
         let model = try model()
         model.reduce(record: recorded(1, .object([
-            "type": .string("agent_message_content_delta"),
+            "type": .string("assistant_content_delta"),
             "sessionId": .string("chat-1"),
             "turnId": .string("turn-1"),
             "modelStepId": .string("step-1"),

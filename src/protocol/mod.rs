@@ -3,13 +3,13 @@
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
+use uuid::Uuid;
 
 pub use self::replay::events as replay_events;
 pub(crate) use self::replay::{
     ATTACHMENT_CONTEXT_MARKER, ATTACHMENTS_FIELD, CONTEXT_COMPACTED_MARKER, INTERNAL_MESSAGE_FIELD,
-    PEER_MESSAGE_MARKER, PEER_METADATA_FIELD, REPLAY_REASONING_FIELD, TOOL_ERROR_FIELD,
-    internal_message_kind, is_internal_message, strip_attachment_references,
-    tool_complete_boundaries,
+    MESSAGE_METADATA_FIELD, REPLAY_REASONING_FIELD, TOOL_ERROR_FIELD, internal_message_kind,
+    is_internal_message, message_metadata, strip_attachment_references, tool_complete_boundaries,
 };
 
 mod events;
@@ -20,14 +20,14 @@ pub use self::events::*;
 pub use self::frontend::*;
 
 /// Maximum total UTF-8 bytes accepted in one user-input submission.
-pub const MAX_USER_INPUT_BYTES: usize = 1024 * 1024;
+pub const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 
-/// Maximum UTF-8 bytes accepted in capability command input or queued active input.
+/// Maximum UTF-8 bytes accepted in capability command input or a queued message edit.
 pub const MAX_CAPABILITY_INPUT_BYTES: usize = 64 * 1024;
 
 /// One immutable, session-bound file addressed by an opaque reference.
 ///
-/// Only upload-origin references are valid in `Op::UserInput.attachments`.
+/// Only upload-origin references are valid in `MessageSubmission::attachments`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionFileReference {
@@ -130,29 +130,155 @@ pub struct ModelChoice {
     pub tool_discovery: ToolDiscoveryMode,
 }
 
+/// Who submitted one conversation message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MessageAuthor {
+    User,
+    Peer {
+        message_id: String,
+        session_id: String,
+        handle: String,
+    },
+}
+
+/// Requested delivery for a message submitted while a turn is active.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActiveMessageDelivery {
+    Steer,
+    Queue,
+}
+
+/// One provider-neutral conversation message submitted to an agent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MessageSubmission {
+    pub author: MessageAuthor,
+    pub text: String,
+    pub attachments: Vec<SessionFileReference>,
+    #[serde(deserialize_with = "required_option")]
+    pub requested_delivery: Option<ActiveMessageDelivery>,
+    #[serde(deserialize_with = "required_option")]
+    pub target_turn_id: Option<String>,
+}
+
+impl MessageSubmission {
+    /// Validates neutral message and file-reference invariants at the agent boundary.
+    pub fn validate(&self, limits: SessionFileLimits) -> crate::Result<()> {
+        const MAX_IDENTIFIER_BYTES: usize = 4 * 1024;
+
+        if let Some(turn_id) = &self.target_turn_id {
+            validate_message_identifier("target turn ID", turn_id, MAX_IDENTIFIER_BYTES)?;
+        }
+        validate_message_content(&self.author, &self.text, &self.attachments)?;
+        validate_message_attachments(&self.attachments, limits)
+    }
+}
+
+pub(crate) fn validate_message_content(
+    author: &MessageAuthor,
+    text: &str,
+    attachments: &[SessionFileReference],
+) -> crate::Result<()> {
+    const MAX_IDENTIFIER_BYTES: usize = 4 * 1024;
+    const MAX_HANDLE_BYTES: usize = 256;
+
+    if text.len() > MAX_MESSAGE_BYTES {
+        return Err(crate::Error::Config("message exceeds size limit".into()));
+    }
+    match author {
+        MessageAuthor::User if text.trim().is_empty() && attachments.is_empty() => {
+            return Err(crate::Error::Config("user message cannot be empty".into()));
+        }
+        MessageAuthor::Peer {
+            message_id,
+            session_id,
+            handle,
+        } => {
+            validate_message_identifier("peer message ID", message_id, MAX_IDENTIFIER_BYTES)?;
+            validate_message_identifier("peer session ID", session_id, MAX_IDENTIFIER_BYTES)?;
+            validate_message_identifier("peer handle", handle, MAX_HANDLE_BYTES)?;
+            if text.trim().is_empty() {
+                return Err(crate::Error::Config("peer message cannot be empty".into()));
+            }
+            if !attachments.is_empty() {
+                return Err(crate::Error::Config(
+                    "peer messages cannot carry attachments".into(),
+                ));
+            }
+        }
+        MessageAuthor::User => {}
+    }
+    let mut ids = std::collections::BTreeSet::new();
+    for attachment in attachments {
+        if !ids.insert(&attachment.id) {
+            return Err(crate::Error::Config(
+                "attachment IDs must be unique per message".into(),
+            ));
+        }
+        if Uuid::parse_str(&attachment.id).is_err() {
+            return Err(crate::Error::Config("attachment ID must be a UUID".into()));
+        }
+        validate_message_identifier("attachment name", &attachment.name, 255)?;
+        validate_message_identifier("attachment media type", &attachment.media_type, 127)?;
+        if attachment.size == 0 {
+            return Err(crate::Error::Config(
+                "attachment size must be positive".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_message_attachments(
+    attachments: &[SessionFileReference],
+    limits: SessionFileLimits,
+) -> crate::Result<()> {
+    if attachments.len() > limits.max_attachment_references {
+        return Err(crate::Error::Config(format!(
+            "message cannot reference more than {} attachments",
+            limits.max_attachment_references
+        )));
+    }
+    let mut bytes = 0_u64;
+    for attachment in attachments {
+        if attachment.size > limits.max_file_bytes {
+            return Err(crate::Error::Config(format!(
+                "attachment size must be 1–{} bytes",
+                limits.max_file_bytes
+            )));
+        }
+        bytes = bytes
+            .checked_add(attachment.size)
+            .ok_or_else(|| crate::Error::Config("attachment sizes overflowed".into()))?;
+    }
+    if bytes > limits.max_session_bytes {
+        return Err(crate::Error::Config(format!(
+            "message attachments exceed the {}-byte session limit",
+            limits.max_session_bytes
+        )));
+    }
+    Ok(())
+}
+
+fn validate_message_identifier(name: &str, value: &str, limit: usize) -> crate::Result<()> {
+    if value.trim().is_empty() {
+        return Err(crate::Error::Config(format!("{name} cannot be empty")));
+    }
+    if value.len() > limit {
+        return Err(crate::Error::Config(format!("{name} exceeds size limit")));
+    }
+    Ok(())
+}
+
 /// Commands supported by the agent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Op {
-    /// Start a user turn.
-    UserInput {
-        text: String,
-        attachments: Vec<SessionFileReference>,
-    },
-    /// Start a turn from advisory input sent by another agent session.
-    PeerInput {
-        message_id: String,
-        source_session_id: String,
-        source_handle: String,
-        text: String,
-    },
-    /// Submit capability-owned input while a turn is active.
-    ActiveInput {
-        operation: String,
-        turn_id: String,
-        text: String,
-    },
+    /// Submit one conversation message for middleware-owned delivery.
+    Message { message: MessageSubmission },
     /// Abort one active turn.
     Interrupt { turn_id: String },
     /// Resolve a paused tool batch.
@@ -204,17 +330,16 @@ pub struct Event {
 pub enum EventMsg {
     Error(ErrorEvent),
     Warning(WarningEvent),
+    SubmissionRejected(SubmissionRejectedEvent),
     SessionConfigured(SessionConfiguredEvent),
-    #[serde(rename = "task_started")]
+    #[serde(rename = "turn_started")]
     TurnStarted(TurnStartedEvent),
-    #[serde(rename = "task_complete")]
+    #[serde(rename = "turn_complete")]
     TurnComplete(TurnCompleteEvent),
     TurnAborted(TurnAbortedEvent),
-    UserMessage(UserMessageEvent),
-    PeerMessage(PeerMessageEvent),
-    AgentMessage(AgentMessageEvent),
-    AgentMessageContentDelta(AgentMessageContentDeltaEvent),
-    AgentReasoningContentDelta(AgentReasoningContentDeltaEvent),
+    Message(MessageEvent),
+    AssistantMessage(AssistantMessageEvent),
+    AssistantContentDelta(AssistantContentDeltaEvent),
     ModelStepStarted(ModelStepStartedEvent),
     ModelStepCompleted(ModelStepCompletedEvent),
     SessionHistory(SessionHistoryEvent),
@@ -232,6 +357,24 @@ pub enum EventMsg {
     Frontend(FrontendEvent),
 }
 
+impl EventMsg {
+    /// Returns the mutable durable transcript target carried by a complete message event.
+    pub(crate) fn message_target_mut(&mut self) -> Option<&mut Option<MessageTarget>> {
+        match self {
+            Self::Message(message) => Some(&mut message.message_target),
+            Self::AssistantMessage(message) => Some(&mut message.message_target),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn message(&self) -> Option<&MessageEvent> {
+        match self {
+            Self::Message(message) => Some(message),
+            _ => None,
+        }
+    }
+}
+
 /// Provider-neutral streaming output before submission correlation is attached.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelEvent {
@@ -245,6 +388,45 @@ pub enum ModelEvent {
         call_id: String,
         action: WebSearchAction,
     },
+}
+
+/// Tracks streamed operations whose terminal event must be synthesized on failure.
+#[derive(Clone, Default)]
+pub(crate) struct ModelEventTracker {
+    pending_web_searches: std::sync::Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
+}
+
+impl ModelEventTracker {
+    pub(crate) fn observe(&self, event: &ModelEvent) -> crate::Result<()> {
+        let mut pending = self
+            .pending_web_searches
+            .lock()
+            .map_err(|_| crate::Error::Stopped("model event tracker is unavailable".into()))?;
+        match event {
+            ModelEvent::WebSearchStarted { call_id } => {
+                pending.insert(call_id.clone());
+            }
+            ModelEvent::WebSearchCompleted { call_id, .. } => {
+                pending.remove(call_id);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    pub(crate) fn interrupted(&self) -> crate::Result<Vec<ModelEvent>> {
+        let mut pending = self
+            .pending_web_searches
+            .lock()
+            .map_err(|_| crate::Error::Stopped("model event tracker is unavailable".into()))?;
+        Ok(std::mem::take(&mut *pending)
+            .into_iter()
+            .map(|call_id| ModelEvent::WebSearchCompleted {
+                call_id,
+                action: WebSearchAction::Interrupted,
+            })
+            .collect())
+    }
 }
 
 /// Provider-neutral action reported by hosted web search.
@@ -270,30 +452,29 @@ impl ModelEvent {
     #[must_use]
     pub fn into_event(self, session_id: &str, turn_id: &str, model_step_id: &str) -> EventMsg {
         match self {
-            Self::TextDelta(delta) => {
-                EventMsg::AgentMessageContentDelta(AgentMessageContentDeltaEvent {
-                    session_id: session_id.into(),
-                    turn_id: turn_id.into(),
-                    model_step_id: model_step_id.into(),
-                    delta,
-                    phase: AgentMessagePhase::FinalAnswer,
-                })
-            }
+            Self::TextDelta(delta) => EventMsg::AssistantContentDelta(AssistantContentDeltaEvent {
+                session_id: session_id.into(),
+                turn_id: turn_id.into(),
+                model_step_id: model_step_id.into(),
+                delta,
+                phase: ModelStepContentPhase::FinalAnswer,
+            }),
             Self::CommentaryDelta(delta) => {
-                EventMsg::AgentMessageContentDelta(AgentMessageContentDeltaEvent {
+                EventMsg::AssistantContentDelta(AssistantContentDeltaEvent {
                     session_id: session_id.into(),
                     turn_id: turn_id.into(),
                     model_step_id: model_step_id.into(),
                     delta,
-                    phase: AgentMessagePhase::Commentary,
+                    phase: ModelStepContentPhase::Commentary,
                 })
             }
             Self::ReasoningDelta(delta) => {
-                EventMsg::AgentReasoningContentDelta(AgentReasoningContentDeltaEvent {
+                EventMsg::AssistantContentDelta(AssistantContentDeltaEvent {
                     session_id: session_id.into(),
                     turn_id: turn_id.into(),
                     model_step_id: model_step_id.into(),
                     delta,
+                    phase: ModelStepContentPhase::Reasoning,
                 })
             }
             Self::WebSearchStarted { call_id } => EventMsg::WebSearchBegin(WebSearchBeginEvent {
@@ -339,7 +520,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(delta).expect("serialize delta"),
             json!({
-                "type": "agent_message_content_delta",
+                "type": "assistant_content_delta",
                 "session_id": "session-1",
                 "turn_id": "turn-1",
                 "model_step_id": "step-1",
@@ -585,12 +766,17 @@ mod tests {
     }
 
     #[test]
-    fn user_input_has_one_text_payload() {
+    fn message_submission_has_one_typed_payload() {
         let submission = Submission {
             id: "input-1".into(),
-            op: Op::UserInput {
-                text: "hello".into(),
-                attachments: Vec::new(),
+            op: Op::Message {
+                message: MessageSubmission {
+                    author: MessageAuthor::User,
+                    text: "hello".into(),
+                    attachments: Vec::new(),
+                    requested_delivery: Some(ActiveMessageDelivery::Queue),
+                    target_turn_id: Some("turn-1".into()),
+                },
             },
         };
 
@@ -599,11 +785,59 @@ mod tests {
             json!({
                 "id": "input-1",
                 "op": {
-                    "type": "user_input",
-                    "text": "hello",
-                    "attachments": []
+                    "type": "message",
+                    "message": {
+                        "author": {"type": "user"},
+                        "text": "hello",
+                        "attachments": [],
+                        "requested_delivery": "queue",
+                        "target_turn_id": "turn-1"
+                    }
                 }
             })
+        );
+    }
+
+    #[test]
+    fn conversation_events_use_turn_and_text_wire_names() {
+        let events = [
+            EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "turn-1".into(),
+                model_context_window: Some(128_000),
+            }),
+            EventMsg::Message(MessageEvent {
+                author: MessageAuthor::User,
+                delivery: MessageDelivery::Turn,
+                text: "hello".into(),
+                attachments: Vec::new(),
+                message_target: None,
+            }),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-1".into(),
+            }),
+        ];
+
+        assert_eq!(
+            serde_json::to_value(events).expect("serialize conversation events"),
+            json!([
+                {
+                    "type": "turn_started",
+                    "turn_id": "turn-1",
+                    "model_context_window": 128_000
+                },
+                {
+                    "type": "message",
+                    "author": {"type": "user"},
+                    "delivery": "turn",
+                    "text": "hello",
+                    "attachments": [],
+                    "message_target": null
+                },
+                {
+                    "type": "turn_complete",
+                    "turn_id": "turn-1"
+                }
+            ])
         );
     }
 
@@ -623,6 +857,20 @@ mod tests {
                     "type": "warning",
                     "message": "system notice"
                 }
+            })
+        );
+    }
+
+    #[test]
+    fn submission_rejection_has_a_typed_wire_shape() {
+        assert_eq!(
+            serde_json::to_value(EventMsg::SubmissionRejected(SubmissionRejectedEvent {
+                message: "message queue is full".into(),
+            }))
+            .expect("serialize rejection"),
+            json!({
+                "type": "submission_rejected",
+                "message": "message queue is full"
             })
         );
     }

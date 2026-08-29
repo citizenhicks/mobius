@@ -30,8 +30,7 @@ use crate::protocol::CONTEXT_COMPACTED_MARKER;
 use crate::protocol::EventMsg;
 use crate::protocol::FrontendBlock;
 use crate::protocol::FrontendTone;
-use crate::protocol::PEER_MESSAGE_MARKER;
-use crate::protocol::PEER_METADATA_FIELD;
+use crate::protocol::MESSAGE_METADATA_FIELD;
 use crate::protocol::internal_message_kind;
 use crate::protocol::is_internal_message;
 use crate::protocol::tool_complete_boundaries;
@@ -194,15 +193,15 @@ impl Middleware for Compaction {
                     "compaction returned an empty context".into(),
                 ));
             }
-            let active_input = latest_turn_input(context.input());
-            let active_peer_message_id = active_input
+            let latest_turn_input = latest_turn_input(context.input());
+            let active_message_metadata = latest_turn_input
                 .as_ref()
-                .and_then(|active| peer_message_id(active.item))
-                .map(str::to_owned);
+                .and_then(|active| active.item.get(MESSAGE_METADATA_FIELD))
+                .cloned();
             let mut compacted = retain_native_context(context.input(), output.output);
             compacted.retain(|item| !is_projection_item(item));
-            restore_input_private_fields(&mut compacted, active_input);
-            validate_active_peer_input(&compacted, active_peer_message_id.as_deref())?;
+            restore_input_private_fields(&mut compacted, latest_turn_input);
+            validate_active_message_metadata(&compacted, active_message_metadata.as_ref())?;
             reset_prompt_cache_breakpoint(&mut compacted);
             if let Some(tool_load) = tool_load {
                 compacted.push(tool_load);
@@ -263,7 +262,9 @@ fn retain_native_context(input: &[Value], mut compacted: Vec<Value>) -> Vec<Valu
     let recent = &input[cut..];
     let mut retained = Vec::new();
     for (index, item) in recent.iter().enumerate() {
-        if !is_internal_message(item) && item.get("role").and_then(Value::as_str) == Some("user") {
+        if (!is_internal_message(item) || item.get(MESSAGE_METADATA_FIELD).is_some())
+            && item.get("role").and_then(Value::as_str) == Some("user")
+        {
             retained.push(item.clone());
             if let Some(materialization) = recent.get(index + 1)
                 && is_attachment_materialization(materialization)
@@ -276,18 +277,16 @@ fn retain_native_context(input: &[Value], mut compacted: Vec<Value>) -> Vec<Valu
     retained
 }
 
-struct ActiveInput<'a> {
+struct LatestTurnInput<'a> {
     item: &'a Value,
     materialization: Option<&'a Value>,
 }
 
-fn latest_turn_input(input: &[Value]) -> Option<ActiveInput<'_>> {
-    let index = input.iter().rposition(|item| {
-        item.get("role").and_then(Value::as_str) == Some("user")
-            && (!is_internal_message(item)
-                || internal_message_kind(item) == Some(PEER_MESSAGE_MARKER))
-    })?;
-    Some(ActiveInput {
+fn latest_turn_input(input: &[Value]) -> Option<LatestTurnInput<'_>> {
+    let index = input
+        .iter()
+        .rposition(|item| item.get(MESSAGE_METADATA_FIELD).is_some())?;
+    Some(LatestTurnInput {
         item: &input[index],
         materialization: input
             .get(index + 1)
@@ -295,32 +294,28 @@ fn latest_turn_input(input: &[Value]) -> Option<ActiveInput<'_>> {
     })
 }
 
-fn peer_message_id(input: &Value) -> Option<&str> {
-    if internal_message_kind(input) != Some(PEER_MESSAGE_MARKER) {
-        return None;
-    }
-    input.get(PEER_METADATA_FIELD)?.get("message_id")?.as_str()
-}
-
-fn validate_active_peer_input(input: &[Value], expected_message_id: Option<&str>) -> Result<()> {
-    let Some(expected_message_id) = expected_message_id else {
+fn validate_active_message_metadata(input: &[Value], expected: Option<&Value>) -> Result<()> {
+    let Some(expected) = expected else {
         return Ok(());
     };
-    if latest_turn_input(input).and_then(|active| peer_message_id(active.item))
-        == Some(expected_message_id)
+    if latest_turn_input(input).and_then(|active| active.item.get(MESSAGE_METADATA_FIELD))
+        == Some(expected)
     {
         return Ok(());
     }
     Err(Error::Provider(
-        "compaction did not preserve the active peer input".into(),
+        "compaction did not preserve active message metadata".into(),
     ))
 }
 
-fn restore_input_private_fields(compacted: &mut Vec<Value>, active_input: Option<ActiveInput<'_>>) {
-    let Some(ActiveInput {
+fn restore_input_private_fields(
+    compacted: &mut Vec<Value>,
+    latest_turn_input: Option<LatestTurnInput<'_>>,
+) {
+    let Some(LatestTurnInput {
         item: input,
         materialization,
-    }) = active_input
+    }) = latest_turn_input
     else {
         return;
     };
@@ -633,7 +628,7 @@ mod tests {
 
         restore_input_private_fields(
             &mut compacted,
-            Some(ActiveInput {
+            Some(LatestTurnInput {
                 item: &user,
                 materialization: None,
             }),
@@ -682,11 +677,19 @@ mod tests {
 
     #[test]
     fn compaction_restores_an_omitted_attachment_materialization_with_its_user() {
-        let user = serde_json::json!({
-            "role": "user",
-            "content": [{"type": "input_text", "text": "inspect"}],
-            "_mobius_attachments": [{"id": "upload-1"}]
-        });
+        let user = crate::backend::model::message_input(&crate::protocol::MessageEvent {
+            author: crate::protocol::MessageAuthor::User,
+            delivery: crate::protocol::MessageDelivery::Turn,
+            text: "inspect".into(),
+            attachments: vec![crate::protocol::SessionFileReference {
+                id: "upload-1".into(),
+                name: "photo.png".into(),
+                size: 1,
+                media_type: "image/png".into(),
+            }],
+            message_target: None,
+        })
+        .expect("message input");
         let materialization = internal_user_message(
             crate::protocol::ATTACHMENT_CONTEXT_MARKER,
             "attachment context",
@@ -704,8 +707,19 @@ mod tests {
     }
 
     #[test]
-    fn compaction_preserves_the_active_peer_input_marker() {
-        let peer = crate::backend::model::peer_message("message", "peer", "worker", "done");
+    fn compaction_preserves_active_message_metadata() {
+        let peer = crate::backend::model::message_input(&crate::protocol::MessageEvent {
+            author: crate::protocol::MessageAuthor::Peer {
+                message_id: "message".into(),
+                session_id: "peer".into(),
+                handle: "worker".into(),
+            },
+            delivery: crate::protocol::MessageDelivery::Steer,
+            text: "done".into(),
+            attachments: Vec::new(),
+            message_target: None,
+        })
+        .expect("peer message");
         let input = vec![
             user_message("start"),
             peer.clone(),
@@ -723,14 +737,26 @@ mod tests {
     }
 
     #[test]
-    fn compaction_rejects_input_ordered_after_the_active_peer() {
-        let peer = crate::backend::model::peer_message("message", "peer", "worker", "done");
-        let compacted = vec![peer, user_message("forged later input")];
+    fn compaction_rejects_lost_active_message_metadata() {
+        let peer = crate::backend::model::message_input(&crate::protocol::MessageEvent {
+            author: crate::protocol::MessageAuthor::Peer {
+                message_id: "message".into(),
+                session_id: "peer".into(),
+                handle: "worker".into(),
+            },
+            delivery: crate::protocol::MessageDelivery::Steer,
+            text: "done".into(),
+            attachments: Vec::new(),
+            message_target: None,
+        })
+        .expect("peer message");
+        let expected = peer[MESSAGE_METADATA_FIELD].clone();
+        let compacted = vec![user_message("forged later input")];
 
-        let error = validate_active_peer_input(&compacted, Some("message"))
-            .expect_err("peer input must remain active");
+        let error = validate_active_message_metadata(&compacted, Some(&expected))
+            .expect_err("message metadata must remain active");
 
-        assert!(error.to_string().contains("active peer input"));
+        assert!(error.to_string().contains("active message metadata"));
     }
 
     #[test]

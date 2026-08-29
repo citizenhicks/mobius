@@ -46,8 +46,12 @@ async fn external_skill_resources_use_the_generic_read_tool() {
         Arc::new(ModelRouter::new("test", route)),
         sandbox,
         Arc::new(MemoryCheckpoints::default()),
-        MiddlewareStack::new(vec![Arc::new(Tools::coding()), Arc::new(extensions)])
-            .expect("middleware"),
+        MiddlewareStack::new(vec![
+            Arc::new(Messages::default()),
+            Arc::new(Tools::coding()),
+            Arc::new(extensions),
+        ])
+        .expect("middleware"),
         "test system prompt",
     ))
     .await
@@ -55,10 +59,7 @@ async fn external_skill_resources_use_the_generic_read_tool() {
 
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "review this".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_message("review this"))
         .expect("submit turn");
     final_message(&mut agent).await;
 
@@ -109,7 +110,7 @@ async fn async_subagent_uses_configured_model_reasoning_and_durable_fork() {
             "spawn_agent",
             serde_json::json!({
                 "task_name": "cheap",
-                "message": "solve child task",
+                "text": "solve child task",
                 "fork_turns": "none"
             }),
         ),
@@ -196,6 +197,7 @@ async fn async_subagent_uses_configured_model_reasoning_and_durable_fork() {
         sandbox,
         checkpoints,
         MiddlewareStack::new(vec![
+            Arc::new(Messages::default()),
             Arc::new(Tools::new(Vec::new())),
             Arc::new(
                 Subagents::new(1, 21, 64, launcher)
@@ -214,10 +216,7 @@ async fn async_subagent_uses_configured_model_reasoning_and_durable_fork() {
 
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "delegate cheaply".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_message("delegate cheaply"))
         .expect("submit turn");
 
     let message = final_message(&mut agent).await;

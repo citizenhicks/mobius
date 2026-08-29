@@ -189,7 +189,7 @@ pub(super) fn live_transcript_lines(
         lines.push(Line::from(vec![
             Span::styled("┊ ", current().style(Role::Muted)),
             Span::styled(
-                format!("{} message", sentence_case(capability)),
+                sentence_case(capability),
                 current().style(Role::Muted).add_modifier(Modifier::ITALIC),
             ),
         ]));

@@ -14,21 +14,37 @@ use crate::backend::sandbox::NetworkAccess;
 use crate::backend::sandbox::SandboxMode;
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
-use crate::protocol::MAX_CAPABILITY_INPUT_BYTES;
+use crate::protocol::MAX_MESSAGE_BYTES;
+use crate::protocol::MessageAuthor;
+use crate::protocol::MessageDelivery;
+use crate::protocol::MessageEvent;
 use crate::protocol::MessageTarget;
 use crate::protocol::ModelStepContentPhase;
 use crate::protocol::SessionContext;
+use crate::protocol::SessionFileReference;
 use crate::protocol::TokenUsage;
 
 pub mod sqlite;
 
-pub(crate) const CHECKPOINT_VERSION: u32 = 6;
-pub(crate) const MAX_QUEUED_INPUTS: usize = 1_024;
+pub(crate) const CHECKPOINT_VERSION: u32 = 9;
+pub(crate) const MAX_QUEUED_MESSAGES: usize = 1_024;
 const TURN_PAGE_BATCH_SIZE: usize = 100;
 const MAX_QUEUED_OWNER_BYTES: usize = 256;
 const MAX_QUEUED_ID_BYTES: usize = 4 * 1024;
+const MAX_QUEUED_TURN_ID_BYTES: usize = 4 * 1024;
+const MAX_QUEUED_MESSAGE_BYTES: usize = MAX_MESSAGE_BYTES * 2;
 
-/// Mutable counters for the user turn currently running.
+/// Durable phase of the user turn currently running.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ExecutionPhase {
+    Model,
+    Completion {
+        last_assistant_message: Option<String>,
+    },
+}
+
+/// Mutable state for the user turn currently running.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActiveExecution {
     pub submission_id: String,
@@ -38,6 +54,9 @@ pub struct ActiveExecution {
     pub tool_calls: u64,
     pub failed_tool_calls: u64,
     pub usage: TokenUsage,
+    pub next_model_step: usize,
+    pub stop_hook_active: bool,
+    pub phase: ExecutionPhase,
 }
 
 /// The model step currently in flight for an active execution.
@@ -158,66 +177,130 @@ pub struct PendingApproval {
     pub decision_received: bool,
 }
 
-/// One active-turn message waiting for its next model boundary.
+/// The single delivery boundary for one queued message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct QueuedInput {
-    owner: String,
-    id: String,
-    text: String,
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum QueuedMessageBoundary {
+    Turn,
+    Steer { turn_id: String },
+    Queue,
 }
 
-impl QueuedInput {
-    pub(crate) fn new(owner: &str, id: &str, text: &str) -> Result<Self> {
-        validate_queued_input(owner, id, text).map_err(|message| Error::Config(message.into()))?;
-        Ok(Self {
-            owner: owner.into(),
-            id: id.into(),
-            text: text.into(),
-        })
+impl QueuedMessageBoundary {
+    pub(crate) const fn delivery(&self) -> MessageDelivery {
+        match self {
+            Self::Turn => MessageDelivery::Turn,
+            Self::Steer { .. } => MessageDelivery::Steer,
+            Self::Queue => MessageDelivery::Queue,
+        }
     }
 
-    pub(crate) fn validate(&self) -> std::result::Result<(), &'static str> {
-        validate_queued_input(&self.owner, &self.id, &self.text)
+    pub(crate) const fn starts_turn(&self) -> bool {
+        matches!(self, Self::Turn | Self::Queue)
+    }
+}
+
+/// One typed conversation message waiting for its delivery boundary.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QueuedMessage {
+    owner: String,
+    id: String,
+    boundary: QueuedMessageBoundary,
+    author: MessageAuthor,
+    message: String,
+    attachments: Vec<SessionFileReference>,
+}
+
+impl QueuedMessage {
+    pub(crate) fn new(
+        owner: &str,
+        id: &str,
+        boundary: QueuedMessageBoundary,
+        event: MessageEvent,
+    ) -> Result<Self> {
+        if event.delivery != boundary.delivery() || event.message_target.is_some() {
+            return Err(Error::Config("queued message event is inconsistent".into()));
+        }
+        let queued = Self {
+            owner: owner.into(),
+            id: id.into(),
+            boundary,
+            author: event.author,
+            message: event.text,
+            attachments: event.attachments,
+        };
+        queued.validate()?;
+        Ok(queued)
+    }
+
+    pub(crate) fn validate(&self) -> Result<()> {
+        validate_queued_message(self)
     }
 
     pub(crate) fn owner(&self) -> &str {
         &self.owner
     }
 
-    /// Returns the submission that owns this queued input.
+    /// Returns the submission that owns this queued message.
     #[must_use]
     pub fn id(&self) -> &str {
         &self.id
     }
 
-    /// Returns the exact queued text.
-    #[must_use]
-    pub fn text(&self) -> &str {
-        &self.text
+    pub(crate) fn boundary(&self) -> &QueuedMessageBoundary {
+        &self.boundary
     }
 
-    pub(crate) fn into_text(self) -> String {
-        self.text
+    pub(crate) fn event(&self) -> MessageEvent {
+        MessageEvent {
+            author: self.author.clone(),
+            delivery: self.boundary.delivery(),
+            text: self.message.clone(),
+            attachments: self.attachments.clone(),
+            message_target: None,
+        }
     }
 
-    pub(crate) fn into_id_and_text(self) -> (String, String) {
-        (self.id, self.text)
+    pub(crate) fn replace(&mut self, id: &str, event: MessageEvent) -> Result<()> {
+        let replacement = Self::new(&self.owner, id, self.boundary.clone(), event)?;
+        *self = replacement;
+        Ok(())
+    }
+
+    pub(crate) fn promote_to_next_turn(&mut self) -> Result<()> {
+        self.boundary = QueuedMessageBoundary::Queue;
+        Ok(())
+    }
+
+    pub(crate) fn into_parts(self) -> (String, MessageEvent) {
+        let event = self.event();
+        (self.id, event)
     }
 }
 
-fn validate_queued_input(
-    owner: &str,
-    id: &str,
-    text: &str,
-) -> std::result::Result<(), &'static str> {
-    if owner.trim().is_empty() || owner.len() > MAX_QUEUED_OWNER_BYTES {
-        return Err("queued input owner is invalid");
+fn validate_queued_message(message: &QueuedMessage) -> Result<()> {
+    if message.owner.trim().is_empty() || message.owner.len() > MAX_QUEUED_OWNER_BYTES {
+        return Err(Error::Config("queued message owner is invalid".into()));
     }
-    if id.trim().is_empty() || id.len() > MAX_QUEUED_ID_BYTES {
-        return Err("queued input ID is invalid");
+    if message.id.trim().is_empty() || message.id.len() > MAX_QUEUED_ID_BYTES {
+        return Err(Error::Config("queued message ID is invalid".into()));
     }
-    if text.trim().is_empty() || text.len() > MAX_CAPABILITY_INPUT_BYTES {
-        return Err("queued input text is invalid");
+    if matches!(
+        &message.boundary,
+        QueuedMessageBoundary::Steer { turn_id }
+            if turn_id.trim().is_empty() || turn_id.len() > MAX_QUEUED_TURN_ID_BYTES
+    ) {
+        return Err(Error::Config("queued message turn ID is invalid".into()));
+    }
+    crate::protocol::validate_message_content(
+        &message.author,
+        &message.message,
+        &message.attachments,
+    )?;
+    if serde_json::to_vec(&message.event())
+        .map_or(true, |value| value.len() > MAX_QUEUED_MESSAGE_BYTES)
+    {
+        return Err(Error::Config("queued message is invalid".into()));
     }
     Ok(())
 }
@@ -239,7 +322,7 @@ pub struct Checkpoint {
     pub last_context_rewrite: Option<ContextRewrite>,
     pub total_usage: TokenUsage,
     pub last_usage: Option<TokenUsage>,
-    pub pending_input: Vec<QueuedInput>,
+    pub pending_messages: Vec<QueuedMessage>,
     pub active_execution: Option<ActiveExecution>,
     pub active_model_step: Option<ActiveModelStep>,
     pub execution_stats: ExecutionStats,
@@ -266,7 +349,7 @@ impl Checkpoint {
             last_context_rewrite: None,
             total_usage: TokenUsage::default(),
             last_usage: None,
-            pending_input: Vec::new(),
+            pending_messages: Vec::new(),
             active_execution: None,
             active_model_step: None,
             execution_stats: ExecutionStats::default(),

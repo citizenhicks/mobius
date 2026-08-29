@@ -62,6 +62,32 @@ fn session_file_list_carries_the_file_origin() {
     assert_eq!(encoded["files"][0]["origin"], "agent");
 }
 
+#[test]
+fn swarm_message_records_use_text_as_the_payload_name() {
+    let record = SwarmMessageRecord {
+        id: "message-a".into(),
+        sequence: 1,
+        author_session_id: "session-a".into(),
+        author_handle: "agent_a".into(),
+        text: "Review this".into(),
+        created_at_ms: 1,
+    };
+
+    let encoded = serde_json::to_value(record).expect("encode swarm message");
+
+    assert_eq!(
+        encoded,
+        serde_json::json!({
+            "id": "message-a",
+            "sequence": 1,
+            "author_session_id": "session-a",
+            "author_handle": "agent_a",
+            "text": "Review this",
+            "created_at_ms": 1,
+        })
+    );
+}
+
 #[tokio::test]
 async fn websocket_bridge_rejects_text_messages() {
     let incoming = futures_util::stream::iter([Ok(Message::Text("{}".into()))]);
@@ -204,24 +230,31 @@ async fn framed_reader_retains_a_partial_prefix_when_cancelled() {
 }
 
 #[test]
-fn client_frame_round_trip_handles_a_nested_operation_tag() {
+fn client_frame_round_trip_preserves_a_unified_message() {
     let expected = ClientFrame::new(ClientMessage::Submit {
         session_id: "session-a".into(),
         submission: Submission {
             id: "submission-a".into(),
-            op: mobius::protocol::Op::CapabilityCommand {
-                capability: "subagents".into(),
-                command: "subagents".into(),
-                arguments: String::new(),
-                input: None,
-                target: None,
+            op: Op::Message {
+                message: mobius::protocol::MessageSubmission {
+                    author: mobius::protocol::MessageAuthor::User,
+                    text: "follow up".into(),
+                    attachments: Vec::new(),
+                    requested_delivery: Some(mobius::protocol::ActiveMessageDelivery::Queue),
+                    target_turn_id: Some("turn-a".into()),
+                },
             },
         },
     });
 
-    let encoded = serde_json::to_vec(&expected).expect("encode nested submission");
-    let actual: ClientFrame = serde_json::from_slice(&encoded).expect("decode nested submission");
+    let encoded = serde_json::to_value(&expected).expect("encode nested submission");
+    let actual: ClientFrame =
+        serde_json::from_value(encoded.clone()).expect("decode nested submission");
 
+    assert_eq!(
+        encoded["submission"]["op"]["message"]["requested_delivery"],
+        "queue"
+    );
     assert_eq!(actual, expected);
 }
 
@@ -949,8 +982,7 @@ fn server_frame_decodes_session_opened_with_a_widget_action_tag() {
                         "target": null
                     }
                 }],
-                "references": [],
-                "active_input": null
+                "references": []
             }],
             "widgets": [],
             "tool_count": 3,

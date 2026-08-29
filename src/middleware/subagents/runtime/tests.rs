@@ -113,8 +113,10 @@ async fn errored_subagent_preview_ends_with_its_terminal_message() {
             turn_id: "turn-1".into(),
             model_context_window: None,
         }),
-        EventMsg::UserMessage(crate::protocol::UserMessageEvent {
-            message: "review this".into(),
+        EventMsg::Message(crate::protocol::MessageEvent {
+            author: crate::protocol::MessageAuthor::User,
+            delivery: crate::protocol::MessageDelivery::Turn,
+            text: "review this".into(),
             attachments: Vec::new(),
             message_target: None,
         }),
@@ -174,10 +176,10 @@ async fn errored_subagent_preview_ends_with_its_terminal_message() {
         events.as_slice(),
         [
             EventMsg::TurnStarted(started),
-            EventMsg::UserMessage(message),
+            EventMsg::Message(message),
             EventMsg::Frontend(FrontendEvent::Render { capability, block }),
         ] if started.turn_id == "turn-1"
-            && message.message == "review this"
+            && message.text == "review this"
             && capability == "subagents"
             && block.title == "Subagent error"
             && block.text == "provider error: servers are currently overloaded"
@@ -594,7 +596,7 @@ async fn reserve_enforces_configured_agent_limit_including_root() {
 }
 
 #[tokio::test]
-async fn mail_is_retained_until_its_checkpoint_marker_is_acknowledged() {
+async fn terminal_update_is_retained_until_its_checkpoint_marker_is_acknowledged() {
     let shared = test_shared();
     let store = Arc::new(FailOnceStore {
         fail_next_save: AtomicBool::new(false),
@@ -606,37 +608,57 @@ async fn mail_is_retained_until_its_checkpoint_marker_is_acknowledged() {
         .await
         .expect("initialize runtime");
     shared
-        .queue_message("root", "/root/child", "/root", "done".into())
+        .reserve(
+            "root",
+            "/root/child",
+            "/root",
+            "child".into(),
+            1,
+            test_presentation(),
+        )
         .await
-        .expect("queue mail");
+        .expect("reserve child");
+    shared
+        .finished(
+            "root",
+            "/root/child",
+            AgentStatus::Completed,
+            Some("done".into()),
+        )
+        .await
+        .expect("finish child");
 
     let pending = shared
-        .receive_mail("root", "/root", &BTreeSet::new())
+        .receive_updates("root", "/root", &BTreeSet::new())
         .await
-        .expect("receive mail");
+        .expect("receive updates");
     let id = pending[0].id.clone();
-    let mailbox_len = store
+    assert_eq!(
+        pending[0].render(),
+        "<subagent_update agent=\"/root/child\" status=\"completed\">\ndone\n</subagent_update>"
+    );
+    let updates_len = store
         .saved_state
         .lock()
         .expect("saved state")
         .as_ref()
-        .and_then(|state| state["mailbox"].as_array())
+        .and_then(|state| state["updates"].as_array())
         .map(Vec::len);
-    assert_eq!(mailbox_len, Some(1));
+    assert_eq!(updates_len, Some(1));
 
     shared
-        .receive_mail("root", "/root", &BTreeSet::from([id]))
+        .receive_updates("root", "/root", &BTreeSet::from([id]))
         .await
-        .expect("acknowledge mail");
+        .expect("acknowledge update");
 
-    let mailbox_len = store
+    let updates_len = store
         .saved_state
         .lock()
         .expect("saved state")
         .as_ref()
-        .and_then(|state| state["mailbox"].as_array())
+        .and_then(|state| state["updates"].as_array())
         .map(Vec::len);
-    assert_eq!(mailbox_len, Some(0));
+    assert_eq!(updates_len, Some(0));
 }
 
 #[tokio::test]
@@ -794,6 +816,7 @@ fn test_context(
     frontend: crate::middleware::FrontendEventSink,
 ) -> RuntimeContext {
     RuntimeContext {
+        sender: crate::agent::test_sender(),
         checkpoints,
         session_id: "root".into(),
         model_route: "test".into(),

@@ -11,7 +11,6 @@ struct FrontendContribution: Decodable, Sendable {
     let commands: [FrontendCommand]
     let widgets: [FrontendWidget]
     let references: [FrontendReference]
-    let activeInput: FrontendActiveInput?
 }
 extension FrontendContribution {
     private enum CodingKeys: String, CodingKey {
@@ -21,7 +20,6 @@ extension FrontendContribution {
         case commands
         case widgets
         case references
-        case activeInput
     }
 
     init(from decoder: Decoder) throws {
@@ -44,7 +42,6 @@ extension FrontendContribution {
         commands = try container.decode([FrontendCommand].self, forKey: .commands)
         widgets = try container.decode([FrontendWidget].self, forKey: .widgets)
         references = try container.decode([FrontendReference].self, forKey: .references)
-        activeInput = try container.decodeIfPresent(FrontendActiveInput.self, forKey: .activeInput)
     }
 }
 
@@ -289,10 +286,6 @@ struct FrontendReference: Codable, Hashable, Sendable {
         case value
         case description
     }
-}
-
-struct FrontendActiveInput: Codable, Hashable, Sendable {
-    let operation: String
 }
 
 enum FrontendBlockUpdate: String, Codable, Hashable, Sendable {

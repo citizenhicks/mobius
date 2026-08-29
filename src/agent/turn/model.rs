@@ -1,30 +1,28 @@
 use std::collections::BTreeSet;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::Value;
-use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use super::turn_event;
-use crate::agent::input::{ActiveRoute, ActiveTurnRouter, Wait};
-use crate::agent::{EventRecorder, Runner, send_event, try_send_event, unix_timestamp_ms};
+use crate::agent::input::Wait;
+use crate::agent::{Runner, SubmissionInbox, send_event, try_send_event, unix_timestamp_ms};
 use crate::backend::checkpoint::{
-    ActiveModelStep, Checkpoint, ContextRewrite, ContextRewriteReason, ExecutionOutcome,
+    ActiveModelStep, ContextRewrite, ContextRewriteReason, ExecutionOutcome, ExecutionPhase,
 };
 use crate::backend::model::{
-    ModelEventSink, ModelOutput, ModelRequest, PromptCacheIdentity, STREAM_RETRY_LIMIT,
-    TOOLS_SEARCH_NAME, ToolCall, ToolDefinition, ToolLoad, internal_user_message, prompt_cache_key,
+    ModelEventSink, ModelOutput, ModelRequest, PromptCacheIdentity, STREAM_RETRY_LIMIT, ToolCall,
+    ToolDefinition, durable_visible_message_index, insert_before_open_tool_calls,
+    internal_user_message, prompt_cache_key,
 };
 use crate::backend::sandbox::SandboxAuthorization;
-use crate::middleware::tools::{Catalog, ToolResult};
-use crate::middleware::{
-    ModelContext, PreToolUseContext, QueuedInputBaseline, QueuedInputQueue, StopContext,
-};
+use crate::middleware::tools::{PreparedToolSet, ToolResult};
+use crate::middleware::{ModelContext, PreToolUseContext, StopContext};
 use crate::protocol::{
-    AgentMessageEvent, AgentMessagePhase, Event, EventMsg, MessageTarget, ModelStepCompletedEvent,
-    ModelStepDiagnostics, ModelStepOutcome, ModelStepStartedEvent, Submission, ToolLoadEvent,
-    WebSearchAction, WebSearchEndEvent, tool_complete_boundaries,
+    AssistantMessageEvent, Event, EventMsg, MessageTarget, ModelEventTracker,
+    ModelStepCompletedEvent, ModelStepDiagnostics, ModelStepOutcome, ModelStepStartedEvent,
+    SubmissionRejectedEvent,
 };
 use crate::{Error, Result};
 
@@ -37,42 +35,114 @@ enum PreparedModel {
     Aborted,
     /// Middleware requested normal completion before another model request.
     Stopped(String),
-    /// Middleware queued input during the phase; re-run it before the model call.
+    /// Middleware queued a message during the phase; re-run it before the model call.
     Repeat(Vec<crate::backend::checkpoint::ContextRewriteReason>),
     /// Proceed to the model request.
     Ready {
         input: Vec<Value>,
-        tools: PreparedTools,
+        tools: Box<PreparedTools>,
         rewrite_reasons: Vec<crate::backend::checkpoint::ContextRewriteReason>,
     },
-}
-
-enum ModelHookOutcome {
-    Error(Error),
-    Interrupted(String),
-    Stopped(String),
-    Repeat,
-    Ready,
 }
 
 struct PreparedTools {
     direct: Vec<ToolDefinition>,
     deferred: Vec<ToolDefinition>,
-    available: BTreeSet<String>,
-    searchable: BTreeSet<String>,
-    materialized: BTreeSet<String>,
+    catalog: PreparedToolSet,
 }
 
 struct CompletedModelStep {
     started: ModelStepStartedEvent,
     output: ModelOutput,
-    available: BTreeSet<String>,
-    searchable: BTreeSet<String>,
-    materialized: BTreeSet<String>,
-    pending_searches: Arc<Mutex<Vec<String>>>,
+    tools: PreparedToolSet,
+    model_events: ModelEventTracker,
+}
+
+enum ModelStepRequest {
+    Completed(Box<CompletedModelStep>),
+    Restart,
+    Finished,
 }
 
 impl Runner {
+    async fn stage_message_input(&mut self, turn_id: &str) -> Result<()> {
+        let mut pending_messages = self.state.pending_messages.clone();
+        let messages = self
+            .config
+            .middleware
+            .stage_model_messages(&mut pending_messages, turn_id)?;
+        if messages.is_empty() {
+            return Ok(());
+        }
+        let checkpoint_sequence = self
+            .state
+            .sequence
+            .checked_add(1)
+            .ok_or_else(|| Error::Checkpoint("checkpoint sequence overflow".into()))?;
+        let batch_before = self.transcript_delta.len();
+        let mut context = self.state.context.clone();
+        let mut transcript = Vec::with_capacity(messages.len());
+        let mut events = Vec::new();
+        for mut message in messages {
+            let mut hook_events = Vec::new();
+            let submitted = self
+                .config
+                .middleware
+                .message_submit(
+                    self.runtime.turn_identity(turn_id),
+                    &message,
+                    &mut hook_events,
+                )
+                .await?;
+            events.extend(hook_events.into_iter().map(|msg| Event {
+                submission_id: Some(message.submission_id.clone()),
+                msg,
+            }));
+            events.extend(message.boundary_events.drain(..).map(|msg| Event {
+                submission_id: Some(message.submission_id.clone()),
+                msg,
+            }));
+            if let Some(rejection) = submitted.rejection {
+                events.push(Event {
+                    submission_id: Some(message.submission_id),
+                    msg: EventMsg::SubmissionRejected(SubmissionRejectedEvent {
+                        message: rejection,
+                    }),
+                });
+                continue;
+            }
+            context.extend(submitted.input);
+            self.config
+                .model
+                .prepare_turn_input(&context, &mut message.input);
+            let target = message.event.message_target_mut().ok_or_else(|| {
+                Error::Checkpoint("prepared input event has no message target".into())
+            })?;
+            *target = Some(MessageTarget {
+                checkpoint_sequence,
+                batch_item_count: batch_before + transcript.len() + 1,
+            });
+            context.push(message.input.clone());
+            transcript.push(message.input);
+            events.push(Event {
+                submission_id: Some(message.submission_id),
+                msg: message.event,
+            });
+        }
+        let previous_pending_messages =
+            std::mem::replace(&mut self.state.pending_messages, pending_messages);
+        let previous_context = std::mem::replace(&mut self.state.context, context);
+        let transcript_len = self.transcript_delta.len();
+        self.transcript_delta.extend(transcript);
+        if let Err(error) = self.persist_with_events(events, None).await {
+            self.state.pending_messages = previous_pending_messages;
+            self.state.context = previous_context;
+            self.transcript_delta.truncate(transcript_len);
+            return Err(error);
+        }
+        Ok(())
+    }
+
     async fn persist_model_hook_changes(
         &mut self,
         submission_id: &str,
@@ -114,11 +184,12 @@ impl Runner {
     /// events into state, and persists when anything changed.
     async fn prepare_model_phase(
         &mut self,
-        commands: &mut mpsc::Receiver<Submission>,
+        inbox: &mut SubmissionInbox,
         submission_id: &str,
         turn_id: &str,
         model_step: usize,
     ) -> Result<PreparedModel> {
+        self.stage_message_input(turn_id).await?;
         let mut middleware_events = Vec::new();
         let mut middleware_usage = Vec::new();
         let provisional_target_sequence = self
@@ -126,100 +197,72 @@ impl Runner {
             .sequence
             .checked_add(1)
             .ok_or_else(|| Error::Checkpoint("checkpoint sequence overflow".into()))?;
-        let queued_before = QueuedInputBaseline::from_items(&self.state.pending_input);
-        let had_queued_input = !self.state.pending_input.is_empty();
-        let mut durable_snapshot = self.state.clone();
-        let original_pending_count = durable_snapshot.pending_input.len();
-        let recorder = self.events.clone();
-        let active_events = self.events.clone();
         let mut checkpoint_changed = false;
         let mut rewrite_reasons = Vec::new();
         let mut turn_stop = None;
         let mut request_input = self.state.context.clone();
-        let mut available_tools = exposed_tool_names(&self.catalog);
-        let (control, mut queued_during_middleware, queue_changed) = {
-            let mut queued_during_middleware = Vec::new();
-            let mut queue_changed = false;
-            let prepare_model = self.config.middleware.prepare_model(ModelContext {
-                model: &self.config.model,
-                provider: &self.config.provider,
-                session_id: &self.config.session_id,
-                session_context: &self.config.session_context,
-                metadata: &self.config.metadata,
-                turn_id,
-                model_step,
-                context_window: self.config.context_window,
-                instructions: &self.system_prompt,
-                checkpoint_sequence: self.state.sequence,
-                request_input: &mut request_input,
-                available_tools: &mut available_tools,
-                durable_input: &mut self.state.context,
-                transcript_delta: &mut self.transcript_delta,
-                context_epoch: &mut self.state.context_epoch,
-                compaction_count: &mut self.state.compaction_count,
-                rewrite_reasons: &mut rewrite_reasons,
-                turn_stop: &mut turn_stop,
-                queued_input: QueuedInputQueue::new(
-                    &mut self.state.pending_input,
-                    QueuedInputBaseline::default(),
-                ),
-                last_usage: self.state.last_usage.as_ref(),
-                tools: &self.catalog,
-                events: &mut middleware_events,
-                usage: &mut middleware_usage,
-                checkpoint_changed: &mut checkpoint_changed,
-                runtime: &self.runtime,
-                hooks: &self.config.middleware,
-            });
-            tokio::pin!(prepare_model);
-            let control = loop {
-                tokio::select! {
-                    output = &mut prepare_model => break Wait::Ready(output),
-                    submission = commands.recv() => {
-                        let Some(submission) = submission else {
-                            return Err(Error::Stopped("frontend disconnected".into()));
-                        };
-                        let route = (ActiveTurnRouter {
-                            middleware: &self.config.middleware,
-                            session_id: &self.config.session_id,
-                            metadata: &self.config.metadata,
-                            turn_id,
-                            queued_input: &mut queued_during_middleware,
-                            queued_before: queued_before.clone(),
-                            deferred: &mut self.deferred,
-                            events: &active_events,
-                            expected_approval: None,
-                        })
-                        .route(submission)
-                        .await?;
-                        match route {
-                            ActiveRoute::Accepted(change) | ActiveRoute::Changed(change) => {
-                                durable_snapshot.pending_input.truncate(original_pending_count);
-                                durable_snapshot
-                                    .pending_input
-                                    .extend(queued_during_middleware.iter().cloned());
-                                persist_queue_snapshot(
-                                    &recorder,
-                                    &mut durable_snapshot,
-                                    change.into_events(),
-                                )
-                                .await?;
-                                queue_changed = true;
-                            }
-                            ActiveRoute::Interrupted { submission_id } => {
-                                break Wait::Interrupted { submission_id };
-                            }
-                            ActiveRoute::Continue | ActiveRoute::Approval { .. } => {}
-                        }
-                    }
-                }
-            };
-            (control, queued_during_middleware, queue_changed)
+        let mut durable_input = self.state.context.clone();
+        let mut transcript_delta = self.transcript_delta.clone();
+        let mut context_epoch = self.state.context_epoch;
+        let mut compaction_count = self.state.compaction_count;
+        let mut available_tools = self.catalog.exposed_names();
+        let queued_messages = self.state.pending_messages.clone();
+        let model = Arc::clone(&self.config.model);
+        let provider = self.config.provider.clone();
+        let session_id = self.config.session_id.clone();
+        let session_context = self.config.session_context.clone();
+        let metadata = self.config.metadata.clone();
+        let instructions = Arc::clone(&self.system_prompt);
+        let last_usage = self.state.last_usage.clone();
+        let catalog = self.catalog.clone();
+        let runtime = self.runtime.clone();
+        let middleware = self.config.middleware.clone();
+        let prepare_model = middleware.prepare_model(ModelContext {
+            model: &model,
+            provider: &provider,
+            session_id: &session_id,
+            session_context: &session_context,
+            metadata: &metadata,
+            turn_id,
+            model_step,
+            context_window: self.config.context_window,
+            instructions: &instructions,
+            checkpoint_sequence: self.state.sequence,
+            request_input: &mut request_input,
+            available_tools: &mut available_tools,
+            durable_input: &mut durable_input,
+            transcript_delta: &mut transcript_delta,
+            context_epoch: &mut context_epoch,
+            compaction_count: &mut compaction_count,
+            rewrite_reasons: &mut rewrite_reasons,
+            turn_stop: &mut turn_stop,
+            queued_messages,
+            last_usage: last_usage.as_ref(),
+            tools: &catalog,
+            events: &mut middleware_events,
+            usage: &mut middleware_usage,
+            checkpoint_changed: &mut checkpoint_changed,
+            runtime: &runtime,
+            hooks: &middleware,
+        });
+        let control = self.wait_active(inbox, turn_id, prepare_model).await?;
+        let hook_result = match control {
+            Wait::Ready { value, .. } => value,
+            Wait::Interrupted { submission_id } => {
+                self.abort(
+                    &submission_id,
+                    turn_id,
+                    "interrupted",
+                    ExecutionOutcome::Aborted,
+                )
+                .await?;
+                return Ok(PreparedModel::Aborted);
+            }
         };
-        self.state.sequence = durable_snapshot.sequence;
-        self.state
-            .pending_input
-            .append(&mut queued_during_middleware);
+        self.state.context = durable_input;
+        self.transcript_delta = transcript_delta;
+        self.state.context_epoch = context_epoch;
+        self.state.compaction_count = compaction_count;
         let usage_changed = !middleware_usage.is_empty();
         if !rewrite_reasons.is_empty() {
             self.state.last_context_rewrite = Some(ContextRewrite {
@@ -234,13 +277,11 @@ impl Runner {
                 self.state.last_usage = Some(usage.clone());
             }
         }
-        checkpoint_changed |= usage_changed || had_queued_input || queue_changed;
-        let outcome = model_hook_outcome(
-            control,
-            turn_stop,
-            queue_changed,
-            !self.state.pending_input.is_empty(),
-        )?;
+        checkpoint_changed |= usage_changed;
+        let messages_ready = self
+            .config
+            .middleware
+            .messages_ready(&self.state.pending_messages, turn_id)?;
         self.persist_model_hook_changes(
             submission_id,
             middleware_events,
@@ -249,147 +290,144 @@ impl Runner {
             provisional_target_sequence,
         )
         .await?;
-        match outcome {
-            ModelHookOutcome::Error(error) => Err(error),
-            ModelHookOutcome::Interrupted(interrupt_submission_id) => {
-                self.abort(
-                    &interrupt_submission_id,
-                    turn_id,
-                    "interrupted",
-                    ExecutionOutcome::Aborted,
-                )
-                .await?;
-                Ok(PreparedModel::Aborted)
-            }
-            ModelHookOutcome::Stopped(reason) => Ok(PreparedModel::Stopped(reason)),
-            ModelHookOutcome::Repeat => Ok(PreparedModel::Repeat(rewrite_reasons)),
-            ModelHookOutcome::Ready => Ok(PreparedModel::Ready {
-                tools: self.prepare_tools(&request_input, available_tools)?,
-                input: request_input,
-                rewrite_reasons,
-            }),
+        hook_result?;
+        if messages_ready {
+            return Ok(PreparedModel::Repeat(rewrite_reasons));
         }
-    }
-
-    fn prepare_tools(
-        &self,
-        input: &[Value],
-        mut available: BTreeSet<String>,
-    ) -> Result<PreparedTools> {
-        let deferred = self
-            .catalog
-            .deferred_definitions()
-            .iter()
-            .filter(|tool| available.contains(&tool.name))
-            .cloned()
-            .collect::<Vec<_>>();
-        let searchable = deferred
-            .iter()
-            .map(|tool| tool.name.clone())
-            .collect::<BTreeSet<_>>();
-        if searchable.is_empty() {
-            available.remove(TOOLS_SEARCH_NAME);
+        if let Some(reason) = turn_stop {
+            return Ok(PreparedModel::Stopped(reason));
         }
-        let materialized = loaded_tools(input, self.catalog.revision()?, &searchable)?;
-        let mut direct = self
-            .catalog
-            .direct_definitions()
-            .iter()
-            .filter(|tool| available.contains(&tool.name))
-            .cloned()
-            .collect::<Vec<_>>();
-        let deferred = match self.config.model.tool_discovery(&self.config.provider)? {
-            crate::protocol::ToolDiscoveryMode::Native => deferred,
-            crate::protocol::ToolDiscoveryMode::Rebuild => {
-                direct.extend(
-                    deferred
-                        .iter()
-                        .filter(|tool| materialized.contains(&tool.name))
-                        .cloned(),
-                );
-                Vec::new()
-            }
-        };
-        Ok(PreparedTools {
-            direct,
-            deferred,
-            available,
-            searchable,
-            materialized,
+        Ok(PreparedModel::Ready {
+            tools: Box::new(self.prepare_tools(&request_input, available_tools)?),
+            input: request_input,
+            rewrite_reasons,
         })
     }
 
-    pub(in crate::agent) async fn live_tool_sets(
-        &self,
-    ) -> Result<(BTreeSet<String>, BTreeSet<String>, BTreeSet<String>)> {
-        let mut available = exposed_tool_names(&self.catalog);
+    fn prepare_tools(&self, input: &[Value], available: BTreeSet<String>) -> Result<PreparedTools> {
+        let catalog = self.catalog.prepare(input, available)?;
+        let (direct, deferred) = self.config.model.prepare_tool_definitions(
+            &self.config.provider,
+            catalog.direct().to_vec(),
+            catalog.deferred().to_vec(),
+            catalog.materialized(),
+        )?;
+        Ok(PreparedTools {
+            direct,
+            deferred,
+            catalog,
+        })
+    }
+
+    pub(in crate::agent) async fn live_tools(&self) -> Result<PreparedToolSet> {
+        let mut available = self.catalog.exposed_names();
         self.config
             .middleware
             .resolve_tool_exposure(&self.config.session_id, &self.state.context, &mut available)
             .await?;
-        let searchable = self
-            .catalog
-            .deferred_definitions()
-            .iter()
-            .filter(|tool| available.contains(&tool.name))
-            .map(|tool| tool.name.clone())
-            .collect::<BTreeSet<_>>();
-        if searchable.is_empty() {
-            available.remove(TOOLS_SEARCH_NAME);
-        }
-        let materialized =
-            loaded_tools(&self.state.context, self.catalog.revision()?, &searchable)?;
-        Ok((available, searchable, materialized))
+        self.catalog.prepare(&self.state.context, available)
     }
 
-    async fn fail_model_step(
-        &mut self,
+    fn model_step_terminal_events(
         submission_id: &str,
         started: &ModelStepStartedEvent,
         outcome: ModelStepOutcome,
-        pending_searches: &Mutex<Vec<String>>,
-    ) -> Result<()> {
-        self.state.active_model_step = None;
-        // A failed step can never complete the hosted searches it started, so the
-        // backend closes them out instead of leaving every frontend to infer it.
-        let dangling = pending_searches
-            .lock()
-            .map(|mut pending| std::mem::take(&mut *pending))
-            .unwrap_or_default();
-        let mut events: Vec<Event> = dangling
+        model_events: &ModelEventTracker,
+    ) -> Result<Vec<Event>> {
+        let mut events = model_events
+            .interrupted()?
             .into_iter()
-            .map(|call_id| {
+            .map(|event| {
                 turn_event(
                     submission_id,
-                    EventMsg::WebSearchEnd(WebSearchEndEvent {
-                        session_id: started.session_id.clone(),
-                        turn_id: started.turn_id.clone(),
-                        model_step_id: started.model_step_id.clone(),
-                        call_id,
-                        action: WebSearchAction::Interrupted,
-                    }),
+                    event.into_event(
+                        &started.session_id,
+                        &started.turn_id,
+                        &started.model_step_id,
+                    ),
                 )
             })
-            .collect();
+            .collect::<Vec<_>>();
         events.push(model_step_completed_event(
             submission_id,
             started,
             outcome,
             None,
         )?);
-        self.persist_with_events(events, None).await?;
-        Ok(())
+        Ok(events)
+    }
+
+    async fn retry_model_step(
+        &mut self,
+        submission_id: &str,
+        started: &ModelStepStartedEvent,
+        model_events: &ModelEventTracker,
+    ) -> Result<()> {
+        let events = Self::model_step_terminal_events(
+            submission_id,
+            started,
+            ModelStepOutcome::Retrying,
+            model_events,
+        )?;
+        let active_model_step = self.state.active_model_step.take();
+        match self.persist_with_events(events, None).await {
+            Ok(_) => Ok(()),
+            Err(error) => {
+                self.state.active_model_step = active_model_step;
+                Err(error)
+            }
+        }
+    }
+
+    async fn fail_model_step(
+        &mut self,
+        submission_id: &str,
+        started: &ModelStepStartedEvent,
+        model_events: &ModelEventTracker,
+        error: Error,
+    ) -> Result<()> {
+        let events = Self::model_step_terminal_events(
+            submission_id,
+            started,
+            ModelStepOutcome::Failed,
+            model_events,
+        )?;
+        self.fail_turn_with_events(submission_id, error, events)
+            .await
+    }
+
+    async fn interrupt_model_step(
+        &mut self,
+        submission_id: &str,
+        interrupt_submission_id: &str,
+        started: &ModelStepStartedEvent,
+        model_events: &ModelEventTracker,
+    ) -> Result<()> {
+        let events = Self::model_step_terminal_events(
+            submission_id,
+            started,
+            ModelStepOutcome::Interrupted,
+            model_events,
+        )?;
+        self.abort_with_events(
+            interrupt_submission_id,
+            &started.turn_id,
+            "interrupted",
+            ExecutionOutcome::Aborted,
+            events,
+        )
+        .await
     }
 
     async fn request_model_step(
         &mut self,
-        commands: &mut mpsc::Receiver<Submission>,
+        inbox: &mut SubmissionInbox,
         submission_id: &str,
         turn_id: &str,
         model_step: usize,
         request_input: &[Value],
         tools: &PreparedTools,
-    ) -> Result<Option<CompletedModelStep>> {
+    ) -> Result<ModelStepRequest> {
         let model = Arc::clone(&self.config.model);
         let provider = self.config.provider.clone();
         let model_session_id = self.state.session_id.clone();
@@ -423,11 +461,11 @@ impl Runner {
             let event_turn_id = turn_id.to_string();
             let event_session_id = self.state.session_id.clone();
             let event_model_step_id = started.model_step_id.clone();
-            let pending_searches = Arc::new(Mutex::new(Vec::<String>::new()));
-            let tracked_searches = Arc::clone(&pending_searches);
+            let model_events = ModelEventTracker::default();
+            let streamed_events = model_events.clone();
             let catalog_revision = self.catalog.revision()?.to_owned();
             let stream: ModelEventSink = Arc::new(move |event| {
-                track_pending_searches(&tracked_searches, &event);
+                streamed_events.observe(&event)?;
                 let msg = event.into_event(&event_session_id, &event_turn_id, &event_model_step_id);
                 try_send_event(
                     &events,
@@ -455,50 +493,35 @@ impl Runner {
                 },
                 stream,
             );
-            match self.wait_active(commands, turn_id, response).await {
-                Ok(Wait::Ready(Ok(output))) => {
-                    if !output.materialized_tools().is_subset(&tools.searchable) {
-                        self.fail_model_step(
-                            submission_id,
-                            &started,
-                            ModelStepOutcome::Failed,
-                            &pending_searches,
-                        )
-                        .await?;
-                        return Err(Error::Provider(
-                            "provider materialized a tool outside the searchable catalog".into(),
-                        ));
-                    }
-                    let mut materialized = tools.materialized.clone();
-                    materialized.extend(output.materialized_tools().iter().cloned());
-                    return Ok(Some(CompletedModelStep {
+            match self.wait_active(inbox, turn_id, response).await {
+                Ok(Wait::Ready {
+                    value: Ok(output), ..
+                }) => {
+                    return Ok(ModelStepRequest::Completed(Box::new(CompletedModelStep {
                         started,
                         output,
-                        available: tools.available.clone(),
-                        searchable: tools.searchable.clone(),
-                        materialized,
-                        pending_searches,
-                    }));
+                        tools: tools.catalog.clone(),
+                        model_events,
+                    })));
                 }
-                Ok(Wait::Ready(Err(Error::Provider(error))))
-                    if error.is_stream_interrupted() && stream_retries < STREAM_RETRY_LIMIT =>
-                {
+                Ok(Wait::Ready {
+                    value: Err(Error::Provider(error)),
+                    input_changed,
+                }) if error.is_stream_interrupted() && stream_retries < STREAM_RETRY_LIMIT => {
                     let delay = stream_retry_delay(&error, stream_retries, &started.model_step_id);
-                    self.fail_model_step(
-                        submission_id,
-                        &started,
-                        ModelStepOutcome::Retrying,
-                        &pending_searches,
-                    )
-                    .await?;
+                    self.retry_model_step(submission_id, &started, &model_events)
+                        .await?;
                     stream_retries += 1;
+                    if input_changed {
+                        return Ok(ModelStepRequest::Restart);
+                    }
                     match self
-                        .wait_active(commands, turn_id, tokio::time::sleep(delay))
+                        .wait_active(inbox, turn_id, tokio::time::sleep(delay))
                         .await?
                     {
-                        Wait::Ready(()) => {
+                        Wait::Ready { input_changed, .. } => {
                             if let Some(interrupt_submission_id) =
-                                self.drain_commands(commands, turn_id).await?
+                                self.drain_submissions(inbox, turn_id).await?
                             {
                                 self.abort(
                                     &interrupt_submission_id,
@@ -507,7 +530,15 @@ impl Runner {
                                     ExecutionOutcome::Aborted,
                                 )
                                 .await?;
-                                return Ok(None);
+                                return Ok(ModelStepRequest::Finished);
+                            }
+                            if input_changed
+                                || self
+                                    .config
+                                    .middleware
+                                    .messages_ready(&self.state.pending_messages, turn_id)?
+                            {
+                                return Ok(ModelStepRequest::Restart);
                             }
                         }
                         Wait::Interrupted {
@@ -520,38 +551,29 @@ impl Runner {
                                 ExecutionOutcome::Aborted,
                             )
                             .await?;
-                            return Ok(None);
+                            return Ok(ModelStepRequest::Finished);
                         }
                     }
                 }
-                Ok(Wait::Ready(Err(error))) | Err(error) => {
-                    self.fail_model_step(
-                        submission_id,
-                        &started,
-                        ModelStepOutcome::Failed,
-                        &pending_searches,
-                    )
-                    .await?;
-                    return Err(error);
+                Ok(Wait::Ready {
+                    value: Err(error), ..
+                })
+                | Err(error) => {
+                    self.fail_model_step(submission_id, &started, &model_events, error)
+                        .await?;
+                    return Ok(ModelStepRequest::Finished);
                 }
                 Ok(Wait::Interrupted {
                     submission_id: interrupt_submission_id,
                 }) => {
-                    self.fail_model_step(
+                    self.interrupt_model_step(
                         submission_id,
-                        &started,
-                        ModelStepOutcome::Interrupted,
-                        &pending_searches,
-                    )
-                    .await?;
-                    self.abort(
                         &interrupt_submission_id,
-                        turn_id,
-                        "interrupted",
-                        ExecutionOutcome::Aborted,
+                        &started,
+                        &model_events,
                     )
                     .await?;
-                    return Ok(None);
+                    return Ok(ModelStepRequest::Finished);
                 }
             }
         }
@@ -559,36 +581,38 @@ impl Runner {
 
     async fn normalize_and_persist_model_step(
         &mut self,
+        inbox: &mut SubmissionInbox,
         submission_id: &str,
         turn_id: &str,
         rewrite_reasons: &[ContextRewriteReason],
         mut step: CompletedModelStep,
-    ) -> Result<(ModelOutput, Vec<ToolCall>, Vec<ToolResult>)> {
+    ) -> Result<Option<(ModelOutput, Vec<ToolCall>, Vec<ToolResult>)>> {
         let provider = self.config.provider.clone();
         if let Err(error) = self.record_usage(&provider, &step.output.usage) {
-            self.fail_model_step(
-                submission_id,
-                &step.started,
-                ModelStepOutcome::Failed,
-                &step.pending_searches,
-            )
-            .await?;
-            return Err(error);
+            self.fail_model_step(submission_id, &step.started, &step.model_events, error)
+                .await?;
+            return Ok(None);
         }
         self.state.last_usage = Some(step.output.usage.clone());
+        let mut tool_effects = match step.tools.accept_materialized(
+            step.output.materialized_tools(),
+            turn_id,
+            &step.started.model_step_id,
+        ) {
+            Ok(effects) => effects,
+            Err(error) => {
+                self.fail_model_step(submission_id, &step.started, &step.model_events, error)
+                    .await?;
+                return Ok(None);
+            }
+        };
         let original_tool_calls = step.output.tool_calls.clone();
         let mut executable_calls = Vec::new();
         let mut denied_results = Vec::new();
         let mut hook_events = Vec::new();
         let mut hook_input = Vec::new();
         for call in &mut step.output.tool_calls {
-            if let Err(error) = bind_prepared_call(
-                &self.catalog,
-                call.clone(),
-                &step.available,
-                &step.materialized,
-                &step.searchable,
-            ) {
+            if let Err(error) = self.catalog.bind_prepared(call.clone(), &step.tools) {
                 denied_results.push(ToolResult::error(call, error.to_string()));
                 continue;
             }
@@ -601,14 +625,9 @@ impl Runner {
                 denial: None,
             };
             if let Err(error) = self.config.middleware.pre_tool_use(&mut context).await {
-                self.fail_model_step(
-                    submission_id,
-                    &step.started,
-                    ModelStepOutcome::Failed,
-                    &step.pending_searches,
-                )
-                .await?;
-                return Err(error);
+                self.fail_model_step(submission_id, &step.started, &step.model_events, error)
+                    .await?;
+                return Ok(None);
             }
             let denial = context.denial().map(str::to_owned);
             hook_input.append(&mut context.input);
@@ -618,14 +637,8 @@ impl Runner {
                     format!("tool call denied: {reason}"),
                 ));
             } else {
-                match bind_prepared_call(
-                    &self.catalog,
-                    call.clone(),
-                    &step.available,
-                    &step.materialized,
-                    &step.searchable,
-                ) {
-                    Ok(call) => executable_calls.push(call),
+                match self.catalog.bind_prepared(call.clone(), &step.tools) {
+                    Ok(call) => executable_calls.push(call.into_call()),
                     Err(error) => {
                         denied_results.push(ToolResult::error(call, error.to_string()));
                     }
@@ -635,45 +648,50 @@ impl Runner {
         if step.output.tool_calls != original_tool_calls
             && let Err(error) = step.output.sync_tool_calls()
         {
-            self.fail_model_step(
+            self.fail_model_step(submission_id, &step.started, &step.model_events, error)
+                .await?;
+            return Ok(None);
+        }
+        if let Some(interrupt_submission_id) = self.drain_submissions(inbox, turn_id).await? {
+            self.interrupt_model_step(
                 submission_id,
+                &interrupt_submission_id,
                 &step.started,
-                ModelStepOutcome::Failed,
-                &step.pending_searches,
+                &step.model_events,
             )
             .await?;
-            return Err(error);
+            return Ok(None);
         }
         let context_before = self.state.context.len();
         let batch_before = self.transcript_delta.len();
         let mut durable_output = step.output.output.clone();
-        let tool_load_event = if step.output.materialized_tools().is_empty() {
-            None
-        } else {
-            let load = ToolLoad {
-                catalog_revision: self.catalog.revision()?.into(),
-                tools: step.output.materialized_tools().iter().cloned().collect(),
-            };
-            let event = ToolLoadEvent {
-                turn_id: turn_id.into(),
-                load_id: step.started.model_step_id.clone(),
-                catalog_revision: load.catalog_revision.clone(),
-                tools: load.tools.clone(),
-            };
-            durable_output.push(load.into_input());
-            Some(event)
-        };
-        insert_pre_tool_input(&mut durable_output, hook_input);
-        let message_index = durable_output.iter().rposition(has_visible_output_text);
+        durable_output.append(&mut tool_effects.input);
+        insert_before_open_tool_calls(&mut durable_output, hook_input);
         self.extend_context(durable_output);
-        let message_boundary = message_index.map(|index| context_before + index + 1);
-        let message_is_safe = message_boundary.is_some_and(|boundary| {
-            tool_complete_boundaries(&self.state.context)
-                .binary_search(&boundary)
-                .is_ok()
-        });
+        let message_index = durable_visible_message_index(
+            &self.state.context[context_before..],
+            &self.state.context,
+            context_before,
+        );
         self.state.pending_tools.clone_from(&step.output.tool_calls);
         self.state.active_model_step = None;
+        let next_model_step = step
+            .started
+            .step_index
+            .checked_add(1)
+            .ok_or_else(|| Error::Checkpoint("model step index overflow".into()))?;
+        let active = self.state.active_execution.as_mut().ok_or_else(|| {
+            Error::Checkpoint("completed model step has no active execution".into())
+        })?;
+        active.next_model_step = next_model_step;
+        active.phase = if step.output.end_turn && step.output.tool_calls.is_empty() {
+            ExecutionPhase::Completion {
+                last_assistant_message: (!step.output.text.is_empty())
+                    .then(|| step.output.text.clone()),
+            }
+        } else {
+            ExecutionPhase::Model
+        };
         let diagnostics = self.config.model.model_step_diagnostics(
             &self.config.provider,
             self.state.context_epoch,
@@ -700,55 +718,63 @@ impl Runner {
                     .map(|call| call.call_id.clone())
                     .collect(),
                 usage: step.output.usage.clone(),
-                content: step.output.content().to_vec(),
             },
             Some(diagnostics),
         )?];
-        if let Some(event) = tool_load_event {
-            model_events.push(turn_event(submission_id, EventMsg::ToolLoad(event)));
+        if !step.output.content().is_empty() {
+            model_events.push(turn_event(
+                submission_id,
+                EventMsg::AssistantMessage(AssistantMessageEvent {
+                    session_id: self.state.session_id.clone(),
+                    turn_id: turn_id.to_string(),
+                    model_step_id: step.started.model_step_id.clone(),
+                    content: step.output.content().to_vec(),
+                    message_target: message_index.map(|index| MessageTarget {
+                        checkpoint_sequence,
+                        batch_item_count: batch_before + index + 1,
+                    }),
+                }),
+            ));
         }
+        model_events.extend(
+            tool_effects
+                .events
+                .into_iter()
+                .map(|event| turn_event(submission_id, event)),
+        );
         model_events.extend(
             hook_events
                 .into_iter()
                 .map(|message| turn_event(submission_id, message)),
         );
-        if !step.output.text.is_empty() {
-            model_events.push(turn_event(
-                submission_id,
-                EventMsg::AgentMessage(AgentMessageEvent {
-                    session_id: self.state.session_id.clone(),
-                    turn_id: turn_id.to_string(),
-                    model_step_id: step.started.model_step_id.clone(),
-                    message: step.output.text.clone(),
-                    phase: AgentMessagePhase::FinalAnswer,
-                    message_target: message_index.filter(|_| message_is_safe).map(|index| {
-                        MessageTarget {
-                            checkpoint_sequence,
-                            batch_item_count: batch_before + index + 1,
-                        }
-                    }),
-                }),
-            ));
-        }
         if let Some(usage) = self.usage_event(submission_id) {
             model_events.push(usage);
         }
         self.persist_with_events(model_events, None).await?;
-        Ok((step.output, executable_calls, denied_results))
+        Ok(Some((step.output, executable_calls, denied_results)))
     }
 
-    async fn finish_toolless_step(
+    async fn resolve_turn_completion(
         &mut self,
-        commands: &mut mpsc::Receiver<Submission>,
+        inbox: &mut SubmissionInbox,
         submission_id: &str,
         turn_id: &str,
-        output: &ModelOutput,
-        stop_continued: &mut bool,
     ) -> Result<bool> {
-        if !output.end_turn {
-            return Ok(false);
-        }
-        if let Some(interrupt_submission_id) = self.drain_commands(commands, turn_id).await? {
+        let (last_assistant_message, stop_hook_active) = {
+            let active = self.state.active_execution.as_ref().ok_or_else(|| {
+                Error::Checkpoint("turn completion has no active execution".into())
+            })?;
+            let ExecutionPhase::Completion {
+                last_assistant_message,
+            } = &active.phase
+            else {
+                return Err(Error::Checkpoint(
+                    "turn completion resumed outside its durable phase".into(),
+                ));
+            };
+            (last_assistant_message.clone(), active.stop_hook_active)
+        };
+        if let Some(interrupt_submission_id) = self.drain_submissions(inbox, turn_id).await? {
             self.abort(
                 &interrupt_submission_id,
                 turn_id,
@@ -758,7 +784,12 @@ impl Runner {
             .await?;
             return Ok(true);
         }
-        if !self.state.pending_input.is_empty() {
+        if self
+            .config
+            .middleware
+            .messages_ready(&self.state.pending_messages, turn_id)?
+        {
+            self.resume_model_phase()?;
             return Ok(false);
         }
 
@@ -767,8 +798,8 @@ impl Runner {
             let mut context = StopContext {
                 turn: self.runtime.turn_identity(turn_id),
                 role: &self.runtime.role,
-                stop_hook_active: *stop_continued,
-                last_assistant_message: (!output.text().is_empty()).then_some(output.text()),
+                stop_hook_active,
+                last_assistant_message: last_assistant_message.as_deref(),
                 events: &mut hook_events,
                 continuation: None,
             };
@@ -779,7 +810,7 @@ impl Runner {
             .into_iter()
             .map(|message| turn_event(submission_id, message))
             .collect::<Vec<_>>();
-        if let Some(interrupt_submission_id) = self.drain_commands(commands, turn_id).await? {
+        if let Some(interrupt_submission_id) = self.drain_submissions(inbox, turn_id).await? {
             if !hook_events.is_empty() {
                 self.persist_with_events(hook_events, None).await?;
             }
@@ -792,14 +823,23 @@ impl Runner {
             .await?;
             return Ok(true);
         }
-        if !self.state.pending_input.is_empty() {
+        if self
+            .config
+            .middleware
+            .messages_ready(&self.state.pending_messages, turn_id)?
+        {
+            self.resume_model_phase()?;
             if !hook_events.is_empty() {
                 self.persist_with_events(hook_events, None).await?;
             }
             return Ok(false);
         }
         if let Some(prompt) = decision {
-            *stop_continued = true;
+            let active = self.state.active_execution.as_mut().ok_or_else(|| {
+                Error::Checkpoint("stop continuation has no active execution".into())
+            })?;
+            active.phase = ExecutionPhase::Model;
+            active.stop_hook_active = true;
             self.push_context(internal_user_message("stop_continuation", &prompt));
             self.persist_with_events(hook_events, None).await?;
             return Ok(false);
@@ -809,13 +849,35 @@ impl Runner {
         Ok(true)
     }
 
+    fn resume_model_phase(&mut self) -> Result<()> {
+        let active =
+            self.state.active_execution.as_mut().ok_or_else(|| {
+                Error::Checkpoint("turn continuation has no active execution".into())
+            })?;
+        active.phase = ExecutionPhase::Model;
+        Ok(())
+    }
+
     async fn authorize_and_execute(
         &mut self,
-        commands: &mut mpsc::Receiver<Submission>,
+        inbox: &mut SubmissionInbox,
         submission_id: &str,
         turn_id: &str,
         calls: Vec<ToolCall>,
     ) -> Result<bool> {
+        let live_tools = self.live_tools().await?;
+        let (live_calls, unavailable_results) = self.catalog.bind_live_batch(&calls, &live_tools);
+        if !unavailable_results.is_empty() {
+            self.persist_tool_results(submission_id, turn_id, unavailable_results)
+                .await?;
+        }
+        let calls = live_calls
+            .into_iter()
+            .map(|call| call.into_call())
+            .collect::<Vec<_>>();
+        if calls.is_empty() {
+            return Ok(false);
+        }
         let mutation_call_ids = calls
             .iter()
             .filter(|call| self.catalog.requires_approval(&call.name))
@@ -828,7 +890,7 @@ impl Runner {
         let results = match authorization {
             SandboxAuthorization::Execute(permissions) => {
                 let tools = self
-                    .execute_tools(commands, submission_id, turn_id, &calls, permissions)
+                    .execute_tools(inbox, submission_id, turn_id, &calls, permissions)
                     .await?;
                 let Some(results) = self.ready_or_aborted(tools, turn_id).await? else {
                     return Ok(true);
@@ -840,14 +902,15 @@ impl Runner {
                 permissions,
             } => {
                 let Some(results) = self
-                    .pause_and_resolve(
-                        commands,
+                    .resolve_tool_approval(
+                        inbox,
                         submission_id,
                         turn_id,
                         calls,
                         request,
                         permissions,
                         Vec::new(),
+                        None,
                     )
                     .await?
                 else {
@@ -857,7 +920,7 @@ impl Runner {
             }
             SandboxAuthorization::Review(review) => {
                 let Some(results) = self
-                    .review_and_resolve(commands, submission_id, turn_id, calls, review)
+                    .review_and_resolve(inbox, submission_id, turn_id, calls, review)
                     .await?
                 else {
                     return Ok(true);
@@ -865,22 +928,35 @@ impl Runner {
                 results
             }
         };
-        self.state.pending_approval = None;
-        self.persist_tool_results(submission_id, turn_id, results)
+        self.complete_tool_step(submission_id, turn_id, results)
             .await?;
         Ok(false)
     }
 
     pub(in crate::agent) async fn continue_turn(
         &mut self,
-        commands: &mut mpsc::Receiver<Submission>,
+        inbox: &mut SubmissionInbox,
         submission_id: String,
         turn_id: String,
     ) -> Result<()> {
-        let mut model_step = 0;
-        let mut stop_continued = false;
         loop {
-            if let Some(interrupt_submission_id) = self.drain_commands(commands, &turn_id).await? {
+            let phase = self
+                .state
+                .active_execution
+                .as_ref()
+                .ok_or_else(|| Error::Checkpoint("continued turn has no active execution".into()))?
+                .phase
+                .clone();
+            if matches!(phase, ExecutionPhase::Completion { .. }) {
+                if self
+                    .resolve_turn_completion(inbox, &submission_id, &turn_id)
+                    .await?
+                {
+                    return Ok(());
+                }
+                continue;
+            }
+            if let Some(interrupt_submission_id) = self.drain_submissions(inbox, &turn_id).await? {
                 self.abort(
                     &interrupt_submission_id,
                     &turn_id,
@@ -890,6 +966,12 @@ impl Runner {
                 .await?;
                 return Ok(());
             }
+            let model_step = self
+                .state
+                .active_execution
+                .as_ref()
+                .ok_or_else(|| Error::Checkpoint("continued turn has no active execution".into()))?
+                .next_model_step;
             if model_step >= self.config.max_model_steps {
                 return Err(Error::Stopped(format!(
                     "turn reached the configured limit of {} model steps",
@@ -899,7 +981,7 @@ impl Runner {
             let mut rewrite_reasons = Vec::new();
             let request_input = loop {
                 match self
-                    .prepare_model_phase(commands, &submission_id, &turn_id, model_step)
+                    .prepare_model_phase(inbox, &submission_id, &turn_id, model_step)
                     .await?
                 {
                     PreparedModel::Aborted => return Ok(()),
@@ -931,9 +1013,9 @@ impl Runner {
                 }
             };
 
-            let Some(step) = self
+            let step = match self
                 .request_model_step(
-                    commands,
+                    inbox,
                     &submission_id,
                     &turn_id,
                     model_step,
@@ -941,26 +1023,24 @@ impl Runner {
                     &request_input.1,
                 )
                 .await?
+            {
+                ModelStepRequest::Completed(step) => *step,
+                ModelStepRequest::Restart => continue,
+                ModelStepRequest::Finished => return Ok(()),
+            };
+            let Some((output, executable_calls, denied_results)) = self
+                .normalize_and_persist_model_step(
+                    inbox,
+                    &submission_id,
+                    &turn_id,
+                    &rewrite_reasons,
+                    step,
+                )
+                .await?
             else {
                 return Ok(());
             };
-            let (output, executable_calls, denied_results) = self
-                .normalize_and_persist_model_step(&submission_id, &turn_id, &rewrite_reasons, step)
-                .await?;
-            model_step += 1;
             if output.tool_calls.is_empty() {
-                if self
-                    .finish_toolless_step(
-                        commands,
-                        &submission_id,
-                        &turn_id,
-                        &output,
-                        &mut stop_continued,
-                    )
-                    .await?
-                {
-                    return Ok(());
-                }
                 continue;
             }
             if !denied_results.is_empty() {
@@ -971,101 +1051,13 @@ impl Runner {
                 continue;
             }
             if self
-                .authorize_and_execute(commands, &submission_id, &turn_id, executable_calls)
+                .authorize_and_execute(inbox, &submission_id, &turn_id, executable_calls)
                 .await?
             {
                 return Ok(());
             }
         }
     }
-}
-
-fn loaded_tools(
-    input: &[Value],
-    catalog_revision: &str,
-    searchable: &BTreeSet<String>,
-) -> Result<BTreeSet<String>> {
-    let mut loaded = BTreeSet::new();
-    for item in input {
-        let Some(selection) = ToolLoad::from_input(item)? else {
-            continue;
-        };
-        if selection.catalog_revision == catalog_revision {
-            loaded.extend(
-                selection
-                    .tools
-                    .into_iter()
-                    .filter(|name| searchable.contains(name)),
-            );
-        }
-    }
-    Ok(loaded)
-}
-
-fn model_hook_outcome(
-    control: Wait<Result<()>>,
-    turn_stop: Option<String>,
-    queue_changed: bool,
-    has_pending_input: bool,
-) -> Result<ModelHookOutcome> {
-    match control {
-        Wait::Ready(Err(error)) => Ok(ModelHookOutcome::Error(error)),
-        Wait::Interrupted { submission_id } => Ok(ModelHookOutcome::Interrupted(submission_id)),
-        Wait::Ready(Ok(())) => {
-            if let Some(reason) = turn_stop {
-                Ok(ModelHookOutcome::Stopped(reason))
-            } else if queue_changed {
-                Ok(ModelHookOutcome::Repeat)
-            } else if has_pending_input {
-                Err(Error::Config(
-                    "queued active input was not consumed by its middleware".into(),
-                ))
-            } else {
-                Ok(ModelHookOutcome::Ready)
-            }
-        }
-    }
-}
-
-fn track_pending_searches(pending: &Mutex<Vec<String>>, event: &crate::protocol::ModelEvent) {
-    if let Ok(mut pending) = pending.lock() {
-        match event {
-            crate::protocol::ModelEvent::WebSearchStarted { call_id } => {
-                pending.push(call_id.clone());
-            }
-            crate::protocol::ModelEvent::WebSearchCompleted { call_id, .. } => {
-                pending.retain(|open| open != call_id);
-            }
-            _ => {}
-        }
-    }
-}
-
-fn exposed_tool_names(catalog: &Catalog) -> BTreeSet<String> {
-    catalog
-        .direct_definitions()
-        .iter()
-        .chain(catalog.deferred_definitions().iter())
-        .map(|tool| tool.name.clone())
-        .collect()
-}
-
-fn bind_prepared_call(
-    catalog: &Catalog,
-    call: ToolCall,
-    available: &BTreeSet<String>,
-    materialized: &BTreeSet<String>,
-    searchable: &BTreeSet<String>,
-) -> Result<ToolCall> {
-    if !available.contains(&call.name) {
-        return Err(Error::Tool(format!(
-            "tool `{}` is unavailable for this model step",
-            call.name
-        )));
-    }
-    catalog
-        .bind_call(call, materialized, searchable)
-        .map(crate::middleware::tools::BoundToolCall::into_call)
 }
 
 fn model_step_completed_event(
@@ -1117,61 +1109,15 @@ fn stream_retry_delay(error: &crate::ProviderError, retry: usize, model_step_id:
 }
 
 fn rebase_live_message_targets(events: &mut [EventMsg], provisional: u64, durable: u64) {
-    for target in events.iter_mut().filter_map(|event| match event {
-        EventMsg::UserMessage(message) => message.message_target.as_mut(),
-        EventMsg::AgentMessage(message) => message.message_target.as_mut(),
-        _ => None,
-    }) {
+    for target in events
+        .iter_mut()
+        .filter_map(EventMsg::message_target_mut)
+        .filter_map(Option::as_mut)
+    {
         if target.checkpoint_sequence == provisional {
             target.checkpoint_sequence = durable;
         }
     }
-}
-
-async fn persist_queue_snapshot(
-    recorder: &EventRecorder,
-    checkpoint: &mut Checkpoint,
-    events: Vec<Event>,
-) -> Result<()> {
-    let previous_sequence = checkpoint.sequence;
-    checkpoint.sequence = checkpoint
-        .sequence
-        .checked_add(1)
-        .ok_or_else(|| Error::Checkpoint("checkpoint sequence overflow".into()))?;
-    if let Err(error) = recorder.save(checkpoint, &[], None, events).await {
-        checkpoint.sequence = previous_sequence;
-        return Err(error);
-    }
-    Ok(())
-}
-
-fn has_visible_output_text(item: &Value) -> bool {
-    item.get("type").and_then(Value::as_str) == Some("message")
-        && item.get("role").and_then(Value::as_str) == Some("assistant")
-        && item.get("phase").and_then(Value::as_str) != Some("commentary")
-        && item
-            .get("content")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .any(|part| {
-                part.get("type").and_then(Value::as_str) == Some("output_text")
-                    && part
-                        .get("text")
-                        .and_then(Value::as_str)
-                        .is_some_and(|text| !text.is_empty())
-            })
-}
-
-fn insert_pre_tool_input(output: &mut Vec<Value>, input: Vec<Value>) {
-    if input.is_empty() {
-        return;
-    }
-    let boundary = tool_complete_boundaries(output.iter())
-        .last()
-        .copied()
-        .unwrap_or_default();
-    output.splice(boundary..boundary, input);
 }
 
 #[cfg(test)]
@@ -1193,7 +1139,7 @@ mod tests {
                 "arguments": "{}"
             }),
         ];
-        insert_pre_tool_input(
+        insert_before_open_tool_calls(
             &mut output,
             vec![internal_user_message("pre_tool_hook", "before")],
         );

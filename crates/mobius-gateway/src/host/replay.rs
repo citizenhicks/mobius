@@ -273,19 +273,7 @@ pub(super) fn compact_replay_deltas(
             ServerMessage::AgentEvent {
                 record: RecordedEvent {
                     event: Event {
-                        msg: EventMsg::AgentMessageContentDelta(delta),
-                        ..
-                    },
-                    ..
-                },
-                ..
-            } if delta.model_step_id == model_step_id
-        ) && !matches!(
-            &frame.message,
-            ServerMessage::AgentEvent {
-                record: RecordedEvent {
-                    event: Event {
-                        msg: EventMsg::AgentReasoningContentDelta(delta),
+                        msg: EventMsg::AssistantContentDelta(delta),
                         ..
                     },
                     ..

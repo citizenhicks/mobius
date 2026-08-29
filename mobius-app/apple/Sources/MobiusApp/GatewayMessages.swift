@@ -971,7 +971,7 @@ struct SwarmMessageRecord: Identifiable, Codable, Hashable, Sendable {
     let sequence: UInt64
     let authorSessionId: String
     let authorHandle: String
-    let body: String
+    let text: String
     let createdAtMs: Int64
 }
 

@@ -10,7 +10,7 @@ use tokio::sync::Notify;
 
 use crate::Error;
 use crate::Result;
-use crate::agent::AgentSender;
+use crate::agent::{AgentSender, WeakAgentSender};
 use crate::backend::checkpoint::CheckpointStore;
 use crate::backend::checkpoint::event_turn_page;
 use crate::middleware::RuntimeContext;
@@ -29,12 +29,12 @@ use crate::protocol::Op;
 mod coordination;
 mod monitor;
 
+pub(super) use coordination::CompletionUpdate;
 pub(super) use coordination::Followup;
-pub(super) use coordination::Mail;
 pub(super) use monitor::monitor_agent;
 
 const STATE_KEY: &str = "subagents.v2";
-const MAX_MAILBOX_ITEMS: usize = 256;
+const MAX_PENDING_UPDATES: usize = 256;
 pub(super) const MAX_PREVIEW_PAGE_BYTES: usize = 8 * 1024 * 1024;
 pub(super) const MAX_MESSAGE_BYTES: usize = 24_000;
 
@@ -55,13 +55,14 @@ struct Root {
     checkpoints: Arc<dyn CheckpointStore>,
     frontend: crate::middleware::FrontendEventSink,
     tree: Tree,
+    root_sender: Option<WeakAgentSender>,
     senders: BTreeMap<String, AgentSender>,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct Tree {
     agents: BTreeMap<String, AgentRecord>,
-    mailbox: VecDeque<Mail>,
+    updates: VecDeque<CompletionUpdate>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -139,8 +140,9 @@ impl Shared {
         let root_id = identity.root_session_id;
         let existing = self.roots.lock().await.get(&root_id).cloned();
         if let Some(root) = existing {
+            let mut root = root.state.lock().await;
             if identity.depth == 0 {
-                let mut root = root.state.lock().await;
+                root.root_sender = Some(context.sender);
                 root.frontend = context.frontend;
                 if !root.tree.agents.is_empty() {
                     emit_status(&root)?;
@@ -168,6 +170,7 @@ impl Shared {
             checkpoints: context.checkpoints,
             frontend: context.frontend,
             tree,
+            root_sender: (identity.depth == 0).then_some(context.sender),
             senders: BTreeMap::new(),
         };
         if changed {
@@ -188,6 +191,12 @@ impl Shared {
     pub(super) async fn remove_root(&self, root_id: &str) {
         self.roots.lock().await.remove(root_id);
         self.changed.notify_waiters();
+    }
+
+    pub(super) async fn remove_sender(&self, root_id: &str, path: &str) {
+        if let Ok(root) = self.root(root_id).await {
+            root.state.lock().await.senders.remove(path);
+        }
     }
 
     pub(super) async fn reserve(
@@ -556,7 +565,7 @@ enum OnPersistFailure {
 
 fn validate_tree(tree: &Tree, max_agents: usize) -> Result<()> {
     if tree.agents.len() >= max_agents
-        || tree.mailbox.len() > MAX_MAILBOX_ITEMS
+        || tree.updates.len() > MAX_PENDING_UPDATES
         || tree.agents.values().any(|entry| {
             entry
                 .last_message

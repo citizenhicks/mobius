@@ -9,11 +9,9 @@ use super::super::StreamMetrics;
 use super::super::TimestampedEvent;
 use crate::Error;
 use crate::Result;
-use crate::protocol::AgentMessagePhase;
 use crate::protocol::EventMsg;
 use crate::protocol::FrontendEvent;
 use crate::protocol::ModelStepContentPhase;
-use crate::protocol::ModelStepOutcome;
 
 pub(super) fn store_event(
     transaction: &Transaction<'_>,
@@ -31,8 +29,7 @@ pub(super) fn store_event(
     }
     let has_authoritative_snapshot = matches!(
         &event.msg,
-        EventMsg::ModelStepCompleted(step)
-            if matches!(&step.outcome, ModelStepOutcome::Completed { .. })
+        EventMsg::AssistantMessage(message) if !message.content.is_empty()
     );
     let discard_after_delivery = is_transient_event(&event.msg);
     let index = event_index(&event.msg)?;
@@ -84,8 +81,7 @@ pub(super) fn store_event(
             "DELETE FROM event_journal
              WHERE session_id = ?1 AND model_step_id = ?2
                AND event_kind IN (
-                   'agent_message_content_delta',
-                   'agent_reasoning_content_delta'
+                   'assistant_content_delta'
                )",
             params![session_id, model_step_id],
         )?;
@@ -134,28 +130,17 @@ fn event_index(event: &EventMsg) -> Result<EventIndex<'_>> {
     Ok(match event {
         EventMsg::Error(_) => plain("error"),
         EventMsg::Warning(_) => plain("warning"),
+        EventMsg::SubmissionRejected(_) => plain("submission_rejected"),
         EventMsg::SessionConfigured(_) => plain("session_configured"),
-        EventMsg::TurnStarted(_) => plain("task_started"),
-        EventMsg::TurnComplete(_) => plain("task_complete"),
+        EventMsg::TurnStarted(_) => plain("turn_started"),
+        EventMsg::TurnComplete(_) => plain("turn_complete"),
         EventMsg::TurnAborted(_) => plain("turn_aborted"),
-        EventMsg::UserMessage(_) => plain("user_message"),
-        EventMsg::PeerMessage(_) => plain("peer_message"),
-        EventMsg::AgentMessage(message) => step("agent_message", &message.model_step_id),
-        EventMsg::AgentMessageContentDelta(delta) => EventIndex {
-            kind: "agent_message_content_delta",
+        EventMsg::Message(_) => plain("message"),
+        EventMsg::AssistantMessage(message) => step("assistant_message", &message.model_step_id),
+        EventMsg::AssistantContentDelta(delta) => EventIndex {
+            kind: "assistant_content_delta",
             model_step_id: Some(&delta.model_step_id),
-            stream_phase: Some(match delta.phase {
-                AgentMessagePhase::Commentary => ModelStepContentPhase::Commentary,
-                AgentMessagePhase::FinalAnswer => ModelStepContentPhase::FinalAnswer,
-            }),
-            delta_bytes: Some(i64::try_from(delta.delta.len()).map_err(|_| {
-                Error::Checkpoint("stream delta length exceeds SQLite INTEGER".into())
-            })?),
-        },
-        EventMsg::AgentReasoningContentDelta(delta) => EventIndex {
-            kind: "agent_reasoning_content_delta",
-            model_step_id: Some(&delta.model_step_id),
-            stream_phase: Some(ModelStepContentPhase::Reasoning),
+            stream_phase: Some(delta.phase),
             delta_bytes: Some(i64::try_from(delta.delta.len()).map_err(|_| {
                 Error::Checkpoint("stream delta length exceeds SQLite INTEGER".into())
             })?),

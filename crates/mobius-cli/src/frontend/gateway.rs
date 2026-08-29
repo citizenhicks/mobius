@@ -205,7 +205,7 @@ impl State {
                 Ok(Action::None)
             }
             KeyCode::Backspace => {
-                self.active_input().pop();
+                self.selected_input().pop();
                 Ok(Action::None)
             }
             KeyCode::Enter if self.field == Field::Endpoint => {
@@ -289,7 +289,7 @@ impl State {
         self.accounts.endpoints().len() + usize::from(self.override_message.is_none())
     }
 
-    fn active_input(&mut self) -> &mut String {
+    fn selected_input(&mut self) -> &mut String {
         match self.field {
             Field::Endpoint => &mut self.endpoint,
             Field::PairingCode => &mut self.pairing_code,
@@ -298,7 +298,7 @@ impl State {
 
     fn insert_char(&mut self, value: char) {
         let limit = self.input_limit();
-        let input = self.active_input();
+        let input = self.selected_input();
         if input.len() + value.len_utf8() <= limit {
             input.push(value);
         } else {
@@ -311,7 +311,7 @@ impl State {
             return;
         }
         let limit = self.input_limit();
-        let input = self.active_input();
+        let input = self.selected_input();
         if input.len() + value.len() <= limit {
             input.push_str(value);
         } else {

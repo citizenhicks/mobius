@@ -21,7 +21,7 @@ extension GatewayWireTests {
         )
 
         let response = try decodeEnvelope(
-            #"{"version":48,"type":"global_scratchpad_changed","request_id":"scratchpad-1","contribution":{"capability":"scratchpad","accepts_file_attachments":false,"count":0,"commands":[],"widgets":[],"references":[],"active_input":null}}"#
+            #"{"version":48,"type":"global_scratchpad_changed","request_id":"scratchpad-1","contribution":{"capability":"scratchpad","accepts_file_attachments":false,"count":0,"commands":[],"widgets":[],"references":[]}}"#
         )
         guard case .globalScratchpadChanged(let requestID, let contribution) = response else {
             return XCTFail("Expected a global scratchpad response")
@@ -106,7 +106,13 @@ extension GatewayWireTests {
     func testSessionScopedRequestsEncodeSessionID() throws {
         let submission = Submission(
             id: "input-1",
-            op: .userInput(text: "Hello", attachments: [])
+            op: .message(MessageSubmission(
+                author: .user,
+                text: "Hello",
+                attachments: [],
+                requestedDelivery: nil,
+                targetTurnId: nil
+            ))
         )
         let requests: [(GatewayRequest, String)] = [
             (.renameSession(requestID: "rename-1", sessionID: "chat-1", title: "Review"), "rename_session"),
@@ -218,12 +224,20 @@ extension GatewayWireTests {
             sessionID: "chat-1",
             submission: Submission(
                 id: "input-1",
-                op: .userInput(text: "Review this", attachments: [file])
+                op: .message(MessageSubmission(
+                    author: .user,
+                    text: "Review this",
+                    attachments: [file],
+                    requestedDelivery: nil,
+                    targetTurnId: nil
+                ))
             )
         ))
         let submission = try XCTUnwrap(submit["submission"] as? [String: Any])
         let operation = try XCTUnwrap(submission["op"] as? [String: Any])
-        let attachments = try XCTUnwrap(operation["attachments"] as? [[String: Any]])
+        XCTAssertEqual(operation["type"] as? String, "message")
+        let message = try XCTUnwrap(operation["message"] as? [String: Any])
+        let attachments = try XCTUnwrap(message["attachments"] as? [[String: Any]])
         XCTAssertEqual(attachments.first?["media_type"] as? String, "image/png")
 
         let begin = try requestObject(.beginSessionFileUpload(
@@ -269,6 +283,61 @@ extension GatewayWireTests {
         XCTAssertEqual(read["type"] as? String, "read_session_file")
         XCTAssertEqual(read["file_id"] as? String, "file-1")
         XCTAssertEqual(read["max_bytes"] as? Int, 262_144)
+    }
+
+    func testMessageOperationEncodesOneTypedPayload() throws {
+        let request = try requestObject(.submit(
+            sessionID: "chat-1",
+            submission: Submission(
+                id: "input-1",
+                op: .message(MessageSubmission(
+                    author: .user,
+                    text: "Use the smaller patch",
+                    attachments: [],
+                    requestedDelivery: .queue,
+                    targetTurnId: "turn-1"
+                ))
+            )
+        ))
+
+        let submission = try XCTUnwrap(request["submission"] as? [String: Any])
+        let operation = try XCTUnwrap(submission["op"] as? [String: Any])
+        XCTAssertEqual(operation["type"] as? String, "message")
+        XCTAssertNil(operation["text"])
+        let message = try XCTUnwrap(operation["message"] as? [String: Any])
+        XCTAssertEqual((message["author"] as? [String: Any])?["type"] as? String, "user")
+        XCTAssertEqual(message["text"] as? String, "Use the smaller patch")
+        XCTAssertEqual(message["requested_delivery"] as? String, "queue")
+        XCTAssertEqual(message["target_turn_id"] as? String, "turn-1")
+
+        let decoded = try decoder().decode(
+            AgentOperation.self,
+            from: try encoder().encode(AgentOperation.message(MessageSubmission(
+                author: .user,
+                text: "Use the smaller patch",
+                attachments: [],
+                requestedDelivery: .queue,
+                targetTurnId: "turn-1"
+            )))
+        )
+        guard case .message(let payload) = decoded else {
+            return XCTFail("Expected a message operation")
+        }
+        XCTAssertEqual(payload.author, .user)
+        XCTAssertEqual(payload.requestedDelivery, .queue)
+        XCTAssertEqual(payload.targetTurnId, "turn-1")
+
+        for fixture in [
+            #"{"type":"message","message":{"author":{"type":"peer","message_id":"peer-1","session_id":"chat-2"},"text":"Review","attachments":[],"requested_delivery":"steer","target_turn_id":"turn-1"}}"#,
+            #"{"type":"message","message":{"author":{"type":"user"},"text":"Review","attachments":[],"requested_delivery":"later","target_turn_id":"turn-1"}}"#,
+            #"{"type":"message","message":{"author":{"type":"user"},"text":"Review","attachments":[],"requested_delivery":"steer","target_turn_id":""}}"#,
+            #"{"type":"message","message":{"author":{"type":"user"},"text":"Review","attachments":[],"target_turn_id":null}}"#,
+            #"{"type":"message","message":{"author":{"type":"user"},"text":"Review","attachments":[],"requested_delivery":null}}"#,
+        ] {
+            XCTAssertThrowsError(
+                try decoder().decode(AgentOperation.self, from: Data(fixture.utf8))
+            )
+        }
     }
 
     func testWorkspaceViewerRequestsMatchV28() throws {

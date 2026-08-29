@@ -9,7 +9,6 @@ use serde::Serialize;
 use serde_json::Value;
 
 use super::ActiveCommandContext;
-use super::ActiveSubmissionResult;
 use super::Middleware;
 use super::MiddlewareCommandContext;
 use super::MiddlewareCommandOutput;
@@ -18,6 +17,7 @@ use super::PromptSection;
 use super::RuntimeContext;
 use super::SessionStartContext;
 use super::SessionStartSource;
+use super::SubmissionResult;
 use super::manifest::{MiddlewareManifest, MiddlewareSettingChoices, MiddlewareSettingManifest};
 use super::tools::Catalog;
 use super::tools::labeled_tool_heading;
@@ -578,7 +578,6 @@ impl Middleware for Subagents {
             }],
             widgets: Vec::new(),
             references: Vec::new(),
-            active_input: None,
         }
     }
 
@@ -636,7 +635,7 @@ impl Middleware for Subagents {
     fn active_command<'a>(
         &'a self,
         context: &'a mut ActiveCommandContext<'_>,
-    ) -> BoxFuture<'a, Result<Option<ActiveSubmissionResult>>> {
+    ) -> BoxFuture<'a, Result<Option<SubmissionResult>>> {
         Box::pin(async move {
             let output = match context.command {
                 "subagents" => {
@@ -650,9 +649,9 @@ impl Middleware for Subagents {
                     context
                         .events
                         .extend(output.events.into_iter().map(EventMsg::Frontend));
-                    Ok(Some(ActiveSubmissionResult::Handled))
+                    Ok(Some(SubmissionResult::Handled))
                 }
-                Err(error) => Ok(Some(ActiveSubmissionResult::Rejected(error.to_string()))),
+                Err(error) => Ok(Some(SubmissionResult::Rejected(error.to_string()))),
             }
         })
     }
@@ -664,19 +663,22 @@ impl Middleware for Subagents {
                 .input()
                 .iter()
                 .filter_map(internal_message_kind)
-                .filter_map(|kind| kind.strip_prefix("subagent_mail:"))
+                .filter_map(|kind| kind.strip_prefix("subagent_update:"))
                 .map(str::to_owned)
                 .collect();
-            let mail = self
+            let updates = self
                 .shared
-                .receive_mail(
+                .receive_updates(
                     &identity.root_session_id,
                     &identity.agent_path,
                     &acknowledged,
                 )
                 .await?;
-            for mail in mail {
-                context.push_input(internal_user_message(&mail.internal_kind(), &mail.render()))?;
+            for update in updates {
+                context.push_input(internal_user_message(
+                    &update.internal_kind(),
+                    &update.render(),
+                ))?;
             }
             Ok(())
         })
@@ -687,6 +689,10 @@ impl Middleware for Subagents {
             let identity = AgentIdentity::read(&runtime.session_id, &runtime.metadata)?;
             if matches!(runtime.role, AgentRole::Main) && identity.depth == 0 {
                 self.shared.remove_root(&identity.root_session_id).await;
+            } else {
+                self.shared
+                    .remove_sender(&identity.root_session_id, &identity.agent_path)
+                    .await;
             }
             Ok(())
         })

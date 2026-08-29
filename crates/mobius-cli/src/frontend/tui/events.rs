@@ -9,18 +9,18 @@ use super::TuiState;
 use super::attachment_label;
 use super::view::bounded_terminal_text;
 use crate::frontend::terminal::terminal_text;
-use mobius::protocol::AgentMessageEvent;
-use mobius::protocol::AgentMessagePhase;
+use mobius::protocol::AssistantMessageEvent;
 use mobius::protocol::EventMsg;
 use mobius::protocol::FrontendEvent;
 use mobius::protocol::FrontendPreviewUpdate;
+use mobius::protocol::MessageAuthor;
+use mobius::protocol::MessageEvent;
 use mobius::protocol::ModelStepCompletedEvent;
 use mobius::protocol::ModelStepContentPhase;
 use mobius::protocol::ModelStepOutcome;
 use mobius::protocol::Op;
 use mobius::protocol::RenderedBlock;
 use mobius::protocol::TokenUsageInfo;
-use mobius::protocol::UserMessageEvent;
 use mobius_gateway::wire::RecordedEvent;
 use mobius_gateway::wire::RenderedEvent;
 use mobius_gateway::wire::RenderedPreview;
@@ -39,25 +39,16 @@ impl TuiState {
                 self.turn_started_at = Some(Instant::now());
                 self.clear_approval();
             }
-            EventMsg::UserMessage(message) => {
-                self.handle_user_message(message);
+            EventMsg::Message(message) => {
+                self.handle_message(message);
             }
-            EventMsg::AgentMessageContentDelta(delta) => {
-                self.remember_streamed_phase(
-                    &delta.model_step_id,
-                    match delta.phase {
-                        AgentMessagePhase::Commentary => ModelStepContentPhase::Commentary,
-                        AgentMessagePhase::FinalAnswer => ModelStepContentPhase::FinalAnswer,
-                    },
-                );
-                self.append_stream(&delta.delta, delta.phase);
-            }
-            EventMsg::AgentReasoningContentDelta(delta) => {
-                self.remember_streamed_phase(
-                    &delta.model_step_id,
-                    ModelStepContentPhase::Reasoning,
-                );
-                self.append_reasoning(&delta.delta);
+            EventMsg::AssistantContentDelta(delta) => {
+                self.remember_streamed_phase(&delta.model_step_id, delta.phase);
+                if delta.phase == ModelStepContentPhase::Reasoning {
+                    self.append_reasoning(&delta.delta);
+                } else {
+                    self.append_stream(&delta.delta, delta.phase);
+                }
             }
             EventMsg::ModelStepStarted(step) => {
                 self.streamed_step_phases
@@ -67,8 +58,8 @@ impl TuiState {
             EventMsg::ModelStepCompleted(step) => {
                 self.handle_model_step_completed(step);
             }
-            EventMsg::AgentMessage(message) => {
-                self.handle_agent_message(message, was_rendered);
+            EventMsg::AssistantMessage(message) => {
+                self.handle_assistant_message(message, was_rendered);
             }
             EventMsg::ContextCompacted => {}
             EventMsg::ExecApprovalRequest(request) => {
@@ -121,36 +112,55 @@ impl TuiState {
                     );
                 }
             }
+            EventMsg::SubmissionRejected(rejection) => {
+                if !was_rendered {
+                    self.push(
+                        format!("warning: {}", rejection.message),
+                        TranscriptTone::Warning,
+                    );
+                }
+            }
             EventMsg::Frontend(update) => self.handle_frontend_event(update),
             _ => {}
         }
     }
 
     fn prepare_agent_event(&mut self, event: &EventMsg) {
-        let is_commentary = matches!(
-            event,
-            EventMsg::AgentMessageContentDelta(delta)
-                if delta.phase == AgentMessagePhase::Commentary
-        ) || matches!(
-            event,
-            EventMsg::AgentMessage(message)
-                if message.phase == AgentMessagePhase::Commentary
-        );
-        if !is_commentary {
+        let preserves_commentary_stream = match event {
+            EventMsg::AssistantContentDelta(delta) => {
+                delta.phase == ModelStepContentPhase::Commentary
+            }
+            EventMsg::AssistantMessage(message) => self.streaming_phase.is_some_and(|phase| {
+                self.streamed_step_phases
+                    .get(&message.model_step_id)
+                    .is_some_and(|streamed| streamed.contains(phase))
+            }),
+            _ => false,
+        };
+        if !preserves_commentary_stream {
             self.commit_commentary_stream();
         }
-        if matches!(event, EventMsg::ModelStepCompleted(_)) {
+        if matches!(
+            event,
+            EventMsg::ModelStepCompleted(step)
+                if !matches!(step.outcome, ModelStepOutcome::Completed { .. })
+        ) {
             self.commit_reasoning();
             self.commit_stream();
         }
     }
 
-    fn handle_user_message(&mut self, message: UserMessageEvent) {
-        self.remember_composer_input(message.message.clone());
-        let mut text = if message.message.is_empty() {
-            "›".to_string()
-        } else {
-            format!("› {}", message.message)
+    fn handle_message(&mut self, message: MessageEvent) {
+        let mut text = match &message.author {
+            MessageAuthor::User => {
+                self.remember_composer_input(message.text.clone());
+                if message.text.is_empty() {
+                    "›".to_string()
+                } else {
+                    format!("› {}", message.text)
+                }
+            }
+            MessageAuthor::Peer { handle, .. } => format!("@{handle} › {}", message.text),
         };
         for attachment in &message.attachments {
             text.push_str(if text == "›" { " " } else { "\n  " });
@@ -160,28 +170,12 @@ impl TuiState {
     }
 
     fn handle_model_step_completed(&mut self, step: ModelStepCompletedEvent) {
-        let streamed = self
-            .streamed_step_phases
-            .remove(&step.model_step_id)
-            .unwrap_or_default();
         match step.outcome {
-            ModelStepOutcome::Completed { content, .. } => {
-                for item in content {
-                    if item.text.is_empty() || streamed.contains(item.phase) {
-                        continue;
-                    }
-                    let tone = match item.phase {
-                        ModelStepContentPhase::Reasoning => TranscriptTone::Reasoning,
-                        ModelStepContentPhase::Commentary | ModelStepContentPhase::FinalAnswer => {
-                            TranscriptTone::Assistant
-                        }
-                    };
-                    self.push(item.text, tone);
-                }
-            }
+            ModelStepOutcome::Completed { .. } => {}
             ModelStepOutcome::Failed
             | ModelStepOutcome::Interrupted
             | ModelStepOutcome::Retrying => {
+                self.streamed_step_phases.remove(&step.model_step_id);
                 // Block ids are namespaced by model step, so a step that ends
                 // without completing can never finish its pending blocks. The
                 // backend closes live ones with its own end events; this sweep
@@ -201,21 +195,41 @@ impl TuiState {
                 }
             }
         }
-        self.completed_model_steps.insert(step.model_step_id);
     }
 
-    fn handle_agent_message(&mut self, message: AgentMessageEvent, was_rendered: bool) {
-        if self.completed_model_steps.contains(&message.model_step_id) {
-            return;
-        }
-        if self.streaming_phase == Some(message.phase) {
+    fn handle_assistant_message(&mut self, message: AssistantMessageEvent, was_rendered: bool) {
+        let streamed = self
+            .streamed_step_phases
+            .remove(&message.model_step_id)
+            .unwrap_or_default();
+        let buffered_stream = self
+            .streaming_phase
+            .filter(|phase| streamed.contains(*phase));
+        if buffered_stream.is_some() {
             self.streaming.clear();
             self.streaming_phase = None;
-        } else {
-            self.commit_stream();
         }
-        if !was_rendered {
-            self.push(message.message, TranscriptTone::Assistant);
+        let buffered_reasoning =
+            !self.reasoning.is_empty() && streamed.contains(ModelStepContentPhase::Reasoning);
+        if buffered_reasoning {
+            self.reasoning.clear();
+        }
+        if was_rendered {
+            return;
+        }
+        for item in message.content {
+            let replaces_buffer = buffered_stream == Some(item.phase)
+                || (buffered_reasoning && item.phase == ModelStepContentPhase::Reasoning);
+            if item.text.is_empty() || (streamed.contains(item.phase) && !replaces_buffer) {
+                continue;
+            }
+            let tone = match item.phase {
+                ModelStepContentPhase::Reasoning => TranscriptTone::Reasoning,
+                ModelStepContentPhase::Commentary | ModelStepContentPhase::FinalAnswer => {
+                    TranscriptTone::Assistant
+                }
+            };
+            self.push(item.text, tone);
         }
     }
 

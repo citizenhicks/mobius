@@ -3,40 +3,48 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use tokio::sync::mpsc;
-
 use super::Runner;
+use super::SubmissionInbox;
 use super::input::ActiveRoute;
-use super::input::ActiveTurnRouter;
 use super::input::Wait;
 use crate::Error;
 use crate::Result;
 use crate::backend::model::ToolCall;
-use crate::backend::model::ToolLoad;
 use crate::backend::model::tool_output;
 use crate::backend::sandbox::SandboxPermissions;
 use crate::middleware::PostToolUseContext;
-use crate::middleware::QueuedInputBaseline;
-use crate::middleware::tools::{BoundToolCall, Catalog, ToolResult, execute_batch};
+use crate::middleware::tools::{ToolResult, execute_batch};
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
-use crate::protocol::Submission;
 use crate::protocol::ToolCallBeginEvent;
 use crate::protocol::ToolCallEndEvent;
-use crate::protocol::ToolLoadEvent;
+
+#[derive(Default)]
+pub(super) struct ToolCompletion {
+    pub(super) results: Vec<ToolResult>,
+    pub(super) events: Vec<EventMsg>,
+}
+
+impl From<Vec<ToolResult>> for ToolCompletion {
+    fn from(results: Vec<ToolResult>) -> Self {
+        Self {
+            results,
+            events: Vec::new(),
+        }
+    }
+}
 
 impl Runner {
     pub(super) async fn execute_tools(
         &mut self,
-        commands: &mut mpsc::Receiver<Submission>,
+        inbox: &mut SubmissionInbox,
         submission_id: &str,
         turn_id: &str,
         calls: &[ToolCall],
         permissions: SandboxPermissions,
-    ) -> Result<Wait<Vec<ToolResult>>> {
-        let (available, searchable, materialized) = self.live_tool_sets().await?;
-        let (bound_calls, mut unavailable_results) =
-            bind_live_calls(&self.catalog, calls, &available, &searchable, &materialized);
+    ) -> Result<Wait<ToolCompletion>> {
+        let tools = self.live_tools().await?;
+        let (bound_calls, mut unavailable_results) = self.catalog.bind_live_batch(calls, &tools);
         let callable = bound_calls
             .iter()
             .map(|call| call.as_call().clone())
@@ -54,7 +62,23 @@ impl Runner {
             .await?;
         }
         let catalog = self.catalog.clone();
-        let interrupt_on_active_input = catalog.interrupts_on_active_input(&callable);
+        let cancel_on_input = catalog.cancels_on_input(&callable);
+        if cancel_on_input
+            && self
+                .config
+                .middleware
+                .messages_ready(&self.state.pending_messages, turn_id)?
+        {
+            let mut results = interrupted_results(
+                &callable,
+                "execution cancelled before start because newer input is ready",
+            );
+            results.append(&mut unavailable_results);
+            return Ok(Wait::Ready {
+                value: order_results(calls, results).into(),
+                input_changed: true,
+            });
+        }
         let execution = execute_batch(
             &catalog,
             &bound_calls,
@@ -64,52 +88,48 @@ impl Runner {
         );
         tokio::pin!(execution);
         let mut executed = false;
+        let mut input_changed = false;
         let results = loop {
             tokio::select! {
-                results = &mut execution => {
-                    executed = true;
-                    break Wait::Ready(results);
-                }
-                submission = commands.recv() => {
+                biased;
+                submission = inbox.recv() => {
                     let Some(submission) = submission else {
                         return Err(Error::Stopped("frontend disconnected".into()));
                     };
-                    match (ActiveTurnRouter {
-                        middleware: &self.config.middleware,
-                        session_id: &self.config.session_id,
-                        metadata: &self.config.metadata,
-                        turn_id,
-                        queued_input: &mut self.state.pending_input,
-                        queued_before: QueuedInputBaseline::default(),
-                        deferred: &mut self.deferred,
-                        events: &self.events,
-                        expected_approval: None,
-                    })
-                    .route(submission)
-                    .await?
-                    {
-                        ActiveRoute::Accepted(change) => {
-                            self.persist_active_change(change).await?;
-                            if interrupt_on_active_input {
-                                break Wait::Ready(interrupted_results(
-                                    &callable,
-                                    "execution interrupted; result unknown after active input",
-                                ));
+                    match self.route_active_submission(submission, turn_id, None).await? {
+                        ActiveRoute::Continue {
+                            input_changed: changed,
+                        } => {
+                            if changed {
+                                if cancel_on_input {
+                                    break Wait::Ready {
+                                        value: interrupted_results(
+                                            &callable,
+                                            "execution cancelled by newer input; result unknown",
+                                        ),
+                                        input_changed: true,
+                                    };
+                                }
+                                input_changed = true;
                             }
-                        }
-                        ActiveRoute::Changed(change) => {
-                            self.persist_active_change(change).await?;
                         }
                         ActiveRoute::Interrupted { submission_id } => {
                             break Wait::Interrupted { submission_id };
                         }
-                        _ => {}
+                        ActiveRoute::Approval { .. } => {}
                     }
+                }
+                results = &mut execution => {
+                    executed = true;
+                    break Wait::Ready { value: results, input_changed };
                 }
             }
         };
-        let mut results = match results {
-            Wait::Ready(results) => results,
+        let (mut results, input_changed) = match results {
+            Wait::Ready {
+                value,
+                input_changed,
+            } => (value, input_changed),
             Wait::Interrupted { submission_id } => {
                 return Ok(Wait::Interrupted { submission_id });
             }
@@ -117,9 +137,11 @@ impl Runner {
         results.append(&mut unavailable_results);
         results = order_results(calls, results);
         if !executed {
-            return Ok(Wait::Ready(results));
+            return Ok(Wait::Ready {
+                value: results.into(),
+                input_changed,
+            });
         }
-        let raw_results = results.clone();
         let mut hook_events = Vec::new();
         for result in &mut results {
             let call = calls
@@ -136,35 +158,72 @@ impl Runner {
                 tools: &self.catalog,
                 result,
             };
-            if let Err(error) = self.config.middleware.post_tool_use(&mut context).await {
-                self.persist_tool_results(submission_id, turn_id, raw_results)
-                    .await?;
-                return Err(error);
-            }
+            self.config.middleware.post_tool_use(&mut context).await?;
         }
-        for message in hook_events {
-            if let Err(error) = self.emit(submission_id, message).await {
-                self.persist_tool_results(submission_id, turn_id, results)
-                    .await?;
-                return Err(error);
-            }
-        }
-        Ok(Wait::Ready(results))
+        Ok(Wait::Ready {
+            value: ToolCompletion {
+                results,
+                events: hook_events,
+            },
+            input_changed,
+        })
     }
 
     pub(super) async fn persist_tool_results(
         &mut self,
         submission_id: &str,
         turn_id: &str,
-        results: Vec<ToolResult>,
+        completion: impl Into<ToolCompletion>,
     ) -> Result<()> {
-        if results.is_empty() {
+        let ToolCompletion {
+            results,
+            events: hook_events,
+        } = completion.into();
+        if results.is_empty() && hook_events.is_empty() {
             return Ok(());
         }
-        let events = tool_result_events(submission_id, turn_id, self.catalog.revision()?, &results);
+        let mut events = hook_events
+            .into_iter()
+            .map(|msg| Event {
+                submission_id: Some(submission_id.to_string()),
+                msg,
+            })
+            .collect::<Vec<_>>();
+        events.extend(tool_result_events(submission_id, turn_id, &results));
+        let pending_tools = self.state.pending_tools.clone();
+        let active_execution = self.state.active_execution.clone();
+        let context_len = self.state.context.len();
+        let transcript_len = self.transcript_delta.len();
         self.append_tool_results(results)?;
-        self.persist_with_events(events, None).await?;
-        Ok(())
+        match self.persist_with_events(events, None).await {
+            Ok(_) => Ok(()),
+            Err(error) => {
+                self.state.pending_tools = pending_tools;
+                self.state.active_execution = active_execution;
+                self.state.context.truncate(context_len);
+                self.transcript_delta.truncate(transcript_len);
+                Err(error)
+            }
+        }
+    }
+
+    pub(super) async fn complete_tool_step(
+        &mut self,
+        submission_id: &str,
+        turn_id: &str,
+        completion: ToolCompletion,
+    ) -> Result<()> {
+        let pending_approval = self.state.pending_approval.take();
+        match self
+            .persist_tool_results(submission_id, turn_id, completion)
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.state.pending_approval = pending_approval;
+                Err(error)
+            }
+        }
     }
 
     pub(super) fn append_tool_results(&mut self, results: Vec<ToolResult>) -> Result<()> {
@@ -188,70 +247,32 @@ impl Runner {
                 &result.output,
                 result.is_error,
             ));
-            if !result.loaded_tools.is_empty() {
-                self.push_context(
-                    ToolLoad {
-                        catalog_revision: self.catalog.revision()?.into(),
-                        tools: std::mem::take(&mut result.loaded_tools),
-                    }
-                    .into_input(),
-                );
-            }
             self.extend_context(std::mem::take(&mut result.additional_input));
         }
         Ok(())
     }
 
-    pub(super) async fn finish_pending_tools(
+    pub(super) fn finish_pending_tools(
         &mut self,
         submission_id: &str,
         turn_id: &str,
         reason: &str,
-    ) -> Result<()> {
+    ) -> Result<Vec<Event>> {
         let calls = std::mem::take(&mut self.state.pending_tools);
         let results = interrupted_results(
             &calls,
             &format!("execution interrupted; result unknown: {reason}"),
         );
         if results.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
-        self.persist_tool_results(submission_id, turn_id, results)
-            .await
+        let events = tool_result_events(submission_id, turn_id, &results);
+        self.append_tool_results(results)?;
+        Ok(events)
     }
 }
 
-fn bind_live_calls(
-    catalog: &Catalog,
-    calls: &[ToolCall],
-    available: &BTreeSet<String>,
-    searchable: &BTreeSet<String>,
-    materialized: &BTreeSet<String>,
-) -> (Vec<BoundToolCall>, Vec<ToolResult>) {
-    let mut bound = Vec::with_capacity(calls.len());
-    let mut rejected = Vec::new();
-    for call in calls {
-        if !available.contains(&call.name) {
-            rejected.push(ToolResult::error(
-                call,
-                format!("tool `{}` is no longer available", call.name),
-            ));
-            continue;
-        }
-        match catalog.bind_call(call.clone(), materialized, searchable) {
-            Ok(call) => bound.push(call),
-            Err(error) => rejected.push(ToolResult::error(call, error.to_string())),
-        }
-    }
-    (bound, rejected)
-}
-
-fn tool_result_events(
-    submission_id: &str,
-    turn_id: &str,
-    catalog_revision: &str,
-    results: &[ToolResult],
-) -> Vec<Event> {
+fn tool_result_events(submission_id: &str, turn_id: &str, results: &[ToolResult]) -> Vec<Event> {
     let mut events = Vec::with_capacity(results.len() * 2);
     for result in results {
         events.push(Event {
@@ -264,17 +285,10 @@ fn tool_result_events(
                 is_error: result.is_error,
             }),
         });
-        if !result.loaded_tools.is_empty() {
-            events.push(Event {
-                submission_id: Some(submission_id.to_string()),
-                msg: EventMsg::ToolLoad(ToolLoadEvent {
-                    turn_id: turn_id.to_string(),
-                    load_id: result.call_id.clone(),
-                    catalog_revision: catalog_revision.into(),
-                    tools: result.loaded_tools.clone(),
-                }),
-            });
-        }
+        events.extend(result.events.iter().cloned().map(|msg| Event {
+            submission_id: Some(submission_id.to_string()),
+            msg,
+        }));
     }
     events
 }
@@ -286,7 +300,7 @@ fn interrupted_results(calls: &[ToolCall], message: &str) -> Vec<ToolResult> {
         .collect()
 }
 
-fn order_results(calls: &[ToolCall], results: Vec<ToolResult>) -> Vec<ToolResult> {
+pub(super) fn order_results(calls: &[ToolCall], results: Vec<ToolResult>) -> Vec<ToolResult> {
     let mut results = results
         .into_iter()
         .map(|result| (result.call_id.clone(), result))

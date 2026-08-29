@@ -28,7 +28,10 @@ async fn native_compaction_survives_recreation_with_current_prompt_and_tools() {
     ));
     let checkpoints: Arc<dyn CheckpointStore> = Arc::new(MemoryCheckpoints::default());
     let config = |base: &str, section: &'static str, coding_tools: bool| {
-        let mut middleware: Vec<Arc<dyn Middleware>> = vec![Arc::new(StaticPrompt(section))];
+        let mut middleware: Vec<Arc<dyn Middleware>> = vec![
+            Arc::new(Messages::default()),
+            Arc::new(StaticPrompt(section)),
+        ];
         if coding_tools {
             middleware.push(Arc::new(Tools::coding()));
         }
@@ -50,18 +53,12 @@ async fn native_compaction_survives_recreation_with_current_prompt_and_tools() {
         .expect("first agent");
     first
         .sender()
-        .submit(Op::UserInput {
-            text: "first turn".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_message("first turn"))
         .expect("first turn");
     assert_eq!(final_message(&mut first).await, "first done");
     first
         .sender()
-        .submit(Op::UserInput {
-            text: "compact turn".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_message("compact turn"))
         .expect("compaction turn");
     assert_eq!(final_message(&mut first).await, "compacted done");
     let (sender, mut events) = first.into_parts();
@@ -73,10 +70,7 @@ async fn native_compaction_survives_recreation_with_current_prompt_and_tools() {
         .expect("replacement agent");
     second
         .sender()
-        .submit(Op::UserInput {
-            text: "second turn".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_message("second turn"))
         .expect("second turn");
     assert_eq!(final_message(&mut second).await, "second done");
 
@@ -128,7 +122,7 @@ async fn native_compaction_survives_recreation_with_current_prompt_and_tools() {
 #[tokio::test]
 async fn steering_is_injected_before_native_compaction() {
     let workspace = TempDir::new().expect("create workspace");
-    let first = text_response_with_usage("draft", usage(100));
+    let first = text_response_with_usage("draft", usage(1_000));
     let scripted = Arc::new(ScriptedModel::with_compaction(
         vec![first, text_response("done")],
         vec![
@@ -151,20 +145,12 @@ async fn steering_is_injected_before_native_compaction() {
     let mut agent = create_agent(test_config(
         workspace.path(),
         Arc::clone(&model),
-        vec![
-            Arc::new(Steering::default()),
-            Arc::new(Compaction::new(50).expect("compaction")),
-        ],
+        vec![Arc::new(Compaction::new(500).expect("compaction"))],
     ))
     .await
     .expect("create agent");
     let sender = agent.sender();
-    sender
-        .submit(Op::UserInput {
-            text: "start".into(),
-            attachments: Vec::new(),
-        })
-        .expect("submit turn");
+    sender.submit(user_message("start")).expect("submit turn");
 
     let turn_id = loop {
         match agent.next_event().await.expect("turn event").msg {
@@ -175,11 +161,7 @@ async fn steering_is_injected_before_native_compaction() {
     };
     model.entered.notified().await;
     sender
-        .submit(Op::ActiveInput {
-            operation: "steer".into(),
-            turn_id,
-            text: "steered".into(),
-        })
+        .submit(steer_message(turn_id, "steered"))
         .expect("steer active turn");
     model.release.notify_one();
 
@@ -187,10 +169,12 @@ async fn steering_is_injected_before_native_compaction() {
     let mut steered_target = None;
     while let Some(event) = agent.next_event().await {
         match event.msg {
-            EventMsg::UserMessage(event) if event.message == "steered" => {
+            EventMsg::Message(event)
+                if event.text == "steered" && event.delivery == MessageDelivery::Steer =>
+            {
                 steered_target = event.message_target;
             }
-            EventMsg::AgentMessage(event) => message = event.message,
+            EventMsg::AssistantMessage(event) => message = assistant_final_text(event),
             EventMsg::TurnComplete(_) => break,
             EventMsg::Error(error) => panic!("{}", error.message),
             _ => {}
@@ -200,7 +184,7 @@ async fn steering_is_injected_before_native_compaction() {
     assert_eq!(
         steered_target,
         Some(MessageTarget {
-            checkpoint_sequence: 5,
+            checkpoint_sequence: 6,
             batch_item_count: 1,
         })
     );
@@ -257,10 +241,7 @@ async fn compaction_uses_the_context_window_of_a_new_model_route() {
 
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "first".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_message("first"))
         .expect("submit first turn");
     assert_eq!(final_message(&mut agent).await, "draft");
     agent
@@ -271,10 +252,7 @@ async fn compaction_uses_the_context_window_of_a_new_model_route() {
         .expect("select small route");
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "second".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_message("second"))
         .expect("submit second turn");
 
     assert_eq!(final_message(&mut agent).await, "done");
@@ -334,10 +312,7 @@ async fn native_compaction_ignores_stale_usage_after_a_retained_user() {
     ] {
         agent
             .sender()
-            .submit(Op::UserInput {
-                text: prompt.into(),
-                attachments: Vec::new(),
-            })
+            .submit(user_message(prompt))
             .expect("submit turn");
         assert_eq!(final_message(&mut agent).await, expected);
     }
@@ -385,18 +360,12 @@ async fn compaction_falls_back_to_a_model_summary_and_keeps_recent_context() {
 
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "x".repeat(82_000),
-            attachments: Vec::new(),
-        })
+        .submit(user_message("x".repeat(40_000)))
         .expect("submit first turn");
     assert_eq!(final_message(&mut agent).await, "draft");
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "continue".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_message("continue"))
         .expect("submit second turn");
     assert_eq!(final_message(&mut agent).await, "done");
 

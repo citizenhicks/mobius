@@ -5,22 +5,20 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::Value;
 
 use crate::backend::model::ToolLoad;
-use crate::protocol::AgentMessageEvent;
-use crate::protocol::AgentMessagePhase;
-use crate::protocol::AgentReasoningContentDeltaEvent;
+use crate::protocol::AssistantMessageEvent;
 use crate::protocol::EventMsg;
+use crate::protocol::MessageEvent;
 use crate::protocol::MessageTarget;
-use crate::protocol::PeerMessageEvent;
+use crate::protocol::ModelStepContent;
+use crate::protocol::ModelStepContentPhase;
 use crate::protocol::ToolCallBeginEvent;
 use crate::protocol::ToolCallEndEvent;
 use crate::protocol::ToolLoadEvent;
-use crate::protocol::UserMessageEvent;
 
 pub(crate) const INTERNAL_MESSAGE_FIELD: &str = "_mobius_internal";
 pub(crate) const CONTEXT_COMPACTED_MARKER: &str = "context_compacted";
 pub(crate) const ATTACHMENT_CONTEXT_MARKER: &str = "attachments";
-pub(crate) const PEER_MESSAGE_MARKER: &str = "peer_message";
-pub(crate) const PEER_METADATA_FIELD: &str = "_mobius_peer";
+pub(crate) const MESSAGE_METADATA_FIELD: &str = "_mobius_message";
 pub(crate) const ATTACHMENTS_FIELD: &str = "_mobius_attachments";
 pub(crate) const REPLAY_REASONING_FIELD: &str = "_mobius_reasoning";
 pub(crate) const TOOL_ERROR_FIELD: &str = "_mobius_is_error";
@@ -41,6 +39,19 @@ pub(crate) fn strip_attachment_references(items: &mut Vec<Value>) {
                         "text": FORKED_ATTACHMENT_PLACEHOLDER
                     }]),
                 );
+            }
+            if let Some(mut message) = object
+                .get(MESSAGE_METADATA_FIELD)
+                .cloned()
+                .and_then(|value| serde_json::from_value::<MessageEvent>(value).ok())
+            {
+                message.attachments.clear();
+                if needs_placeholder {
+                    message.text = FORKED_ATTACHMENT_PLACEHOLDER.into();
+                }
+                if let Ok(metadata) = serde_json::to_value(message) {
+                    object.insert(MESSAGE_METADATA_FIELD.into(), metadata);
+                }
             }
         }
     }
@@ -111,38 +122,19 @@ pub fn events(context: &[(MessageTarget, Value)], session_id: &str) -> Vec<Event
             .is_ok()
             .then_some(*target);
         let item_id = replay_id(target);
-        if value.get("role").and_then(Value::as_str) == Some("user") {
-            if internal_message_kind(value) == Some(PEER_MESSAGE_MARKER) {
-                if let Some(message) = peer_message_event(value, message_target) {
-                    events.push(EventMsg::PeerMessage(message));
-                }
-                continue;
-            }
-            let attachments = attachment_references(value);
-            let message = message_text(value, "user").unwrap_or_default();
-            if !is_internal_message(value) && (!message.is_empty() || !attachments.is_empty()) {
-                events.push(EventMsg::UserMessage(UserMessageEvent {
-                    message,
-                    attachments,
-                    message_target,
-                }));
-            }
+        if let Some(mut message) = message_metadata(value) {
+            message.message_target = message_target;
+            events.push(EventMsg::Message(message));
             continue;
         }
         if value.get("role").and_then(Value::as_str) == Some("assistant") {
-            push_reasoning(&mut events, reasoning_text(value), session_id, &item_id);
-            if let Some(message) = message_text(value, "assistant") {
-                let phase = if value.get("phase").and_then(Value::as_str) == Some("commentary") {
-                    AgentMessagePhase::Commentary
-                } else {
-                    AgentMessagePhase::FinalAnswer
-                };
-                events.push(EventMsg::AgentMessage(AgentMessageEvent {
+            let content = assistant_content(value);
+            if !content.is_empty() {
+                events.push(EventMsg::AssistantMessage(AssistantMessageEvent {
                     session_id: session_id.into(),
                     turn_id: item_id.clone(),
                     model_step_id: item_id.clone(),
-                    message,
-                    phase,
+                    content,
                     message_target,
                 }));
             }
@@ -150,7 +142,21 @@ pub fn events(context: &[(MessageTarget, Value)], session_id: &str) -> Vec<Event
         }
         match value.get("type").and_then(Value::as_str) {
             Some("reasoning") => {
-                push_reasoning(&mut events, reasoning_text(value), session_id, &item_id);
+                if let Some(text) = reasoning_text(value) {
+                    events.push(EventMsg::AssistantMessage(AssistantMessageEvent {
+                        session_id: session_id.into(),
+                        turn_id: item_id.clone(),
+                        model_step_id: item_id,
+                        content: vec![ModelStepContent {
+                            output_index: 0,
+                            part_index: 0,
+                            phase: ModelStepContentPhase::Reasoning,
+                            text,
+                            annotations: Vec::new(),
+                        }],
+                        message_target: None,
+                    }));
+                }
             }
             Some("function_call") => {
                 let call_id = string(value, "call_id");
@@ -201,25 +207,8 @@ pub fn events(context: &[(MessageTarget, Value)], session_id: &str) -> Vec<Event
     events
 }
 
-fn peer_message_event(
-    value: &Value,
-    message_target: Option<MessageTarget>,
-) -> Option<PeerMessageEvent> {
-    let metadata = value.get(PEER_METADATA_FIELD)?;
-    let field = |name| {
-        metadata
-            .get(name)
-            .and_then(Value::as_str)
-            .filter(|value| !value.trim().is_empty())
-            .map(str::to_string)
-    };
-    Some(PeerMessageEvent {
-        message_id: field("message_id")?,
-        source_session_id: field("source_session_id")?,
-        source_handle: field("source_handle")?,
-        message: field("text")?,
-        message_target,
-    })
+pub(crate) fn message_metadata(value: &Value) -> Option<MessageEvent> {
+    serde_json::from_value(value.get(MESSAGE_METADATA_FIELD)?.clone()).ok()
 }
 
 fn attachment_references(value: &Value) -> Vec<crate::protocol::SessionFileReference> {
@@ -231,30 +220,60 @@ fn attachment_references(value: &Value) -> Vec<crate::protocol::SessionFileRefer
         .unwrap_or_default()
 }
 
-fn push_reasoning(
-    events: &mut Vec<EventMsg>,
-    reasoning: Option<String>,
-    session_id: &str,
-    item_id: &str,
-) {
-    let Some(delta) = reasoning.filter(|reasoning| !reasoning.trim().is_empty()) else {
-        return;
-    };
-    events.push(EventMsg::AgentReasoningContentDelta(
-        AgentReasoningContentDeltaEvent {
-            session_id: session_id.into(),
-            turn_id: item_id.into(),
-            model_step_id: item_id.into(),
-            delta,
-        },
-    ));
-}
-
 fn replay_id(target: &MessageTarget) -> String {
     format!(
         "history-{}-{}",
         target.checkpoint_sequence, target.batch_item_count
     )
+}
+
+fn assistant_content(value: &Value) -> Vec<ModelStepContent> {
+    let mut content = reasoning_text(value)
+        .filter(|text| !text.trim().is_empty())
+        .map(|text| ModelStepContent {
+            output_index: 0,
+            part_index: 0,
+            phase: ModelStepContentPhase::Reasoning,
+            text,
+            annotations: Vec::new(),
+        })
+        .into_iter()
+        .collect::<Vec<_>>();
+    let phase = if value.get("phase").and_then(Value::as_str) == Some("commentary") {
+        ModelStepContentPhase::Commentary
+    } else {
+        ModelStepContentPhase::FinalAnswer
+    };
+    match value.get("content") {
+        Some(Value::String(text)) if !text.is_empty() => content.push(ModelStepContent {
+            output_index: 0,
+            part_index: 0,
+            phase,
+            text: text.clone(),
+            annotations: Vec::new(),
+        }),
+        Some(Value::Array(parts)) => {
+            content.extend(parts.iter().enumerate().filter_map(|(part_index, part)| {
+                let text = part.get("text").and_then(Value::as_str)?;
+                if text.is_empty() {
+                    return None;
+                }
+                Some(ModelStepContent {
+                    output_index: 0,
+                    part_index,
+                    phase,
+                    text: text.into(),
+                    annotations: part
+                        .get("annotations")
+                        .cloned()
+                        .and_then(|annotations| serde_json::from_value(annotations).ok())
+                        .unwrap_or_default(),
+                })
+            }))
+        }
+        Some(_) | None => {}
+    }
+    content
 }
 
 fn message_text(value: &Value, role: &str) -> Option<String> {
@@ -312,12 +331,30 @@ fn value_text(value: Option<&Value>) -> String {
 mod tests {
     use super::*;
     use crate::backend::model::internal_user_message;
-    use crate::backend::model::user_message;
+    use crate::backend::model::message_input;
+    use crate::protocol::{
+        MessageAuthor, MessageDelivery, ModelStepAnnotation, SessionFileReference,
+    };
+
+    fn user_message(text: &str) -> Value {
+        typed_user_message(text, Vec::new())
+    }
+
+    fn typed_user_message(text: &str, attachments: Vec<SessionFileReference>) -> Value {
+        message_input(&MessageEvent {
+            author: MessageAuthor::User,
+            delivery: MessageDelivery::Turn,
+            text: text.into(),
+            attachments,
+            message_target: None,
+        })
+        .expect("typed user message")
+    }
 
     #[test]
     fn replay_uses_only_neutral_reasoning_and_hides_internal_messages() {
         let history = vec![
-            serde_json::json!({"role": "user", "content": "hello"}),
+            user_message("hello"),
             serde_json::json!({
                 "role": "assistant",
                 "content": "done",
@@ -341,22 +378,22 @@ mod tests {
 
         let replayed = events(&history, "session");
 
-        assert_eq!(replayed.len(), 3);
-        assert!(matches!(&replayed[0], EventMsg::UserMessage(event) if event.message == "hello"));
+        assert_eq!(replayed.len(), 2);
+        assert!(matches!(&replayed[0], EventMsg::Message(event) if event.text == "hello"));
         assert!(matches!(
             &replayed[1],
-            EventMsg::AgentReasoningContentDelta(event)
-                if event.delta == "neutral"
-                    && event.turn_id == "history-4-2"
+            EventMsg::AssistantMessage(event)
+                if event.turn_id == "history-4-2"
                     && event.model_step_id == "history-4-2"
-        ));
-        assert!(matches!(
-            &replayed[2],
-            EventMsg::AgentMessage(event) if event.message == "done"
+                    && event.content.len() == 2
+                    && event.content[0].phase == ModelStepContentPhase::Reasoning
+                    && event.content[0].text == "neutral"
+                    && event.content[1].phase == ModelStepContentPhase::FinalAnswer
+                    && event.content[1].text == "done"
         ));
         assert!(matches!(
             &replayed[0],
-            EventMsg::UserMessage(event)
+            EventMsg::Message(event)
                 if event.message_target == Some(MessageTarget {
                     checkpoint_sequence: 4,
                     batch_item_count: 1,
@@ -391,29 +428,28 @@ mod tests {
         assert!(matches!(
             replayed.as_slice(),
             [
-                EventMsg::UserMessage(first),
+                EventMsg::Message(first),
                 EventMsg::ContextCompacted,
-                EventMsg::AgentMessage(answer),
+                EventMsg::AssistantMessage(answer),
                 EventMsg::ContextCompacted,
-                EventMsg::UserMessage(second),
-            ] if first.message == "first"
-                && answer.message == "answer"
-                && second.message == "second"
+                EventMsg::Message(second),
+            ] if first.text == "first"
+                && answer.content[0].text == "answer"
+                && second.text == "second"
         ));
     }
 
     #[test]
     fn replay_preserves_attachment_only_user_messages() {
-        let item = serde_json::json!({
-            "role": "user",
-            "content": [{"type": "input_text", "text": ""}],
-            "_mobius_attachments": [{
-                "id": "3d46beff-7e84-46ea-859a-e66b4614a79b",
-                "name": "photo.png",
-                "size": 4,
-                "media_type": "image/png"
-            }]
-        });
+        let item = typed_user_message(
+            "",
+            vec![SessionFileReference {
+                id: "3d46beff-7e84-46ea-859a-e66b4614a79b".into(),
+                name: "photo.png".into(),
+                size: 4,
+                media_type: "image/png".into(),
+            }],
+        );
         let events = events(
             &[(
                 MessageTarget {
@@ -427,7 +463,7 @@ mod tests {
 
         assert!(matches!(
             events.as_slice(),
-            [EventMsg::UserMessage(message)] if message.message.is_empty()
+            [EventMsg::Message(message)] if message.text.is_empty()
                 && message.attachments[0].name == "photo.png"
         ));
     }
@@ -451,25 +487,61 @@ mod tests {
 
         assert!(matches!(
             replayed.as_slice(),
-            [EventMsg::AgentMessage(message)]
-                if message.message == "Checking the workspace."
-                    && message.phase == AgentMessagePhase::Commentary
+            [EventMsg::AssistantMessage(message)]
+                if message.content[0].text == "Checking the workspace."
+                    && message.content[0].phase == ModelStepContentPhase::Commentary
+        ));
+    }
+
+    #[test]
+    fn replay_preserves_assistant_message_citations() {
+        let history = [(
+            MessageTarget {
+                checkpoint_sequence: 2,
+                batch_item_count: 1,
+            },
+            serde_json::json!({
+                "type": "message",
+                "role": "assistant",
+                "content": [{
+                    "type": "output_text",
+                    "text": "Source",
+                    "annotations": [{
+                        "type": "url_citation",
+                        "url": "https://example.com",
+                        "title": "Example",
+                        "start_index": 0,
+                        "end_index": 6
+                    }]
+                }]
+            }),
+        )];
+
+        let replayed = events(&history, "session");
+
+        assert!(matches!(
+            replayed.as_slice(),
+            [EventMsg::AssistantMessage(message)]
+                if matches!(
+                    message.content[0].annotations.as_slice(),
+                    [ModelStepAnnotation::UrlCitation { url, title, start_index: 0, end_index: 6 }]
+                        if url == "https://example.com" && title == "Example"
+                )
         ));
     }
 
     #[test]
     fn stripped_attachment_only_messages_keep_a_neutral_fork_placeholder() {
         let mut items = vec![
-            serde_json::json!({
-                "role": "user",
-                "content": [{"type": "input_text", "text": ""}],
-                "_mobius_attachments": [{
-                    "id": "3d46beff-7e84-46ea-859a-e66b4614a79b",
-                    "name": "photo.png",
-                    "size": 4,
-                    "media_type": "image/png"
-                }]
-            }),
+            typed_user_message(
+                "",
+                vec![SessionFileReference {
+                    id: "3d46beff-7e84-46ea-859a-e66b4614a79b".into(),
+                    name: "photo.png".into(),
+                    size: 4,
+                    media_type: "image/png".into(),
+                }],
+            ),
             internal_user_message(ATTACHMENT_CONTEXT_MARKER, "private blob context"),
         ];
 
@@ -486,8 +558,8 @@ mod tests {
 
         assert!(matches!(
             replayed.as_slice(),
-            [EventMsg::UserMessage(message)]
-                if message.message == FORKED_ATTACHMENT_PLACEHOLDER
+            [EventMsg::Message(message)]
+                if message.text == FORKED_ATTACHMENT_PLACEHOLDER
                     && message.attachments.is_empty()
         ));
     }

@@ -22,10 +22,7 @@ async fn loop_executes_tool_and_returns_result_to_model() {
 
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "read note.txt".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_message("read note.txt"))
         .expect("submit turn");
 
     assert_eq!(final_message(&mut agent).await, "read hello");
@@ -59,10 +56,7 @@ async fn middleware_prompt_is_composed_once_per_agent() {
     for message in ["one", "two"] {
         agent
             .sender()
-            .submit(Op::UserInput {
-                text: message.into(),
-                attachments: Vec::new(),
-            })
+            .submit(user_message(message))
             .expect("submit turn");
         final_message(&mut agent).await;
     }
@@ -97,17 +91,14 @@ async fn live_messages_expose_their_durable_transcript_boundaries() {
         .expect("create agent");
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "question".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_message("question"))
         .expect("submit turn");
 
     let mut targets = Vec::new();
     while let Some(event) = agent.next_event().await {
         match event.msg {
-            EventMsg::UserMessage(message) => targets.push(message.message_target),
-            EventMsg::AgentMessage(message) => targets.push(message.message_target),
+            EventMsg::Message(message) => targets.push(message.message_target),
+            EventMsg::AssistantMessage(message) => targets.push(message.message_target),
             EventMsg::TurnComplete(_) => break,
             EventMsg::Error(error) => panic!("{}", error.message),
             _ => {}
@@ -118,11 +109,11 @@ async fn live_messages_expose_their_durable_transcript_boundaries() {
         targets,
         [
             Some(MessageTarget {
-                checkpoint_sequence: 1,
+                checkpoint_sequence: 2,
                 batch_item_count: 1,
             }),
             Some(MessageTarget {
-                checkpoint_sequence: 3,
+                checkpoint_sequence: 4,
                 batch_item_count: 1,
             }),
         ]
@@ -150,10 +141,7 @@ async fn approval_allows_an_explicitly_approved_write() {
     .expect("create agent");
     let sender = agent.sender();
     sender
-        .submit(Op::UserInput {
-            text: "write the result".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_message("write the result"))
         .expect("submit turn");
 
     while let Some(event) = agent.next_event().await {
@@ -200,10 +188,7 @@ async fn approval_denial_prevents_command_execution() {
     .expect("create agent");
     let sender = agent.sender();
     sender
-        .submit(Op::UserInput {
-            text: "run a command".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_message("run a command"))
         .expect("submit turn");
 
     while let Some(event) = agent.next_event().await {
@@ -245,12 +230,7 @@ async fn interrupt_only_aborts_its_target_turn() {
     .await
     .expect("create agent");
     let sender = agent.sender();
-    sender
-        .submit(Op::UserInput {
-            text: "start".into(),
-            attachments: Vec::new(),
-        })
-        .expect("submit turn");
+    sender.submit(user_message("start")).expect("submit turn");
 
     let configured = agent.next_event().await.expect("session event");
     assert!(configured.submission_id.is_none());

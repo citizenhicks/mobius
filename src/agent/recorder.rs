@@ -138,7 +138,19 @@ async fn run_recorder(
                 let recorded = checkpoints
                     .append_event(&session_id, event.recorded_at_ms, &event.event)
                     .await;
-                match publish(recorded, &events) {
+                let recorded = match recorded {
+                    Ok(recorded) => recorded,
+                    Err(error) => {
+                        let terminal = RecorderFailure::from(&error);
+                        if let Some(result) = result {
+                            let _ = result.send(Err(error));
+                            return;
+                        }
+                        terminal_error = Some(terminal);
+                        continue;
+                    }
+                };
+                match publish(recorded, &events).await {
                     Ok(()) => {
                         if let Some(result) = result {
                             let _ = result.send(Ok(()));
@@ -148,7 +160,7 @@ async fn run_recorder(
                     Err(error) => {
                         let terminal = RecorderFailure::from(&error);
                         if let Some(result) = result {
-                            let _ = result.send(Err(error));
+                            let _ = result.send(Ok(()));
                             return;
                         }
                         Some(terminal)
@@ -166,14 +178,20 @@ async fn run_recorder(
                 let recorded = checkpoints
                     .save_with_events(&checkpoint, &transcript_delta, execution.as_ref(), &pending)
                     .await;
-                let saved = publish_all(recorded, &events);
-                match saved {
+                let recorded = match recorded {
+                    Ok(recorded) => recorded,
+                    Err(error) => {
+                        let _ = result.send(Err(error));
+                        return;
+                    }
+                };
+                match publish_all(recorded, &events).await {
                     Ok(()) => {
                         let _ = result.send(Ok(()));
                         None
                     }
-                    Err(error) => {
-                        let _ = result.send(Err(error));
+                    Err(_) => {
+                        let _ = result.send(Ok(()));
                         return;
                     }
                 }
@@ -225,25 +243,22 @@ fn reject(command: RecorderCommand, failure: &RecorderFailure) -> bool {
     }
 }
 
-fn publish(record: Result<JournalEvent>, events: &mpsc::Sender<JournalEvent>) -> Result<()> {
-    events.try_send(record?).map_err(event_delivery_error)
+async fn publish(record: JournalEvent, events: &mpsc::Sender<JournalEvent>) -> Result<()> {
+    events
+        .send(record)
+        .await
+        .map_err(|_| Error::Stopped("frontend event channel closed".into()))
 }
 
-fn publish_all(
-    records: Result<Vec<JournalEvent>>,
+async fn publish_all(
+    records: Vec<JournalEvent>,
     events: &mpsc::Sender<JournalEvent>,
 ) -> Result<()> {
-    for record in records? {
-        events.try_send(record).map_err(event_delivery_error)?;
+    for record in records {
+        events
+            .send(record)
+            .await
+            .map_err(|_| Error::Stopped("frontend event channel closed".into()))?;
     }
     Ok(())
-}
-
-fn event_delivery_error(error: mpsc::error::TrySendError<JournalEvent>) -> Error {
-    match error {
-        mpsc::error::TrySendError::Full(_) => Error::Stopped("event delivery queue is full".into()),
-        mpsc::error::TrySendError::Closed(_) => {
-            Error::Stopped("frontend event channel closed".into())
-        }
-    }
 }

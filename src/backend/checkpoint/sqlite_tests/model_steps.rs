@@ -20,10 +20,9 @@ fn stream_metrics_tolerate_wall_clock_regression() {
 }
 
 #[tokio::test]
-async fn completed_model_step_compacts_progressive_deltas() {
-    use crate::protocol::AgentMessageContentDeltaEvent;
-    use crate::protocol::AgentMessagePhase;
-    use crate::protocol::AgentReasoningContentDeltaEvent;
+async fn assistant_message_compacts_progressive_deltas_and_preserves_citations() {
+    use crate::protocol::AssistantContentDeltaEvent;
+    use crate::protocol::AssistantMessageEvent;
     use crate::protocol::ModelStepAnnotation;
     use crate::protocol::ModelStepCompletedEvent;
     use crate::protocol::ModelStepContent;
@@ -49,21 +48,22 @@ async fn completed_model_step_compacts_progressive_deltas() {
             step_index: 0,
             started_at_ms: 10,
         })),
-        event(EventMsg::AgentReasoningContentDelta(
-            AgentReasoningContentDeltaEvent {
+        event(EventMsg::AssistantContentDelta(
+            AssistantContentDeltaEvent {
                 session_id: "session".into(),
                 turn_id: "turn".into(),
                 model_step_id: "step".into(),
                 delta: "Plan".into(),
+                phase: ModelStepContentPhase::Reasoning,
             },
         )),
-        event(EventMsg::AgentMessageContentDelta(
-            AgentMessageContentDeltaEvent {
+        event(EventMsg::AssistantContentDelta(
+            AssistantContentDeltaEvent {
                 session_id: "session".into(),
                 turn_id: "turn".into(),
                 model_step_id: "step".into(),
                 delta: "Done".into(),
-                phase: AgentMessagePhase::FinalAnswer,
+                phase: ModelStepContentPhase::FinalAnswer,
             },
         )),
         event(EventMsg::ModelStepCompleted(ModelStepCompletedEvent {
@@ -77,29 +77,35 @@ async fn completed_model_step_compacts_progressive_deltas() {
                 end_turn: true,
                 tool_call_ids: Vec::new(),
                 usage: crate::protocol::TokenUsage::default(),
-                content: vec![
-                    ModelStepContent {
-                        output_index: 0,
-                        part_index: 0,
-                        phase: ModelStepContentPhase::Reasoning,
-                        text: "Plan".into(),
-                        annotations: Vec::new(),
-                    },
-                    ModelStepContent {
-                        output_index: 1,
-                        part_index: 0,
-                        phase: ModelStepContentPhase::FinalAnswer,
-                        text: "Done".into(),
-                        annotations: vec![ModelStepAnnotation::UrlCitation {
-                            url: "https://example.com".into(),
-                            title: "Example".into(),
-                            start_index: 0,
-                            end_index: 4,
-                        }],
-                    },
-                ],
             },
             diagnostics: None,
+        })),
+        event(EventMsg::AssistantMessage(AssistantMessageEvent {
+            session_id: "session".into(),
+            turn_id: "turn".into(),
+            model_step_id: "step".into(),
+            content: vec![
+                ModelStepContent {
+                    output_index: 0,
+                    part_index: 0,
+                    phase: ModelStepContentPhase::Reasoning,
+                    text: "Plan".into(),
+                    annotations: Vec::new(),
+                },
+                ModelStepContent {
+                    output_index: 1,
+                    part_index: 0,
+                    phase: ModelStepContentPhase::FinalAnswer,
+                    text: "Done".into(),
+                    annotations: vec![ModelStepAnnotation::UrlCitation {
+                        url: "https://example.com".into(),
+                        title: "Example".into(),
+                        start_index: 0,
+                        end_index: 4,
+                    }],
+                },
+            ],
+            message_target: None,
         })),
     ];
     for (index, event) in events.iter().enumerate() {
@@ -127,14 +133,11 @@ async fn completed_model_step_compacts_progressive_deltas() {
 
     assert_eq!(
         page.iter().map(|event| event.sequence).collect::<Vec<_>>(),
-        [1, 4]
+        [1, 4, 5]
     );
-    let EventMsg::ModelStepCompleted(ModelStepCompletedEvent {
-        outcome: ModelStepOutcome::Completed { content, .. },
-        ..
-    }) = &page[1].event.msg
+    let EventMsg::AssistantMessage(AssistantMessageEvent { content, .. }) = &page[2].event.msg
     else {
-        panic!("expected completed model step");
+        panic!("expected assistant message");
     };
     assert_eq!(
         content,
@@ -175,8 +178,7 @@ async fn completed_model_step_compacts_progressive_deltas() {
 
 #[tokio::test]
 async fn incomplete_model_steps_retain_progressive_deltas() {
-    use crate::protocol::AgentMessageContentDeltaEvent;
-    use crate::protocol::AgentMessagePhase;
+    use crate::protocol::AssistantContentDeltaEvent;
     use crate::protocol::ModelStepCompletedEvent;
 
     let workspace = tempfile::tempdir().expect("create workspace");
@@ -193,12 +195,12 @@ async fn incomplete_model_steps_retain_progressive_deltas() {
     ] {
         let delta = Event {
             submission_id: Some("submission".into()),
-            msg: EventMsg::AgentMessageContentDelta(AgentMessageContentDeltaEvent {
+            msg: EventMsg::AssistantContentDelta(AssistantContentDeltaEvent {
                 session_id: "session".into(),
                 turn_id: "turn".into(),
                 model_step_id: model_step_id.into(),
                 delta: format!("partial {model_step_id}"),
-                phase: AgentMessagePhase::FinalAnswer,
+                phase: crate::protocol::ModelStepContentPhase::FinalAnswer,
             }),
         };
         let completed = Event {
@@ -242,14 +244,14 @@ async fn incomplete_model_steps_retain_progressive_deltas() {
     );
     assert!(matches!(
         page[0].event.msg,
-        EventMsg::AgentMessageContentDelta(_)
+        EventMsg::AssistantContentDelta(_)
     ));
     assert!(matches!(
         page[2].event.msg,
-        EventMsg::AgentMessageContentDelta(_)
+        EventMsg::AssistantContentDelta(_)
     ));
     assert!(matches!(
         page[4].event.msg,
-        EventMsg::AgentMessageContentDelta(_)
+        EventMsg::AssistantContentDelta(_)
     ));
 }

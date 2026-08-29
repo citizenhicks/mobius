@@ -108,7 +108,7 @@ extension AppModel {
         if !preservingSession {
             nextHistoryBeforeSequence = nil
             transcriptWindowAnchor = .tail
-            awaitingInitialUserTurnID = nil
+            awaitingInitialMessageTurnID = nil
         }
         if !preservingSession { replayPresentedTranscript = nil }
         if preservingDrafts {
@@ -293,9 +293,7 @@ extension AppModel {
         nextHistoryBeforeSequence = nil
         transcriptWindowAnchor = .tail
         activeTurnID = nil
-        awaitingInitialUserTurnID = nil
-        activeOperation = nil
-        awaitsSteeringDelivery = false
+        awaitingInitialMessageTurnID = nil
         runStats = RunStats()
         contextTokens = 0
         sessionCompactionCount = 0

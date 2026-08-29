@@ -17,10 +17,14 @@ fn composer_dispatches_commands_and_active_turn_steering() {
 
     assert_eq!(
         working.submit_input(&catalog),
-        UiAction::Submit(Op::ActiveInput {
-            operation: "steer".into(),
-            turn_id: "turn".into(),
-            text: "change direction".into(),
+        UiAction::Submit(Op::Message {
+            message: MessageSubmission {
+                author: MessageAuthor::User,
+                text: "change direction".into(),
+                attachments: Vec::new(),
+                requested_delivery: None,
+                target_turn_id: Some("turn".into()),
+            },
         })
     );
 }
@@ -38,28 +42,6 @@ fn new_and_clear_keep_distinct_terminal_semantics() {
     assert_eq!(
         (new.submit_input(&catalog), clear.submit_input(&catalog)),
         (UiAction::New, UiAction::Clear)
-    );
-}
-
-#[test]
-fn composer_queues_a_new_turn_without_steering_middleware() {
-    let catalog = UiCatalog::build(
-        &[],
-        &[],
-        std::path::Path::new("/missing-mobius-test-workspace"),
-    )
-    .expect("UI catalog");
-    let mut working = state();
-    working.active_turn = Some("turn".into());
-    working.input = "next task".into();
-    working.cursor = working.input.len();
-
-    assert_eq!(
-        working.submit_input(&catalog),
-        UiAction::Submit(Op::UserInput {
-            text: "next task".into(),
-            attachments: Vec::new(),
-        })
     );
 }
 
@@ -168,7 +150,7 @@ async fn remote_workspace_inventory_does_not_read_the_client_filesystem() {
 #[test]
 fn composer_rejects_input_over_the_protocol_limit() {
     let mut state = state();
-    state.insert_paste(&"x".repeat(mobius::protocol::MAX_USER_INPUT_BYTES));
+    state.insert_paste(&"x".repeat(mobius::protocol::MAX_MESSAGE_BYTES));
     state.insert_text("x");
 
     assert_eq!(
@@ -176,7 +158,7 @@ fn composer_rejects_input_over_the_protocol_limit() {
             state.pastes.values().map(String::len).sum::<usize>(),
             state.input_limit_reached,
         ),
-        (mobius::protocol::MAX_USER_INPUT_BYTES, true)
+        (mobius::protocol::MAX_MESSAGE_BYTES, true)
     );
 }
 
@@ -309,9 +291,14 @@ fn attachment_only_submission_is_a_user_turn() {
 
     assert_eq!(
         state.submit_input(&default_catalog()),
-        UiAction::Submit(Op::UserInput {
-            text: String::new(),
-            attachments: vec![attachment("photo.png")],
+        UiAction::Submit(Op::Message {
+            message: MessageSubmission {
+                author: MessageAuthor::User,
+                text: String::new(),
+                attachments: vec![attachment("photo.png")],
+                requested_delivery: None,
+                target_turn_id: None,
+            },
         })
     );
     assert!(state.attachments.is_empty());

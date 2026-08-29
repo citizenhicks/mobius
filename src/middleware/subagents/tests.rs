@@ -3,11 +3,10 @@ use std::time::Duration;
 
 use super::runtime::AgentPresentation;
 use super::*;
-use crate::middleware::QueuedInputBaseline;
-use crate::middleware::QueuedInputQueue;
+use crate::middleware::MessageQueue;
 use crate::protocol::{
-    Event, ToolCallBeginEvent, ToolCallEndEvent, TurnCompleteEvent, TurnStartedEvent,
-    UserMessageEvent,
+    Event, MessageAuthor, MessageDelivery, MessageEvent, ToolCallBeginEvent, ToolCallEndEvent,
+    TurnCompleteEvent, TurnStartedEvent,
 };
 
 fn test_middleware() -> Subagents {
@@ -179,8 +178,10 @@ async fn active_command_emits_a_subagent_transcript_preview() {
                 turn_id: "turn-1".into(),
                 model_context_window: None,
             }),
-            EventMsg::UserMessage(UserMessageEvent {
-                message: "review this".into(),
+            EventMsg::Message(MessageEvent {
+                author: MessageAuthor::User,
+                delivery: MessageDelivery::Turn,
+                text: "review this".into(),
                 attachments: Vec::new(),
                 message_target: None,
             }),
@@ -200,6 +201,7 @@ async fn active_command_emits_a_subagent_transcript_preview() {
     middleware
         .shared
         .session_start(RuntimeContext {
+            sender: crate::agent::test_sender(),
             checkpoints,
             session_id: root.session_id.clone(),
             model_route: "test".into(),
@@ -240,13 +242,13 @@ async fn active_command_emits_a_subagent_transcript_preview() {
             arguments: "/root/reviewer",
             input: None,
             target: None,
-            queued_input: QueuedInputQueue::new(&mut queued, QueuedInputBaseline::default()),
+            queued_messages: MessageQueue::new(&mut queued),
             events: &mut events,
         })
         .await
         .expect("active command");
 
-    assert_eq!(result, Some(ActiveSubmissionResult::Handled));
+    assert_eq!(result, Some(SubmissionResult::Handled));
     assert!(matches!(
         events.as_slice(),
         [EventMsg::Frontend(FrontendEvent::Preview {
@@ -264,9 +266,9 @@ async fn active_command_emits_a_subagent_transcript_preview() {
                 && page_id == "/root/reviewer:latest"
                 && matches!(preview_messages(events).as_slice(), [
                     EventMsg::TurnStarted(_),
-                    EventMsg::UserMessage(message),
+                    EventMsg::Message(message),
                     EventMsg::TurnComplete(_),
-                ] if message.message == "review this")
+                ] if message.text == "review this")
     ));
     assert!(queued.is_empty());
 }
@@ -295,18 +297,25 @@ async fn preview_continuation_loads_one_older_turn_through_registered_command() 
                 turn_id: "older".into(),
                 model_context_window: None,
             }),
-            EventMsg::UserMessage(UserMessageEvent {
-                message: "Older question".into(),
+            EventMsg::Message(MessageEvent {
+                author: MessageAuthor::User,
+                delivery: MessageDelivery::Turn,
+                text: "Older question".into(),
                 attachments: Vec::new(),
                 message_target: None,
             }),
             EventMsg::ContextCompacted,
-            EventMsg::AgentMessage(crate::protocol::AgentMessageEvent {
+            EventMsg::AssistantMessage(crate::protocol::AssistantMessageEvent {
                 session_id: "child".into(),
                 turn_id: "older".into(),
                 model_step_id: "older-step".into(),
-                message: "Older answer".into(),
-                phase: crate::protocol::AgentMessagePhase::FinalAnswer,
+                content: vec![crate::protocol::ModelStepContent {
+                    output_index: 0,
+                    part_index: 0,
+                    phase: crate::protocol::ModelStepContentPhase::FinalAnswer,
+                    text: "Older answer".into(),
+                    annotations: Vec::new(),
+                }],
                 message_target: None,
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
@@ -316,22 +325,31 @@ async fn preview_continuation_loads_one_older_turn_through_registered_command() 
                 turn_id: "latest".into(),
                 model_context_window: None,
             }),
-            EventMsg::UserMessage(UserMessageEvent {
-                message: "Latest question".into(),
+            EventMsg::Message(MessageEvent {
+                author: MessageAuthor::User,
+                delivery: MessageDelivery::Turn,
+                text: "Latest question".into(),
                 attachments: Vec::new(),
                 message_target: None,
             }),
-            EventMsg::UserMessage(UserMessageEvent {
-                message: "Steer latest".into(),
+            EventMsg::Message(MessageEvent {
+                author: MessageAuthor::User,
+                delivery: MessageDelivery::Steer,
+                text: "Steer latest".into(),
                 attachments: Vec::new(),
                 message_target: None,
             }),
-            EventMsg::AgentMessage(crate::protocol::AgentMessageEvent {
+            EventMsg::AssistantMessage(crate::protocol::AssistantMessageEvent {
                 session_id: "child".into(),
                 turn_id: "latest".into(),
                 model_step_id: "latest-step".into(),
-                message: "Latest answer".into(),
-                phase: crate::protocol::AgentMessagePhase::FinalAnswer,
+                content: vec![crate::protocol::ModelStepContent {
+                    output_index: 0,
+                    part_index: 0,
+                    phase: crate::protocol::ModelStepContentPhase::FinalAnswer,
+                    text: "Latest answer".into(),
+                    annotations: Vec::new(),
+                }],
                 message_target: None,
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
@@ -344,6 +362,7 @@ async fn preview_continuation_loads_one_older_turn_through_registered_command() 
     middleware
         .shared
         .session_start(RuntimeContext {
+            sender: crate::agent::test_sender(),
             checkpoints: Arc::clone(&checkpoints),
             session_id: root.session_id.clone(),
             model_route: "test".into(),
@@ -408,13 +427,13 @@ async fn preview_continuation_loads_one_older_turn_through_registered_command() 
         preview_messages(events).as_slice(),
         [
             EventMsg::TurnStarted(_),
-            EventMsg::UserMessage(question),
-            EventMsg::UserMessage(steering),
-            EventMsg::AgentMessage(answer),
+            EventMsg::Message(question),
+            EventMsg::Message(steering),
+            EventMsg::AssistantMessage(answer),
             EventMsg::TurnComplete(_),
-        ] if question.message == "Latest question"
-            && steering.message == "Steer latest"
-            && answer.message == "Latest answer"
+        ] if question.text == "Latest question"
+            && steering.text == "Steer latest"
+            && answer.content[0].text == "Latest answer"
     ));
 
     let older = stack
@@ -444,11 +463,11 @@ async fn preview_continuation_loads_one_older_turn_through_registered_command() 
             preview_messages(events).as_slice(),
             [
                 EventMsg::TurnStarted(_),
-                EventMsg::UserMessage(question),
+                EventMsg::Message(question),
                 EventMsg::ContextCompacted,
-                EventMsg::AgentMessage(answer),
+                EventMsg::AssistantMessage(answer),
                 EventMsg::TurnComplete(_),
-            ] if question.message == "Older question" && answer.message == "Older answer"
+            ] if question.text == "Older question" && answer.content[0].text == "Older answer"
         )
     ));
 }
@@ -500,6 +519,7 @@ async fn fork_persists_the_metadata_passed_to_the_child() {
         }
     });
     let runtime = RuntimeContext {
+        sender: crate::agent::test_sender(),
         checkpoints: Arc::clone(&checkpoints),
         session_id: parent.session_id.clone(),
         model_route: "test".into(),

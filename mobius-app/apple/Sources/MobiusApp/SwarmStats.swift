@@ -3,7 +3,7 @@ import SwiftUI
 
 /// What a board post turned out to be, derived from its text.
 ///
-/// The wire carries no kind on `SwarmMessageRecord`, so this is read back out of the body the
+/// The wire carries no kind on `SwarmMessageRecord`, so this is read back out of the text the
 /// same way the gateway reads it on the way in. Keep `swarmMentionedHandles` in step with the
 /// gateway's `mentioned_handles`: a post the gateway accepted as directed has to read as
 /// directed here, or the counts disagree with the delivery that actually happened.
@@ -14,8 +14,8 @@ enum SwarmMessageKind: Sendable {
 
 /// Handles mentioned by one post, mirroring the gateway's parser: an `@` that does not follow
 /// a mention byte, then the run of mention bytes after it.
-func swarmMentionedHandles(in body: String) -> Set<String> {
-    let characters = Array(body.unicodeScalars)
+func swarmMentionedHandles(in text: String) -> Set<String> {
+    let characters = Array(text.unicodeScalars)
     var handles = Set<String>()
     var index = 0
     while index < characters.count {
@@ -46,13 +46,13 @@ private func isSwarmMentionScalar(_ scalar: Unicode.Scalar) -> Bool {
 ///
 /// Code is left exactly as typed: an `@handle` inside a span or a fence is source, not an
 /// address, and bolding it would corrupt what the agent posted.
-func swarmHighlightedBody(_ body: String, roster: Set<String>) -> String {
-    guard !roster.isEmpty, body.contains("@") else { return body }
+func swarmHighlightedText(_ text: String, roster: Set<String>) -> String {
+    guard !roster.isEmpty, text.contains("@") else { return text }
     var lines: [String] = []
     var fence: SwarmCodeFence?
     var codeDelimiter: Int?
 
-    for line in body.components(separatedBy: "\n") {
+    for line in text.components(separatedBy: "\n") {
         if let currentFence = fence {
             lines.append(line)
             if currentFence.closes(line) { fence = nil }
@@ -152,7 +152,7 @@ struct SwarmStats: Equatable {
         var edges = 0
 
         for message in messages {
-            let mentioned = swarmMentionedHandles(in: message.body)
+            let mentioned = swarmMentionedHandles(in: message.text)
             counts[mentioned.isEmpty ? .broadcast : .directed, default: 0] += 1
             edges += mentioned.count
         }

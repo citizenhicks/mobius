@@ -23,23 +23,32 @@ impl HostState {
         {
             return Ok(false);
         }
-        if let EventMsg::PeerMessage(message) = &event.msg {
-            self.acknowledge_peer_message(&message.message_id).await?;
+        if let EventMsg::Message(message) = &event.msg
+            && let Some(message_id) = peer_message_id(message)
+        {
+            self.acknowledge_peer_message(message_id).await?;
+        }
+        if opens_message_capacity(&event.msg) {
+            self.swarm
+                .notify_capacity_available(&self.running.session_id);
+        }
+        if let EventMsg::SubmissionRejected(_) = &event.msg
+            && let Some(submission_id) = event.submission_id.as_deref()
+        {
+            self.swarm
+                .notify_rejected(submission_id, &self.running.session_id);
         }
         let next_activity = self.activity_for_event(&event.msg)?;
+        account_turn_event(&mut self.pending_turns, &mut self.pending_messages, &event);
         match &event.msg {
             EventMsg::ExecApprovalRequest(_) => self.approval_active = true,
-            EventMsg::TurnComplete(_) => {
-                self.pending_turns = self.pending_turns.saturating_sub(1);
-                self.approval_active = false;
-            }
-            EventMsg::TurnAborted(_) => {
-                self.pending_turns = self.pending_turns.saturating_sub(1);
-                self.approval_active = false;
-            }
+            EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_) => self.approval_active = false,
             _ => {}
         }
         let cron_completion = self.observe_cron_event(&event)?;
+        if let Some((active, status, message)) = cron_completion {
+            self.cron.finish_run(active.run, status, message)?;
+        }
         if let Some(activity) = next_activity {
             self.set_activity(activity)?;
             self.broadcast_sessions()
@@ -50,9 +59,6 @@ impl HostState {
         let became_idle = self.pending_turns == 0 && was_active;
         let mut restart = false;
         if became_idle {
-            if let Some((active, status, message)) = cron_completion {
-                self.cron.finish_run(active.run, status, message)?;
-            }
             restart = self.restart_after_turn;
             if !self.approval_active && self.active_cron.is_none() {
                 for waiter in self.idle_waiters.drain(..) {
@@ -76,7 +82,7 @@ impl HostState {
             .iter()
             .filter_map(|frame| match &frame.message {
                 ServerMessage::AgentEvent { record, .. } => match &record.event.msg {
-                    EventMsg::PeerMessage(message) => Some(message.message_id.clone()),
+                    EventMsg::Message(message) => peer_message_id(message).map(str::to_owned),
                     _ => None,
                 },
                 _ => None,
@@ -91,31 +97,10 @@ impl HostState {
     }
 
     async fn acknowledge_peer_message(&self, message_id: &str) -> Result<()> {
-        let pending = self
-            .swarm
-            .pending_deliveries(&self.running.session_id)
-            .await?;
-        if !pending
-            .iter()
-            .any(|delivery| delivery.entry.id == message_id)
-        {
-            self.swarm
-                .notify_acknowledged(message_id, &self.running.session_id);
-            return Ok(());
-        }
-        match self
-            .swarm
+        self.swarm
             .acknowledge(message_id, &self.running.session_id)
-            .await
-        {
-            Ok(_) => Ok(()),
-            Err(Error::Config(_)) => {
-                self.swarm
-                    .notify_acknowledged(message_id, &self.running.session_id);
-                Ok(())
-            }
-            Err(error) => Err(error),
-        }
+            .await?;
+        Ok(())
     }
 
     pub(super) fn project_and_publish(
@@ -133,13 +118,11 @@ impl HostState {
         validate_event_frame(&frame)?;
         if let ServerMessage::AgentEvent { record, .. } = &frame.message {
             update_widgets(&mut self.widgets, &record.event.msg);
-            if let EventMsg::ModelStepCompleted(step) = &record.event.msg
-                && matches!(&step.outcome, ModelStepOutcome::Completed { .. })
-            {
+            if let EventMsg::AssistantMessage(message) = &record.event.msg {
                 compact_replay_deltas(
                     &mut self.replay,
                     &mut self.replay_bytes,
-                    &step.model_step_id,
+                    &message.model_step_id,
                 )?;
             }
         }
@@ -443,5 +426,183 @@ impl HostState {
 
     pub(super) fn is_idle(&self) -> bool {
         self.pending_turns == 0 && !self.approval_active && self.active_cron.is_none()
+    }
+}
+
+fn account_turn_event(
+    pending_turns: &mut usize,
+    pending_messages: &mut HashSet<String>,
+    event: &Event,
+) {
+    match &event.msg {
+        EventMsg::TurnStarted(_) => {
+            let reserved = event
+                .submission_id
+                .as_deref()
+                .is_some_and(|submission_id| pending_messages.remove(submission_id));
+            if !reserved {
+                *pending_turns = pending_turns.saturating_add(1);
+            }
+        }
+        EventMsg::Message(_) | EventMsg::SubmissionRejected(_) => {
+            if event
+                .submission_id
+                .as_deref()
+                .is_some_and(|submission_id| pending_messages.remove(submission_id))
+            {
+                *pending_turns = pending_turns.saturating_sub(1);
+            }
+        }
+        EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_) => {
+            *pending_turns = pending_turns.saturating_sub(1);
+        }
+        _ => {}
+    }
+}
+
+fn peer_message_id(message: &MessageEvent) -> Option<&str> {
+    match &message.author {
+        MessageAuthor::Peer { message_id, .. } => Some(message_id),
+        MessageAuthor::User => None,
+    }
+}
+
+fn opens_message_capacity(event: &EventMsg) -> bool {
+    matches!(event, EventMsg::TurnStarted(_) | EventMsg::Message(_))
+}
+
+#[cfg(test)]
+mod accounting_tests {
+    use super::*;
+    use mobius::protocol::{
+        MessageDelivery, SubmissionRejectedEvent, TurnCompleteEvent, TurnStartedEvent,
+    };
+
+    fn event(submission_id: &str, msg: EventMsg) -> Event {
+        Event {
+            submission_id: Some(submission_id.into()),
+            msg,
+        }
+    }
+
+    fn message(delivery: MessageDelivery) -> EventMsg {
+        EventMsg::Message(MessageEvent {
+            author: MessageAuthor::Peer {
+                message_id: "message-1".into(),
+                session_id: "reviewer".into(),
+                handle: "reviewer".into(),
+            },
+            delivery,
+            text: "Review this".into(),
+            attachments: Vec::new(),
+            message_target: None,
+        })
+    }
+
+    #[test]
+    fn steering_message_releases_its_turn_reservation() {
+        let mut pending_turns = 2;
+        let mut messages = HashSet::from(["message-1".into()]);
+
+        account_turn_event(
+            &mut pending_turns,
+            &mut messages,
+            &event("message-1", message(MessageDelivery::Steer)),
+        );
+        account_turn_event(
+            &mut pending_turns,
+            &mut messages,
+            &event(
+                "user-1",
+                EventMsg::TurnComplete(TurnCompleteEvent {
+                    turn_id: "turn-1".into(),
+                }),
+            ),
+        );
+
+        assert_eq!(pending_turns, 0);
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn started_message_keeps_its_active_turn_on_delivery() {
+        let mut pending_turns = 1;
+        let mut messages = HashSet::from(["message-1".into()]);
+
+        account_turn_event(
+            &mut pending_turns,
+            &mut messages,
+            &event(
+                "message-1",
+                EventMsg::TurnStarted(TurnStartedEvent {
+                    turn_id: "turn-1".into(),
+                    model_context_window: None,
+                }),
+            ),
+        );
+        account_turn_event(
+            &mut pending_turns,
+            &mut messages,
+            &event("message-1", message(MessageDelivery::Turn)),
+        );
+
+        assert_eq!(pending_turns, 1);
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn unreserved_turn_increments_the_active_count() {
+        let mut pending_turns = 0;
+        let mut messages = HashSet::new();
+
+        account_turn_event(
+            &mut pending_turns,
+            &mut messages,
+            &event(
+                "recovered-message",
+                EventMsg::TurnStarted(TurnStartedEvent {
+                    turn_id: "turn-1".into(),
+                    model_context_window: None,
+                }),
+            ),
+        );
+
+        assert_eq!(pending_turns, 1);
+    }
+
+    #[test]
+    fn rejection_releases_its_message_reservation() {
+        let mut pending_turns = 1;
+        let mut messages = HashSet::from(["message-1".into()]);
+
+        account_turn_event(
+            &mut pending_turns,
+            &mut messages,
+            &event(
+                "message-1",
+                EventMsg::SubmissionRejected(SubmissionRejectedEvent {
+                    message: "rejected".into(),
+                }),
+            ),
+        );
+
+        assert_eq!(pending_turns, 0);
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn starting_a_queued_turn_opens_message_capacity_before_its_message_is_submitted() {
+        assert!(opens_message_capacity(&EventMsg::TurnStarted(
+            TurnStartedEvent {
+                turn_id: "turn-1".into(),
+                model_context_window: None,
+            }
+        )));
+        assert!(opens_message_capacity(&message(MessageDelivery::Queue)));
+        assert!(!opens_message_capacity(&EventMsg::SubmissionRejected(
+            SubmissionRejectedEvent {
+                message: "prompt hook rejected the queued message".into(),
+            }
+        )));
     }
 }

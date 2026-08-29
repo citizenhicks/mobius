@@ -35,15 +35,35 @@ extension GatewayWireTests {
         }
 
         let untargeted = try decodeEnvelope(
-            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"user_message","message":"Hello","attachments":[],"message_target":null}},"stream_metrics":[],"blocks":[],"preview":null}}"#
+            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"message","author":{"type":"user"},"delivery":"turn","text":"Hello","attachments":[],"message_target":null}},"stream_metrics":[],"blocks":[],"preview":null}}"#
         )
         guard case .agentEvent(_, let record) = untargeted else {
             return XCTFail("Expected an agent event")
         }
         XCTAssertEqual(record.event.msg["messageTarget"], JSONValue.null)
         XCTAssertThrowsError(try decodeEnvelope(
-            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"user_message","message":"Hello","attachments":[]}},"stream_metrics":[],"blocks":[],"preview":null}}"#
+            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"message","author":{"type":"user"},"delivery":"turn","text":"Hello","attachments":[]}},"stream_metrics":[],"blocks":[],"preview":null}}"#
         ))
+    }
+
+    func testMessageEventDecodesTypedAuthorAndActualDelivery() throws {
+        let envelope = try decodeEnvelope(
+            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"submission_id":"swarm-message-1","msg":{"type":"message","author":{"type":"peer","message_id":"message-1","session_id":"chat-reviewer","handle":"@reviewer"},"delivery":"steer","text":"Check the parser boundary.","attachments":[],"message_target":{"checkpoint_sequence":12,"batch_item_count":2}}},"stream_metrics":[],"blocks":[],"preview":null}}"#
+        )
+        guard case .agentEvent(_, let record) = envelope else {
+            return XCTFail("Expected an agent event")
+        }
+        let message = try MessageEventPayload(json: record.event.msg)
+        XCTAssertEqual(
+            message.author,
+            .peer(messageID: "message-1", sessionID: "chat-reviewer", handle: "@reviewer")
+        )
+        XCTAssertEqual(message.delivery, .steer)
+        XCTAssertEqual(message.text, "Check the parser boundary.")
+        XCTAssertEqual(
+            message.messageTarget,
+            MessageTarget(checkpointSequence: 12, batchItemCount: 2)
+        )
     }
 
     func testSessionFileResponsesMatchV28() throws {
@@ -123,7 +143,24 @@ extension GatewayWireTests {
     func testMalformedKnownAgentEventIsRejected() {
         let fixtures = [
             #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"turn_aborted","turn_id":"turn-1"}},"stream_metrics":[],"blocks":[],"preview":null}}"#,
-            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"agent_message","session_id":"chat-1","turn_id":"turn-1","model_step_id":"step-1","message":"Working","phase":"future_phase","message_target":null}},"stream_metrics":[],"blocks":[],"preview":null}}"#
+            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"assistant_message","session_id":"chat-1","turn_id":"turn-1","model_step_id":"step-1","content":[{"output_index":0,"part_index":0,"phase":"future_phase","text":"Working","annotations":[]}],"message_target":null}},"stream_metrics":[],"blocks":[],"preview":null}}"#,
+            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"message","author":{"type":"peer","message_id":"message-1","session_id":"chat-reviewer"},"delivery":"steer","text":"Review","attachments":[],"message_target":null}},"stream_metrics":[],"blocks":[],"preview":null}}"#,
+            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"message","author":{"type":"user"},"delivery":"later","text":"Review","attachments":[],"message_target":null}},"stream_metrics":[],"blocks":[],"preview":null}}"#
+        ]
+
+        for fixture in fixtures {
+            XCTAssertThrowsError(try decodeEnvelope(fixture))
+        }
+    }
+
+    func testLegacyMessageAndTurnEventsAreRejected() {
+        let fixtures = [
+            #"{"version":55,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"message","author":{"type":"user"},"delivery":"turn","message":"Hello","attachments":[],"message_target":null}},"stream_metrics":[],"blocks":[],"preview":null}}"#,
+            #"{"version":55,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"task_started","turn_id":"turn-1"}},"stream_metrics":[],"blocks":[],"preview":null}}"#,
+            #"{"version":55,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"task_complete","turn_id":"turn-1"}},"stream_metrics":[],"blocks":[],"preview":null}}"#,
+            #"{"version":55,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"agent_message","session_id":"chat-1","turn_id":"turn-1","model_step_id":"step-1","message":"Done","phase":"final_answer","message_target":null}},"stream_metrics":[],"blocks":[],"preview":null}}"#,
+            #"{"version":55,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"agent_message_content_delta","session_id":"chat-1","turn_id":"turn-1","model_step_id":"step-1","delta":"Done","phase":"final_answer"}},"stream_metrics":[],"blocks":[],"preview":null}}"#,
+            #"{"version":55,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"agent_reasoning_content_delta","session_id":"chat-1","turn_id":"turn-1","model_step_id":"step-1","delta":"Thinking"}},"stream_metrics":[],"blocks":[],"preview":null}}"#,
         ]
 
         for fixture in fixtures {

@@ -1,5 +1,7 @@
 use futures_util::SinkExt as _;
-use mobius::protocol::{Event, EventMsg, Op, SessionFileReference, Submission};
+use mobius::protocol::{
+    Event, EventMsg, MessageAuthor, MessageSubmission, Op, SessionFileReference, Submission,
+};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::protocol::Message;
@@ -135,6 +137,18 @@ async fn drain_ready_replay(events: &mut GatewayEvents) {
         tokio::time::timeout(Duration::from_millis(10), events.next()).await,
         Ok(Ok(Some(_)))
     ) {}
+}
+
+fn user_message(text: impl Into<String>, attachments: Vec<SessionFileReference>) -> Op {
+    Op::Message {
+        message: MessageSubmission {
+            author: MessageAuthor::User,
+            text: text.into(),
+            attachments,
+            requested_delivery: None,
+            target_turn_id: None,
+        },
+    }
 }
 
 fn run_git(workspace: &Path, args: &[&str]) {

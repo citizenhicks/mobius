@@ -20,7 +20,9 @@ use crate::frontend::catalog::UiCatalog;
 use crate::frontend::setup::SetupMode;
 use crate::frontend::terminal::terminal_text;
 use mobius::protocol::EventMsg;
-use mobius::protocol::MAX_USER_INPUT_BYTES;
+use mobius::protocol::MAX_MESSAGE_BYTES;
+use mobius::protocol::MessageAuthor;
+use mobius::protocol::MessageSubmission;
 use mobius::protocol::Op;
 use mobius::protocol::ReviewDecision;
 
@@ -549,7 +551,7 @@ impl TuiState {
     pub(super) fn submit_input(&mut self, catalog: &UiCatalog) -> UiAction {
         let had_pastes = !self.pastes.is_empty();
         let line = self.expanded_input();
-        if line.len() > MAX_USER_INPUT_BYTES {
+        if line.len() > MAX_MESSAGE_BYTES {
             self.input_limit_reached = true;
             return UiAction::None;
         }
@@ -624,27 +626,14 @@ impl TuiState {
         if line.is_empty() && self.attachments.is_empty() {
             return UiAction::None;
         }
-        let attachments = std::mem::take(&mut self.attachments);
-        let op = if attachments.is_empty() {
-            self.active_turn
-                .clone()
-                .zip(catalog.active_input())
-                .map_or_else(
-                    || Op::UserInput {
-                        text: line.into(),
-                        attachments,
-                    },
-                    |(turn_id, active)| Op::ActiveInput {
-                        operation: active.operation.clone(),
-                        turn_id,
-                        text: line.into(),
-                    },
-                )
-        } else {
-            Op::UserInput {
+        let op = Op::Message {
+            message: MessageSubmission {
+                author: MessageAuthor::User,
                 text: line.into(),
-                attachments,
-            }
+                attachments: std::mem::take(&mut self.attachments),
+                requested_delivery: None,
+                target_turn_id: self.active_turn.clone(),
+            },
         };
         UiAction::Submit(op)
     }
@@ -667,7 +656,7 @@ impl TuiState {
             .expanded_input_bytes()
             .saturating_sub(removed)
             .saturating_add(inserted);
-        self.input_limit_reached = bytes > MAX_USER_INPUT_BYTES;
+        self.input_limit_reached = bytes > MAX_MESSAGE_BYTES;
         !self.input_limit_reached
     }
 

@@ -58,10 +58,10 @@ extension AppModelTests {
         })
 
         model.reduce(
-            event: AgentEventRecord(submissionId: submission.id, msg: .object([
-                "type": .string("user_message"),
-                "message": .string("Review the gateway")
-            ])),
+            event: AgentEventRecord(
+                submissionId: submission.id,
+                msg: testMessageEvent(text: "Review the gateway")
+            ),
             blocks: [],
             preview: nil
         )
@@ -159,10 +159,10 @@ extension AppModelTests {
         )
 
         model.reduce(
-            event: AgentEventRecord(submissionId: "another-submission", msg: .object([
-                "type": .string("user_message"),
-                "message": .string("Another message")
-            ])),
+            event: AgentEventRecord(
+                submissionId: "another-submission",
+                msg: testMessageEvent(text: "Another message")
+            ),
             blocks: [],
             preview: nil
         )
@@ -174,10 +174,10 @@ extension AppModelTests {
         })
 
         model.reduce(
-            event: AgentEventRecord(submissionId: submission.id, msg: .object([
-                "type": .string("user_message"),
-                "message": .string("Review the gateway")
-            ])),
+            event: AgentEventRecord(
+                submissionId: submission.id,
+                msg: testMessageEvent(text: "Review the gateway")
+            ),
             blocks: [],
             preview: nil
         )
@@ -217,10 +217,10 @@ extension AppModelTests {
 
         let requestCount = await recorder.requestCount()
         model.reduce(
-            event: AgentEventRecord(submissionId: submission.id, msg: .object([
-                "type": .string("user_message"),
-                "message": .string("Review the gateway")
-            ])),
+            event: AgentEventRecord(
+                submissionId: submission.id,
+                msg: testMessageEvent(text: "Review the gateway")
+            ),
             blocks: [],
             preview: nil
         )
@@ -278,15 +278,13 @@ extension AppModelTests {
         model.handle(.agentEvent(
             sessionID: "chat-1",
             sequence: 1,
-            event: AgentEventRecord(submissionId: nil, msg: .object([
-                "type": .string("user_message"),
-                "message": .string("Review the gateway"),
-                "attachments": .array([]),
-                "messageTarget": .object([
-                    "checkpointSequence": .number(1),
-                    "batchItemCount": .number(1)
-                ])
-            ])),
+            event: AgentEventRecord(
+                submissionId: nil,
+                msg: testMessageEvent(
+                    text: "Review the gateway",
+                    messageTarget: MessageTarget(checkpointSequence: 1, batchItemCount: 1)
+                )
+            ),
             blocks: [],
             history: nil,
             preview: nil
@@ -494,10 +492,10 @@ extension AppModelTests {
         XCTAssertEqual(model.toast?.tone, .warning)
 
         model.reduce(
-            event: AgentEventRecord(submissionId: submission.id, msg: .object([
-                "type": .string("user_message"),
-                "message": .string("Review the gateway retry behavior")
-            ])),
+            event: AgentEventRecord(
+                submissionId: submission.id,
+                msg: testMessageEvent(text: "Review the gateway retry behavior")
+            ),
             blocks: [],
             preview: nil
         )
@@ -595,10 +593,10 @@ extension AppModelTests {
         )
         await fulfillment(of: [firstTitleStarted], timeout: 1)
         model.reduce(
-            event: AgentEventRecord(submissionId: firstSubmission.id, msg: .object([
-                "type": .string("user_message"),
-                "message": .string("First prompt")
-            ])),
+            event: AgentEventRecord(
+                submissionId: firstSubmission.id,
+                msg: testMessageEvent(text: "First prompt")
+            ),
             blocks: [],
             preview: nil
         )

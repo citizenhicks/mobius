@@ -11,9 +11,9 @@ use uuid::Uuid;
 use super::manifest::MiddlewareManifest;
 use super::tools::{Catalog, labeled_tool_heading, render_tool_event};
 use super::{
-    ActiveCommandContext, ActiveSubmissionResult, Middleware, MiddlewareCommandContext,
-    MiddlewareCommandOutput, ModelContext, PromptSection, RuntimeContext, SessionStartContext,
-    SessionStartSource,
+    ActiveCommandContext, Middleware, MiddlewareCommandContext, MiddlewareCommandOutput,
+    ModelContext, PromptSection, RuntimeContext, SessionStartContext, SessionStartSource,
+    SubmissionResult,
 };
 use crate::backend::checkpoint::{CheckpointStore, ContextRewriteReason};
 use crate::protocol::{
@@ -480,7 +480,6 @@ impl Middleware for Scratchpad {
             }],
             widgets: surface_widgets(&Snapshot::default()),
             references: Vec::new(),
-            active_input: None,
         }
     }
 
@@ -543,7 +542,7 @@ impl Middleware for Scratchpad {
     fn active_command<'a>(
         &'a self,
         context: &'a mut ActiveCommandContext<'_>,
-    ) -> BoxFuture<'a, Result<Option<ActiveSubmissionResult>>> {
+    ) -> BoxFuture<'a, Result<Option<SubmissionResult>>> {
         Box::pin(async move {
             let Some(access) = self.store.try_lock_access() else {
                 return Ok(None);
@@ -560,7 +559,7 @@ impl Middleware for Scratchpad {
             context
                 .events
                 .extend(output.events.into_iter().map(EventMsg::Frontend));
-            Ok(Some(ActiveSubmissionResult::Handled))
+            Ok(Some(SubmissionResult::Handled))
         })
     }
 

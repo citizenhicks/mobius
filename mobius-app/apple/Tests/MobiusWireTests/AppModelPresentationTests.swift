@@ -324,28 +324,24 @@ extension AppModelTests {
         let events = [
             RenderedEventRecord(
                 event: .object([
-                    "type": .string("task_started"),
+                    "type": .string("turn_started"),
                     "turnId": .string(turnID),
                 ]),
                 blocks: [],
                 recordedAtMs: 1_000
             ),
             RenderedEventRecord(
-                event: .object([
-                    "type": .string("user_message"),
-                    "message": .string("Please review this"),
-                ]),
+                event: testMessageEvent(text: "Please review this"),
                 blocks: [],
                 recordedAtMs: 1_100
             ),
             RenderedEventRecord(
-                event: .object([
-                    "type": .string("agent_message"),
-                    "turnId": .string(turnID),
-                    "modelStepId": .string("step-1"),
-                    "phase": .string("commentary"),
-                    "message": .string("Checking"),
-                ]),
+                event: testAssistantMessage(
+                    turnID: turnID,
+                    modelStepID: "step-1",
+                    phase: "commentary",
+                    text: "Checking"
+                ),
                 blocks: [],
                 recordedAtMs: 2_000
             ),
@@ -355,27 +351,25 @@ extension AppModelTests {
                 recordedAtMs: 2_200
             ),
             RenderedEventRecord(
-                event: .object([
-                    "type": .string("user_message"),
-                    "message": .string("Use the smaller patch"),
-                ]),
+                event: testMessageEvent(
+                    delivery: .steer,
+                    text: "Use the smaller patch"
+                ),
                 blocks: [],
                 recordedAtMs: 2_500
             ),
             RenderedEventRecord(
-                event: .object([
-                    "type": .string("agent_message"),
-                    "turnId": .string(turnID),
-                    "modelStepId": .string("step-2"),
-                    "phase": .string("final_answer"),
-                    "message": .string("Done"),
-                ]),
+                event: testAssistantMessage(
+                    turnID: turnID,
+                    modelStepID: "step-2",
+                    text: "Done"
+                ),
                 blocks: [],
                 recordedAtMs: 4_000
             ),
             RenderedEventRecord(
                 event: .object([
-                    "type": .string("task_complete"),
+                    "type": .string("turn_complete"),
                     "turnId": .string(turnID),
                 ]),
                 blocks: [],
@@ -469,7 +463,11 @@ extension AppModelTests {
                 update: .replace,
                 events: [
                     RenderedEventRecord(
-                        event: .object(["type": .string("agent_message")]),
+                        event: testAssistantMessage(
+                            turnID: "turn-1",
+                            modelStepID: "worker-step",
+                            text: ""
+                        ),
                         blocks: [RenderedBlock(capability: "worker", block: block)]
                     )
                 ],
@@ -523,7 +521,11 @@ extension AppModelTests {
                 pageId: "latest",
                 update: .replace,
                 events: [RenderedEventRecord(
-                    event: .object(["type": .string("agent_message")]),
+                    event: testAssistantMessage(
+                        turnID: "turn-1",
+                        modelStepID: "worker-step",
+                        text: ""
+                    ),
                     blocks: [block("new")]
                 )],
                 next: next
@@ -554,7 +556,7 @@ extension AppModelTests {
                 pageId: "before-12",
                 update: .prepend,
                 events: [RenderedEventRecord(
-                    event: .object(["type": .string("user_message")]),
+                    event: testMessageEvent(text: ""),
                     blocks: [block("old")]
                 )],
                 next: nil
@@ -675,7 +677,7 @@ extension AppModelTests {
                     pageId: "\(path):latest",
                     update: .replace,
                     events: [RenderedEventRecord(
-                        event: .object(["type": .string("user_message"), "message": .string(path)]),
+                        event: testMessageEvent(text: path),
                         blocks: []
                     )],
                     next: nil

@@ -27,8 +27,8 @@ use mobius::middleware::scratchpad::ScratchpadStore;
 use mobius::middleware::session_files::SessionFileStore;
 use mobius::middleware::{FrontendExtensions, Middleware as _};
 use mobius::protocol::{
-    Event, EventMsg, FrontendContribution, FrontendEvent, FrontendPreviewEvent, ModelStepOutcome,
-    Op, RenderedBlock, ReviewDecision, Submission,
+    Event, EventMsg, FrontendContribution, FrontendEvent, FrontendPreviewEvent, MessageAuthor,
+    MessageEvent, MessageSubmission, Op, RenderedBlock, ReviewDecision, Submission,
 };
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc, oneshot};
 use uuid::Uuid;
@@ -45,7 +45,7 @@ use crate::provider_catalog::{
     provider_instances, provider_statuses,
 };
 use crate::sandbox::GatewaySandbox;
-use crate::swarm::{SwarmDelivery, SwarmStore, validate_swarm_members};
+use crate::swarm::{BoardEntry, SwarmDelivery, SwarmStore, validate_swarm_members};
 use crate::wire::{
     AgentComposition, CronRunStatus, GitDiffScope, MAX_FRAME_BYTES, ProfileSnapshot,
     ProviderConfig, ReadyPayload, RecordedEvent, RenderedEvent, RenderedPreview, RunStats,
@@ -91,6 +91,20 @@ fn scheduled_execution_spec(mut spec: ChatSpec) -> ChatSpec {
 }
 
 type SessionActivities = Arc<StdMutex<HashMap<String, SessionActivity>>>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SwarmDeliveryAttempt {
+    Submitted(String),
+    Rejected(String),
+}
+
+impl SwarmDeliveryAttempt {
+    fn message_id(&self) -> &str {
+        match self {
+            Self::Submitted(message_id) | Self::Rejected(message_id) => message_id,
+        }
+    }
+}
 
 /// Machine-wide chat registry. A session has at most one resident agent owner.
 #[derive(Clone)]
@@ -523,7 +537,7 @@ impl GatewayHost {
             };
             drop(gateway_state);
 
-            let mut in_flight = HashMap::new();
+            let mut attempts = HashMap::new();
             for target_session_id in startup {
                 let Some(gateway_state) = state.upgrade() else {
                     return;
@@ -535,7 +549,7 @@ impl GatewayHost {
                 gateway
                     .handle_swarm_delivery(
                         SwarmDelivery::Pending { target_session_id },
-                        &mut in_flight,
+                        &mut attempts,
                     )
                     .await;
             }
@@ -548,9 +562,7 @@ impl GatewayHost {
                     state: gateway_state,
                     events: events.clone(),
                 };
-                gateway
-                    .handle_swarm_delivery(delivery, &mut in_flight)
-                    .await;
+                gateway.handle_swarm_delivery(delivery, &mut attempts).await;
             }
         });
     }
@@ -558,7 +570,7 @@ impl GatewayHost {
     async fn handle_swarm_delivery(
         &self,
         delivery: SwarmDelivery,
-        in_flight: &mut HashMap<String, String>,
+        attempts: &mut HashMap<String, SwarmDeliveryAttempt>,
     ) {
         if matches!(&delivery, SwarmDelivery::Changed) {
             let swarm = Arc::clone(&self.state.lock().await.swarm);
@@ -600,17 +612,45 @@ impl GatewayHost {
                 target_session_id,
                 message_id,
             } => {
-                if in_flight
+                if attempts
                     .get(&target_session_id)
-                    .is_some_and(|current| current != &message_id)
+                    .is_some_and(|current| current.message_id() != message_id)
                 {
                     return;
                 }
-                in_flight.remove(&target_session_id);
+                attempts.remove(&target_session_id);
+                target_session_id
+            }
+            SwarmDelivery::Rejected {
+                target_session_id,
+                message_id,
+            } => {
+                let Some(SwarmDeliveryAttempt::Submitted(current)) =
+                    attempts.get(&target_session_id)
+                else {
+                    return;
+                };
+                if current != &message_id {
+                    return;
+                }
+                attempts.insert(
+                    target_session_id,
+                    SwarmDeliveryAttempt::Rejected(message_id),
+                );
+                return;
+            }
+            SwarmDelivery::CapacityAvailable { target_session_id } => {
+                if !matches!(
+                    attempts.get(&target_session_id),
+                    Some(SwarmDeliveryAttempt::Rejected(_))
+                ) {
+                    return;
+                }
+                attempts.remove(&target_session_id);
                 target_session_id
             }
             SwarmDelivery::Pending { target_session_id } => {
-                if in_flight.contains_key(&target_session_id) {
+                if attempts.contains_key(&target_session_id) {
                     let alive = self
                         .state
                         .lock()
@@ -621,13 +661,13 @@ impl GatewayHost {
                     if alive {
                         return;
                     }
-                    in_flight.remove(&target_session_id);
+                    attempts.remove(&target_session_id);
                 }
                 target_session_id
             }
         };
         if let Err(rejection) = self
-            .deliver_next_swarm_message(&target_session_id, in_flight)
+            .deliver_next_swarm_message(&target_session_id, attempts)
             .await
         {
             let _ = self.events.send(ServerFrame::new(ServerMessage::Error {
@@ -641,7 +681,7 @@ impl GatewayHost {
     async fn deliver_next_swarm_message(
         &self,
         target_session_id: &str,
-        in_flight: &mut HashMap<String, String>,
+        attempts: &mut HashMap<String, SwarmDeliveryAttempt>,
     ) -> std::result::Result<(), Rejection> {
         let swarm = Arc::clone(&self.state.lock().await.swarm);
         if swarm
@@ -664,19 +704,14 @@ impl GatewayHost {
         else {
             return Ok(());
         };
-        let message_id = delivery.entry.id;
-        let submission = Submission {
-            id: format!("swarm-{message_id}"),
-            op: Op::PeerInput {
-                message_id: message_id.clone(),
-                source_session_id: delivery.entry.author.session_id,
-                source_handle: delivery.entry.author.handle,
-                text: delivery.entry.text,
-            },
-        };
+        let message_id = delivery.entry.id.clone();
+        let submission = peer_message_submission(delivery.entry);
         match host.submit(submission).await {
             Ok(()) => {
-                in_flight.insert(target_session_id.to_owned(), message_id);
+                attempts.insert(
+                    target_session_id.to_owned(),
+                    SwarmDeliveryAttempt::Submitted(message_id),
+                );
                 Ok(())
             }
             Err(rejection) if matches!(rejection.code, "agent_busy" | "agent_stopped") => {
@@ -1110,6 +1145,26 @@ async fn receive<T>(
     receiver: oneshot::Receiver<std::result::Result<T, Rejection>>,
 ) -> std::result::Result<T, Rejection> {
     receiver.await.map_err(|_| stopped())?
+}
+
+fn peer_message_submission(entry: BoardEntry) -> Submission {
+    let message_id = entry.id;
+    Submission {
+        id: message_id.clone(),
+        op: Op::Message {
+            message: MessageSubmission {
+                author: MessageAuthor::Peer {
+                    message_id,
+                    session_id: entry.author.session_id,
+                    handle: entry.author.handle,
+                },
+                text: entry.text,
+                attachments: Vec::new(),
+                requested_delivery: None,
+                target_turn_id: None,
+            },
+        },
+    }
 }
 
 fn stopped() -> Rejection {

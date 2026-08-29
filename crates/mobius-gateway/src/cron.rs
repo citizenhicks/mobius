@@ -12,7 +12,7 @@ use std::sync::Mutex;
 use chrono::{TimeZone as _, Timelike as _, Utc};
 use chrono_tz::Tz;
 use croner::Cron;
-use mobius::protocol::MAX_USER_INPUT_BYTES;
+use mobius::protocol::MAX_MESSAGE_BYTES;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -208,9 +208,9 @@ impl CronStore {
         if task.is_empty() {
             return Err(Error::Config("scheduled task cannot be empty".into()));
         }
-        if task.len() > MAX_USER_INPUT_BYTES {
+        if task.len() > MAX_MESSAGE_BYTES {
             return Err(Error::Config(format!(
-                "scheduled task exceeds the {MAX_USER_INPUT_BYTES}-byte input limit"
+                "scheduled task exceeds the {MAX_MESSAGE_BYTES}-byte input limit"
             )));
         }
         validate_schedule(&schedule, ends_at)?;
@@ -416,14 +416,14 @@ impl CronStore {
                 "cron task changed while it was being opened".into(),
             ));
         }
-        let limit = u64::try_from(MAX_USER_INPUT_BYTES).unwrap_or(u64::MAX);
+        let limit = u64::try_from(MAX_MESSAGE_BYTES).unwrap_or(u64::MAX);
         let mut bytes = Vec::new();
         std::io::Read::by_ref(&mut file)
             .take(limit + 1)
             .read_to_end(&mut bytes)?;
-        if bytes.len() > MAX_USER_INPUT_BYTES {
+        if bytes.len() > MAX_MESSAGE_BYTES {
             return Err(Error::Config(format!(
-                "cron task exceeds the {MAX_USER_INPUT_BYTES}-byte input limit"
+                "cron task exceeds the {MAX_MESSAGE_BYTES}-byte input limit"
             )));
         }
         let input = String::from_utf8(bytes)
@@ -710,9 +710,9 @@ fn validate_task_input(task: &str) -> Result<()> {
     if task.is_empty() {
         return Err(Error::Config("scheduled task cannot be empty".into()));
     }
-    if task.len() > MAX_USER_INPUT_BYTES {
+    if task.len() > MAX_MESSAGE_BYTES {
         return Err(Error::Config(format!(
-            "scheduled task exceeds the {MAX_USER_INPUT_BYTES}-byte input limit"
+            "scheduled task exceeds the {MAX_MESSAGE_BYTES}-byte input limit"
         )));
     }
     Ok(())

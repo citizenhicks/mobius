@@ -1,8 +1,9 @@
 //! Agent handles and the single linear command dispatch loop.
 
 use std::collections::BTreeMap;
-use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::Weak;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
@@ -50,9 +51,8 @@ pub use self::startup::create_agent;
 
 use self::recorder::EventRecorder;
 
-const COMMAND_QUEUE_CAPACITY: usize = 64;
+const SUBMISSION_QUEUE_CAPACITY: usize = 64;
 const EVENT_QUEUE_CAPACITY: usize = 256;
-const MAX_DEFERRED_SUBMISSIONS: usize = 64;
 const MAX_IDENTIFIER_BYTES: usize = 4 * 1024;
 const MAX_OPERATION_BYTES: usize = 256;
 const DEFAULT_INITIAL_REPLAY_BATCHES: usize = 100;
@@ -228,23 +228,51 @@ impl AgentConfig {
 /// Cloneable command side of a running agent.
 #[derive(Clone)]
 pub struct AgentSender {
-    commands: mpsc::Sender<Submission>,
+    ingress: Arc<SubmissionIngress>,
+}
+
+/// Non-owning command handle for middleware that must address its current agent.
+#[derive(Clone)]
+pub struct WeakAgentSender {
+    ingress: Weak<SubmissionIngress>,
 }
 
 impl AgentSender {
+    /// Returns a handle that does not keep the agent submission channel open.
+    #[must_use]
+    pub fn downgrade(&self) -> WeakAgentSender {
+        WeakAgentSender {
+            ingress: Arc::downgrade(&self.ingress),
+        }
+    }
+
     /// Sends a submission with a caller-controlled correlation ID.
     pub fn send(&self, submission: Submission) -> Result<()> {
         validate_submission(&submission)?;
-        self.commands
-            .try_send(submission)
+        let mut last_sequence = self
+            .ingress
+            .last_sequence
+            .lock()
+            .map_err(|_| Error::Stopped("agent submission queue poisoned".into()))?;
+        let sequence = last_sequence
+            .checked_add(1)
+            .ok_or_else(|| Error::Busy("agent submission sequence exhausted".into()))?;
+        self.ingress
+            .sender
+            .try_send(SequencedSubmission {
+                sequence,
+                submission,
+            })
             .map_err(|error| match error {
                 mpsc::error::TrySendError::Full(_) => {
-                    Error::Busy("agent command queue is full".into())
+                    Error::Busy("agent submission queue is full".into())
                 }
                 mpsc::error::TrySendError::Closed(_) => {
-                    Error::Stopped("agent command channel closed".into())
+                    Error::Stopped("agent submission channel closed".into())
                 }
-            })
+            })?;
+        *last_sequence = sequence;
+        Ok(())
     }
 
     /// Submits a command and returns its correlation ID.
@@ -255,35 +283,76 @@ impl AgentSender {
     }
 }
 
+impl WeakAgentSender {
+    /// Returns a live sender while another owner keeps the agent connected.
+    #[must_use]
+    pub fn upgrade(&self) -> Option<AgentSender> {
+        self.ingress
+            .upgrade()
+            .map(|ingress| AgentSender { ingress })
+    }
+}
+
+struct SubmissionIngress {
+    sender: mpsc::Sender<SequencedSubmission>,
+    last_sequence: Arc<Mutex<u64>>,
+}
+
+struct SequencedSubmission {
+    sequence: u64,
+    submission: Submission,
+}
+
+struct SubmissionInbox {
+    receiver: mpsc::Receiver<SequencedSubmission>,
+    last_sent_sequence: Arc<Mutex<u64>>,
+    last_sequence: u64,
+}
+
+impl SubmissionInbox {
+    async fn recv(&mut self) -> Option<Submission> {
+        let queued = self.receiver.recv().await?;
+        self.last_sequence = queued.sequence;
+        Some(queued.submission)
+    }
+
+    fn cutoff(&self) -> Result<u64> {
+        self.last_sent_sequence
+            .lock()
+            .map(|sequence| *sequence)
+            .map_err(|_| Error::Stopped("agent submission queue poisoned".into()))
+    }
+}
+
+fn submission_channel(capacity: usize) -> (AgentSender, SubmissionInbox) {
+    let (sender, receiver) = mpsc::channel(capacity);
+    let last_sequence = Arc::new(Mutex::new(0));
+    let ingress = Arc::new(SubmissionIngress {
+        sender,
+        last_sequence: Arc::clone(&last_sequence),
+    });
+    (
+        AgentSender {
+            ingress: Arc::clone(&ingress),
+        },
+        SubmissionInbox {
+            receiver,
+            last_sent_sequence: last_sequence,
+            last_sequence: 0,
+        },
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn test_sender() -> WeakAgentSender {
+    submission_channel(1).0.downgrade()
+}
+
 /// Validates one submission before callers perform more expensive boundary work.
 pub fn validate_submission(submission: &Submission) -> Result<()> {
     validate_identifier("submission ID", &submission.id, MAX_IDENTIFIER_BYTES)?;
     match &submission.op {
-        Op::UserInput { text, attachments } => validate_user_input(text, attachments),
-        Op::PeerInput {
-            message_id,
-            source_session_id,
-            source_handle,
-            text,
-        } => {
-            validate_identifier("peer message ID", message_id, MAX_IDENTIFIER_BYTES)?;
-            validate_identifier(
-                "peer source session ID",
-                source_session_id,
-                MAX_IDENTIFIER_BYTES,
-            )?;
-            validate_identifier("peer source handle", source_handle, MAX_OPERATION_BYTES)?;
-            validate_peer_input(text)
-        }
-        Op::ActiveInput {
-            operation,
-            turn_id,
-            text,
-        } => {
-            validate_identifier("active operation", operation, MAX_OPERATION_BYTES)?;
-            validate_identifier("turn ID", turn_id, MAX_IDENTIFIER_BYTES)?;
-            validate_user_input(text, &[])
-        }
+        Op::Message { message } => message.validate(session_file_limits()),
         Op::Interrupt { turn_id } => validate_identifier("turn ID", turn_id, MAX_IDENTIFIER_BYTES),
         Op::ExecApproval { id, .. } => validate_identifier("approval ID", id, MAX_IDENTIFIER_BYTES),
         Op::CapabilityCommand {
@@ -320,65 +389,6 @@ pub fn validate_submission(submission: &Submission) -> Result<()> {
             validate_identifier("session ID", session_id, MAX_IDENTIFIER_BYTES)
         }
     }
-}
-
-fn validate_peer_input(text: &str) -> Result<()> {
-    if text.trim().is_empty() {
-        return Err(Error::Config("peer input cannot be empty".into()));
-    }
-    if text.len() > crate::protocol::MAX_USER_INPUT_BYTES {
-        return Err(Error::Config("peer input exceeds size limit".into()));
-    }
-    Ok(())
-}
-
-fn validate_user_input(
-    text: &str,
-    attachments: &[crate::protocol::SessionFileReference],
-) -> Result<()> {
-    if text.trim().is_empty() && attachments.is_empty() {
-        return Err(Error::Config("user input cannot be empty".into()));
-    }
-    if text.len() > crate::protocol::MAX_USER_INPUT_BYTES {
-        return Err(Error::Config("user input exceeds size limit".into()));
-    }
-    let limits = session_file_limits();
-    if attachments.len() > limits.max_attachment_references {
-        return Err(Error::Config(format!(
-            "user input cannot reference more than {} attachments",
-            limits.max_attachment_references
-        )));
-    }
-    let mut attachment_ids = std::collections::BTreeSet::new();
-    let mut attachment_bytes = 0_u64;
-    for attachment in attachments {
-        if !attachment_ids.insert(&attachment.id) {
-            return Err(Error::Config(
-                "attachment IDs must be unique per message".into(),
-            ));
-        }
-        if Uuid::parse_str(&attachment.id).is_err() {
-            return Err(Error::Config("attachment ID must be a UUID".into()));
-        }
-        validate_identifier("attachment name", &attachment.name, 255)?;
-        validate_identifier("attachment media type", &attachment.media_type, 127)?;
-        if !(1..=limits.max_file_bytes).contains(&attachment.size) {
-            return Err(Error::Config(format!(
-                "attachment size must be 1–{} bytes",
-                limits.max_file_bytes
-            )));
-        }
-        attachment_bytes = attachment_bytes
-            .checked_add(attachment.size)
-            .ok_or_else(|| Error::Config("attachment sizes overflowed".into()))?;
-    }
-    if attachment_bytes > limits.max_session_bytes {
-        return Err(Error::Config(format!(
-            "user input attachments exceed the {}-byte session limit",
-            limits.max_session_bytes
-        )));
-    }
-    Ok(())
 }
 
 fn validate_identifier(name: &str, value: &str, limit: usize) -> Result<()> {
@@ -506,68 +516,50 @@ struct Runner {
     state: Checkpoint,
     review_session_id: String,
     transcript_delta: Vec<Value>,
-    deferred: VecDeque<Submission>,
     pending_session_start_stop: Option<String>,
     turn_end_turn_id: Option<String>,
     events: EventRecorder,
 }
 
 impl Runner {
-    async fn run(&mut self, mut commands: mpsc::Receiver<Submission>) -> Result<()> {
+    async fn run(&mut self, mut inbox: SubmissionInbox) -> Result<()> {
         self.stop_resumed_turn_at_session_start().await?;
         if let Some(pending) = self.state.pending_approval.clone() {
             let submission_id = pending.submission_id.clone();
-            if let Err(error) = self.resume_pending(&mut commands, pending).await {
+            if let Err(error) = self.resume_pending(&mut inbox, pending).await {
+                self.fail_turn(&submission_id, error).await?;
+            }
+        } else if let Some(active) = self.state.active_execution.as_ref() {
+            let submission_id = active.submission_id.clone();
+            let turn_id = active.turn_id.clone();
+            if let Err(error) = self
+                .continue_turn(&mut inbox, submission_id.clone(), turn_id)
+                .await
+            {
                 self.fail_turn(&submission_id, error).await?;
             }
         }
         loop {
-            let submission = match self.deferred.pop_front() {
-                Some(submission) => submission,
-                None => {
-                    let Some(submission) = commands.recv().await else {
-                        return Ok(());
-                    };
-                    submission
+            if let Some(message) = self
+                .config
+                .middleware
+                .next_turn(&mut self.state.pending_messages)?
+            {
+                let submission_id = message.submission_id.clone();
+                if let Err(error) = self.start_message_turn(&mut inbox, message).await {
+                    self.fail_turn(&submission_id, error).await?;
                 }
+                continue;
+            }
+            let submission = {
+                let Some(submission) = inbox.recv().await else {
+                    return Ok(());
+                };
+                submission
             };
             match submission.op {
-                Op::UserInput { text, attachments } => {
-                    if let Err(error) = self
-                        .start_turn(&mut commands, submission.id.clone(), text, attachments)
-                        .await
-                    {
-                        self.fail_turn(&submission.id, error).await?;
-                    }
-                }
-                Op::PeerInput {
-                    message_id,
-                    source_session_id,
-                    source_handle,
-                    text,
-                } => {
-                    if let Err(error) = self
-                        .start_peer_turn(
-                            &mut commands,
-                            submission.id.clone(),
-                            message_id,
-                            source_session_id,
-                            source_handle,
-                            text,
-                        )
-                        .await
-                    {
-                        self.fail_turn(&submission.id, error).await?;
-                    }
-                }
-                Op::ActiveInput { .. } => {
-                    self.emit(
-                        submission.id,
-                        EventMsg::Warning(WarningEvent {
-                            message: "there is no active turn".into(),
-                        }),
-                    )
-                    .await?;
+                Op::Message { message } => {
+                    self.route_idle_message(submission.id, message).await?;
                 }
                 Op::Interrupt { .. } => {
                     self.emit(

@@ -29,7 +29,9 @@ extension AppModelTests {
             sessionID: "chat-1",
             sequence: 1,
             event: AgentEventRecord(submissionId: nil, msg: .object([
-                "type": .string("agent_message_content_delta"),
+                "type": .string("assistant_content_delta"),
+                "sessionId": .string("chat-1"),
+                "turnId": .string("turn-1"),
                 "modelStepId": .string("answer-1"),
                 "phase": .string("final_answer"),
                 "delta": .string("Hel")
@@ -43,10 +45,14 @@ extension AppModelTests {
         model.handle(.agentEvent(
             sessionID: "chat-1",
             sequence: 2,
-            event: AgentEventRecord(submissionId: nil, msg: .object([
-                "type": .string("agent_message"),
-                "message": .string("Hello")
-            ])),
+            event: AgentEventRecord(
+                submissionId: nil,
+                msg: testAssistantMessage(
+                    turnID: "turn-1",
+                    modelStepID: "answer-1",
+                    text: "Hello"
+                )
+            ),
             blocks: [],
             history: nil,
             preview: nil
@@ -92,15 +98,14 @@ extension AppModelTests {
         model.handle(.agentEvent(
             sessionID: "chat-1",
             sequence: 8,
-            event: AgentEventRecord(submissionId: nil, msg: .object([
-                "type": .string("agent_message"),
-                "sessionId": .string("chat-1"),
-                "turnId": .string("turn-current"),
-                "modelStepId": .string("step-current"),
-                "phase": .string("final_answer"),
-                "message": .string("Current"),
-                "messageTarget": .null
-            ])),
+            event: AgentEventRecord(
+                submissionId: nil,
+                msg: testAssistantMessage(
+                    turnID: "turn-live",
+                    modelStepID: "step-current",
+                    text: "Current"
+                )
+            ),
             blocks: [],
             history: nil,
             preview: nil
@@ -152,46 +157,56 @@ extension AppModelTests {
 
         model.handle(.agentEvent(
             sessionID: "chat-1",
-            record: recorded(9, .object([
-                "type": .string("agent_message"),
-                "turnId": .string("turn-live"),
-                "modelStepId": .string("step-live"),
-                "phase": .string("commentary"),
-                "message": .string("Still working"),
-            ]))
+            record: recorded(9, testAssistantMessage(
+                turnID: "turn-live",
+                modelStepID: "step-live",
+                phase: "commentary",
+                text: "Still working"
+            ))
         ))
 
         let events = [
+            RenderedEventRecord(
+                event: testMessageEvent(text: "Oldest question"),
+                blocks: []
+            ),
+            RenderedEventRecord(
+                event: testAssistantMessage(
+                    turnID: "turn-oldest",
+                    modelStepID: "step-oldest",
+                    text: "Oldest answer"
+                ),
+                blocks: []
+            ),
             RenderedEventRecord(event: .object([
-                "type": .string("user_message"),
-                "turnId": .string("turn-oldest"),
-                "message": .string("Oldest question")
+                "type": .string("turn_started"),
+                "turnId": .string("turn-older")
             ]), blocks: []),
-            RenderedEventRecord(event: .object([
-                "type": .string("agent_message"),
-                "turnId": .string("turn-oldest"),
-                "message": .string("Oldest answer")
-            ]), blocks: []),
-            RenderedEventRecord(event: .object([
-                "type": .string("user_message"),
-                "turnId": .string("turn-older"),
-                "message": .string("Older question")
-            ]), blocks: []),
+            RenderedEventRecord(
+                event: testMessageEvent(text: "Older question"),
+                blocks: []
+            ),
             RenderedEventRecord(event: .object([
                 "type": .string("model_changed"),
                 "route": .string("historical-route")
             ]), blocks: []),
-            RenderedEventRecord(event: .object([
-                "type": .string("agent_message"),
-                "turnId": .string("turn-older"),
-                "phase": .string("commentary"),
-                "message": .string("Earlier update")
-            ]), blocks: []),
-            RenderedEventRecord(event: .object([
-                "type": .string("agent_message"),
-                "turnId": .string("turn-older"),
-                "message": .string("Older answer")
-            ]), blocks: []),
+            RenderedEventRecord(
+                event: testAssistantMessage(
+                    turnID: "turn-older",
+                    modelStepID: "step-older-commentary",
+                    phase: "commentary",
+                    text: "Earlier update"
+                ),
+                blocks: []
+            ),
+            RenderedEventRecord(
+                event: testAssistantMessage(
+                    turnID: "turn-older",
+                    modelStepID: "step-older-final",
+                    text: "Older answer"
+                ),
+                blocks: []
+            ),
         ]
         let records = events.enumerated().map { index, rendered in
             RecordedEvent(
@@ -214,8 +229,8 @@ extension AppModelTests {
         model.handle(.sessionHistory(
             requestID: historyID,
             sessionID: "chat-1",
-            records: records,
-            nextBeforeSequence: nil
+            records: Array(records.dropFirst(2)),
+            nextBeforeSequence: 3
         ))
 
         XCTAssertEqual(
@@ -229,7 +244,25 @@ extension AppModelTests {
         XCTAssertEqual(model.selectedModelRoute, "current-route")
         XCTAssertTrue(model.hasEarlierHistory)
 
+        let olderRequestCount = await recorder.requestCount()
         model.loadEarlierHistory()
+        let olderRequest = await recorder.firstRequest(after: olderRequestCount) { request in
+            if case .getSessionHistory = request { return true }
+            return false
+        }
+        guard case .getSessionHistory(
+            let olderHistoryID,
+            "chat-1",
+            3
+        ) = try XCTUnwrap(olderRequest) else {
+            return XCTFail("Expected the next history page")
+        }
+        model.handle(.sessionHistory(
+            requestID: olderHistoryID,
+            sessionID: "chat-1",
+            records: Array(records.prefix(2)),
+            nextBeforeSequence: nil
+        ))
         XCTAssertEqual(
             model.displayedTranscript.map(\.text),
             [
@@ -246,13 +279,12 @@ extension AppModelTests {
 
         model.handle(.agentEvent(
             sessionID: "chat-1",
-            record: recorded(10, .object([
-                "type": .string("agent_message"),
-                "turnId": .string("turn-live"),
-                "modelStepId": .string("step-more"),
-                "phase": .string("commentary"),
-                "message": .string("More work"),
-            ]))
+            record: recorded(10, testAssistantMessage(
+                turnID: "turn-live",
+                modelStepID: "step-more",
+                phase: "commentary",
+                text: "More work"
+            ))
         ))
         XCTAssertEqual(
             model.displayedTranscript.map(\.text),
@@ -279,7 +311,10 @@ extension AppModelTests {
             payload: sessionReady(latestSequence: 8, nextBeforeSequence: 40)
         ))
         model.handle(.sessionReplayComplete(requestID: reconnectID, sessionID: "chat-1"))
-        XCTAssertEqual(model.displayedTranscript.map(\.text), ["Still working", "More work"])
+        XCTAssertEqual(
+            model.displayedTranscript.map(\.text),
+            ["Older question", "Earlier update", "Older answer", "Current", "Still working", "More work"]
+        )
         XCTAssertTrue(model.hasEarlierHistory)
     }
 
@@ -305,15 +340,11 @@ extension AppModelTests {
         ))
         model.handle(.agentEvent(
             sessionID: "chat-1",
-            record: recorded(8, .object([
-                "type": .string("agent_message"),
-                "sessionId": .string("chat-1"),
-                "turnId": .string("turn-current"),
-                "modelStepId": .string("step-current"),
-                "phase": .string("final_answer"),
-                "message": .string("Current"),
-                "messageTarget": .null,
-            ]))
+            record: recorded(8, testAssistantMessage(
+                turnID: "turn-current",
+                modelStepID: "step-current",
+                text: "Current"
+            ))
         ))
         model.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
         model.activeTurnID = "turn-live"
@@ -330,7 +361,7 @@ extension AppModelTests {
         model.handle(.agentEvent(
             sessionID: "chat-1",
             record: recorded(9, .object([
-                "type": .string("agent_message_content_delta"),
+                "type": .string("assistant_content_delta"),
                 "sessionId": .string("chat-1"),
                 "turnId": .string("turn-live"),
                 "modelStepId": .string("step-live"),
@@ -343,10 +374,7 @@ extension AppModelTests {
         model.handle(.sessionHistory(
             requestID: historyID,
             sessionID: "chat-1",
-            records: [recorded(1, .object([
-                "type": .string("user_message"),
-                "message": .string("Older question"),
-            ]))],
+            records: [recorded(1, testMessageEvent(text: "Older question"))],
             nextBeforeSequence: nil
         ))
         try await Task.sleep(for: .milliseconds(80))
@@ -392,26 +420,23 @@ extension AppModelTests {
             requestID: firstID,
             sessionID: "chat-1",
             records: [
-                recorded(5, .object([
-                    "type": .string("user_message"),
-                    "message": .string("Use the smaller patch"),
-                ])),
-                recorded(6, .object([
-                    "type": .string("agent_message"),
-                    "turnId": .string(turnID),
-                    "modelStepId": .string("step-2"),
-                    "phase": .string("commentary"),
-                    "message": .string("After steering"),
-                ])),
-                recorded(7, .object([
-                    "type": .string("agent_message"),
-                    "turnId": .string(turnID),
-                    "modelStepId": .string("step-3"),
-                    "phase": .string("final_answer"),
-                    "message": .string("Done"),
-                ])),
+                recorded(5, testMessageEvent(
+                    delivery: .steer,
+                    text: "Use the smaller patch"
+                )),
+                recorded(6, testAssistantMessage(
+                    turnID: turnID,
+                    modelStepID: "step-2",
+                    phase: "commentary",
+                    text: "After steering"
+                )),
+                recorded(7, testAssistantMessage(
+                    turnID: turnID,
+                    modelStepID: "step-3",
+                    text: "Done"
+                )),
                 recorded(8, .object([
-                    "type": .string("task_complete"),
+                    "type": .string("turn_complete"),
                     "turnId": .string(turnID),
                 ])),
             ],
@@ -421,7 +446,7 @@ extension AppModelTests {
         XCTAssertEqual(model.transcript.map(\.turnID), Array(repeating: turnID, count: 3))
         XCTAssertEqual(
             model.transcriptProjection(breakBefore: nil).rows.map(\.kind),
-            [.user, .workedGroup, .narrative]
+            [.workedGroup, .narrative]
         )
 
         let requestCount = await recorder.requestCount()
@@ -438,35 +463,59 @@ extension AppModelTests {
             sessionID: "chat-1",
             records: [
                 recorded(1, .object([
-                    "type": .string("task_started"),
+                    "type": .string("turn_started"),
                     "turnId": .string(turnID),
                 ])),
-                recorded(2, .object([
-                    "type": .string("user_message"),
-                    "message": .string("Start"),
-                ])),
-                recorded(3, .object([
-                    "type": .string("agent_message"),
-                    "turnId": .string(turnID),
-                    "modelStepId": .string("step-1"),
-                    "phase": .string("commentary"),
-                    "message": .string("Before steering"),
-                ])),
+                recorded(2, testMessageEvent(text: "Start")),
+                recorded(3, testAssistantMessage(
+                    turnID: turnID,
+                    modelStepID: "step-1",
+                    phase: "commentary",
+                    text: "Before steering"
+                )),
+                recorded(4, testMessageEvent(
+                    author: .peer(
+                        messageID: "message-1",
+                        sessionID: "chat-reviewer",
+                        handle: "@reviewer"
+                    ),
+                    delivery: .steer,
+                    text: "The parser boundary is covered."
+                )),
             ],
             nextBeforeSequence: nil
         ))
 
         XCTAssertEqual(
             model.transcript.map(\.text),
-            ["Start", "Before steering", "Use the smaller patch", "After steering", "Done"]
+            [
+                "Start",
+                "Before steering",
+                "The parser boundary is covered.",
+                "Use the smaller patch",
+                "After steering",
+                "Done",
+            ]
         )
-        XCTAssertEqual(model.transcript.map(\.turnID), Array(repeating: turnID, count: 5))
-        XCTAssertEqual(model.transcript.map(\.startsTurn), [true, false, false, false, false])
+        XCTAssertEqual(model.transcript.map(\.turnID), Array(repeating: turnID, count: 6))
+        XCTAssertEqual(
+            model.transcript.map(\.startsTurn),
+            [true, false, false, false, false, false]
+        )
+        XCTAssertEqual(
+            model.transcript.compactMap { $0.messageMetadata?.delivery },
+            [.turn, .steer, .steer]
+        )
         let projection = model.transcriptProjection(breakBefore: nil)
         XCTAssertEqual(projection.rows.map(\.kind), [.user, .workedGroup, .narrative])
         XCTAssertEqual(
             projection.rows[1].records.map(\.text),
-            ["Before steering", "Use the smaller patch", "After steering"]
+            [
+                "Before steering",
+                "The parser boundary is covered.",
+                "Use the smaller patch",
+                "After steering",
+            ]
         )
     }
 
@@ -474,29 +523,27 @@ extension AppModelTests {
         let model = try model()
         let turnID = "peer-turn"
         model.mergeHistory([
-            recorded(5, .object([
-                "type": .string("peer_message"),
-                "messageId": .string("message-1"),
-                "sourceSessionId": .string("chat-reviewer"),
-                "sourceHandle": .string("reviewer"),
-                "message": .string("Review the parser boundary."),
-            ])),
-            recorded(6, .object([
-                "type": .string("agent_message"),
-                "turnId": .string(turnID),
-                "modelStepId": .string("step-1"),
-                "phase": .string("commentary"),
-                "message": .string("Checking"),
-            ])),
-            recorded(7, .object([
-                "type": .string("agent_message"),
-                "turnId": .string(turnID),
-                "modelStepId": .string("step-2"),
-                "phase": .string("final_answer"),
-                "message": .string("Done"),
-            ])),
+            recorded(5, testMessageEvent(
+                author: .peer(
+                    messageID: "message-1",
+                    sessionID: "chat-reviewer",
+                    handle: "@reviewer"
+                ),
+                text: "Review the parser boundary."
+            )),
+            recorded(6, testAssistantMessage(
+                turnID: turnID,
+                modelStepID: "step-1",
+                phase: "commentary",
+                text: "Checking"
+            )),
+            recorded(7, testAssistantMessage(
+                turnID: turnID,
+                modelStepID: "step-2",
+                text: "Done"
+            )),
             recorded(8, .object([
-                "type": .string("task_complete"),
+                "type": .string("turn_complete"),
                 "turnId": .string(turnID),
             ])),
         ])
@@ -505,7 +552,7 @@ extension AppModelTests {
         XCTAssertEqual(model.transcript.map(\.startsTurn), [true, false, false])
 
         model.mergeHistory([recorded(1, .object([
-            "type": .string("task_started"),
+            "type": .string("turn_started"),
             "turnId": .string(turnID),
         ]))])
 
@@ -558,20 +605,16 @@ extension AppModelTests {
             sessionID: "chat-1",
             records: [
                 recorded(1, .object([
-                    "type": .string("task_started"),
+                    "type": .string("turn_started"),
                     "turnId": .string(turnID),
                 ])),
-                recorded(2, .object([
-                    "type": .string("user_message"),
-                    "message": .string("Start"),
-                ])),
-                recorded(3, .object([
-                    "type": .string("agent_message"),
-                    "turnId": .string(turnID),
-                    "modelStepId": .string("step-1"),
-                    "phase": .string("commentary"),
-                    "message": .string("Checking"),
-                ])),
+                recorded(2, testMessageEvent(text: "Start")),
+                recorded(3, testAssistantMessage(
+                    turnID: turnID,
+                    modelStepID: "step-1",
+                    phase: "commentary",
+                    text: "Checking"
+                )),
                 recorded(4, .object([
                     "type": .string("turn_aborted"),
                     "turnId": .string(turnID),
@@ -733,10 +776,11 @@ extension AppModelTests {
             return XCTFail("Expected first history page")
         }
         let partial = recorded(6, .object([
-            "type": .string("agent_reasoning_content_delta"),
+            "type": .string("assistant_content_delta"),
             "sessionId": .string("chat-1"),
             "turnId": .string("turn-1"),
             "modelStepId": .string("step-1"),
+            "phase": .string("reasoning"),
             "delta": .string("Partial reasoning"),
         ]))
         model.handle(.sessionHistory(

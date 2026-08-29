@@ -108,8 +108,8 @@ async fn each_call_receives_its_own_permissions() {
                 output: "first:false".into(),
                 is_error: false,
                 handler_executed: true,
-                loaded_tools: Vec::new(),
                 additional_input: Vec::new(),
+                events: Vec::new(),
             },
             ToolResult {
                 call_id: "allowed".into(),
@@ -117,8 +117,8 @@ async fn each_call_receives_its_own_permissions() {
                 output: "second:true".into(),
                 is_error: false,
                 handler_executed: true,
-                loaded_tools: Vec::new(),
                 additional_input: Vec::new(),
+                events: Vec::new(),
             },
         ]
     );
@@ -157,8 +157,8 @@ async fn parallel_tool_panic_preserves_call_identity() {
             output: "tool panicked".into(),
             is_error: true,
             handler_executed: true,
-            loaded_tools: Vec::new(),
             additional_input: Vec::new(),
+            events: Vec::new(),
         }]
     );
 }

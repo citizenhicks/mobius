@@ -81,9 +81,185 @@ struct MessageTarget: Codable, Hashable, Sendable {
     }
 }
 
+enum ActiveMessageDelivery: String, CaseIterable, Codable, Hashable, Sendable {
+    case steer
+    case queue
+}
+
+enum MessageDelivery: String, Codable, Hashable, Sendable {
+    case turn
+    case steer
+    case queue
+
+    var startsTurn: Bool { self != .steer }
+}
+
+enum MessageAuthor: Codable, Hashable, Sendable {
+    case user
+    case peer(messageID: String, sessionID: String, handle: String)
+
+    init(from decoder: Decoder) throws {
+        try self.init(json: JSONValue(from: decoder))
+    }
+
+    init(json: JSONValue) throws {
+        guard let type = json["type"]?.stringValue else {
+            throw GatewayWireError.invalidFrame("message author has no type")
+        }
+        switch type {
+        case "user":
+            self = .user
+        case "peer":
+            guard let messageID = json["messageId"]?.stringValue,
+                  !messageID.isEmpty,
+                  let sessionID = json["sessionId"]?.stringValue,
+                  !sessionID.isEmpty,
+                  let handle = json["handle"]?.stringValue,
+                  !handle.isEmpty
+            else {
+                throw GatewayWireError.invalidFrame("peer message author is incomplete")
+            }
+            self = .peer(messageID: messageID, sessionID: sessionID, handle: handle)
+        default:
+            throw GatewayWireError.invalidFrame("unknown message author \(type)")
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: DynamicCodingKey.self)
+        switch self {
+        case .user:
+            try container.encode("user", forKey: "type")
+        case .peer(let messageID, let sessionID, let handle):
+            try container.encode("peer", forKey: "type")
+            try container.encode(messageID, forKey: "messageId")
+            try container.encode(sessionID, forKey: "sessionId")
+            try container.encode(handle, forKey: "handle")
+        }
+    }
+}
+
+extension MessageAuthor {
+    var peerFields: (messageID: String, sessionID: String, handle: String)? {
+        guard case .peer(let messageID, let sessionID, let handle) = self else { return nil }
+        return (messageID, sessionID, handle)
+    }
+}
+
+struct MessageSubmission: Codable, Hashable, Sendable {
+    let author: MessageAuthor
+    let text: String
+    let attachments: [SessionFileReference]
+    let requestedDelivery: ActiveMessageDelivery?
+    let targetTurnId: String?
+
+    init(
+        author: MessageAuthor,
+        text: String,
+        attachments: [SessionFileReference],
+        requestedDelivery: ActiveMessageDelivery?,
+        targetTurnId: String?
+    ) {
+        self.author = author
+        self.text = text
+        self.attachments = attachments
+        self.requestedDelivery = requestedDelivery
+        self.targetTurnId = targetTurnId
+    }
+
+    init(from decoder: Decoder) throws {
+        try self.init(json: JSONValue(from: decoder))
+    }
+
+    init(json: JSONValue) throws {
+        guard let author = json["author"],
+              let text = json["text"]?.stringValue,
+              let attachmentValues = json["attachments"]?.arrayValue,
+              attachmentValues.count <= maximumWireSessionFileReferences,
+              let requestedDeliveryValue = json["requestedDelivery"],
+              let targetTurnValue = json["targetTurnId"]
+        else {
+            throw GatewayWireError.invalidFrame("message submission is incomplete")
+        }
+        let requestedDelivery: ActiveMessageDelivery?
+        if requestedDeliveryValue != .null {
+            guard let rawValue = requestedDeliveryValue.stringValue,
+                  let decoded = ActiveMessageDelivery(rawValue: rawValue)
+            else {
+                throw GatewayWireError.invalidFrame("message submission has invalid delivery")
+            }
+            requestedDelivery = decoded
+        } else {
+            requestedDelivery = nil
+        }
+        let targetTurnId: String?
+        if targetTurnValue != .null {
+            guard let decoded = targetTurnValue.stringValue, !decoded.isEmpty else {
+                throw GatewayWireError.invalidFrame("message submission has invalid target turn")
+            }
+            targetTurnId = decoded
+        } else {
+            targetTurnId = nil
+        }
+        self.init(
+            author: try MessageAuthor(json: author),
+            text: text,
+            attachments: try attachmentValues.map(SessionFileReference.init(json:)),
+            requestedDelivery: requestedDelivery,
+            targetTurnId: targetTurnId
+        )
+    }
+
+    func encode(to encoder: Encoder) throws {
+        guard attachments.count <= maximumWireSessionFileReferences else {
+            throw GatewayWireError.invalidFrame("message submission has too many attachments")
+        }
+        var container = encoder.container(keyedBy: DynamicCodingKey.self)
+        try container.encode(author, forKey: "author")
+        try container.encode(text, forKey: "text")
+        try container.encode(attachments, forKey: "attachments")
+        try container.encode(requestedDelivery, forKey: "requestedDelivery")
+        try container.encode(targetTurnId, forKey: "targetTurnId")
+    }
+}
+
+struct MessageEventPayload: Hashable, Sendable {
+    let author: MessageAuthor
+    let delivery: MessageDelivery
+    let text: String
+    let attachments: [SessionFileReference]
+    let messageTarget: MessageTarget?
+
+    init(json: JSONValue) throws {
+        guard let author = json["author"],
+              let deliveryValue = json["delivery"]?.stringValue,
+              let delivery = MessageDelivery(rawValue: deliveryValue),
+              let text = json["text"]?.stringValue,
+              let attachmentValues = json["attachments"]?.arrayValue,
+              attachmentValues.count <= maximumWireSessionFileReferences,
+              let targetValue = json["messageTarget"]
+        else {
+            throw GatewayWireError.invalidFrame("message event is incomplete")
+        }
+        let messageTarget: MessageTarget?
+        if targetValue == .null {
+            messageTarget = nil
+        } else {
+            guard let decoded = MessageTarget(json: targetValue) else {
+                throw GatewayWireError.invalidFrame("message event has invalid target")
+            }
+            messageTarget = decoded
+        }
+        self.author = try MessageAuthor(json: author)
+        self.delivery = delivery
+        self.text = text
+        self.attachments = try attachmentValues.map(SessionFileReference.init(json:))
+        self.messageTarget = messageTarget
+    }
+}
+
 enum AgentOperation: Codable, Sendable {
-    case userInput(text: String, attachments: [SessionFileReference])
-    case activeInput(operation: String, turnID: String, text: String)
+    case message(MessageSubmission)
     case interrupt(turnID: String)
     case execApproval(id: String, decision: ReviewDecision)
     case capabilityCommand(
@@ -111,22 +287,11 @@ enum AgentOperation: Codable, Sendable {
             return string
         }
         switch type {
-        case "user_input":
-            guard let values = value["attachments"]?.arrayValue,
-                  values.count <= maximumWireSessionFileReferences
-            else {
-                throw GatewayWireError.invalidFrame("user_input has invalid attachments")
+        case "message":
+            guard let message = value["message"] else {
+                throw GatewayWireError.invalidFrame("message operation has no message")
             }
-            self = .userInput(
-                text: try required("text"),
-                attachments: try values.map(SessionFileReference.init(json:))
-            )
-        case "active_input":
-            self = .activeInput(
-                operation: try required("operation"),
-                turnID: try required("turnId"),
-                text: try required("text")
-            )
+            self = .message(try MessageSubmission(json: message))
         case "interrupt":
             self = .interrupt(turnID: try required("turnId"))
         case "exec_approval":
@@ -175,18 +340,9 @@ enum AgentOperation: Codable, Sendable {
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: DynamicCodingKey.self)
         switch self {
-        case .userInput(let text, let attachments):
-            guard attachments.count <= maximumWireSessionFileReferences else {
-                throw GatewayWireError.invalidFrame("user_input has too many attachments")
-            }
-            try container.encode("user_input", forKey: "type")
-            try container.encode(text, forKey: "text")
-            try container.encode(attachments, forKey: "attachments")
-        case .activeInput(let operation, let turnID, let text):
-            try container.encode("active_input", forKey: "type")
-            try container.encode(operation, forKey: "operation")
-            try container.encode(turnID, forKey: "turnId")
-            try container.encode(text, forKey: "text")
+        case .message(let message):
+            try container.encode("message", forKey: "type")
+            try container.encode(message, forKey: "message")
         case .interrupt(let turnID):
             try container.encode("interrupt", forKey: "type")
             try container.encode(turnID, forKey: "turnId")

@@ -30,7 +30,6 @@ pub struct FrontendContribution {
     pub commands: Vec<FrontendCommand>,
     pub widgets: Vec<FrontendWidget>,
     pub references: Vec<FrontendReference>,
-    pub active_input: Option<FrontendActiveInput>,
 }
 
 /// One middleware entry and its frontend-neutral configuration controls.
@@ -88,12 +87,6 @@ pub struct FrontendSettingOption {
 pub enum FrontendSettingValue {
     Integer(i64),
     String(String),
-}
-
-/// How normal composer input is submitted while a turn is active.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FrontendActiveInput {
-    pub operation: String,
 }
 
 /// One chat reference supplied by a capability.

@@ -539,7 +539,7 @@ enum TranscriptWindowAnchor: Equatable {
 struct TranscriptHistoryTurnState {
     var turnID: String?
     var unassignedEntryStart: Int?
-    var awaitingInitialUserTurnID: String?
+    var awaitingInitialMessageTurnID: String?
 }
 
 struct BufferedAgentEvent {

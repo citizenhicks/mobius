@@ -94,12 +94,10 @@ extension AppModelTests {
             records: [RecordedEvent(
                 sequence: 1,
                 recordedAtMs: 1_000,
-                event: AgentEventRecord(submissionId: nil, msg: .object([
-                    "type": .string("user_message"),
-                    "message": .string("Scheduled transcript"),
-                    "attachments": .array([]),
-                    "messageTarget": .null
-                ])),
+                event: AgentEventRecord(
+                    submissionId: nil,
+                    msg: testMessageEvent(text: "Scheduled transcript")
+                ),
                 streamMetrics: [],
                 blocks: [],
                 preview: nil
@@ -173,8 +171,7 @@ extension AppModelTests {
                 content: .actionList(title: "Global Scratchpad", items: []),
                 action: nil
             )],
-            references: [],
-            activeInput: nil
+            references: []
         )
         model.applyGatewayCatalog(ready(
             defaultConfig: VersionedAgentConfig(revision: 1, config: composition()),
@@ -263,8 +260,7 @@ extension AppModelTests {
                     action: nil
                 )
             ],
-            references: [FrontendReference(trigger: "$", value: "planning", description: "Planning skill")],
-            activeInput: nil
+            references: [FrontendReference(trigger: "$", value: "planning", description: "Planning skill")]
         )]
         model.mountedWidgets = model.contributions.flatMap { contribution in
             contribution.widgets.map {
@@ -298,8 +294,7 @@ extension AppModelTests {
                 references: [
                     FrontendReference(trigger: "$", value: "global", description: "Global"),
                     FrontendReference(trigger: "$", value: "workspace", description: "Duplicate")
-                ],
-                activeInput: nil
+                ]
             )]
         ))
         model.agentSnapshot = VersionedAgentConfig(revision: 1, config: config)
@@ -313,8 +308,7 @@ extension AppModelTests {
                 FrontendReference(trigger: "$", value: "ponytail", description: "Managed"),
                 FrontendReference(trigger: "$", value: "workspace", description: "Workspace"),
                 FrontendReference(trigger: "$", value: "project", description: "Project")
-            ],
-            activeInput: nil
+            ]
         )]
 
         XCTAssertEqual(
@@ -368,8 +362,7 @@ extension AppModelTests {
             count: 1,
             commands: [],
             widgets: [staticStatus, navigation],
-            references: [],
-            activeInput: nil
+            references: []
         )
 
         model.handle(.sessionChanged(sessionReady(
@@ -390,15 +383,13 @@ extension AppModelTests {
         })
         model.selectedSessionID = "chat-1"
         model.reduce(
-            event: AgentEventRecord(submissionId: nil, msg: .object([
-                "type": .string("user_message"),
-                "message": .string("Fork here"),
-                "attachments": .array([]),
-                "messageTarget": .object([
-                    "checkpointSequence": .number(12),
-                    "batchItemCount": .number(3)
-                ])
-            ])),
+            event: AgentEventRecord(
+                submissionId: nil,
+                msg: testMessageEvent(
+                    text: "Fork here",
+                    messageTarget: MessageTarget(checkpointSequence: 12, batchItemCount: 3)
+                )
+            ),
             blocks: [],
             history: nil,
             preview: nil
@@ -619,12 +610,14 @@ extension AppModelTests {
         model.reduce(record: RecordedEvent(
             sequence: 1,
             recordedAtMs: 1_200,
-            event: AgentEventRecord(submissionId: nil, msg: .object([
-                "type": .string("agent_message"),
-                "modelStepId": .string("step-live"),
-                "phase": .string("final_answer"),
-                "message": .string("Answer")
-            ])),
+            event: AgentEventRecord(
+                submissionId: nil,
+                msg: testAssistantMessage(
+                    turnID: "turn-live",
+                    modelStepID: "step-live",
+                    text: "Answer"
+                )
+            ),
             streamMetrics: [],
             blocks: [],
             preview: nil
@@ -632,13 +625,14 @@ extension AppModelTests {
         model.reduce(record: RecordedEvent(
             sequence: 2,
             recordedAtMs: 1_250,
-            event: AgentEventRecord(submissionId: nil, msg: .object([
-                "type": .string("agent_message"),
-                "turnId": .string("turn-live"),
-                "modelStepId": .string("step-live"),
-                "phase": .string("final_answer"),
-                "message": .string("Answer")
-            ])),
+            event: AgentEventRecord(
+                submissionId: nil,
+                msg: testAssistantMessage(
+                    turnID: "turn-live",
+                    modelStepID: "step-live",
+                    text: "Answer"
+                )
+            ),
             streamMetrics: [],
             blocks: [],
             preview: nil
@@ -647,7 +641,7 @@ extension AppModelTests {
             sequence: 3,
             recordedAtMs: 1_300,
             event: AgentEventRecord(submissionId: nil, msg: .object([
-                "type": .string("task_complete"),
+                "type": .string("turn_complete"),
                 "turnId": .string("turn-live")
             ])),
             streamMetrics: [],
@@ -726,7 +720,7 @@ extension AppModelTests {
 
         model.reduce(
             event: AgentEventRecord(submissionId: nil, msg: .object([
-                "type": .string("task_started"),
+                "type": .string("turn_started"),
                 "turnId": .string("turn-1")
             ])),
             blocks: [],

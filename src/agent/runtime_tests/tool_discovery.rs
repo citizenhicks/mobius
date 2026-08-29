@@ -60,6 +60,10 @@ impl Model for DiscoveryModel {
 
 struct OptionalTool(Arc<AtomicUsize>);
 
+struct ApprovalTool(Arc<AtomicUsize>);
+
+struct HideAfterModel(AtomicUsize);
+
 impl Tool for OptionalTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
@@ -76,6 +80,51 @@ impl Tool for OptionalTool {
     ) -> BoxFuture<'a, Result<String>> {
         self.0.fetch_add(1, Ordering::SeqCst);
         Box::pin(async { Ok("optional work complete".into()) })
+    }
+}
+
+impl Tool for ApprovalTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "approval_work".into(),
+            description: "Perform approval work".into(),
+            parameters: serde_json::json!({"type": "object"}),
+        }
+    }
+
+    fn exposure(&self) -> ToolExposure {
+        ToolExposure::Direct
+    }
+
+    fn approval(&self) -> ApprovalRequirement {
+        ApprovalRequirement::Always
+    }
+
+    fn call<'a>(
+        &'a self,
+        _context: ToolContext,
+        _arguments: Value,
+    ) -> BoxFuture<'a, Result<String>> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Ok("approval work complete".into()) })
+    }
+}
+
+impl Middleware for HideAfterModel {
+    fn name(&self) -> &'static str {
+        "hide_after_model"
+    }
+
+    fn tool_exposure<'a>(
+        &'a self,
+        context: &'a mut crate::middleware::ToolExposureContext<'_>,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            if self.0.fetch_add(1, Ordering::SeqCst) > 0 {
+                context.hide(&["approval_work"]);
+            }
+            Ok(())
+        })
     }
 }
 
@@ -107,10 +156,9 @@ fn discovery_config(
             ApprovalPolicy::Ask,
         )),
         checkpoints,
-        MiddlewareStack::new(vec![Arc::new(Tools::new(vec![Arc::new(OptionalTool(
+        test_middleware(vec![Arc::new(Tools::new(vec![Arc::new(OptionalTool(
             executions,
-        ))]))])
-        .expect("middleware"),
+        ))]))]),
         "test prompt",
     )
     .session_id(session_id)
@@ -149,10 +197,7 @@ async fn rebuild_discovers_then_exposes_an_optional_tool() {
     let mut agent = create_agent(config).await.expect("create agent");
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "do optional work".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_op("do optional work"))
         .expect("submit input");
     let mut load_event = None;
     loop {
@@ -211,10 +256,7 @@ async fn native_materialization_can_call_a_deferred_tool_in_the_same_step() {
     let mut agent = create_agent(config).await.expect("create agent");
     agent
         .sender()
-        .submit(Op::UserInput {
-            text: "do optional work".into(),
-            attachments: Vec::new(),
-        })
+        .submit(user_op("do optional work"))
         .expect("submit input");
     let mut load_event = None;
     loop {
@@ -238,6 +280,117 @@ async fn native_materialization_can_call_a_deferred_tool_in_the_same_step() {
             .expect("valid load")
             .is_some()
     }));
+}
+
+#[tokio::test]
+async fn invalid_native_materialization_still_records_provider_usage() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let checkpoints = Arc::new(
+        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
+            .expect("checkpoint store"),
+    );
+    let mut output = scripted_message("invalid");
+    output.materialized_tools.insert("missing_tool".into());
+    let model = Arc::new(DiscoveryModel {
+        mode: crate::protocol::ToolDiscoveryMode::Native,
+        outputs: Mutex::new(VecDeque::from([output])),
+        compact_outputs: Mutex::new(VecDeque::new()),
+        requests: Mutex::new(Vec::new()),
+    });
+    let checkpoint_store: Arc<dyn CheckpointStore> = checkpoints.clone();
+    let config = discovery_config(
+        workspace.path(),
+        checkpoint_store,
+        model,
+        Arc::new(AtomicUsize::new(0)),
+        "invalid-native-tool",
+    );
+    let mut agent = create_agent(config).await.expect("create agent");
+    agent
+        .sender()
+        .submit(user_op("use missing tool"))
+        .expect("submit input");
+    while !matches!(
+        agent.next_event().await.expect("agent event").msg,
+        EventMsg::TurnAborted(_)
+    ) {}
+
+    let saved = checkpoints
+        .load("invalid-native-tool")
+        .await
+        .expect("load checkpoint")
+        .expect("saved checkpoint");
+    let execution = checkpoints
+        .execution_page(
+            "invalid-native-tool",
+            ExecutionPageRequest {
+                before_sequence: None,
+                limit: 1,
+            },
+        )
+        .await
+        .expect("execution page")
+        .executions
+        .pop()
+        .expect("failed execution");
+    assert_eq!(saved.total_usage, scripted_usage());
+    assert_eq!(execution.usage, scripted_usage());
+}
+
+#[tokio::test]
+async fn tool_hidden_after_inference_never_reaches_approval() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
+        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
+            .expect("checkpoint store"),
+    );
+    let model = Arc::new(DiscoveryModel {
+        mode: crate::protocol::ToolDiscoveryMode::Rebuild,
+        outputs: Mutex::new(VecDeque::from([
+            tool_call("approval", "approval_work", serde_json::json!({})),
+            scripted_message("done"),
+        ])),
+        compact_outputs: Mutex::new(VecDeque::new()),
+        requests: Mutex::new(Vec::new()),
+    });
+    let executions = Arc::new(AtomicUsize::new(0));
+    let config = AgentConfig::new(
+        Arc::new(ModelRouter::new("test", model)),
+        Arc::new(Sandbox::new(
+            Arc::new(LocalSandbox::new(workspace.path()).expect("sandbox")),
+            ApprovalPolicy::Ask,
+        )),
+        checkpoints,
+        test_middleware(vec![
+            Arc::new(Tools::new(vec![Arc::new(ApprovalTool(Arc::clone(
+                &executions,
+            )))])),
+            Arc::new(HideAfterModel(AtomicUsize::new(0))),
+        ]),
+        "test prompt",
+    )
+    .session_id("live-tool-exposure");
+    let mut agent = create_agent(config).await.expect("create agent");
+    agent
+        .sender()
+        .submit(user_op("do approval work"))
+        .expect("submit input");
+    let mut approval_requested = false;
+    let mut unavailable = false;
+    loop {
+        match agent.next_event().await.expect("agent event").msg {
+            EventMsg::ExecApprovalRequest(_) => approval_requested = true,
+            EventMsg::ToolCallEnd(result) if result.call_id == "approval" => {
+                unavailable = result.is_error && result.output.contains("unavailable");
+            }
+            EventMsg::TurnComplete(_) => break,
+            _ => {}
+        }
+    }
+
+    assert!(!approval_requested);
+    assert!(unavailable);
+    assert_eq!(executions.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
@@ -291,26 +444,19 @@ async fn compaction_preserves_loaded_deferred_tools() {
             ApprovalPolicy::Ask,
         )),
         checkpoints,
-        MiddlewareStack::new(vec![
+        test_middleware(vec![
             Arc::new(Tools::new(vec![Arc::new(OptionalTool(Arc::clone(
                 &executions,
             )))])),
             Arc::new(Compaction::new(1_000).expect("compaction")),
-        ])
-        .expect("middleware"),
+        ]),
         "test prompt",
     )
     .session_id("compacted-tool-discovery");
     let mut agent = create_agent(config).await.expect("create agent");
 
     for text in ["load optional work", "use optional work"] {
-        agent
-            .sender()
-            .submit(Op::UserInput {
-                text: text.into(),
-                attachments: Vec::new(),
-            })
-            .expect("submit input");
+        agent.sender().submit(user_op(text)).expect("submit input");
         while !matches!(
             agent.next_event().await.expect("agent event").msg,
             EventMsg::TurnComplete(_)

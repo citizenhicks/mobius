@@ -1,6 +1,6 @@
 use super::*;
 use mobius::middleware::session_files::session_file_limits;
-use mobius::protocol::Submission;
+use mobius::protocol::{MessageAuthor, Submission};
 
 use crate::wire::{AgentComposition, GitDiffScope, WorkspaceFileScope};
 
@@ -779,18 +779,24 @@ async fn submit(
         Ok(host) => host,
         Err(rejection) => return write_rejection(writer, request_id, rejection).await,
     };
-    if matches!(&submission.op, Op::PeerInput { .. }) {
-        return write_rejection(
-            writer,
-            request_id,
-            Rejection {
-                code: "invalid_submission",
-                message: "peer input is gateway-owned".into(),
-                fatal: false,
-            },
-        )
-        .await;
-    }
+    let user_message = match &submission.op {
+        Op::Message { message } => match &message.author {
+            MessageAuthor::User => Some(message),
+            MessageAuthor::Peer { .. } => {
+                return write_rejection(
+                    writer,
+                    request_id,
+                    Rejection {
+                        code: "invalid_submission",
+                        message: "peer messages are gateway-owned".into(),
+                        fatal: false,
+                    },
+                )
+                .await;
+            }
+        },
+        _ => None,
+    };
     if let Err(error) = validate_submission(&submission) {
         return write_rejection(
             writer,
@@ -803,16 +809,13 @@ async fn submit(
         )
         .await;
     }
-    if let Op::UserInput {
-        attachments: references,
-        ..
-    } = &submission.op
-        && !references.is_empty()
+    if let Some(message) = user_message
+        && !message.attachments.is_empty()
     {
         if !host.accepts_file_attachments() {
             return write_rejection(writer, request_id, uploads_disabled_rejection()).await;
         }
-        for reference in references {
+        for reference in &message.attachments {
             if let Err(error) = connection
                 .session_files
                 .verify_upload(&session_id, reference)

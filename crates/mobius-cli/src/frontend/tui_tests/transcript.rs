@@ -21,26 +21,34 @@ fn commentary_and_final_output_are_separate_assistant_messages() {
     let mut state = state();
     state.active_turn = Some("turn".into());
     state.handle_agent_event(
-        EventMsg::AgentMessageContentDelta(mobius::protocol::AgentMessageContentDeltaEvent {
+        EventMsg::AssistantContentDelta(mobius::protocol::AssistantContentDeltaEvent {
             session_id: "session".into(),
             turn_id: "turn".into(),
             model_step_id: "commentary".into(),
             delta: "Checking the workspace".into(),
-            phase: AgentMessagePhase::Commentary,
+            phase: ModelStepContentPhase::Commentary,
         }),
         Vec::new(),
     );
 
     assert_eq!(state.streaming, "Checking the workspace");
-    assert_eq!(state.streaming_phase, Some(AgentMessagePhase::Commentary));
+    assert_eq!(
+        state.streaming_phase,
+        Some(ModelStepContentPhase::Commentary)
+    );
 
     state.handle_agent_event(
-        EventMsg::AgentMessage(mobius::protocol::AgentMessageEvent {
+        EventMsg::AssistantMessage(mobius::protocol::AssistantMessageEvent {
             session_id: "session".into(),
             turn_id: "turn".into(),
             model_step_id: "final".into(),
-            message: "Done".into(),
-            phase: AgentMessagePhase::FinalAnswer,
+            content: vec![ModelStepContent {
+                output_index: 0,
+                part_index: 0,
+                phase: ModelStepContentPhase::FinalAnswer,
+                text: "Done".into(),
+                annotations: Vec::new(),
+            }],
             message_target: None,
         }),
         Vec::new(),
@@ -68,12 +76,12 @@ fn commentary_and_final_output_are_separate_assistant_messages() {
 fn commentary_is_committed_before_a_tool_block() {
     let mut state = state();
     state.handle_agent_event(
-        EventMsg::AgentMessageContentDelta(mobius::protocol::AgentMessageContentDeltaEvent {
+        EventMsg::AssistantContentDelta(mobius::protocol::AssistantContentDeltaEvent {
             session_id: "session".into(),
             turn_id: "turn".into(),
             model_step_id: "response".into(),
             delta: "I’ll inspect the file first.".into(),
-            phase: AgentMessagePhase::Commentary,
+            phase: ModelStepContentPhase::Commentary,
         }),
         Vec::new(),
     );
@@ -114,12 +122,17 @@ fn commentary_is_committed_before_a_tool_block() {
 fn durable_commentary_is_an_assistant_message() {
     let mut state = state();
     state.handle_agent_event(
-        EventMsg::AgentMessage(mobius::protocol::AgentMessageEvent {
+        EventMsg::AssistantMessage(mobius::protocol::AssistantMessageEvent {
             session_id: "session".into(),
             turn_id: "turn".into(),
             model_step_id: "commentary".into(),
-            message: "The first check passed.".into(),
-            phase: AgentMessagePhase::Commentary,
+            content: vec![ModelStepContent {
+                output_index: 0,
+                part_index: 0,
+                phase: ModelStepContentPhase::Commentary,
+                text: "The first check passed.".into(),
+                annotations: Vec::new(),
+            }],
             message_target: None,
         }),
         Vec::new(),
@@ -136,16 +149,29 @@ fn durable_commentary_is_an_assistant_message() {
 #[test]
 fn final_message_replaces_an_incomplete_stream() {
     let mut state = state();
-    state.streaming = "partial".into();
-    state.streaming_phase = Some(AgentMessagePhase::FinalAnswer);
-
     state.handle_agent_event(
-        EventMsg::AgentMessage(mobius::protocol::AgentMessageEvent {
+        EventMsg::AssistantContentDelta(mobius::protocol::AssistantContentDeltaEvent {
             session_id: "session".into(),
             turn_id: "turn".into(),
             model_step_id: "final".into(),
-            message: "complete answer".into(),
-            phase: AgentMessagePhase::FinalAnswer,
+            delta: "partial".into(),
+            phase: ModelStepContentPhase::FinalAnswer,
+        }),
+        Vec::new(),
+    );
+
+    state.handle_agent_event(
+        EventMsg::AssistantMessage(mobius::protocol::AssistantMessageEvent {
+            session_id: "session".into(),
+            turn_id: "turn".into(),
+            model_step_id: "final".into(),
+            content: vec![ModelStepContent {
+                output_index: 0,
+                part_index: 0,
+                phase: ModelStepContentPhase::FinalAnswer,
+                text: "complete answer".into(),
+                annotations: Vec::new(),
+            }],
             message_target: None,
         }),
         Vec::new(),
@@ -160,7 +186,7 @@ fn final_message_replaces_an_incomplete_stream() {
 }
 
 #[test]
-fn completed_model_step_is_authoritative_for_replay_and_summary_events() {
+fn assistant_message_is_authoritative_for_replay_and_summary_events() {
     use mobius::protocol::{
         ModelStepCompletedEvent, ModelStepContent, ModelStepContentPhase, ModelStepOutcome,
         TokenUsage,
@@ -179,34 +205,32 @@ fn completed_model_step_is_authoritative_for_replay_and_summary_events() {
                 end_turn: true,
                 tool_call_ids: Vec::new(),
                 usage: TokenUsage::default(),
-                content: vec![
-                    ModelStepContent {
-                        output_index: 0,
-                        part_index: 0,
-                        phase: ModelStepContentPhase::Reasoning,
-                        text: "Checked the state".into(),
-                        annotations: Vec::new(),
-                    },
-                    ModelStepContent {
-                        output_index: 1,
-                        part_index: 0,
-                        phase: ModelStepContentPhase::FinalAnswer,
-                        text: "Everything is ready".into(),
-                        annotations: Vec::new(),
-                    },
-                ],
             },
             diagnostics: None,
         }),
         Vec::new(),
     );
     state.handle_agent_event(
-        EventMsg::AgentMessage(mobius::protocol::AgentMessageEvent {
+        EventMsg::AssistantMessage(mobius::protocol::AssistantMessageEvent {
             session_id: "session".into(),
             turn_id: "turn".into(),
             model_step_id: "step".into(),
-            message: "Everything is ready".into(),
-            phase: AgentMessagePhase::FinalAnswer,
+            content: vec![
+                ModelStepContent {
+                    output_index: 0,
+                    part_index: 0,
+                    phase: ModelStepContentPhase::Reasoning,
+                    text: "Checked the state".into(),
+                    annotations: Vec::new(),
+                },
+                ModelStepContent {
+                    output_index: 1,
+                    part_index: 0,
+                    phase: ModelStepContentPhase::FinalAnswer,
+                    text: "Everything is ready".into(),
+                    annotations: Vec::new(),
+                },
+            ],
             message_target: None,
         }),
         Vec::new(),
@@ -237,12 +261,12 @@ fn retrying_model_step_closes_pending_search_and_marks_the_reconnect() {
         call_id: "search".into(),
     });
     state.handle_agent_event(
-        EventMsg::AgentMessageContentDelta(mobius::protocol::AgentMessageContentDeltaEvent {
+        EventMsg::AssistantContentDelta(mobius::protocol::AssistantContentDeltaEvent {
             session_id: "session".into(),
             turn_id: "turn".into(),
             model_step_id: "step".into(),
             delta: "Partial answer".into(),
-            phase: AgentMessagePhase::FinalAnswer,
+            phase: ModelStepContentPhase::FinalAnswer,
         }),
         Vec::new(),
     );
@@ -343,12 +367,12 @@ fn completed_model_step_does_not_duplicate_live_streams() {
 
     let mut state = state();
     state.handle_agent_event(
-        EventMsg::AgentMessageContentDelta(mobius::protocol::AgentMessageContentDeltaEvent {
+        EventMsg::AssistantContentDelta(mobius::protocol::AssistantContentDeltaEvent {
             session_id: "session".into(),
             turn_id: "turn".into(),
             model_step_id: "step".into(),
             delta: "Everything is ready".into(),
-            phase: AgentMessagePhase::FinalAnswer,
+            phase: ModelStepContentPhase::FinalAnswer,
         }),
         Vec::new(),
     );
@@ -364,15 +388,24 @@ fn completed_model_step_does_not_duplicate_live_streams() {
                 end_turn: true,
                 tool_call_ids: Vec::new(),
                 usage: TokenUsage::default(),
-                content: vec![ModelStepContent {
-                    output_index: 0,
-                    part_index: 0,
-                    phase: ModelStepContentPhase::FinalAnswer,
-                    text: "Everything is ready".into(),
-                    annotations: Vec::new(),
-                }],
             },
             diagnostics: None,
+        }),
+        Vec::new(),
+    );
+    state.handle_agent_event(
+        EventMsg::AssistantMessage(mobius::protocol::AssistantMessageEvent {
+            session_id: "session".into(),
+            turn_id: "turn".into(),
+            model_step_id: "step".into(),
+            content: vec![ModelStepContent {
+                output_index: 0,
+                part_index: 0,
+                phase: ModelStepContentPhase::FinalAnswer,
+                text: "Everything is ready".into(),
+                annotations: Vec::new(),
+            }],
+            message_target: None,
         }),
         Vec::new(),
     );

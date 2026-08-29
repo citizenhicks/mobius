@@ -417,7 +417,8 @@ extension AppModelTests {
                 kind: .assistant,
                 format: "plain_text",
                 pending: false,
-                modelStepID: "answer-1"
+                modelStepID: "answer-1",
+                turnID: "turn-1"
             )],
             currentUsage: TokenUsage(),
             lastUsage: TokenUsage()
@@ -445,7 +446,9 @@ extension AppModelTests {
             sessionID: "chat-1",
             sequence: 8,
             event: AgentEventRecord(submissionId: nil, msg: .object([
-                "type": .string("agent_message_content_delta"),
+                "type": .string("assistant_content_delta"),
+                "sessionId": .string("chat-1"),
+                "turnId": .string("turn-1"),
                 "modelStepId": .string("answer-2"),
                 "phase": .string("final_answer"),
                 "delta": .string(" updated")
@@ -458,13 +461,14 @@ extension AppModelTests {
         model.handle(.agentEvent(
             sessionID: "chat-1",
             sequence: 9,
-            event: AgentEventRecord(submissionId: nil, msg: .object([
-                "type": .string("agent_message"),
-                "modelStepId": .string("answer-2"),
-                "phase": .string("final_answer"),
-                "message": .string("Canonical"),
-                "messageTarget": .null
-            ])),
+            event: AgentEventRecord(
+                submissionId: nil,
+                msg: testAssistantMessage(
+                    turnID: "turn-1",
+                    modelStepID: "answer-2",
+                    text: "Canonical"
+                )
+            ),
             blocks: [],
             history: nil,
             preview: nil
@@ -526,7 +530,9 @@ extension AppModelTests {
             sessionID: "chat-1",
             sequence: 8,
             event: AgentEventRecord(submissionId: nil, msg: .object([
-                "type": .string("agent_message_content_delta"),
+                "type": .string("assistant_content_delta"),
+                "sessionId": .string("chat-1"),
+                "turnId": .string("turn-1"),
                 "modelStepId": .string("answer-1"),
                 "phase": .string("final_answer"),
                 "delta": .string(" updated")
@@ -551,7 +557,9 @@ extension AppModelTests {
             sessionID: "chat-1",
             sequence: 9,
             event: AgentEventRecord(submissionId: nil, msg: .object([
-                "type": .string("agent_message_content_delta"),
+                "type": .string("assistant_content_delta"),
+                "sessionId": .string("chat-1"),
+                "turnId": .string("turn-1"),
                 "modelStepId": .string("answer-1"),
                 "phase": .string("final_answer"),
                 "delta": .string(" again")

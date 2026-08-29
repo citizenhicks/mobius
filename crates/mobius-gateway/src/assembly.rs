@@ -19,16 +19,16 @@ use mobius::middleware::compaction::Compaction;
 use mobius::middleware::context_offloading::ContextOffloading;
 use mobius::middleware::extensions::{Extensions, MANIFEST as EXTENSIONS_MANIFEST};
 use mobius::middleware::instructions::Instructions;
+use mobius::middleware::messages::Messages;
 use mobius::middleware::scratchpad::{Scratchpad, ScratchpadStore};
 use mobius::middleware::session_files::SessionFileStore;
 use mobius::middleware::sessions::Sessions;
-use mobius::middleware::steering::Steering;
 use mobius::middleware::subagents::{SubagentLaunch, SubagentLauncher, Subagents};
 use mobius::middleware::swarm::{Swarm, SwarmBackend};
 use mobius::middleware::tasks::Tasks;
 use mobius::middleware::tools::Tools;
 use mobius::middleware::{Middleware, MiddlewareStack};
-use mobius::protocol::{ModelChoice, ModelInfo, SessionContext, TokenUsage};
+use mobius::protocol::{ActiveMessageDelivery, ModelChoice, ModelInfo, SessionContext, TokenUsage};
 
 use crate::config::{
     ChatSpec, ConfigStore, CredentialStore, DEFAULT_CONTEXT_WINDOW, GatewayConfig,
@@ -568,9 +568,28 @@ fn build_middleware(
                 subagent_template = Some(template);
                 Arc::new(middleware)
             }
-            BuiltinMiddleware::Steering => Arc::new(Steering::new(
-                crate::middleware_manifest::usize_setting(settings, "steering", "max_pending")?,
-            )?),
+            BuiltinMiddleware::Messages => {
+                let delivery = match crate::middleware_manifest::string_setting(
+                    settings, "messages", "delivery",
+                )? {
+                    Some("steer") => ActiveMessageDelivery::Steer,
+                    Some("queue") => ActiveMessageDelivery::Queue,
+                    Some(value) => {
+                        return Err(Error::Config(format!(
+                            "unsupported messages delivery `{value}`"
+                        )));
+                    }
+                    None => {
+                        return Err(Error::Config(
+                            "missing middleware setting `messages.delivery`".into(),
+                        ));
+                    }
+                };
+                Arc::new(Messages::new(
+                    crate::middleware_manifest::usize_setting(settings, "messages", "max_pending")?,
+                    delivery,
+                )?)
+            }
             BuiltinMiddleware::ContextOffloading => Arc::new(ContextOffloading::new(
                 crate::middleware_manifest::integer_setting(
                     settings,

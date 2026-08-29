@@ -1,0 +1,23 @@
+[manifest]
+label = "Messages"
+description = "Deliver conversation messages at the correct turn boundary"
+
+[setting.delivery]
+label = "Active message delivery"
+description = "Default behavior for user messages sent while the agent is working"
+
+[setting.delivery.steer]
+label = "Steer"
+description = "Inject at the next model boundary of the active turn"
+
+[setting.delivery.queue]
+label = "Queue"
+description = "Start a new turn after the active turn finishes"
+
+[setting.max_pending]
+label = "Maximum pending messages"
+description = "Maximum messages waiting for delivery"
+step = 1
+
+[defaults]
+max_pending = 64
