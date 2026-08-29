@@ -21,7 +21,8 @@ use mobius_gateway::client::{
 };
 use mobius_gateway::config::state_dir;
 use mobius_gateway::wire::{
-    ClientKind, ClientMessage, ReadyPayload, ServerFrame, ServerMessage, SessionReadyPayload,
+    ClientKind, ClientMessage, ReadyPayload, ServerFrame, ServerMessage, SessionActivityState,
+    SessionReadyPayload, SessionRecord, SwarmRecord,
 };
 use tokio::process::{Child, Command};
 use uuid::Uuid;
@@ -99,6 +100,14 @@ async fn run_interactive() -> Result<()> {
                 return Ok(());
             }
             FrontendExit::New => {
+                discard_pristine_bootstrap(
+                    &sender,
+                    &mut events,
+                    &mut gateway,
+                    disposable_session.as_deref(),
+                    &session.session.session_id,
+                )
+                .await?;
                 session = create_session(
                     &sender,
                     &mut events,
@@ -109,6 +118,16 @@ async fn run_interactive() -> Result<()> {
                 disposable_session = None;
             }
             FrontendExit::Resume(session_id) => {
+                if session_id != session.session.session_id {
+                    discard_pristine_bootstrap(
+                        &sender,
+                        &mut events,
+                        &mut gateway,
+                        disposable_session.as_deref(),
+                        &session.session.session_id,
+                    )
+                    .await?;
+                }
                 session = open_session(&sender, &mut events, &mut gateway, session_id).await?;
                 disposable_session = None;
             }
@@ -199,9 +218,7 @@ async fn connect(
         None if local_gateway => {
             let session =
                 create_session(&sender, &mut events, &mut gateway, env::current_dir()?).await?;
-            let disposable_session = (gateway.default_config.is_none()
-                || gateway.models.is_empty())
-            .then(|| session.session.session_id.clone());
+            let disposable_session = Some(session.session.session_id.clone());
             (session, disposable_session)
         }
         None => {
@@ -604,7 +621,7 @@ async fn discard_session(
     let mut deferred = Vec::new();
     let result = loop {
         let frame = events.next().await.map_err(gateway_error)?.ok_or_else(|| {
-            Error::Stopped("gateway disconnected before discarding the setup chat".into())
+            Error::Stopped("gateway disconnected before discarding the chat".into())
         })?;
         match frame.message {
             ServerMessage::Accepted { request_id: actual } if actual == request_id => break Ok(()),
@@ -618,7 +635,7 @@ async fn discard_session(
             ServerMessage::Error { message, .. } => break Err(Error::Stopped(message)),
             message if deferred.len() == MAX_PENDING_FRAMES => {
                 break Err(Error::Stopped(format!(
-                    "gateway event backlog exceeds {MAX_PENDING_FRAMES} frames while discarding the setup chat: {message:?}"
+                    "gateway event backlog exceeds {MAX_PENDING_FRAMES} frames while discarding the chat: {message:?}"
                 )));
             }
             message => deferred.push(ServerFrame::new(message)),
@@ -626,6 +643,94 @@ async fn discard_session(
     };
     events.prepend(deferred).map_err(gateway_error)?;
     result
+}
+
+async fn discard_pristine_bootstrap(
+    sender: &GatewaySender,
+    events: &mut GatewayEvents,
+    gateway: &mut ReadyPayload,
+    disposable_session: Option<&str>,
+    session_id: &str,
+) -> Result<()> {
+    if disposable_session != Some(session_id) {
+        return Ok(());
+    }
+    refresh_sessions(sender, events, gateway).await?;
+    if pristine_bootstrap(gateway, session_id) {
+        discard_session(sender, events, gateway, session_id).await?;
+    }
+    Ok(())
+}
+
+async fn refresh_sessions(
+    sender: &GatewaySender,
+    events: &mut GatewayEvents,
+    gateway: &mut ReadyPayload,
+) -> Result<()> {
+    let request_id = Uuid::new_v4().to_string();
+    sender
+        .send(ClientMessage::ListSessions {
+            request_id: request_id.clone(),
+        })
+        .await
+        .map_err(gateway_error)?;
+    let mut deferred = Vec::new();
+    let result = loop {
+        let frame =
+            events.next().await.map_err(gateway_error)?.ok_or_else(|| {
+                Error::Stopped("gateway disconnected before listing chats".into())
+            })?;
+        match frame.message {
+            ServerMessage::Sessions {
+                request_id: Some(actual),
+                sessions,
+            } if actual == request_id => {
+                gateway.sessions = sessions;
+                break Ok(());
+            }
+            ServerMessage::Ready { payload } => *gateway = payload,
+            ServerMessage::Sessions { sessions, .. } => gateway.sessions = sessions,
+            ServerMessage::Swarms { swarms, .. } => gateway.swarms = swarms,
+            ServerMessage::Rejected {
+                request_id: actual,
+                message,
+                ..
+            } if actual == request_id => break Err(Error::Stopped(message)),
+            ServerMessage::Error { message, .. } => break Err(Error::Stopped(message)),
+            message if deferred.len() == MAX_PENDING_FRAMES => {
+                break Err(Error::Stopped(format!(
+                    "gateway event backlog exceeds {MAX_PENDING_FRAMES} frames while listing chats: {message:?}"
+                )));
+            }
+            message => deferred.push(ServerFrame::new(message)),
+        }
+    };
+    events.prepend(deferred).map_err(gateway_error)?;
+    result
+}
+
+fn pristine_bootstrap(gateway: &ReadyPayload, session_id: &str) -> bool {
+    gateway
+        .sessions
+        .iter()
+        .find(|session| session.session_id == session_id)
+        .is_some_and(|session| pristine_session(session, &gateway.swarms))
+}
+
+fn pristine_session(session: &SessionRecord, swarms: &[SwarmRecord]) -> bool {
+    session.parent_session_id.is_none()
+        && session.first_user_message.is_none()
+        && session.execution_stats.run_count == 0
+        && session.title.is_none()
+        && !session.pinned
+        && session.session_context.origin_label.is_none()
+        && session.activity.state == SessionActivityState::Idle
+        && !swarms.iter().any(|swarm| {
+            swarm
+                .members
+                .iter()
+                .any(|member| member.session_id == session.session_id)
+        })
 }
 
 async fn wait_gateway_ready(events: &mut GatewayEvents) -> Result<ReadyPayload> {
@@ -794,5 +899,27 @@ mod tests {
 
         assert_eq!(output_text(cron_output, true), "task: reset[2J.md");
         assert_eq!(output_text(cron_output, false), cron_output);
+    }
+
+    #[test]
+    fn only_an_unused_startup_chat_is_pristine() {
+        let mut session = SessionRecord {
+            session_id: "startup".into(),
+            session_context: Default::default(),
+            parent_session_id: None,
+            parent_sequence: None,
+            sequence: 0,
+            first_user_message: None,
+            execution_stats: Default::default(),
+            title: None,
+            pinned: false,
+            activity: Default::default(),
+            created_at: 0,
+            updated_at: 0,
+        };
+
+        assert!(pristine_session(&session, &[]));
+        session.first_user_message = Some("keep this chat".into());
+        assert!(!pristine_session(&session, &[]));
     }
 }

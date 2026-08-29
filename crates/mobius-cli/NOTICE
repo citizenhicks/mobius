@@ -10,9 +10,9 @@ OpenAI Codex includes code derived from Ratatui
 Copyright (c) 2016-2022 Florian Dehau
 Copyright (c) 2023-2025 The Ratatui Developers
 
-The möbius terminal color palette is adapted from Sora
-(https://github.com/Aejkatappaja/sora), licensed under the MIT License.
-Copyright (c) 2026 aejkatappaja
+The möbius terminal color palette uses Nord
+(https://github.com/nordtheme/nord), licensed under the MIT License.
+Copyright (c) 2016-present Sven Greb
 
 The MIT License
 

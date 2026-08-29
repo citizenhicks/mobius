@@ -53,10 +53,10 @@ fn completed_diff_replaces_the_pending_block_with_a_styled_diff() {
     );
     let lines = view::live_transcript_lines(&mut state, 0, 80);
     let text = rendered_text(&lines);
-    assert!(text.contains("◉ Edited note.rs (+2 -2)"), "{text}");
+    assert!(text.contains("• Edited note.rs (+2 -2)"), "{text}");
     assert!(text.contains("    1 -fn old_name() {}"), "{text}");
     assert!(text.contains("    1 +fn new_name() {}"), "{text}");
-    assert!(!text.contains("◉ Edit note.rs"), "{text}");
+    assert!(!text.contains("• Edit note.rs"), "{text}");
 
     let changed_delete = lines
         .iter()
@@ -112,6 +112,43 @@ fn completed_diff_replaces_the_pending_block_with_a_styled_diff() {
             narrow_insert.width(),
         ),
         (Some(40), 40)
+    );
+}
+
+#[test]
+fn completed_tool_keeps_its_detail_inline_and_indents_the_result() {
+    let mut state = state();
+    state.transcript.clear();
+    state.apply_block(rendered(FrontendBlock {
+        id: Some("turn/bash".into()),
+        group: None,
+        update: FrontendBlockUpdate::Replace,
+        state: FrontendBlockState::Pending,
+        role: FrontendBlockRole::Tool,
+        title: "Bash".into(),
+        text: "cargo test".into(),
+        symbol: None,
+        format: FrontendBlockFormat::PlainText,
+        tone: FrontendTone::Neutral,
+        files: Vec::new(),
+    }));
+    state.apply_block(rendered(FrontendBlock {
+        id: Some("turn/bash".into()),
+        group: None,
+        update: FrontendBlockUpdate::Append,
+        state: FrontendBlockState::Complete,
+        role: FrontendBlockRole::Tool,
+        title: "Bash".into(),
+        text: "ok".into(),
+        symbol: None,
+        format: FrontendBlockFormat::PlainText,
+        tone: FrontendTone::Success,
+        files: Vec::new(),
+    }));
+
+    assert_eq!(
+        rendered_text(&view::live_transcript_lines(&mut state, 0, 80)),
+        "• Bash cargo test\n  └ ok"
     );
 }
 
@@ -182,7 +219,7 @@ fn transcript_tail_widgets_render_after_live_output_in_arrival_order() {
 
     assert_eq!(
         rendered_text(&lines),
-        "◉ working\n\n┊ Messages\n┊ older\n\n┊ Messages\n┊ newer"
+        "• working\n\n┊ Messages\n┊ older\n\n┊ Messages\n┊ newer"
     );
 
     state.handle_agent_event(
@@ -193,11 +230,11 @@ fn transcript_tail_widgets_render_after_live_output_in_arrival_order() {
         Vec::new(),
     );
     let lines = view::live_transcript_lines(&mut state, 0, 80);
-    assert_eq!(rendered_text(&lines), "◉ working\n\n┊ Messages\n┊ newer");
+    assert_eq!(rendered_text(&lines), "• working\n\n┊ Messages\n┊ newer");
 }
 
 #[test]
-fn sora_transcript_stays_styled_and_transparent_in_chat_and_preview() {
+fn nord_transcript_stays_styled_and_transparent_in_chat_and_preview() {
     let catalog = default_catalog();
     let mut state = state();
     state.transcript.clear();
@@ -243,13 +280,13 @@ fn empty_chat_shows_the_agent_card_without_polluting_the_transcript() {
     let card = view::welcome_card(&state);
 
     assert!(state.transcript.is_empty());
-    assert!(card.contains("⣠⡤⢶"));
-    assert!(card.contains("MÖBIUS AGENT"));
+    assert!(!card.contains("⣠⡤⢶"));
+    assert!(card.contains("MÖBIUS"));
     assert!(card.contains("model: kimi-k3 · high"));
 
     state.push("hello", TranscriptTone::User);
     let rendered = rendered_text(&view::live_transcript_lines(&mut state, 0, 80));
-    assert!(!rendered.contains("MÖBIUS AGENT"));
+    assert!(!rendered.contains("MÖBIUS"));
 }
 
 #[test]
@@ -264,8 +301,8 @@ fn narrow_terminal_keeps_session_card_and_compact_footer() {
         .expect("draw");
     let rendered = terminal.backend().to_string();
 
-    assert!(rendered.contains("MÖBIUS AGENT"), "{rendered}");
-    assert!(rendered.contains("⣠⡤⢶"), "{rendered}");
+    assert!(rendered.contains("MÖBIUS"), "{rendered}");
+    assert!(!rendered.contains("⣠⡤⢶"), "{rendered}");
     assert!(rendered.contains("model: kimi-k3 · high"), "{rendered}");
     assert!(rendered.contains("kimi-k3 high"), "{rendered}");
     assert!(rendered.contains("╰"), "{rendered}");
@@ -304,9 +341,9 @@ fn block_identity_is_scoped_by_explicit_capability() {
         state
             .transcript
             .iter()
-            .map(|entry| entry.text.as_str())
+            .map(|entry| entry.title.as_deref())
             .collect::<Vec<_>>(),
-        ["Alpha updated", "Beta"]
+        [Some("Alpha updated"), Some("Beta")]
     );
 }
 
@@ -377,7 +414,14 @@ fn session_file_block_renders_download_metadata_as_plain_text() {
 
     assert_eq!(
         state.transcript.front().map(|entry| entry.text.as_str()),
-        Some("Sent report.xlsx\n[file] report.xlsx · application/octet-stream · 42 bytes")
+        Some("[file] report.xlsx · application/octet-stream · 42 bytes")
+    );
+    assert_eq!(
+        state
+            .transcript
+            .front()
+            .and_then(|entry| entry.title.as_deref()),
+        Some("Sent report.xlsx")
     );
 }
 

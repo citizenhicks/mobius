@@ -112,9 +112,12 @@ fn commentary_is_committed_before_a_tool_block() {
         state
             .transcript
             .iter()
-            .map(|entry| entry.text.as_str())
+            .map(|entry| (entry.title.as_deref(), entry.text.as_str()))
             .collect::<Vec<_>>(),
-        ["I’ll inspect the file first.", "Read src/lib.rs"]
+        [
+            (None, "I’ll inspect the file first."),
+            (Some("Read src/lib.rs"), "")
+        ]
     );
 }
 
@@ -294,23 +297,19 @@ fn retrying_model_step_closes_pending_search_and_marks_the_reconnect() {
     state.handle_agent_event(retry.clone(), retry.presentation().into_iter().collect());
 
     assert!(state.transcript.iter().all(|entry| !entry.pending));
+    assert!(state.transcript.iter().any(|entry| entry.title.as_deref()
+        == Some("Web search interrupted")
+        && matches!(entry.tone, TranscriptTone::Warning)));
     assert!(
         state
             .transcript
             .iter()
-            .any(|entry| entry.text == "Web search interrupted"
-                && matches!(entry.tone, TranscriptTone::Warning))
-    );
-    assert!(
-        state
-            .transcript
-            .iter()
-            .any(|entry| entry.text.contains("Reconnecting"))
+            .any(|entry| entry.title.as_deref() == Some("Reconnecting…"))
     );
     let texts = state
         .transcript
         .iter()
-        .map(|entry| entry.text.as_str())
+        .map(|entry| entry.title.as_deref().unwrap_or(entry.text.as_str()))
         .collect::<Vec<_>>();
     let partial = texts
         .iter()
@@ -318,7 +317,7 @@ fn retrying_model_step_closes_pending_search_and_marks_the_reconnect() {
         .expect("partial answer");
     let reconnecting = texts
         .iter()
-        .position(|text| text.contains("Reconnecting"))
+        .position(|text| *text == "Reconnecting…")
         .expect("reconnecting notice");
     assert!(partial < reconnecting);
 }
@@ -352,7 +351,7 @@ fn failed_model_step_clears_pending_blocks_without_an_end_event() {
     let entry = state
         .transcript
         .iter()
-        .find(|entry| entry.text == "Searching the web")
+        .find(|entry| entry.title.as_deref() == Some("Searching the web"))
         .expect("search entry");
     assert!(!entry.pending);
     assert!(matches!(entry.tone, TranscriptTone::Warning));

@@ -38,26 +38,26 @@ pub(crate) struct Theme {
     diff_delete: Color,
 }
 
-const SORA: Theme = Theme {
-    surface: Color::Rgb(34, 40, 56),
-    foreground: Color::Rgb(200, 208, 224),
-    muted: Color::Rgb(88, 100, 120),
-    border: Color::Rgb(34, 40, 56),
-    accent: Color::Rgb(212, 184, 120),
-    accent_strong: Color::Rgb(224, 200, 136),
-    info: Color::Rgb(128, 200, 224),
-    reasoning: Color::Rgb(176, 160, 216),
-    code: Color::Rgb(144, 200, 160),
-    neutral: Color::Rgb(136, 152, 184),
-    success: Color::Rgb(104, 168, 136),
-    warning: Color::Rgb(200, 168, 96),
-    error: Color::Rgb(196, 108, 120),
-    diff_add: Color::Rgb(33, 58, 43),
-    diff_delete: Color::Rgb(74, 34, 29),
+const NORD: Theme = Theme {
+    surface: Color::Rgb(59, 66, 82),
+    foreground: Color::Rgb(216, 222, 233),
+    muted: Color::Rgb(76, 86, 106),
+    border: Color::Rgb(67, 76, 94),
+    accent: Color::Rgb(136, 192, 208),
+    accent_strong: Color::Rgb(143, 188, 187),
+    info: Color::Rgb(129, 161, 193),
+    reasoning: Color::Rgb(180, 142, 173),
+    code: Color::Rgb(163, 190, 140),
+    neutral: Color::Rgb(94, 129, 172),
+    success: Color::Rgb(163, 190, 140),
+    warning: Color::Rgb(235, 203, 139),
+    error: Color::Rgb(191, 97, 106),
+    diff_add: Color::Rgb(59, 66, 82),
+    diff_delete: Color::Rgb(67, 76, 94),
 };
 
 pub(crate) const fn current() -> &'static Theme {
-    &SORA
+    &NORD
 }
 
 impl Theme {
@@ -95,5 +95,50 @@ impl Theme {
 
     pub(crate) const fn diff_delete_background(&self) -> Color {
         self.diff_delete
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn palette_uses_exact_nord_colors() {
+        assert_eq!(
+            [
+                NORD.surface,
+                NORD.foreground,
+                NORD.muted,
+                NORD.border,
+                NORD.accent,
+                NORD.accent_strong,
+                NORD.info,
+                NORD.reasoning,
+                NORD.code,
+                NORD.neutral,
+                NORD.success,
+                NORD.warning,
+                NORD.error,
+                NORD.diff_add,
+                NORD.diff_delete,
+            ],
+            [
+                Color::Rgb(59, 66, 82),
+                Color::Rgb(216, 222, 233),
+                Color::Rgb(76, 86, 106),
+                Color::Rgb(67, 76, 94),
+                Color::Rgb(136, 192, 208),
+                Color::Rgb(143, 188, 187),
+                Color::Rgb(129, 161, 193),
+                Color::Rgb(180, 142, 173),
+                Color::Rgb(163, 190, 140),
+                Color::Rgb(94, 129, 172),
+                Color::Rgb(163, 190, 140),
+                Color::Rgb(235, 203, 139),
+                Color::Rgb(191, 97, 106),
+                Color::Rgb(59, 66, 82),
+                Color::Rgb(67, 76, 94),
+            ]
+        );
     }
 }

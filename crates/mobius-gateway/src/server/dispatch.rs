@@ -109,14 +109,14 @@ pub(super) async fn handle_message(
             session_id,
             title,
         } => {
-            return rename_session(writer, &connection, request_id, session_id, title).await;
+            return rename_session(writer, gateway, request_id, session_id, title).await;
         }
         ClientMessage::SetSessionPinned {
             request_id,
             session_id,
             pinned,
         } => {
-            return set_session_pinned(writer, &connection, request_id, session_id, pinned).await;
+            return set_session_pinned(writer, gateway, request_id, session_id, pinned).await;
         }
         ClientMessage::DeleteSession {
             request_id,
@@ -692,38 +692,30 @@ async fn get_session_history(
 
 async fn rename_session(
     writer: &mut (impl AsyncWrite + Unpin),
-    connection: &ConnectionSessionState<'_>,
+    gateway: &GatewayHost,
     request_id: String,
     session_id: String,
     title: String,
 ) -> Result<()> {
-    let host = match require_selected(&*connection.selected, &session_id) {
-        Ok(host) => host,
-        Err(rejection) => return write_rejection(writer, request_id, rejection).await,
-    };
     write_result(
         writer,
         request_id,
-        host.rename_session(session_id, title).await,
+        gateway.rename_session(&session_id, &title).await,
     )
     .await
 }
 
 async fn set_session_pinned(
     writer: &mut (impl AsyncWrite + Unpin),
-    connection: &ConnectionSessionState<'_>,
+    gateway: &GatewayHost,
     request_id: String,
     session_id: String,
     pinned: bool,
 ) -> Result<()> {
-    let host = match require_selected(&*connection.selected, &session_id) {
-        Ok(host) => host,
-        Err(rejection) => return write_rejection(writer, request_id, rejection).await,
-    };
     write_result(
         writer,
         request_id,
-        host.set_session_pinned(session_id, pinned).await,
+        gateway.set_session_pinned(&session_id, pinned).await,
     )
     .await
 }
@@ -755,17 +747,22 @@ async fn delete_session(
     session_id: String,
     gateway: &GatewayHost,
 ) -> Result<()> {
-    if let Err(rejection) = require_selected(connection.selected, &session_id) {
-        return write_rejection(writer, request_id, rejection).await;
+    match gateway.delete_session(&session_id).await {
+        Ok(deleted) => {
+            connection
+                .uploads
+                .retain(|(session_id, _), _| !deleted.contains(session_id));
+            if connection.selected.as_ref().is_some_and(|selected| {
+                deleted
+                    .iter()
+                    .any(|session_id| session_id == selected.host.session_id())
+            }) {
+                *connection.selected = None;
+            }
+            write_result(writer, request_id, Ok(())).await
+        }
+        Err(rejection) => write_result(writer, request_id, Err(rejection)).await,
     }
-    connection
-        .uploads
-        .retain(|(upload_session_id, _), _| upload_session_id != &session_id);
-    let result = gateway.delete_session(&session_id).await;
-    if result.is_ok() {
-        *connection.selected = None;
-    }
-    write_result(writer, request_id, result).await
 }
 
 async fn submit(

@@ -1,0 +1,1 @@
+Allow paired clients to rename, pin, and delete inactive catalog chats without opening them first. Chat-tree deletion now clears selected descendants and pending uploads only after a successful delete. Protocol 55, configuration 21, chat specification 10, and durable checkpoint formats are unchanged.

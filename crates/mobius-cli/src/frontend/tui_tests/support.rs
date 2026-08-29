@@ -119,7 +119,7 @@ pub(super) fn state() -> TuiState {
             reasoning_effort: Some("high".into()),
         },
         "kimi".into(),
-        "MÖBIUS AGENT\nmodel: kimi-k3 · high".into(),
+        "MÖBIUS\nmodel: kimi-k3 · high".into(),
     )
 }
 

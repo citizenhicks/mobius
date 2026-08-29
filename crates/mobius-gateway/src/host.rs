@@ -726,11 +726,95 @@ impl GatewayHost {
         }
     }
 
+    pub(crate) async fn rename_session(
+        &self,
+        session_id: &str,
+        title: &str,
+    ) -> std::result::Result<(), Rejection> {
+        let title = validate_session_title(title)?;
+        let (host, checkpoints, catalog_lock) = {
+            let state = self.state.lock().await;
+            require_catalog_session(&state, session_id).await?;
+            (
+                state
+                    .sessions
+                    .get(session_id)
+                    .filter(|host| host.is_alive())
+                    .cloned(),
+                Arc::clone(&state.checkpoints),
+                Arc::clone(&state.catalog_lock),
+            )
+        };
+        if let Some(host) = host {
+            return host.rename_session(session_id.into(), title.into()).await;
+        }
+        let _catalog = catalog_lock.lock().await;
+        if checkpoints
+            .load(session_id)
+            .await
+            .map_err(internal)?
+            .is_none()
+        {
+            return Err(unknown_session());
+        }
+        let mut metadata = load_session_metadata(&checkpoints)
+            .await
+            .map_err(internal)?;
+        metadata.entry(session_id.into()).or_default().title = Some(title.into());
+        save_session_metadata(&checkpoints, &metadata)
+            .await
+            .map_err(internal)?;
+        drop(_catalog);
+        self.broadcast_sessions().await
+    }
+
+    pub(crate) async fn set_session_pinned(
+        &self,
+        session_id: &str,
+        pinned: bool,
+    ) -> std::result::Result<(), Rejection> {
+        let (host, checkpoints, catalog_lock) = {
+            let state = self.state.lock().await;
+            require_catalog_session(&state, session_id).await?;
+            (
+                state
+                    .sessions
+                    .get(session_id)
+                    .filter(|host| host.is_alive())
+                    .cloned(),
+                Arc::clone(&state.checkpoints),
+                Arc::clone(&state.catalog_lock),
+            )
+        };
+        if let Some(host) = host {
+            return host.set_session_pinned(session_id.into(), pinned).await;
+        }
+        let _catalog = catalog_lock.lock().await;
+        if checkpoints
+            .load(session_id)
+            .await
+            .map_err(internal)?
+            .is_none()
+        {
+            return Err(unknown_session());
+        }
+        let mut metadata = load_session_metadata(&checkpoints)
+            .await
+            .map_err(internal)?;
+        metadata.entry(session_id.into()).or_default().pinned = pinned;
+        save_session_metadata(&checkpoints, &metadata)
+            .await
+            .map_err(internal)?;
+        drop(_catalog);
+        self.broadcast_sessions().await
+    }
+
     pub(crate) async fn delete_session(
         &self,
         session_id: &str,
-    ) -> std::result::Result<(), Rejection> {
+    ) -> std::result::Result<Vec<String>, Rejection> {
         let mut state = self.state.lock().await;
+        require_catalog_session(&state, session_id).await?;
         let summaries = gateway_session_summaries(&state.checkpoints)
             .await
             .map_err(internal)?;
@@ -799,7 +883,8 @@ impl GatewayHost {
             .retain(|id, _| !session_ids.iter().any(|deleted| deleted == id));
         drop(_catalog);
         drop(state);
-        self.broadcast_sessions().await
+        self.broadcast_sessions().await?;
+        Ok(session_ids)
     }
 
     pub(crate) async fn create_cron(

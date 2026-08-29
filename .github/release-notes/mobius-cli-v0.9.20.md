@@ -1,0 +1,1 @@
+Refresh the terminal with the Nord palette, simpler MÖBIUS branding, cleaner Codex-style tool timelines, richer resume metadata, live swarm catalog updates, and cleanup of unused startup chats before resume or new-chat replacement. Bundles Gateway 0.9.26 for inactive chat rename, pin, and delete support. Protocol 55 is unchanged.

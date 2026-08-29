@@ -1,6 +1,7 @@
 use std::io;
 use std::time::Duration;
 
+use chrono::{DateTime, Local, Utc};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::SynchronizedUpdate;
@@ -24,10 +25,13 @@ use crate::frontend::gateway;
 use crate::frontend::gateway_actions::{prepare, render_response};
 use crate::frontend::setup;
 use crate::frontend::terminal::{INPUT_POLL, MAX_INPUT_BATCH, TerminalGuard, poll_event};
-use mobius::protocol::{ModelInfo, Op, Submission};
+use mobius::protocol::{EventMsg, FrontendEvent, ModelInfo, Op, Submission};
 use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayEvents, GatewaySender};
-use mobius_gateway::wire::{ClientMessage, ReadyPayload, ServerMessage, SessionReadyPayload};
+use mobius_gateway::wire::{
+    ClientMessage, ReadyPayload, ServerMessage, SessionActivityState, SessionOutcome,
+    SessionReadyPayload, SessionRecord, SwarmRecord,
+};
 use uuid::Uuid;
 
 const ELAPSED_INTERVAL: Duration = Duration::from_secs(1);
@@ -385,13 +389,31 @@ fn handle_server_message(
     match message {
         ServerMessage::AgentEvent {
             session_id: actual,
-            record,
-        } if actual == session_id => handle_gateway_event(state, record),
+            mut record,
+        } if actual == session_id => {
+            enrich_resume_picker(
+                &mut record.event.msg,
+                &gateway.sessions,
+                &gateway.swarms,
+                &session.workspace.id,
+            );
+            handle_gateway_event(state, record);
+        }
         ServerMessage::SessionHistory {
             session_id: actual,
-            records,
+            mut records,
             ..
-        } if actual == session_id => handle_gateway_history(state, records),
+        } if actual == session_id => {
+            for record in &mut records {
+                enrich_resume_picker(
+                    &mut record.event.msg,
+                    &gateway.sessions,
+                    &gateway.swarms,
+                    &session.workspace.id,
+                );
+            }
+            handle_gateway_history(state, records);
+        }
         ServerMessage::SessionOpened { payload, .. } => {
             *session = payload;
             return Some(FrontendExit::Reload);
@@ -401,6 +423,7 @@ fn handle_server_message(
             sync_gateway_models(state, catalog, gateway);
         }
         ServerMessage::Sessions { sessions, .. } => gateway.sessions = sessions,
+        ServerMessage::Swarms { swarms, .. } => gateway.swarms = swarms,
         ServerMessage::SessionChanged { payload }
             if payload.session.session_id == session_id
                 && payload.config.revision >= session.config.revision =>
@@ -599,6 +622,96 @@ fn sync_session(state: &mut TuiState, session: &SessionReadyPayload, gateway: &R
     state.usage.apply_context_limit(state.context_limit);
 }
 
+fn enrich_resume_picker(
+    event: &mut EventMsg,
+    sessions: &[SessionRecord],
+    swarms: &[SwarmRecord],
+    current_workspace_id: &str,
+) {
+    let EventMsg::Frontend(FrontendEvent::Picker { options, .. }) = event else {
+        return;
+    };
+    for option in options {
+        let Op::ResumeSession { session_id } = &option.op else {
+            continue;
+        };
+        let Some(session) = sessions
+            .iter()
+            .find(|session| session.session_id == *session_id)
+        else {
+            continue;
+        };
+        if let Some(title) = &session.title {
+            option.label.clone_from(title);
+        }
+        let mut details = vec![session_status(session).into()];
+        details.push(
+            if session.session_context.workspace_id.as_deref() == Some(current_workspace_id) {
+                "this workspace"
+            } else {
+                session
+                    .session_context
+                    .workspace_label
+                    .as_deref()
+                    .unwrap_or("other workspace")
+            }
+            .into(),
+        );
+        if let Some(origin) = &session.session_context.origin_label {
+            details.push(origin.clone());
+        }
+        if let Some(swarm) = swarm_label(session_id, swarms) {
+            details.push(swarm);
+        }
+        details.push(format!("started {}", human_time(session.created_at)));
+        option.description = details.join(" · ");
+    }
+}
+
+fn session_status(session: &SessionRecord) -> &'static str {
+    match session.activity.state {
+        SessionActivityState::Running => "running",
+        SessionActivityState::AwaitingApproval => "awaiting approval",
+        SessionActivityState::Idle => match session.activity.last_outcome {
+            Some(SessionOutcome::Completed) => "done",
+            Some(SessionOutcome::Aborted) => "aborted",
+            Some(SessionOutcome::Failed) => "failed",
+            None if session.execution_stats.run_count == 0 => "new",
+            None => "idle",
+        },
+    }
+}
+
+fn swarm_label(session_id: &str, swarms: &[SwarmRecord]) -> Option<String> {
+    swarms.iter().find_map(|swarm| {
+        let member = swarm
+            .members
+            .iter()
+            .find(|member| member.session_id == session_id)?;
+        Some(format!(
+            "swarm {} (@{}{})",
+            swarm.title,
+            member.handle,
+            if swarm.leader_session_id == session_id {
+                ", leader"
+            } else {
+                ""
+            }
+        ))
+    })
+}
+
+fn human_time(timestamp_ms: i64) -> String {
+    DateTime::<Utc>::from_timestamp_millis(timestamp_ms).map_or_else(
+        || "unknown time".into(),
+        |time| {
+            time.with_timezone(&Local)
+                .format("%Y-%m-%d %H:%M %Z")
+                .to_string()
+        },
+    )
+}
+
 fn agent_summary(gateway: &ReadyPayload, session: &SessionReadyPayload) -> String {
     let providers = gateway
         .provider_instances
@@ -638,7 +751,7 @@ fn agent_summary(gateway: &ReadyPayload, session: &SessionReadyPayload) -> Strin
         .as_deref()
         .unwrap_or("default");
     format!(
-        "MÖBIUS AGENT\nmodel: {} · {reasoning}\nproviders: {}\nmiddleware: {}\n{}tools: {}\nworkspace: {}",
+        "MÖBIUS\nmodel: {} · {reasoning}\nproviders: {}\nmiddleware: {}\n{}tools: {}\nworkspace: {}",
         super::terminal_text(&session.session.model.model),
         if providers.is_empty() {
             "none"
@@ -685,8 +798,8 @@ async fn send_op(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mobius::protocol::{Event, EventMsg};
-    use mobius_gateway::wire::RecordedEvent;
+    use mobius::protocol::{Event, EventMsg, FrontendPickerOption, SessionContext};
+    use mobius_gateway::wire::{RecordedEvent, SessionActivity, SwarmMemberRecord};
 
     fn replay_event(sequence: u64) -> ServerMessage {
         ServerMessage::AgentEvent {
@@ -733,5 +846,73 @@ mod tests {
 
         hydration.observe(&replay_event(4), "session-a");
         assert!(hydration.allows_draw());
+    }
+
+    #[test]
+    fn resume_picker_uses_live_session_and_swarm_metadata() {
+        let mut event = EventMsg::Frontend(FrontendEvent::Picker {
+            title: "Resume chat".into(),
+            options: vec![FrontendPickerOption {
+                label: "old label".into(),
+                description: "created at Unix time 1700000000000".into(),
+                detail: String::new(),
+                symbol: None,
+                shows_detail: false,
+                op: Op::ResumeSession {
+                    session_id: "session-a".into(),
+                },
+            }],
+        });
+        let sessions = [SessionRecord {
+            session_id: "session-a".into(),
+            session_context: SessionContext {
+                workspace_id: Some("workspace-a".into()),
+                workspace_label: Some("Project A".into()),
+                ..SessionContext::default()
+            },
+            parent_session_id: None,
+            parent_sequence: None,
+            sequence: 1,
+            first_user_message: Some("First message".into()),
+            execution_stats: Default::default(),
+            title: Some("Named chat".into()),
+            pinned: false,
+            activity: SessionActivity {
+                state: SessionActivityState::Running,
+                ..SessionActivity::default()
+            },
+            created_at: 1_700_000_000_000,
+            updated_at: 1_700_000_000_000,
+        }];
+        let swarms = [SwarmRecord {
+            id: "swarm-a".into(),
+            title: "Release".into(),
+            leader_session_id: "session-a".into(),
+            members: vec![SwarmMemberRecord {
+                session_id: "session-a".into(),
+                handle: "curie".into(),
+            }],
+            messages: Vec::new(),
+            updated_at_ms: 0,
+        }];
+
+        enrich_resume_picker(&mut event, &sessions, &swarms, "workspace-a");
+
+        let EventMsg::Frontend(FrontendEvent::Picker { options, .. }) = event else {
+            panic!("resume picker");
+        };
+        assert_eq!(options[0].label, "Named chat");
+        assert!(
+            options[0]
+                .description
+                .starts_with("running · this workspace")
+        );
+        assert!(
+            options[0]
+                .description
+                .contains("swarm Release (@curie, leader)")
+        );
+        assert!(options[0].description.contains("started "));
+        assert!(!options[0].description.contains("Unix"));
     }
 }

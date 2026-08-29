@@ -34,15 +34,7 @@ use mobius::protocol::FrontendWidget;
 
 const MAX_MENU_ROWS: usize = 6;
 const COMPOSER_PROMPT: &str = "» ";
-const AGENT_MARKER: &str = "◉ ";
-const WELCOME_EYE: [&str; 6] = [
-    "  ⣠⡤⢶⣛⣯⣭⣭⣟⣳⠶⣤⣀  ",
-    "⣴⣾⡽⠞⠋⣽⠉  ⠈⢻⠉⠙⠷⣭⣳⠦",
-    "⠛⠙⠛⠓⠶⠾⠷⣤⣴⠿⠶⠚⠛⠉⠉⠛",
-    "       ⢠⡶⢻⡟⢷⣄       ",
-    "        ⢻⣼⡇  ⠹⣦⡀⣀⣀⡀",
-    "        ⠈⣿⡇    ⠈⠻⣟⣀⡿",
-];
+const AGENT_MARKER: &str = "• ";
 
 pub(super) fn render(frame: &mut Frame<'_>, state: &mut TuiState, catalog: &UiCatalog) {
     let theme = current();
@@ -303,12 +295,16 @@ fn transcript_lines<'a>(
                     .lines()
                     .any(|line| Line::from(line).width() > usize::from(width))
             {
-                "◉ MÖBIUS · type / for commands"
+                "MÖBIUS · type / for commands"
             } else {
                 &entry.text
             };
             let mut rendered = Vec::new();
-            push_lines(&mut rendered, text, entry.tone, entry.format, width);
+            if entry.role.is_some() {
+                push_block_lines(&mut rendered, entry, width);
+            } else {
+                push_lines(&mut rendered, text, entry.tone, entry.format, width);
+            }
             entry.rendered = Some((width, rendered));
         }
         if let Some((_, rendered)) = &entry.rendered {
@@ -318,6 +314,74 @@ fn transcript_lines<'a>(
         has_previous = true;
     }
     lines
+}
+
+fn push_block_lines(lines: &mut Vec<Line<'static>>, entry: &TranscriptEntry, width: u16) {
+    if entry.format == FrontendBlockFormat::UnifiedDiff
+        && push_unified_diff(lines, &entry.text, usize::from(width))
+    {
+        return;
+    }
+    let Some(title) = entry.title.as_deref().filter(|title| !title.is_empty()) else {
+        push_lines(lines, &entry.text, entry.tone, entry.format, width);
+        return;
+    };
+    let theme = current();
+    let marker_role = if entry.pending {
+        Role::Accent
+    } else {
+        transcript_role(entry.tone)
+    };
+    let detail = entry.detail.as_deref();
+    let inline_detail = detail.is_some_and(|detail| {
+        !detail.contains('\n')
+            && Line::from(format!("{AGENT_MARKER}{title} {detail}")).width() <= usize::from(width)
+    });
+    let mut header = vec![
+        Span::styled(
+            AGENT_MARKER,
+            theme.style(marker_role).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            title.to_owned(),
+            theme.style(Role::Text).add_modifier(Modifier::BOLD),
+        ),
+    ];
+    if inline_detail {
+        header.push(Span::raw(" "));
+        header.push(Span::styled(
+            detail.unwrap_or_default().to_owned(),
+            theme.style(Role::Code),
+        ));
+    }
+    lines.push(Line::from(header));
+
+    let mut first = true;
+    if let Some(detail) = detail.filter(|_| !inline_detail) {
+        for line in detail.split('\n') {
+            push_tree_line(lines, &mut first, line, theme.style(Role::Code));
+        }
+    }
+    let output_style = theme
+        .style(if matches!(entry.tone, TranscriptTone::Error) {
+            Role::Error
+        } else {
+            Role::Text
+        })
+        .add_modifier(Modifier::DIM);
+    if !entry.text.is_empty() {
+        for line in entry.text.split('\n') {
+            push_tree_line(lines, &mut first, line, output_style);
+        }
+    }
+}
+
+fn push_tree_line(lines: &mut Vec<Line<'static>>, first: &mut bool, text: &str, style: Style) {
+    lines.push(Line::from(vec![
+        Span::styled(if *first { "  └ " } else { "    " }, style),
+        Span::styled(text.to_owned(), style),
+    ]));
+    *first = false;
 }
 
 fn push_lines(
@@ -520,19 +584,7 @@ fn transcript_role(tone: TranscriptTone) -> Role {
 }
 
 pub(super) fn welcome_card(state: &TuiState) -> String {
-    let details = state.agent_summary.lines().chain(std::iter::repeat(""));
-    let rows = WELCOME_EYE
-        .iter()
-        .zip(details)
-        .map(|(eye, detail)| {
-            if detail.is_empty() {
-                (*eye).to_owned()
-            } else {
-                format!("{eye}  {detail}")
-            }
-        })
-        .collect::<Vec<_>>();
-    bordered_card(rows)
+    bordered_card(state.agent_summary.lines().map(str::to_owned).collect())
 }
 
 fn responsive_welcome_card(state: &TuiState, width: u16) -> String {
@@ -540,22 +592,18 @@ fn responsive_welcome_card(state: &TuiState, width: u16) -> String {
     if card_fits(&welcome, width) {
         return welcome;
     }
-    let stacked = bordered_card(
-        WELCOME_EYE
-            .iter()
-            .map(|line| (*line).to_owned())
-            .chain(std::iter::once(String::new()))
-            .chain(state.agent_summary.lines().map(str::to_owned))
+    let compact = bordered_card(
+        state
+            .agent_summary
+            .lines()
+            .take(2)
+            .map(str::to_owned)
             .collect(),
     );
-    if card_fits(&stacked, width) {
-        return stacked;
-    }
-    let agent = bordered_card(state.agent_summary.lines().map(str::to_owned).collect());
-    if card_fits(&agent, width) {
-        agent
+    if card_fits(&compact, width) {
+        compact
     } else {
-        "◉ MÖBIUS AGENT · type / for commands".into()
+        "MÖBIUS · type / for commands".into()
     }
 }
 

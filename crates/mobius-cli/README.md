@@ -146,7 +146,7 @@ The CLI owns only shell lifecycle and presentation commands: `/help`, `/gateway`
 the menu changes with the installed gateway capabilities. The gateway always contributes `/resume`
 as the single saved-chat picker; it lists chats across every workspace.
 
-The Sora-themed TUI uses the full terminal. The mouse wheel and Page Up/Page Down scroll the chat;
+The Nord-themed TUI uses the full terminal. The mouse wheel and Page Up/Page Down scroll the chat;
 Ctrl-T opens a full-screen transcript view, releases mouse capture for native drag-to-copy, and
 scrolls with Arrow or Page Up/Page Down. Up/Down and Ctrl-P/Ctrl-N navigate composer history.
 

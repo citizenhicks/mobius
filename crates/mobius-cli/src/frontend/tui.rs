@@ -1,4 +1,4 @@
-//! Minimal state-driven Sora terminal frontend.
+//! Minimal state-driven möbius terminal frontend.
 
 mod clipboard;
 mod events;
@@ -25,6 +25,7 @@ use super::terminal::terminal_text;
 #[cfg(test)]
 use mobius::protocol::EventMsg;
 use mobius::protocol::FrontendBlockFormat;
+use mobius::protocol::FrontendBlockRole;
 use mobius::protocol::FrontendBlockState;
 use mobius::protocol::FrontendBlockUpdate;
 use mobius::protocol::FrontendPickerOption;
@@ -74,6 +75,9 @@ impl From<FrontendTone> for TranscriptTone {
 struct TranscriptEntry {
     id: Option<BlockKey>,
     group: Option<BlockKey>,
+    title: Option<String>,
+    role: Option<FrontendBlockRole>,
+    detail: Option<String>,
     text: String,
     format: FrontendBlockFormat,
     tone: TranscriptTone,
@@ -456,13 +460,16 @@ impl TuiState {
     fn apply_block(&mut self, rendered: RenderedBlock) {
         self.commit_reasoning();
         let capability = rendered.capability;
-        let block = rendered.block;
-        let mut text = if block.format == FrontendBlockFormat::UnifiedDiff && block.files.is_empty()
-        {
-            bounded_terminal_text(&block.text, MAX_ENTRY_BYTES)
-        } else {
-            bounded_terminal_text(&super::block_text(&block), MAX_ENTRY_BYTES)
-        };
+        let mut block = rendered.block;
+        let title = bounded_title(&std::mem::take(&mut block.title));
+        let mut text = bounded_terminal_text(&super::block_text(&block), MAX_ENTRY_BYTES);
+        let detail = (block.state == FrontendBlockState::Pending
+            && matches!(
+                block.role,
+                FrontendBlockRole::Tool | FrontendBlockRole::WebSearch
+            )
+            && !text.is_empty())
+        .then(|| std::mem::take(&mut text));
         let id = block.id.map(|value| BlockKey {
             capability: capability.clone(),
             value,
@@ -476,9 +483,23 @@ impl TuiState {
                 .find(|entry| entry.id.as_ref() == Some(id))
         {
             if block.update == FrontendBlockUpdate::Append {
-                text.insert_str(0, &entry.text);
+                text = text.trim_start_matches('\n').to_string();
+                if !entry.text.is_empty() && !text.is_empty() {
+                    entry.text.push('\n');
+                }
+                entry.text.push_str(&text);
+                entry.text = bounded_terminal_text(&entry.text, MAX_ENTRY_BYTES);
+                if detail.is_some() {
+                    entry.detail = detail;
+                }
+            } else {
+                entry.text = text;
+                entry.detail = detail;
             }
-            entry.text = bounded_terminal_text(&text, MAX_ENTRY_BYTES);
+            if !title.is_empty() {
+                entry.title = Some(title);
+            }
+            entry.role = Some(block.role);
             entry.format = block.format;
             entry.tone = block.tone.into();
             if group.is_some() {
@@ -494,6 +515,9 @@ impl TuiState {
         self.transcript.push_back(TranscriptEntry {
             id,
             group,
+            title: (!title.is_empty()).then_some(title),
+            role: Some(block.role),
+            detail,
             text,
             format: block.format,
             tone: block.tone.into(),
@@ -580,6 +604,9 @@ impl TuiState {
         self.transcript.push_back(TranscriptEntry {
             id: None,
             group: None,
+            title: None,
+            role: None,
+            detail: None,
             text,
             format: FrontendBlockFormat::PlainText,
             tone,

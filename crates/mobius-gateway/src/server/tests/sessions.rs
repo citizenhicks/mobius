@@ -1,5 +1,213 @@
 use super::*;
 
+async fn expect_accepted(events: &mut GatewayEvents, expected_request_id: &str) {
+    loop {
+        match next_gateway_message(events).await {
+            ServerMessage::Accepted { request_id } if request_id == expected_request_id => return,
+            ServerMessage::Rejected {
+                request_id,
+                code,
+                message,
+                ..
+            } if request_id == expected_request_id => {
+                panic!("request rejected ({code}): {message}")
+            }
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test]
+async fn catalogue_mutations_do_not_require_selecting_the_target_chat() {
+    let root = tempfile::tempdir().expect("temporary directory");
+    let workspace = root.path().join("workspace");
+    fs::create_dir(&workspace).expect("workspace");
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let listen = listener.local_addr().expect("listen address");
+    let (store, config) = ConfigStore::initialize(root.path().join("state"), listen, None)
+        .expect("initialize gateway");
+    let checkpoints_path = store.checkpoints_path();
+    let config = config
+        .registering_provider(
+            crate::wire::AgentComposition::default().provider,
+            "Test".into(),
+            Default::default(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("register provider");
+    store.save(&config).expect("save provider");
+    let (_, grant) = AuthStore::initialize(store.auth_path()).expect("initialize auth");
+    let server = GatewayServer::assemble(store, config, listener)
+        .await
+        .expect("assemble gateway");
+    let listen = server.config.listen;
+    let (shutdown, signal) = tokio::sync::oneshot::channel();
+    let serving = tokio::spawn(server.serve_until(async move {
+        let _ = signal.await;
+    }));
+    let endpoint = format!("tcp://{listen}")
+        .parse::<Endpoint>()
+        .expect("endpoint");
+    let (connection, _) = GatewayClient::pair(
+        &endpoint,
+        grant.code,
+        "catalogue mutation test",
+        ClientKind::Ios,
+    )
+    .await
+    .expect("pair frontend");
+    let (sender, mut events) = connection.into_parts();
+    wait_gateway_ready(&mut events).await;
+    let inactive_session_id = create_chat(&sender, &mut events, &workspace).await;
+    let selected_session_id = create_chat(&sender, &mut events, &workspace).await;
+
+    sender
+        .send(ClientMessage::RenameSession {
+            request_id: "rename-inactive".into(),
+            session_id: inactive_session_id.clone(),
+            title: "Renamed without opening".into(),
+        })
+        .await
+        .expect("rename inactive chat");
+    expect_accepted(&mut events, "rename-inactive").await;
+
+    sender
+        .send(ClientMessage::SetSessionPinned {
+            request_id: "pin-inactive".into(),
+            session_id: inactive_session_id.clone(),
+            pinned: true,
+        })
+        .await
+        .expect("pin inactive chat");
+    expect_accepted(&mut events, "pin-inactive").await;
+
+    sender
+        .send(ClientMessage::DeleteSession {
+            request_id: "delete-inactive".into(),
+            session_id: inactive_session_id,
+        })
+        .await
+        .expect("delete inactive chat");
+    expect_accepted(&mut events, "delete-inactive").await;
+
+    sender
+        .send(ClientMessage::GetSessionHistory {
+            request_id: "selected-history".into(),
+            session_id: selected_session_id.clone(),
+            before_sequence: None,
+        })
+        .await
+        .expect("read selected chat history");
+    loop {
+        match next_gateway_message(&mut events).await {
+            ServerMessage::SessionHistory { request_id, .. }
+                if request_id == "selected-history" =>
+            {
+                break;
+            }
+            ServerMessage::Rejected {
+                request_id,
+                code,
+                message,
+                ..
+            } if request_id == "selected-history" => {
+                panic!("selected chat was cleared ({code}): {message}")
+            }
+            _ => {}
+        }
+    }
+
+    let checkpoints = SqliteCheckpoint::new(checkpoints_path).expect("open checkpoints");
+    let selected = checkpoints
+        .load(&selected_session_id)
+        .await
+        .expect("load selected")
+        .expect("selected checkpoint");
+    let mut hidden = Checkpoint::empty("hidden-child");
+    hidden.catalog_visible = false;
+    checkpoints
+        .fork(&selected_session_id, selected.sequence, &hidden)
+        .await
+        .expect("fork hidden child");
+    sender
+        .send(ClientMessage::RenameSession {
+            request_id: "rename-hidden".into(),
+            session_id: "hidden-child".into(),
+            title: "Hidden".into(),
+        })
+        .await
+        .expect("rename hidden chat");
+    loop {
+        match next_gateway_message(&mut events).await {
+            ServerMessage::Rejected {
+                request_id, code, ..
+            } if request_id == "rename-hidden" => {
+                assert_eq!(code, "unknown_session");
+                break;
+            }
+            ServerMessage::Accepted { request_id } if request_id == "rename-hidden" => {
+                panic!("hidden chat was renamed")
+            }
+            _ => {}
+        }
+    }
+
+    let parent_session_id = create_chat(&sender, &mut events, &workspace).await;
+    let parent = checkpoints
+        .load(&parent_session_id)
+        .await
+        .expect("load parent")
+        .expect("parent checkpoint");
+    let child_session_id = "selected-child";
+    let mut child = Checkpoint::empty(child_session_id);
+    child.session_context.clone_from(&parent.session_context);
+    child.metadata.clone_from(&parent.metadata);
+    child.model_route.clone_from(&parent.model_route);
+    checkpoints
+        .fork(&parent_session_id, parent.sequence, &child)
+        .await
+        .expect("fork child");
+    open_chat(&sender, &mut events, child_session_id).await;
+
+    sender
+        .send(ClientMessage::DeleteSession {
+            request_id: "delete-selected-child-parent".into(),
+            session_id: parent_session_id,
+        })
+        .await
+        .expect("delete selected child's parent");
+    expect_accepted(&mut events, "delete-selected-child-parent").await;
+
+    sender
+        .send(ClientMessage::GetSessionHistory {
+            request_id: "deleted-child-history".into(),
+            session_id: child_session_id.into(),
+            before_sequence: None,
+        })
+        .await
+        .expect("read deleted child history");
+    loop {
+        match next_gateway_message(&mut events).await {
+            ServerMessage::Rejected {
+                request_id, code, ..
+            } if request_id == "deleted-child-history" => {
+                assert_eq!(code, "session_required");
+                break;
+            }
+            ServerMessage::SessionHistory { request_id, .. }
+                if request_id == "deleted-child-history" =>
+            {
+                panic!("deleted child remained selected")
+            }
+            _ => {}
+        }
+    }
+
+    shutdown.send(()).expect("stop gateway");
+    serving.await.expect("gateway task").expect("gateway stop");
+}
+
 #[tokio::test]
 async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
     let root = tempfile::tempdir().expect("temporary directory");
