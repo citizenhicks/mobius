@@ -1,0 +1,1 @@
+Replace literal deferred-tool matching with BM25 ranking across tool names, descriptions, and JSON schema metadata so natural-language tool discovery behaves like Codex CLI. Tool materialization and provider protocols are unchanged.
