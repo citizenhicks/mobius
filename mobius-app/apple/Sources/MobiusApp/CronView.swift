@@ -167,9 +167,8 @@ private struct CronTaskRow: View {
                     .truncationMode(.middle)
             }
 
-            Text(verbatim: task.task)
+            CollapsibleText(text: task.task, collapsedLineLimit: 3)
                 .font(MobiusStyle.bodyFont.weight(.semibold))
-                .fixedSize(horizontal: false, vertical: true)
 
             HStack(alignment: .firstTextBaseline, spacing: MobiusSpace.s) {
                 projectName.text
@@ -183,7 +182,7 @@ private struct CronTaskRow: View {
             .foregroundStyle(palette.muted)
         }
         .contentShape(Rectangle())
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel(Text("\(Text(status.label)) scheduled task: \(task.task)"))
         .accessibilityValue(
             Text("\(Text(schedule)); workspace \(projectName.text); \(Text(nextRun))")

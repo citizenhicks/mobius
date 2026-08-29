@@ -4,7 +4,6 @@ import SwiftUI
 private struct CollapsibleTextEndAttribute: TextAttribute {}
 
 struct CollapsibleText: View {
-    private static let collapsedLineLimit = 21
     // Bound the text SwiftUI must shape while collapsed. Four thousand characters still
     // exceed 21 lines at the transcript's widest supported layout, including on iPad.
     private static let collapsedCharacterLimit = 4_096
@@ -13,11 +12,17 @@ struct CollapsibleText: View {
     @State private var isExpanded = false
     @State private var isTruncated = false
     let text: String
+    let collapsedLineLimit: Int
+
+    init(text: String, collapsedLineLimit: Int = 21) {
+        self.text = text
+        self.collapsedLineLimit = collapsedLineLimit
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: MobiusSpace.s) {
             markedText
-                .lineLimit(isExpanded ? nil : Self.collapsedLineLimit)
+                .lineLimit(isExpanded ? nil : collapsedLineLimit)
                 .truncationMode(.tail)
                 .textSelection(.enabled)
                 .onPreferenceChange(Text.LayoutKey.self, perform: measureTruncation)
