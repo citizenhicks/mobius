@@ -14,6 +14,7 @@ use crate::Error;
 use crate::Result;
 use crate::agent::AgentEvents;
 use crate::protocol::EventMsg;
+use crate::protocol::MessageAuthor;
 use crate::protocol::Op;
 use crate::protocol::ReviewDecision;
 use crate::truncate_utf8;
@@ -21,6 +22,7 @@ use crate::truncate_utf8;
 impl Shared {
     async fn turn_started(&self, root_id: &str, path: &str, turn_id: String) -> Result<()> {
         self.mutate_root(root_id, |root| {
+            root.parent_reports.remove(path);
             let entry = root
                 .tree
                 .agents
@@ -85,7 +87,20 @@ impl Shared {
                     entry.last_message.clone_from(&message);
                     let parent = entry.parent.clone();
                     root.senders.remove(path);
-                    push_finished(root, path, parent, &status, message);
+                    let reports = root.parent_reports.remove(path).unwrap_or_default();
+                    let reported_message_ids = if matches!(&status, AgentStatus::Completed) {
+                        reports
+                            .into_iter()
+                            .filter(|report| message.as_deref() == Some(report.text.as_str()))
+                            .filter_map(|report| match report.author {
+                                MessageAuthor::Peer { message_id, .. } => Some(message_id),
+                                MessageAuthor::User => None,
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    push_finished(root, path, parent, &status, message, reported_message_ids);
                     Ok(Stage::Changed(()))
                 },
                 OnPersistFailure::RepairRetry(Box::new(move |candidate, error| {
@@ -103,6 +118,7 @@ impl Shared {
                     {
                         update.status = AgentStatus::Errored.label().into();
                         update.text = Some(failure.clone());
+                        update.reported_message_ids.clear();
                     }
                     (
                         format!("{repair_path} state persistence retry failed"),
@@ -152,6 +168,7 @@ fn push_finished(
     parent: String,
     status: &AgentStatus,
     message: Option<String>,
+    reported_message_ids: Vec<String>,
 ) {
     if root.tree.updates.len() >= MAX_PENDING_UPDATES {
         root.tree.updates.pop_front();
@@ -162,6 +179,7 @@ fn push_finished(
         agent: path.into(),
         status: status.label().into(),
         text: message,
+        reported_message_ids,
     });
 }
 

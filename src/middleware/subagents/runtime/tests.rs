@@ -634,7 +634,7 @@ async fn terminal_update_is_retained_until_its_checkpoint_marker_is_acknowledged
         .expect("receive updates");
     let id = pending[0].id.clone();
     assert_eq!(
-        pending[0].render(),
+        pending[0].render(&BTreeSet::new()),
         "<subagent_update agent=\"/root/child\" status=\"completed\">\ndone\n</subagent_update>"
     );
     let updates_len = store
@@ -659,6 +659,84 @@ async fn terminal_update_is_retained_until_its_checkpoint_marker_is_acknowledged
         .and_then(|state| state["updates"].as_array())
         .map(Vec::len);
     assert_eq!(updates_len, Some(0));
+}
+
+#[tokio::test]
+async fn terminal_update_does_not_repeat_a_delivered_parent_report() {
+    let shared = test_shared();
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(FailOnceStore {
+        fail_next_save: AtomicBool::new(false),
+        saved_state: StdMutex::new(None),
+    });
+    shared
+        .session_start(test_context(checkpoints, Arc::new(|_| Ok(()))))
+        .await
+        .expect("initialize runtime");
+    shared
+        .reserve(
+            "root",
+            "/root/child",
+            "/root",
+            "child".into(),
+            1,
+            test_presentation(),
+        )
+        .await
+        .expect("reserve child");
+    shared
+        .root("root")
+        .await
+        .expect("root runtime")
+        .state
+        .lock()
+        .await
+        .parent_reports
+        .insert(
+            "/root/child".into(),
+            vec![
+                crate::protocol::MessageSubmission {
+                    author: crate::protocol::MessageAuthor::Peer {
+                        message_id: "report-a".into(),
+                        session_id: "child".into(),
+                        handle: "child".into(),
+                    },
+                    text: "done".into(),
+                    attachments: Vec::new(),
+                    requested_delivery: None,
+                    target_turn_id: None,
+                },
+                crate::protocol::MessageSubmission {
+                    author: crate::protocol::MessageAuthor::Peer {
+                        message_id: "report-b".into(),
+                        session_id: "child".into(),
+                        handle: "child".into(),
+                    },
+                    text: "still checking".into(),
+                    attachments: Vec::new(),
+                    requested_delivery: None,
+                    target_turn_id: None,
+                },
+            ],
+        );
+    shared
+        .finished(
+            "root",
+            "/root/child",
+            AgentStatus::Completed,
+            Some("done".into()),
+        )
+        .await
+        .expect("finish child");
+
+    let pending = shared
+        .receive_updates("root", "/root", &BTreeSet::new())
+        .await
+        .expect("receive updates");
+
+    assert_eq!(
+        pending[0].render(&BTreeSet::from(["report-a".into()])),
+        "<subagent_update agent=\"/root/child\" status=\"completed\">\n\n</subagent_update>"
+    );
 }
 
 #[tokio::test]

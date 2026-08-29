@@ -1,0 +1,1 @@
+Bundle möbius 0.9.20 so explicit subagent parent reports are not repeated by automatic completion updates. Protocol 55, configuration 21, chat specification 10, and durable checkpoint formats are unchanged.

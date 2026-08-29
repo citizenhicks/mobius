@@ -1,0 +1,1 @@
+Prevent a subagent result explicitly sent to its parent from being repeated in the automatic completion update. Completion status and undelivered fallback text remain durable; protocol and checkpoint formats are unchanged.

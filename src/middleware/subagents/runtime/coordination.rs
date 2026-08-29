@@ -23,6 +23,8 @@ pub(in crate::middleware::subagents) struct CompletionUpdate {
     pub(super) agent: String,
     pub(super) status: String,
     pub(super) text: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) reported_message_ids: Vec<String>,
 }
 
 impl CompletionUpdate {
@@ -30,12 +32,20 @@ impl CompletionUpdate {
         format!("subagent_update:{}", self.id)
     }
 
-    pub(in crate::middleware::subagents) fn render(&self) -> String {
+    pub(in crate::middleware::subagents) fn render(
+        &self,
+        delivered_message_ids: &BTreeSet<String>,
+    ) -> String {
+        let text = self.text.as_deref().filter(|_| {
+            self.reported_message_ids
+                .iter()
+                .all(|id| !delivered_message_ids.contains(id))
+        });
         format!(
             "<subagent_update agent=\"{}\" status=\"{}\">\n{}\n</subagent_update>",
             self.agent,
             self.status,
-            self.text.as_deref().unwrap_or_default()
+            text.unwrap_or_default()
         )
     }
 }
@@ -91,26 +101,39 @@ impl Shared {
         if from == target {
             return Err(Error::Tool("an agent cannot message itself".into()));
         }
-        let sender = {
-            let root = self.root(root_id).await?;
-            let root = root.state.lock().await;
-            if target != "/root" && !root.tree.agents.contains_key(target) {
-                return Err(Error::Unknown(format!("agent `{target}`")));
-            }
-            let sender = if target == "/root" {
-                root.root_sender
-                    .as_ref()
-                    .and_then(|sender| sender.upgrade())
-            } else {
-                root.senders.get(target).cloned()
-            };
-            sender.ok_or_else(|| {
-                Error::Stopped(format!(
-                    "agent `{target}` is not running; use `followup_task` to restart it"
-                ))
-            })?
+        let root = self.root(root_id).await?;
+        let mut root = root.state.lock().await;
+        if target != "/root" && !root.tree.agents.contains_key(target) {
+            return Err(Error::Unknown(format!("agent `{target}`")));
+        }
+        let reports_to_parent = root
+            .tree
+            .agents
+            .get(from)
+            .is_some_and(|entry| entry.parent == target);
+        let sender = if target == "/root" {
+            root.root_sender
+                .as_ref()
+                .and_then(|sender| sender.upgrade())
+        } else {
+            root.senders.get(target).cloned()
         };
-        sender.submit(Op::Message { message })?;
+        let sender = sender.ok_or_else(|| {
+            Error::Stopped(format!(
+                "agent `{target}` is not running; use `followup_task` to restart it"
+            ))
+        })?;
+        if reports_to_parent {
+            sender.submit(Op::Message {
+                message: message.clone(),
+            })?;
+            root.parent_reports
+                .entry(from.into())
+                .or_default()
+                .push(message);
+        } else {
+            sender.submit(Op::Message { message })?;
+        }
         Ok(())
     }
 

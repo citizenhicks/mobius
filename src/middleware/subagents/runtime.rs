@@ -24,6 +24,7 @@ use crate::protocol::FrontendSymbol;
 use crate::protocol::FrontendTone;
 use crate::protocol::FrontendWidget;
 use crate::protocol::FrontendWidgetContent;
+use crate::protocol::MessageSubmission;
 use crate::protocol::Op;
 
 mod coordination;
@@ -57,6 +58,7 @@ struct Root {
     tree: Tree,
     root_sender: Option<WeakAgentSender>,
     senders: BTreeMap<String, AgentSender>,
+    parent_reports: BTreeMap<String, Vec<MessageSubmission>>,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -172,6 +174,7 @@ impl Shared {
             tree,
             root_sender: (identity.depth == 0).then_some(context.sender),
             senders: BTreeMap::new(),
+            parent_reports: BTreeMap::new(),
         };
         if changed {
             persist(&root_id, &root).await?;
@@ -242,6 +245,7 @@ impl Shared {
         self.cleanup_root(root_id, |root| {
             root.tree.agents.remove(path);
             root.senders.remove(path);
+            root.parent_reports.remove(path);
             Ok(())
         })
         .await
@@ -281,6 +285,7 @@ impl Shared {
                 entry.status = status;
             }
             root.senders.remove(path);
+            root.parent_reports.remove(path);
             Ok(())
         })
         .await

@@ -36,8 +36,10 @@ use crate::protocol::FrontendContribution;
 use crate::protocol::FrontendEvent;
 use crate::protocol::FrontendPreviewUpdate;
 use crate::protocol::FrontendTone;
+use crate::protocol::MessageAuthor;
 use crate::protocol::Op;
 use crate::protocol::internal_message_kind;
+use crate::protocol::message_metadata;
 
 use self::runtime::Shared;
 
@@ -666,6 +668,15 @@ impl Middleware for Subagents {
                 .filter_map(|kind| kind.strip_prefix("subagent_update:"))
                 .map(str::to_owned)
                 .collect();
+            let delivered_message_ids = context
+                .input()
+                .iter()
+                .filter_map(message_metadata)
+                .filter_map(|message| match message.author {
+                    MessageAuthor::Peer { message_id, .. } => Some(message_id),
+                    MessageAuthor::User => None,
+                })
+                .collect();
             let updates = self
                 .shared
                 .receive_updates(
@@ -677,7 +688,7 @@ impl Middleware for Subagents {
             for update in updates {
                 context.push_input(internal_user_message(
                     &update.internal_kind(),
-                    &update.render(),
+                    &update.render(&delivered_message_ids),
                 ))?;
             }
             Ok(())
