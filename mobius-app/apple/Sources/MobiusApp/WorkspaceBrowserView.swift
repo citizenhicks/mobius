@@ -176,21 +176,19 @@ struct ScratchpadView: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        Group {
-            if let widget = model.globalScratchpadWidget,
-               let content = widget.widget.content {
-                PageScaffold(
-                    title: .localized(frontendPresentationText(widget.title)),
-                    detail: .verbatim("")
-                ) {
-                    Section {
-                        FrontendWidgetContentView(
-                            content: content,
-                            actionsEnabled: model.connectionState.isReady,
-                            usesSwipeActions: true,
-                            submitOperation: model.submitGlobalScratchpadOperation
-                        ) { _ in }
-                    }
+        let widget = model.globalScratchpadWidget
+        let title: MobiusText = widget.map {
+            .localized(frontendPresentationText($0.title))
+        } ?? .localized("Scratchpad")
+        PageScaffold(title: title, detail: .verbatim("")) {
+            if let widget, let content = widget.widget.content {
+                Section {
+                    FrontendWidgetContentView(
+                        content: content,
+                        actionsEnabled: model.connectionState.isReady,
+                        usesSwipeActions: true,
+                        submitOperation: model.submitGlobalScratchpadOperation
+                    ) { _ in }
                 }
             } else {
                 MobiusUnavailable(
@@ -198,8 +196,6 @@ struct ScratchpadView: View {
                     glyph: .brain,
                     detail: "Connect to a gateway to load it."
                 )
-                .navigationTitle("Scratchpad")
-                .background(MobiusBackdrop())
             }
         }
         .task(id: model.connectionState.isReady) {

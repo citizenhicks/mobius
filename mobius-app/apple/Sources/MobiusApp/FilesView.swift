@@ -34,7 +34,7 @@ struct FilesView: View {
                         Button(action: model.createWorkspaceFile) {
                             MobiusIcon(.plus, gutter: false)
                         }
-                        .disabled(!model.canModifySelectedSession || !model.connectionState.isReady)
+                        .disabled(!model.canOpenSession)
                         .accessibilityLabel("Create file")
                         .help("Create a workspace text file")
                     }

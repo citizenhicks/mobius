@@ -859,7 +859,7 @@ extension AppModel {
     }
 
     func createWorkspaceFile() {
-        guard canModifySelectedSession, let sessionID = selectedSessionID else { return }
+        guard canOpenSession, let sessionID = selectedSessionID else { return }
         discardFilePresentation()
         returnsToFilesAfterFilePresentation = showsInspector
         revealFilePresentation()

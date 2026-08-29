@@ -934,6 +934,7 @@ struct PageScaffold<HeaderAccessory: View, Content: View>: View {
     let title: MobiusText
     let detail: MobiusText
     let sharesHeaderBackground: Bool
+    let showsBackdrop: Bool
     let headerAccessory: HeaderAccessory
     let content: Content
 
@@ -941,6 +942,7 @@ struct PageScaffold<HeaderAccessory: View, Content: View>: View {
         title: LocalizedStringResource,
         detail: LocalizedStringResource,
         sharesHeaderBackground: Bool = false,
+        showsBackdrop: Bool = true,
         @ViewBuilder headerAccessory: () -> HeaderAccessory,
         @ViewBuilder content: () -> Content
     ) {
@@ -948,6 +950,7 @@ struct PageScaffold<HeaderAccessory: View, Content: View>: View {
             title: .localized(title),
             detail: .localized(detail),
             sharesHeaderBackground: sharesHeaderBackground,
+            showsBackdrop: showsBackdrop,
             headerAccessory: headerAccessory,
             content: content
         )
@@ -957,12 +960,14 @@ struct PageScaffold<HeaderAccessory: View, Content: View>: View {
         title: MobiusText,
         detail: MobiusText,
         sharesHeaderBackground: Bool = false,
+        showsBackdrop: Bool = true,
         @ViewBuilder headerAccessory: () -> HeaderAccessory,
         @ViewBuilder content: () -> Content
     ) {
         self.title = title
         self.detail = detail
         self.sharesHeaderBackground = sharesHeaderBackground
+        self.showsBackdrop = showsBackdrop
         self.headerAccessory = headerAccessory()
         self.content = content()
     }
@@ -994,7 +999,9 @@ struct PageScaffold<HeaderAccessory: View, Content: View>: View {
                     .sharedBackgroundVisibility(.hidden)
             }
         }
-        .background(MobiusBackdrop())
+        .background {
+            if showsBackdrop { MobiusBackdrop() }
+        }
     }
 }
 
@@ -1002,12 +1009,14 @@ extension PageScaffold where HeaderAccessory == EmptyView {
     init(
         title: LocalizedStringResource,
         detail: LocalizedStringResource,
+        showsBackdrop: Bool = true,
         @ViewBuilder content: () -> Content
     ) {
         self.init(
             title: .localized(title),
             detail: .localized(detail),
             sharesHeaderBackground: false,
+            showsBackdrop: showsBackdrop,
             headerAccessory: EmptyView.init,
             content: content
         )
@@ -1016,12 +1025,14 @@ extension PageScaffold where HeaderAccessory == EmptyView {
     init(
         title: MobiusText,
         detail: MobiusText,
+        showsBackdrop: Bool = true,
         @ViewBuilder content: () -> Content
     ) {
         self.init(
             title: title,
             detail: detail,
             sharesHeaderBackground: false,
+            showsBackdrop: showsBackdrop,
             headerAccessory: EmptyView.init,
             content: content
         )

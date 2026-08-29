@@ -56,27 +56,24 @@ struct MobiusCloudOfferSheet: View {
 
     var body: some View {
         NavigationStack {
-            ZStack {
-                MobiusBackdrop()
-                ScrollView {
-                    VStack(alignment: .leading, spacing: MobiusSpace.xl) {
-                        hero
-                        if let setupStage {
-                            setupSteps(current: setupStage)
-                        } else {
-                            offerDetails
-                            controlNote
-                        }
+            ScrollView {
+                VStack(alignment: .leading, spacing: MobiusSpace.xl) {
+                    hero
+                    if let setupStage {
+                        setupSteps(current: setupStage)
+                    } else {
+                        offerDetails
+                        controlNote
                     }
-                    .animation(reduceMotion ? nil : .smooth(duration: 0.28), value: setupStage)
-                    .frame(maxWidth: 680, alignment: .leading)
-                    .padding(.horizontal, MobiusSpace.l)
-                    .padding(.top, MobiusSpace.l)
-                    .padding(.bottom, MobiusSpace.xl)
-                    .frame(maxWidth: .infinity)
                 }
-                .scrollIndicators(.hidden)
+                .animation(reduceMotion ? nil : .smooth(duration: 0.28), value: setupStage)
+                .frame(maxWidth: 680, alignment: .leading)
+                .padding(.horizontal, MobiusSpace.l)
+                .padding(.top, MobiusSpace.l)
+                .padding(.bottom, MobiusSpace.xl)
+                .frame(maxWidth: .infinity)
             }
+            .scrollIndicators(.hidden)
             .navigationTitle("möbius Cloud")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -285,15 +282,6 @@ struct MobiusCloudOfferSheet: View {
         .padding(.top, MobiusSpace.l)
         .padding(.bottom, MobiusSpace.s)
         .frame(maxWidth: .infinity)
-        .background {
-            LinearGradient(
-                colors: [palette.canvas.opacity(0), palette.canvas],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .ignoresSafeArea()
-            .allowsHitTesting(false)
-        }
     }
 
     private func waitingButton(_ title: LocalizedStringResource) -> some View {

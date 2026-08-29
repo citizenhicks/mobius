@@ -254,7 +254,6 @@ struct ExtensionsView: View {
 private struct InstallExtensionSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.mobiusPalette) private var palette
 
     var body: some View {
         @Bindable var model = model
@@ -285,7 +284,6 @@ private struct InstallExtensionSheet: View {
                     Button("Install", action: install).disabled(!canInstall)
                 }
             }
-            .background(MobiusBackdrop())
         }
         .mobiusSheet(detents: [.large])
     }

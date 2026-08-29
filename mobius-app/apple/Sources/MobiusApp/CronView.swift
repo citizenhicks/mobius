@@ -449,7 +449,8 @@ private struct CronTaskEditorSheet: View {
         NavigationStack {
             PageScaffold(
                 title: .localized(editorTitle),
-                detail: summary
+                detail: summary,
+                showsBackdrop: false
             ) {
                 Section("Workspace") {
                     Picker("Workspace", selection: $sourceSessionID) {

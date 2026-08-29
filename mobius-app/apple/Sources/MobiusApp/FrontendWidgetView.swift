@@ -136,7 +136,11 @@ struct FrontendWidgetContentView: View {
             if items.isEmpty {
                 Text("Nothing here yet.")
                     .foregroundStyle(palette.muted)
-                    .frame(maxWidth: .infinity, minHeight: MobiusStyle.iconButtonSize)
+                    .frame(
+                        maxWidth: .infinity,
+                        minHeight: MobiusStyle.iconButtonSize,
+                        alignment: .leading
+                    )
             } else {
                 ForEach(items) { item in
                     FrontendActionListRow(

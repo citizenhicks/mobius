@@ -24,7 +24,6 @@ struct InspectorLoadingView: View {
 struct TextFilePreviewView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.mobiusPalette) private var palette
     let preview: TextFilePreview
 
     var body: some View {
@@ -39,7 +38,6 @@ struct TextFilePreviewView: View {
                     )
                 }
             }
-                .background(palette.canvas)
                 .navigationTitle(navigationTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

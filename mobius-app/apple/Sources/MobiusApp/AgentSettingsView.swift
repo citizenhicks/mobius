@@ -17,6 +17,7 @@ struct AgentSettingsView: View {
             title: pageTitle,
             detail: pageDetail,
             sharesHeaderBackground: true,
+            showsBackdrop: scope == .gatewayDefault,
             headerAccessory: { agentStatusAccessory }
         ) {
             if draft != nil {

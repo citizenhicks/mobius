@@ -329,6 +329,18 @@ extension AppModelTests {
         XCTAssertNotNil(refresh)
     }
 
+    func testActiveRunAllowsCreatingWorkspaceFileDraft() throws {
+        let model = try model()
+        model.connectionState = .ready
+        model.selectedSessionID = "chat-1"
+        model.activeTurnID = "turn-1"
+
+        model.createWorkspaceFile()
+
+        XCTAssertEqual(model.textFilePreview?.workspaceSessionID, "chat-1")
+        XCTAssertEqual(model.textFilePreview?.workspacePath, "")
+    }
+
     func testUnsavedWorkspaceTextDraftSurvivesTransientConnectionReset() throws {
         let model = try model()
         model.connectionState = .ready

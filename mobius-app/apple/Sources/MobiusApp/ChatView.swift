@@ -387,7 +387,6 @@ private struct SwarmCreationPicker: View {
                 }
             }
             .scrollContentBackground(.hidden)
-            .background(palette.canvas)
             .navigationTitle("Create Swarm")
             .toolbarTitleDisplayMode(.inline)
             .toolbar {
