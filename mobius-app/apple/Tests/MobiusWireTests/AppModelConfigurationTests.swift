@@ -766,6 +766,45 @@ extension AppModelTests {
         )
     }
 
+    func testAcceptedConfigurationReenablesComposerSettings() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model { request in await recorder.record(request) }
+        var active = composition()
+        active.middleware.setSetting(
+            .string("queue"),
+            middleware: "messages",
+            setting: "delivery"
+        )
+        model.connectionState = .ready
+        model.selectedSessionID = "chat-1"
+        model.agentSnapshot = VersionedAgentConfig(revision: 4, config: active)
+        model.agentDraft = active
+        model.chatAgentApplyState = .applying
+        model.configRequestID = "configure-1"
+
+        model.handle(.accepted(requestID: "configure-1"))
+        XCTAssertEqual(model.chatAgentApplyState, .applied)
+        XCTAssertFalse(model.isApplyingConfiguration)
+
+        model.setAgentSettingForCurrentChat(
+            .string("allow"),
+            middleware: "sandbox",
+            setting: "approval_policy"
+        )
+        let request = await recorder.firstRequest(after: 0) {
+            if case .configureSession = $0 { return true }
+            return false
+        }
+        guard case .configureSession(_, _, let revision, let approved) = try XCTUnwrap(request) else {
+            return XCTFail("Expected workspace approval to remain configurable")
+        }
+        XCTAssertEqual(revision, 4)
+        XCTAssertEqual(
+            approved.middleware.settings["sandbox"]?["approval_policy"],
+            .string("allow")
+        )
+    }
+
     func testProviderRegistrationDoesNotConfigureDefaultAgent() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model(requestSender: { request in

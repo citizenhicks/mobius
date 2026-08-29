@@ -501,7 +501,7 @@ private struct MessageMetadata: View {
     private var glyph: MobiusGlyph {
         switch delivery {
         case .steer: .workflowSquare03
-        case .queue: .workflowSquare01
+        case .queue: .queue01
         case .turn: author == .user ? .userFocus : .swarm
         }
     }

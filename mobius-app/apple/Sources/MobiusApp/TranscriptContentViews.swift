@@ -88,9 +88,33 @@ struct TranscriptFileCards: View {
     let sessionID: String?
 
     var body: some View {
-        ForEach(files) { file in
-            SessionFileCard(file: file, sessionID: sessionID)
+        if files.count <= 1 {
+            ForEach(files) { file in
+                SessionFileCard(file: file, sessionID: sessionID)
+            }
+        } else {
+            LazyVGrid(
+                columns: [
+                    GridItem(
+                        .adaptive(minimum: 136, maximum: 136),
+                        spacing: MobiusSpace.s,
+                        alignment: .topLeading
+                    ),
+                ],
+                alignment: .leading,
+                spacing: MobiusSpace.s
+            ) {
+                ForEach(files) { file in
+                    SessionFileCard(file: file, sessionID: sessionID)
+                }
+            }
+            .frame(maxWidth: gridWidth, alignment: .leading)
         }
+    }
+
+    private var gridWidth: CGFloat {
+        let columns = CGFloat(min(files.count, 3))
+        return columns * 136 + (columns - 1) * MobiusSpace.s
     }
 }
 

@@ -211,6 +211,7 @@ struct MobiusGlyph: Hashable {
     static let pushPin = Self("hi.pushPin")
     static let pushPinSlash = Self("hi.pushPinSlash")
     static let question = Self("hi.question")
+    static let queue01 = Self("hi.queue01")
     static let robot = Self("hi.robot")
     static let rust = Self("hi.rust")
     static let saveAll = Self("hi.saveAll")

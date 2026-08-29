@@ -85,7 +85,6 @@ private struct ComposerSurface: View {
                 .padding(.horizontal, MobiusSpace.l)
                 .padding(.top, MobiusSpace.m)
                 .padding(.bottom, MobiusSpace.xs)
-                .padding(.trailing, showsExpansionControl ? MobiusStyle.iconButtonSize : 0)
                 .overlay(alignment: .topTrailing) {
                     if showsExpansionControl {
                         ComposerSizeButton(expanded: false) {
@@ -272,7 +271,6 @@ private struct ExpandedComposerSheet: View {
                 .padding(.horizontal, MobiusSpace.l)
                 .padding(.top, MobiusSpace.m)
                 .padding(.bottom, MobiusSpace.xs)
-                .padding(.trailing, MobiusStyle.iconButtonSize)
                 .overlay(alignment: .topTrailing) {
                     ComposerSizeButton(expanded: true, action: dismiss.callAsFunction)
                 }

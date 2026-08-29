@@ -4,9 +4,9 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
-    func testMessageDeliverySymbolsUseWorkflowGlyphs() {
+    func testMessageDeliverySymbolsUseTheirRequestedGlyphs() {
         XCTAssertEqual(MobiusSymbol.knownGlyph(for: "steer"), .workflowSquare03)
-        XCTAssertEqual(MobiusSymbol.knownGlyph(for: "queue"), .workflowSquare01)
+        XCTAssertEqual(MobiusSymbol.knownGlyph(for: "queue"), .queue01)
     }
 
     func testToolLoadUsesTheStandardToolTranscriptPresentation() throws {

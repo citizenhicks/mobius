@@ -688,6 +688,11 @@ extension AppModelTests {
         model.applySessions([session(state: .running, turnID: "turn-2")])
         model.applySessions([session(state: .idle, outcome: .completed)])
         XCTAssertNil(model.toast)
+
+        model.setChatVisible(false)
+        model.applySessions([session(state: .running, turnID: "turn-3")])
+        model.applySessions([session(state: .idle)])
+        XCTAssertTrue(model.unreadSessionIDs.contains("chat-1"))
     }
 
     func testFailedSessionSnapshotUsesGatewayMessage() throws {

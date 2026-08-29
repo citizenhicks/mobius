@@ -703,10 +703,6 @@ extension AppModel {
                 )
             )
         }
-        if chatAgentApplyState == .restarting {
-            chatAgentApplyState = .applied
-            showToast("Agent configuration applied.", tone: .success)
-        }
         persistGeneratedChatTitles()
     }
 
@@ -782,9 +778,8 @@ extension AppModel {
             showToast("\(sessionTitle(sessionID)) needs approval.", tone: .warning)
         }
         guard activity.state == .idle,
-              let outcome = activity.lastOutcome,
               previous.state != .idle
-                || previous.lastOutcome != outcome
+                || previous.lastOutcome != activity.lastOutcome
                 || previous.message != activity.message
         else { return }
 
@@ -795,6 +790,7 @@ extension AppModel {
             unreadSessionIDs.insert(sessionID)
         }
 
+        guard let outcome = activity.lastOutcome else { return }
         switch outcome {
         case .completed:
             guard !isActiveChat else { return }
@@ -842,8 +838,9 @@ extension AppModel {
             approvalRequestID = nil
         }
         if requestID == configRequestID {
-            chatAgentApplyState = .restarting
             configRequestID = nil
+            chatAgentApplyState = .applied
+            showToast("Agent configuration applied.", tone: .success)
         }
         if requestID == sessionMutationRequestID {
             if let sessionID = pendingDeletedSessionID {
