@@ -485,10 +485,12 @@ private struct MessageMetadata: View {
                 foreground: palette.muted,
                 gutter: false
             )
-            Text(label)
-            if let handle = author.peerFields?.handle {
-                Text(verbatim: "· \(handle)")
+            Text(verbatim: "·")
+            if let deliveryLabel {
+                Text(deliveryLabel)
+                Text(verbatim: "·")
             }
+            authorLabel
         }
         .font(MobiusStyle.metadataFont)
         .foregroundStyle(palette.muted)
@@ -498,27 +500,27 @@ private struct MessageMetadata: View {
 
     private var glyph: MobiusGlyph {
         switch delivery {
-        case .steer: .arrowUpRight01
-        case .queue: .clock
+        case .steer: .workflowSquare03
+        case .queue: .workflowSquare01
         case .turn: author == .user ? .userFocus : .swarm
         }
     }
 
-    private var label: LocalizedStringResource {
+    private var deliveryLabel: LocalizedStringResource? {
         switch delivery {
-        case .steer: "Steer"
-        case .queue: "Queued"
-        case .turn: author == .user ? "User message" : "Peer agent message"
+        case .steer: "steer"
+        case .queue: "queued"
+        case .turn: nil
         }
     }
 
+    private var authorLabel: Text {
+        author.peerFields.map { Text(verbatim: $0.handle) } ?? Text("you")
+    }
+
     private var accessibilityLabel: Text {
-        guard let handle = author.peerFields?.handle else { return Text(label) }
-        let label: LocalizedStringResource = switch delivery {
-        case .steer: "Steer from \(handle)"
-        case .queue: "Queued message from \(handle)"
-        case .turn: "Peer agent message from \(handle)"
-        }
-        return Text(label)
+        let author = author.peerFields?.handle ?? String(localized: "you")
+        guard let deliveryLabel else { return Text(verbatim: author) }
+        return Text(verbatim: "\(String(localized: deliveryLabel)), \(author)")
     }
 }

@@ -236,6 +236,8 @@ struct MobiusGlyph: Hashable {
     static let volumeHigh = Self("hi.volumeHigh")
     static let warning = Self("hi.warning")
     static let warningOctagon = Self("hi.warningOctagon")
+    static let workflowSquare01 = Self("hi.workflowSquare01")
+    static let workflowSquare03 = Self("hi.workflowSquare03")
     static let x = Self("hi.x")
     static let xCircle = Self("hi.xCircle")
 

@@ -27,6 +27,7 @@ enum MobiusSymbol {
         "kimi": .kimiAi,
         "moon": .moon,
         "promote": .arrowCircleUp,
+        "queue": .workflowSquare01,
         "route": .path,
         "search": .magnifyingGlass,
         "security_review": .aiSecurity02,
@@ -36,6 +37,7 @@ enum MobiusSymbol {
         "shield_off": .shieldOff,
         "sparkle": .sparkle,
         "storage": .hardDrives,
+        "steer": .workflowSquare03,
         "task": .checkCircle,
     ]
 }

@@ -4,6 +4,11 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testMessageDeliverySymbolsUseWorkflowGlyphs() {
+        XCTAssertEqual(MobiusSymbol.knownGlyph(for: "steer"), .workflowSquare03)
+        XCTAssertEqual(MobiusSymbol.knownGlyph(for: "queue"), .workflowSquare01)
+    }
+
     func testToolLoadUsesTheStandardToolTranscriptPresentation() throws {
         let app = try model()
         let event = AgentEventRecord(submissionId: "input-1", msg: .object([

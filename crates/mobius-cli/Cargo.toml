@@ -1,6 +1,6 @@
 [package]
 name = "mobius-cli"
-version = "0.9.17"
+version = "0.9.18"
 edition = "2024"
 rust-version = "1.98"
 description = "The terminal client for a möbius gateway"
@@ -25,8 +25,8 @@ doc = false
 arboard = { version = "3", features = ["wayland-data-control"] }
 diffy = "0.4.2"
 image = { version = "0.25", default-features = false, features = ["png"] }
-mobius = { version = "=0.9.17", path = "../.." }
-mobius-gateway = { version = "=0.9.23", path = "../mobius-gateway" }
+mobius = { version = "=0.9.18", path = "../.." }
+mobius-gateway = { version = "=0.9.24", path = "../mobius-gateway" }
 pulldown-cmark = { version = "0.10", default-features = false }
 ratatui = { version = "0.30.2", features = [
     "scrolling-regions",

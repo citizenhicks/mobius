@@ -235,7 +235,7 @@ struct MobiusIconButtonStyle: ButtonStyle {
                 .font(MobiusStyle.controlFont)
                 .foregroundStyle(foreground)
                 .frame(width: MobiusStyle.iconButtonSize, height: MobiusStyle.iconButtonSize)
-                .contentShape(Circle())
+                .contentShape(Rectangle())
             Group {
                 if bare {
                     base

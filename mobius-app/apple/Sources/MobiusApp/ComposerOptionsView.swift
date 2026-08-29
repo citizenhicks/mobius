@@ -515,7 +515,7 @@ struct ComposerOptionsView: View {
 
     private var sendGlyph: MobiusGlyph {
         guard model.activeTurnID != nil else { return .arrowUp02 }
-        return model.activeMessageDelivery == .steer ? .arrowUpRight01 : .clock
+        return model.activeMessageDelivery == .steer ? .workflowSquare03 : .workflowSquare01
     }
 
     private var alternateDelivery: ActiveMessageDelivery {
@@ -527,7 +527,7 @@ struct ComposerOptionsView: View {
     }
 
     private var alternateSendGlyph: MobiusGlyph {
-        alternateDelivery == .steer ? .arrowUpRight01 : .clock
+        alternateDelivery == .steer ? .workflowSquare03 : .workflowSquare01
     }
 
     private func toggleDictation() {

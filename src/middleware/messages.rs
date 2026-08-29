@@ -36,14 +36,14 @@ const DELIVERIES: &[MiddlewareSettingChoice] = &[
         value: "steer",
         label: text::SETTING_DELIVERY_STEER_LABEL,
         description: text::SETTING_DELIVERY_STEER_DESCRIPTION,
-        symbol: Some("route"),
+        symbol: Some("steer"),
         tone: FrontendTone::Neutral,
     },
     MiddlewareSettingChoice {
         value: "queue",
         label: text::SETTING_DELIVERY_QUEUE_LABEL,
         description: text::SETTING_DELIVERY_QUEUE_DESCRIPTION,
-        symbol: Some("clock"),
+        symbol: Some("queue"),
         tone: FrontendTone::Neutral,
     },
 ];
@@ -287,6 +287,17 @@ mod tests {
     use crate::backend::checkpoint::QueuedMessage;
     use crate::middleware::{MessageQueue, MessageRouteContext, MiddlewareStack};
     use crate::protocol::{MessageSubmission, SessionFileReference};
+
+    #[test]
+    fn manifest_advertises_delivery_symbols() {
+        assert_eq!(
+            DELIVERIES
+                .iter()
+                .map(|choice| (choice.value, choice.symbol))
+                .collect::<Vec<_>>(),
+            [("steer", Some("steer")), ("queue", Some("queue"))]
+        );
+    }
 
     fn user(delivery: Option<ActiveMessageDelivery>) -> MessageSubmission {
         MessageSubmission {
