@@ -366,6 +366,7 @@ private struct TranscriptRow: View {
                 Spacer(minLength: 42)
                 VStack(alignment: .trailing, spacing: MobiusSpace.s) {
                     TranscriptFileCards(files: entry.files, sessionID: fileSessionID)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
                     if !entry.text.isEmpty {
                         CollapsibleText(text: entry.text)
                             .padding(.horizontal, MobiusSpace.l)
@@ -382,6 +383,7 @@ private struct TranscriptRow: View {
                 Spacer(minLength: 42)
                 VStack(alignment: .trailing, spacing: MobiusSpace.s) {
                     TranscriptFileCards(files: entry.files, sessionID: fileSessionID)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
                     if !entry.text.isEmpty {
                         MobiusMarkdownText(entry.text, streaming: false)
                             .equatable()
