@@ -86,6 +86,7 @@ struct CollapsibleText: View {
 struct TranscriptFileCards: View {
     let files: [SessionFileReference]
     let sessionID: String?
+    var alignsTrailing = false
 
     var body: some View {
         if files.count <= 1 {
@@ -93,27 +94,36 @@ struct TranscriptFileCards: View {
                 SessionFileCard(file: file, sessionID: sessionID)
             }
         } else {
-            LazyVGrid(
-                columns: [
-                    GridItem(
-                        .adaptive(minimum: 136, maximum: 136),
-                        spacing: MobiusSpace.s,
-                        alignment: .topLeading
-                    ),
-                ],
-                alignment: .leading,
-                spacing: MobiusSpace.s
-            ) {
-                ForEach(files) { file in
-                    SessionFileCard(file: file, sessionID: sessionID)
-                }
+            ViewThatFits(in: .horizontal) {
+                fileRows(columnCount: 3)
+                fileRows(columnCount: 2)
+                fileRows(columnCount: 1)
             }
-            .frame(maxWidth: gridWidth, alignment: .leading)
         }
     }
 
-    private var gridWidth: CGFloat {
-        let columns = CGFloat(min(files.count, 3))
+    private func fileRows(columnCount: Int) -> some View {
+        VStack(alignment: alignsTrailing ? .trailing : .leading, spacing: MobiusSpace.s) {
+            ForEach(Array(stride(from: 0, to: files.count, by: columnCount)), id: \.self) { start in
+                HStack(alignment: .top, spacing: MobiusSpace.s) {
+                    ForEach(files[start ..< min(start + columnCount, files.count)]) { file in
+                        SessionFileCard(file: file, sessionID: sessionID)
+                            .frame(
+                                width: 136,
+                                alignment: alignsTrailing ? .trailing : .leading
+                            )
+                    }
+                }
+            }
+        }
+        .frame(
+            width: gridWidth(columnCount: columnCount),
+            alignment: alignsTrailing ? .trailing : .leading
+        )
+    }
+
+    private func gridWidth(columnCount: Int) -> CGFloat {
+        let columns = CGFloat(min(files.count, columnCount))
         return columns * 136 + (columns - 1) * MobiusSpace.s
     }
 }

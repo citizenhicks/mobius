@@ -643,10 +643,6 @@ struct SessionCatalogRow: View {
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    SessionActivityIndicator(
-                        state: session.activity.state,
-                        isUnread: isUnread
-                    )
                     if session.pinned {
                         MobiusIcon(
                             .pushPin,
@@ -655,6 +651,14 @@ struct SessionCatalogRow: View {
                         )
                         .accessibilityHidden(true)
                     }
+                    SessionActivityIndicator(
+                        state: session.activity.state,
+                        isUnread: isUnread
+                    )
+                    .frame(
+                        width: MobiusStyle.iconButtonSize,
+                        height: MobiusStyle.iconButtonSize
+                    )
                 }
                 .frame(minHeight: MobiusStyle.iconButtonSize)
                 .contentShape(Rectangle())
@@ -664,7 +668,7 @@ struct SessionCatalogRow: View {
             .accessibilityValue(accessibilityValue(isUnread: isUnread))
             .accessibilityAddTraits(isSelected ? .isSelected : [])
         }
-        .padding(.horizontal, MobiusSpace.s)
+        .padding(.leading, MobiusSpace.s)
         .frame(minHeight: MobiusStyle.iconButtonSize)
 
         if showsControls {
