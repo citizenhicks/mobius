@@ -5,6 +5,9 @@ use std::collections::BTreeSet;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
+use bm25::Document;
+use bm25::Language;
+use bm25::SearchEngineBuilder;
 use diffy::Patch;
 use futures_util::FutureExt;
 use futures_util::future::join_all;
@@ -423,7 +426,7 @@ impl Catalog {
         (bound, rejected)
     }
 
-    /// Searches currently deferred tools using deterministic name-first ranking.
+    /// Searches currently deferred tools using BM25 relevance ranking.
     pub fn search_deferred(
         &self,
         query: &str,
@@ -438,42 +441,31 @@ impl Catalog {
                 "tools_search query exceeds {MAX_TOOL_SEARCH_QUERY_BYTES} bytes"
             )));
         }
-        let query_lower = query.to_lowercase();
-        let mut matches = self
+        let definitions = self
             .tools
             .values()
             .filter(|tool| {
                 tool.exposure == ToolExposure::Deferred
                     && searchable.contains(&tool.definition.name)
             })
-            .filter_map(|tool| {
-                let name = tool.definition.name.to_lowercase();
-                let rank = if name == query_lower {
-                    0
-                } else if name.contains(&query_lower) {
-                    1
-                } else if tool
-                    .definition
-                    .description
-                    .to_lowercase()
-                    .contains(&query_lower)
-                {
-                    2
-                } else {
-                    return None;
-                };
-                Some((rank, &tool.definition))
-            })
+            .map(|tool| &tool.definition)
             .collect::<Vec<_>>();
-        matches.sort_by(|(left_rank, left), (right_rank, right)| {
-            left_rank
-                .cmp(right_rank)
-                .then_with(|| left.name.cmp(&right.name))
-        });
-        Ok(matches
+        if definitions.is_empty() {
+            return Ok(Vec::new());
+        }
+        // ponytail: rebuild the tiny index per query; cache it if deferred catalogs become large.
+        let documents = definitions
+            .iter()
+            .enumerate()
+            .map(|(index, definition)| Document::new(index, tool_search_text(definition)))
+            .collect::<Vec<_>>();
+        let search_engine =
+            SearchEngineBuilder::<usize>::with_documents(Language::English, documents).build();
+
+        Ok(search_engine
+            .search(query, MAX_TOOL_SEARCH_RESULTS)
             .into_iter()
-            .take(MAX_TOOL_SEARCH_RESULTS)
-            .map(|(_, definition)| definition.clone())
+            .filter_map(|result| definitions.get(result.document.id).copied().cloned())
             .collect())
     }
 
@@ -585,6 +577,42 @@ impl Catalog {
 
     fn get(&self, name: &str) -> Option<&RegisteredTool> {
         self.tools.get(name)
+    }
+}
+
+fn tool_search_text(definition: &ToolDefinition) -> String {
+    let mut parts = Vec::new();
+    push_search_part(&mut parts, &definition.name);
+    push_search_part(&mut parts, &definition.name.replace('_', " "));
+    push_search_part(&mut parts, &definition.description);
+    append_schema_search_text(&definition.parameters, &mut parts);
+    parts.join(" ")
+}
+
+fn append_schema_search_text(schema: &Value, parts: &mut Vec<String>) {
+    if let Some(description) = schema.get("description").and_then(Value::as_str) {
+        push_search_part(parts, description);
+    }
+    if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
+        for (name, schema) in properties {
+            push_search_part(parts, name);
+            append_schema_search_text(schema, parts);
+        }
+    }
+    if let Some(items) = schema.get("items") {
+        append_schema_search_text(items, parts);
+    }
+    if let Some(variants) = schema.get("anyOf").and_then(Value::as_array) {
+        for variant in variants {
+            append_schema_search_text(variant, parts);
+        }
+    }
+}
+
+fn push_search_part(parts: &mut Vec<String>, part: &str) {
+    let part = part.trim();
+    if !part.is_empty() {
+        parts.push(part.into());
     }
 }
 

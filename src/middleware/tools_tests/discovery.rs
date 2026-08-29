@@ -163,7 +163,7 @@ fn catalog_revision_is_order_independent_and_schema_sensitive() {
 }
 
 #[test]
-fn deferred_search_is_ranked_deterministic_and_bounded() {
+fn deferred_search_is_relevant_scoped_and_bounded() {
     let mut catalog = Catalog::default();
     for (name, description) in [
         ("swarm", "exact"),
@@ -208,7 +208,7 @@ fn deferred_search_is_ranked_deterministic_and_bounded() {
                 )
                 .expect("search"),
         ),
-        ["swarm", "swarm_post", "board"]
+        ["swarm", "board", "swarm_post"]
     );
     assert_eq!(
         names(
@@ -260,6 +260,56 @@ fn deferred_search_is_ranked_deterministic_and_bounded() {
             .len(),
         MAX_TOOL_SEARCH_RESULTS
     );
+}
+
+#[test]
+fn deferred_search_matches_natural_language_queries() {
+    let mut catalog = Catalog::default();
+    for (name, description) in [
+        (
+            "send_artifact",
+            "Send one existing workspace file to the user.",
+        ),
+        (
+            "list_attachments",
+            "List files uploaded to this chat and their workspace paths when available.",
+        ),
+        (
+            "spawn_agent",
+            "Start an async child for independent work; return its canonical task name.",
+        ),
+    ] {
+        catalog
+            .register(Arc::new(NamedTool::new(
+                name,
+                description,
+                ToolExposure::Deferred,
+            )))
+            .expect("deferred tool");
+    }
+    let searchable = catalog
+        .deferred_definitions()
+        .iter()
+        .map(|definition| definition.name.clone())
+        .collect();
+
+    for (query, expected) in [
+        (
+            "send a generated file to the user as an artifact",
+            "send_artifact",
+        ),
+        ("list files attached by the user", "list_attachments"),
+        ("spawn a subagent to do independent work", "spawn_agent"),
+    ] {
+        assert_eq!(
+            catalog
+                .search_deferred(query, &searchable)
+                .expect("search")
+                .first()
+                .map(|definition| definition.name.as_str()),
+            Some(expected)
+        );
+    }
 }
 
 #[test]
