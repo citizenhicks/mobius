@@ -241,7 +241,7 @@ struct ComposerOptionsView: View {
                 text: currentChoice.map { .verbatim(model.modelLabel(for: $0)) }
                     ?? .localized("Model"),
                 glyph: providerGlyph,
-                detail: currentChoice?.reasoningEffort.map { .verbatim($0.capitalized) },
+                detail: displayedReasoningLabel,
                 glyphSize: MobiusStyle.glyphLead,
                 glyphColor: providerTint?.color
             )
@@ -259,7 +259,7 @@ struct ComposerOptionsView: View {
         Picker("Model", selection: modelPickerSelection) {
             ForEach(distinctModels, id: \.route) { choice in
                 modelMenuOptionLabel(
-                    "\(model.modelGroupLabel(for: choice)) · \(String(localized: choice.toolDiscovery.label))",
+                    model.modelLabel(for: choice),
                     providerSymbol: model.providerSymbol(for: choice),
                     tint: model.providerTint(for: choice)
                 )
@@ -447,6 +447,14 @@ struct ComposerOptionsView: View {
             return .localized("\(modelName) · \(effort.capitalized)")
         }
         return .localized("\(modelName) · Default")
+    }
+
+    private var displayedReasoningLabel: MobiusText? {
+        guard let currentChoice else { return nil }
+        if let effort = currentChoice.reasoningEffort {
+            return .verbatim("• \(effort.capitalized)")
+        }
+        return .localized("• Default")
     }
 
     private var providerTint: AccentTint? {

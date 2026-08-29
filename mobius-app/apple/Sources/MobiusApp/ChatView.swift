@@ -52,16 +52,18 @@ struct ChatView: View {
         .scaleEffect(hasEntered || reduceMotion ? 1 : 0.985)
         .opacity(hasEntered ? 1 : 0)
         .onAppear {
-            // SwiftUI can retain a navigation destination after it is popped. Give every
-            // presentation a fresh scroll state even when the same session is reopened.
-            transcriptPresentationID = UUID()
+            resetTranscriptPresentation()
             withAnimation(reduceMotion ? .easeOut(duration: 0.12) : .smooth(duration: 0.28)) {
                 hasEntered = true
             }
         }
+        .onChange(of: model.chatPresentationRevision) {
+            // SwiftUI can retain a popped navigation destination, so `onAppear` is not a
+            // reliable signal when the same active chat is opened again.
+            resetTranscriptPresentation()
+        }
         .onChange(of: model.selectedSessionID) {
-            transcriptPresentationID = UUID()
-            isAtBottom = true
+            resetTranscriptPresentation()
         }
         .navigationTitle(chatTitle)
         .toolbarTitleDisplayMode(.inline)
@@ -113,6 +115,11 @@ struct ChatView: View {
             }
             .mobiusSheet(detents: [.large])
         }
+    }
+
+    private func resetTranscriptPresentation() {
+        transcriptPresentationID = UUID()
+        isAtBottom = true
     }
 
     /// Starting a chat in the folder you are already in belongs with the other page-level

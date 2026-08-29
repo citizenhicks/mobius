@@ -55,6 +55,7 @@ final class AppModel {
     @ObservationIgnored var titleEligibleSessionIDs: Set<String> = []
     var pendingChatTitles: [String: PendingChatTitle] = [:]
     var selectedSessionID: String?
+    var chatPresentationRevision = 0
     var sessionToRename: SessionRecord?
     var sessionRenameDraft = ""
     var sessionToDelete: SessionRecord?

@@ -11,6 +11,8 @@ final class ComposerDictation {
         [
             Locale(identifier: "en_US"),
             Locale(identifier: "fr_FR"),
+            Locale(identifier: "de_DE"),
+            Locale(identifier: "hu_HU"),
             Locale.current,
         ]
     }

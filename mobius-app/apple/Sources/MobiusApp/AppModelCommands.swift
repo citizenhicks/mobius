@@ -241,6 +241,7 @@ extension AppModel {
 
     func openChat(_ sessionID: String) {
         guard canOpenSession || sessionID == selectedSessionID else { return }
+        chatPresentationRevision &+= 1
         destination = .chats
         openSession(sessionID)
         navigationPath = [.chat(.session(sessionID))]

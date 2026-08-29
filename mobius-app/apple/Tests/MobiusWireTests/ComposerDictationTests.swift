@@ -2,11 +2,11 @@ import Foundation
 import XCTest
 
 final class ComposerDictationTests: XCTestCase {
-    func testAutomaticDictationKeepsEnglishFrenchAndIncludesCurrentLocale() {
+    func testAutomaticDictationIncludesAppLanguagesAndCurrentLocale() {
         let languages = ComposerDictation.requestedLocales
             .compactMap { $0.language.languageCode?.identifier }
 
-        XCTAssertEqual(Array(languages.prefix(2)), ["en", "fr"])
+        XCTAssertEqual(Array(languages.prefix(4)), ["en", "fr", "de", "hu"])
         XCTAssertTrue(
             ComposerDictation.requestedLocales.contains {
                 $0.identifier(.bcp47) == Locale.current.identifier(.bcp47)

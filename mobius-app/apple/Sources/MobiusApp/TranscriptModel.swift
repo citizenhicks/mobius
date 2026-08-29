@@ -750,6 +750,53 @@ extension TranscriptEntry {
     }
 }
 
+func formattedToolEventDetail(_ text: String) -> String {
+    guard text.first == "{",
+          let inputEnd = firstJSONObjectEnd(in: text),
+          let input = prettyJSON(String(text[...inputEnd]))
+    else { return text }
+
+    let output = String(text[text.index(after: inputEnd)...])
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !output.isEmpty else { return input }
+    guard let output = prettyJSON(output) else { return text }
+    return "\(input)\n\n\(output)"
+}
+
+private func firstJSONObjectEnd(in text: String) -> String.Index? {
+    var depth = 0
+    var isInsideString = false
+    var isEscaped = false
+    for index in text.indices {
+        let character = text[index]
+        if isInsideString {
+            if isEscaped {
+                isEscaped = false
+            } else if character == "\\" {
+                isEscaped = true
+            } else if character == "\"" {
+                isInsideString = false
+            }
+        } else if character == "\"" {
+            isInsideString = true
+        } else if character == "{" {
+            depth += 1
+        } else if character == "}" {
+            depth -= 1
+            if depth == 0 { return index }
+        }
+    }
+    return nil
+}
+
+private func prettyJSON(_ text: String) -> String? {
+    guard let data = text.data(using: .utf8),
+          let value = try? JSONDecoder().decode(JSONValue.self, from: data),
+          value.objectValue != nil || value.arrayValue != nil
+    else { return nil }
+    return value.prettyPrinted
+}
+
 /// Derived from the entries a surface actually holds, so the chat, a subagent preview, and a
 /// scheduled run all resolve these against their own transcript rather than the selected chat's.
 func activeStepID(in entries: [TranscriptEntry], isRunning: Bool) -> String? {

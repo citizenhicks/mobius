@@ -319,8 +319,12 @@ private struct EventLine: View {
                 if entry.format == "unified_diff" {
                     InlineUnifiedDiffView(source: entry.text)
                 } else if !entry.eventDetail.isEmpty {
-                    Text(verbatim: entry.eventDetail)
-                        .font(MobiusStyle.bodyFont)
+                    Text(verbatim: detail)
+                        .font(
+                            entry.role == .tool
+                                ? MobiusStyle.bodyFont.monospaced()
+                                : MobiusStyle.bodyFont
+                        )
                         .foregroundStyle(palette.muted)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -370,6 +374,10 @@ private struct EventLine: View {
     /// A diff says more as a count of changed lines than as the word "Code change".
     private var headline: MobiusText {
         entry.format == "unified_diff" ? diffSummary(entry.text) : .verbatim(entry.headline)
+    }
+
+    private var detail: String {
+        entry.role == .tool ? formattedToolEventDetail(entry.eventDetail) : entry.eventDetail
     }
 
     private var glyph: MobiusGlyph {

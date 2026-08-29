@@ -4,6 +4,8 @@
 <dict>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Use the microphone to dictate messages into the möbius composer.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Use speech recognition to transcribe dictated messages in möbius.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Use Face ID to unlock möbius.</string>
 	<key>CFBundleURLTypes</key>

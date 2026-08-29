@@ -323,6 +323,8 @@ enum AppLanguage: String, CaseIterable, Identifiable {
     case system
     case english = "en"
     case french = "fr"
+    case german = "de"
+    case hungarian = "hu"
 
     var id: Self { self }
 
@@ -331,6 +333,8 @@ enum AppLanguage: String, CaseIterable, Identifiable {
         case .system: "System"
         case .english: "English"
         case .french: "French"
+        case .german: "German"
+        case .hungarian: "Hungarian"
         }
     }
 
@@ -338,7 +342,7 @@ enum AppLanguage: String, CaseIterable, Identifiable {
         switch self {
         case .system:
             .autoupdatingCurrent
-        case .english, .french:
+        case .english, .french, .german, .hungarian:
             Locale(identifier: rawValue)
         }
     }

@@ -47,6 +47,31 @@ extension AppModelTests {
         XCTAssertEqual(entry.turnID, "turn-1")
     }
 
+    func testToolEventDetailPrettyPrintsAdjacentJSONWithoutChangingStrings() {
+        let detail = #"{"query":"show }{ safely"}{"loaded_tools":["swarm_post","swarm_read"]}"#
+
+        XCTAssertEqual(formattedToolEventDetail(detail), """
+        {
+          "query" : "show }{ safely"
+        }
+
+        {
+          "loaded_tools" : [
+            "swarm_post",
+            "swarm_read"
+          ]
+        }
+        """)
+        XCTAssertEqual(
+            formattedToolEventDetail(#"{"query":"show"}plain result"#),
+            #"{"query":"show"}plain result"#
+        )
+        XCTAssertEqual(
+            formattedToolEventDetail(#"{"query":"show"}true"#),
+            #"{"query":"show"}true"#
+        )
+    }
+
     func testFrontendPresentationMetadataUsesTheAppLanguageCatalog() {
         let french = Locale(identifier: "fr")
         let values = [

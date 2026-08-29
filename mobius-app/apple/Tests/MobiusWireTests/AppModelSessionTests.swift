@@ -297,10 +297,12 @@ extension AppModelTests {
         model.sessions = [session(sessionID: "chat-2", state: .idle)]
 
         let requestCount = await recorder.requestCount()
+        let presentationRevision = model.chatPresentationRevision
         model.openChat("chat-2")
 
         XCTAssertEqual(model.destination, .chats)
         XCTAssertEqual(model.navigationPath, [.chat(.session("chat-2"))])
+        XCTAssertEqual(model.chatPresentationRevision, presentationRevision + 1)
         let request = await recorder.firstRequest(after: requestCount) { request in
             guard case .openSession(_, "chat-2", _) = request else { return false }
             return true
@@ -313,6 +315,10 @@ extension AppModelTests {
             payload: sessionReady(latestSequence: 0, sessionID: "chat-2")
         ))
         XCTAssertEqual(model.navigationPath, [.chat(.session("chat-2"))])
+        model.navigationPath = []
+        model.openChat("chat-2")
+        XCTAssertEqual(model.navigationPath, [.chat(.session("chat-2"))])
+        XCTAssertEqual(model.chatPresentationRevision, presentationRevision + 2)
         try await Task.sleep(for: .milliseconds(30))
         let requests = await recorder.requests()
         let opens = requests.dropFirst(requestCount).filter { request in

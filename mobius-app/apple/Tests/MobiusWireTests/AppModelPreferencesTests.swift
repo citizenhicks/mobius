@@ -102,6 +102,8 @@ extension AppModelTests {
         XCTAssertEqual(AppLanguage.system.locale, .autoupdatingCurrent)
         XCTAssertEqual(AppLanguage.english.locale.identifier, "en")
         XCTAssertEqual(AppLanguage.french.locale.identifier, "fr")
+        XCTAssertEqual(AppLanguage.german.locale.identifier, "de")
+        XCTAssertEqual(AppLanguage.hungarian.locale.identifier, "hu")
     }
 
     func testLanguageDefaultsToSystem() throws {
