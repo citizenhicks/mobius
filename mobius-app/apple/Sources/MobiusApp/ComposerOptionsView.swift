@@ -169,10 +169,8 @@ struct ComposerOptionsView: View {
                     stop: toggleDictation
                 )
             } else {
-                // The icon buttons already pad their own glyphs, so they need no spacing
-                // between them: 44pt centres are the native rhythm, and anything more
-                // reads as drift.
-                HStack(spacing: 0) {
+                // ponytail: overlap 44pt targets by 4pt; split groups if boundary taps misfire.
+                HStack(spacing: -MobiusSpace.xs) {
                     if model.attachmentsEnabled { addAttachmentControl }
                     ForEach(composerSettings) { item in
                         ComposerSettingMenu(item: item)

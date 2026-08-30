@@ -43,7 +43,14 @@ struct PairingView: View {
                                             model.applyPairingSetup(value)
                                         }
                                     }
-                                    .mobiusIconButton()
+                                    .labelStyle(.iconOnly)
+                                    .buttonStyle(.mobiusPlain)
+                                    .tint(.primary)
+                                    .frame(
+                                        width: MobiusStyle.iconButtonSize,
+                                        height: MobiusStyle.iconButtonSize
+                                    )
+                                    .mobiusGlass(in: Circle(), interactive: true, clear: true)
                                     .accessibilityLabel("Paste pairing setup")
                                     .help("Paste pairing setup")
                                 }
