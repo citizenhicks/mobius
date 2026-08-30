@@ -60,6 +60,7 @@ final class AppModel {
     var sessionRenameDraft = ""
     var sessionToDelete: SessionRecord?
     var unreadSessionIDs: Set<String> = []
+    @ObservationIgnored var sessionReadCursors: [String: SessionReadCursor]?
     var transcript: [TranscriptEntry] = [] {
         didSet { updateTranscriptWindow(after: oldValue) }
     }
@@ -426,6 +427,7 @@ final class AppModel {
         self.isAppLocked = appLockEnabled
         self.appLockAuthenticationMethod = appLockAuthenticator.method
         if selectedAccountID == nil { selectedAccountID = accounts.first?.id }
+        restoreSessionReadState()
         showsPairing = accounts.isEmpty
         #if DEBUG
         let environment = ProcessInfo.processInfo.environment
@@ -723,8 +725,38 @@ final class AppModel {
     func setChatVisible(_ visible: Bool) {
         isChatVisible = visible
         if visible, let selectedSessionID {
-            unreadSessionIDs.remove(selectedSessionID)
+            markSessionRead(selectedSessionID)
         }
+    }
+
+    func restoreSessionReadState() {
+        guard let selectedAccountID else {
+            sessionReadCursors = nil
+            unreadSessionIDs.removeAll()
+            return
+        }
+        sessionReadCursors = store.loadSessionReadCursors(accountID: selectedAccountID)
+        unreadSessionIDs.removeAll()
+    }
+
+    func markSessionRead(_ sessionID: String) {
+        unreadSessionIDs.remove(sessionID)
+        guard let accountID = selectedAccountID,
+              let session = sessions.first(where: { $0.sessionId == sessionID })
+        else { return }
+        let cursor = sessionReadCursor(for: session)
+        guard sessionReadCursors?[sessionID] != cursor else { return }
+        var cursors = sessionReadCursors ?? [:]
+        cursors[sessionID] = cursor
+        sessionReadCursors = cursors
+        store.saveSessionReadCursors(cursors, accountID: accountID)
+    }
+
+    func sessionReadCursor(for session: SessionRecord) -> SessionReadCursor {
+        SessionReadCursor(
+            sequence: session.sequence,
+            wasActive: session.activity.state != .idle
+        )
     }
 
     /// Asks the composer to give up the keyboard. Leaving it up while the drawer slides means

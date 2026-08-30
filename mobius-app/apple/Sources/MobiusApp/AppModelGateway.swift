@@ -16,6 +16,7 @@ extension AppModel {
         sessionToRestoreID = sessionID
         selectedAccountID = account.id
         store.select(account)
+        restoreSessionReadState()
         connectionState = .connecting
         Task { [weak self] in
             guard let self, self.connectionGeneration == generation else { return }
@@ -125,6 +126,7 @@ extension AppModel {
                 try store.save(account, token: token)
                 accounts = store.loadAccounts()
                 selectedAccountID = account.id
+                restoreSessionReadState()
                 pendingPairingAccount = nil
                 pairingCode = ""
                 showsPairing = false
@@ -671,7 +673,7 @@ extension AppModel {
             prepareChatTitle(for: payload.session.sessionId)
         }
         if isChatVisible {
-            unreadSessionIDs.remove(payload.session.sessionId)
+            markSessionRead(payload.session.sessionId)
         }
         selectedModelRoute = payload.session.model.route
         modelContextWindow = payload.session.model.modelContextWindow
@@ -728,6 +730,44 @@ extension AppModel {
         if let selected = sessions.first(where: { $0.sessionId == selectedSessionID }) {
             applyExecutionStats(selected.executionStats)
             if selected.activity.state == .idle { runStats.active = nil }
+        }
+        if let accountID = selectedAccountID {
+            if var cursors = sessionReadCursors {
+                var readStateChanged = false
+                for session in sessions {
+                    let sessionID = session.sessionId
+                    let cursor = sessionReadCursor(for: session)
+                    if selectedSessionID == sessionID, isChatVisible {
+                        unreadSessionIDs.remove(sessionID)
+                        if cursors[sessionID] != cursor {
+                            cursors[sessionID] = cursor
+                            readStateChanged = true
+                        }
+                    } else if let readCursor = cursors[sessionID] {
+                        if session.activity.state == .idle,
+                           session.sequence > readCursor.sequence || readCursor.wasActive {
+                            unreadSessionIDs.insert(sessionID)
+                        }
+                    } else if session.activity.state == .idle {
+                        if session.sequence > 0 || session.activity.lastOutcome != nil {
+                            unreadSessionIDs.insert(sessionID)
+                        } else {
+                            cursors[sessionID] = cursor
+                            readStateChanged = true
+                        }
+                    }
+                }
+                if readStateChanged {
+                    sessionReadCursors = cursors
+                    store.saveSessionReadCursors(cursors, accountID: accountID)
+                }
+            } else {
+                let cursors = Dictionary(uniqueKeysWithValues: sessions.map { session in
+                    (session.sessionId, sessionReadCursor(for: session))
+                })
+                sessionReadCursors = cursors
+                store.saveSessionReadCursors(cursors, accountID: accountID)
+            }
         }
         let visible = Set(sessions.map(\.sessionId))
         unreadSessionIDs.formIntersection(visible)

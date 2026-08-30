@@ -395,12 +395,18 @@ private actor GatewayDiskStore {
     }
 }
 
+struct SessionReadCursor: Codable, Equatable {
+    let sequence: UInt64
+    let wasActive: Bool
+}
+
 @MainActor
 final class GatewayStore {
     private let defaults: UserDefaults
     private let diskStore: GatewayDiskStore
     private let accountsKey = "paired-gateways"
     private let selectedAccountKey = "selected-gateway"
+    private let sessionReadCursorsKeyPrefix = "session-read-cursors."
     private let keychainService = "app.mobius.gateway"
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
@@ -448,6 +454,19 @@ final class GatewayStore {
 
     func select(_ account: GatewayAccount) {
         defaults.set(account.id.uuidString, forKey: selectedAccountKey)
+    }
+
+    func loadSessionReadCursors(accountID: UUID) -> [String: SessionReadCursor]? {
+        guard let data = defaults.data(forKey: sessionReadCursorsKey(accountID)) else { return nil }
+        return try? decoder.decode([String: SessionReadCursor].self, from: data)
+    }
+
+    func saveSessionReadCursors(
+        _ cursors: [String: SessionReadCursor],
+        accountID: UUID
+    ) {
+        guard let data = try? encoder.encode(cursors) else { return }
+        defaults.set(data, forKey: sessionReadCursorsKey(accountID))
     }
 
     func recordMachineName(_ machineName: String, for account: GatewayAccount) throws {
@@ -523,6 +542,7 @@ final class GatewayStore {
         if selectedAccountID() == account.id {
             defaults.removeObject(forKey: selectedAccountKey)
         }
+        defaults.removeObject(forKey: sessionReadCursorsKey(account.id))
         await diskStore.removeAccount(account.id)
     }
 
@@ -597,6 +617,10 @@ final class GatewayStore {
             accountID: accountID,
             sessionID: sessionID
         )
+    }
+
+    private func sessionReadCursorsKey(_ accountID: UUID) -> String {
+        sessionReadCursorsKeyPrefix + accountID.uuidString
     }
 
     private func saveToken(_ token: String, accountID: UUID) throws {

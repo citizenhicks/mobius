@@ -268,7 +268,7 @@ extension AppModelTests {
         XCTAssertEqual(model.navigationPath, [.chat(.session("chat-1"))])
     }
 
-    func testReactivationFromChatCatalogDoesNotPreserveSelectedSession() throws {
+    func testReactivationFromChatCatalogFindsUnreadTerminalWork() throws {
         let model = try model()
         let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
         model.accounts = [account]
@@ -277,6 +277,11 @@ extension AppModelTests {
         model.destination = .chats
         model.navigationPath = []
         model.connectionState = .ready
+        model.applySessions([session(
+            state: .running,
+            turnID: "turn-1",
+            sequence: 1
+        )])
 
         model.setSceneActive(true)
         model.setSceneActive(false)
@@ -285,6 +290,25 @@ extension AppModelTests {
         XCTAssertEqual(model.connectionState, .connecting)
         XCTAssertNil(model.selectedSessionID)
         XCTAssertTrue(model.navigationPath.isEmpty)
+
+        model.applySessions([session(
+            state: .idle,
+            outcome: .failed,
+            message: "the agent stopped",
+            sequence: 1
+        )])
+        XCTAssertTrue(model.unreadSessionIDs.contains("chat-1"))
+
+        model.applySessions([
+            session(
+                state: .idle,
+                outcome: .failed,
+                message: "the agent stopped",
+                sequence: 1
+            ),
+            session(sessionID: "chat-2", state: .idle, outcome: .completed, sequence: 1)
+        ])
+        XCTAssertTrue(model.unreadSessionIDs.contains("chat-2"))
     }
 
     func testAutomaticReconnectRestoresDraftWithoutReplayingSubmission() async throws {
