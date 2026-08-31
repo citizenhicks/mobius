@@ -523,6 +523,7 @@ fn responses_decode_preserves_text_part_boundaries_and_annotations() {
                             "type": "url_citation",
                             "url": "https://example.com",
                             "title": "Example",
+                            "content": "Relevant excerpt.",
                             "start_index": 0,
                             "end_index": 10
                         },
@@ -572,6 +573,7 @@ fn responses_decode_preserves_text_part_boundaries_and_annotations() {
                         "type": "url_citation",
                         "url": "https://example.com",
                         "title": "Example",
+                        "content": "Relevant excerpt.",
                         "start_index": 0,
                         "end_index": 10
                     },

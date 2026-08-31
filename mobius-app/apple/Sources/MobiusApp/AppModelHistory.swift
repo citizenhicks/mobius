@@ -62,6 +62,7 @@ extension AppModel {
                 recordedAtMs: entry.recordedAtMs,
                 messageTarget: entry.messageTarget,
                 files: entry.files,
+                annotations: entry.annotations,
                 messageMetadata: entry.messageMetadata
             )
         }
@@ -75,6 +76,7 @@ extension AppModel {
     ) {
         let event = record.event.msg
         let type = event["type"]?.stringValue ?? "unknown"
+        let modelStepID = event["modelStepId"]?.stringValue
         let turnID = historyTurnID(
             for: type,
             event: event,
@@ -96,6 +98,7 @@ extension AppModel {
                 blockIndex: index,
                 recordedAtMs: record.recordedAtMs,
                 turnID: turnID,
+                modelStepID: modelStepID,
                 recordID: recordID,
                 to: &entries
             )

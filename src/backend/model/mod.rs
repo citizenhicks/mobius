@@ -600,6 +600,7 @@ enum OutputTextAnnotation {
     UrlCitation {
         url: String,
         title: String,
+        content: Option<String>,
         start_index: usize,
         end_index: usize,
     },
@@ -627,11 +628,13 @@ impl From<OutputTextAnnotation> for ModelStepAnnotation {
             OutputTextAnnotation::UrlCitation {
                 url,
                 title,
+                content,
                 start_index,
                 end_index,
             } => Self::UrlCitation {
                 url,
                 title,
+                content,
                 start_index,
                 end_index,
             },

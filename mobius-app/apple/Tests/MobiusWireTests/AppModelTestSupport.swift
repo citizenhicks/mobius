@@ -48,7 +48,8 @@ func testAssistantMessage(
     turnID: String,
     modelStepID: String,
     phase: String = "final_answer",
-    text: String
+    text: String,
+    annotations: [JSONValue] = []
 ) -> JSONValue {
     .object([
         "type": .string("assistant_message"),
@@ -60,7 +61,7 @@ func testAssistantMessage(
             "partIndex": .number(0),
             "phase": .string(phase),
             "text": .string(text),
-            "annotations": .array([]),
+            "annotations": .array(annotations),
         ])]),
         "messageTarget": .null,
     ])

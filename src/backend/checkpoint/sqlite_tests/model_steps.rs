@@ -100,6 +100,7 @@ async fn assistant_message_compacts_progressive_deltas_and_preserves_citations()
                     annotations: vec![ModelStepAnnotation::UrlCitation {
                         url: "https://example.com".into(),
                         title: "Example".into(),
+                        content: Some("Relevant excerpt.".into()),
                         start_index: 0,
                         end_index: 4,
                     }],
@@ -157,6 +158,7 @@ async fn assistant_message_compacts_progressive_deltas_and_preserves_citations()
                 annotations: vec![ModelStepAnnotation::UrlCitation {
                     url: "https://example.com".into(),
                     title: "Example".into(),
+                    content: Some("Relevant excerpt.".into()),
                     start_index: 0,
                     end_index: 4,
                 }],

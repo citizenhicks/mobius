@@ -294,6 +294,71 @@ struct TranscriptTailView: View {
     }
 }
 
+private struct WebSearchDetail: View {
+    @Environment(\.mobiusPalette) private var palette
+    let detail: String
+    let sources: [WebSearchSource]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: MobiusSpace.m) {
+            if !detail.isEmpty {
+                Text(verbatim: detail)
+                    .font(MobiusStyle.bodyFont)
+                    .foregroundStyle(palette.muted)
+                    .textSelection(.enabled)
+            }
+            if !sources.isEmpty {
+                VStack(alignment: .leading, spacing: MobiusSpace.s) {
+                    Text("Sources")
+                        .font(MobiusStyle.captionFont.weight(.semibold))
+                        .foregroundStyle(palette.muted)
+                    ForEach(sources) { source in
+                        Link(destination: source.url) {
+                            HStack(alignment: .top, spacing: MobiusSpace.s) {
+                                VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
+                                    Text(verbatim: source.title)
+                                        .font(MobiusStyle.bodyFont)
+                                        .foregroundStyle(palette.accent)
+                                        .lineLimit(2)
+                                    Text(verbatim: source.host)
+                                        .font(MobiusStyle.captionFont)
+                                        .foregroundStyle(palette.muted)
+                                        .lineLimit(1)
+                                    if let excerpt = source.excerpt {
+                                        Text(verbatim: excerpt)
+                                            .font(MobiusStyle.captionFont)
+                                            .foregroundStyle(palette.muted)
+                                            .lineLimit(3)
+                                    }
+                                }
+                                Spacer(minLength: MobiusSpace.s)
+                                MobiusIcon(
+                                    .link,
+                                    size: MobiusStyle.glyphMark,
+                                    foreground: palette.accent
+                                )
+                            }
+                            .frame(
+                                maxWidth: .infinity,
+                                minHeight: MobiusStyle.rowTouch,
+                                alignment: .leading
+                            )
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.mobiusPlain)
+                        .accessibilityLabel("Open \(source.title) from \(source.host)")
+                        .accessibilityHint("Opens the source in your browser")
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, MobiusSpace.m)
+        .padding(.vertical, MobiusSpace.s)
+        .background(palette.panel, in: MobiusStyle.controlShape)
+    }
+}
+
 /// One typed event on one line: its semantic owner, title, and optional detail.
 private struct EventLine: View {
     @Environment(AppModel.self) private var model
@@ -318,6 +383,8 @@ private struct EventLine: View {
             if isExpanded {
                 if entry.format == "unified_diff" {
                     InlineUnifiedDiffView(source: entry.text)
+                } else if entry.isWebSearch {
+                    WebSearchDetail(detail: detail, sources: entry.webSearchSources)
                 } else if !entry.eventDetail.isEmpty {
                     Text(verbatim: detail)
                         .font(
@@ -361,7 +428,7 @@ private struct EventLine: View {
                 MobiusIcon(.caretRight, size: MobiusStyle.glyphMark, foreground: palette.muted)
                     .rotationEffect(.degrees(isExpanded ? 90 : 0))
                     .animation(.snappy(duration: 0.18), value: isExpanded)
-            } else if !entry.eventDetail.isEmpty {
+            } else if !entry.eventDetail.isEmpty || !entry.webSearchSources.isEmpty {
                 MobiusIcon(.caretUpDown, size: MobiusStyle.glyphMark, foreground: palette.muted)
             }
         }
@@ -407,7 +474,9 @@ private struct EventLine: View {
     }
 
     private var isInteractive: Bool {
-        entry.format == "unified_diff" || !entry.eventDetail.isEmpty
+        entry.format == "unified_diff"
+            || !entry.eventDetail.isEmpty
+            || !entry.webSearchSources.isEmpty
     }
 
     private var accessibilityHint: LocalizedStringResource {

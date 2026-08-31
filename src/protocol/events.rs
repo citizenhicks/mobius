@@ -267,6 +267,8 @@ pub enum ModelStepAnnotation {
     UrlCitation {
         url: String,
         title: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content: Option<String>,
         start_index: usize,
         end_index: usize,
     },

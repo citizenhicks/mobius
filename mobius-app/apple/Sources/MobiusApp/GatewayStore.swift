@@ -52,6 +52,7 @@ struct CachedTranscript: Codable, Sendable {
         let recordedAtMs: Int64?
         let messageTarget: MessageTarget?
         let files: [SessionFileReference]
+        let annotations: [JSONValue]?
 
         init(_ entry: TranscriptEntry) {
             id = entry.id
@@ -75,6 +76,7 @@ struct CachedTranscript: Codable, Sendable {
             recordedAtMs = entry.recordedAtMs
             messageTarget = entry.messageTarget
             files = entry.files
+            annotations = entry.annotations.isEmpty ? nil : entry.annotations
         }
 
         var transcriptEntry: TranscriptEntry {
@@ -100,6 +102,7 @@ struct CachedTranscript: Codable, Sendable {
                 recordedAtMs: recordedAtMs,
                 messageTarget: messageTarget,
                 files: files,
+                annotations: annotations ?? [],
                 messageMetadata: identity.messageMetadata
             )
         }

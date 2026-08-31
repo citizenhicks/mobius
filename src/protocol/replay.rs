@@ -510,6 +510,7 @@ mod tests {
                         "type": "url_citation",
                         "url": "https://example.com",
                         "title": "Example",
+                        "content": "Relevant excerpt.",
                         "start_index": 0,
                         "end_index": 6
                     }]
@@ -524,8 +525,10 @@ mod tests {
             [EventMsg::AssistantMessage(message)]
                 if matches!(
                     message.content[0].annotations.as_slice(),
-                    [ModelStepAnnotation::UrlCitation { url, title, start_index: 0, end_index: 6 }]
-                        if url == "https://example.com" && title == "Example"
+                    [ModelStepAnnotation::UrlCitation { url, title, content: Some(content), start_index: 0, end_index: 6 }]
+                        if url == "https://example.com"
+                            && title == "Example"
+                            && content == "Relevant excerpt."
                 )
         ));
     }

@@ -1,0 +1,1 @@
+Accept and preserve OpenRouter's optional `content` excerpt on Responses API URL citations from hosted web search while retaining strict validation for every other annotation field. Protocol and persisted formats are unchanged.

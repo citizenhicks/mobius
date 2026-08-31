@@ -69,13 +69,15 @@ extension AppModel {
 
     private func applyPresentation(from record: RecordedEvent, turnID: String?) -> Bool {
         let event = record.event
+        let modelStepID = event.msg["modelStepId"]?.stringValue
         for (index, rendered) in record.blocks.enumerated() {
             apply(
                 rendered,
                 sequence: record.sequence,
                 blockIndex: index,
                 recordedAtMs: record.recordedAtMs,
-                turnID: turnID
+                turnID: turnID,
+                modelStepID: modelStepID
             )
         }
         if let preview = record.preview {
@@ -327,7 +329,8 @@ extension AppModel {
         sequence: UInt64,
         blockIndex: Int,
         recordedAtMs: Int64,
-        turnID: String?
+        turnID: String?,
+        modelStepID: String?
     ) {
         mutateTranscriptPreservingPrefix { entries in
             apply(
@@ -336,6 +339,7 @@ extension AppModel {
                 blockIndex: blockIndex,
                 recordedAtMs: recordedAtMs,
                 turnID: turnID,
+                modelStepID: modelStepID,
                 to: &entries
             )
         }
@@ -351,6 +355,7 @@ extension AppModel {
         blockIndex: Int,
         recordedAtMs: Int64,
         turnID: String?,
+        modelStepID: String? = nil,
         recordID: String? = nil,
         to entries: inout [TranscriptEntry]
     ) {
@@ -381,6 +386,7 @@ extension AppModel {
                 entries[index].turnID = turnID
                 invalidateTranscriptProjection()
             }
+            if let modelStepID { entries[index].modelStepID = modelStepID }
             entries[index].pending = block.pending
             entries[index].sourceSequence = sequence
             entries[index].recordedAtMs = recordedAtMs
@@ -408,6 +414,7 @@ extension AppModel {
                 format: block.format,
                 tone: block.tone,
                 pending: block.pending,
+                modelStepID: modelStepID,
                 turnID: turnID,
                 sourceSequence: sequence,
                 recordedAtMs: recordedAtMs,
@@ -864,6 +871,13 @@ extension AppModel {
         guard !snapshotEntries.isEmpty else { return }
         let insertionIndex = min(previousSnapshotIndex ?? entries.endIndex, entries.endIndex)
         entries.insert(contentsOf: snapshotEntries, at: insertionIndex)
+        let annotations = snapshotEntries.flatMap(\.annotations)
+        if !annotations.isEmpty,
+           let searchIndex = entries.lastIndex(where: {
+               $0.isWebSearch && $0.modelStepID == modelStepID
+           }) {
+            entries[searchIndex].annotations = annotations
+        }
     }
 
     func completeStream(

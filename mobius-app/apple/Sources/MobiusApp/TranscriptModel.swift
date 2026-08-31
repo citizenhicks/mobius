@@ -253,6 +253,15 @@ struct TranscriptMessageMetadata: Codable, Equatable, Sendable {
     var kind: TranscriptEntry.Kind { author == .user ? .user : .peer }
 }
 
+struct WebSearchSource: Identifiable, Equatable {
+    let url: URL
+    let title: String
+    let excerpt: String?
+
+    var id: URL { url }
+    var host: String { url.host ?? url.absoluteString }
+}
+
 extension TranscriptEntry.Kind {
     /// Everything that is not the narrative: it rides behind a group summary rather than
     /// taking a line of the timeline to itself.
@@ -689,6 +698,45 @@ extension TranscriptEntry {
     /// Hosted web search is identified by its protocol role, independent of title or owner.
     var isWebSearch: Bool {
         role == .webSearch
+    }
+
+    var webSearchSources: [WebSearchSource] {
+        guard isWebSearch else { return [] }
+        var seen = Set<URL>()
+        return annotations.compactMap { annotation in
+            let rawURL: String?
+            let rawTitle: String?
+            let rawExcerpt: String?
+            switch annotation["type"]?.stringValue {
+            case "url_citation":
+                rawURL = annotation["url"]?.stringValue
+                rawTitle = annotation["title"]?.stringValue
+                rawExcerpt = annotation["content"]?.stringValue
+            case "search_result_citation":
+                rawURL = annotation["source"]?.stringValue
+                rawTitle = annotation["title"]?.stringValue
+                rawExcerpt = annotation["citedText"]?.stringValue
+            case "web_search_result_citation":
+                rawURL = annotation["url"]?.stringValue
+                rawTitle = annotation["title"]?.stringValue
+                rawExcerpt = annotation["citedText"]?.stringValue
+            default:
+                return nil
+            }
+            guard let rawURL,
+                  let url = URL(string: rawURL),
+                  ["http", "https"].contains(url.scheme?.lowercased()),
+                  url.host?.isEmpty == false,
+                  seen.insert(url).inserted
+            else { return nil }
+            let title = rawTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let excerpt = rawExcerpt?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return WebSearchSource(
+                url: url,
+                title: title.flatMap { $0.isEmpty ? nil : $0 } ?? url.host ?? rawURL,
+                excerpt: excerpt.flatMap { $0.isEmpty ? nil : $0 }
+            )
+        }
     }
 
     /// "2 thoughts • 3 tool calls • 4 web searches • 1 approval • 2 events • 1 error", skipping

@@ -1,0 +1,1 @@
+Bundle möbius 0.9.22 so OpenRouter hosted web-search citations preserve their optional `content` excerpts instead of aborting completed turns. Protocol 55, configuration 21, chat specification 10, and durable checkpoint formats are unchanged.

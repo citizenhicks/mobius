@@ -244,7 +244,15 @@ extension AppModelTests {
                 turnID: "turn-cached",
                 startsTurn: true,
                 turnTerminal: true,
-                turnElapsedMs: 1_250
+                turnElapsedMs: 1_250,
+                annotations: [.object([
+                    "type": .string("url_citation"),
+                    "url": .string("https://example.com"),
+                    "title": .string("Example"),
+                    "content": .string("Relevant excerpt."),
+                    "startIndex": .number(0),
+                    "endIndex": .number(4),
+                ])]
             )],
             currentUsage: currentUsage,
             lastUsage: lastUsage
@@ -276,6 +284,10 @@ extension AppModelTests {
         XCTAssertEqual(model.transcript.first?.startsTurn, true)
         XCTAssertEqual(model.transcript.first?.turnTerminal, true)
         XCTAssertEqual(model.transcript.first?.turnElapsedMs, 1_250)
+        XCTAssertEqual(
+            model.transcript.first?.annotations.first?["content"]?.stringValue,
+            "Relevant excerpt."
+        )
         XCTAssertFalse(model.isLoadingTranscript)
         XCTAssertEqual(model.currentUsage.totalTokens, 55)
         XCTAssertEqual(model.contextTokens, 42)

@@ -555,4 +555,72 @@ extension AppModelTests {
         )
     }
 
+    func testAssistantCitationsAttachToTheirWebSearchResult() throws {
+        let model = try model()
+        for (sequence, stepID) in [(UInt64(1), "step-1"), (UInt64(2), "step-2")] {
+            model.reduce(record: recorded(sequence, .object([
+                "type": .string("web_search_end"),
+                "sessionId": .string("chat-1"),
+                "turnId": .string("turn-1"),
+                "modelStepId": .string(stepID),
+                "callId": .string("search-1"),
+                "action": .object([
+                    "type": .string("search"),
+                    "queries": .array([.string("möbius")]),
+                ]),
+            ]), blocks: [RenderedBlock(capability: "web_search", block: FrontendBlock(
+                id: "\(stepID)/search-1",
+                group: "turn-1",
+                update: .replace,
+                state: .complete,
+                role: .webSearch,
+                title: "Searched the web",
+                text: "möbius",
+                symbol: "search",
+                format: "plain_text",
+                tone: "success",
+                files: []
+            ))]))
+        }
+        model.reduce(record: recorded(3, testAssistantMessage(
+            turnID: "turn-1",
+            modelStepID: "step-1",
+            text: "Done",
+            annotations: [
+                .object([
+                    "type": .string("url_citation"),
+                    "url": .string("https://example.com/source"),
+                    "title": .string("Example"),
+                    "content": .string("Relevant excerpt."),
+                    "startIndex": .number(0),
+                    "endIndex": .number(4),
+                ]),
+                .object([
+                    "type": .string("url_citation"),
+                    "url": .string("https://example.com/source"),
+                    "title": .string("Duplicate"),
+                    "startIndex": .number(0),
+                    "endIndex": .number(4),
+                ]),
+                .object([
+                    "type": .string("url_citation"),
+                    "url": .string("javascript:alert(1)"),
+                    "title": .string("Unsafe"),
+                    "startIndex": .number(0),
+                    "endIndex": .number(4),
+                ]),
+            ]
+        )))
+
+        let searches = model.transcript.filter(\.isWebSearch)
+        XCTAssertEqual(searches.map(\.modelStepID), ["step-1", "step-2"])
+        let source = try XCTUnwrap(searches[0].webSearchSources.first)
+        XCTAssertEqual(searches[0].webSearchSources.count, 1)
+        XCTAssertEqual(source.url.absoluteString, "https://example.com/source")
+        XCTAssertEqual(source.title, "Example")
+        XCTAssertEqual(source.excerpt, "Relevant excerpt.")
+        XCTAssertTrue(searches[1].webSearchSources.isEmpty)
+        XCTAssertEqual(model.copiedTranscript([searches[0]])[0].webSearchSources, [source])
+    }
+
 }

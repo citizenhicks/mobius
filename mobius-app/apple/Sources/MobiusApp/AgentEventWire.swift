@@ -290,6 +290,7 @@ private struct AgentEventValidator {
         switch annotationType {
         case "url_citation":
             try requireStrings(["url", "title"], in: annotation)
+            try optionalString("content", in: annotation)
             try requireIntegers(["startIndex", "endIndex"], in: annotation)
         case "file_citation":
             try requireStrings(["fileId", "filename"], in: annotation)
