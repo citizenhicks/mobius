@@ -1,0 +1,1 @@
+Retry transient HTTP transport failures for OpenAI-compatible Responses requests with bounded exponential backoff while preserving request headers and bodies. Sanitized transport diagnostics now retain the failure classification and source; protocol and persisted formats are unchanged.

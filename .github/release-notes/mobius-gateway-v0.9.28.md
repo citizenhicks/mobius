@@ -1,0 +1,1 @@
+Bundle möbius 0.9.21 so transient OpenRouter and OpenAI-compatible Responses transport failures retry automatically with sanitized diagnostics. Protocol 55, configuration 21, chat specification 10, and durable checkpoint formats are unchanged.

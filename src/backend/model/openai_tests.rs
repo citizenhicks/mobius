@@ -1102,6 +1102,57 @@ async fn http_unauthorized_refreshes_and_retries_once() {
 }
 
 #[tokio::test]
+async fn http_transport_failure_retries_the_same_authorized_request() {
+    use tokio::io::AsyncReadExt as _;
+    use tokio::io::AsyncWriteExt as _;
+
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("HTTP listener");
+    let address = listener.local_addr().expect("HTTP address");
+    let server = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for attempt in 0..2 {
+            let (mut stream, _) = listener.accept().await.expect("HTTP connection");
+            let mut request = Vec::new();
+            while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                let mut chunk = [0; 1_024];
+                let count = stream.read(&mut chunk).await.expect("HTTP request");
+                assert_ne!(count, 0, "request ended before its headers");
+                request.extend_from_slice(&chunk[..count]);
+            }
+            requests.push(String::from_utf8_lossy(&request).into_owned());
+            if attempt == 1 {
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+                    )
+                    .await
+                    .expect("HTTP response");
+            }
+        }
+        requests
+    });
+    let provider = OpenAi::with_client(
+        Some("test-key".into()),
+        format!("http://{address}"),
+        "test-model",
+        reqwest::Client::new(),
+    )
+    .expect("provider");
+
+    let response = provider
+        .send_authorized("responses", &serde_json::json!({}), false, None)
+        .await
+        .expect("request should recover");
+
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let requests = server.await.expect("HTTP server");
+    assert_eq!(requests[0], requests[1]);
+    assert!(requests[0].contains("Bearer test-key"));
+}
+
+#[tokio::test]
 async fn credentialless_http_omits_authorization() {
     let (address, server) = capture_http_request().await;
     let provider = OpenAi::with_client(
