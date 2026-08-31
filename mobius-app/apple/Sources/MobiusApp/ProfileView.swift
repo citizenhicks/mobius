@@ -59,7 +59,7 @@ struct ProfileView: View {
 
 private struct CloudAgentUsageLimit: View {
     @Environment(\.mobiusPalette) private var palette
-    let limit: MobiusCloudUsageLimit
+    let limit: MobiusCloudUsageLimit?
 
     private static let resetFormat = Date.FormatStyle(
         date: .abbreviated,
@@ -68,26 +68,35 @@ private struct CloudAgentUsageLimit: View {
     )
 
     var body: some View {
-        let percentage = limit.remainingFraction.formatted(
+        let percentage = (limit?.remainingFraction ?? 0).formatted(
             .percent.precision(.fractionLength(0))
         )
+        let remaining = limit == nil
+            ? Text("Unavailable")
+            : Text("\(percentage) remaining")
         VStack(alignment: .leading, spacing: MobiusSpace.s) {
             HStack(alignment: .firstTextBaseline) {
                 Text("möbius cloud agent usage limits")
                 Spacer(minLength: MobiusSpace.s)
-                Text("\(percentage) remaining")
+                remaining
                     .monospacedDigit()
             }
             .font(MobiusStyle.controlFont)
             .accessibilityHidden(true)
-            ProgressView(value: limit.remainingFraction)
+            ProgressView(value: limit?.remainingFraction ?? 0)
                 .progressViewStyle(.linear)
                 .tint(palette.accent)
                 .accessibilityLabel("möbius Cloud agent usage limits")
-                .accessibilityValue("\(percentage) remaining")
-            Text("Resets \(limit.resetsAt.formatted(Self.resetFormat))")
-                .font(MobiusStyle.metadataFont)
-                .foregroundStyle(palette.muted)
+                .accessibilityValue(remaining)
+            if let limit {
+                Text("Resets \(limit.resetsAt.formatted(Self.resetFormat))")
+                    .font(MobiusStyle.metadataFont)
+                    .foregroundStyle(palette.muted)
+            } else {
+                Text("Unavailable")
+                    .font(MobiusStyle.metadataFont)
+                    .foregroundStyle(palette.muted)
+            }
         }
     }
 }
@@ -197,8 +206,28 @@ private struct CloudAccountSettings: View {
         if model.isLoadingCloudAccount {
             SettingsLoadingRows(label: "Loading Cloud account") {
                 LabeledContent("Email") { Text("account@example.com") }
-                Toggle("Help improve möbius", isOn: .constant(false))
+                HStack(spacing: MobiusSpace.xs) {
+                    Toggle("Help improve möbius", isOn: .constant(false))
+                    SettingsInfoButton(
+                        title: "Help improve möbius",
+                        detail: "Off by default. Saved to your Cloud account."
+                    )
+                }
                 LabeledContent("Subscriber since") { Text("August 2026") }
+                CloudAgentUsageLimit(limit: MobiusCloudUsageLimit(
+                    creditMicrousd: 1,
+                    remainingMicrousd: 1,
+                    resetsAt: Date(timeIntervalSince1970: 0)
+                ))
+                VStack(spacing: MobiusSpace.s) {
+                    ForEach(0..<(model.mobiusCloudGateway == nil ? 5 : 4), id: \.self) { _ in
+                        Button("Manage subscription", glyph: .sealCheck) {}
+                    }
+                }
+                .buttonStyle(.mobiusGlass)
+                .buttonBorderShape(.capsule)
+                .buttonSizing(.flexible)
+                .controlSize(.large)
             }
         } else if model.hasCloudAccount {
             if let cloudError = model.cloudError {
@@ -216,32 +245,30 @@ private struct CloudAccountSettings: View {
                     Text("Unavailable")
                 }
             }
-            if model.cloudAccount != nil {
-                // The info button sits beside the toggle rather than inside its label,
-                // which would hand its taps to the switch.
-                HStack(spacing: MobiusSpace.xs) {
-                    Toggle("Help improve möbius", isOn: Binding(
-                        get: { model.cloudAccount?.sharesDiagnostics ?? false },
-                        set: { sharesDiagnostics in
-                            Task { await model.setCloudSharesDiagnostics(sharesDiagnostics) }
-                        }
-                    ))
-                    .toggleStyle(.switch)
-                    .disabled(model.isUpdatingCloudDiagnostics)
-                    SettingsInfoButton(
-                        title: "Help improve möbius",
-                        detail: "Off by default. Saved to your Cloud account."
-                    )
-                }
+            // The info button sits beside the toggle rather than inside its label,
+            // which would hand its taps to the switch.
+            HStack(spacing: MobiusSpace.xs) {
+                Toggle("Help improve möbius", isOn: Binding(
+                    get: { model.cloudAccount?.sharesDiagnostics ?? false },
+                    set: { sharesDiagnostics in
+                        Task { await model.setCloudSharesDiagnostics(sharesDiagnostics) }
+                    }
+                ))
+                .toggleStyle(.switch)
+                .disabled(model.isUpdatingCloudDiagnostics || model.cloudAccount == nil)
+                SettingsInfoButton(
+                    title: "Help improve möbius",
+                    detail: "Off by default. Saved to your Cloud account."
+                )
             }
-            if let startedAt = model.cloudAccount?.subscriptionStartedAt {
-                LabeledContent("Subscriber since") {
+            LabeledContent("Subscriber since") {
+                if let startedAt = model.cloudAccount?.subscriptionStartedAt {
                     Text(startedAt, format: .dateTime.month(.wide).day().year())
+                } else {
+                    Text("Unavailable")
                 }
             }
-            if let limit = model.cloudAccount?.luna {
-                CloudAgentUsageLimit(limit: limit)
-            }
+            CloudAgentUsageLimit(limit: model.cloudAccount?.luna)
             VStack(spacing: MobiusSpace.s) {
                 if model.cloudAccount != nil, model.mobiusCloudGateway == nil {
                     MobiusCloudOfferButton()
@@ -556,56 +583,33 @@ private struct UsageHeatmap: View {
             weekCount: profileUsageWeekCount,
             aggregation: aggregation
         )
-        VStack(alignment: .leading, spacing: MobiusSpace.xs) {
-            Canvas { context, size in
-                let gapRatio: CGFloat = 0.28
-                let cell = size.width / (
-                    CGFloat(profileUsageWeekCount)
-                        + gapRatio * CGFloat(profileUsageWeekCount - 1)
-                )
-                let spacing = cell * gapRatio
+        Canvas { context, size in
+            let gapRatio: CGFloat = 0.28
+            let cell = size.width / (
+                CGFloat(profileUsageWeekCount)
+                    + gapRatio * CGFloat(profileUsageWeekCount - 1)
+            )
+            let spacing = cell * gapRatio
 
-                for index in chart.values.indices {
-                    let week = index / 7
-                    let weekday = index % 7
-                    guard week < profileUsageWeekCount else { continue }
-                    let value = chart.values[index]
-                    let rect = CGRect(
-                        x: CGFloat(week) * (cell + spacing),
-                        y: CGFloat(weekday) * (cell + spacing),
-                        width: cell,
-                        height: cell
-                    )
-                    let path = Path(roundedRect: rect, cornerRadius: min(4, cell * 0.3))
-                    context.fill(path, with: .color(heatColor(level: chart.activityLevel(value))))
-                    if differentiatesWithoutColor, value > 0 {
-                        context.stroke(path, with: .color(palette.canvas), lineWidth: 1)
-                    }
+            for index in chart.values.indices {
+                let week = index / 7
+                let weekday = index % 7
+                guard week < profileUsageWeekCount else { continue }
+                let value = chart.values[index]
+                let rect = CGRect(
+                    x: CGFloat(week) * (cell + spacing),
+                    y: CGFloat(weekday) * (cell + spacing),
+                    width: cell,
+                    height: cell
+                )
+                let path = Path(roundedRect: rect, cornerRadius: min(4, cell * 0.3))
+                context.fill(path, with: .color(heatColor(level: chart.activityLevel(value))))
+                if differentiatesWithoutColor, value > 0 {
+                    context.stroke(path, with: .color(palette.canvas), lineWidth: 1)
                 }
             }
-            .aspectRatio(heatmapAspectRatio, contentMode: .fit)
-
-            GeometryReader { geometry in
-                let gapRatio: CGFloat = 0.28
-                let cell = geometry.size.width / (
-                    CGFloat(profileUsageWeekCount)
-                        + gapRatio * CGFloat(profileUsageWeekCount - 1)
-                )
-                let spacing = cell * gapRatio
-                ZStack(alignment: .topLeading) {
-                    ForEach(monthLabels) { label in
-                        Text(label.title)
-                            .font(MobiusStyle.metadataFont)
-                            .foregroundStyle(palette.muted)
-                            .position(
-                                x: CGFloat(label.week) * (cell + spacing) + 12,
-                                y: 8
-                            )
-                    }
-                }
-            }
-            .frame(height: 16)
         }
+        .aspectRatio(heatmapAspectRatio, contentMode: .fit)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(aggregation.title) token activity")
         .accessibilityValue("\(chart.activeDays) active days, \(chart.totalTokens) total tokens")
@@ -619,30 +623,6 @@ private struct UsageHeatmap: View {
         ) / (7 + gapRatio * 6)
     }
 
-    private var monthLabels: [UsageMonthLabel] {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
-        let start = UsageActivitySeries.startDay(
-            endingOn: endingOn,
-            weekCount: profileUsageWeekCount
-        )
-        var labels: [UsageMonthLabel] = []
-        var previousMonth: Int?
-        for week in 0..<profileUsageWeekCount {
-            let date = Date(
-                timeIntervalSince1970: TimeInterval(start + UInt64(week * 7 + 6)) * 86_400
-            )
-            let month = calendar.component(.month, from: date)
-            guard month != previousMonth else { continue }
-            previousMonth = month
-            labels.append(UsageMonthLabel(
-                week: week,
-                title: calendar.veryShortMonthSymbols[month - 1]
-            ))
-        }
-        return labels
-    }
-
     private func heatColor(level: Int) -> Color {
         switch level {
         case 1: tint.opacity(0.28)
@@ -652,13 +632,6 @@ private struct UsageHeatmap: View {
         default: palette.line.opacity(0.35)
         }
     }
-}
-
-private struct UsageMonthLabel: Identifiable {
-    let week: Int
-    let title: String
-
-    var id: Int { week }
 }
 
 private struct AppearanceSettings: View {
