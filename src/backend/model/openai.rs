@@ -44,6 +44,7 @@ use crate::Error;
 use crate::Result;
 use crate::protocol::ModelEvent;
 use crate::protocol::ModelInfo;
+use crate::protocol::ModelStepAnnotation;
 use crate::protocol::TokenUsage;
 use crate::protocol::ToolDiscoveryMode;
 use crate::protocol::WebSearchAction;
@@ -275,6 +276,7 @@ impl OpenAi {
                     continue;
                 }
                 if let Some(response) = self.finish_stream_event(&event, &output, deferred_tools)? {
+                    emit_citation_web_search(&response, &web_searches, &events)?;
                     return Ok(response);
                 }
             }
@@ -783,6 +785,30 @@ fn web_search_item(event: &Value) -> Option<&Value> {
     event
         .get("item")
         .filter(|item| item.get("type").and_then(Value::as_str) == Some("web_search_call"))
+}
+
+fn emit_citation_web_search(
+    output: &ModelOutput,
+    web_searches: &BTreeSet<String>,
+    events: &ModelEventSink,
+) -> Result<()> {
+    if !web_searches.is_empty()
+        || !output.content().iter().any(|part| {
+            part.annotations
+                .iter()
+                .any(|annotation| matches!(annotation, ModelStepAnnotation::UrlCitation { .. }))
+        })
+    {
+        return Ok(());
+    }
+    let call_id = "citations".to_string();
+    events(ModelEvent::WebSearchStarted {
+        call_id: call_id.clone(),
+    })?;
+    events(ModelEvent::WebSearchCompleted {
+        call_id,
+        action: WebSearchAction::Other,
+    })
 }
 
 pub(super) fn emit_web_event(

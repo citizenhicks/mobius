@@ -957,7 +957,7 @@ impl OpenAiAuthorization for HttpRefreshingAuthorization {
 }
 
 #[tokio::test]
-async fn http_stream_forwards_deltas_and_completion_before_eof() {
+async fn http_stream_emits_citation_search_before_completion_and_eof() {
     use tokio::io::AsyncReadExt as _;
     use tokio::io::AsyncWriteExt as _;
 
@@ -992,7 +992,17 @@ async fn http_stream_forwards_deltas_and_completion_before_eof() {
                     "id": "message-1",
                     "type": "message",
                     "role": "assistant",
-                    "content": [{"type": "output_text", "text": "Done."}]
+                    "content": [{
+                        "type": "output_text",
+                        "text": "Done.",
+                        "annotations": [{
+                            "type": "url_citation",
+                            "url": "https://example.com",
+                            "title": "Example",
+                            "start_index": 0,
+                            "end_index": 4
+                        }]
+                    }]
                 }
             }),
             serde_json::json!({
@@ -1046,6 +1056,19 @@ async fn http_stream_forwards_deltas_and_completion_before_eof() {
     server.await.expect("HTTP server");
 
     assert_eq!(output.text(), "Done.");
+    assert_eq!(
+        events.recv().await,
+        Some(ModelEvent::WebSearchStarted {
+            call_id: "citations".into()
+        })
+    );
+    assert_eq!(
+        events.recv().await,
+        Some(ModelEvent::WebSearchCompleted {
+            call_id: "citations".into(),
+            action: WebSearchAction::Other
+        })
+    );
 }
 
 #[tokio::test]
