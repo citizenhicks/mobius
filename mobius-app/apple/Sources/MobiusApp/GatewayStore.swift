@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Security
 
@@ -164,6 +165,74 @@ struct CachedTranscript: Codable, Sendable {
     }
 }
 
+struct CachedChatCatalog: Codable, Equatable, Sendable {
+    static let currentSchemaVersion = 1
+
+    let schemaVersion: Int
+    let sessions: [SessionRecord]
+    let swarms: [SwarmRecord]
+    let lastSessionID: String?
+
+    init(
+        sessions: [SessionRecord],
+        swarms: [SwarmRecord],
+        lastSessionID: String?
+    ) {
+        schemaVersion = Self.currentSchemaVersion
+        self.sessions = sessions.map { session in
+            SessionRecord(
+                sessionId: session.sessionId,
+                sessionContext: session.sessionContext,
+                parentSessionId: session.parentSessionId,
+                parentSequence: session.parentSequence,
+                sequence: session.sequence,
+                firstUserMessage: session.firstUserMessage,
+                executionStats: session.executionStats,
+                title: session.title,
+                pinned: session.pinned,
+                activity: SessionActivity(
+                    state: .idle,
+                    turnId: nil,
+                    startedAt: nil,
+                    lastOutcome: session.activity.lastOutcome,
+                    message: nil
+                ),
+                createdAt: session.createdAt,
+                updatedAt: session.updatedAt
+            )
+        }
+        self.swarms = swarms.map { swarm in
+            SwarmRecord(
+                id: swarm.id,
+                title: swarm.title,
+                leaderSessionId: swarm.leaderSessionId,
+                members: swarm.members,
+                messages: [],
+                updatedAtMs: swarm.updatedAtMs
+            )
+        }
+        self.lastSessionID = lastSessionID.flatMap { sessionID in
+            sessions.contains { $0.sessionId == sessionID } ? sessionID : nil
+        }
+    }
+
+    fileprivate var isValid: Bool {
+        let sessionIDs = Set(sessions.map(\.sessionId))
+        return sessions.count <= 100
+            && sessionIDs.count == sessions.count
+            && !sessionIDs.contains("")
+            && swarms.count <= 100
+            && Set(swarms.map(\.id)).count == swarms.count
+            && swarms.allSatisfy { swarm in
+                !swarm.id.isEmpty
+                    && swarm.messages.isEmpty
+                    && Set(swarm.members.map(\.sessionId)).count == swarm.members.count
+                    && swarm.members.contains { $0.sessionId == swarm.leaderSessionId }
+            }
+            && lastSessionID.map(sessionIDs.contains) ?? true
+    }
+}
+
 struct ComposerEditRecovery: Codable, Equatable, Sendable {
     enum Phase: String, Codable, Sendable {
         case removingQueuedInput
@@ -192,18 +261,63 @@ struct ComposerEditRecovery: Codable, Equatable, Sendable {
 }
 
 private actor GatewayDiskStore {
+    private let maximumCachedCatalogBytes = 4 * 1024 * 1024
     private let maximumCachedTranscriptsPerAccount = 20
     private let maximumCachedTranscriptBytes = 4 * 1024 * 1024
     private let maximumCachedTranscriptContentBytes = 3 * 1024 * 1024
     private let maximumCachedTranscriptEntries = 10_000
+    private let maximumCachedThumbnailsPerAccount = 32
+    private let maximumCachedThumbnailBytes = 1024 * 1024
+    private let catalogDirectory: URL
     private let transcriptDirectory: URL
+    private let thumbnailDirectory: URL
     private let draftDirectory: URL
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
-    init(transcriptDirectory: URL, draftDirectory: URL) {
+    init(
+        catalogDirectory: URL,
+        transcriptDirectory: URL,
+        thumbnailDirectory: URL,
+        draftDirectory: URL
+    ) {
+        self.catalogDirectory = catalogDirectory
         self.transcriptDirectory = transcriptDirectory
+        self.thumbnailDirectory = thumbnailDirectory
         self.draftDirectory = draftDirectory
+    }
+
+    func loadChatCatalog(accountID: UUID) -> CachedChatCatalog? {
+        let url = catalogURL(accountID)
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+            let size = (attributes[.size] as? NSNumber)?.intValue
+        else { return nil }
+        guard size <= maximumCachedCatalogBytes,
+            let data = try? Data(contentsOf: url),
+            let cached = try? decoder.decode(CachedChatCatalog.self, from: data),
+            cached.schemaVersion == CachedChatCatalog.currentSchemaVersion,
+            cached.isValid
+        else {
+            try? FileManager.default.removeItem(at: url)
+            return nil
+        }
+        return cached
+    }
+
+    func saveChatCatalog(_ catalog: CachedChatCatalog, accountID: UUID) {
+        let url = catalogURL(accountID)
+        guard catalog.isValid,
+            let data = try? encoder.encode(catalog),
+            data.count <= maximumCachedCatalogBytes
+        else {
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
+        try? FileManager.default.createDirectory(
+            at: catalogDirectory,
+            withIntermediateDirectories: true
+        )
+        try? data.write(to: url, options: protectedWriteOptions)
     }
 
     func loadTranscript(accountID: UUID, sessionID: String) -> CachedTranscript? {
@@ -252,6 +366,42 @@ private actor GatewayDiskStore {
     func removeTranscript(accountID: UUID, sessionID: String) {
         try? FileManager.default.removeItem(
             at: transcriptURL(accountID: accountID, sessionID: sessionID)
+        )
+    }
+
+    func loadThumbnail(accountID: UUID, sessionID: String, fileID: String) -> Data? {
+        let url = thumbnailURL(accountID: accountID, sessionID: sessionID, fileID: fileID)
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+            let size = (attributes[.size] as? NSNumber)?.intValue,
+            size <= maximumCachedThumbnailBytes,
+            let data = try? Data(contentsOf: url),
+            !data.isEmpty,
+            data.count <= maximumCachedThumbnailBytes
+        else {
+            try? FileManager.default.removeItem(at: url)
+            return nil
+        }
+        return data
+    }
+
+    func saveThumbnail(_ data: Data, accountID: UUID, sessionID: String, fileID: String) {
+        let url = thumbnailURL(accountID: accountID, sessionID: sessionID, fileID: fileID)
+        guard !data.isEmpty, data.count <= maximumCachedThumbnailBytes else {
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
+        let directory = accountThumbnailDirectory(accountID)
+        try? FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        guard (try? data.write(to: url, options: protectedWriteOptions)) != nil else { return }
+        trimThumbnailCache(in: directory)
+    }
+
+    func removeThumbnail(accountID: UUID, sessionID: String, fileID: String) {
+        try? FileManager.default.removeItem(
+            at: thumbnailURL(accountID: accountID, sessionID: sessionID, fileID: fileID)
         )
     }
 
@@ -335,20 +485,51 @@ private actor GatewayDiskStore {
     }
 
     func removeAccount(_ accountID: UUID) {
+        try? FileManager.default.removeItem(at: catalogURL(accountID))
         try? FileManager.default.removeItem(at: accountTranscriptDirectory(accountID))
+        try? FileManager.default.removeItem(at: accountThumbnailDirectory(accountID))
         try? FileManager.default.removeItem(at: accountDraftDirectory(accountID))
+    }
+
+    func clearCachedData() throws {
+        try removeItemIfPresent(at: catalogDirectory)
+        try removeItemIfPresent(at: transcriptDirectory)
+        try removeItemIfPresent(at: thumbnailDirectory)
+    }
+
+    func clearAllData() throws {
+        try clearCachedData()
+        try removeItemIfPresent(at: draftDirectory)
     }
 
     private var protectedWriteOptions: Data.WritingOptions {
         [.atomic, .completeFileProtection]
     }
 
+    private func removeItemIfPresent(at url: URL) throws {
+        do {
+            try FileManager.default.removeItem(at: url)
+        } catch let error as CocoaError where error.code == .fileNoSuchFile {
+            return
+        }
+    }
+
     private func accountTranscriptDirectory(_ accountID: UUID) -> URL {
         transcriptDirectory.appendingPathComponent(accountID.uuidString, isDirectory: true)
     }
 
+    private func accountThumbnailDirectory(_ accountID: UUID) -> URL {
+        thumbnailDirectory.appendingPathComponent(accountID.uuidString, isDirectory: true)
+    }
+
     private func accountDraftDirectory(_ accountID: UUID) -> URL {
         draftDirectory.appendingPathComponent(accountID.uuidString, isDirectory: true)
+    }
+
+    private func catalogURL(_ accountID: UUID) -> URL {
+        catalogDirectory
+            .appendingPathComponent(accountID.uuidString)
+            .appendingPathExtension("json")
     }
 
     private func transcriptURL(accountID: UUID, sessionID: String) -> URL {
@@ -367,6 +548,16 @@ private actor GatewayDiskStore {
         accountDraftDirectory(accountID)
             .appendingPathComponent(filename(for: sessionID))
             .appendingPathExtension("edit.json")
+    }
+
+    private func thumbnailURL(accountID: UUID, sessionID: String, fileID: String) -> URL {
+        let key = SHA256.hash(data: Data("\(sessionID)\0\(fileID)".utf8)).map { byte in
+            let hex = String(byte, radix: 16)
+            return byte < 16 ? "0\(hex)" : hex
+        }.joined()
+        return accountThumbnailDirectory(accountID)
+            .appendingPathComponent(key)
+            .appendingPathExtension("png")
     }
 
     private func filename(for sessionID: String) -> String {
@@ -393,6 +584,27 @@ private actor GatewayDiskStore {
             try? FileManager.default.removeItem(at: stale.url)
         }
     }
+
+    private func trimThumbnailCache(in directory: URL) {
+        let cached =
+            ((try? FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: [.contentModificationDateKey],
+                options: [.skipsHiddenFiles]
+            )) ?? [])
+            .filter { $0.pathExtension == "png" }
+            .map { candidate in
+                let date =
+                    (try? candidate.resourceValues(
+                        forKeys: [.contentModificationDateKey]
+                    ).contentModificationDate) ?? .distantPast
+                return (url: candidate, date: date)
+            }
+            .sorted { $0.date > $1.date }
+        for stale in cached.dropFirst(maximumCachedThumbnailsPerAccount) {
+            try? FileManager.default.removeItem(at: stale.url)
+        }
+    }
 }
 
 struct SessionReadCursor: Codable, Equatable {
@@ -413,15 +625,21 @@ final class GatewayStore {
 
     init(
         defaults: UserDefaults = .standard,
+        catalogDirectory: URL? = nil,
         transcriptDirectory: URL? = nil,
+        thumbnailDirectory: URL? = nil,
         draftDirectory: URL? = nil
     ) {
         self.defaults = defaults
+        let cacheDirectory = URL.cachesDirectory
+            .appendingPathComponent("mobius", isDirectory: true)
         diskStore = GatewayDiskStore(
+            catalogDirectory: catalogDirectory
+                ?? cacheDirectory.appendingPathComponent("Catalogs", isDirectory: true),
             transcriptDirectory: transcriptDirectory
-                ?? URL.cachesDirectory
-                    .appendingPathComponent("mobius", isDirectory: true)
-                    .appendingPathComponent("Transcripts", isDirectory: true),
+                ?? cacheDirectory.appendingPathComponent("Transcripts", isDirectory: true),
+            thumbnailDirectory: thumbnailDirectory
+                ?? cacheDirectory.appendingPathComponent("Thumbnails", isDirectory: true),
             draftDirectory: draftDirectory
                 ?? URL.applicationSupportDirectory
                     .appendingPathComponent("mobius", isDirectory: true)
@@ -528,15 +746,7 @@ final class GatewayStore {
     }
 
     func remove(_ account: GatewayAccount) async throws {
-        let query: [CFString: Any] = [
-            kSecClass: kSecClassGenericPassword,
-            kSecAttrService: keychainService,
-            kSecAttrAccount: account.id.uuidString,
-        ]
-        let status = SecItemDelete(query as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw StoreError.keychain(status)
-        }
+        try removeToken(accountID: account.id)
         let accounts = loadAccounts().filter { $0.id != account.id }
         defaults.set(try encoder.encode(accounts), forKey: accountsKey)
         if selectedAccountID() == account.id {
@@ -544,6 +754,14 @@ final class GatewayStore {
         }
         defaults.removeObject(forKey: sessionReadCursorsKey(account.id))
         await diskStore.removeAccount(account.id)
+    }
+
+    func loadChatCatalog(accountID: UUID) async -> CachedChatCatalog? {
+        await diskStore.loadChatCatalog(accountID: accountID)
+    }
+
+    func saveChatCatalog(_ catalog: CachedChatCatalog, accountID: UUID) async {
+        await diskStore.saveChatCatalog(catalog, accountID: accountID)
     }
 
     func loadTranscript(accountID: UUID, sessionID: String) async -> CachedTranscript? {
@@ -579,6 +797,36 @@ final class GatewayStore {
 
     func removeTranscript(accountID: UUID, sessionID: String) async {
         await diskStore.removeTranscript(accountID: accountID, sessionID: sessionID)
+    }
+
+    func loadThumbnail(accountID: UUID, sessionID: String, fileID: String) async -> Data? {
+        await diskStore.loadThumbnail(
+            accountID: accountID,
+            sessionID: sessionID,
+            fileID: fileID
+        )
+    }
+
+    func saveThumbnail(
+        _ data: Data,
+        accountID: UUID,
+        sessionID: String,
+        fileID: String
+    ) async {
+        await diskStore.saveThumbnail(
+            data,
+            accountID: accountID,
+            sessionID: sessionID,
+            fileID: fileID
+        )
+    }
+
+    func removeThumbnail(accountID: UUID, sessionID: String, fileID: String) async {
+        await diskStore.removeThumbnail(
+            accountID: accountID,
+            sessionID: sessionID,
+            fileID: fileID
+        )
     }
 
     func loadComposerDraft(accountID: UUID, sessionID: String) async -> String {
@@ -619,6 +867,28 @@ final class GatewayStore {
         )
     }
 
+    func clearCachedData() async throws {
+        try await diskStore.clearCachedData()
+    }
+
+    func clearAllData() async throws {
+        let query: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: keychainService,
+        ]
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw StoreError.keychain(status)
+        }
+        for key in defaults.dictionaryRepresentation().keys
+        where key.hasPrefix(sessionReadCursorsKeyPrefix) {
+            defaults.removeObject(forKey: key)
+        }
+        defaults.removeObject(forKey: accountsKey)
+        defaults.removeObject(forKey: selectedAccountKey)
+        try await diskStore.clearAllData()
+    }
+
     private func sessionReadCursorsKey(_ accountID: UUID) -> String {
         sessionReadCursorsKeyPrefix + accountID.uuidString
     }
@@ -645,6 +915,17 @@ final class GatewayStore {
         guard addStatus == errSecSuccess else { throw StoreError.keychain(addStatus) }
     }
 
+    private func removeToken(accountID: UUID) throws {
+        let query: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: keychainService,
+            kSecAttrAccount: accountID.uuidString,
+        ]
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw StoreError.keychain(status)
+        }
+    }
 }
 
 extension GatewayStore {

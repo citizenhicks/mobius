@@ -145,7 +145,7 @@ struct AppShell: View {
             }
         }
         .task {
-            model.start()
+            await model.start()
             if scenePhase == .active { await model.appDidBecomeActive() }
         }
         .environment(\.locale, model.language.locale)

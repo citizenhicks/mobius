@@ -942,7 +942,7 @@ struct ModelChanged: Codable, Hashable, Sendable {
     let modelContextWindow: Int64?
 }
 
-struct SessionRecord: Identifiable, Decodable, Hashable, Sendable {
+struct SessionRecord: Identifiable, Codable, Hashable, Sendable {
     var id: String { sessionId }
 
     let sessionId: String

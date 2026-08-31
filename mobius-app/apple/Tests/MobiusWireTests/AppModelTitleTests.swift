@@ -340,7 +340,7 @@ extension AppModelTests {
         )
         await model.appDidBecomeActive()
 
-        model.start()
+        await model.start()
         let initialConnectionOpened = await eventually { await harness.attemptCount() >= 2 }
         XCTAssertTrue(initialConnectionOpened)
         await harness.yield(.authenticated)

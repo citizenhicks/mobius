@@ -485,7 +485,8 @@ extension AppModel {
     }
 
     func cacheSelectedTranscript() {
-        guard let accountID = selectedAccountID,
+        guard !isClearingLocalData,
+              let accountID = selectedAccountID,
               let sessionID = selectedSessionID,
               let latestSequence,
               activeTurnID == nil,
@@ -643,8 +644,8 @@ extension AppModel {
             sessionOpenCursor = nil
             sessionOpeningID = nil
             pendingCachedTranscript = nil
-            pendingPresentedTranscript = nil
             replayPresentedTranscript = presented ?? []
+            pendingPresentedTranscript = nil
             transcriptRecordBase = cached?.transcript ?? []
             transcriptRecordBaseSequence = cursor
             transcriptRecords.removeAll(keepingCapacity: true)
@@ -772,6 +773,7 @@ extension AppModel {
         let visible = Set(sessions.map(\.sessionId))
         unreadSessionIDs.formIntersection(visible)
         reconcileChatTitles()
+        cacheChatCatalog()
         guard let selectedSessionID,
               !sessions.contains(where: { $0.sessionId == selectedSessionID }),
               sessionRequestID == nil
@@ -794,6 +796,7 @@ extension AppModel {
             return
         }
         swarms = records
+        cacheChatCatalog()
     }
 
     private func applyExecutionStats(_ stats: ExecutionStats) {
@@ -858,6 +861,7 @@ extension AppModel {
         refreshWorkspaceChanges()
         refreshSessionFiles()
         refreshCron()
+        startNextSessionFileThumbnailDownload()
     }
 
     func clearSelectedSession() {
@@ -869,6 +873,7 @@ extension AppModel {
         navigationPath = []
         resetSessionState()
         connectionState = .ready
+        cacheChatCatalog()
     }
 
     private func handleAccepted(_ requestID: String) {

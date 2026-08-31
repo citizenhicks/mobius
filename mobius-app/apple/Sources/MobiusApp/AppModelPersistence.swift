@@ -75,6 +75,23 @@ extension AppModel {
         }.value
     }
 
+    nonisolated static func encodedFileThumbnail(_ image: CGImage) async -> Data? {
+        await Task.detached(priority: .utility) {
+            let data = NSMutableData()
+            guard
+                let destination = CGImageDestinationCreateWithData(
+                    data,
+                    UTType.png.identifier as CFString,
+                    1,
+                    nil
+                )
+            else { return nil }
+            CGImageDestinationAddImage(destination, image, nil)
+            guard CGImageDestinationFinalize(destination) else { return nil }
+            return data as Data
+        }.value
+    }
+
     func fileThumbnail(for file: SessionFileReference, sessionID: String?) -> CGImage? {
         guard let sessionID else { return nil }
         return fileThumbnails[.session(sessionID: sessionID, fileID: file.id)]
@@ -98,6 +115,19 @@ extension AppModel {
         fileThumbnails[key] = thumbnail
     }
 
+    func persistFileThumbnail(_ thumbnail: CGImage, sessionID: String, fileID: String) {
+        guard !isClearingLocalData, let accountID = selectedAccountID else { return }
+        enqueueTranscriptIO { [store] in
+            guard let data = await Self.encodedFileThumbnail(thumbnail) else { return }
+            await store.saveThumbnail(
+                data,
+                accountID: accountID,
+                sessionID: sessionID,
+                fileID: fileID
+            )
+        }
+    }
+
     func removeFileThumbnail(for key: FileThumbnailKey) {
         fileThumbnails[key] = nil
         fileThumbnailOrder.removeAll { $0 == key }
@@ -115,17 +145,62 @@ extension AppModel {
             thumbnail,
             for: .session(sessionID: sessionID, fileID: fileID)
         )
+        persistFileThumbnail(thumbnail, sessionID: sessionID, fileID: fileID)
     }
 
     func requestSessionFileThumbnail(_ file: SessionFileReference, sessionID: String?) {
-        guard let sessionID,
+        guard !isClearingLocalData,
+              let sessionID,
               Self.isFileThumbnailCandidate(mediaType: file.mediaType, size: file.size),
               fileThumbnails[.session(sessionID: sessionID, fileID: file.id)] == nil
         else { return }
         let key = FileThumbnailKey.session(sessionID: sessionID, fileID: file.id)
-        if requestedSessionFileThumbnailKeys.insert(key).inserted {
-            queuedSessionFileThumbnails.append((sessionID, file))
+        guard requestedSessionFileThumbnailKeys.insert(key).inserted else { return }
+        guard let accountID = selectedAccountID else {
+            queueSessionFileThumbnail(file, sessionID: sessionID, key: key)
+            return
         }
+        Task { [weak self, store] in
+            let data = await store.loadThumbnail(
+                accountID: accountID,
+                sessionID: sessionID,
+                fileID: file.id
+            )
+            let thumbnail: CGImage? =
+                if let data {
+                    await Self.downsampledFileThumbnail(from: data)
+                } else {
+                    nil
+                }
+            guard let self,
+                  self.selectedAccountID == accountID,
+                  self.requestedSessionFileThumbnailKeys.contains(key)
+            else { return }
+            if let thumbnail {
+                self.requestedSessionFileThumbnailKeys.remove(key)
+                self.cacheFileThumbnail(thumbnail, for: key)
+                return
+            }
+            if data != nil {
+                await store.removeThumbnail(
+                    accountID: accountID,
+                    sessionID: sessionID,
+                    fileID: file.id
+                )
+            }
+            self.queueSessionFileThumbnail(file, sessionID: sessionID, key: key)
+        }
+    }
+
+    private func queueSessionFileThumbnail(
+        _ file: SessionFileReference,
+        sessionID: String,
+        key: FileThumbnailKey
+    ) {
+        guard requestedSessionFileThumbnailKeys.contains(key),
+            fileThumbnails[key] == nil
+        else { return }
+        queuedSessionFileThumbnails.append((sessionID, file))
         startNextSessionFileThumbnailDownload()
     }
 
@@ -542,6 +617,7 @@ extension AppModel {
                     thumbnail,
                     for: .session(sessionID: sessionID, fileID: fileID)
                 )
+                self.persistFileThumbnail(thumbnail, sessionID: sessionID, fileID: fileID)
             }
             self.finishSessionFileThumbnailAttempt(download)
         }
@@ -729,6 +805,33 @@ extension AppModel {
 
     func requestID(_ prefix: String) -> String {
         "\(prefix)-\(UUID().uuidString.lowercased())"
+    }
+
+    func cacheChatCatalog(lastSessionID: String? = nil) {
+        guard !isClearingLocalData, let accountID = selectedAccountID else { return }
+        let catalog = CachedChatCatalog(
+            sessions: sessions,
+            swarms: swarms,
+            lastSessionID: lastSessionID ?? selectedSessionID
+        )
+        enqueueTranscriptIO { [store] in
+            await store.saveChatCatalog(catalog, accountID: accountID)
+        }
+    }
+
+    func clearCachedData() async {
+        guard !isClearingLocalData else { return }
+        isClearingLocalData = true
+        defer { isClearingLocalData = false }
+        discardFileThumbnails()
+        let previous = transcriptIOTask
+        await previous?.value
+        do {
+            try await store.clearCachedData()
+            showToast("Cached data cleared.", tone: .success)
+        } catch {
+            showToast(verbatim: localizedErrorDescription(error), tone: .error)
+        }
     }
 
     func enqueueTranscriptIO(

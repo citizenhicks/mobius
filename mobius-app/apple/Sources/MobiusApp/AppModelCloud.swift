@@ -374,6 +374,46 @@ extension AppModel {
         showToast("Signed out of möbius Cloud.", tone: .info)
     }
 
+    func clearDataAndGatewayInformation() async {
+        guard !isClearingLocalData else { return }
+        isClearingLocalData = true
+        defer { isClearingLocalData = false }
+
+        cancelReconnect()
+        automaticReconnectBlocked = true
+        discardComposerDraft()
+        _ = resetGatewayState(preservingDrafts: false, preservingSession: false)
+        let transcriptIO = transcriptIOTask
+        let composerIO = composerDraftIOTask
+        await client.disconnect()
+        await transcriptIO?.value
+        await composerIO?.value
+
+        do {
+            try cloudClient.signOut()
+            clearCloudAccountState()
+            try await store.clearAllData()
+        } catch {
+            accounts = store.loadAccounts()
+            selectedAccountID = store.selectedAccountID() ?? accounts.first?.id
+            restoreSessionReadState()
+            showsPairing = accounts.isEmpty
+            showToast(verbatim: localizedErrorDescription(error), tone: .error)
+            return
+        }
+
+        accounts = []
+        selectedAccountID = nil
+        restoreSessionReadState()
+        pairingEndpoint = "wss://"
+        pairingCode = ""
+        pairingError = nil
+        destination = .chats
+        navigationPath = []
+        showsPairing = true
+        showToast("Local data and gateway information cleared.", tone: .success)
+    }
+
     func deleteCloudAccount(authorizationCode: String, nonce: String) async -> Bool {
         guard cloudAction == .idle else { return false }
         guard cloudSession != nil else {

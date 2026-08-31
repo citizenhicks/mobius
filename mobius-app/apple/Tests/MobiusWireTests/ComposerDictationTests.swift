@@ -2,16 +2,11 @@ import Foundation
 import XCTest
 
 final class ComposerDictationTests: XCTestCase {
-    func testAutomaticDictationIncludesAppLanguagesAndCurrentLocale() {
+    func testDictationUsesOnlyEnglishFrenchAndGerman() {
         let languages = ComposerDictation.requestedLocales
             .compactMap { $0.language.languageCode?.identifier }
 
-        XCTAssertEqual(Array(languages.prefix(4)), ["en", "fr", "de", "hu"])
-        XCTAssertTrue(
-            ComposerDictation.requestedLocales.contains {
-                $0.identifier(.bcp47) == Locale.current.identifier(.bcp47)
-            }
-        )
+        XCTAssertEqual(languages, ["en", "fr", "de"])
     }
 
     func testDictationChoosesTheHighestConfidenceTranscript() {

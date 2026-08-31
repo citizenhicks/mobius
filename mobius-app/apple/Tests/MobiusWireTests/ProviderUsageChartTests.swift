@@ -1,83 +1,89 @@
 import XCTest
 
 final class ProviderUsageChartTests: XCTestCase {
-    func testBuildsZeroFilledProviderSeriesAndCombinesDuplicateRows() {
-        let points = ProviderUsageSeries.points(
+    func testBuildsTopThreeProviderTotalsForTheVisibleRange() {
+        let totals = ProviderUsageTotal.top(
             from: [
-                usage(day: 100, provider: "openai", tokens: 20),
-                usage(day: 100, provider: "openai", tokens: 5),
-                usage(day: 101, provider: "anthropic", tokens: 9),
-                usage(day: 90, provider: "openai", tokens: 999),
+                usage(day: 4, provider: "openai", tokens: 20),
+                usage(day: 4, provider: "openai", tokens: 5),
+                usage(day: 5, provider: "anthropic", tokens: 30),
+                usage(day: 6, provider: "google", tokens: 10),
+                usage(day: 7, provider: "xai", tokens: 5),
+                usage(day: 1, provider: "ignored-past", tokens: 999),
+                usage(day: 12, provider: "ignored-future", tokens: 999),
             ],
-            endingOn: 102,
-            dayCount: 3,
-            providerLabels: ["anthropic": "Anthropic", "openai": "OpenAI"]
+            endingOn: 11,
+            weekCount: 2
         )
 
-        XCTAssertEqual(points.count, 6)
-        XCTAssertEqual(points.map(\.provider), [
-            "anthropic", "anthropic", "anthropic",
-            "openai", "openai", "openai",
-        ])
-        XCTAssertEqual(points.map(\.unixDay), [100, 101, 102, 100, 101, 102])
-        XCTAssertEqual(points.map(\.totalTokens), [0, 9, 0, 25, 0, 0])
-        XCTAssertEqual(points.first?.providerLabel, "Anthropic")
-        XCTAssertEqual(points.last?.providerLabel, "OpenAI")
+        XCTAssertEqual(totals.map(\.provider), [
+            "anthropic", "openai", "google"])
+        XCTAssertEqual(totals.map(\.totalTokens), [30, 25, 10])
     }
 
-    func testBuildsWeeklyAndCumulativeProviderBars() {
+    func testAlignsDailyActivityToMondayAndLeavesFutureDaysEmpty() {
         let usage = [
-            usage(day: 100, provider: "openai", tokens: 4),
-            usage(day: 106, provider: "openai", tokens: 6),
-            usage(day: 107, provider: "openai", tokens: 3),
+            usage(day: 4, provider: "openai", tokens: 2),
+            usage(day: 10, provider: "openai", tokens: 5),
+            usage(day: 11, provider: "openai", tokens: 3),
+            usage(day: 12, provider: "openai", tokens: 99),
         ]
 
-        let weekly = ProviderUsageSeries.points(
+        let daily = UsageActivitySeries.snapshot(
             from: usage,
-            endingOn: 107,
-            dayCount: 8,
-            providerLabels: ["openai": "OpenAI"],
-            aggregation: .weekly
+            endingOn: 11,
+            weekCount: 2,
+            aggregation: .daily
         )
-        XCTAssertEqual(weekly.map(\.unixDay), [100, 107])
-        XCTAssertEqual(weekly.map(\.totalTokens), [10, 3])
 
-        let cumulative = ProviderUsageSeries.points(
-            from: usage,
-            endingOn: 107,
-            dayCount: 8,
-            providerLabels: ["openai": "OpenAI"],
-            aggregation: .cumulative
-        )
-        XCTAssertEqual(cumulative.map(\.unixDay), [107])
-        XCTAssertEqual(cumulative.map(\.totalTokens), [13])
+        XCTAssertEqual(daily.values, [2, 0, 0, 0, 0, 0, 5, 3, 0, 0, 0, 0, 0, 0])
+        XCTAssertEqual(daily.maximum, 5)
+        XCTAssertEqual(daily.activeDays, 3)
+        XCTAssertEqual(daily.totalTokens, 10)
     }
 
-    func testBuildsHeatmapValuesForEachAggregation() {
+    func testBuildsReferenceWeeklyAndCumulativeBars() {
         let usage = [
-            usage(day: 0, provider: "openai", tokens: 2),
-            usage(day: 2, provider: "anthropic", tokens: 3),
-            usage(day: 6, provider: "openai", tokens: 5),
+            usage(day: 4, provider: "openai", tokens: 10),
+            usage(day: 11, provider: "openai", tokens: 25),
+            usage(day: 18, provider: "openai", tokens: 50),
+            usage(day: 25, provider: "openai", tokens: 100),
         ]
 
         let weekly = UsageActivitySeries.snapshot(
             from: usage,
-            endingOn: 6,
-            weekCount: 1,
+            endingOn: 31,
+            weekCount: 4,
             aggregation: .weekly
         )
-        XCTAssertEqual(weekly.values, Array(repeating: 10, count: 7))
-        XCTAssertEqual(weekly.activeDays, 3)
-        XCTAssertEqual(weekly.totalTokens, 10)
+        XCTAssertEqual(weekly.values,
+            [
+                0, 0, 0, 0, 0, 0, 10,
+                0, 0, 0, 0, 0, 25, 25,
+                0, 0, 0, 50, 50, 50, 50,
+                100, 100, 100, 100, 100, 100, 100,
+            ])
+        XCTAssertEqual(weekly.maximum, 100)
+        XCTAssertEqual(
+            [0, 1, 2, 3, 4],
+            [0, 10, 50, 75, 100].map(weekly.activityLevel)
+        )
 
         let cumulative = UsageActivitySeries.snapshot(
             from: usage,
-            endingOn: 6,
-            weekCount: 1,
+            endingOn: 31,
+            weekCount: 4,
             aggregation: .cumulative
         )
-        XCTAssertEqual(cumulative.values, [2, 2, 5, 5, 5, 5, 10])
-        XCTAssertEqual(cumulative.maximum, 10)
+        XCTAssertEqual(cumulative.values, [
+                0, 0, 0, 0, 0, 0, 10,
+                0, 0, 0, 0, 0, 35, 35,
+                0, 0, 0, 85, 85, 85, 85,
+                185, 185, 185, 185, 185, 185, 185,
+            ])
+        XCTAssertEqual(cumulative.maximum, 185)
+        XCTAssertEqual(cumulative.activeDays, 4)
+        XCTAssertEqual(cumulative.totalTokens, 185)
     }
 
     private func usage(day: UInt64, provider: String, tokens: Int) -> DailyUsage {

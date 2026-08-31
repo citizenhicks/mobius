@@ -35,25 +35,18 @@ struct ProfileView: View {
                 AppearanceSettings()
             }
             .listRowSeparator(.hidden)
-            Section("Security") {
+            Section("Security and Data") {
                 AppLockSettings()
+                LocalDataSettings()
             }
             .listRowSeparator(.hidden)
             Section("Usage") {
                 ProfileUsageSection(days: usage)
-                DisclosureGroup("Usage history") {
-                    ProfileUsageHistory(
-                        days: usage,
-                        providerLabels: providerLabels,
-                        providerTints: providerTints
-                    )
-                }
-                if let stats = model.profile?.runStats {
-                    DisclosureGroup("Run activity") {
-                        ProfileRunStatsSection(stats: stats)
-                        ProfileRecentRuns(groups: model.profile?.recentRunGroups ?? [])
-                    }
-                }
+                ProfileUsageHistory(
+                    days: usage,
+                    providerLabels: providerLabels,
+                    providerTints: providerTints
+                )
             }
             .listRowSeparator(.hidden)
         }
@@ -400,7 +393,7 @@ private struct MobiusCloudAccountDeletionSheet: View {
     }
 }
 
-private let profileUsageWeekCount = 25
+private let profileUsageWeekCount = 26
 
 private struct ProfileUsageSection: View {
     @Environment(\.mobiusPalette) private var palette
@@ -431,47 +424,74 @@ private struct ProfileUsageHistory: View {
     let providerTints: [String: AccentTint]
 
     var body: some View {
+        let endingOn = UInt64(Date.now.timeIntervalSince1970 / 86_400)
+        let providers = ProviderUsageTotal.top(
+            from: days,
+            endingOn: endingOn,
+            weekCount: profileUsageWeekCount
+        )
         VStack(alignment: .leading, spacing: MobiusSpace.l) {
-            VStack(alignment: .leading, spacing: MobiusSpace.l) {
-                Text("Token activity")
-                    .font(MobiusStyle.controlFont)
-                Picker("Usage grouping", selection: $aggregation) {
-                    ForEach(UsageAggregation.allCases) { option in
-                        Text(option.title).tag(option)
+            Text("Token activity")
+                .font(MobiusStyle.controlFont)
+            Picker("Usage grouping", selection: $aggregation) {
+                ForEach(UsageAggregation.allCases) { option in
+                    Text(option.title).tag(option)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .sensoryFeedback(.selection, trigger: aggregation)
+            UsageHeatmap(
+                days: days,
+                aggregation: aggregation,
+                endingOn: endingOn,
+                tint: providers.first.flatMap { providerTints[$0.provider] }?.color
+                    ?? palette.accent
+            )
+            if !providers.isEmpty {
+                Divider()
+                    .overlay(palette.line)
+                HStack {
+                    Text("Top providers")
+                        .font(MobiusStyle.metadataFont.weight(.semibold))
+                    Spacer()
+                    Text("Last \(profileUsageWeekCount) weeks")
+                        .font(MobiusStyle.metadataFont)
+                        .foregroundStyle(palette.muted)
+                }
+                VStack(spacing: MobiusSpace.s) {
+                    ForEach(providers) { provider in
+                        let label = providerLabels[provider.provider] ?? provider.provider
+                        HStack(spacing: MobiusSpace.s) {
+                            Circle()
+                                .fill((providerTints[provider.provider] ?? .appDefault).color)
+                                .frame(width: 8, height: 8)
+                            Text(label)
+                                .font(MobiusStyle.metadataFont)
+                                .lineLimit(1)
+                            Spacer(minLength: MobiusSpace.m)
+                            Text(compact(provider.totalTokens))
+                                .font(MobiusStyle.metadataFont.monospacedDigit())
+                                .foregroundStyle(palette.muted)
+                        }
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(
+                            "\(label), \(provider.totalTokens.formatted()) tokens"
+                        )
                     }
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .sensoryFeedback(.selection, trigger: aggregation)
-                UsageHeatmap(days: days, aggregation: aggregation)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(MobiusStyle.cardPadding)
-            .background(palette.panel, in: MobiusStyle.cardShape)
-            .overlay {
-                MobiusStyle.cardShape.stroke(
-                    palette.line.opacity(0.45),
-                    lineWidth: MobiusStyle.borderWidth
-                )
-                .allowsHitTesting(false)
-            }
-            HStack(alignment: .firstTextBaseline) {
-                Text("By provider")
-                    .font(MobiusStyle.controlFont)
-                Spacer()
-                Text("Last \(profileUsageWeekCount) weeks")
-                    .font(MobiusStyle.metadataFont)
-                    .foregroundStyle(palette.muted)
-            }
-            ProviderUsageChart(
-                usage: days,
-                providerLabels: providerLabels,
-                providerTints: providerTints,
-                weekCount: profileUsageWeekCount,
-                aggregation: aggregation
-            )
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(MobiusStyle.cardPadding)
+        .background(palette.panel, in: MobiusStyle.cardShape)
+        .overlay {
+            MobiusStyle.cardShape.stroke(
+                palette.line.opacity(0.45),
+                lineWidth: MobiusStyle.borderWidth
+            )
+            .allowsHitTesting(false)
+        }
     }
 }
 
@@ -521,170 +541,21 @@ private struct UsageMetric: View {
     }
 }
 
-private struct ProfileRunStatsSection: View {
-    let stats: RunStats
-
-    var body: some View {
-        // Two independent HStacks sized their columns separately, so the rows never
-        // lined up with each other or with the usage grid above.
-        UsageMetricGrid {
-            UsageMetric(label: "Runs", value: compact(stats.runCount))
-            UsageMetric(label: "Failed", value: compact(stats.failedRunCount))
-            UsageMetric(label: "Aborted", value: compact(stats.abortedRunCount))
-            UsageMetric(label: "Elapsed", value: formatMilliseconds(stats.elapsedMs))
-            UsageMetric(label: "Model calls", value: compact(stats.modelCalls))
-            UsageMetric(label: "Tool calls", value: compact(stats.toolCalls))
-            UsageMetric(label: "Tool errors", value: compact(stats.failedToolCalls))
-            UsageMetric(label: "Run tokens", value: compact(stats.usage.totalTokens))
-        }
-    }
-}
-
-private struct ProfileRecentRuns: View {
-    @Environment(AppModel.self) private var model
-    @Environment(\.mobiusPalette) private var palette
-    @State private var collapsedGroupIDs: Set<String> = []
-    let groups: [SessionRunGroup]
-
-    var body: some View {
-        if groups.isEmpty {
-            Text("No completed runs yet.")
-                .font(MobiusStyle.bodyFont)
-                .foregroundStyle(palette.muted)
-        } else {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(groups) { group in
-                        DisclosureGroup(isExpanded: expansion(for: group.id)) {
-                            ForEach(group.runs) { run in
-                                Button {
-                                    model.openChat(group.sessionId)
-                                } label: {
-                                    HStack(spacing: MobiusSpace.m) {
-                                        MobiusIcon(runGlyph(run), foreground: runColor(run))
-                                        VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
-                                            HStack(spacing: MobiusSpace.s) {
-                                                Text(run.sessionId == group.sessionId ? "Run" : "Sub-run")
-                                                    .font(MobiusStyle.metadataFont.weight(.semibold))
-                                                Text(
-                                                    runDate(run),
-                                                    format: .dateTime.month(.abbreviated).day().hour().minute()
-                                                )
-                                                .font(MobiusStyle.metadataFont)
-                                                .foregroundStyle(palette.muted)
-                                            }
-                                            Text(runDetail(run))
-                                                .font(MobiusStyle.metadataFont)
-                                                .foregroundStyle(palette.muted)
-                                                .lineLimit(1)
-                                        }
-                                        Spacer(minLength: MobiusSpace.xs)
-                                        MobiusIcon(.caretRight, size: MobiusStyle.glyphMark, foreground: palette.muted)
-                                    }
-                                    .frame(maxWidth: .infinity, minHeight: MobiusStyle.iconButtonSize)
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.mobiusPlain)
-                                .disabled(
-                                    !model.canOpenSession
-                                        && group.sessionId != model.selectedSessionID
-                                )
-                                .accessibilityLabel(
-                                    Text(
-                                        "\(Text(runOutcome(run))), \(Text(verbatim: group.title))"
-                                    )
-                                )
-                                .accessibilityValue(Text(runDetail(run)))
-                                .accessibilityHint("Opens the chat for this run")
-                            }
-                        } label: {
-                            HStack(spacing: MobiusSpace.s) {
-                                Text(group.title)
-                                    .font(MobiusStyle.controlFont)
-                                    .lineLimit(1)
-                                Text(group.runs.count, format: .number)
-                                    .font(MobiusStyle.metadataFont)
-                                    .foregroundStyle(palette.muted)
-                            }
-                            .frame(maxWidth: .infinity, minHeight: MobiusStyle.iconButtonSize)
-                        }
-                        .tint(palette.accent)
-                    }
-                }
-            }
-            .frame(height: CGFloat(min(visibleRowCount, 20)) * MobiusStyle.iconButtonSize)
-            .scrollBounceBehavior(.basedOnSize)
-        }
-    }
-
-    private var visibleRowCount: Int {
-        groups.reduce(0) { count, group in
-            count + 1 + (collapsedGroupIDs.contains(group.id) ? 0 : group.runs.count)
-        }
-    }
-
-    private func expansion(for groupID: String) -> Binding<Bool> {
-        Binding(
-            get: { !collapsedGroupIDs.contains(groupID) },
-            set: { expanded in
-                if expanded { collapsedGroupIDs.remove(groupID) }
-                else { collapsedGroupIDs.insert(groupID) }
-            }
-        )
-    }
-
-    private func runDetail(_ run: RunSummary) -> LocalizedStringResource {
-        let elapsed = formatMilliseconds(run.elapsedMs)
-        let tokens = compact(run.usage.totalTokens)
-        return switch (run.modelCalls == 1, run.toolCalls == 1) {
-        case (true, true): "\(elapsed) · 1 model · 1 tool · \(tokens) tokens"
-        case (true, false): "\(elapsed) · 1 model · \(run.toolCalls) tools · \(tokens) tokens"
-        case (false, true): "\(elapsed) · \(run.modelCalls) models · 1 tool · \(tokens) tokens"
-        case (false, false):
-            "\(elapsed) · \(run.modelCalls) models · \(run.toolCalls) tools · \(tokens) tokens"
-        }
-    }
-
-    private func runDate(_ run: RunSummary) -> Date {
-        Date(timeIntervalSince1970: TimeInterval(run.startedAtMs) / 1_000)
-    }
-
-    private func runOutcome(_ run: RunSummary) -> LocalizedStringResource {
-        switch run.outcome {
-        case .completed: "Completed"
-        case .aborted: "Aborted"
-        case .failed: "Failed"
-        case nil: "Running"
-        }
-    }
-
-    private func runGlyph(_ run: RunSummary) -> MobiusGlyph {
-        switch run.outcome {
-        case .completed: .checkCircle
-        case .aborted: .stopFill
-        case .failed: .xCircle
-        case nil: .arrowClockwise
-        }
-    }
-
-    private func runColor(_ run: RunSummary) -> Color {
-        switch run.outcome {
-        case .completed: palette.signal
-        case .aborted: palette.warning
-        case .failed: palette.danger
-        case nil: palette.accent
-        }
-    }
-}
-
 private struct UsageHeatmap: View {
     @Environment(\.mobiusPalette) private var palette
     @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiatesWithoutColor
     let days: [DailyUsage]
     let aggregation: UsageAggregation
+    let endingOn: UInt64
+    let tint: Color
 
     var body: some View {
-        let chart = chartData
+        let chart = UsageActivitySeries.snapshot(
+            from: days,
+            endingOn: endingOn,
+            weekCount: profileUsageWeekCount,
+            aggregation: aggregation
+        )
         VStack(alignment: .leading, spacing: MobiusSpace.xs) {
             Canvas { context, size in
                 let gapRatio: CGFloat = 0.28
@@ -706,7 +577,7 @@ private struct UsageHeatmap: View {
                         height: cell
                     )
                     let path = Path(roundedRect: rect, cornerRadius: min(4, cell * 0.3))
-                    context.fill(path, with: .color(heatColor(value: value, maximum: chart.maximum)))
+                    context.fill(path, with: .color(heatColor(level: chart.activityLevel(value))))
                     if differentiatesWithoutColor, value > 0 {
                         context.stroke(path, with: .color(palette.canvas), lineWidth: 1)
                     }
@@ -751,37 +622,35 @@ private struct UsageHeatmap: View {
     private var monthLabels: [UsageMonthLabel] {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
-        let today = UInt64(Date.now.timeIntervalSince1970 / 86_400)
-        let dayCount = profileUsageWeekCount * 7
-        let start = today - min(today, UInt64(dayCount - 1))
+        let start = UsageActivitySeries.startDay(
+            endingOn: endingOn,
+            weekCount: profileUsageWeekCount
+        )
         var labels: [UsageMonthLabel] = []
         var previousMonth: Int?
         for week in 0..<profileUsageWeekCount {
-            let date = Date(timeIntervalSince1970: TimeInterval(start + UInt64(week * 7)) * 86_400)
+            let date = Date(
+                timeIntervalSince1970: TimeInterval(start + UInt64(week * 7 + 6)) * 86_400
+            )
             let month = calendar.component(.month, from: date)
             guard month != previousMonth else { continue }
             previousMonth = month
             labels.append(UsageMonthLabel(
                 week: week,
-                title: date.formatted(.dateTime.month(.narrow))
+                title: calendar.veryShortMonthSymbols[month - 1]
             ))
         }
         return labels
     }
 
-    private var chartData: UsageActivitySnapshot {
-        UsageActivitySeries.snapshot(
-            from: days,
-            endingOn: UInt64(Date.now.timeIntervalSince1970 / 86_400),
-            weekCount: profileUsageWeekCount,
-            aggregation: aggregation
-        )
-    }
-
-    private func heatColor(value: Int, maximum: Int) -> Color {
-        guard value > 0 else { return palette.line.opacity(0.35) }
-        let ratio = Double(value) / Double(maximum)
-        return palette.accent.opacity(0.25 + 0.75 * ratio.squareRoot())
+    private func heatColor(level: Int) -> Color {
+        switch level {
+        case 1: tint.opacity(0.28)
+        case 2: tint.opacity(0.5)
+        case 3: tint.opacity(0.72)
+        case 4: tint
+        default: palette.line.opacity(0.35)
+        }
     }
 }
 
@@ -863,17 +732,59 @@ private struct AppLockSettings: View {
     }
 }
 
+private struct LocalDataSettings: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.mobiusPalette) private var palette
+    @State private var confirmsCacheClear = false
+    @State private var confirmsFullReset = false
+
+    var body: some View {
+        VStack(spacing: MobiusSpace.s) {
+            Button("Clear cached data", glyph: .trash, role: .destructive) {
+                confirmsCacheClear = true
+            }
+            .disabled(model.isClearingLocalData)
+            .accessibilityHint("Removes cached chats, chat lists, and image thumbnails")
+            .alert("Clear cached data?", isPresented: $confirmsCacheClear) {
+                Button("Clear cached data", role: .destructive) {
+                    Task { await model.clearCachedData() }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text(
+                    "This removes cached chats, chat lists, and image thumbnails from this device. Gateways, credentials, Cloud sign-in, settings, and drafts are kept."
+                )
+            }
+
+            Button("Clear data and gateway information", glyph: .trash, role: .destructive) {
+                confirmsFullReset = true
+            }
+            .disabled(model.isClearingLocalData)
+            .accessibilityHint("Removes local data, gateway credentials, and the Cloud sign-in")
+            .alert("Clear data and gateway information?", isPresented: $confirmsFullReset) {
+                Button("Clear data and gateway information", role: .destructive) {
+                    Task { await model.clearDataAndGatewayInformation() }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text(
+                    "This removes cached data, drafts, paired gateways, saved gateway credentials, and the Cloud sign-in from this device. You’ll need to pair or sign in again. Remote chats, your Cloud account, and your subscription are not deleted."
+                )
+            }
+        }
+        .buttonStyle(.mobiusGlassProminent)
+        .tint(palette.danger)
+        .foregroundStyle(palette.onDanger)
+        .buttonBorderShape(.capsule)
+        .buttonSizing(.flexible)
+        .controlSize(.large)
+    }
+}
+
 private func compact(_ value: Int) -> String {
     value.formatted(.number.notation(.compactName).precision(.fractionLength(0 ... 1)))
 }
 
 private func compact(_ value: UInt64) -> String {
     value.formatted(.number.notation(.compactName).precision(.fractionLength(0 ... 1)))
-}
-
-private func formatMilliseconds(_ milliseconds: UInt64) -> String {
-    let seconds = Int(clamping: milliseconds / 1_000)
-    return Duration.seconds(seconds).formatted(
-        .time(pattern: .minuteSecond(padMinuteToLength: 1))
-    )
 }

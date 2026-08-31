@@ -267,7 +267,8 @@ extension AppModelTests {
         }
         XCTAssertEqual(sessionID, "chat-1")
         XCTAssertEqual(cursor, 7)
-        XCTAssertTrue(model.isLoadingTranscript)
+        XCTAssertFalse(model.isLoadingTranscript)
+        XCTAssertEqual(model.displayedTranscript.map(\.text), ["Already rendered"])
 
         model.handle(.sessionOpened(requestID: requestID, payload: sessionReady(latestSequence: 7)))
         XCTAssertEqual(model.transcript.map(\.text), ["Already rendered"])

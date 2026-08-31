@@ -19,6 +19,76 @@ extension AppModelTests {
         }
     }
 
+    func testStartRestoresCachedCatalogAndLastChatBeforeGatewayReady() async throws {
+        let suiteName = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let store = GatewayStore(
+            defaults: defaults,
+            catalogDirectory: root.appendingPathComponent("Catalogs", isDirectory: true),
+            transcriptDirectory: root.appendingPathComponent("Transcripts", isDirectory: true),
+            thumbnailDirectory: root.appendingPathComponent("Thumbnails", isDirectory: true),
+            draftDirectory: root.appendingPathComponent("Drafts", isDirectory: true)
+        )
+        let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
+        try store.save(account, token: "test-token")
+        addTeardownBlock { try await store.remove(account) }
+        await store.saveChatCatalog(
+            CachedChatCatalog(
+                sessions: [session(state: .running, sequence: 7)],
+                swarms: [],
+                lastSessionID: "chat-1"
+            ),
+            accountID: account.id
+        )
+        await store.saveTranscript(
+            accountID: account.id,
+            sessionID: "chat-1",
+            sequence: 7,
+            transcript: [
+                TranscriptEntry(
+                    id: "cached-answer",
+                    text: "Restored before the network",
+                    kind: .assistant,
+                    format: "plain_text",
+                    pending: false,
+                    turnID: "turn-1",
+                    startsTurn: true,
+                    turnTerminal: true
+                )
+            ],
+            currentUsage: TokenUsage(),
+            lastUsage: TokenUsage()
+        )
+        let model = AppModel(
+            client: GatewayClient(),
+            store: GatewayStore(
+                defaults: defaults,
+                catalogDirectory: root.appendingPathComponent("Catalogs", isDirectory: true),
+                transcriptDirectory: root.appendingPathComponent("Transcripts", isDirectory: true),
+                thumbnailDirectory: root.appendingPathComponent("Thumbnails", isDirectory: true),
+                draftDirectory: root.appendingPathComponent("Drafts", isDirectory: true)
+            ),
+            settingsDefaults: defaults,
+            requestSender: { _ in },
+            connectionOpener: { _ in AsyncThrowingStream { _ in } }
+        )
+
+        await model.start()
+
+        XCTAssertEqual(model.sessions.map(\.sessionId), ["chat-1"])
+        XCTAssertEqual(model.sessions.first?.activity.state, .idle)
+        XCTAssertEqual(model.selectedSessionID, "chat-1")
+        XCTAssertEqual(model.navigationPath, [.chat(.session("chat-1"))])
+        XCTAssertEqual(model.displayedTranscript.map(\.text), ["Restored before the network"])
+        XCTAssertFalse(model.connectionState.isReady)
+    }
+
     func testCloudConnectionRetriesFailureAndSilentWarmupUntilReady() async throws {
         let suiteName = UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -57,7 +127,7 @@ extension AppModelTests {
         model.cloudSession = MobiusCloudSession(userID: userID, expiresAt: .distantFuture)
         await model.appDidBecomeActive()
 
-        model.start()
+        await model.start()
 
         let becameReady = await eventually { model.connectionState.isReady }
         XCTAssertTrue(becameReady)
@@ -340,7 +410,7 @@ extension AppModelTests {
         )
         await model.appDidBecomeActive()
 
-        model.start()
+        await model.start()
         try await Task.sleep(for: .milliseconds(100))
         let connectedAttempts = await harness.attemptCount()
         XCTAssertEqual(connectedAttempts, 2)

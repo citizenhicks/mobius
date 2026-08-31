@@ -1,13 +1,44 @@
 import Foundation
 
 extension AppModel {
-    func start() {
+    func start() async {
         guard let account = selectedAccount else {
             #if DEBUG
             if !pairingCode.isEmpty, !pairingEndpoint.isEmpty { pair(); return }
             #endif
             showsPairing = true
             return
+        }
+        let catalog = await store.loadChatCatalog(accountID: account.id)
+        let cachedTranscript: CachedTranscript? =
+            if let sessionID = catalog?.lastSessionID {
+                await store.loadTranscript(accountID: account.id, sessionID: sessionID)
+            } else {
+                nil
+            }
+        guard selectedAccountID == account.id else { return }
+        if let catalog {
+            applySwarms(catalog.swarms)
+            applySessions(catalog.sessions)
+            if let sessionID = catalog.lastSessionID {
+                destination = .chats
+                navigationPath = [.chat(.session(sessionID))]
+                selectedSessionID = sessionID
+                sessionToRestoreID = sessionID
+                latestSequence = cachedTranscript?.sequence
+                nextHistoryBeforeSequence = cachedTranscript?.nextBeforeSequence
+                transcript = cachedTranscript?.transcript ?? []
+                currentUsage = cachedTranscript?.currentUsage ?? TokenUsage()
+                lastUsage = cachedTranscript?.lastUsage ?? TokenUsage()
+                updateContextTokens()
+                changeComposerDraftOwner(
+                    to: ComposerDraftOwner(
+                        accountID: account.id,
+                        sessionID: sessionID
+                    )
+                )
+                cacheChatCatalog(lastSessionID: sessionID)
+            }
         }
         connect(to: account)
     }
@@ -245,6 +276,7 @@ extension AppModel {
         destination = .chats
         openSession(sessionID)
         navigationPath = [.chat(.session(sessionID))]
+        cacheChatCatalog(lastSessionID: sessionID)
     }
 
     func openSwarm(_ swarmID: String) {

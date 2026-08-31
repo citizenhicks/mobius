@@ -693,6 +693,121 @@ extension AppModelTests {
         XCTAssertNil(model.fileThumbnails[.session(sessionID: "chat-1", fileID: "file-0")])
     }
 
+    func testSessionThumbnailPersistsAcrossModelRelaunch() async throws {
+        let suiteName = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: root)
+        }
+        func store() -> GatewayStore {
+            GatewayStore(
+                defaults: defaults,
+                catalogDirectory: root.appendingPathComponent("Catalogs", isDirectory: true),
+                transcriptDirectory: root.appendingPathComponent("Transcripts", isDirectory: true),
+                thumbnailDirectory: root.appendingPathComponent("Thumbnails", isDirectory: true),
+                draftDirectory: root.appendingPathComponent("Drafts", isDirectory: true)
+            )
+        }
+        let firstStore = store()
+        let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
+        try firstStore.save(account, token: "test-token")
+        addTeardownBlock { try await firstStore.remove(account) }
+        let data = try tinyPNGData()
+        let file = SessionFileReference(
+            id: "cached-image",
+            name: "pixel.png",
+            size: Int64(data.count),
+            mediaType: "image/png"
+        )
+        let firstRecorder = GatewayRequestRecorder()
+        let firstModel = AppModel(
+            client: GatewayClient(),
+            store: firstStore,
+            settingsDefaults: defaults,
+            requestSender: { request in await firstRecorder.record(request) }
+        )
+        firstModel.accounts = [account]
+        firstModel.selectedAccountID = account.id
+        firstModel.connectionState = .ready
+
+        firstModel.requestSessionFileThumbnail(file, sessionID: "chat-1")
+        let request = await firstRecorder.firstRequest(after: 0) {
+            guard case .readSessionFile(_, _, let fileID, _, _) = $0 else { return false }
+            return fileID == file.id
+        }
+        guard case .readSessionFile(let requestID, _, _, _, _) = try XCTUnwrap(request)
+        else { return XCTFail("Expected thumbnail read") }
+        firstModel.handle(
+            .sessionFileChunk(
+                requestID: requestID,
+                sessionID: "chat-1",
+                fileID: file.id,
+                offset: 0,
+                data: data,
+                nextOffset: nil
+            ))
+        let persisted = await eventually {
+            await firstStore.loadThumbnail(
+                accountID: account.id,
+                sessionID: "chat-1",
+                fileID: file.id
+            ) != nil
+        }
+        XCTAssertTrue(persisted)
+
+        let secondRecorder = GatewayRequestRecorder()
+        let secondModel = AppModel(
+            client: GatewayClient(),
+            store: store(),
+            settingsDefaults: defaults,
+            requestSender: { request in await secondRecorder.record(request) }
+        )
+        secondModel.accounts = [account]
+        secondModel.selectedAccountID = account.id
+        secondModel.connectionState = .ready
+        secondModel.requestSessionFileThumbnail(file, sessionID: "chat-1")
+
+        let restored = await eventually {
+            secondModel.fileThumbnail(for: file, sessionID: "chat-1") != nil
+        }
+        let secondRequestCount = await secondRecorder.requestCount()
+        XCTAssertTrue(restored)
+        XCTAssertEqual(secondRequestCount, 0)
+    }
+
+    func testSessionResetKeepsThumbnailCacheUntilGatewayReset() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model(requestSender: { request in
+            await recorder.record(request)
+        })
+        model.connectionState = .ready
+        let file = SessionFileReference(
+            id: "image-1",
+            name: "pixel.png",
+            size: 1,
+            mediaType: "image/png"
+        )
+        let image = await AppModel.downsampledFileThumbnail(from: try tinyPNGData())
+        model.cacheFileThumbnail(
+            try XCTUnwrap(image),
+            for: .session(sessionID: "chat-1", fileID: file.id)
+        )
+
+        model.resetSessionState()
+        XCTAssertNotNil(model.fileThumbnail(for: file, sessionID: "chat-1"))
+
+        model.requestSessionFileThumbnail(file, sessionID: "chat-1")
+        await Task.yield()
+        let requestCount = await recorder.requestCount()
+        XCTAssertEqual(requestCount, 0)
+
+        model.resetGatewayState(preservingDrafts: false)
+        XCTAssertNil(model.fileThumbnail(for: file, sessionID: "chat-1"))
+    }
+
     func testTextEncodedImageSessionFileUsesQuickLookPreview() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model(requestSender: { request in

@@ -1746,6 +1746,126 @@ final class MobiusCloudTests: XCTestCase {
         }
     }
 
+    func testClearDataAndGatewayInformationPerformsALocalCleanReset() async throws {
+        let suiteName = "app.mobius.cloud.tests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: root)
+        }
+        defaults.set(ThemePreference.light.rawValue, forKey: "theme")
+        let gatewayStore = GatewayStore(
+            defaults: defaults,
+            catalogDirectory: root.appendingPathComponent("Catalogs", isDirectory: true),
+            transcriptDirectory: root.appendingPathComponent("Transcripts", isDirectory: true),
+            thumbnailDirectory: root.appendingPathComponent("Thumbnails", isDirectory: true),
+            draftDirectory: root.appendingPathComponent("Drafts", isDirectory: true)
+        )
+        let firstGateway = GatewayAccount(
+            endpoint: try GatewayEndpoint("tcp://localhost:9191")
+        )
+        let secondGateway = GatewayAccount(
+            endpoint: try GatewayEndpoint("tcp://localhost:9192")
+        )
+        try gatewayStore.save(firstGateway, token: "first-token")
+        try gatewayStore.save(secondGateway, token: "second-token")
+        addTeardownBlock {
+            try? await gatewayStore.remove(firstGateway)
+            try? await gatewayStore.remove(secondGateway)
+        }
+        await gatewayStore.saveChatCatalog(
+            CachedChatCatalog(sessions: [], swarms: [], lastSessionID: nil),
+            accountID: secondGateway.id
+        )
+        await gatewayStore.saveTranscript(
+            accountID: secondGateway.id,
+            sessionID: "chat-1",
+            sequence: 1,
+            transcript: [
+                TranscriptEntry(
+                    id: "cached-answer",
+                    text: "Cached",
+                    kind: .assistant,
+                    format: "plain_text",
+                    pending: false
+                )
+            ],
+            currentUsage: TokenUsage(),
+            lastUsage: TokenUsage()
+        )
+        await gatewayStore.saveThumbnail(
+            Data([1]),
+            accountID: secondGateway.id,
+            sessionID: "chat-1",
+            fileID: "file-1"
+        )
+        await gatewayStore.saveComposerDraft(
+            "Delete this draft",
+            accountID: secondGateway.id,
+            sessionID: "chat-1"
+        )
+
+        let service = "app.mobius.cloud.tests.\(UUID())"
+        let sessionStore = MobiusCloudSessionStore(service: service)
+        defer { try? sessionStore.remove() }
+        let client = MobiusCloudClient(store: sessionStore) { request in
+            try self.response(
+                for: request,
+                json:
+                    #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
+            )
+        }
+        _ = try await client.authenticate(
+            authorizationCode: "apple-code",
+            nonce: String(repeating: "n", count: 43)
+        )
+        let model = AppModel(
+            store: gatewayStore,
+            settingsDefaults: defaults,
+            requestSender: { _ in },
+            connectionOpener: { _ in AsyncThrowingStream { _ in } },
+            cloudClient: client
+        )
+        model.connectionState = .ready
+        model.selectedSessionID = "chat-1"
+        model.navigationPath = [.chat(.session("chat-1"))]
+
+        await model.clearDataAndGatewayInformation()
+
+        let catalog = await gatewayStore.loadChatCatalog(accountID: secondGateway.id)
+        let transcript = await gatewayStore.loadTranscript(
+            accountID: secondGateway.id,
+            sessionID: "chat-1"
+        )
+        let thumbnail = await gatewayStore.loadThumbnail(
+            accountID: secondGateway.id,
+            sessionID: "chat-1",
+            fileID: "file-1"
+        )
+        let draft = await gatewayStore.loadComposerDraft(
+            accountID: secondGateway.id,
+            sessionID: "chat-1"
+        )
+        XCTAssertNil(model.cloudSession)
+        XCTAssertNil(try client.loadSession())
+        XCTAssertTrue(model.accounts.isEmpty)
+        XCTAssertTrue(gatewayStore.loadAccounts().isEmpty)
+        XCTAssertNil(model.selectedAccountID)
+        XCTAssertNil(gatewayStore.selectedAccountID())
+        XCTAssertNil(catalog)
+        XCTAssertNil(transcript)
+        XCTAssertNil(thumbnail)
+        XCTAssertEqual(draft, "")
+        XCTAssertEqual(defaults.string(forKey: "theme"), ThemePreference.light.rawValue)
+        XCTAssertEqual(model.connectionState, .disconnected)
+        XCTAssertTrue(model.navigationPath.isEmpty)
+        XCTAssertTrue(model.showsPairing)
+        XCTAssertThrowsError(try gatewayStore.token(for: firstGateway))
+        XCTAssertThrowsError(try gatewayStore.token(for: secondGateway))
+    }
+
     func testRestoreRecoversOutsidePurchaseBeforeFinishingAndConnects() async throws {
         let userID = UUID()
         let token = String(repeating: "t", count: 43)

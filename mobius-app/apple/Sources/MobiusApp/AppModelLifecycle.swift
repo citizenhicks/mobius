@@ -211,7 +211,10 @@ extension AppModel {
         pairingCodeInfo = nil
         pairingCode = ""
         pairingError = nil
-        if !preservingSession { resetSessionState() }
+        if !preservingSession {
+            discardFileThumbnails()
+            resetSessionState()
+        }
         if preservingDrafts { restorePendingDrafts() }
         return connectionGeneration
     }
@@ -249,7 +252,7 @@ extension AppModel {
         modifiedFilesScope = .unstaged
         gitBranchRequestID = nil
         discardComposerAttachments()
-        discardFileThumbnails()
+        cancelSessionFileThumbnailDownloads()
         sessionFiles = []
         sessionFilesRequestID = nil
         isLoadingSessionFiles = false

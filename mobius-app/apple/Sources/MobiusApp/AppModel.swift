@@ -67,6 +67,9 @@ final class AppModel {
     var replayPresentedTranscript: [TranscriptEntry]? {
         didSet { transcriptWindowAnchor = .tail }
     }
+    var pendingPresentedTranscript: [TranscriptEntry]? {
+        didSet { transcriptWindowAnchor = .tail }
+    }
     var transcriptWindowAnchor = TranscriptWindowAnchor.tail {
         didSet { invalidateTranscriptProjection() }
     }
@@ -74,7 +77,7 @@ final class AppModel {
         transcriptWindow.entries
     }
     var transcriptWindow: TranscriptWindowCache {
-        let source = replayPresentedTranscript ?? transcript
+        let source = pendingPresentedTranscript ?? replayPresentedTranscript ?? transcript
         if let transcriptWindowCache { return transcriptWindowCache }
         let maximumTurns = switch transcriptWindowAnchor {
         case .tail: transcriptTurnsPerPage
@@ -113,8 +116,12 @@ final class AppModel {
               sessionRequestID != nil || replayRequestID != nil
         else { return false }
 
-        let opensAnotherSession = sessionOpeningID.map { $0 != selectedSessionID } ?? false
-        return opensAnotherSession || (replayPresentedTranscript ?? transcript).isEmpty
+        let opensAnotherSessionWithoutCache =
+            (sessionOpeningID.map { $0 != selectedSessionID } ?? false)
+            && pendingPresentedTranscript == nil
+        if opensAnotherSessionWithoutCache { return true }
+
+        return (pendingPresentedTranscript ?? replayPresentedTranscript ?? transcript).isEmpty
     }
     var isLoadingEarlierHistory = false
     var historyLoadCompletionRevision = 0
@@ -253,6 +260,7 @@ final class AppModel {
     var appLockEnabled: Bool
     var isAppLocked: Bool
     var isAppLockAuthenticating = false
+    var isClearingLocalData = false
     var appLockAuthenticationMethod: AppLockAuthenticationMethod
     var appLockError: String?
 
@@ -306,7 +314,6 @@ final class AppModel {
     @ObservationIgnored var sessionRequestID: String?
     @ObservationIgnored var sessionOpeningID: String?
     @ObservationIgnored var pendingCachedTranscript: CachedTranscript?
-    @ObservationIgnored var pendingPresentedTranscript: [TranscriptEntry]?
     var sessionMutationRequestID: String?
     var swarmMutationRequestID: String?
     @ObservationIgnored var pendingDeletedSessionID: String?

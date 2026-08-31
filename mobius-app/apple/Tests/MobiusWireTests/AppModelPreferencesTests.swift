@@ -74,6 +74,130 @@ extension AppModelTests {
         XCTAssertTrue(results.isEmpty)
     }
 
+    func testClearCachedDataKeepsGatewayDraftAndSettings() async throws {
+        let suiteName = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: root)
+        }
+        defaults.set(ThemePreference.light.rawValue, forKey: "theme")
+        defaults.set(AppLanguage.french.rawValue, forKey: "language")
+        let store = GatewayStore(
+            defaults: defaults,
+            catalogDirectory: root.appendingPathComponent("Catalogs", isDirectory: true),
+            transcriptDirectory: root.appendingPathComponent("Transcripts", isDirectory: true),
+            thumbnailDirectory: root.appendingPathComponent("Thumbnails", isDirectory: true),
+            draftDirectory: root.appendingPathComponent("Drafts", isDirectory: true)
+        )
+        let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
+        try store.save(account, token: "test-token")
+        addTeardownBlock { try await store.remove(account) }
+        await store.saveChatCatalog(
+            CachedChatCatalog(
+                sessions: [session(state: .idle)],
+                swarms: [],
+                lastSessionID: "chat-1"
+            ),
+            accountID: account.id
+        )
+        await store.saveTranscript(
+            accountID: account.id,
+            sessionID: "chat-1",
+            sequence: 1,
+            transcript: [
+                TranscriptEntry(
+                    id: "cached-answer",
+                    text: "Cached",
+                    kind: .assistant,
+                    format: "plain_text",
+                    pending: false
+                )
+            ],
+            currentUsage: TokenUsage(),
+            lastUsage: TokenUsage()
+        )
+        let png = try tinyPNGData()
+        await store.saveThumbnail(
+            png,
+            accountID: account.id,
+            sessionID: "chat-1",
+            fileID: "file-1"
+        )
+        await store.saveComposerDraft("Keep this draft", accountID: account.id, sessionID: "chat-1")
+        let model = AppModel(
+            client: GatewayClient(),
+            store: store,
+            settingsDefaults: defaults
+        )
+        let image = await AppModel.downsampledFileThumbnail(from: png)
+        model.cacheFileThumbnail(
+            try XCTUnwrap(image),
+            for: .session(sessionID: "chat-1", fileID: "file-1")
+        )
+
+        await model.clearCachedData()
+
+        let catalog = await store.loadChatCatalog(accountID: account.id)
+        let transcript = await store.loadTranscript(accountID: account.id, sessionID: "chat-1")
+        let thumbnail = await store.loadThumbnail(
+            accountID: account.id,
+            sessionID: "chat-1",
+            fileID: "file-1"
+        )
+        let draft = await store.loadComposerDraft(
+            accountID: account.id,
+            sessionID: "chat-1"
+        )
+        XCTAssertNil(catalog)
+        XCTAssertNil(transcript)
+        XCTAssertNil(thumbnail)
+        XCTAssertEqual(draft, "Keep this draft")
+        XCTAssertEqual(try store.token(for: account), "test-token")
+        XCTAssertEqual(store.loadAccounts().map(\.id), [account.id])
+        XCTAssertEqual(defaults.string(forKey: "theme"), ThemePreference.light.rawValue)
+        XCTAssertEqual(defaults.string(forKey: "language"), AppLanguage.french.rawValue)
+        XCTAssertTrue(model.fileThumbnails.isEmpty)
+    }
+
+    func testClearCachedDataReportsDeletionFailure() async throws {
+        let suiteName = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let blocker = root.appendingPathComponent("blocker")
+        let transcriptDirectory = root.appendingPathComponent("Transcripts", isDirectory: true)
+        let marker = transcriptDirectory.appendingPathComponent("cached.json")
+        try FileManager.default.createDirectory(
+            at: transcriptDirectory,
+            withIntermediateDirectories: true
+        )
+        try Data([1]).write(to: blocker)
+        try Data([1]).write(to: marker)
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let model = AppModel(
+            client: GatewayClient(),
+            store: GatewayStore(
+                defaults: defaults,
+                catalogDirectory: blocker.appendingPathComponent("Catalogs", isDirectory: true),
+                transcriptDirectory: transcriptDirectory,
+                thumbnailDirectory: root.appendingPathComponent("Thumbnails", isDirectory: true),
+                draftDirectory: root.appendingPathComponent("Drafts", isDirectory: true)
+            ),
+            settingsDefaults: defaults
+        )
+
+        await model.clearCachedData()
+
+        XCTAssertEqual(model.toast?.tone, .error)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path))
+    }
+
     func testAppearanceUsesTheInjectedDefaults() throws {
         let suiteName = UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -103,7 +227,7 @@ extension AppModelTests {
         XCTAssertEqual(AppLanguage.english.locale.identifier, "en")
         XCTAssertEqual(AppLanguage.french.locale.identifier, "fr")
         XCTAssertEqual(AppLanguage.german.locale.identifier, "de")
-        XCTAssertEqual(AppLanguage.hungarian.locale.identifier, "hu")
+        XCTAssertEqual(AppLanguage.allCases, [.system, .english, .french, .german])
     }
 
     func testLanguageDefaultsToSystem() throws {
