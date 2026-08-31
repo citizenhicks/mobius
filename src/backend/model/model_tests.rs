@@ -221,6 +221,45 @@ fn normalized_output_preserves_complete_typed_step_content() {
 }
 
 #[test]
+fn hosted_search_keeps_only_the_last_unphased_message_as_final_answer() {
+    let output = ModelOutput::from_output(
+        vec![
+            serde_json::json!({
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "I'll check."}]
+            }),
+            serde_json::json!({
+                "type": "openrouter:web_search",
+                "status": "completed",
+                "action": {"type": "search", "query": "möbius"}
+            }),
+            serde_json::json!({
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "Done."}]
+            }),
+        ],
+        true,
+        TokenUsage::default(),
+    )
+    .expect("normalized output");
+
+    assert_eq!(output.text(), "Done.");
+    assert_eq!(
+        output
+            .content()
+            .iter()
+            .map(|part| part.phase)
+            .collect::<Vec<_>>(),
+        [
+            ModelStepContentPhase::Commentary,
+            ModelStepContentPhase::FinalAnswer,
+        ]
+    );
+}
+
+#[test]
 fn normalized_output_rejects_unmodeled_annotation_fields() {
     let error = ModelOutput::from_output(
         vec![serde_json::json!({

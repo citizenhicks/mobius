@@ -493,12 +493,27 @@ impl ModelOutput {
 
 fn normalized_step_content(output: &[Value]) -> Result<Vec<ModelStepContent>> {
     let mut content = Vec::new();
+    let final_message_index = output
+        .iter()
+        .rposition(|item| item.get("type").and_then(Value::as_str) == Some("message"));
     for (output_index, item) in output.iter().enumerate() {
         normalize_reasoning_content(output_index, item, &mut content);
         if item.get("type").and_then(Value::as_str) != Some("message") {
             continue;
         }
-        let phase = if item.get("phase").and_then(Value::as_str) == Some("commentary") {
+        let precedes_hosted_search = final_message_index.is_some_and(|final_index| {
+            output_index < final_index
+                && output[output_index + 1..final_index].iter().any(|item| {
+                    matches!(
+                        item.get("type").and_then(Value::as_str),
+                        Some("web_search_call" | "openrouter:web_search")
+                    )
+                })
+        });
+        let declared_phase = item.get("phase").and_then(Value::as_str);
+        let phase = if declared_phase == Some("commentary")
+            || (declared_phase.is_none() && precedes_hosted_search)
+        {
             ModelStepContentPhase::Commentary
         } else {
             ModelStepContentPhase::FinalAnswer
