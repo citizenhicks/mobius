@@ -778,6 +778,51 @@ fn responses_emits_commentary_text_deltas() {
 }
 
 #[test]
+fn openrouter_web_search_uses_native_search_events() {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink_seen = Arc::clone(&seen);
+    let events: ModelEventSink = Arc::new(move |event| {
+        sink_seen.lock().expect("events lock").push(event);
+        Ok(())
+    });
+    let mut searches = BTreeSet::new();
+
+    assert!(
+        emit_web_event(
+            &serde_json::json!({
+                "type": "response.output_item.done",
+                "item": {
+                    "id": "search-1",
+                    "type": "openrouter:web_search",
+                    "status": "completed",
+                    "action": {
+                        "type": "search",
+                        "query": "möbius framework"
+                    }
+                }
+            }),
+            &mut searches,
+            &events,
+        )
+        .expect("OpenRouter web search event")
+    );
+    assert_eq!(
+        *seen.lock().expect("events lock"),
+        vec![
+            ModelEvent::WebSearchStarted {
+                call_id: "search-1".into()
+            },
+            ModelEvent::WebSearchCompleted {
+                call_id: "search-1".into(),
+                action: WebSearchAction::Search {
+                    queries: vec!["möbius framework".into()]
+                }
+            }
+        ]
+    );
+}
+
+#[test]
 fn responses_web_search_preserves_every_query() {
     let action = decode_web_action(&serde_json::json!({
         "action": {

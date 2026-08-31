@@ -782,9 +782,12 @@ fn build_generic(config: ProviderBuildConfig) -> Result<std::sync::Arc<dyn Model
 }
 
 fn web_search_item(event: &Value) -> Option<&Value> {
-    event
-        .get("item")
-        .filter(|item| item.get("type").and_then(Value::as_str) == Some("web_search_call"))
+    event.get("item").filter(|item| {
+        matches!(
+            item.get("type").and_then(Value::as_str),
+            Some("web_search_call" | "openrouter:web_search")
+        )
+    })
 }
 
 fn emit_citation_web_search(
