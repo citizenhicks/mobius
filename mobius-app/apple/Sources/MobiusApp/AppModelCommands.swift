@@ -857,6 +857,23 @@ extension AppModel {
         }
     }
 
+    func workspaceFile(for link: URL) -> WorkspaceFileRecord? {
+        let scheme = link.scheme?.lowercased()
+        if let scheme, !["file", "sandbox", "workspace"].contains(scheme) { return nil }
+        var path = link.path
+        if let root = workspace?.path {
+            let prefix = root.hasSuffix("/") ? root : "\(root)/"
+            if path.hasPrefix(prefix) { path = String(path.dropFirst(prefix.count)) }
+        }
+        if scheme == "sandbox", path.hasPrefix("/mnt/data/") {
+            path = String(path.dropFirst("/mnt/data/".count))
+        }
+        if scheme == "workspace" { path = String(path.drop(while: { $0 == "/" })) }
+        while path.hasPrefix("./") { path.removeFirst(2) }
+        guard !path.isEmpty, !path.hasPrefix("/") else { return nil }
+        return workspaceFiles.first { $0.path == path }
+    }
+
     func previewWorkspaceFile(_ file: WorkspaceFileRecord) {
         guard let sessionID = selectedSessionID else { return }
         guard file.size <= UInt64(maximumPresentedFileBytes) else {

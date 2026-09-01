@@ -68,6 +68,7 @@ private let mobiusSelectTextMenu = TextContextMenu(menuGroups: [
 /// It reads the palette itself rather than taking one from `MobiusMarkdownText`, so a theme
 /// change still reaches the config even when the equatable parent skips its own body.
 private struct MobiusMarkdownDocument: View {
+    @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.mobiusPalette) private var palette
     @Environment(\.colorScheme) private var colorScheme
@@ -86,6 +87,11 @@ private struct MobiusMarkdownDocument: View {
             dynamicTypeSize: dynamicTypeSize
         )
         DocumentView(renderableDocument: document, config: request.config, listener: selection)
+            .environment(\.openURL, OpenURLAction { url in
+                guard let file = model.workspaceFile(for: url) else { return .systemAction }
+                model.previewWorkspaceFile(file)
+                return .handled
+            })
             .task(id: request) {
                 let parsed = await MarkdownParserImpl().parse(
                     text: request.text,

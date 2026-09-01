@@ -401,6 +401,26 @@ extension AppModelTests {
         model.discardFilePresentation()
     }
 
+    func testWorkspaceMarkdownLinkPaths() throws {
+        let model = try model()
+        let root = "/srv/mobius"
+        let report = WorkspaceFileRecord(path: "reports/My Report.pdf", size: 1)
+        let artifact = WorkspaceFileRecord(path: "report.pdf", size: 1)
+        model.workspace = WorkspaceInfo(id: "workspace-1", path: root)
+        model.workspaceFiles = [report, artifact]
+        for (rawLink, expected) in [
+            ("reports/My%20Report.pdf", report),
+            ("workspace:/report.pdf", artifact),
+            ("sandbox:/mnt/data/report.pdf", artifact),
+            ("/srv/mobius/report.pdf", artifact),
+        ] {
+            XCTAssertEqual(model.workspaceFile(for: try XCTUnwrap(URL(string: rawLink))), expected)
+        }
+        for rawLink in ["https://example.com/report.pdf", "/tmp/report.pdf"] {
+            XCTAssertNil(model.workspaceFile(for: try XCTUnwrap(URL(string: rawLink))))
+        }
+    }
+
     func testUnsupportedSessionFileCanBeDownloadedForSharing() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model(requestSender: { request in
