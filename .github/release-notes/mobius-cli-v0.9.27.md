@@ -1,0 +1,1 @@
+Add centered popups for resume, subagents, and global/chat scratchpads; compact tool input while retaining output; use red/green patch highlights; and allow Alt+Enter to send with the alternate active-message delivery. Include Gateway 0.9.33; protocol 55 is unchanged.

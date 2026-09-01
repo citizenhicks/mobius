@@ -1,0 +1,1 @@
+Bundle möbius 0.9.26 so active clients can inspect subagents and distinguish pending steer/queue messages. Protocol 55, configuration 21, chat specification 10, checkpoint 9, and SQLite schema 6 are unchanged.
