@@ -88,7 +88,9 @@ fn session_identity_survives_activity_sorting() {
 fn open_widget_tracks_updates_and_submits_the_advertised_operation() {
     let key: (String, String) = ("capability-a".into(), "view".into());
     let mut overlay = CapabilityOverlay {
+        title: "Chat capabilities · session-1".into(),
         session_id: "session-1".into(),
+        slots: vec![FrontendSlot::Navigation],
         widgets: vec![(key.clone(), widget(blocks("Initial")))],
         widget_list: ListState::default(),
         open: Some(key.clone()),
@@ -141,7 +143,9 @@ fn opening_widget_submits_its_advertised_refresh() {
     let mut item = widget(blocks("Initial"));
     item.action = Some(op.clone());
     let mut overlay = CapabilityOverlay {
+        title: "Chat capabilities · session-1".into(),
         session_id: "session-1".into(),
+        slots: vec![FrontendSlot::Navigation],
         widgets: vec![(key.clone(), item)],
         widget_list: ListState::default().with_selected(Some(0)),
         open: None,
@@ -161,7 +165,9 @@ fn action_list_renders_one_row_with_declared_actions_and_runs_the_selected_one()
     let content = action_list(edit.clone(), delete.clone());
     let key: (String, String) = ("capability-a".into(), "view".into());
     let mut overlay = CapabilityOverlay {
+        title: "Chat capabilities · session-1".into(),
         session_id: "session-1".into(),
+        slots: vec![FrontendSlot::Navigation],
         widgets: vec![(key.clone(), widget(content.clone()))],
         widget_list: ListState::default(),
         open: Some(key),
@@ -204,7 +210,9 @@ fn action_list_renders_one_row_with_declared_actions_and_runs_the_selected_one()
 fn editable_action_replaces_its_advertised_input_before_submission() {
     let key: (String, String) = ("capability-a".into(), "view".into());
     let mut overlay = CapabilityOverlay {
+        title: "Chat capabilities · session-1".into(),
         session_id: "session-1".into(),
+        slots: vec![FrontendSlot::Navigation],
         widgets: vec![(key.clone(), widget(blocks("Initial")))],
         widget_list: ListState::default(),
         open: Some(key),

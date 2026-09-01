@@ -15,7 +15,13 @@ use ratatui::backend::CrosstermBackend;
 use super::setup::{self, SetupMode};
 use super::terminal::TerminalGuard;
 
+pub(in crate::frontend) use self::runtime::{
+    activate_overlay, handle_action_input_key, insert_overlay_input, move_overlay_action,
+    move_overlay_selection, prepare_overlay_operation, select_overlay_edge,
+};
 use self::runtime::{connect, dashboard_loop};
+pub(in crate::frontend) use self::state::CapabilityOverlay;
+pub(in crate::frontend) use self::view::{centered_area, render_capability_overlay};
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 

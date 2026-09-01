@@ -35,7 +35,6 @@ use crate::protocol::FrontendCommand;
 use crate::protocol::FrontendContribution;
 use crate::protocol::FrontendEvent;
 use crate::protocol::FrontendPreviewUpdate;
-use crate::protocol::FrontendTone;
 use crate::protocol::MessageAuthor;
 use crate::protocol::Op;
 use crate::protocol::internal_message_kind;
@@ -435,11 +434,12 @@ impl Subagents {
             .resume_options(&identity.root_session_id)
             .await?;
         if options.is_empty() {
-            return Ok(MiddlewareCommandOutput::render(
-                "subagents",
-                text::RENDER_EMPTY,
-                FrontendTone::Neutral,
-            ));
+            return Ok(MiddlewareCommandOutput::events(vec![
+                FrontendEvent::Picker {
+                    title: format!("{} · {}", text::RENDER_OPEN, text::RENDER_EMPTY),
+                    options,
+                },
+            ]));
         }
         Ok(MiddlewareCommandOutput::events(vec![
             FrontendEvent::Picker {
@@ -576,7 +576,7 @@ impl Middleware for Subagents {
                 name: "subagents".into(),
                 arguments: String::new(),
                 description: text::COMMAND_DESCRIPTION.into(),
-                requires_idle: true,
+                requires_idle: false,
             }],
             widgets: Vec::new(),
             references: Vec::new(),

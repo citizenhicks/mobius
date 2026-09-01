@@ -1,7 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use mobius::protocol::{
-    FrontendActionListItem, FrontendBlock, FrontendListItemState, FrontendTone,
+    FrontendActionListItem, FrontendBlock, FrontendListItemState, FrontendTone, FrontendWidget,
     FrontendWidgetContent,
 };
 use mobius_gateway::wire::{ClientKind, DailyUsage, ProfileSnapshot, SessionActivityState};
@@ -64,13 +64,13 @@ pub(super) fn render(frame: &mut ratatui::Frame<'_>, state: &mut DashboardState)
     }
 }
 
-pub(super) fn render_capability_overlay(
+pub(in crate::frontend) fn render_capability_overlay(
     frame: &mut ratatui::Frame<'_>,
     overlay: &mut CapabilityOverlay,
 ) {
     let area = centered_area(frame.area(), 86, 82);
     frame.render_widget(Clear, area);
-    let outer = panel(format!("Chat capabilities · {}", overlay.session_id), true);
+    let outer = panel(&overlay.title, true);
     let inner = outer.inner(area);
     frame.render_widget(outer, area);
     let [body, footer] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
@@ -139,7 +139,7 @@ pub(super) fn render_action_input(frame: &mut ratatui::Frame<'_>, area: Rect, in
     );
 }
 
-pub(super) fn centered_area(area: Rect, width: u16, height: u16) -> Rect {
+pub(in crate::frontend) fn centered_area(area: Rect, width: u16, height: u16) -> Rect {
     let [vertical] = Layout::vertical([Constraint::Percentage(height)])
         .flex(ratatui::layout::Flex::Center)
         .areas(area);
@@ -164,7 +164,7 @@ pub(super) fn render_navigation_widgets(
             .map(|((capability, _), widget)| {
                 Line::from(vec![
                     Span::styled(
-                        format!(" {}", terminal_text(&widget.text)),
+                        format!(" {}", terminal_text(widget_title(widget))),
                         theme
                             .style(tone_role(widget.tone))
                             .add_modifier(Modifier::BOLD),
@@ -185,6 +185,17 @@ pub(super) fn render_navigation_widgets(
         area,
         &mut overlay.widget_list,
     );
+}
+
+fn widget_title(widget: &FrontendWidget) -> &str {
+    match widget.content.as_ref() {
+        Some(
+            FrontendWidgetContent::Blocks { title, .. }
+            | FrontendWidgetContent::Picker { title, .. }
+            | FrontendWidgetContent::ActionList { title, .. },
+        ) => title,
+        None => &widget.text,
+    }
 }
 
 pub(super) fn render_blocks(

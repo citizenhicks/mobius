@@ -52,8 +52,8 @@ const NORD: Theme = Theme {
     success: Color::Rgb(163, 190, 140),
     warning: Color::Rgb(235, 203, 139),
     error: Color::Rgb(191, 97, 106),
-    diff_add: Color::Rgb(59, 66, 82),
-    diff_delete: Color::Rgb(67, 76, 94),
+    diff_add: Color::Rgb(33, 58, 43),
+    diff_delete: Color::Rgb(74, 34, 29),
 };
 
 pub(crate) const fn current() -> &'static Theme {
@@ -136,8 +136,8 @@ mod tests {
                 Color::Rgb(163, 190, 140),
                 Color::Rgb(235, 203, 139),
                 Color::Rgb(191, 97, 106),
-                Color::Rgb(59, 66, 82),
-                Color::Rgb(67, 76, 94),
+                Color::Rgb(33, 58, 43),
+                Color::Rgb(74, 34, 29),
             ]
         );
     }

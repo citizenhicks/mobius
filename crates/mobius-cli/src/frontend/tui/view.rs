@@ -11,6 +11,7 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::text::Text;
 use ratatui::widgets::Block;
+use ratatui::widgets::Clear;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
 
@@ -24,9 +25,11 @@ use super::markdown;
 use super::shimmer;
 use crate::frontend::catalog::MenuItem;
 use crate::frontend::catalog::UiCatalog;
+use crate::frontend::dashboard::centered_area;
 use crate::frontend::terminal::terminal_text;
 use crate::frontend::theme::Role;
 use crate::frontend::theme::current;
+use mobius::protocol::ActiveMessageDelivery;
 use mobius::protocol::FrontendBlockFormat;
 use mobius::protocol::FrontendSlot;
 use mobius::protocol::FrontendTone;
@@ -54,17 +57,13 @@ pub(super) fn render(frame: &mut Frame<'_>, state: &mut TuiState, catalog: &UiCa
     let slash_suggestions = (state.picker.is_none() && reference_suggestions.is_none())
         .then(|| catalog.command_suggestions(&state.input, state.cursor))
         .flatten();
-    let menu_height = if let Some(picker) = &state.picker {
-        u16::try_from(picker.options.len().clamp(1, MAX_MENU_ROWS) + 1).unwrap_or(0)
-    } else {
-        reference_suggestions
-            .as_ref()
-            .map(Vec::len)
-            .or_else(|| slash_suggestions.as_ref().map(Vec::len))
-            .map_or(0, |length| {
-                u16::try_from(length.clamp(1, MAX_MENU_ROWS)).unwrap_or(0)
-            })
-    };
+    let menu_height = reference_suggestions
+        .as_ref()
+        .map(Vec::len)
+        .or_else(|| slash_suggestions.as_ref().map(Vec::len))
+        .map_or(0, |length| {
+            u16::try_from(length.clamp(1, MAX_MENU_ROWS)).unwrap_or(0)
+        });
     let (input, cursor_end) = marked_input(state);
     let inner_width = frame.area().width.saturating_sub(2).max(1);
     let input_rows = Paragraph::new(input.as_str())
@@ -90,10 +89,7 @@ pub(super) fn render(frame: &mut Frame<'_>, state: &mut TuiState, catalog: &UiCa
     .split(frame.area());
 
     render_transcript(frame, state, areas[0]);
-    if let Some(picker) = state.picker.as_mut() {
-        picker.selected = picker.selected.min(picker.options.len().saturating_sub(1));
-        render_picker_menu(frame, areas[1], picker);
-    } else if let Some(suggestions) = reference_suggestions {
+    if let Some(suggestions) = reference_suggestions {
         state.reference_selection = state
             .reference_selection
             .min(suggestions.len().saturating_sub(1));
@@ -121,6 +117,10 @@ pub(super) fn render(frame: &mut Frame<'_>, state: &mut TuiState, catalog: &UiCa
         areas[3],
     );
     render_footer(frame, state, areas[4]);
+    if let Some(picker) = state.picker.as_mut() {
+        picker.selected = picker.selected.min(picker.options.len().saturating_sub(1));
+        render_picker_popup(frame, picker);
+    }
 }
 
 fn render_transcript(frame: &mut Frame<'_>, state: &mut TuiState, area: Rect) {
@@ -178,10 +178,14 @@ pub(super) fn live_transcript_lines(
         if !lines.is_empty() {
             lines.push(Line::default());
         }
+        let heading = item.symbol.as_ref().map_or_else(
+            || sentence_case(capability),
+            |symbol| sentence_case(symbol.as_str()),
+        );
         lines.push(Line::from(vec![
             Span::styled("┊ ", current().style(Role::Muted)),
             Span::styled(
-                sentence_case(capability),
+                heading,
                 current().style(Role::Muted).add_modifier(Modifier::ITALIC),
             ),
         ]));
@@ -208,10 +212,11 @@ pub(super) fn live_transcript_lines(
 
 pub(super) fn render_preview(frame: &mut Frame<'_>, state: &mut TuiState) {
     let theme = current();
-    let area = frame.area();
+    let area = centered_area(frame.area(), 92, 88);
     if area.width < 3 || area.height < 3 {
         return;
     }
+    frame.render_widget(Clear, area);
     let (title, live) = {
         let Some(preview) = state.preview.as_ref() else {
             return;
@@ -807,7 +812,24 @@ fn status_line(state: &TuiState) -> Line<'static> {
             theme.style(Role::Warning),
         );
     }
+    if state.is_working() {
+        return Line::styled(
+            format!(
+                "enter {} · alt+enter {}",
+                delivery_label(state.message_delivery()),
+                delivery_label(state.alternate_message_delivery())
+            ),
+            theme.style(Role::Muted),
+        );
+    }
     Line::default()
+}
+
+const fn delivery_label(delivery: ActiveMessageDelivery) -> &'static str {
+    match delivery {
+        ActiveMessageDelivery::Steer => "steer",
+        ActiveMessageDelivery::Queue => "queue",
+    }
 }
 
 fn elapsed_label(elapsed: std::time::Duration) -> String {
@@ -865,6 +887,25 @@ fn render_picker_menu(frame: &mut Frame<'_>, area: Rect, picker: &super::PickerS
         })
         .collect::<Vec<_>>();
     render_menu(frame, areas[1], &items, picker.selected);
+}
+
+fn render_picker_popup(frame: &mut Frame<'_>, picker: &super::PickerState) {
+    let area = centered_area(frame.area(), 86, 70);
+    if area.width < 3 || area.height < 3 {
+        return;
+    }
+    let theme = current();
+    frame.render_widget(Clear, area);
+    let block = Block::bordered()
+        .style(theme.style(Role::Canvas))
+        .border_style(theme.style(Role::Info))
+        .title(Line::styled(
+            " ↑↓ select · Enter open · Esc close ",
+            theme.style(Role::Accent).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    render_picker_menu(frame, inner, picker);
 }
 
 fn render_menu(frame: &mut Frame<'_>, area: Rect, items: &[MenuItem], selected: usize) {

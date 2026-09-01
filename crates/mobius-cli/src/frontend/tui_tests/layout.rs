@@ -108,3 +108,36 @@ fn composer_shows_attached_file_metadata_compactly() {
     assert!(rendered.contains("[file] photo.png · 42 bytes"));
     assert!(rendered.contains("» █"));
 }
+
+#[test]
+fn picker_uses_a_centered_popup() {
+    let catalog = default_catalog();
+    let mut state = state();
+    state.handle_agent_event(
+        EventMsg::Frontend(FrontendEvent::Picker {
+            title: "Resume chat".into(),
+            options: vec![mobius::protocol::FrontendPickerOption {
+                label: "Earlier chat".into(),
+                description: "idle".into(),
+                detail: String::new(),
+                symbol: None,
+                shows_detail: false,
+                op: Op::ResumeSession {
+                    session_id: "session-a".into(),
+                },
+            }],
+        }),
+        Vec::new(),
+    );
+    let mut terminal = Terminal::new(TestBackend::new(60, 20)).expect("terminal");
+
+    terminal
+        .draw(|frame| view::render(frame, &mut state, &catalog))
+        .expect("picker draw");
+    let rendered = terminal.backend().to_string();
+    let lines = rendered.lines().collect::<Vec<_>>();
+
+    assert!(rendered.contains("Resume chat"), "{rendered}");
+    assert!(lines.first().is_some_and(|line| !line.contains('┌')));
+    assert!(lines.iter().skip(1).any(|line| line.contains('┌')));
+}

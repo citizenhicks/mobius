@@ -2,7 +2,7 @@ use super::support::*;
 use super::*;
 
 #[test]
-fn live_transcript_preview_uses_the_full_frame_and_new_entries() {
+fn live_transcript_preview_uses_a_centered_popup_and_new_entries() {
     let mut state = state();
     state.transcript.clear();
     state.open_transcript_preview();
@@ -13,20 +13,15 @@ fn live_transcript_preview_uses_the_full_frame_and_new_entries() {
         .draw(|frame| view::render_preview(frame, &mut state))
         .expect("preview draw");
     let rendered = terminal.backend().to_string();
+    let lines = rendered.lines().collect::<Vec<_>>();
 
     assert!(rendered.contains("new live row"));
     assert!(
-        rendered
-            .lines()
-            .next()
-            .is_some_and(|line| line.contains('┌')),
+        lines.first().is_some_and(|line| !line.contains('┌')),
         "{rendered}"
     );
     assert!(
-        rendered
-            .lines()
-            .last()
-            .is_some_and(|line| line.contains('└')),
+        lines.iter().skip(1).any(|line| line.contains('┌')),
         "{rendered}"
     );
 }
@@ -85,7 +80,7 @@ fn snapshot_preview_scrolls_with_the_mouse_wheel() {
         .draw(|frame| view::render_preview(frame, &mut state))
         .expect("scrolled preview draw");
     let scrolled = terminal.backend().to_string();
-    assert!(scrolled.contains("subagent row 24"), "{scrolled}");
+    assert!(scrolled.contains("subagent row 25"), "{scrolled}");
     assert!(!scrolled.contains("subagent row 29"), "{scrolled}");
 
     state.handle_mouse(MouseEvent {

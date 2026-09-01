@@ -10,8 +10,8 @@ use super::{
 };
 use crate::backend::checkpoint::QueuedMessageBoundary;
 use crate::protocol::{
-    ActiveMessageDelivery, EventMsg, FrontendEvent, FrontendSlot, FrontendTone, FrontendWidget,
-    MAX_CAPABILITY_INPUT_BYTES, MessageAuthor, MessageDelivery, MessageEvent, Op,
+    ActiveMessageDelivery, EventMsg, FrontendEvent, FrontendSlot, FrontendSymbol, FrontendTone,
+    FrontendWidget, MAX_CAPABILITY_INPUT_BYTES, MessageAuthor, MessageDelivery, MessageEvent, Op,
 };
 use crate::{BoxFuture, Error, Result};
 
@@ -135,7 +135,11 @@ impl Messages {
                 slot: FrontendSlot::TranscriptTail,
                 text: message.text.clone(),
                 tone: FrontendTone::Neutral,
-                symbol: None,
+                symbol: Some(match message.delivery {
+                    MessageDelivery::Turn => FrontendSymbol::Chat,
+                    MessageDelivery::Steer => FrontendSymbol::Custom("steer".into()),
+                    MessageDelivery::Queue => FrontendSymbol::Custom("queue".into()),
+                }),
                 icon_only: false,
                 progress: None,
                 content: None,
@@ -296,6 +300,37 @@ mod tests {
                 .map(|choice| (choice.value, choice.symbol))
                 .collect::<Vec<_>>(),
             [("steer", Some("steer")), ("queue", Some("queue"))]
+        );
+    }
+
+    #[test]
+    fn queued_widgets_name_their_delivery() {
+        let messages = Messages::default();
+        let symbol = |delivery| {
+            let FrontendEvent::Widget { item, .. } = messages.queued_widget(
+                "message-1",
+                &MessageEvent {
+                    author: MessageAuthor::User,
+                    delivery,
+                    text: "hello".into(),
+                    attachments: Vec::new(),
+                    message_target: None,
+                },
+            ) else {
+                panic!("queued message widget");
+            };
+            item.symbol
+        };
+
+        assert_eq!(
+            (
+                symbol(MessageDelivery::Steer),
+                symbol(MessageDelivery::Queue),
+            ),
+            (
+                Some(FrontendSymbol::Custom("steer".into())),
+                Some(FrontendSymbol::Custom("queue".into())),
+            )
         );
     }
 

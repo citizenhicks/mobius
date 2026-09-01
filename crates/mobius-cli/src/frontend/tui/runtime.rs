@@ -20,17 +20,21 @@ use super::input::UiAction;
 use super::view::render_preview;
 use crate::frontend::FrontendExit;
 use crate::frontend::catalog::{GatewayAction, UiCatalog};
+use crate::frontend::dashboard::render_capability_overlay;
 use crate::frontend::extensions;
 use crate::frontend::gateway;
 use crate::frontend::gateway_actions::{prepare, render_response};
 use crate::frontend::setup;
 use crate::frontend::terminal::{INPUT_POLL, MAX_INPUT_BATCH, TerminalGuard, poll_event};
-use mobius::protocol::{EventMsg, FrontendEvent, ModelInfo, Op, Submission};
+use mobius::protocol::{
+    ActiveMessageDelivery, EventMsg, FrontendEvent, FrontendSettingKind, FrontendSettingValue,
+    MiddlewareFeature, ModelInfo, Op, Submission,
+};
 use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayEvents, GatewaySender};
 use mobius_gateway::wire::{
-    ClientMessage, ReadyPayload, ServerMessage, SessionActivityState, SessionOutcome,
-    SessionReadyPayload, SessionRecord, SwarmRecord,
+    ClientMessage, MiddlewareConfig, ReadyPayload, ServerMessage, SessionActivityState,
+    SessionOutcome, SessionReadyPayload, SessionRecord, SwarmRecord,
 };
 use uuid::Uuid;
 
@@ -110,6 +114,10 @@ pub(in crate::frontend) async fn run(
         model_route,
         agent_summary(gateway, session),
     );
+    state.active_message_delivery = Some(composer_message_delivery(
+        &gateway.middleware_features,
+        &session.config.config.middleware,
+    ));
     let mut uploads = ClipboardUploads::default();
     state.context_limit = session.context_limit_tokens;
     let mut tick = tokio::time::interval(INPUT_POLL);
@@ -335,10 +343,11 @@ fn draw_if_dirty(
 fn draw(terminal: &mut TuiTerminal, state: &mut TuiState, catalog: &UiCatalog) -> Result<()> {
     io::stdout().sync_update(|_| -> Result<()> {
         terminal.draw(|frame| {
+            super::view::render(frame, state, catalog);
             if state.preview.is_some() {
                 render_preview(frame, state);
-            } else {
-                super::view::render(frame, state, catalog);
+            } else if let Some(overlay) = state.capability_overlay.as_mut() {
+                render_capability_overlay(frame, overlay);
             }
         })?;
         Ok(())
@@ -472,7 +481,9 @@ fn terminal_action(
             state.handle_key(key, catalog)
         }
         TerminalEvent::Paste(text) => {
-            if state.preview.is_none() && state.picker.is_none() {
+            if state.capability_overlay.is_some() {
+                *dirty |= state.insert_capability_overlay_paste(&text);
+            } else if state.preview.is_none() && state.picker.is_none() {
                 let before = (state.input.len(), state.input_limit_reached);
                 state.insert_paste(&text);
                 *dirty |= before != (state.input.len(), state.input_limit_reached);
@@ -618,8 +629,42 @@ fn sync_session(state: &mut TuiState, session: &SessionReadyPayload, gateway: &R
         .map(super::terminal_text);
     state.model_route.clone_from(&session.session.model.route);
     state.agent_summary = agent_summary(gateway, session);
+    state.active_message_delivery = Some(composer_message_delivery(
+        &gateway.middleware_features,
+        &session.config.config.middleware,
+    ));
     state.context_limit = session.context_limit_tokens;
     state.usage.apply_context_limit(state.context_limit);
+}
+
+fn composer_message_delivery(
+    features: &[MiddlewareFeature],
+    config: &MiddlewareConfig,
+) -> ActiveMessageDelivery {
+    for feature in features {
+        for setting in &feature.settings {
+            let FrontendSettingKind::Select { options, .. } = &setting.kind else {
+                continue;
+            };
+            if !setting.composer
+                || options.len() != 2
+                || !options.iter().any(|option| option.value == "steer")
+                || !options.iter().any(|option| option.value == "queue")
+            {
+                continue;
+            }
+            let Some(FrontendSettingValue::String(value)) =
+                config.setting(&feature.id, &setting.id)
+            else {
+                continue;
+            };
+            return match value.as_str() {
+                "queue" => ActiveMessageDelivery::Queue,
+                _ => ActiveMessageDelivery::Steer,
+            };
+        }
+    }
+    ActiveMessageDelivery::Steer
 }
 
 fn enrich_resume_picker(
@@ -798,7 +843,10 @@ async fn send_op(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mobius::protocol::{Event, EventMsg, FrontendPickerOption, SessionContext};
+    use mobius::protocol::{
+        Event, EventMsg, FrontendPickerOption, FrontendSetting, FrontendSettingOption,
+        FrontendTone, SessionContext,
+    };
     use mobius_gateway::wire::{RecordedEvent, SessionActivity, SwarmMemberRecord};
 
     fn replay_event(sequence: u64) -> ServerMessage {
@@ -846,6 +894,60 @@ mod tests {
 
         hydration.observe(&replay_event(4), "session-a");
         assert!(hydration.allows_draw());
+    }
+
+    #[test]
+    fn composer_delivery_uses_the_advertised_session_setting() {
+        let features = [MiddlewareFeature {
+            id: "messages".into(),
+            label: "Messages".into(),
+            description: String::new(),
+            required: true,
+            settings: vec![FrontendSetting {
+                id: "delivery".into(),
+                label: "Delivery".into(),
+                description: String::new(),
+                composer: true,
+                kind: FrontendSettingKind::Select {
+                    options: vec![
+                        FrontendSettingOption {
+                            value: "steer".into(),
+                            label: "Steer".into(),
+                            description: String::new(),
+                            symbol: None,
+                            tone: FrontendTone::Neutral,
+                        },
+                        FrontendSettingOption {
+                            value: "queue".into(),
+                            label: "Queue".into(),
+                            description: String::new(),
+                            symbol: None,
+                            tone: FrontendTone::Neutral,
+                        },
+                    ],
+                    unset_label: None,
+                },
+            }],
+        }];
+        let mut config: MiddlewareConfig = serde_json::from_value(serde_json::json!({
+            "enabled": [],
+            "settings": {}
+        }))
+        .expect("middleware config");
+
+        assert_eq!(
+            composer_message_delivery(&features, &config),
+            ActiveMessageDelivery::Steer
+        );
+        config.set_setting(
+            "messages",
+            "delivery",
+            Some(FrontendSettingValue::String("queue".into())),
+        );
+        assert_eq!(
+            composer_message_delivery(&features, &config),
+            ActiveMessageDelivery::Queue
+        );
     }
 
     #[test]

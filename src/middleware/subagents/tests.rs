@@ -51,6 +51,13 @@ fn prompt_section_guides_root_to_delegate_parallel_work() {
 }
 
 #[test]
+fn frontend_command_is_available_during_an_active_turn() {
+    let contribution = test_middleware().frontend();
+
+    assert!(!contribution.commands[0].requires_idle);
+}
+
+#[test]
 fn prompt_section_identifies_child_with_default_instruction() {
     let identity = AgentIdentity {
         root_session_id: "root".into(),

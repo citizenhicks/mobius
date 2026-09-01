@@ -30,6 +30,40 @@ fn composer_dispatches_commands_and_active_turn_steering() {
 }
 
 #[test]
+fn alt_enter_uses_the_opposite_active_delivery() {
+    let catalog = default_catalog();
+    for (configured, expected) in [
+        (
+            mobius::protocol::ActiveMessageDelivery::Steer,
+            mobius::protocol::ActiveMessageDelivery::Queue,
+        ),
+        (
+            mobius::protocol::ActiveMessageDelivery::Queue,
+            mobius::protocol::ActiveMessageDelivery::Steer,
+        ),
+    ] {
+        let mut state = state();
+        state.active_turn = Some("turn".into());
+        state.active_message_delivery = Some(configured);
+        state.input = "follow up".into();
+        state.cursor = state.input.len();
+
+        assert_eq!(
+            state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT), &catalog,),
+            UiAction::Submit(Op::Message {
+                message: MessageSubmission {
+                    author: MessageAuthor::User,
+                    text: "follow up".into(),
+                    attachments: Vec::new(),
+                    requested_delivery: Some(expected),
+                    target_turn_id: Some("turn".into()),
+                },
+            })
+        );
+    }
+}
+
+#[test]
 fn new_and_clear_keep_distinct_terminal_semantics() {
     let catalog = default_catalog();
     let mut new = state();
@@ -112,6 +146,141 @@ fn generic_picker_submits_the_selected_operation() {
         UiAction::Submit(Op::ResumeSession {
             session_id: "second".into(),
         })
+    );
+}
+
+#[test]
+fn bare_capability_command_opens_all_of_its_popup_surfaces() {
+    let refresh = Op::CapabilityCommand {
+        capability: "scratchpad".into(),
+        command: "scratchpad".into(),
+        arguments: "refresh".into(),
+        input: None,
+        target: None,
+    };
+    let global_action = Op::CapabilityCommand {
+        capability: "scratchpad".into(),
+        command: "scratchpad".into(),
+        arguments: "forget global global-1".into(),
+        input: None,
+        target: None,
+    };
+    let session_action = Op::CapabilityCommand {
+        capability: "scratchpad".into(),
+        command: "scratchpad".into(),
+        arguments: "promote note-1".into(),
+        input: None,
+        target: None,
+    };
+    let surface =
+        |id: &str, slot: FrontendSlot, title: &str, note: &str, action: Op| FrontendWidget {
+            id: id.into(),
+            slot,
+            text: "Scratchpad".into(),
+            tone: FrontendTone::Neutral,
+            symbol: Some(FrontendSymbol::Brain),
+            icon_only: false,
+            progress: None,
+            content: Some(FrontendWidgetContent::ActionList {
+                title: title.into(),
+                items: vec![FrontendActionListItem {
+                    id: id.into(),
+                    text: note.into(),
+                    state: FrontendListItemState::Plain,
+                    actions: vec![FrontendAction {
+                        id: format!("action:{id}"),
+                        label: "Run".into(),
+                        symbol: FrontendSymbol::Edit,
+                        tone: FrontendTone::Neutral,
+                        op: action,
+                    }],
+                }],
+            }),
+            action: Some(refresh.clone()),
+        };
+    let global = surface(
+        "navigation",
+        FrontendSlot::Navigation,
+        "Global scratchpad",
+        "Global note",
+        global_action.clone(),
+    );
+    let session = surface(
+        "chat_menu",
+        FrontendSlot::ChatMenu,
+        "Chat scratchpad",
+        "Session note",
+        session_action.clone(),
+    );
+    let catalog = UiCatalog::build(
+        &[FrontendContribution {
+            capability: "scratchpad".into(),
+            accepts_file_attachments: false,
+            count: None,
+            commands: vec![FrontendCommand {
+                name: "scratchpad".into(),
+                arguments: String::new(),
+                description: "manage notes".into(),
+                requires_idle: false,
+            }],
+            widgets: vec![global.clone(), session.clone()],
+            references: Vec::new(),
+        }],
+        &[],
+        std::path::Path::new("/missing-mobius-test-workspace"),
+    )
+    .expect("scratchpad catalog");
+    let mut state = state();
+    state.widgets.extend([
+        (("scratchpad".into(), global.id.clone()), global),
+        (("scratchpad".into(), session.id.clone()), session),
+    ]);
+    state.input = "/scratchpad".into();
+    state.cursor = state.input.len();
+
+    assert_eq!(
+        state.submit_input(&catalog),
+        UiAction::Submit(refresh.clone())
+    );
+    assert!(state.capability_overlay.is_some());
+
+    let mut terminal = Terminal::new(TestBackend::new(72, 18)).expect("terminal");
+    terminal
+        .draw(|frame| {
+            view::render(frame, &mut state, &catalog);
+            crate::frontend::dashboard::render_capability_overlay(
+                frame,
+                state.capability_overlay.as_mut().expect("scratchpad popup"),
+            );
+        })
+        .expect("scratchpad popup draw");
+    let rendered = terminal.backend().to_string();
+    assert!(rendered.contains("Global scratchpad"), "{rendered}");
+    assert!(rendered.contains("Chat scratchpad"), "{rendered}");
+
+    assert_eq!(
+        state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &catalog),
+        UiAction::Submit(refresh.clone())
+    );
+    assert_eq!(
+        state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &catalog),
+        UiAction::Submit(global_action)
+    );
+    assert_eq!(
+        state.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &catalog),
+        UiAction::None
+    );
+    assert_eq!(
+        state.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &catalog),
+        UiAction::None
+    );
+    assert_eq!(
+        state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &catalog),
+        UiAction::Submit(refresh)
+    );
+    assert_eq!(
+        state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &catalog),
+        UiAction::Submit(session_action)
     );
 }
 

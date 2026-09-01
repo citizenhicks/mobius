@@ -17,9 +17,20 @@ use crate::frontend::catalog::CommandContext;
 use crate::frontend::catalog::GatewayAction;
 use crate::frontend::catalog::MenuItem;
 use crate::frontend::catalog::UiCatalog;
+use crate::frontend::dashboard::activate_overlay;
+use crate::frontend::dashboard::handle_action_input_key;
+use crate::frontend::dashboard::insert_overlay_input;
+use crate::frontend::dashboard::move_overlay_action;
+use crate::frontend::dashboard::move_overlay_selection;
+use crate::frontend::dashboard::prepare_overlay_operation;
+use crate::frontend::dashboard::select_overlay_edge;
 use crate::frontend::setup::SetupMode;
 use crate::frontend::terminal::terminal_text;
+use mobius::protocol::ActiveMessageDelivery;
 use mobius::protocol::EventMsg;
+use mobius::protocol::FrontendSlot;
+use mobius::protocol::FrontendWidget;
+use mobius::protocol::FrontendWidgetContent;
 use mobius::protocol::MAX_MESSAGE_BYTES;
 use mobius::protocol::MessageAuthor;
 use mobius::protocol::MessageSubmission;
@@ -52,8 +63,8 @@ impl TuiState {
         if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
             return UiAction::None;
         }
-        if self.preview.is_some() {
-            return self.handle_preview_key(key);
+        if let Some(action) = self.handle_open_surface_key(key) {
+            return action;
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return UiAction::Exit;
@@ -124,9 +135,13 @@ impl TuiState {
         }
         match key.code {
             KeyCode::Enter if self.complete_reference(catalog) => UiAction::None,
-            KeyCode::Enter => self
-                .submit_selected_slash(catalog)
-                .unwrap_or_else(|| self.submit_input(catalog)),
+            KeyCode::Enter => {
+                let delivery = (self.active_turn.is_some()
+                    && key.modifiers.contains(KeyModifiers::ALT))
+                .then(|| self.alternate_message_delivery());
+                self.submit_selected_slash(catalog, delivery)
+                    .unwrap_or_else(|| self.submit_input_with_delivery(catalog, delivery))
+            }
             KeyCode::Up => {
                 if !self.move_menu_up(catalog) && self.approval.is_none() {
                     self.composer_history_up();
@@ -336,6 +351,83 @@ impl TuiState {
         }
     }
 
+    fn handle_open_surface_key(&mut self, key: KeyEvent) -> Option<UiAction> {
+        if self.preview.is_some() {
+            return Some(self.handle_preview_key(key));
+        }
+        self.capability_overlay
+            .is_some()
+            .then(|| self.handle_capability_overlay_key(key))
+    }
+
+    fn handle_capability_overlay_key(&mut self, key: KeyEvent) -> UiAction {
+        let editing = self
+            .capability_overlay
+            .as_ref()
+            .is_some_and(crate::frontend::dashboard::CapabilityOverlay::is_editing);
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c')
+            || key.code == KeyCode::Char('q') && !editing
+        {
+            self.capability_overlay = None;
+            return UiAction::None;
+        }
+        if key.code == KeyCode::Esc && !editing {
+            if self
+                .capability_overlay
+                .as_ref()
+                .is_some_and(crate::frontend::dashboard::CapabilityOverlay::can_go_back)
+            {
+                self.capability_overlay
+                    .as_mut()
+                    .expect("overlay checked")
+                    .close_widget();
+            } else {
+                self.capability_overlay = None;
+            }
+            return UiAction::None;
+        }
+        let Some(overlay) = self.capability_overlay.as_mut() else {
+            return UiAction::None;
+        };
+        if overlay.is_editing() {
+            return handle_action_input_key(overlay, key).map_or(UiAction::None, UiAction::Submit);
+        }
+        let action_list_open = matches!(
+            overlay
+                .open_widget()
+                .and_then(|widget| widget.content.as_ref()),
+            Some(FrontendWidgetContent::ActionList { .. })
+        );
+        match key.code {
+            KeyCode::Left if action_list_open => move_overlay_action(overlay, -1),
+            KeyCode::Up | KeyCode::Char('k') => move_overlay_selection(overlay, -1),
+            KeyCode::Down | KeyCode::Char('j') => move_overlay_selection(overlay, 1),
+            KeyCode::Home => select_overlay_edge(overlay, false),
+            KeyCode::End => select_overlay_edge(overlay, true),
+            KeyCode::Right if action_list_open => move_overlay_action(overlay, 1),
+            KeyCode::Enter | KeyCode::Right => {
+                return activate_overlay(overlay)
+                    .and_then(|op| prepare_overlay_operation(overlay, op))
+                    .map_or(UiAction::None, UiAction::Submit);
+            }
+            KeyCode::Char('a') => {
+                return overlay
+                    .open_widget()
+                    .and_then(|widget| widget.action.clone())
+                    .and_then(|op| prepare_overlay_operation(overlay, op))
+                    .map_or(UiAction::None, UiAction::Submit);
+            }
+            _ => {}
+        }
+        UiAction::None
+    }
+
+    pub(super) fn insert_capability_overlay_paste(&mut self, value: &str) -> bool {
+        self.capability_overlay
+            .as_mut()
+            .is_some_and(|overlay| insert_overlay_input(overlay, value))
+    }
+
     pub(super) fn insert_text(&mut self, text: &str) {
         let text = terminal_text(text);
         if !self.accepts_input(text.len(), 0) {
@@ -430,7 +522,11 @@ impl TuiState {
         self.slash_input_changed();
     }
 
-    fn submit_selected_slash(&mut self, catalog: &UiCatalog) -> Option<UiAction> {
+    fn submit_selected_slash(
+        &mut self,
+        catalog: &UiCatalog,
+        delivery: Option<ActiveMessageDelivery>,
+    ) -> Option<UiAction> {
         let command = self.selected_slash_command(catalog)?;
         let token_end = self
             .input
@@ -441,7 +537,7 @@ impl TuiState {
         }
         self.input.replace_range(..token_end, &command);
         self.cursor = self.input.len();
-        Some(self.submit_input(catalog))
+        Some(self.submit_input_with_delivery(catalog, delivery))
     }
 
     fn selected_slash_command(&self, catalog: &UiCatalog) -> Option<String> {
@@ -548,7 +644,16 @@ impl TuiState {
         self.reference_menu_dismissed = false;
     }
 
+    #[cfg(test)]
     pub(super) fn submit_input(&mut self, catalog: &UiCatalog) -> UiAction {
+        self.submit_input_with_delivery(catalog, None)
+    }
+
+    fn submit_input_with_delivery(
+        &mut self,
+        catalog: &UiCatalog,
+        delivery: Option<ActiveMessageDelivery>,
+    ) -> UiAction {
         let had_pastes = !self.pastes.is_empty();
         let line = self.expanded_input();
         if line.len() > MAX_MESSAGE_BYTES {
@@ -595,6 +700,15 @@ impl TuiState {
                     if matches!(op, Op::Interrupt { .. }) {
                         self.clear_approval();
                     }
+                    if let Some((capability, widgets, action)) = self.capability_popup_for(&op) {
+                        self.picker = None;
+                        self.preview = None;
+                        self.capability_overlay =
+                            Some(crate::frontend::dashboard::CapabilityOverlay::from_widgets(
+                                capability, widgets,
+                            ));
+                        return UiAction::Submit(action);
+                    }
                     UiAction::Submit(op)
                 }
                 CommandAction::Gateway(action) => UiAction::Gateway(action),
@@ -631,11 +745,54 @@ impl TuiState {
                 author: MessageAuthor::User,
                 text: line.into(),
                 attachments: std::mem::take(&mut self.attachments),
-                requested_delivery: None,
+                requested_delivery: self.active_turn.as_ref().and(delivery),
                 target_turn_id: self.active_turn.clone(),
             },
         };
         UiAction::Submit(op)
+    }
+
+    fn capability_popup_for(&self, op: &Op) -> Option<(String, Vec<FrontendWidget>, Op)> {
+        let Op::CapabilityCommand {
+            capability,
+            command,
+            arguments,
+            input,
+            target,
+        } = op
+        else {
+            return None;
+        };
+        if !arguments.is_empty() || input.is_some() || target.is_some() {
+            return None;
+        }
+        let (_, menu) = self.widgets.iter().find(|((owner, _), widget)| {
+            owner == capability
+                && widget.slot == FrontendSlot::ChatMenu
+                && matches!(
+                    widget.action.as_ref(),
+                    Some(Op::CapabilityCommand {
+                        capability: action_capability,
+                        command: action_command,
+                        ..
+                    }) if action_capability == capability && action_command == command
+                )
+        })?;
+        let action = menu.action.clone()?;
+        let widgets = self
+            .widgets
+            .iter()
+            .filter(|((owner, _), widget)| {
+                owner == capability
+                    && matches!(
+                        widget.slot,
+                        FrontendSlot::ChatMenu | FrontendSlot::Navigation
+                    )
+                    && widget.content.is_some()
+            })
+            .map(|(_, widget)| widget.clone())
+            .collect();
+        Some((capability.clone(), widgets, action))
     }
 
     fn status(&self) -> String {

@@ -116,7 +116,7 @@ fn completed_diff_replaces_the_pending_block_with_a_styled_diff() {
 }
 
 #[test]
-fn completed_tool_keeps_its_detail_inline_and_indents_the_result() {
+fn completed_tool_compacts_its_detail_and_keeps_the_result() {
     let mut state = state();
     state.transcript.clear();
     state.apply_block(rendered(FrontendBlock {
@@ -126,7 +126,7 @@ fn completed_tool_keeps_its_detail_inline_and_indents_the_result() {
         state: FrontendBlockState::Pending,
         role: FrontendBlockRole::Tool,
         title: "Bash".into(),
-        text: "cargo test".into(),
+        text: "input 0\ninput 1\ninput 2\ninput 3\ninput 4".into(),
         symbol: None,
         format: FrontendBlockFormat::PlainText,
         tone: FrontendTone::Neutral,
@@ -146,10 +146,13 @@ fn completed_tool_keeps_its_detail_inline_and_indents_the_result() {
         files: Vec::new(),
     }));
 
+    let entry = state.transcript.front().expect("tool entry");
     assert_eq!(
-        rendered_text(&view::live_transcript_lines(&mut state, 0, 80)),
-        "• Bash cargo test\n  └ ok"
+        entry.detail.as_deref(),
+        Some("input 0\ninput 1\ninput 2\n…")
     );
+    assert_eq!(entry.text, "ok");
+    assert!(rendered_text(&view::live_transcript_lines(&mut state, 0, 80)).contains("ok"));
 }
 
 #[test]
@@ -196,7 +199,7 @@ fn transcript_tail_widgets_render_after_live_output_in_arrival_order() {
     let mut state = state();
     state.transcript.clear();
     state.streaming = "working".into();
-    let widget = |id: &str, text: &str| {
+    let widget = |id: &str, text: &str, delivery: &str| {
         EventMsg::Frontend(FrontendEvent::Widget {
             capability: "messages".into(),
             item: FrontendWidget {
@@ -204,7 +207,7 @@ fn transcript_tail_widgets_render_after_live_output_in_arrival_order() {
                 slot: FrontendSlot::TranscriptTail,
                 text: text.into(),
                 tone: FrontendTone::Neutral,
-                symbol: None,
+                symbol: Some(FrontendSymbol::Custom(delivery.into())),
                 icon_only: false,
                 progress: None,
                 content: None,
@@ -212,14 +215,14 @@ fn transcript_tail_widgets_render_after_live_output_in_arrival_order() {
             },
         })
     };
-    state.handle_agent_event(widget("z-older", "older"), Vec::new());
-    state.handle_agent_event(widget("a-newer", "newer"), Vec::new());
+    state.handle_agent_event(widget("z-older", "older", "steer"), Vec::new());
+    state.handle_agent_event(widget("a-newer", "newer", "queue"), Vec::new());
 
     let lines = view::live_transcript_lines(&mut state, 0, 80);
 
     assert_eq!(
         rendered_text(&lines),
-        "• working\n\n┊ Messages\n┊ older\n\n┊ Messages\n┊ newer"
+        "• working\n\n┊ Steer\n┊ older\n\n┊ Queue\n┊ newer"
     );
 
     state.handle_agent_event(
@@ -230,7 +233,7 @@ fn transcript_tail_widgets_render_after_live_output_in_arrival_order() {
         Vec::new(),
     );
     let lines = view::live_transcript_lines(&mut state, 0, 80);
-    assert_eq!(rendered_text(&lines), "• working\n\n┊ Messages\n┊ newer");
+    assert_eq!(rendered_text(&lines), "• working\n\n┊ Queue\n┊ newer");
 }
 
 #[test]

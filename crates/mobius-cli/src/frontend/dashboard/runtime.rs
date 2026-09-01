@@ -276,7 +276,7 @@ pub(super) async fn handle_overlay_key(
     Ok(())
 }
 
-pub(super) fn move_overlay_selection(overlay: &mut CapabilityOverlay, delta: isize) {
+pub(in crate::frontend) fn move_overlay_selection(overlay: &mut CapabilityOverlay, delta: isize) {
     let option_count = overlay
         .open_widget()
         .and_then(|widget| widget.content.as_ref())
@@ -301,7 +301,7 @@ pub(super) fn move_overlay_selection(overlay: &mut CapabilityOverlay, delta: isi
     }
 }
 
-pub(super) fn select_overlay_edge(overlay: &mut CapabilityOverlay, last: bool) {
+pub(in crate::frontend) fn select_overlay_edge(overlay: &mut CapabilityOverlay, last: bool) {
     let option_count = overlay
         .open_widget()
         .and_then(|widget| widget.content.as_ref())
@@ -325,7 +325,7 @@ pub(super) fn select_overlay_edge(overlay: &mut CapabilityOverlay, last: bool) {
     overlay.action_index = 0;
 }
 
-pub(super) fn activate_overlay(overlay: &mut CapabilityOverlay) -> Option<Op> {
+pub(in crate::frontend) fn activate_overlay(overlay: &mut CapabilityOverlay) -> Option<Op> {
     if let Some(widget) = overlay.open_widget() {
         return match widget.content.as_ref() {
             Some(FrontendWidgetContent::Picker { options, .. }) => options
@@ -350,7 +350,7 @@ pub(super) fn activate_overlay(overlay: &mut CapabilityOverlay) -> Option<Op> {
     }
 }
 
-pub(super) fn move_overlay_action(overlay: &mut CapabilityOverlay, delta: isize) {
+pub(in crate::frontend) fn move_overlay_action(overlay: &mut CapabilityOverlay, delta: isize) {
     let Some(length) = overlay
         .selected_action_list_item()
         .map(|item| item.actions.len())
@@ -361,7 +361,10 @@ pub(super) fn move_overlay_action(overlay: &mut CapabilityOverlay, delta: isize)
         moved_index(Some(overlay.action_index), length, delta).unwrap_or_default();
 }
 
-pub(super) fn prepare_overlay_operation(overlay: &mut CapabilityOverlay, op: Op) -> Option<Op> {
+pub(in crate::frontend) fn prepare_overlay_operation(
+    overlay: &mut CapabilityOverlay,
+    op: Op,
+) -> Option<Op> {
     let seed = match &op {
         Op::CapabilityCommand {
             input: Some(input), ..
@@ -377,7 +380,7 @@ pub(super) fn prepare_overlay_operation(overlay: &mut CapabilityOverlay, op: Op)
     None
 }
 
-pub(super) fn handle_action_input_key(
+pub(in crate::frontend) fn handle_action_input_key(
     overlay: &mut CapabilityOverlay,
     key: KeyEvent,
 ) -> Option<Op> {
@@ -430,13 +433,21 @@ pub(super) fn handle_action_input_key(
 }
 
 pub(super) fn handle_overlay_paste(state: &mut DashboardState, value: &str) {
-    if let Some(input) = state
-        .overlay
-        .as_mut()
-        .and_then(|overlay| overlay.input.as_mut())
-    {
-        insert_action_input(input, value);
+    if let Some(overlay) = state.overlay.as_mut() {
+        insert_overlay_input(overlay, value);
     }
+}
+
+pub(in crate::frontend) fn insert_overlay_input(
+    overlay: &mut CapabilityOverlay,
+    value: &str,
+) -> bool {
+    let Some(input) = overlay.input.as_mut() else {
+        return false;
+    };
+    let before = (input.text.len(), input.cursor);
+    insert_action_input(input, value);
+    before != (input.text.len(), input.cursor)
 }
 
 pub(super) fn insert_action_input(input: &mut ActionInput, value: &str) {

@@ -21,7 +21,9 @@ use self::input::UiAction;
 use self::view::bounded_terminal_text;
 use self::view::initial_widgets;
 use super::catalog::{MenuItem, UiCatalog};
+use super::dashboard::CapabilityOverlay;
 use super::terminal::terminal_text;
+use mobius::protocol::ActiveMessageDelivery;
 #[cfg(test)]
 use mobius::protocol::EventMsg;
 use mobius::protocol::FrontendBlockFormat;
@@ -41,6 +43,8 @@ use mobius::protocol::SessionResumeRequestedEvent;
 
 const MAX_ENTRY_BYTES: usize = 40_000;
 const MAX_COMPOSER_HISTORY_ENTRIES: usize = 100;
+const MAX_TOOL_DETAIL_BYTES: usize = 512;
+const MAX_TOOL_DETAIL_LINES: usize = 3;
 const MAX_TITLE_BYTES: usize = 160;
 const MAX_STREAM_BYTES: usize = 64 * 1024;
 const MAX_TRANSCRIPT_ENTRIES: usize = 512;
@@ -288,6 +292,7 @@ struct TuiState {
     approval: Option<String>,
     approval_draft: Option<InputDraft>,
     active_turn: Option<String>,
+    active_message_delivery: Option<ActiveMessageDelivery>,
     turn_started_at: Option<Instant>,
     usage: UsageStatus,
     context_limit: Option<i64>,
@@ -304,6 +309,7 @@ struct TuiState {
     reference_cache: Option<(char, String, Vec<MenuItem>)>,
     picker: Option<PickerState>,
     preview: Option<PreviewState>,
+    capability_overlay: Option<CapabilityOverlay>,
     requested_resume: Option<SessionResumeRequestedEvent>,
 }
 
@@ -337,6 +343,7 @@ impl TuiState {
             approval: None,
             approval_draft: None,
             active_turn: None,
+            active_message_delivery: None,
             turn_started_at: None,
             usage: UsageStatus::default(),
             context_limit: None,
@@ -353,12 +360,25 @@ impl TuiState {
             reference_cache: None,
             picker: None,
             preview: None,
+            capability_overlay: None,
             requested_resume: None,
         }
     }
 
     fn is_working(&self) -> bool {
         self.active_turn.is_some() && self.approval.is_none() && !self.disconnected
+    }
+
+    fn message_delivery(&self) -> ActiveMessageDelivery {
+        self.active_message_delivery
+            .unwrap_or(ActiveMessageDelivery::Steer)
+    }
+
+    fn alternate_message_delivery(&self) -> ActiveMessageDelivery {
+        match self.message_delivery() {
+            ActiveMessageDelivery::Steer => ActiveMessageDelivery::Queue,
+            ActiveMessageDelivery::Queue => ActiveMessageDelivery::Steer,
+        }
     }
 
     fn begin_approval(&mut self, id: String) {
@@ -463,6 +483,9 @@ impl TuiState {
         let mut block = rendered.block;
         let title = bounded_title(&std::mem::take(&mut block.title));
         let mut text = bounded_terminal_text(&super::block_text(&block), MAX_ENTRY_BYTES);
+        if block.state == FrontendBlockState::Pending && block.role == FrontendBlockRole::Tool {
+            text = compact_tool_detail(&text);
+        }
         let detail = (block.state == FrontendBlockState::Pending
             && matches!(
                 block.role,
@@ -632,11 +655,26 @@ impl TuiState {
     }
 
     fn open_transcript_preview(&mut self) {
+        self.picker = None;
+        self.capability_overlay = None;
         self.preview = Some(PreviewState::new(
             "Transcript".into(),
             PreviewContent::LiveTranscript,
         ));
     }
+}
+
+fn compact_tool_detail(value: &str) -> String {
+    let mut lines = value.lines();
+    let mut compact = lines
+        .by_ref()
+        .take(MAX_TOOL_DETAIL_LINES)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if lines.next().is_some() {
+        compact.push_str("\n…");
+    }
+    bounded_terminal_text(&compact, MAX_TOOL_DETAIL_BYTES)
 }
 
 fn bounded_title(value: &str) -> String {

@@ -21,8 +21,10 @@ pub(super) struct DashboardState {
     pub(super) error: Option<String>,
 }
 
-pub(super) struct CapabilityOverlay {
+pub(in crate::frontend) struct CapabilityOverlay {
+    pub(super) title: String,
     pub(super) session_id: String,
+    pub(super) slots: Vec<FrontendSlot>,
     pub(super) widgets: Vec<((String, String), FrontendWidget)>,
     pub(super) widget_list: ListState,
     pub(super) open: Option<(String, String)>,
@@ -51,7 +53,9 @@ impl CapabilityOverlay {
             })
             .collect();
         let mut overlay = Self {
+            title: format!("Chat capabilities · {session_id}"),
             session_id,
+            slots: vec![FrontendSlot::Navigation],
             widgets,
             widget_list: ListState::default(),
             open: None,
@@ -69,11 +73,41 @@ impl CapabilityOverlay {
         overlay
     }
 
-    pub(super) fn apply(&mut self, event: FrontendEvent) {
+    pub(in crate::frontend) fn from_widgets(
+        capability: String,
+        items: Vec<FrontendWidget>,
+    ) -> Self {
+        let title = items
+            .first()
+            .map_or_else(|| capability.clone(), |item| item.text.clone());
+        let mut slots = items.iter().map(|item| item.slot).collect::<Vec<_>>();
+        slots.sort_unstable();
+        slots.dedup();
+        let widgets = items
+            .into_iter()
+            .map(|item| ((capability.clone(), item.id.clone()), item))
+            .collect::<Vec<_>>();
+        let open = (widgets.len() == 1).then(|| widgets[0].0.clone());
+        let mut overlay = Self {
+            title,
+            session_id: String::new(),
+            slots,
+            widgets,
+            widget_list: ListState::default(),
+            open,
+            option_list: ListState::default(),
+            action_index: 0,
+            input: None,
+        };
+        overlay.sync_selection();
+        overlay
+    }
+
+    pub(in crate::frontend) fn apply(&mut self, event: FrontendEvent) {
         match event {
             FrontendEvent::Widget { capability, item } => {
                 let key = (capability, item.id.clone());
-                if item.slot == FrontendSlot::Navigation {
+                if self.slots.contains(&item.slot) {
                     if let Some((_, widget)) = self
                         .widgets
                         .iter_mut()
@@ -93,6 +127,20 @@ impl CapabilityOverlay {
             }
             _ => return,
         }
+        self.sync_selection();
+    }
+
+    pub(in crate::frontend) const fn is_editing(&self) -> bool {
+        self.input.is_some()
+    }
+
+    pub(in crate::frontend) fn can_go_back(&self) -> bool {
+        self.widgets.len() > 1 && self.open.is_some()
+    }
+
+    pub(in crate::frontend) fn close_widget(&mut self) {
+        self.open = None;
+        self.input = None;
         self.sync_selection();
     }
 
@@ -136,7 +184,7 @@ impl CapabilityOverlay {
             .cloned()
     }
 
-    pub(super) fn open_widget(&self) -> Option<&FrontendWidget> {
+    pub(in crate::frontend) fn open_widget(&self) -> Option<&FrontendWidget> {
         self.widget(self.open.as_ref()?)
     }
 

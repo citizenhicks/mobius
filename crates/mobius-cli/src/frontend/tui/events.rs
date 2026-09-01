@@ -234,6 +234,9 @@ impl TuiState {
     }
 
     fn handle_frontend_event(&mut self, update: FrontendEvent) {
+        if let Some(overlay) = self.capability_overlay.as_mut() {
+            overlay.apply(update.clone());
+        }
         match update {
             FrontendEvent::Widget {
                 capability,
@@ -258,6 +261,8 @@ impl TuiState {
             // The gateway has already projected this event into `blocks`.
             FrontendEvent::Render { .. } => {}
             FrontendEvent::Picker { title, options } => {
+                self.preview = None;
+                self.capability_overlay = None;
                 let selected = options
                     .iter()
                     .position(|option| {
@@ -375,6 +380,8 @@ fn apply_preview(state: &mut TuiState, preview: RenderedPreview) {
 
     match update {
         FrontendPreviewUpdate::Replace => {
+            state.picker = None;
+            state.capability_overlay = None;
             state.preview = Some(PreviewState::snapshot(
                 id,
                 title,

@@ -8,10 +8,12 @@ use super::*;
 use crate::frontend::catalog::UiCatalog;
 use crate::frontend::theme::{Role, current};
 use mobius::protocol::{
-    Event, FrontendBlock, FrontendBlockFormat, FrontendBlockRole, FrontendBlockState,
-    FrontendBlockUpdate, FrontendEvent, FrontendPreviewUpdate, FrontendSlot, FrontendTone,
-    FrontendWidget, MessageAuthor, MessageDelivery, MessageEvent, MessageSubmission, ModelChoice,
-    ModelStepContent, ModelStepContentPhase, RenderedBlock, ReviewDecision,
+    Event, FrontendAction, FrontendActionListItem, FrontendBlock, FrontendBlockFormat,
+    FrontendBlockRole, FrontendBlockState, FrontendBlockUpdate, FrontendCommand,
+    FrontendContribution, FrontendEvent, FrontendListItemState, FrontendPreviewUpdate,
+    FrontendSlot, FrontendSymbol, FrontendTone, FrontendWidget, FrontendWidgetContent,
+    MessageAuthor, MessageDelivery, MessageEvent, MessageSubmission, ModelChoice, ModelStepContent,
+    ModelStepContentPhase, RenderedBlock, ReviewDecision,
 };
 use mobius_gateway::wire::{RecordedEvent, RenderedEvent, RenderedPreview};
 
