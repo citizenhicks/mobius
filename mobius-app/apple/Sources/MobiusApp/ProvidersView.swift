@@ -47,13 +47,12 @@ struct ProvidersView: View {
             }
         }
         .sheet(isPresented: $isAdding) { AddProviderSheet() }
-        .confirmationDialog(
+        .alert(
             removing.map { "Remove \($0.label)?" } ?? "Remove provider?",
             isPresented: Binding(
                 get: { removing != nil },
                 set: { if !$0 { removing = nil } }
             ),
-            titleVisibility: .visible,
             presenting: removing
         ) { instance in
             Button("Remove provider", role: .destructive) {
@@ -279,10 +278,9 @@ struct ProviderDetailView: View {
                 ProviderFormSections(provider: record.provider, isNew: false)
             }
             .toolbarRole(.editor)
-            .confirmationDialog(
+            .alert(
                 "Remove \(record.label)?",
-                isPresented: $confirmsRemoval,
-                titleVisibility: .visible
+                isPresented: $confirmsRemoval
             ) {
                 Button("Remove provider", role: .destructive) {
                     model.removeProvider(record.instance)
