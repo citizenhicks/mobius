@@ -152,7 +152,7 @@ struct MobiusPalette: Sendable {
             )
             accentSoft = panelColor.mix(
                 with: hue,
-                by: isDark ? 0.08 : 0.12,
+                by: isDark ? 0.10 : 0.18,
                 in: .device
             )
         }

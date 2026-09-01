@@ -292,7 +292,7 @@ extension AppModelTests {
         )
         XCTAssertEqual(
             dark.accentSoft,
-            dark.panel.mix(with: tint.color, by: 0.08, in: .device)
+            dark.panel.mix(with: tint.color, by: 0.10, in: .device)
         )
         XCTAssertEqual(
             light.accent,
@@ -304,7 +304,7 @@ extension AppModelTests {
         )
         XCTAssertEqual(
             light.accentSoft,
-            light.panel.mix(with: tint.color, by: 0.12, in: .device)
+            light.panel.mix(with: tint.color, by: 0.18, in: .device)
         )
         XCTAssertTrue(zip(
             [dark.canvas, dark.recessed, dark.panel, dark.raised, dark.line, dark.sidebarScrim],
