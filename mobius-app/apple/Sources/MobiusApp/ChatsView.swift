@@ -62,54 +62,6 @@ struct ChatsView: View {
         .navigationTitle("Chats")
         .toolbarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .principal) {
-                VStack(spacing: MobiusSpace.xxs) {
-                    MobiusTitleText(title: "Chats")
-                        .font(MobiusStyle.titleFont)
-                    if let account = model.selectedAccount {
-                        // A menu-style Picker draws its own button from the selected tag and
-                        // drops the label view, so the dot and the caption step never survive:
-                        // the choice goes inside a Menu whose label is ours to draw.
-                        Menu {
-                            Picker("Gateway", selection: Binding(
-                                get: { model.selectedAccountID },
-                                set: { model.selectAccount($0) }
-                            )) {
-                                ForEach(model.accounts) { account in
-                                    Text(verbatim: account.machineName)
-                                        .tag(Optional(account.id))
-                                }
-                            }
-                            .labelsHidden()
-                        } label: {
-                            HStack(spacing: MobiusSpace.xs) {
-                                Circle()
-                                    .fill(model.connectionState.tone.color(in: palette))
-                                    .frame(width: 6, height: 6)
-                                Text(verbatim: account.machineName)
-                                    .font(MobiusStyle.captionFont)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                MobiusIcon(
-                                    .caretUpDown,
-                                    size: MobiusStyle.glyphMark,
-                                    foreground: palette.muted,
-                                    gutter: false
-                                )
-                            }
-                            .foregroundStyle(palette.muted)
-                        }
-                        .menuIndicator(.hidden)
-                        .buttonStyle(.mobiusPlain)
-                        .sensoryFeedback(.selection, trigger: model.selectedAccountID)
-                        .accessibilityLabel("Gateway")
-                        .accessibilityValue(
-                            Text("\(account.machineName), \(model.connectionState.label)")
-                        )
-                        .help("Switch gateway")
-                    }
-                }
-            }
             if usesIPadLayout {
                 ToolbarItem(placement: .primaryAction) {
                     organizationMenu

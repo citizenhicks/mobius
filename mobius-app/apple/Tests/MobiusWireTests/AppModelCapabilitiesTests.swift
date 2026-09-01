@@ -695,6 +695,40 @@ extension AppModelTests {
         XCTAssertTrue(model.unreadSessionIDs.contains("chat-1"))
     }
 
+    func testReadSessionStaysReadWhenCatalogMetadataChangesAtSameSequence() throws {
+        let model = try model()
+        let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
+        model.accounts = [account]
+        model.selectedAccountID = account.id
+        model.applySessions([session(
+            state: .idle,
+            outcome: .failed,
+            message: "Initial failure",
+            sequence: 1
+        )])
+        model.markSessionRead("chat-1")
+
+        model.applySessions([session(
+            state: .idle,
+            outcome: .failed,
+            message: "Refined failure",
+            sequence: 1
+        )])
+
+        XCTAssertFalse(model.unreadSessionIDs.contains("chat-1"))
+        XCTAssertNil(model.toast)
+
+        model.applySessions([session(
+            state: .idle,
+            outcome: .failed,
+            message: "New failure",
+            sequence: 2
+        )])
+
+        XCTAssertTrue(model.unreadSessionIDs.contains("chat-1"))
+        XCTAssertEqual(model.toast?.message, "Review failed: New failure.")
+    }
+
     func testFailedSessionSnapshotUsesGatewayMessage() throws {
         let model = try model()
         model.applySessions([session(state: .idle, title: "Review")])

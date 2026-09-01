@@ -12,6 +12,7 @@ private let debugStartsOnDetail: Bool = {
 
 struct AppShell: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.mobiusPalette) private var palette
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.openURL) private var openURL
@@ -217,6 +218,11 @@ struct AppShell: View {
                     }
                 }
                 .toolbar {
+                    if model.navigationPath.isEmpty {
+                        ToolbarItem(placement: .principal) {
+                            rootNavigationTitle
+                        }
+                    }
                     if usesIPadLayout {
                         ToolbarItem(placement: .topBarLeading) {
                             iPadSidebarButton
@@ -288,6 +294,86 @@ struct AppShell: View {
                 )
             }
         }
+    }
+
+    private var rootNavigationTitle: some View {
+        VStack(spacing: MobiusSpace.xxs) {
+            rootPageTitle
+                .font(MobiusStyle.titleFont)
+            if let account = model.selectedAccount {
+                gatewayPicker(account)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var rootPageTitle: some View {
+        switch model.destination ?? .chats {
+        case .chats:
+            MobiusTitleText(title: "Chats")
+        case .gateway:
+            MobiusTitleText(title: "Gateway")
+        case .agent:
+            MobiusTitleText(title: "Default agent")
+        case .providers:
+            MobiusTitleText(title: "Providers")
+        case .extensions:
+            MobiusTitleText(title: "Extensions")
+        case .cron:
+            MobiusTitleText(title: "Scheduled")
+        case .scratchpad:
+            if let widget = model.globalScratchpadWidget {
+                MobiusTitleText(title: frontendPresentationText(widget.title))
+            } else {
+                MobiusTitleText(title: "Scratchpad")
+            }
+        case .profile:
+            MobiusTitleText(title: "Settings")
+        case .contribution(let id):
+            if let widget = model.navigationWidgets.first(where: { $0.id == id }) {
+                MobiusTitleText(title: frontendPresentationText(widget.title))
+            } else {
+                MobiusTitleText(title: "Capability unavailable")
+            }
+        }
+    }
+
+    private func gatewayPicker(_ account: GatewayAccount) -> some View {
+        Menu {
+            Picker("Gateway", selection: Binding(
+                get: { model.selectedAccountID },
+                set: { model.selectAccount($0) }
+            )) {
+                ForEach(model.accounts) { account in
+                    Text(verbatim: account.machineName)
+                        .tag(Optional(account.id))
+                }
+            }
+            .labelsHidden()
+        } label: {
+            HStack(spacing: MobiusSpace.xs) {
+                Circle()
+                    .fill(model.connectionState.tone.color(in: palette))
+                    .frame(width: 6, height: 6)
+                Text(verbatim: account.machineName)
+                    .font(MobiusStyle.captionFont)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                MobiusIcon(
+                    .caretUpDown,
+                    size: MobiusStyle.glyphMark,
+                    foreground: palette.muted,
+                    gutter: false
+                )
+            }
+            .foregroundStyle(palette.muted)
+        }
+        .menuIndicator(.hidden)
+        .buttonStyle(.mobiusPlain)
+        .sensoryFeedback(.selection, trigger: model.selectedAccountID)
+        .accessibilityLabel("Gateway")
+        .accessibilityValue(Text("\(account.machineName), \(model.connectionState.label)"))
+        .help("Switch gateway")
     }
 
     private var usesIPadLayout: Bool {

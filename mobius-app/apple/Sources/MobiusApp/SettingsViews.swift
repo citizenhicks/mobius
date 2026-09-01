@@ -342,35 +342,6 @@ struct GatewayView: View {
                 }
             }
         ) {
-            if !model.accounts.isEmpty {
-                Section("Active") {
-                    // The same control as the chats header, so switching does not
-                    // require stepping into a gateway's detail page.
-                    Picker("Gateway", selection: Binding(
-                        get: { model.selectedAccountID },
-                        set: { model.selectAccount($0) }
-                    )) {
-                        ForEach(model.accounts) { account in
-                            Text(verbatim: account.machineName)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                                .tag(Optional(account.id))
-                        }
-                    }
-                    .settingsPickerStyle()
-                    .sensoryFeedback(.selection, trigger: model.selectedAccountID)
-                    LabeledContent("Status") {
-                        HStack(spacing: MobiusSpace.s) {
-                            Circle()
-                                .fill(model.connectionState.tone.color(in: palette))
-                                .frame(width: 7, height: 7)
-                            Text(model.connectionState.label)
-                        }
-                        .font(MobiusStyle.controlFont)
-                    }
-                }
-            }
-
             Section("Paired") {
                 if model.accounts.isEmpty {
                     SettingsCaption("No gateway paired on this device.")

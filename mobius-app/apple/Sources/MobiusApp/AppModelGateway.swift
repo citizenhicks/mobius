@@ -716,15 +716,14 @@ extension AppModel {
         }
         if sessions != records {
             let previous = Dictionary(
-                sessions.map { ($0.sessionId, $0.activity) },
+                sessions.map { ($0.sessionId, $0) },
                 uniquingKeysWith: { _, latest in latest }
             )
             sessions = records
             for session in sessions {
                 applyActivityTransition(
                     from: previous[session.sessionId],
-                    to: session.activity,
-                    sessionID: session.sessionId
+                    to: session
                 )
             }
         }
@@ -811,19 +810,18 @@ extension AppModel {
     }
 
     private func applyActivityTransition(
-        from previous: SessionActivity?,
-        to activity: SessionActivity,
-        sessionID: String
+        from previous: SessionRecord?,
+        to session: SessionRecord
     ) {
-        guard let previous, previous != activity else { return }
+        guard let previous, previous.activity != session.activity else { return }
+        let activity = session.activity
+        let sessionID = session.sessionId
         if activity.state == .awaitingApproval,
-           previous.state != .awaitingApproval {
+           previous.activity.state != .awaitingApproval {
             showToast("\(sessionTitle(sessionID)) needs approval.", tone: .warning)
         }
         guard activity.state == .idle,
-              previous.state != .idle
-                || previous.lastOutcome != activity.lastOutcome
-                || previous.message != activity.message
+              previous.activity.state != .idle || session.sequence > previous.sequence
         else { return }
 
         let isActiveChat = selectedSessionID == sessionID && isChatVisible
