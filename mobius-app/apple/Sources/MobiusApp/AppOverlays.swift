@@ -124,11 +124,7 @@ private struct AppToastView: View {
 
     private var toastMessage: some View {
         HStack(alignment: .top, spacing: MobiusSpace.m) {
-            MobiusIcon(
-                toast.tone.glyph,
-                size: 18,
-                foreground: toast.tone.color(in: palette)
-            )
+            toastIcon
             VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
                 Text(toast.tone.title)
                     .font(MobiusStyle.controlFont.weight(.semibold))
@@ -143,8 +139,34 @@ private struct AppToastView: View {
         .contentShape(Rectangle())
     }
 
+    @ViewBuilder
+    private var toastIcon: some View {
+        if let bot = model.bot(forSessionID: toast.sessionID) {
+            ZStack {
+                Circle().fill(bot.tint.color.opacity(0.16))
+                MobiusIcon(
+                    .aiScan,
+                    size: MobiusStyle.glyphLead,
+                    foreground: bot.tint.color,
+                    gutter: false
+                )
+            }
+            .frame(width: MobiusStyle.controlHeight, height: MobiusStyle.controlHeight)
+            .accessibilityHidden(true)
+        } else {
+            MobiusIcon(
+                toast.tone.glyph,
+                size: MobiusStyle.glyphLead,
+                foreground: toast.tone.color(in: palette)
+            )
+        }
+    }
+
     private var accessibilityLabel: Text {
-        Text("\(toast.tone.title): \(toast.message)")
+        if let bot = model.bot(forSessionID: toast.sessionID) {
+            return Text("\(toast.tone.title), \(bot.name): \(toast.message)")
+        }
+        return Text("\(toast.tone.title): \(toast.message)")
     }
 }
 

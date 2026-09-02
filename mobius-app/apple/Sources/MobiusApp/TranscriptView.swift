@@ -459,6 +459,23 @@ private struct TranscriptRow: View {
                     speaker.speak(entry.text)
                 }
             }
+            if !entry.pending, let bot = model.bot(forSessionID: fileSessionID) {
+                HStack(spacing: MobiusSpace.xs) {
+                    Text(verbatim: "·")
+                        .accessibilityHidden(true)
+                    MobiusIcon(
+                        .aiScan,
+                        size: MobiusStyle.glyphMark,
+                        foreground: bot.tint.color,
+                        gutter: false
+                    )
+                    .accessibilityHidden(true)
+                    Text(verbatim: bot.name)
+                }
+                .font(MobiusStyle.metadataFont)
+                .foregroundStyle(palette.muted)
+                .padding(.horizontal, MobiusSpace.xs)
+            }
         }
     }
 
@@ -510,7 +527,7 @@ private struct MessageMetadata: View {
         switch delivery {
         case .steer: .workflowSquare03
         case .queue: .queue01
-        case .turn: author == .user ? .userFocus : .swarm
+        case .turn: author == .user ? .userFocus : .aiScan
         }
     }
 

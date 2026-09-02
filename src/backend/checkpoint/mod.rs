@@ -26,7 +26,7 @@ use crate::protocol::TokenUsage;
 
 pub mod sqlite;
 
-pub(crate) const CHECKPOINT_VERSION: u32 = 9;
+pub(crate) const CHECKPOINT_VERSION: u32 = 12;
 pub(crate) const MAX_QUEUED_MESSAGES: usize = 1_024;
 const TURN_PAGE_BATCH_SIZE: usize = 100;
 const MAX_QUEUED_OWNER_BYTES: usize = 256;

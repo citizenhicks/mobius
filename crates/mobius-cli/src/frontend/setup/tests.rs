@@ -449,7 +449,7 @@ fn hosted_search_is_selected_only_from_the_gateway_manifest() {
 
 #[test]
 fn agent_is_one_page_and_preserves_unedited_provider_settings() {
-    let mut state = state(SetupMode::Agent, "openai_socket", true);
+    let mut state = state(SetupMode::Bot, "openai_socket", true);
     state.original.provider.web_search = HostedWebSearch::Live;
     state.original.system_prompt = "Keep this system prompt".into();
     state.middleware.set_enabled("plain", true);
@@ -473,8 +473,41 @@ fn agent_is_one_page_and_preserves_unedited_provider_settings() {
 }
 
 #[test]
+fn bot_model_setup_updates_only_model_settings() {
+    let mut state = state(SetupMode::BotModel, "openai_socket", true);
+    let original = state.original.clone();
+    state.row = state.model_choice_count() + state.reasoning_choice_count() + 2;
+    state.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    state.row = state.models_action_start();
+
+    assert_eq!(state.page, Page::Models);
+    assert_eq!(
+        state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        Flow::Finish
+    );
+    let configured = state
+        .agent_composition(&original)
+        .expect("Bot model composition");
+
+    assert_eq!(configured.provider.web_search, HostedWebSearch::Live);
+    assert_eq!(configured.middleware, original.middleware);
+    assert_eq!(configured.extensions, original.extensions);
+}
+
+#[test]
+fn bot_model_setup_escape_closes_without_entering_provider_login() {
+    let mut state = state(SetupMode::BotModel, "openai_socket", true);
+
+    assert_eq!(
+        state.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        Flow::Cancel
+    );
+    assert_eq!(state.page, Page::Models);
+}
+
+#[test]
 fn agent_capability_children_are_collapsed_until_opened() {
-    let mut state = state(SetupMode::Agent, "openai_socket", true);
+    let mut state = state(SetupMode::Bot, "openai_socket", true);
     assert_eq!(state.middleware_row_count(), state.features.len());
     state.row = feature_row(&state, "configured");
 
@@ -490,7 +523,7 @@ fn agent_capability_children_are_collapsed_until_opened() {
 
 #[test]
 fn agent_activates_installed_children_through_their_advertised_capability() {
-    let mut state = state(SetupMode::Agent, "openai_socket", true);
+    let mut state = state(SetupMode::Bot, "openai_socket", true);
     state.available_extensions.push(extension("plain"));
     state.middleware.set_enabled("plain", false);
     state.row = feature_row(&state, "plain");
@@ -523,7 +556,7 @@ fn agent_activates_installed_children_through_their_advertised_capability() {
 
 #[test]
 fn agent_activates_untrusted_plugin_skills_without_authorizing_hooks() {
-    let mut state = state(SetupMode::Agent, "openai_socket", true);
+    let mut state = state(SetupMode::Bot, "openai_socket", true);
     let mut untrusted = extension("plain");
     untrusted.hooks.push(ExtensionHookRecord {
         event: "PreToolUse".into(),
@@ -552,7 +585,7 @@ fn agent_activates_untrusted_plugin_skills_without_authorizing_hooks() {
 
 #[test]
 fn agent_edits_an_advertised_select_without_knowing_the_middleware() {
-    let mut state = state(SetupMode::Agent, "openai_socket", true);
+    let mut state = state(SetupMode::Bot, "openai_socket", true);
     let row = setting_row(&mut state, "configured", "route");
     state.row = row;
 
@@ -570,7 +603,7 @@ fn agent_edits_an_advertised_select_without_knowing_the_middleware() {
 
 #[test]
 fn agent_edits_an_advertised_integer_without_knowing_the_middleware() {
-    let mut state = state(SetupMode::Agent, "openai_socket", true);
+    let mut state = state(SetupMode::Bot, "openai_socket", true);
     state.middleware.set_setting(
         "configured",
         "limit",
@@ -593,7 +626,7 @@ fn agent_edits_an_advertised_integer_without_knowing_the_middleware() {
 
 #[test]
 fn agent_setting_rows_style_inherited_explicit_and_focused_values() {
-    let mut inherited = state(SetupMode::Agent, "openai_socket", true);
+    let mut inherited = state(SetupMode::Bot, "openai_socket", true);
     expand_feature(&mut inherited, "configured");
     let mut inherited_lines = Vec::new();
     render_page(&mut inherited_lines, &inherited, 82);
@@ -602,7 +635,7 @@ fn agent_setting_rows_style_inherited_explicit_and_focused_values() {
         .find(|line| line.to_string().contains("Route  ‹ Inherit ›"))
         .expect("inherited route row");
 
-    let mut explicit = state(SetupMode::Agent, "openai_socket", true);
+    let mut explicit = state(SetupMode::Bot, "openai_socket", true);
     explicit.middleware.set_setting(
         "configured",
         "route",
@@ -666,12 +699,12 @@ fn agent_setting_rows_style_inherited_explicit_and_focused_values() {
 }
 
 #[test]
-fn agent_descriptions_share_a_column_and_wrap_under_it() {
+fn bot_descriptions_share_a_column_and_wrap_under_it() {
     fn column_of(line: &str, value: &str) -> Option<usize> {
         line.find(value).map(|index| display_width(&line[..index]))
     }
 
-    let mut state = state(SetupMode::Agent, "openai_socket", true);
+    let mut state = state(SetupMode::Bot, "openai_socket", true);
     expand_feature(&mut state, "configured");
     let layout = agent_layout(&state, 70);
     let column = layout.description_column.expect("wide inline layout");
@@ -691,7 +724,7 @@ fn agent_descriptions_share_a_column_and_wrap_under_it() {
         .find(|line| line.to_string().contains("An advertised integer"))
         .expect("setting row")
         .to_string();
-    let action_description = "Restart the active chat";
+    let action_description = "Apply these settings to every chat";
     let action = lines
         .iter()
         .find(|line| line.to_string().contains(action_description))
@@ -713,32 +746,32 @@ fn agent_descriptions_share_a_column_and_wrap_under_it() {
 }
 
 #[test]
-fn selected_agent_row_stays_visible_in_a_short_viewport() {
-    let mut state = state(SetupMode::Agent, "openai_socket", true);
-    state.row = state.agent_action_start() + 1;
+fn selected_bot_row_stays_visible_in_a_short_viewport() {
+    let mut state = state(SetupMode::Bot, "openai_socket", true);
+    state.row = state.agent_action_start();
     let mut terminal = Terminal::new(TestBackend::new(90, 10)).expect("terminal");
 
     terminal
         .draw(|frame| render(frame, &state))
-        .expect("agent setup draw");
+        .expect("Bot setup draw");
 
-    assert!(terminal.backend().to_string().contains("Save as default"));
+    assert!(terminal.backend().to_string().contains("Update this Bot"));
 }
 
 #[test]
-fn save_as_default_row_selects_the_default_target() {
-    let mut state = state(SetupMode::Agent, "openai_socket", true);
-    state.row = state.agent_action_start() + 1;
+fn update_bot_row_selects_the_bot_target() {
+    let mut state = state(SetupMode::Bot, "openai_socket", true);
+    state.row = state.agent_action_start();
 
     let flow = state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert_eq!(flow, Flow::Finish);
-    assert_eq!(state.target, ApplyTarget::Default);
+    assert_eq!(state.target, ApplyTarget::Bot);
 }
 
 #[test]
 fn required_features_are_visible_but_cannot_be_toggled() {
-    let mut state = state(SetupMode::Agent, "openai_socket", true);
+    let mut state = state(SetupMode::Bot, "openai_socket", true);
     state.row = feature_row(&state, "required");
 
     state.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
@@ -893,7 +926,7 @@ fn setup_rejects_active_provider_values_outside_the_manifest() {
 
 #[test]
 fn agent_reuses_authentication_without_provider_controls() {
-    let mut state = state(SetupMode::Agent, "responses", true);
+    let mut state = state(SetupMode::Bot, "responses", true);
 
     assert_eq!(state.page, Page::Agent);
     assert!(matches!(

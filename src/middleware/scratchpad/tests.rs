@@ -6,6 +6,79 @@ use crate::protocol::{
     FrontendEvent, FrontendSlot, FrontendWidgetContent, Op, internal_message_kind,
 };
 
+#[derive(Default)]
+struct TestBotsBackend {
+    scope: std::sync::Mutex<Option<String>>,
+}
+
+impl TestBotsBackend {
+    fn set_scope(&self, scope: Option<&str>) {
+        *self.scope.lock().expect("swarm scope") = scope.map(str::to_owned);
+    }
+}
+
+impl BotsBackend for TestBotsBackend {
+    fn active<'a>(&'a self, _bot_id: &'a str) -> BoxFuture<'a, Result<bool>> {
+        let active = self.scope.lock().expect("swarm scope").is_some();
+        Box::pin(async move { Ok(active) })
+    }
+
+    fn scratchpad_scope<'a>(&'a self, _bot_id: &'a str) -> BoxFuture<'a, Result<Option<String>>> {
+        let scope = self.scope.lock().expect("swarm scope").clone();
+        Box::pin(async move { Ok(scope) })
+    }
+
+    fn spawn_bot<'a>(
+        &'a self,
+        _bot_id: &'a str,
+        _name: String,
+        _description: String,
+    ) -> BoxFuture<'a, Result<String>> {
+        Box::pin(async { unreachable!() })
+    }
+
+    fn roster<'a>(&'a self, _bot_id: &'a str) -> BoxFuture<'a, Result<String>> {
+        Box::pin(async { unreachable!() })
+    }
+
+    fn read<'a>(&'a self, _bot_id: &'a str) -> BoxFuture<'a, Result<String>> {
+        Box::pin(async { unreachable!() })
+    }
+
+    fn can_reply<'a>(
+        &'a self,
+        _bot_id: &'a str,
+        _message_id: &'a str,
+    ) -> BoxFuture<'a, Result<bool>> {
+        Box::pin(async { unreachable!() })
+    }
+
+    fn post<'a>(
+        &'a self,
+        _bot_id: &'a str,
+        _source_session_id: &'a str,
+        _text: String,
+        _in_reply_to_message_id: Option<String>,
+    ) -> BoxFuture<'a, Result<String>> {
+        Box::pin(async { unreachable!() })
+    }
+}
+
+fn scratchpad(store: &ScratchpadStore) -> Scratchpad {
+    Scratchpad::new(
+        store.clone(),
+        Arc::new(TestBotsBackend::default()),
+        "test-bot",
+    )
+}
+
+fn session_context() -> crate::protocol::SessionContext {
+    crate::protocol::SessionContext {
+        bot_id: "test-bot".into(),
+        ..crate::protocol::SessionContext::default()
+    }
+}
+
 fn entry(note: impl Into<String>) -> Entry {
     Entry {
         id: Uuid::new_v4().to_string(),
@@ -75,15 +148,20 @@ async fn notes_are_session_scoped_deduplicated_and_exactly_promoted() {
     );
     assert!(
         store
-            .promote_note("session-b", "learned lesson")
+            .promote_note("session-b", None, "learned lesson", PromotionTarget::Global,)
             .await
             .is_err()
     );
-    let session = store.snapshot("session-a").await.expect("session");
+    let session = store.snapshot("session-a", None).await.expect("session");
     assert_eq!(session.session[0].basis, Basis::AgentObservation);
     assert_eq!(
         store
-            .promote_id("session-a", &session.session[0].id)
+            .promote_id(
+                "session-a",
+                None,
+                &session.session[0].id,
+                PromotionTarget::Global,
+            )
             .await
             .expect("promote"),
         WriteOutcome::Added
@@ -93,10 +171,15 @@ async fn notes_are_session_scoped_deduplicated_and_exactly_promoted() {
         .await
         .expect("write reviewed note");
     store
-        .promote_note("session-a", "reviewed lesson")
+        .promote_note(
+            "session-a",
+            None,
+            "reviewed lesson",
+            PromotionTarget::Global,
+        )
         .await
         .expect("promote reviewed note");
-    let session = store.snapshot("session-a").await.expect("session");
+    let session = store.snapshot("session-a", None).await.expect("session");
     let reviewed = session
         .session
         .iter()
@@ -104,18 +187,209 @@ async fn notes_are_session_scoped_deduplicated_and_exactly_promoted() {
         .expect("reviewed note");
     assert_eq!(
         store
-            .promote_id("session-a", &reviewed.id)
+            .promote_id("session-a", None, &reviewed.id, PromotionTarget::Global,)
             .await
             .expect("confirm reviewed note"),
         WriteOutcome::Updated
     );
 
-    let other = store.snapshot("session-b").await.expect("other session");
+    let other = store
+        .snapshot("session-b", None)
+        .await
+        .expect("other session");
     assert!(other.session.is_empty());
     assert_eq!(other.global[0].note, "learned lesson");
     assert_eq!(other.global[0].basis, Basis::UserConfirmed);
     assert!(other.global[0].created_at.parse::<u64>().is_ok());
     assert_eq!(other.global[1].basis, Basis::UserConfirmed);
+}
+
+#[tokio::test]
+async fn swarm_notes_are_shared_only_with_the_current_swarm() {
+    let (_temporary, store) = store().await;
+    let swarm_a = Uuid::new_v4().to_string();
+    let swarm_b = Uuid::new_v4().to_string();
+    store
+        .write_session("session-a", "coordinate releases")
+        .await
+        .expect("write session note");
+    let note_id = store
+        .snapshot("session-a", Some(&swarm_a))
+        .await
+        .expect("session snapshot")
+        .session[0]
+        .id
+        .clone();
+
+    assert_eq!(
+        store
+            .promote_id(
+                "session-a",
+                Some(&swarm_a),
+                &note_id,
+                PromotionTarget::Swarm,
+            )
+            .await
+            .expect("promote to swarm"),
+        WriteOutcome::Added
+    );
+
+    let same_swarm = store
+        .snapshot("session-b", Some(&swarm_a))
+        .await
+        .expect("same swarm");
+    assert_eq!(
+        same_swarm.swarm.expect("member projection")[0].note,
+        "coordinate releases"
+    );
+    assert!(same_swarm.global.is_empty());
+    let source = store
+        .snapshot("session-a", Some(&swarm_a))
+        .await
+        .expect("source session");
+    assert_eq!(source.session[0].note, "coordinate releases");
+    assert_eq!(
+        source.swarm.expect("member projection")[0].basis,
+        Basis::UserConfirmed
+    );
+    assert!(
+        store
+            .snapshot("session-c", Some(&swarm_b))
+            .await
+            .expect("other swarm")
+            .swarm
+            .expect("member projection")
+            .is_empty()
+    );
+    assert!(
+        store
+            .promote_id("session-a", None, &note_id, PromotionTarget::Swarm,)
+            .await
+            .expect_err("non-member promotion must fail")
+            .to_string()
+            .contains("not currently in a swarm")
+    );
+}
+
+#[tokio::test]
+async fn clearing_a_disbanded_swarm_removes_its_collective_notes() {
+    let (_temporary, store) = store().await;
+    let swarm_id = Uuid::new_v4().to_string();
+    store
+        .add_swarm(&swarm_id, "temporary collective context")
+        .await
+        .expect("add swarm note");
+
+    store.clear_swarm(&swarm_id).await.expect("clear swarm");
+
+    assert!(
+        store
+            .snapshot("session", Some(&swarm_id))
+            .await
+            .expect("cleared snapshot")
+            .swarm
+            .expect("swarm scope")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn swarm_scope_is_resolved_for_each_projection() {
+    let (_temporary, store) = store().await;
+    let swarm_a = Uuid::new_v4().to_string();
+    let swarm_b = Uuid::new_v4().to_string();
+    store
+        .add_swarm(&swarm_a, "alpha context")
+        .await
+        .expect("seed alpha");
+    store
+        .add_swarm(&swarm_b, "beta context")
+        .await
+        .expect("seed beta");
+    let backend = Arc::new(TestBotsBackend::default());
+    let middleware = Scratchpad::new(store, backend.clone(), "test-bot");
+
+    backend.set_scope(Some(&swarm_a));
+    assert_eq!(
+        middleware
+            .snapshot("session")
+            .await
+            .expect("alpha snapshot")
+            .swarm
+            .expect("alpha membership")[0]
+            .note,
+        "alpha context"
+    );
+    backend.set_scope(None);
+    assert_eq!(
+        middleware
+            .snapshot("session")
+            .await
+            .expect("no swarm")
+            .swarm,
+        None
+    );
+    backend.set_scope(Some(&swarm_b));
+    assert_eq!(
+        middleware
+            .snapshot("session")
+            .await
+            .expect("beta snapshot")
+            .swarm
+            .expect("beta membership")[0]
+            .note,
+        "beta context"
+    );
+}
+
+#[tokio::test]
+async fn human_management_returns_scoped_action_lists() {
+    let (_temporary, store) = store().await;
+    let swarm_id = Uuid::new_v4().to_string();
+    let contribution = store
+        .add_swarm(&swarm_id, "  initial note  ")
+        .await
+        .expect("add swarm note");
+    let Some(FrontendWidgetContent::ActionList { title, items }) = &contribution.widgets[0].content
+    else {
+        panic!("swarm contribution should be an action list");
+    };
+    assert_eq!(title, "Swarm Scratchpad");
+    assert_eq!(items[0].text, "initial note");
+    let note_id = items[0].id.clone();
+    let Op::CapabilityCommand { arguments, .. } = &items[0].actions[0].op else {
+        panic!("edit should use a capability command");
+    };
+    assert_eq!(arguments, &format!("edit swarm {note_id}"));
+
+    let contribution = store
+        .edit_swarm(&swarm_id, &note_id, "revised note")
+        .await
+        .expect("edit swarm note");
+    let Some(FrontendWidgetContent::ActionList { items, .. }) = &contribution.widgets[0].content
+    else {
+        panic!("swarm contribution should be an action list");
+    };
+    assert_eq!(items[0].text, "revised note");
+    let contribution = store
+        .forget_swarm(&swarm_id, &note_id)
+        .await
+        .expect("forget swarm note");
+    assert!(matches!(
+        &contribution.widgets[0].content,
+        Some(FrontendWidgetContent::ActionList { items, .. }) if items.is_empty()
+    ));
+
+    let global = store
+        .add_global("global note")
+        .await
+        .expect("add global note");
+    assert!(matches!(
+        &global.widgets[0].content,
+        Some(FrontendWidgetContent::ActionList { title, items })
+            if title == "Global Scratchpad" && items[0].text == "global note"
+    ));
+    assert!(store.swarm_contribution("not-a-uuid").await.is_err());
 }
 
 #[test]
@@ -152,7 +426,7 @@ async fn shared_lock_preserves_the_bounded_concurrent_whole_value_writes() {
 
     assert_eq!(
         store
-            .snapshot("session")
+            .snapshot("session", None)
             .await
             .expect("snapshot")
             .session
@@ -179,11 +453,16 @@ async fn edit_preserves_identity_confirms_provenance_and_rejects_duplicates() {
         .write_session("session", "second note")
         .await
         .expect("write second note");
-    let before = store.snapshot("session").await.expect("snapshot").session[0].clone();
+    let before = store
+        .snapshot("session", None)
+        .await
+        .expect("snapshot")
+        .session[0]
+        .clone();
 
-    let middleware = Scratchpad::new(store.clone());
+    let middleware = scratchpad(&store);
     let checkpoint = crate::backend::checkpoint::Checkpoint::empty("session");
-    let session_context = crate::protocol::SessionContext::default();
+    let session_context = session_context();
     let arguments = format!("edit session {}", before.id);
     middleware
         .command(MiddlewareCommandContext {
@@ -198,20 +477,25 @@ async fn edit_preserves_identity_confirms_provenance_and_rejects_duplicates() {
         })
         .await
         .expect("edit command");
-    let after = store.snapshot("session").await.expect("snapshot").session[0].clone();
+    let after = store
+        .snapshot("session", None)
+        .await
+        .expect("snapshot")
+        .session[0]
+        .clone();
     assert_eq!(after.id, before.id);
     assert_eq!(after.created_at, before.created_at);
     assert_eq!(after.note, "revised note");
     assert_eq!(after.basis, Basis::UserConfirmed);
     assert!(
         store
-            .edit("session", Scope::Session, &after.id, "second note")
+            .edit("session", None, Scope::Session, &after.id, "second note")
             .await
             .is_err()
     );
     assert!(
         store
-            .edit("session", Scope::Session, &after.id, "   ")
+            .edit("session", None, Scope::Session, &after.id, "   ")
             .await
             .is_err()
     );
@@ -224,10 +508,14 @@ async fn active_edit_applies_immediately_and_refreshes_widgets() {
         .write_session("session", "first note")
         .await
         .expect("write note");
-    let note_id = store.snapshot("session").await.expect("snapshot").session[0]
+    let note_id = store
+        .snapshot("session", None)
+        .await
+        .expect("snapshot")
+        .session[0]
         .id
         .clone();
-    let middleware = Scratchpad::new(store.clone());
+    let middleware = scratchpad(&store);
     let arguments = format!("edit session {note_id}");
 
     let (result, events) =
@@ -240,7 +528,12 @@ async fn active_edit_applies_immediately_and_refreshes_widgets() {
             .any(|event| matches!(event, EventMsg::Frontend(FrontendEvent::Widget { .. })))
     );
     assert_eq!(
-        store.snapshot("session").await.expect("snapshot").session[0].note,
+        store
+            .snapshot("session", None)
+            .await
+            .expect("snapshot")
+            .session[0]
+            .note,
         "revised note"
     );
 }
@@ -252,15 +545,19 @@ async fn active_promote_applies_immediately() {
         .write_session("session", "promote this")
         .await
         .expect("write note");
-    let note_id = store.snapshot("session").await.expect("snapshot").session[0]
+    let note_id = store
+        .snapshot("session", None)
+        .await
+        .expect("snapshot")
+        .session[0]
         .id
         .clone();
-    let middleware = Scratchpad::new(store.clone());
+    let middleware = scratchpad(&store);
 
     let (result, events) = active_command(
         &middleware,
         "scratchpad",
-        &format!("promote {note_id}"),
+        &format!("promote global {note_id}"),
         None,
     )
     .await;
@@ -271,7 +568,7 @@ async fn active_promote_applies_immediately() {
             .iter()
             .any(|event| matches!(event, EventMsg::Frontend(FrontendEvent::Widget { .. })))
     );
-    let snapshot = store.snapshot("session").await.expect("snapshot");
+    let snapshot = store.snapshot("session", None).await.expect("snapshot");
     assert_eq!(snapshot.global[0].note, "promote this");
     assert_eq!(snapshot.global[0].basis, Basis::UserConfirmed);
 }
@@ -279,7 +576,7 @@ async fn active_promote_applies_immediately() {
 #[tokio::test]
 async fn active_command_defers_when_scratchpad_lock_is_busy() {
     let (_temporary, store) = store().await;
-    let middleware = Scratchpad::new(store.clone());
+    let middleware = scratchpad(&store);
     let _access = store.access.lock().await;
 
     let (result, events) = tokio::time::timeout(
@@ -300,10 +597,14 @@ async fn disabled_agent_keeps_read_only_surfaces_without_prompt_or_tools() {
         .write_session("session", "historical note")
         .await
         .expect("seed note");
-    let note_id = store.snapshot("session").await.expect("snapshot").session[0]
+    let note_id = store
+        .snapshot("session", None)
+        .await
+        .expect("snapshot")
+        .session[0]
         .id
         .clone();
-    let middleware = Scratchpad::new(store.clone()).agent_enabled(false);
+    let middleware = scratchpad(&store).agent_enabled(false);
     let frontend_events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let captured_events = Arc::clone(&frontend_events);
     let runtime = RuntimeContext {
@@ -313,7 +614,7 @@ async fn disabled_agent_keeps_read_only_surfaces_without_prompt_or_tools() {
         model_route: "model".into(),
         model: "model".into(),
         approval_policy: crate::backend::sandbox::ApprovalPolicy::Ask,
-        session_context: crate::protocol::SessionContext::default(),
+        session_context: session_context(),
         metadata: Default::default(),
         role: crate::agent::AgentRole::Main,
         frontend: Arc::new(move |event| {
@@ -363,7 +664,7 @@ async fn disabled_agent_keeps_read_only_surfaces_without_prompt_or_tools() {
     );
 
     let checkpoint = crate::backend::checkpoint::Checkpoint::empty("session");
-    let session_context = crate::protocol::SessionContext::default();
+    let session_context = session_context();
     let stack = crate::middleware::MiddlewareStack::new(vec![Arc::new(middleware)])
         .expect("scratchpad middleware stack");
     assert_eq!(
@@ -410,7 +711,12 @@ async fn disabled_agent_keeps_read_only_surfaces_without_prompt_or_tools() {
         "tool error: scratchpad is disabled for this chat"
     );
     assert_eq!(
-        store.snapshot("session").await.expect("retained").session[0].note,
+        store
+            .snapshot("session", None)
+            .await
+            .expect("retained")
+            .session[0]
+            .note,
         "historical note"
     );
 }
@@ -423,7 +729,7 @@ fn runtime(store: &ScratchpadStore, session_id: &str) -> RuntimeContext {
         model_route: "model".into(),
         model: "model".into(),
         approval_policy: crate::backend::sandbox::ApprovalPolicy::Ask,
-        session_context: crate::protocol::SessionContext::default(),
+        session_context: session_context(),
         metadata: Default::default(),
         role: crate::agent::AgentRole::Main,
         frontend: frontend_sink(),
@@ -437,7 +743,7 @@ async fn new_session_seeds_one_bounded_baseline_projection() {
         .write_session("session", "remember this")
         .await
         .expect("write note");
-    let middleware = Scratchpad::new(store.clone());
+    let middleware = scratchpad(&store);
     let runtime = runtime(&store, "session");
     let mut seeded = Vec::new();
     let mut start = crate::middleware::SessionStartContext {
@@ -465,7 +771,7 @@ async fn new_session_seeds_one_bounded_baseline_projection() {
     assert_eq!(
         serde_json::from_value::<Snapshot>(seeded[0][PROJECTION_FIELD].clone())
             .expect("projection"),
-        store.snapshot("session").await.expect("snapshot")
+        store.snapshot("session", None).await.expect("snapshot")
     );
 }
 
@@ -476,9 +782,9 @@ async fn startup_keeps_one_inherited_baseline_projection() {
         .write_session("session", "remember this")
         .await
         .expect("write note");
-    let snapshot = store.snapshot("session").await.expect("snapshot");
+    let snapshot = store.snapshot("session", None).await.expect("snapshot");
     let inherited = scratchpad_message(&snapshot).expect("baseline");
-    let middleware = Scratchpad::new(store.clone());
+    let middleware = scratchpad(&store);
     let runtime = runtime(&store, "session");
     let mut input = vec![inherited.clone()];
     let mut start = crate::middleware::SessionStartContext {
@@ -502,6 +808,7 @@ async fn startup_keeps_one_inherited_baseline_projection() {
 fn unchanged_projection_is_a_no_op() {
     let snapshot = Snapshot {
         session: vec![entry("same")],
+        swarm: None,
         global: Vec::new(),
     };
     let input = vec![scratchpad_message(&snapshot).expect("baseline")];
@@ -517,6 +824,7 @@ fn unchanged_projection_is_a_no_op() {
 fn disabled_scratchpad_removes_durable_projection_items() {
     let snapshot = Snapshot {
         session: vec![entry("private note")],
+        swarm: None,
         global: Vec::new(),
     };
     let user = crate::backend::model::user_message("hello");
@@ -534,6 +842,7 @@ fn disabled_scratchpad_removes_durable_projection_items() {
 fn changed_projection_appends_a_bounded_delta_without_replacing_context() {
     let previous = Snapshot {
         session: vec![entry("old")],
+        swarm: None,
         global: Vec::new(),
     };
     let mut current = previous.clone();
@@ -569,12 +878,49 @@ fn changed_projection_appends_a_bounded_delta_without_replacing_context() {
 }
 
 #[test]
+fn swarm_projection_is_injected_and_hard_rejects_the_old_shape() {
+    let previous = Snapshot {
+        session: Vec::new(),
+        swarm: Some(vec![entry("shared context")]),
+        global: Vec::new(),
+    };
+    let baseline = scratchpad_message(&previous).expect("swarm baseline");
+    assert!(
+        baseline["content"][0]["text"]
+            .as_str()
+            .expect("baseline text")
+            .contains("Swarm (newest first):")
+    );
+    let mut current = previous.clone();
+    current
+        .swarm
+        .as_mut()
+        .expect("swarm projection")
+        .push(entry("new shared context"));
+    let delta = next_projection(&[baseline], &current)
+        .expect("compare projection")
+        .expect("swarm delta");
+    let text = delta["content"][0]["text"].as_str().expect("delta text");
+    assert!(text.contains("Swarm:\n"));
+    assert!(text.contains("new shared context"));
+    assert!(
+        serde_json::from_value::<Snapshot>(serde_json::json!({
+            "session": [],
+            "global": []
+        }))
+        .is_err(),
+        "the pre-Swarm projection shape must not be accepted"
+    );
+}
+
+#[test]
 fn surfaces_are_scope_specific_action_lists_without_subtext() {
     let session = entry("Prefer focused tests");
     let mut global = entry("Use generic UI records");
     global.basis = Basis::UserConfirmed;
     let snapshot = Snapshot {
         session: vec![session],
+        swarm: None,
         global: vec![global],
     };
     let widgets = surface_widgets(&snapshot);
@@ -606,17 +952,59 @@ fn surfaces_are_scope_specific_action_lists_without_subtext() {
             .iter()
             .map(|action| action.label.as_str())
             .collect::<Vec<_>>(),
-        ["Promote", "Edit", "Delete"]
+        ["Promote Globally", "Edit", "Delete"]
     );
     let Op::CapabilityCommand { input, .. } = &items[0].actions[1].op else {
         panic!("edit should submit a capability command");
     };
     assert_eq!(input.as_deref(), Some("Prefer focused tests"));
     assert_eq!(
-        action_list_item(Scope::Session, &entry("Already global"), true)
+        action_list_item(Scope::Session, &entry("Already global"), true, None)
             .actions
             .into_iter()
             .map(|action| action.label)
+            .collect::<Vec<_>>(),
+        ["Edit", "Delete"]
+    );
+
+    let shared = entry("Share release context");
+    let widgets = surface_widgets(&Snapshot {
+        session: vec![shared.clone()],
+        swarm: Some(Vec::new()),
+        global: Vec::new(),
+    });
+    let Some(FrontendWidgetContent::ActionList { items, .. }) = &widgets[1].content else {
+        panic!("chat menu should render an action list");
+    };
+    assert_eq!(
+        items[0]
+            .actions
+            .iter()
+            .map(|action| action.label.as_str())
+            .collect::<Vec<_>>(),
+        ["Promote Globally", "Promote to Swarm", "Edit", "Delete"]
+    );
+    assert_ne!(items[0].actions[0].id, items[0].actions[1].id);
+    let Op::CapabilityCommand { arguments, .. } = &items[0].actions[1].op else {
+        panic!("Swarm promotion should submit a capability command");
+    };
+    assert_eq!(arguments, &format!("promote swarm {}", shared.id));
+
+    let mut confirmed = shared.clone();
+    confirmed.basis = Basis::UserConfirmed;
+    let widgets = surface_widgets(&Snapshot {
+        session: vec![shared],
+        swarm: Some(vec![confirmed.clone()]),
+        global: vec![confirmed],
+    });
+    let Some(FrontendWidgetContent::ActionList { items, .. }) = &widgets[1].content else {
+        panic!("chat menu should render an action list");
+    };
+    assert_eq!(
+        items[0]
+            .actions
+            .iter()
+            .map(|action| action.label.as_str())
             .collect::<Vec<_>>(),
         ["Edit", "Delete"]
     );
@@ -632,7 +1020,7 @@ fn surfaces_are_scope_specific_action_lists_without_subtext() {
 #[tokio::test]
 async fn frontend_is_semantic_and_only_promotion_requires_approval() {
     let (_temporary, store) = store().await;
-    let middleware = Scratchpad::new(store.clone());
+    let middleware = scratchpad(&store);
     let contribution = middleware.frontend();
 
     assert_eq!(contribution.widgets[0].slot, FrontendSlot::Navigation);
@@ -647,19 +1035,32 @@ async fn frontend_is_semantic_and_only_promotion_requires_approval() {
     assert_eq!(
         WriteScratchpad {
             store: store.clone(),
+            swarm: SwarmScope {
+                backend: Arc::new(TestBotsBackend::default()),
+                bot_id: "test-bot".into(),
+            },
             session_id: "session".into(),
             frontend: frontend_sink(),
         }
         .approval(),
         ApprovalRequirement::Never
     );
+    let promote = PromoteScratchpad {
+        store,
+        swarm: SwarmScope {
+            backend: Arc::new(TestBotsBackend::default()),
+            bot_id: "test-bot".into(),
+        },
+        session_id: "session".into(),
+        frontend: frontend_sink(),
+    };
+    assert_eq!(promote.approval(), ApprovalRequirement::Always);
     assert_eq!(
-        PromoteScratchpad {
-            store,
-            session_id: "session".into(),
-            frontend: frontend_sink(),
-        }
-        .approval(),
-        ApprovalRequirement::Always
+        promote.definition().parameters["properties"]["target"]["enum"],
+        serde_json::json!(["global", "swarm"])
+    );
+    assert_eq!(
+        promote.definition().parameters["required"],
+        serde_json::json!(["note", "target"])
     );
 }

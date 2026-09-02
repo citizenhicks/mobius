@@ -74,11 +74,6 @@ pub(super) async fn register_provider_with_credential(
     } else {
         Vec::new()
     };
-    let replace_existing_selections = existing.as_ref().is_some_and(|configured| {
-        configured.selection != selection
-            || configured.model_ids != model_ids
-            || configured.reasoning_efforts != options.reasoning_efforts
-    });
     let registration = ConfiguredProvider {
         selection: selection.clone(),
         label,
@@ -86,8 +81,7 @@ pub(super) async fn register_provider_with_credential(
         model_ids,
         reasoning_efforts: options.reasoning_efforts,
     };
-    request_provider_registration(&endpoint, &token, registration, replace_existing_selections)
-        .await?;
+    request_provider_registration(&endpoint, &token, registration).await?;
     println!("{}", register_provider_json(&selection.provider)?);
     Ok(())
 }
@@ -171,7 +165,6 @@ async fn request_provider_registration(
     endpoint: &Endpoint,
     token: &str,
     registration: ConfiguredProvider,
-    replace_existing_selections: bool,
 ) -> Result<()> {
     let client = GatewayClient::connect(endpoint, token, ClientKind::GatewayDashboard).await?;
     let (sender, mut events) = client.into_parts();
@@ -184,7 +177,6 @@ async fn request_provider_registration(
             tint: registration.tint,
             model_ids: registration.model_ids,
             reasoning_efforts: registration.reasoning_efforts,
-            replace_existing_selections,
         })
         .await?;
     for _ in 0..MAX_PENDING_FRAMES {

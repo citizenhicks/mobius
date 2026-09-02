@@ -810,6 +810,7 @@ extension AppModel {
     func cacheChatCatalog(lastSessionID: String? = nil) {
         guard !isClearingLocalData, let accountID = selectedAccountID else { return }
         let catalog = CachedChatCatalog(
+            bots: bots,
             sessions: sessions,
             swarms: swarms,
             lastSessionID: lastSessionID ?? selectedSessionID

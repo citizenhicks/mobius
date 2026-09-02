@@ -103,8 +103,8 @@ private struct ComposerSettingMenu: View {
     }
 
     private var selectedValue: String? {
-        guard let configured = model.agentDraft?
-            .middleware.settings[item.feature.id]?[item.setting.id],
+        guard let configured = model.selectedBot?.config.config.middleware
+            .settings[item.feature.id]?[item.setting.id],
               case .string(let value) = configured
         else { return nil }
         return value
@@ -123,13 +123,10 @@ private struct ComposerSettingMenu: View {
     }
 
     private var isEnabled: Bool {
-        model.connectionState.isReady
-            && model.selectedSessionID != nil
-            && model.activeTurnID == nil
-            && !model.isApplyingConfiguration
-            && model.agentDraft != nil
+        model.canMutateSelectedBot
             && (item.feature.required
-                || model.agentDraft?.middleware.enabled.contains(item.feature.id) == true)
+                || model.selectedBot?.config.config.middleware.enabled.contains(item.feature.id)
+                    == true)
     }
 
     private var destructiveConfirmationPresented: Binding<Bool> {
@@ -142,7 +139,7 @@ private struct ComposerSettingMenu: View {
 
     private func apply(_ value: String?) {
         pendingDestructiveOption = nil
-        model.setAgentSettingForCurrentChat(
+        model.setSelectedBotSetting(
             value.map(FrontendSettingValue.string),
             middleware: item.feature.id,
             setting: item.setting.id
@@ -243,11 +240,12 @@ struct ComposerOptionsView: View {
                 glyphSize: MobiusStyle.glyphLead,
                 glyphColor: providerTint?.color
             )
-                .frame(minHeight: MobiusStyle.iconButtonSize)
-                .contentShape(Rectangle())
+            .frame(minHeight: MobiusStyle.iconButtonSize)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.mobiusPlain)
-        .sensoryFeedback(.selection, trigger: model.selectedModelRoute)
+        .sensoryFeedback(.selection, trigger: selectedBotModelRoute)
+        .disabled(!model.canMutateSelectedBot)
         .accessibilityLabel("Model and reasoning")
         .accessibilityValue(modelLabel.text)
     }
@@ -337,8 +335,6 @@ struct ComposerOptionsView: View {
                         }
                     }
                 }
-                    // `sendMessage()` also needs a session: a gateway with no chats left the
-                    // button enabled and the tap silent.
                     .disabled(!canSend)
                     .help(Text(sendLabel))
                     .accessibilityLabel(Text(sendLabel))
@@ -386,8 +382,13 @@ struct ComposerOptionsView: View {
         for url in urls { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
     }
 
+    private var selectedBotModelRoute: String? {
+        model.modelRoute(for: model.selectedBot?.config.config)
+    }
+
     private var currentChoice: ModelChoice? {
-        model.modelChoices.first { $0.route == model.selectedModelRoute }
+        guard let selectedBotModelRoute else { return nil }
+        return model.modelChoices.first { $0.route == selectedBotModelRoute }
     }
 
     private var modelPickerSelection: Binding<String> {
@@ -401,15 +402,15 @@ struct ComposerOptionsView: View {
             let target = model.modelChoices.first {
                 model.sameModel($0, choice) && $0.reasoningEffort == effort
             } ?? choice
-            model.selectModel(target.route)
+            model.selectModelForSelectedBot(target.route)
         }
     }
 
     private var reasoningPickerSelection: Binding<String> {
         Binding {
-            model.selectedModelRoute
+            selectedBotModelRoute ?? ""
         } set: { route in
-            model.selectModel(route)
+            model.selectModelForSelectedBot(route)
         }
     }
 
@@ -469,7 +470,6 @@ struct ComposerOptionsView: View {
         guard model.connectionState.isReady,
               model.canSendComposer,
               !model.composerHasUnfinishedAttachments,
-              model.selectedSessionID != nil,
               model.activeTurnID == nil || model.composerAttachments.isEmpty
         else { return false }
         return !dictation.isActive

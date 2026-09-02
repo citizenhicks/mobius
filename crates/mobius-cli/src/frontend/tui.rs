@@ -11,6 +11,7 @@ mod shimmer;
 mod view;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::path::PathBuf;
 use std::time::Instant;
 
 use ratatui::text::Line;
@@ -33,7 +34,6 @@ use mobius::protocol::FrontendBlockUpdate;
 use mobius::protocol::FrontendPickerOption;
 use mobius::protocol::FrontendTone;
 use mobius::protocol::FrontendWidget;
-use mobius::protocol::ModelChoice;
 use mobius::protocol::ModelInfo;
 use mobius::protocol::ModelStepContentPhase;
 use mobius::protocol::Op;
@@ -120,9 +120,39 @@ impl StreamedStepPhases {
     }
 }
 
+#[derive(Clone)]
+enum PickerAction {
+    Submit(Op),
+    CreateSession {
+        workspace: PathBuf,
+        bot_id: String,
+        clear: bool,
+    },
+}
+
+struct PickerOption {
+    label: String,
+    description: String,
+    detail: String,
+    shows_detail: bool,
+    action: PickerAction,
+}
+
+impl From<FrontendPickerOption> for PickerOption {
+    fn from(option: FrontendPickerOption) -> Self {
+        Self {
+            label: option.label,
+            description: option.description,
+            detail: option.detail,
+            shows_detail: option.shows_detail,
+            action: PickerAction::Submit(option.op),
+        }
+    }
+}
+
 struct PickerState {
     title: String,
-    options: Vec<FrontendPickerOption>,
+    options: Vec<PickerOption>,
     selected: usize,
 }
 
@@ -299,7 +329,6 @@ struct TuiState {
     cwd: String,
     model: ModelInfo,
     model_route: String,
-    model_choices: Vec<ModelChoice>,
     agent_summary: String,
     disconnected: bool,
     slash_selection: usize,
@@ -350,7 +379,6 @@ impl TuiState {
             cwd: terminal_text(&cwd.display().to_string()),
             model,
             model_route,
-            model_choices: catalog.model_choices().to_vec(),
             agent_summary,
             disconnected: false,
             slash_selection: 0,

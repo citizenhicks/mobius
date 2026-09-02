@@ -8,6 +8,7 @@ extension AppModelTests {
         let model = try model { request in await recorder.record(request) }
         model.applyGatewayCatalog(ReadyPayload(
             machineName: "snowwhite.local",
+            bots: [],
             sessions: [],
             swarms: [],
             providers: [ProviderStatus(
@@ -37,7 +38,7 @@ extension AppModelTests {
                 customEndpointToolDiscovery: nil
             )],
             providerInstances: [],
-            defaultConfig: nil,
+            botDefaults: nil,
             models: [],
             modelProviders: [:],
             middlewareFeatures: [],
@@ -81,10 +82,10 @@ extension AppModelTests {
         XCTAssertTrue(modelIDs.isEmpty)
         XCTAssertTrue(reasoningEfforts.isEmpty)
 
-        let defaultConfig = VersionedAgentConfig(revision: 1, config: composition())
-        model.applyGatewayCatalog(ready(defaultConfig: defaultConfig))
+        let botDefaults = VersionedAgentConfig(revision: 1, config: composition())
+        model.applyGatewayCatalog(ready(botDefaults: botDefaults))
         XCTAssertNil(model.agentDraft)
-        XCTAssertEqual(model.defaultAgentDraft, defaultConfig.config)
+        XCTAssertEqual(model.botDefaultsDraft, botDefaults.config)
     }
 
     func testProviderCredentialResponseMustMatchSubmittedTarget() async throws {
@@ -226,11 +227,12 @@ extension AppModelTests {
             requestID: retryRequestID,
             payload: ReadyPayload(
                 machineName: "snowwhite.local",
+                bots: [],
                 sessions: [],
                 swarms: [],
                 providers: [providerStatus(for: selection)],
                 providerInstances: [],
-                defaultConfig: nil,
+                botDefaults: nil,
                 models: [],
                 modelProviders: [:],
                 middlewareFeatures: [],
@@ -251,7 +253,7 @@ extension AppModelTests {
 
     func testProviderSelectionUsesGatewayManifestDefaults() throws {
         let model = try model()
-        model.defaultAgentDraft = AgentComposition(
+        model.botDefaultsDraft = AgentComposition(
             provider: ProviderConfig(
                 provider: "old",
                 model: "old-model",
@@ -424,10 +426,9 @@ extension AppModelTests {
             toolDiscovery: .rebuild
         )
         let original = composition()
-        model.agentSnapshot = VersionedAgentConfig(revision: 1, config: original)
-        model.defaultAgentSnapshot = VersionedAgentConfig(revision: 1, config: original)
-        model.agentDraft = original
-        model.defaultAgentDraft = original
+        model.botDefaultsSnapshot = VersionedAgentConfig(revision: 1, config: original)
+        model.botDraft = original
+        model.botDefaultsDraft = original
         model.modelChoices = [choice]
         model.modelProviders = [choice.route: target.instance]
         model.providerStatuses = [providerStatus(for: target)]
@@ -440,19 +441,19 @@ extension AppModelTests {
             reasoningEfforts: []
         )]
 
-        model.selectAgentDraftModel(choice.route)
+        model.selectBotDraftModel(choice.route)
 
-        XCTAssertEqual(model.agentDraft?.provider, target)
-        XCTAssertEqual(model.agentDraftModelRoute, choice.route)
-        XCTAssertEqual(model.defaultAgentDraft, original)
-        XCTAssertNotEqual(model.agentDraft, model.agentSnapshot?.config)
+        XCTAssertEqual(model.botDraft?.provider, target)
+        XCTAssertEqual(model.botDraftModelRoute, choice.route)
+        XCTAssertEqual(model.botDefaultsDraft, original)
+        XCTAssertNotEqual(model.botDraft, original)
 
-        model.agentDraft = original
-        model.selectDefaultAgentDraftModel(choice.route)
+        model.botDraft = original
+        model.selectBotDefaultsDraftModel(choice.route)
 
-        XCTAssertEqual(model.defaultAgentDraft?.provider, target)
-        XCTAssertEqual(model.defaultAgentDraftModelRoute, choice.route)
-        XCTAssertEqual(model.agentDraft, original)
+        XCTAssertEqual(model.botDefaultsDraft?.provider, target)
+        XCTAssertEqual(model.botDefaultsDraftModelRoute, choice.route)
+        XCTAssertEqual(model.botDraft, original)
     }
 
     func testModelChoicesKeepSiblingProviderInstancesSeparate() throws {
@@ -520,8 +521,8 @@ extension AppModelTests {
 
         var draft = composition()
         draft.provider = personal
-        model.defaultAgentDraft = draft
-        XCTAssertEqual(model.defaultAgentDraftModelRoute, "personal-medium")
+        model.botDefaultsDraft = draft
+        XCTAssertEqual(model.botDefaultsDraftModelRoute, "personal-medium")
     }
 
     func testModelLabelUsesProviderFriendlyName() throws {
@@ -652,7 +653,7 @@ extension AppModelTests {
         XCTAssertNil(middleware.settings["example"])
     }
 
-    func testGatewayDefaultRefreshDoesNotOverwriteActiveAgentDraft() throws {
+    func testBotDefaultsRefreshDoesNotOverwriteActiveAgentDraft() throws {
         let model = try model()
         let active = AgentComposition(
             provider: ProviderConfig(
@@ -674,20 +675,21 @@ extension AppModelTests {
         )
         var edited = active
         edited.systemPrompt = "Unsaved active edit"
-        var gatewayDefault = active
-        gatewayDefault.systemPrompt = "New chat default"
+        var botDefaults = active
+        botDefaults.systemPrompt = "New Bot defaults"
         model.agentSnapshot = VersionedAgentConfig(revision: 3, config: active)
         model.agentDraft = edited
-        model.defaultAgentSnapshot = VersionedAgentConfig(revision: 7, config: active)
-        model.defaultAgentDraft = active
+        model.botDefaultsSnapshot = VersionedAgentConfig(revision: 7, config: active)
+        model.botDefaultsDraft = active
 
         model.applyGatewayCatalog(ReadyPayload(
             machineName: "snowwhite.local",
+            bots: [],
             sessions: [],
             swarms: [],
             providers: [],
             providerInstances: [],
-            defaultConfig: VersionedAgentConfig(revision: 8, config: gatewayDefault),
+            botDefaults: VersionedAgentConfig(revision: 8, config: botDefaults),
             models: [],
             modelProviders: [:],
             middlewareFeatures: [],
@@ -699,127 +701,316 @@ extension AppModelTests {
 
         XCTAssertEqual(model.agentSnapshot, VersionedAgentConfig(revision: 3, config: active))
         XCTAssertEqual(model.agentDraft, edited)
-        XCTAssertEqual(model.defaultAgentDraft, gatewayDefault)
+        XCTAssertEqual(model.botDefaultsDraft, botDefaults)
         XCTAssertEqual(
-            model.defaultAgentSnapshot,
-            VersionedAgentConfig(revision: 8, config: gatewayDefault)
+            model.botDefaultsSnapshot,
+            VersionedAgentConfig(revision: 8, config: botDefaults)
         )
     }
 
-    func testClearingCurrentChatPreservesGatewayDefaultSettings() throws {
+    func testClearingCurrentChatPreservesBotDefaultsSettings() throws {
         let model = try model()
         let active = composition(systemPrompt: "Active chat")
-        let gatewayDefault = composition(systemPrompt: "New chats")
+        let botDefaults = composition(systemPrompt: "New chats")
         model.connectionState = .ready
         model.selectedSessionID = "chat-1"
         model.sessions = [session(state: .idle)]
         model.agentSnapshot = VersionedAgentConfig(revision: 3, config: active)
         model.agentDraft = active
-        model.chatAgentApplyState = .failed("Chat failure")
-        model.defaultAgentSnapshot = VersionedAgentConfig(revision: 8, config: gatewayDefault)
-        model.defaultAgentDraft = gatewayDefault
-        model.defaultAgentApplyState = .failed("Default failure")
+        model.botDefaultsSnapshot = VersionedAgentConfig(revision: 8, config: botDefaults)
+        model.botDefaultsDraft = botDefaults
+        model.botDefaultsApplyState = .failed("Bot defaults failure")
 
         model.applySessions([])
 
         XCTAssertNil(model.selectedSessionID)
         XCTAssertNil(model.agentSnapshot)
         XCTAssertNil(model.agentDraft)
-        XCTAssertEqual(model.chatAgentApplyState, .idle)
         XCTAssertEqual(
-            model.defaultAgentSnapshot,
-            VersionedAgentConfig(revision: 8, config: gatewayDefault)
+            model.botDefaultsSnapshot,
+            VersionedAgentConfig(revision: 8, config: botDefaults)
         )
-        XCTAssertEqual(model.defaultAgentDraft, gatewayDefault)
-        XCTAssertEqual(model.defaultAgentApplyState, .failed("Default failure"))
+        XCTAssertEqual(model.botDefaultsDraft, botDefaults)
+        XCTAssertEqual(model.botDefaultsApplyState, .failed("Bot defaults failure"))
     }
 
-    func testComposerSettingConfiguresTheActiveChatWithoutCapabilityLogic() async throws {
+    func testSavingBotDraftUsesBotIdentityRevisionAndConfiguration() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
-        var active = composition()
-        active.middleware.setSetting(
+        var edited = composition()
+        edited.middleware.setSetting(
             .string("safe"),
             middleware: "example",
             setting: "access"
         )
-        model.selectedSessionID = "chat-1"
-        model.agentSnapshot = VersionedAgentConfig(revision: 3, config: active)
-        model.agentDraft = active
+        let helper = bot(config: VersionedAgentConfig(revision: 3, config: composition()))
+        model.connectionState = .ready
+        model.bots = [helper]
+        model.beginEditingBot(helper)
+        model.botNameDraft = "Durable Helper"
+        model.botDescriptionDraft = "Reviews durable changes."
+        model.botTintDraft = .purple
+        model.botDraft = edited
 
-        model.setAgentSettingForCurrentChat(
-            .string("broader"),
-            middleware: "example",
-            setting: "access"
-        )
-        try await Task.sleep(for: .milliseconds(20))
-
-        let requests = await recorder.requests()
-        let request = try XCTUnwrap(requests.first)
-        guard case .configureSession(_, _, let expectedRevision, let config) = request else {
-            return XCTFail("Expected composer setting to configure the active chat")
+        model.saveBotDraft()
+        let request = await recorder.firstRequest(after: 0) {
+            if case .updateBot = $0 { return true }
+            return false
         }
+        guard case .updateBot(
+            let requestID,
+            let id,
+            let expectedRevision,
+            let name,
+            let description,
+            let tint,
+            let config
+        ) = try XCTUnwrap(request) else {
+            return XCTFail("Expected the Bot draft to be saved")
+        }
+        XCTAssertEqual(id, "bot-1")
         XCTAssertEqual(expectedRevision, 3)
+        XCTAssertEqual(name, "Durable Helper")
+        XCTAssertEqual(description, "Reviews durable changes.")
+        XCTAssertEqual(tint, .purple)
         XCTAssertEqual(
             config.middleware.settings["example"]?["access"],
-            .string("broader")
+            .string("safe")
+        )
+        XCTAssertEqual(model.botMutationRequestID, requestID)
+        XCTAssertEqual(model.botApplyState, .applying)
+    }
+
+    func testBotDraftSaveKeepsTheRevisionCapturedWhenEditingBegan() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model { request in await recorder.record(request) }
+        let original = bot(config: VersionedAgentConfig(revision: 3, config: composition()))
+        model.connectionState = .ready
+        model.bots = [original]
+        model.beginEditingBot(original)
+        model.botNameDraft = "Locally edited"
+
+        let external = bot(
+            name: "Externally edited",
+            config: VersionedAgentConfig(revision: 8, config: composition())
+        )
+        model.handle(.bots(requestID: nil, bots: [external]))
+        model.saveBotDraft()
+
+        let request = await recorder.firstRequest(after: 0) {
+            if case .updateBot = $0 { return true }
+            return false
+        }
+        guard case .updateBot(_, _, let expectedRevision, _, _, _, _) = try XCTUnwrap(request)
+        else { return XCTFail("Expected a Bot update") }
+        XCTAssertEqual(expectedRevision, 3)
+    }
+
+    func testBotDraftCannotSaveWhileAnotherChatForTheBotIsRunning() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model { request in await recorder.record(request) }
+        let helper = bot()
+        model.connectionState = .ready
+        model.bots = [helper]
+        model.sessions = [
+            session(sessionID: "chat-1", state: .idle, botID: helper.id),
+            session(sessionID: "chat-2", state: .running, botID: helper.id),
+        ]
+        model.selectedSessionID = "chat-1"
+        model.beginEditingBot(helper)
+        model.botNameDraft = "Blocked edit"
+
+        XCTAssertFalse(model.canMutateSelectedBot)
+        model.saveBotDraft()
+        let requestCount = await recorder.requestCount()
+        XCTAssertEqual(requestCount, 0)
+    }
+
+    func testBotMutationRejectionsUseConfigurationApplyStates() throws {
+        let cases: [(String, ApplyState)] = [
+            ("revision_conflict", .conflict("Rejected")),
+            ("agent_busy", .busy("Rejected")),
+            ("invalid_config", .invalid("Rejected")),
+        ]
+        for (code, expected) in cases {
+            let model = try model()
+            model.botMutationRequestID = "bot-update"
+            model.botApplyState = .applying
+
+            model.handle(.rejected(GatewayRejection(
+                requestId: "bot-update",
+                code: code,
+                message: "Rejected",
+                fatal: false
+            )))
+
+            XCTAssertEqual(model.botApplyState, expected)
+        }
+    }
+
+    func testComposerSettingUpdatesTheSelectedBotProfile() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model { request in await recorder.record(request) }
+        let helper = bot(config: VersionedAgentConfig(revision: 7, config: composition()))
+        model.connectionState = .ready
+        model.bots = [helper]
+        model.sessions = [session(state: .idle)]
+        model.selectedSessionID = "chat-1"
+
+        model.setSelectedBotSetting(
+            .string("full_access"),
+            middleware: "sandbox",
+            setting: "approval_policy"
+        )
+
+        let request = await recorder.firstRequest(after: 0) {
+            if case .updateBot = $0 { return true }
+            return false
+        }
+        guard case .updateBot(
+            _,
+            let id,
+            let expectedRevision,
+            let name,
+            let description,
+            let tint,
+            let config
+        ) = try XCTUnwrap(request) else {
+            return XCTFail("Expected a durable Bot update")
+        }
+        XCTAssertEqual(id, helper.id)
+        XCTAssertEqual(expectedRevision, 7)
+        XCTAssertEqual(name, helper.name)
+        XCTAssertEqual(description, helper.description)
+        XCTAssertEqual(tint, helper.tint)
+        XCTAssertEqual(
+            config.middleware.settings["sandbox"]?["approval_policy"],
+            .string("full_access")
         )
     }
 
-    func testAcceptedConfigurationReenablesComposerSettings() async throws {
-        let recorder = GatewayRequestRecorder()
-        let model = try model { request in await recorder.record(request) }
-        var active = composition()
-        active.middleware.setSetting(
-            .string("queue"),
-            middleware: "messages",
-            setting: "delivery"
-        )
+    func testBotCatalogResponseCompletesSaveAndRefreshesDraft() throws {
+        let model = try model()
+        let original = bot(config: VersionedAgentConfig(revision: 4, config: composition()))
         model.connectionState = .ready
+        model.bots = [original]
+        model.sessions = [session(state: .idle)]
         model.selectedSessionID = "chat-1"
-        model.agentSnapshot = VersionedAgentConfig(revision: 4, config: active)
-        model.agentDraft = active
-        model.chatAgentApplyState = .applying
-        model.configRequestID = "configure-1"
+        model.agentSnapshot = original.config
+        model.agentDraft = original.config.config
+        model.beginEditingBot(original)
+        model.botMutationRequestID = "bot-update-1"
+        model.botApplyState = .applying
 
-        model.handle(.accepted(requestID: "configure-1"))
-        XCTAssertEqual(model.chatAgentApplyState, .applied)
-        XCTAssertFalse(model.isApplyingConfiguration)
-
-        model.setAgentSettingForCurrentChat(
+        var savedConfig = composition(systemPrompt: "Durable Bot")
+        savedConfig.middleware.setSetting(
             .string("allow"),
             middleware: "sandbox",
             setting: "approval_policy"
         )
-        let request = await recorder.firstRequest(after: 0) {
-            if case .configureSession = $0 { return true }
-            return false
-        }
-        guard case .configureSession(_, _, let revision, let approved) = try XCTUnwrap(request) else {
-            return XCTFail("Expected workspace approval to remain configurable")
-        }
-        XCTAssertEqual(revision, 4)
-        XCTAssertEqual(
-            approved.middleware.settings["sandbox"]?["approval_policy"],
-            .string("allow")
+        let saved = bot(
+            name: "Durable Helper",
+            description: "Reviews durable changes.",
+            tint: .purple,
+            config: VersionedAgentConfig(revision: 5, config: savedConfig)
         )
+        model.handle(.bots(requestID: "bot-update-1", bots: [saved]))
+
+        XCTAssertNil(model.botMutationRequestID)
+        XCTAssertEqual(model.botApplyState, .applied)
+        XCTAssertFalse(model.isApplyingConfiguration)
+        XCTAssertEqual(model.botNameDraft, "Durable Helper")
+        XCTAssertEqual(model.botDescriptionDraft, "Reviews durable changes.")
+        XCTAssertEqual(model.botTintDraft, .purple)
+        XCTAssertEqual(model.botDraft, savedConfig)
+        XCTAssertEqual(model.agentSnapshot, saved.config)
+        XCTAssertEqual(model.agentDraft, savedConfig)
     }
 
-    func testProviderRegistrationDoesNotConfigureDefaultAgent() async throws {
+    func testSeededMobiusBotCannotBeDeleted() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model { request in await recorder.record(request) }
+        let mobius = bot(handle: "mobius", name: "Mobius")
+        model.connectionState = .ready
+        model.bots = [mobius]
+
+        model.deleteBot(mobius)
+        try await Task.sleep(for: .milliseconds(20))
+
+        let requests = await recorder.requests()
+        XCTAssertFalse(requests.contains { request in
+            if case .deleteBot = request { return true }
+            return false
+        })
+    }
+
+    func testDeletingBotDropsItsRoutineStateWhenTheCatalogConfirms() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model { request in await recorder.record(request) }
+        let mobius = bot(handle: "mobius", name: "Mobius")
+        let helper = bot(
+            id: "bot-2",
+            handle: "helper",
+            name: "Helper",
+            config: VersionedAgentConfig(revision: 7, config: composition())
+        )
+        let helperRoutine = Routine(
+            id: "routine-1",
+            botId: helper.id,
+            workspace: "/srv/mobius",
+            instructions: "Review nightly",
+            schedule: .interval(seconds: 120),
+            endsAt: nil,
+            enabled: true,
+            finished: false,
+            nextRunAt: nil
+        )
+        model.connectionState = .ready
+        model.bots = [mobius, helper]
+        model.routines = [helperRoutine]
+        model.routineRuns = [RoutineRun(
+            id: "run-1",
+            routineId: helperRoutine.id,
+            botId: helper.id,
+            startedAt: 100,
+            finishedAt: 101,
+            status: .succeeded,
+            sessionId: nil,
+            message: nil
+        )]
+
+        model.deleteBot(helper)
+        let request = await recorder.firstRequest(after: 0) {
+            if case .deleteBot = $0 { return true }
+            return false
+        }
+        guard case .deleteBot(let requestID, let id, let revision) = try XCTUnwrap(request) else {
+            return XCTFail("Expected Bot deletion")
+        }
+        XCTAssertEqual(id, helper.id)
+        XCTAssertEqual(revision, 7)
+
+        model.handle(.bots(requestID: requestID, bots: [mobius]))
+
+        XCTAssertTrue(model.routines.isEmpty)
+        XCTAssertTrue(model.routineRuns.isEmpty)
+    }
+
+    func testProviderRegistrationDoesNotConfigureBotDefaults() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
-        let draft = composition(systemPrompt: "New default")
-        let previousDefault = composition(systemPrompt: "Previous default")
+        let draft = composition(systemPrompt: "New Bot defaults")
+        let previousBotDefaults = composition(systemPrompt: "Previous Bot defaults")
         model.selectedSessionID = "chat-1"
         model.agentSnapshot = VersionedAgentConfig(revision: 3, config: composition())
         model.agentDraft = composition(systemPrompt: "Active chat")
-        model.defaultAgentSnapshot = VersionedAgentConfig(
+        model.botDefaultsSnapshot = VersionedAgentConfig(
             revision: 8,
-            config: previousDefault
+            config: previousBotDefaults
         )
-        model.defaultAgentDraft = previousDefault
+        model.botDefaultsDraft = previousBotDefaults
         model.providerStatuses = [providerStatus(for: draft.provider)]
         model.providerDraft = draft.provider
         model.providerLabelDraft = "Work"
@@ -836,31 +1027,28 @@ extension AppModelTests {
                 return requestID
             }.first
         )
-        let response = ready(defaultConfig: VersionedAgentConfig(
+        let response = ready(botDefaults: VersionedAgentConfig(
             revision: 8,
-            config: previousDefault
+            config: previousBotDefaults
         ))
         model.applyGatewayConfigurationResponse(requestID: registration, payload: response)
         try await Task.sleep(for: .milliseconds(20))
 
         let requests = await recorder.requests()
         XCTAssertFalse(requests.contains {
-            if case .configureDefaultAgent = $0 { return true }
+            if case .configureBotDefaults = $0 { return true }
             return false
         })
-        XCTAssertEqual(model.defaultAgentDraft, previousDefault)
+        XCTAssertEqual(model.botDefaultsDraft, previousBotDefaults)
         XCTAssertEqual(model.agentDraft?.systemPrompt, "Active chat")
     }
 
-    func testSavingDefaultLeavesActiveChatUntouched() async throws {
+    func testSavingBotDefaultsLeavesActiveChatUntouched() async throws {
         let recorder = GatewayRequestRecorder()
-        let defaultSaved = expectation(description: "Default agent saved")
-        let sessionConfigured = expectation(description: "Active chat configured")
-        sessionConfigured.isInverted = true
+        let botDefaultsSaved = expectation(description: "Bot defaults saved")
         let model = try model { request in
             await recorder.record(request)
-            if case .configureDefaultAgent = request { defaultSaved.fulfill() }
-            if case .configureSession = request { sessionConfigured.fulfill() }
+            if case .configureBotDefaults = request { botDefaultsSaved.fulfill() }
         }
         let active = composition()
         var draft = active
@@ -872,53 +1060,43 @@ extension AppModelTests {
         model.selectedSessionID = "chat-1"
         model.sessions = [session(state: .idle)]
         model.agentSnapshot = VersionedAgentConfig(revision: 3, config: active)
-        model.defaultAgentSnapshot = VersionedAgentConfig(revision: 7, config: active)
+        model.botDefaultsSnapshot = VersionedAgentConfig(revision: 7, config: active)
         model.agentDraft = active
-        model.defaultAgentDraft = draft
+        model.botDefaultsDraft = draft
 
-        model.saveAgentAsDefault()
-        await fulfillment(of: [defaultSaved], timeout: 1)
+        model.saveBotDefaults()
+        await fulfillment(of: [botDefaultsSaved], timeout: 1)
 
-        let defaultRequests = await recorder.requests()
-        let defaultRequest = try XCTUnwrap(
-            defaultRequests.first { request in
-                if case .configureDefaultAgent = request { return true }
+        let botDefaultsRequests = await recorder.requests()
+        let botDefaultsRequest = try XCTUnwrap(
+            botDefaultsRequests.first { request in
+                if case .configureBotDefaults = request { return true }
                 return false
             }
         )
-        guard case .configureDefaultAgent(let requestID, _, let savedDraft) = defaultRequest else {
-            return XCTFail("Expected default-agent configuration")
+        guard case .configureBotDefaults(let requestID, _, let savedDraft) = botDefaultsRequest else {
+            return XCTFail("Expected Bot defaults configuration")
         }
         XCTAssertEqual(savedDraft, draft)
 
         let response = ready(
-            defaultConfig: VersionedAgentConfig(revision: 8, config: draft)
+            botDefaults: VersionedAgentConfig(revision: 8, config: draft),
+            bots: [bot(config: VersionedAgentConfig(revision: 3, config: active))]
         )
         model.handle(.ready(response))
-        XCTAssertEqual(model.defaultAgentDraft, draft)
+        XCTAssertEqual(model.botDefaultsDraft, draft)
         model.applyGatewayConfigurationResponse(requestID: requestID, payload: response)
-        await fulfillment(of: [sessionConfigured], timeout: 0.05)
-
-        let sessionRequests = await recorder.requests()
-        XCTAssertFalse(sessionRequests.contains {
-            if case .configureSession = $0 { return true }
-            return false
-        })
         XCTAssertEqual(model.agentDraft, active)
-        XCTAssertEqual(model.defaultAgentDraft, draft)
-        XCTAssertEqual(model.defaultAgentApplyState, .applied)
-        XCTAssertEqual(model.chatAgentApplyState, .idle)
+        XCTAssertEqual(model.botDefaultsDraft, draft)
+        XCTAssertEqual(model.botDefaultsApplyState, .applied)
     }
 
-    func testSavingDefaultPreservesALaterDefaultDraft() async throws {
+    func testSavingBotDefaultsPreservesALaterDraft() async throws {
         let recorder = GatewayRequestRecorder()
-        let defaultSaved = expectation(description: "Default agent saved")
-        let sessionConfigured = expectation(description: "Active chat configured")
-        sessionConfigured.isInverted = true
+        let botDefaultsSaved = expectation(description: "Bot defaults saved")
         let model = try model { request in
             await recorder.record(request)
-            if case .configureDefaultAgent = request { defaultSaved.fulfill() }
-            if case .configureSession = request { sessionConfigured.fulfill() }
+            if case .configureBotDefaults = request { botDefaultsSaved.fulfill() }
         }
         let active = composition()
         var draft = active
@@ -929,42 +1107,35 @@ extension AppModelTests {
         )
         model.selectedSessionID = "chat-1"
         model.agentSnapshot = VersionedAgentConfig(revision: 3, config: active)
-        model.defaultAgentSnapshot = VersionedAgentConfig(revision: 7, config: active)
+        model.botDefaultsSnapshot = VersionedAgentConfig(revision: 7, config: active)
         model.agentDraft = active
-        model.defaultAgentDraft = draft
+        model.botDefaultsDraft = draft
 
-        model.saveAgentAsDefault()
-        await fulfillment(of: [defaultSaved], timeout: 1)
+        model.saveBotDefaults()
+        await fulfillment(of: [botDefaultsSaved], timeout: 1)
         let requests = await recorder.requests()
         let requestID = try XCTUnwrap(requests.lazy.compactMap { request -> String? in
-            guard case .configureDefaultAgent(let requestID, _, _) = request else { return nil }
+            guard case .configureBotDefaults(let requestID, _, _) = request else { return nil }
             return requestID
         }.first)
 
-        var laterDefaultDraft = draft
-        laterDefaultDraft.middleware.setSetting(
+        var laterBotDefaultsDraft = draft
+        laterBotDefaultsDraft.middleware.setSetting(
             .string("second"),
             middleware: "example",
             setting: "mode"
         )
-        model.defaultAgentDraft = laterDefaultDraft
+        model.botDefaultsDraft = laterBotDefaultsDraft
         let response = ready(
-            defaultConfig: VersionedAgentConfig(revision: 8, config: draft)
+            botDefaults: VersionedAgentConfig(revision: 8, config: draft),
+            bots: [bot(config: VersionedAgentConfig(revision: 3, config: active))]
         )
         model.handle(.ready(response))
-        XCTAssertEqual(model.defaultAgentDraft, laterDefaultDraft)
+        XCTAssertEqual(model.botDefaultsDraft, laterBotDefaultsDraft)
         model.applyGatewayConfigurationResponse(requestID: requestID, payload: response)
-        await fulfillment(of: [sessionConfigured], timeout: 0.05)
-
-        let configuredSessions = await recorder.requests().filter { request in
-            if case .configureSession = request { return true }
-            return false
-        }
-        XCTAssertTrue(configuredSessions.isEmpty)
         XCTAssertEqual(model.agentDraft, active)
-        XCTAssertEqual(model.defaultAgentDraft, laterDefaultDraft)
-        XCTAssertEqual(model.defaultAgentApplyState, .applied)
-        XCTAssertEqual(model.chatAgentApplyState, .idle)
+        XCTAssertEqual(model.botDefaultsDraft, laterBotDefaultsDraft)
+        XCTAssertEqual(model.botDefaultsApplyState, .applied)
     }
 
     func testInstallingAnExtensionUsesTheGatewayRefreshAsItsResult() async throws {
@@ -994,7 +1165,7 @@ extension AppModelTests {
 
         let installed = extensionRecord()
         let response = ready(
-            defaultConfig: VersionedAgentConfig(revision: 1, config: composition()),
+            botDefaults: VersionedAgentConfig(revision: 1, config: composition()),
             extensions: [installed]
         )
         model.applyGatewayConfigurationResponse(requestID: requestID, payload: response)
@@ -1087,17 +1258,17 @@ extension AppModelTests {
     func testCatalogRefreshPreservesStableMissingExtensionReferences() throws {
         let model = try model()
         let snapshot = VersionedAgentConfig(revision: 1, config: composition())
-        var unsavedDefault = snapshot.config
-        unsavedDefault.extensions = ["plugin:ponytail"]
+        var unsavedBotDefaults = snapshot.config
+        unsavedBotDefaults.extensions = ["plugin:ponytail"]
         var unsavedChat = snapshot.config
         unsavedChat.extensions = ["plugin:ponytail"]
-        model.defaultAgentSnapshot = snapshot
-        model.defaultAgentDraft = unsavedDefault
+        model.botDefaultsSnapshot = snapshot
+        model.botDefaultsDraft = unsavedBotDefaults
         model.agentDraft = unsavedChat
 
-        model.applyGatewayCatalog(ready(defaultConfig: snapshot))
+        model.applyGatewayCatalog(ready(botDefaults: snapshot))
 
-        XCTAssertEqual(model.defaultAgentDraft?.extensions, ["plugin:ponytail"])
+        XCTAssertEqual(model.botDefaultsDraft?.extensions, ["plugin:ponytail"])
         XCTAssertEqual(model.agentDraft?.extensions, ["plugin:ponytail"])
     }
 

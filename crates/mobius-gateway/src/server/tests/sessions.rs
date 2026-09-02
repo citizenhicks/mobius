@@ -125,6 +125,7 @@ async fn catalogue_mutations_do_not_require_selecting_the_target_chat() {
         .expect("load selected")
         .expect("selected checkpoint");
     let mut hidden = Checkpoint::empty("hidden-child");
+    hidden.session_context = selected.session_context.clone();
     hidden.catalog_visible = false;
     checkpoints
         .fork(&selected_session_id, selected.sequence, &hidden)
@@ -245,35 +246,10 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
             .expect("pair frontend");
     let (sender, mut events) = connection.into_parts();
     wait_gateway_ready(&mut events).await;
-    let session_id = create_chat(&sender, &mut events, &workspace).await;
-
     let mut config = crate::wire::AgentComposition::default();
     config.middleware.set_enabled("attachments", true);
-    sender
-        .send(ClientMessage::ConfigureSession {
-            request_id: "configure-attachments".into(),
-            session_id: session_id.clone(),
-            expected_revision: 1,
-            config,
-        })
-        .await
-        .expect("enable attachments");
-    loop {
-        match next_gateway_message(&mut events).await {
-            ServerMessage::Accepted { request_id } if request_id == "configure-attachments" => {
-                break;
-            }
-            ServerMessage::Rejected {
-                request_id,
-                code,
-                message,
-                ..
-            } if request_id == "configure-attachments" => {
-                panic!("attachment configuration rejected ({code}): {message}")
-            }
-            _ => {}
-        }
-    }
+    let (session_id, _) =
+        create_bot_chat_with_config(&sender, &mut events, &workspace, config).await;
 
     let missing = SessionFileReference {
         id: Uuid::new_v4().to_string(),
@@ -626,20 +602,17 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
 }
 
 #[tokio::test]
-async fn paired_client_reads_cron_execution_files_after_run_history_is_removed() {
+async fn paired_client_deletes_routine_sessions_with_the_routine() {
     let root = tempfile::tempdir().expect("temporary directory");
     let workspace = root.path().join("workspace");
     fs::create_dir(&workspace).expect("workspace");
-    let (server, grant) = GatewayServer::bootstrap(
-        root.path().join("state"),
-        std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
-    )
-    .await
-    .expect("bootstrap gateway");
+    let (server, grant) = configured_test_server(root.path().join("state")).await;
     let listen = server.config.listen;
     let host = server.host.clone();
-    let cron = Arc::clone(&server.cron);
+    let bots = Arc::clone(&server.bots);
     let files = host.session_file_store().await;
+    let checkpoints = SqliteCheckpoint::new(root.path().join("state/checkpoints.sqlite3"))
+        .expect("checkpoint store");
     let (shutdown, signal) = tokio::sync::oneshot::channel();
     let serving = tokio::spawn(server.serve_until(async move {
         let _ = signal.await;
@@ -647,18 +620,20 @@ async fn paired_client_reads_cron_execution_files_after_run_history_is_removed()
     let endpoint = format!("tcp://{listen}")
         .parse::<Endpoint>()
         .expect("endpoint");
-    let (connection, _) = GatewayClient::pair(&endpoint, grant.code, "cron files", ClientKind::Ios)
-        .await
-        .expect("pair frontend");
+    let (connection, _) =
+        GatewayClient::pair(&endpoint, grant.code, "routine files", ClientKind::Ios)
+            .await
+            .expect("pair frontend");
     let (sender, mut events) = connection.into_parts();
     wait_gateway_ready(&mut events).await;
-    let source_session_id = create_chat(&sender, &mut events, &workspace).await;
-    let task = cron
-        .add_for_test(
-            &source_session_id,
+    let (_, bot_id) = create_bot_chat(&sender, &mut events, &workspace).await;
+    let routine = bots
+        .create_routine(
+            &bot_id,
+            &workspace,
             "produce a report",
-            crate::wire::CronSchedule {
-                kind: crate::wire::CronScheduleKind::Interval,
+            crate::wire::RoutineSchedule {
+                kind: crate::wire::RoutineScheduleKind::Interval,
                 at: None,
                 every_seconds: Some(600),
                 expression: None,
@@ -666,13 +641,16 @@ async fn paired_client_reads_cron_execution_files_after_run_history_is_removed()
             },
             None,
         )
-        .expect("schedule task");
+        .expect("create routine");
 
-    let _ = host.run_cron(task.id.clone()).await;
+    let _ = host.run_routine(routine.id.clone()).await;
     let execution_session_id = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            if let Some(run) = cron.history(Some(&task.id)).expect("run history").first()
-                && run.status != crate::wire::CronRunStatus::Running
+            if let Some(run) = bots
+                .history(Some(&routine.id))
+                .expect("run history")
+                .first()
+                && run.status != crate::wire::RoutineRunStatus::Running
                 && let Some(session_id) = &run.session_id
             {
                 break session_id.clone();
@@ -681,12 +659,9 @@ async fn paired_client_reads_cron_execution_files_after_run_history_is_removed()
         }
     })
     .await
-    .expect("cron completion");
-    cron.delete(&task.id).expect("remove task and run history");
-    assert!(cron.history(None).expect("empty history").is_empty());
-
-    let contents = b"scheduled report";
-    let file = files
+    .expect("routine completion");
+    let contents = b"routine report";
+    files
         .publish_artifact(
             &execution_session_id,
             "report.txt".into(),
@@ -694,50 +669,39 @@ async fn paired_client_reads_cron_execution_files_after_run_history_is_removed()
             contents,
         )
         .await
-        .expect("publish cron artifact");
+        .expect("publish routine artifact");
+    assert!(
+        checkpoints
+            .load(&execution_session_id)
+            .await
+            .expect("load routine checkpoint")
+            .is_some()
+    );
     sender
-        .send(ClientMessage::ListSessionFiles {
-            request_id: "list-cron-files".into(),
-            session_id: execution_session_id.clone(),
+        .send(ClientMessage::DeleteRoutine {
+            request_id: "delete-routine".into(),
+            id: routine.id.clone(),
         })
         .await
-        .expect("list cron files");
-    loop {
-        if let ServerMessage::SessionFiles {
-            request_id, files, ..
-        } = next_gateway_message(&mut events).await
-            && request_id == "list-cron-files"
-        {
-            assert_eq!(files.len(), 1);
-            assert_eq!(files[0].file, file);
-            break;
-        }
-    }
+        .expect("delete routine");
+    expect_accepted(&mut events, "delete-routine").await;
 
-    sender
-        .send(ClientMessage::ReadSessionFile {
-            request_id: "read-cron-file".into(),
-            session_id: execution_session_id,
-            file_id: file.id,
-            offset: 0,
-            max_bytes: contents.len(),
-        })
-        .await
-        .expect("read cron file");
-    loop {
-        if let ServerMessage::SessionFileChunk {
-            request_id,
-            data,
-            next_offset,
-            ..
-        } = next_gateway_message(&mut events).await
-            && request_id == "read-cron-file"
-        {
-            assert_eq!(data, contents);
-            assert_eq!(next_offset, None);
-            break;
-        }
-    }
+    assert!(bots.routine(&routine.id).is_err());
+    assert!(bots.history(None).expect("empty history").is_empty());
+    assert!(
+        checkpoints
+            .load(&execution_session_id)
+            .await
+            .expect("load deleted routine checkpoint")
+            .is_none()
+    );
+    assert!(
+        files
+            .list_files(&execution_session_id)
+            .await
+            .expect("deleted routine files")
+            .is_empty()
+    );
 
     shutdown.send(()).expect("send shutdown");
     serving
@@ -832,15 +796,44 @@ async fn unpairing_disconnects_the_client_and_rejects_its_token() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn scheduled_task_disables_inactivity_shutdown() {
+async fn running_one_shot_routine_disables_inactivity_shutdown() {
     let root = tempfile::tempdir().expect("temporary directory");
+    let workspace = root.path().join("workspace");
+    fs::create_dir(&workspace).expect("workspace");
     let (server, _) = GatewayServer::bootstrap(
         root.path().join("state"),
         std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
     )
     .await
     .expect("bootstrap gateway");
-    let cron = Arc::clone(&server.cron);
+    let bots = Arc::clone(&server.bots);
+    let bot = bots
+        .create_bot(
+            "keepalive",
+            "Keepalive",
+            crate::wire::AgentComposition::default(),
+        )
+        .expect("Bot");
+    let now = Utc::now().timestamp();
+    bots.create_routine(
+        &bot.id,
+        &workspace,
+        "hold the gateway open",
+        crate::wire::RoutineSchedule {
+            kind: crate::wire::RoutineScheduleKind::Once,
+            at: Some(now - 1),
+            every_seconds: None,
+            expression: None,
+            time_zone: None,
+        },
+        None,
+    )
+    .expect("one-shot routine");
+    let (_, active_run) = bots
+        .take_due(now)
+        .expect("due routines")
+        .pop()
+        .expect("due one-shot");
     let (shutdown, signal) = tokio::sync::oneshot::channel();
     let serving = tokio::spawn(server.serve_until_inactive(
         async move {
@@ -849,31 +842,17 @@ async fn scheduled_task_disables_inactivity_shutdown() {
         Duration::from_millis(50),
     ));
     tokio::task::yield_now().await;
-    tokio::time::advance(Duration::from_millis(25)).await;
-    cron.add_for_test(
-        "source-chat",
-        "do work",
-        crate::wire::CronSchedule {
-            kind: crate::wire::CronScheduleKind::Cron,
-            at: None,
-            every_seconds: None,
-            expression: Some("0 9 * * *".into()),
-            time_zone: Some("UTC".into()),
-        },
-        None,
-    )
-    .expect("schedule task");
-
     tokio::time::advance(Duration::from_millis(75)).await;
     assert!(
         !serving.is_finished(),
-        "scheduled task must keep gateway alive"
+        "a running one-shot routine must keep the gateway alive after its schedule is consumed"
     );
     shutdown.send(()).expect("send shutdown");
     serving
         .await
         .expect("gateway task")
         .expect("gateway shutdown");
+    drop(active_run);
 }
 
 #[tokio::test]
@@ -883,12 +862,7 @@ async fn frontends_select_independent_chats_and_can_share_one_chat() {
     let second_workspace = root.path().join("second");
     fs::create_dir(&first_workspace).expect("first workspace");
     fs::create_dir(&second_workspace).expect("second workspace");
-    let (server, grant) = GatewayServer::bootstrap(
-        root.path().join("state"),
-        std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
-    )
-    .await
-    .expect("bootstrap gateway");
+    let (server, grant) = configured_test_server(root.path().join("state")).await;
     let listen = server.config.listen;
     let (shutdown, signal) = tokio::sync::oneshot::channel();
     let serving = tokio::spawn(server.serve_until(async move {
@@ -1002,12 +976,7 @@ async fn branch_switch_is_acknowledged_and_broadcasts_fresh_status() {
     run_git(&workspace, &["add", "--", "tracked.txt"]);
     run_git(&workspace, &["commit", "--quiet", "-m", "initial"]);
     run_git(&workspace, &["branch", "feature"]);
-    let (server, grant) = GatewayServer::bootstrap(
-        root.path().join("state"),
-        std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
-    )
-    .await
-    .expect("bootstrap gateway");
+    let (server, grant) = configured_test_server(root.path().join("state")).await;
     let listen = server.config.listen;
     let (shutdown, signal) = tokio::sync::oneshot::channel();
     let serving = tokio::spawn(server.serve_until(async move {

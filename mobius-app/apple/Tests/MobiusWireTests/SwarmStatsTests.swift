@@ -88,17 +88,20 @@ final class SwarmStatsTests: XCTestCase {
 
     private func message(
         _ sequence: UInt64,
-        _ sessionID: String,
+        _ botID: String,
         _ handle: String,
         _ text: String
     ) -> SwarmMessageRecord {
         SwarmMessageRecord(
             id: "m\(sequence)",
             sequence: sequence,
-            authorSessionId: sessionID,
+            authorBotId: botID,
             authorHandle: handle,
+            sourceSessionId: "chat-\(sequence)",
             text: text,
-            createdAtMs: Int64(sequence) * 1_000
+            createdAtMs: Int64(sequence) * 1_000,
+            inReplyToMessageId: nil,
+            replyDepth: 0
         )
     }
 }

@@ -18,8 +18,9 @@ extension AppModel {
             }
         guard selectedAccountID == account.id else { return }
         if let catalog {
+            applyBots(catalog.bots)
             applySwarms(catalog.swarms)
-            applySessions(catalog.sessions)
+            applySessionCatalog(catalog.sessions)
             if let sessionID = catalog.lastSessionID {
                 destination = .chats
                 navigationPath = [.chat(.session(sessionID))]
@@ -77,7 +78,6 @@ extension AppModel {
         automaticReconnectBlocked = false
         pairingError = nil
         do {
-            let endpoint = try GatewayEndpoint(pairingEndpoint)
             let code = pairingCode.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !code.isEmpty else {
                 let message = localizedString("Enter the one-time code shown by the gateway.")
@@ -85,6 +85,8 @@ extension AppModel {
                 showToast(verbatim: message, tone: .error)
                 return
             }
+            let setup = try GatewayPairingSetup(endpoint: pairingEndpoint, code: code)
+            let endpoint = setup.endpoint
             let endpointName = endpoint.displayName(locale: language.locale)
             let account = accounts.first(where: { $0.endpoint == endpoint })
                 ?? GatewayAccount(
@@ -103,7 +105,7 @@ extension AppModel {
             beginConnection(to: endpoint, generation: generation) { [weak self] in
                 guard let self, self.connectionGeneration == generation else { return }
                 try await self.requestSender(.pair(
-                    code: code,
+                    code: setup.code,
                     clientLabel: "möbius Apple",
                     clientKind: .currentApplePlatform
                 ))
@@ -164,19 +166,56 @@ extension AppModel {
             return
         }
         guard canCreateSession else { return }
+        changeComposerDraftOwner(to: nil)
+        discardComposerAttachments()
+        discardFilePresentation()
+        selectedSessionID = nil
         sessionToRestoreID = nil
         sessionOpenCursor = nil
+        pendingNewChatWorkspace = path
+        pendingNewChatBotID = nil
+        workspaceError = nil
+        resetSessionState()
+        destination = .chats
+        navigationPath = [.chat(.new)]
+        showsWorkspaceBrowser = false
+        cacheChatCatalog(lastSessionID: nil)
+        if bots.count == 1 { selectBotForNewChat(bots[0]) }
+    }
+
+    func selectBotForNewChat(_ bot: BotRecord) {
+        guard canCreateSession,
+              bots.contains(where: { $0.id == bot.id }),
+              pendingNewChatWorkspace != nil,
+              case .chat(.new)? = navigationPath.last
+        else { return }
+        pendingNewChatBotID = bot.id
+        workspaceError = nil
+    }
+
+    @discardableResult
+    func createPendingSession() -> String? {
+        guard canCreateSession,
+              let path = pendingNewChatWorkspace,
+              let botID = pendingNewChatBotID,
+              bots.contains(where: { $0.id == botID }),
+              case .chat(.new)? = navigationPath.last
+        else { return nil }
         let id = requestID("create")
         sessionRequestID = id
         workspaceError = nil
         isChangingWorkspace = true
         connectionState = .loading
-        transmit(.createSession(requestID: id, workspace: path)) { [weak self] message in
-            self?.sessionRequestID = nil
-            self?.isChangingWorkspace = false
-            self?.connectionState = .ready
-            self?.workspaceError = message
+        transmit(.createSession(requestID: id, workspace: path, botID: botID)) {
+            [weak self] message in
+            guard let self, self.sessionRequestID == id else { return }
+            self.restoreDraft(id: id)
+            self.sessionRequestID = nil
+            self.isChangingWorkspace = false
+            self.connectionState = .ready
+            self.workspaceError = message
         }
+        return id
     }
 
     func openWorkspaceBrowser() {
@@ -266,8 +305,12 @@ extension AppModel {
     }
 
     func openNewSessionInCurrentWorkspace() {
-        guard let path = workspace?.path else { return }
+        guard let path = workspace?.path,
+              let selectedSession,
+              let bot = bots.first(where: { $0.id == selectedSession.sessionContext.botId })
+        else { return }
         chooseWorkspace(path)
+        selectBotForNewChat(bot)
     }
 
     func openChat(_ sessionID: String) {
@@ -279,46 +322,32 @@ extension AppModel {
         cacheChatCatalog(lastSessionID: sessionID)
     }
 
+    func openBotChats(_ botID: String) {
+        guard bots.contains(where: { $0.id == botID }) else { return }
+        chatBotFilterIDs = [botID]
+        destination = .chats
+        navigationPath = []
+    }
+
     func openSwarm(_ swarmID: String) {
         guard swarms.contains(where: { $0.id == swarmID }) else { return }
-        destination = .chats
+        destination = .bots
         navigationPath = [.swarm(swarmID)]
     }
 
-    func swarm(containing sessionID: String) -> SwarmRecord? {
+    func swarm(containingBot botID: String) -> SwarmRecord? {
         swarms.first { swarm in
-            swarm.leaderSessionId == sessionID
-                || swarm.members.contains { $0.sessionId == sessionID }
+            swarm.leaderBotId == botID
+                || swarm.members.contains { $0.botId == botID }
         }
     }
 
-    func swarmCreationCandidates(for leader: SessionRecord) -> [SessionRecord] {
-        guard leader.parentSessionId == nil,
-              swarm(containing: leader.sessionId) == nil,
-              let workspace = swarmWorkspace(for: leader)
-        else { return [] }
-        return sessions.filter { session in
-            session.sessionId != leader.sessionId
-                && session.parentSessionId == nil
-                && swarm(containing: session.sessionId) == nil
-                && swarmWorkspace(for: session) == workspace
+    func availableBotsForSwarm(excluding botID: String? = nil) -> [BotRecord] {
+        bots.filter { bot in
+            bot.id != botID && swarm(containingBot: bot.id) == nil
+        }.sorted {
+            $0.name.localizedStandardCompare($1.name) == .orderedAscending
         }
-        .sorted {
-            if $0.updatedAt != $1.updatedAt { return $0.updatedAt > $1.updatedAt }
-            return $0.sessionId < $1.sessionId
-        }
-    }
-
-    func availableSwarms(for session: SessionRecord) -> [SwarmRecord] {
-        guard session.parentSessionId == nil,
-              swarm(containing: session.sessionId) == nil,
-              let workspace = swarmWorkspace(for: session)
-        else { return [] }
-        return swarms.filter { swarmWorkspace(for: $0) == workspace }
-            .sorted {
-                if $0.updatedAtMs != $1.updatedAtMs { return $0.updatedAtMs > $1.updatedAtMs }
-                return $0.id < $1.id
-            }
     }
 
     func openSession(_ sessionID: String) {
@@ -539,55 +568,63 @@ extension AppModel {
         restoreSession(sessionID)
     }
 
-    func createSwarm(leaderSessionID: String, memberSessionIDs: Set<String>) {
+    func createSwarm(title rawTitle: String, leaderBotID: String, memberBotIDs: Set<String>) {
+        let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canMutateSwarm,
-              let leader = sessions.first(where: { $0.sessionId == leaderSessionID })
+              !title.isEmpty,
+              bots.contains(where: { $0.id == leaderBotID }),
+              swarm(containingBot: leaderBotID) == nil
         else { return }
-        let candidates = swarmCreationCandidates(for: leader)
-        let allowed = Set(candidates.map(\.sessionId))
-        guard !memberSessionIDs.isEmpty, memberSessionIDs.isSubset(of: allowed) else {
-            showToast("Those chats can no longer form a swarm.", tone: .warning)
+        let allowed = Set(availableBotsForSwarm(excluding: leaderBotID).map(\.id))
+        guard !memberBotIDs.isEmpty, memberBotIDs.isSubset(of: allowed) else {
+            showToast("Those Bots can no longer form a swarm.", tone: .warning)
             return
         }
-        let selectedCoworkers = candidates.compactMap { candidate in
-            memberSessionIDs.contains(candidate.sessionId) ? candidate.sessionId : nil
+        let selectedCoworkers = bots.compactMap { bot in
+            memberBotIDs.contains(bot.id) ? bot.id : nil
         }
         sendSwarmMutation("swarm-create") { requestID in
             .createSwarm(
                 requestID: requestID,
-                leaderSessionID: leaderSessionID,
-                memberSessionIDs: [leaderSessionID] + selectedCoworkers
+                title: title,
+                leaderBotID: leaderBotID,
+                memberBotIDs: selectedCoworkers
             )
         }
     }
 
-    func addSwarmMember(_ session: SessionRecord, to swarm: SwarmRecord) {
-        guard availableSwarms(for: session).contains(where: { $0.id == swarm.id }) else {
-            showToast("That chat can no longer join this swarm.", tone: .warning)
+    func addSwarmMember(_ bot: BotRecord, to swarm: SwarmRecord) {
+        guard self.swarm(containingBot: bot.id) == nil else {
+            showToast("That Bot already belongs to a swarm.", tone: .warning)
             return
         }
         sendSwarmMutation("swarm-add") { requestID in
             .addSwarmMember(
                 requestID: requestID,
                 swarmID: swarm.id,
-                sessionID: session.sessionId
+                botID: bot.id
             )
         }
     }
 
-    func leaveSwarm(_ swarm: SwarmRecord, sessionID: String) {
-        guard swarm.leaderSessionId != sessionID,
-              self.swarm(containing: sessionID)?.id == swarm.id
+    func leaveSwarm(_ swarm: SwarmRecord, botID: String) {
+        guard swarm.leaderBotId != botID,
+              self.swarm(containingBot: botID)?.id == swarm.id
         else { return }
         sendSwarmMutation("swarm-leave") { requestID in
-            .leaveSwarm(requestID: requestID, swarmID: swarm.id, sessionID: sessionID)
+            .leaveSwarm(requestID: requestID, swarmID: swarm.id, botID: botID)
         }
     }
 
-    func disbandSwarm(_ swarm: SwarmRecord, leaderSessionID: String) {
-        guard swarm.leaderSessionId == leaderSessionID,
-              self.swarm(containing: leaderSessionID)?.id == swarm.id
-        else { return }
+    func renameSwarm(_ swarm: SwarmRecord, title rawTitle: String) {
+        let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty, title != swarm.title else { return }
+        sendSwarmMutation("swarm-rename") { requestID in
+            .renameSwarm(requestID: requestID, swarmID: swarm.id, title: title)
+        }
+    }
+
+    func disbandSwarm(_ swarm: SwarmRecord) {
         sendSwarmMutation("swarm-disband") { requestID in
             .disbandSwarm(requestID: requestID, swarmID: swarm.id)
         }
@@ -603,20 +640,6 @@ extension AppModel {
         transmit(request(id)) { [weak self] _ in
             if self?.swarmMutationRequestID == id { self?.swarmMutationRequestID = nil }
         }
-    }
-
-    private func swarmWorkspace(for session: SessionRecord) -> String? {
-        session.sessionContext.workspaceId
-    }
-
-    private func swarmWorkspace(for swarm: SwarmRecord) -> String? {
-        let memberIDs = [swarm.leaderSessionId] + swarm.members.map(\.sessionId)
-        return memberIDs.lazy.compactMap { sessionID in
-            guard let session = self.sessions.first(where: { $0.sessionId == sessionID }) else {
-                return nil
-            }
-            return self.swarmWorkspace(for: session)
-        }.first
     }
 
     func refreshWorkspaceChanges() {
@@ -999,8 +1022,7 @@ extension AppModel {
     @discardableResult
     func sendMessage(delivery requestedDelivery: ActiveMessageDelivery? = nil) -> Bool {
         guard connectionState.isReady,
-              sessionRequestID == nil,
-              let sessionID = selectedSessionID
+              sessionRequestID == nil
         else { return false }
         let text = composer.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = uploadedComposerAttachments
@@ -1023,6 +1045,22 @@ extension AppModel {
             showToast("Attachments can be sent with a new turn.", tone: .warning)
             return false
         }
+        if selectedSessionID == nil {
+            guard let requestID = createPendingSession() else { return false }
+            dismissComposerFocus()
+            pendingDrafts[requestID] = PendingComposerDraft(
+                text: text,
+                attachments: attachments
+            )
+            composerDraftSaveTask?.cancel()
+            composerDraftSaveTask = nil
+            suppressesComposerDraftSave = true
+            composer = ""
+            suppressesComposerDraftSave = false
+            composerAttachments = []
+            return true
+        }
+        guard let sessionID = selectedSessionID else { return false }
         let id = requestID("input")
         let targetTurnID = activeTurnID
         let delivery = targetTurnID == nil ? nil : requestedDelivery
@@ -1077,7 +1115,7 @@ extension AppModel {
 
     var activeMessageDelivery: ActiveMessageDelivery {
         for feature in middlewareFeatures {
-            for setting in feature.settings where setting.composer {
+            for setting in feature.settings {
                 guard case .select(let options, _) = setting.kind,
                       Set(options.compactMap { ActiveMessageDelivery(rawValue: $0.value) })
                         == Set(ActiveMessageDelivery.allCases),
@@ -1234,22 +1272,23 @@ extension AppModel {
         ))
     }
 
-    func submitGlobalScratchpadOperation(_ operation: AgentOperation) {
+    func submitScratchpadOperation(_ operation: AgentOperation, scope: ScratchpadScope) {
         guard connectionState.isReady else { return }
-        transmit(.submitGlobalScratchpad(
-            requestID: requestID("global-scratchpad"),
+        transmit(.submitScratchpad(
+            requestID: requestID("scratchpad"),
+            scope: scope,
             operation: operation
         ))
     }
 
-    func refreshGlobalScratchpad() {
-        submitGlobalScratchpadOperation(.capabilityCommand(
+    func refreshScratchpad(scope: ScratchpadScope) {
+        submitScratchpadOperation(.capabilityCommand(
             capability: "scratchpad",
             command: "scratchpad",
             arguments: "refresh",
             input: nil,
             target: nil
-        ))
+        ), scope: scope)
     }
 
     func loadPreviewPage(_ operation: AgentOperation) {

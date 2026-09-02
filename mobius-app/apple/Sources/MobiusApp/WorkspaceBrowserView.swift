@@ -187,7 +187,9 @@ struct ScratchpadView: View {
                         content: content,
                         actionsEnabled: model.connectionState.isReady,
                         usesSwipeActions: true,
-                        submitOperation: model.submitGlobalScratchpadOperation
+                        submitOperation: { operation in
+                            model.submitScratchpadOperation(operation, scope: .global)
+                        }
                     ) { _ in }
                 }
             } else {
@@ -199,7 +201,7 @@ struct ScratchpadView: View {
             }
         }
         .task(id: model.connectionState.isReady) {
-            if model.connectionState.isReady { model.refreshGlobalScratchpad() }
+            if model.connectionState.isReady { model.refreshScratchpad(scope: .global) }
         }
     }
 }

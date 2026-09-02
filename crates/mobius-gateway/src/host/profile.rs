@@ -261,6 +261,7 @@ pub(super) async fn gateway_ready(
     );
     Ok(ReadyPayload {
         machine_name: local_machine_name().map_err(internal)?,
+        bots: state.bots.bots().map_err(internal)?,
         sessions: session_catalog(&state.checkpoints, &state.activities)
             .await
             .map_err(internal)?,
@@ -270,7 +271,7 @@ pub(super) async fn gateway_ready(
             .map_err(internal)?,
         models,
         model_providers,
-        default_config: config.default_agent,
+        bot_defaults: config.bot_defaults,
         middleware_features,
         extensions,
         contributions,

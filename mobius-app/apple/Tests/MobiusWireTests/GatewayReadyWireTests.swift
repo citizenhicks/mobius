@@ -51,8 +51,8 @@ extension GatewayWireTests {
             payload.providers.first?.webSearch.first?.description,
             "Do not use provider-hosted web search"
         )
-        XCTAssertEqual(payload.defaultConfig?.revision, 4)
-        XCTAssertEqual(payload.defaultConfig?.config.maxModelSteps, 256)
+        XCTAssertEqual(payload.botDefaults?.revision, 4)
+        XCTAssertEqual(payload.botDefaults?.config.maxModelSteps, 256)
         XCTAssertEqual(payload.models.first?.route, "openai_socket/gpt-5.6-sol")
         XCTAssertEqual(payload.models.first?.supportsImageInput, true)
         XCTAssertEqual(payload.models.first?.toolDiscovery, .native)
@@ -63,7 +63,7 @@ extension GatewayWireTests {
         XCTAssertEqual(payload.extensions.first?.kind, .plugin)
         XCTAssertEqual(payload.extensions.first?.hooks.first?.timeoutSeconds, 10)
         XCTAssertEqual(payload.contributions.first?.references.first?.value, "planning")
-        XCTAssertEqual(payload.defaultConfig?.config.extensions, ["plugin:ponytail"])
+        XCTAssertEqual(payload.botDefaults?.config.extensions, ["plugin:ponytail"])
         XCTAssertEqual(payload.maxActiveSessions, 4)
         XCTAssertEqual(payload.sessionFileLimits.maxAttachmentReferences, 16)
         XCTAssertEqual(payload.sessionFileLimits.maxFileBytes, 50 * 1024 * 1024)
@@ -134,7 +134,7 @@ extension GatewayWireTests {
 
     func testV28RejectsLegacyProviderMetadata() {
         let legacyProvider = #"{"provider":"openai_socket","label":"OpenAI","configured":true,"auth":"api_key","default_model":"gpt-5.6-sol","default_base_url":null,"default_api_key_env":"OPENAI_API_KEY","default_reasoning_effort":"medium","default_web_search":"off"}"#
-        let payload = #"{"sessions":[],"providers":[\#(legacyProvider)],"default_config":\#(configJSON),"models":[],"middleware_features":[],"max_active_sessions":4}"#
+        let payload = #"{"sessions":[],"providers":[\#(legacyProvider)],"bot_defaults":\#(configJSON),"models":[],"middleware_features":[],"max_active_sessions":4}"#
 
         XCTAssertThrowsError(try decodeEnvelope(
             #"{"version":28,"type":"ready","payload":\#(payload)}"#
@@ -176,8 +176,6 @@ extension GatewayWireTests {
         XCTAssertEqual(payload.runStats.elapsedMs, 9_000)
         XCTAssertEqual(payload.contributions.first?.count, 2)
         XCTAssertEqual(payload.contributions.first?.acceptsFileAttachments, false)
-        XCTAssertEqual(payload.config.config.middleware.enabled, ["extensions", "subagents"])
-        XCTAssertEqual(payload.config.config.maxModelSteps, 256)
         guard let widget = payload.contributions.first?.widgets.first,
               case .picker(let title, let options) = widget.content,
               let option = options.first,
@@ -349,7 +347,7 @@ extension GatewayWireTests {
         guard case .ready(let payload) = try decodeEnvelope(
             #"{"version":28,"type":"ready","payload":\#(maximumPayload)}"#
         ) else { return XCTFail("Expected ready envelope") }
-        XCTAssertEqual(payload.defaultConfig?.config.maxModelSteps, UInt64.max)
+        XCTAssertEqual(payload.botDefaults?.config.maxModelSteps, UInt64.max)
     }
 
     func testFrontendIntegerSettingsRejectInvalidBoundsAndStep() {

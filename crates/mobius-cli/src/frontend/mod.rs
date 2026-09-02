@@ -5,6 +5,7 @@ use mobius::protocol::FrontendBlock;
 use mobius_gateway::client::{GatewayEvents, GatewaySender};
 use mobius_gateway::wire::{ProviderInstance, ReadyPayload, SessionReadyPayload};
 
+mod bots;
 mod catalog;
 mod cloudflare_setup;
 mod dashboard;
@@ -24,6 +25,7 @@ pub use terminal::terminal_text;
 pub use cloudflare_setup::{CloudflareInit, run as run_cloudflare_setup};
 pub use dashboard::{run as run_gateway_dashboard, run_provider as run_gateway_provider};
 pub use reinitialize::confirm as confirm_gateway_reinitialize;
+pub use setup::run_gateway_login;
 
 pub async fn run_extensions(
     sender: GatewaySender,
@@ -72,7 +74,7 @@ pub async fn run(
     gateway_endpoint: String,
 ) -> Result<(FrontendExit, GatewaySender, GatewayEvents)> {
     let workspace = session.workspace.path.clone();
-    let catalog = catalog::UiCatalog::build(&session.contributions, &gateway.models, &workspace)?;
+    let catalog = catalog::UiCatalog::build(&session.contributions, &workspace)?;
     tui::runtime::run(
         sender,
         events,
@@ -88,8 +90,6 @@ pub async fn run(
 /// Why a frontend returned control to its launcher.
 pub enum FrontendExit {
     Exit,
-    Discard,
-    New,
     Resume(String),
     Reload,
     Reconnect,

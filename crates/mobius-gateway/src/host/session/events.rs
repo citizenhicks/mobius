@@ -29,14 +29,12 @@ impl HostState {
             self.acknowledge_peer_message(message_id).await?;
         }
         if opens_message_capacity(&event.msg) {
-            self.swarm
-                .notify_capacity_available(&self.running.session_id);
+            self.swarm.notify_capacity_available(&self.spec.bot_id);
         }
         if let EventMsg::SubmissionRejected(_) = &event.msg
             && let Some(submission_id) = event.submission_id.as_deref()
         {
-            self.swarm
-                .notify_rejected(submission_id, &self.running.session_id);
+            self.swarm.notify_rejected(submission_id, &self.spec.bot_id);
         }
         let next_activity = self.activity_for_event(&event.msg)?;
         account_turn_event(&mut self.pending_turns, &mut self.pending_messages, &event);
@@ -45,9 +43,9 @@ impl HostState {
             EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_) => self.approval_active = false,
             _ => {}
         }
-        let cron_completion = self.observe_cron_event(&event)?;
-        if let Some((active, status, message)) = cron_completion {
-            self.cron.finish_run(active.run, status, message)?;
+        let routine_completion = self.observe_routine_event(&event)?;
+        if let Some((active, status, message)) = routine_completion {
+            self.bots.finish_run(active.run, status, message)?;
         }
         if let Some(activity) = next_activity {
             self.set_activity(activity)?;
@@ -60,7 +58,7 @@ impl HostState {
         let mut restart = false;
         if became_idle {
             restart = self.restart_after_turn;
-            if !self.approval_active && self.active_cron.is_none() {
+            if !self.approval_active && self.active_routine.is_none() {
                 for waiter in self.idle_waiters.drain(..) {
                     let _ = waiter.send(());
                 }
@@ -70,10 +68,8 @@ impl HostState {
     }
 
     pub(super) async fn acknowledge_replayed_peer_messages(&self) -> Result<()> {
-        let pending = self
-            .swarm
-            .pending_deliveries(&self.running.session_id)
-            .await?;
+        let bot_id = self.spec.bot_id.as_str();
+        let pending = self.swarm.pending_deliveries(bot_id).await?;
         if pending.is_empty() {
             return Ok(());
         }
@@ -97,9 +93,8 @@ impl HostState {
     }
 
     async fn acknowledge_peer_message(&self, message_id: &str) -> Result<()> {
-        self.swarm
-            .acknowledge(message_id, &self.running.session_id)
-            .await?;
+        let bot_id = self.spec.bot_id.as_str();
+        self.swarm.acknowledge(message_id, bot_id).await?;
         Ok(())
     }
 
@@ -143,11 +138,11 @@ impl HostState {
         Ok(Some(frame))
     }
 
-    pub(super) fn observe_cron_event(
+    pub(super) fn observe_routine_event(
         &mut self,
         event: &Event,
-    ) -> Result<Option<(ActiveCron, CronRunStatus, Option<String>)>> {
-        let Some(active) = self.active_cron.as_mut() else {
+    ) -> Result<Option<(ActiveRoutine, RoutineRunStatus, Option<String>)>> {
+        let Some(active) = self.active_routine.as_mut() else {
             return Ok(None);
         };
         let completion = match &event.msg {
@@ -161,43 +156,19 @@ impl HostState {
                 active.failure.get_or_insert_with(|| error.message.clone());
                 None
             }
-            EventMsg::ExecApprovalRequest(request)
-                if active.turn_id.as_deref() == Some(request.turn_id.as_str()) =>
-            {
-                active.failure.get_or_insert_with(|| {
-                    "headless cron run requested interactive tool approval".into()
-                });
-                self.running
-                    .sender
-                    .as_ref()
-                    .ok_or_else(|| {
-                        Error::Mobius(mobius::Error::Stopped(
-                            "agent command channel is closed".into(),
-                        ))
-                    })?
-                    .send(Submission {
-                        id: Uuid::new_v4().to_string(),
-                        op: Op::ExecApproval {
-                            id: request.id.clone(),
-                            decision: ReviewDecision::Abort,
-                        },
-                    })?;
-                self.approval_active = false;
-                None
-            }
             EventMsg::TurnComplete(turn)
                 if active.turn_id.as_deref() == Some(turn.turn_id.as_str()) =>
             {
                 Some(match active.failure.clone() {
-                    Some(message) => (CronRunStatus::Failed, Some(message)),
-                    None => (CronRunStatus::Succeeded, None),
+                    Some(message) => (RoutineRunStatus::Failed, Some(message)),
+                    None => (RoutineRunStatus::Succeeded, None),
                 })
             }
             EventMsg::TurnAborted(turn)
                 if active.turn_id.as_deref() == Some(turn.turn_id.as_str()) =>
             {
                 Some((
-                    CronRunStatus::Failed,
+                    RoutineRunStatus::Failed,
                     Some(
                         active
                             .failure
@@ -210,9 +181,9 @@ impl HostState {
         };
         Ok(completion.map(|(status, message)| {
             let active = self
-                .active_cron
+                .active_routine
                 .take()
-                .expect("completion requires an active cron run");
+                .expect("completion requires an active routine run");
             (active, status, message)
         }))
     }
@@ -262,7 +233,6 @@ impl HostState {
             compaction_count: checkpoint.compaction_count,
             context_limit_tokens,
             run_stats,
-            config: self.spec.agent.clone(),
         })
     }
 
@@ -425,7 +395,7 @@ impl HostState {
     }
 
     pub(super) fn is_idle(&self) -> bool {
-        self.pending_turns == 0 && !self.approval_active && self.active_cron.is_none()
+        self.pending_turns == 0 && !self.approval_active && self.active_routine.is_none()
     }
 }
 

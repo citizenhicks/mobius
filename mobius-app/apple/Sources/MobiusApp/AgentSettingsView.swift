@@ -1,8 +1,8 @@
 import SwiftUI
 
 enum AgentSettingsScope: Equatable {
-    case gatewayDefault
-    case currentChat
+    case botDefaults
+    case bot(String)
 }
 
 struct AgentSettingsView: View {
@@ -13,14 +13,39 @@ struct AgentSettingsView: View {
     let scope: AgentSettingsScope
 
     var body: some View {
+        @Bindable var model = model
         PageScaffold(
             title: pageTitle,
             detail: pageDetail,
             sharesHeaderBackground: true,
-            showsBackdrop: scope == .gatewayDefault,
-            headerAccessory: { agentStatusAccessory }
+            showsBackdrop: scope == .botDefaults,
+            headerAccessory: { configurationStatusAccessory }
         ) {
             if draft != nil {
+                if case .bot = scope {
+                    Section("Identity") {
+                        TextField("Bot name", text: $model.botNameDraft)
+                            .textInputAutocapitalization(.words)
+                            .font(MobiusStyle.bodyFont)
+                            .textFieldStyle(.plain)
+                            .labelsHidden()
+                            .accessibilityLabel("Bot name")
+                            .promptCard()
+                        TextField(
+                            "Operational description",
+                            text: $model.botDescriptionDraft,
+                            axis: .vertical
+                        )
+                        .font(MobiusStyle.bodyFont)
+                        .lineLimit(3...6)
+                        .textFieldStyle(.plain)
+                        .labelsHidden()
+                        .accessibilityLabel("Operational description")
+                        .promptCard()
+                        AccentTintPicker(selection: $model.botTintDraft)
+                            .settingsBareRow()
+                    }
+                }
                 Section("System prompt") {
                     TextField("System prompt", text: systemPrompt, axis: .vertical)
                         .font(MobiusStyle.bodyFont)
@@ -79,7 +104,7 @@ struct AgentSettingsView: View {
     }
 
     /// The page this is about to become, so waiting for the gateway reads as loading
-    /// rather than as an agent that is missing.
+    /// rather than as configuration that is missing.
     private var loadingDraft: some View {
         Group {
             // Per section rather than around all three: a placeholder over the whole group
@@ -107,12 +132,12 @@ struct AgentSettingsView: View {
         }
     }
 
-    private var agentStatusAccessory: some View {
+    private var configurationStatusAccessory: some View {
         SettingsStatusAccessory(
-            subject: .localized("Agent"),
+            subject: .localized(scope == .botDefaults ? "Bot defaults" : "Bot"),
             hasChanges: hasChanges,
             isSaving: model.isApplyingConfiguration,
-            saveDisabled: model.isApplyingConfiguration,
+            saveDisabled: model.isApplyingConfiguration || !canSave,
             statusLabel: .localized(agentStatusLabel),
             statusDetail: agentStatusDetail,
             statusColor: agentStatusColor,
@@ -125,15 +150,22 @@ struct AgentSettingsView: View {
 
     private var applyTitle: LocalizedStringResource {
         switch scope {
-        case .currentChat: "Apply to this chat"
-        case .gatewayDefault: "Save as gateway default"
+        case .bot: "Save Bot"
+        case .botDefaults: "Save Bot defaults"
+        }
+    }
+
+    private var canSave: Bool {
+        switch scope {
+        case .botDefaults: true
+        case .bot(let id): model.canMutateBot(id)
         }
     }
 
     private func applyConfiguration() {
         switch scope {
-        case .currentChat: model.changeAgentForCurrentChat()
-        case .gatewayDefault: model.saveAgentAsDefault()
+        case .bot: model.saveBotDraft()
+        case .botDefaults: model.saveBotDefaults()
         }
     }
 
@@ -565,34 +597,43 @@ struct AgentSettingsView: View {
 
     private var draft: AgentComposition? {
         switch scope {
-        case .gatewayDefault: model.defaultAgentDraft
-        case .currentChat: model.agentDraft
+        case .botDefaults: model.botDefaultsDraft
+        case .bot: model.botDraft
         }
     }
 
     private var snapshot: VersionedAgentConfig? {
         switch scope {
-        case .gatewayDefault: model.defaultAgentSnapshot
-        case .currentChat: model.agentSnapshot
+        case .botDefaults: model.botDefaultsSnapshot
+        case .bot(let id): model.bots.first { $0.id == id }?.config
         }
     }
 
     private var applyState: ApplyState {
         switch scope {
-        case .gatewayDefault: model.defaultAgentApplyState
-        case .currentChat: model.chatAgentApplyState
+        case .botDefaults: model.botDefaultsApplyState
+        case .bot: model.botApplyState
         }
     }
 
     private var selectedModelRoute: String? {
         switch scope {
-        case .gatewayDefault: model.defaultAgentDraftModelRoute
-        case .currentChat: model.agentDraftModelRoute
+        case .botDefaults: model.botDefaultsDraftModelRoute
+        case .bot: model.botDraftModelRoute
         }
     }
 
     private var hasChanges: Bool {
         guard let snapshot, let draft else { return false }
+        if case .bot(let id) = scope,
+           let bot = model.bots.first(where: { $0.id == id }),
+           bot.name != model.botNameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+            || bot.description != model.botDescriptionDraft.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            || bot.tint != model.botTintDraft {
+            return true
+        }
         return snapshot.config != draft
     }
 
@@ -600,70 +641,72 @@ struct AgentSettingsView: View {
         guard var draft else { return }
         update(&draft)
         switch scope {
-        case .gatewayDefault: model.defaultAgentDraft = draft
-        case .currentChat: model.agentDraft = draft
+        case .botDefaults: model.botDefaultsDraft = draft
+        case .bot: model.botDraft = draft
         }
     }
 
     private func selectModel(_ route: String) {
         switch scope {
-        case .gatewayDefault: model.selectDefaultAgentDraftModel(route)
-        case .currentChat: model.selectAgentDraftModel(route)
+        case .botDefaults: model.selectBotDefaultsDraftModel(route)
+        case .bot: model.selectBotDraftModel(route)
         }
     }
 
     private func reloadDraft() {
         switch scope {
-        case .gatewayDefault: model.reloadDefaultAgentDraft()
-        case .currentChat: model.reloadAgentDraft()
+        case .botDefaults: model.reloadBotDefaultsDraft()
+        case .bot: model.reloadBotDraft()
         }
     }
 
     private var pageTitle: LocalizedStringResource {
-        scope == .gatewayDefault ? "Default agent" : "Chat agent"
+        scope == .botDefaults ? "Bot defaults" : "Bot settings"
     }
 
     private var pageDetail: LocalizedStringResource {
         switch scope {
-        case .gatewayDefault:
-            "The prompt, model, and capabilities new chats start from."
-        case .currentChat:
-            "The prompt, model, and capabilities for this chat only."
+        case .botDefaults:
+            "The prompt, model, and capabilities new Bots start from."
+        case .bot:
+            "The durable prompt, model, and capabilities used by this Bot."
         }
     }
 
     private var modelSectionTitle: LocalizedStringResource {
-        scope == .gatewayDefault ? "Default AI model" : "Chat AI model"
+        scope == .botDefaults ? "Bot defaults model" : "Bot AI model"
     }
 
     private var modelSectionDetail: LocalizedStringResource {
         switch scope {
-        case .gatewayDefault:
-            "Sets the provider, model, and reasoning inherited by new chats."
-        case .currentChat:
-            "Sets the provider, model, and reasoning used by this chat."
+        case .botDefaults:
+            "Sets the provider, model, and reasoning inherited by new Bots."
+        case .bot:
+            "Sets the provider, model, and reasoning used by this Bot."
         }
     }
 
     private var unavailableTitle: LocalizedStringResource {
-        scope == .gatewayDefault ? "Default agent unavailable" : "Chat agent unavailable"
+        scope == .botDefaults ? "Bot defaults unavailable" : "Bot unavailable"
     }
 
     private var unavailableDetail: LocalizedStringResource {
         guard model.connectionState.isReady else { return "Connect to a gateway first." }
-        if scope == .currentChat, model.selectedSessionID == nil { return "Open a chat first." }
+        if case .bot(let id) = scope, !model.bots.contains(where: { $0.id == id }) {
+            return "Choose a Bot first."
+        }
         return "Configure a provider first."
     }
 
     private var unsavedStatusDetail: LocalizedStringResource {
-        scope == .gatewayDefault
-            ? "Save this draft as the gateway default for new chats."
-            : "Apply this draft to the current chat."
+        scope == .botDefaults
+            ? "Save this draft as the defaults for new Bots."
+            : "Save this durable Bot configuration."
     }
 
     private var savedStatusDetail: LocalizedStringResource {
-        scope == .gatewayDefault
-            ? "The draft matches the gateway default."
-            : "The draft matches this chat's saved agent configuration."
+        scope == .botDefaults
+            ? "The draft matches the saved Bot defaults."
+            : "The draft matches this Bot's saved configuration."
     }
 }

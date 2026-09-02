@@ -27,6 +27,7 @@ use crate::protocol::ToolCallEndEvent;
 
 pub mod artifacts;
 pub mod attachments;
+pub mod bots;
 pub mod compaction;
 mod context;
 pub mod context_offloading;
@@ -38,7 +39,6 @@ pub mod scratchpad;
 pub mod session_files;
 pub mod sessions;
 pub mod subagents;
-pub mod swarm;
 pub mod tasks;
 pub mod tools;
 

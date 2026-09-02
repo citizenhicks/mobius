@@ -77,7 +77,7 @@ extension GatewayWireTests {
         XCTAssertNil(provider["api_key_env"])
         XCTAssertEqual(registered["model_ids"] as? [String], ["gpt-5.6-sol", "gpt-5.6-mini"])
         XCTAssertEqual(registered["reasoning_efforts"] as? [String], ["medium", "high"])
-        XCTAssertEqual(registered["replace_existing_selections"] as? Bool, false)
+        XCTAssertNil(registered["replace_existing_selections"])
         XCTAssertEqual(registered["label"] as? String, "Work")
         XCTAssertEqual(registered["tint"] as? String, "purple")
 
@@ -141,14 +141,14 @@ extension GatewayWireTests {
         XCTAssertEqual(request["instance"] as? String, "openai-work")
     }
 
-    func testConfigureDefaultAgentUsesDefaultRevisionWithoutSessionScope() throws {
-        let request = try requestObject(.configureDefaultAgent(
+    func testConfigureBotDefaultsUsesTemplateRevisionWithoutSessionScope() throws {
+        let request = try requestObject(.configureBotDefaults(
             requestID: "default-1",
             expectedRevision: 4,
             config: composition
         ))
 
-        XCTAssertEqual(request["type"] as? String, "configure_default_agent")
+        XCTAssertEqual(request["type"] as? String, "configure_bot_defaults")
         XCTAssertEqual(request["request_id"] as? String, "default-1")
         XCTAssertEqual(request["expected_revision"] as? Int, 4)
         XCTAssertNil(request["session_id"])
@@ -162,7 +162,7 @@ extension GatewayWireTests {
 
         var inherited = composition
         inherited.middleware.setSetting(nil, middleware: "subagents", setting: "model_route")
-        let inheritedRequest = try requestObject(.configureDefaultAgent(
+        let inheritedRequest = try requestObject(.configureBotDefaults(
             requestID: "default-2",
             expectedRevision: 4,
             config: inherited

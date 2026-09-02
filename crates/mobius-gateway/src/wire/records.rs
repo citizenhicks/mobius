@@ -4,11 +4,12 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReadyPayload {
     pub machine_name: String,
+    pub bots: Vec<BotRecord>,
     pub sessions: Vec<SessionRecord>,
     pub swarms: Vec<SwarmRecord>,
     pub providers: Vec<ProviderStatus>,
     pub provider_instances: Vec<ProviderInstance>,
-    pub default_config: Option<VersionedAgentConfig>,
+    pub bot_defaults: Option<VersionedAgentConfig>,
     pub models: Vec<ModelChoice>,
     pub model_providers: BTreeMap<String, String>,
     pub middleware_features: Vec<MiddlewareFeature>,
@@ -18,21 +19,21 @@ pub struct ReadyPayload {
     pub session_file_limits: SessionFileLimits,
 }
 
-/// One gateway-managed group of ordinary visible sessions.
+/// One gateway-managed group of durable Bots.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SwarmRecord {
     pub id: String,
     pub title: String,
-    pub leader_session_id: String,
+    pub leader_bot_id: String,
     pub members: Vec<SwarmMemberRecord>,
     pub messages: Vec<SwarmMessageRecord>,
     pub updated_at_ms: i64,
 }
 
-/// Stable per-swarm identity for one member conversation.
+/// Stable identity for one Bot in a Swarm.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SwarmMemberRecord {
-    pub session_id: String,
+    pub bot_id: String,
     pub handle: String,
 }
 
@@ -41,10 +42,21 @@ pub struct SwarmMemberRecord {
 pub struct SwarmMessageRecord {
     pub id: String,
     pub sequence: u64,
-    pub author_session_id: String,
+    pub author_bot_id: String,
     pub author_handle: String,
+    pub source_session_id: String,
     pub text: String,
     pub created_at_ms: i64,
+    pub in_reply_to_message_id: Option<String>,
+    pub reply_depth: u8,
+}
+
+/// Gateway-managed scratchpad selected by a human-facing management request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ScratchpadScope {
+    Global,
+    Swarm { id: String },
 }
 
 /// Frontend-safe state for one opened session.
@@ -61,7 +73,6 @@ pub struct SessionReadyPayload {
     pub compaction_count: u64,
     pub context_limit_tokens: Option<i64>,
     pub run_stats: RunStats,
-    pub config: VersionedAgentConfig,
 }
 
 /// One currently mounted capability widget and its owning namespace.
@@ -521,13 +532,25 @@ pub struct DailyUsage {
     pub usage: TokenUsage,
 }
 
-/// One frontend-safe scheduled task.
+/// One durable Bot profile.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CronTask {
+pub struct BotRecord {
     pub id: String,
-    pub source_session_id: String,
-    pub task: String,
-    pub schedule: CronSchedule,
+    pub handle: String,
+    pub name: String,
+    pub description: String,
+    pub tint: ProviderTint,
+    pub config: VersionedAgentConfig,
+}
+
+/// One Bot-owned routine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Routine {
+    pub id: String,
+    pub bot_id: String,
+    pub workspace: PathBuf,
+    pub instructions: String,
+    pub schedule: RoutineSchedule,
     pub ends_at: Option<i64>,
     pub enabled: bool,
     pub finished: bool,
@@ -536,8 +559,8 @@ pub struct CronTask {
 
 /// A user-selected scheduling rule.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CronSchedule {
-    pub kind: CronScheduleKind,
+pub struct RoutineSchedule {
+    pub kind: RoutineScheduleKind,
     pub at: Option<i64>,
     pub every_seconds: Option<u64>,
     pub expression: Option<String>,
@@ -547,38 +570,38 @@ pub struct CronSchedule {
 /// The supported scheduling rule families.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum CronScheduleKind {
+pub enum RoutineScheduleKind {
     Once,
     Interval,
     Cron,
 }
 
-/// A read-only page of a scheduled run transcript.
+/// A read-only page of a Bot routine transcript.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CronRunPreview {
-    pub task: CronTask,
-    pub run: CronRun,
+pub struct RoutineRunPreview {
+    pub routine: Routine,
+    pub run: RoutineRun,
     pub records: Vec<RecordedEvent>,
     pub next_before_sequence: Option<u64>,
 }
 
-/// One completed or active invocation of a scheduled task.
+/// One completed or active invocation of a Bot routine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CronRun {
+pub struct RoutineRun {
     pub id: String,
-    pub task_id: String,
-    pub source_session_id: String,
+    pub routine_id: String,
+    pub bot_id: String,
     pub started_at: i64,
     pub finished_at: Option<i64>,
-    pub status: CronRunStatus,
+    pub status: RoutineRunStatus,
     pub session_id: Option<String>,
     pub message: Option<String>,
 }
 
-/// Durable state of one cron invocation.
+/// Durable state of one routine invocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum CronRunStatus {
+pub enum RoutineRunStatus {
     Running,
     Succeeded,
     Failed,

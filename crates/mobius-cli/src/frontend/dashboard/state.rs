@@ -11,8 +11,10 @@ pub(super) struct DashboardState {
     pub(super) current_client_id: Option<String>,
     pub(super) selected_client_id: Option<String>,
     pub(super) selected_session_id: Option<String>,
+    pub(super) selected_bot_id: Option<String>,
     pub(super) device_list: ListState,
     pub(super) chat_list: ListState,
+    pub(super) bot_list: ListState,
     pub(super) focus: DashboardFocus,
     pub(super) pending_unpair: Option<(String, String)>,
     pub(super) profile: Option<ProfileSnapshot>,
@@ -205,8 +207,19 @@ impl CapabilityOverlay {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DashboardFocus {
     Devices,
     Chats,
+    Bots,
+}
+
+impl DashboardFocus {
+    pub(super) const fn next(self) -> Self {
+        match self {
+            Self::Devices => Self::Chats,
+            Self::Chats => Self::Bots,
+            Self::Bots => Self::Devices,
+        }
+    }
 }

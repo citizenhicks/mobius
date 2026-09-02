@@ -1,5 +1,53 @@
 use super::*;
 
+#[tokio::test]
+async fn checkpoint_version_hard_rejects_the_previous_session_context_shape() {
+    let workspace = tempfile::tempdir().expect("create workspace");
+    let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
+        .expect("open checkpoint database");
+    let mut checkpoint = checkpoint("session");
+    assert_eq!(checkpoint.version, 12);
+    for version in [9, 11] {
+        checkpoint.version = version;
+        let error = store
+            .save(&checkpoint, &[], None)
+            .await
+            .expect_err("older checkpoint shape must fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("unsupported checkpoint version {version}"))
+        );
+    }
+}
+
+#[test]
+fn open_hard_rejects_the_previous_session_context_schema() {
+    for version in [6, 7] {
+        let workspace = tempfile::tempdir().expect("create workspace");
+        let path = workspace.path().join("checkpoints.sqlite3");
+        drop(SqliteCheckpoint::new(&path).expect("create current database"));
+        let connection = Connection::open(&path).expect("open database");
+        connection
+            .pragma_update(None, "user_version", version)
+            .expect("set older schema version");
+        drop(connection);
+
+        let error = SqliteCheckpoint::new(path)
+            .err()
+            .expect("older session-context schema must fail");
+
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "checkpoint error: unsupported SQLite schema version {version}; expected 8 \
+                 (start with a fresh database)"
+            )
+        );
+    }
+}
+
 #[test]
 fn open_rejects_a_nonempty_unversioned_database() {
     let workspace = tempfile::tempdir().expect("create workspace");
@@ -17,7 +65,7 @@ fn open_rejects_a_nonempty_unversioned_database() {
     assert_eq!(
         error.to_string(),
         "checkpoint error: unversioned SQLite database is not empty; expected schema version \
-             6 (start with a fresh database)"
+             8 (start with a fresh database)"
     );
 }
 
@@ -28,7 +76,7 @@ async fn load_completes_while_another_connection_holds_a_write_transaction() {
         SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
             .expect("open checkpoint database"),
     );
-    let checkpoint = Checkpoint::empty("session");
+    let checkpoint = checkpoint("session");
     store
         .save(&checkpoint, &[], None)
         .await
@@ -72,7 +120,7 @@ async fn save_rejects_a_nonadvancing_sequence() {
     let workspace = tempfile::tempdir().expect("create workspace");
     let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
         .expect("open checkpoint database");
-    let mut checkpoint = Checkpoint::empty("session");
+    let mut checkpoint = checkpoint("session");
     checkpoint.sequence = 2;
 
     store

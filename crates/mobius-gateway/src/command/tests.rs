@@ -158,7 +158,7 @@ fn bootstrap_cleans_state_when_the_control_token_cannot_be_saved() {
 
 #[cfg(unix)]
 #[test]
-fn reset_default_agent_reapplies_defaults_without_changing_other_gateway_state() {
+fn reset_bot_defaults_reapplies_defaults_without_changing_other_gateway_state() {
     let directory = tempfile::tempdir().expect("gateway state parent");
     let state = directory.path().join("gateway");
     let (store, config) = ConfigStore::initialize(state.clone(), DEFAULT_LISTEN, None)
@@ -173,18 +173,18 @@ fn reset_default_agent_reapplies_defaults_without_changing_other_gateway_state()
             Vec::new(),
         )
         .expect("register provider");
-    let current = config.default_agent.as_ref().expect("default agent");
+    let current = config.bot_defaults.as_ref().expect("Bot defaults");
     let mut custom = current.config.clone();
     custom.system_prompt = "custom prompt".into();
     custom.max_model_steps = 3;
     custom.middleware.set_enabled("tasks", true);
     let config = config
-        .replacing_default_agent(current.revision, custom)
+        .replacing_bot_defaults(current.revision, custom)
         .expect("customize defaults");
     store.save(&config).expect("save customized defaults");
-    let current = config.default_agent.as_ref().expect("custom default");
+    let current = config.bot_defaults.as_ref().expect("custom Bot defaults");
     let expected = config
-        .replacing_default_agent(
+        .replacing_bot_defaults(
             current.revision,
             crate::wire::AgentComposition {
                 provider,
@@ -193,7 +193,7 @@ fn reset_default_agent_reapplies_defaults_without_changing_other_gateway_state()
         )
         .expect("expected reset");
 
-    reset_default_agent(state.clone()).expect("reset default agent");
+    reset_bot_defaults(state.clone()).expect("reset Bot defaults");
     let (_, actual) = ConfigStore::open(state).expect("open reset config");
 
     assert_eq!(actual, expected);
@@ -343,9 +343,9 @@ fn parse_bootstrap_commands_accept_only_their_machine_interface() {
 }
 
 #[test]
-fn parse_reset_default_agent_accepts_an_explicit_state_directory() {
+fn parse_reset_bot_defaults_accepts_an_explicit_state_directory() {
     let command = parse(vec![
-        "reset-default-agent".into(),
+        "reset-bot-defaults".into(),
         "--state-dir".into(),
         "/tmp/mobius".into(),
     ])
@@ -353,7 +353,7 @@ fn parse_reset_default_agent_accepts_an_explicit_state_directory() {
 
     assert!(matches!(
         command,
-        Command::ResetDefaultAgent { state_dir }
+        Command::ResetBotDefaults { state_dir }
             if state_dir == std::path::Path::new("/tmp/mobius")
     ));
 }
@@ -507,13 +507,13 @@ async fn register_provider_command_is_idempotent() {
     .await
     .expect("register provider");
     let (_, persisted) = ConfigStore::open(state.clone()).expect("registered provider");
-    let default = persisted.default_agent.expect("default agent");
+    let default = persisted.bot_defaults.expect("Bot defaults");
     let mut selected = default.config;
     selected.provider.reasoning_effort = Some("high".into());
     let request_id = Uuid::new_v4().to_string();
     let (sender, mut events) = dashboard.into_parts();
     sender
-        .send(ClientMessage::ConfigureDefaultAgent {
+        .send(ClientMessage::ConfigureBotDefaults {
             request_id: request_id.clone(),
             expected_revision: default.revision,
             config: selected,
@@ -525,7 +525,7 @@ async fn register_provider_command_is_idempotent() {
         let frame = events
             .next()
             .await
-            .expect("default-agent response")
+            .expect("Bot-default response")
             .expect("gateway connection");
         match frame.message {
             ServerMessage::GatewayConfigured {
@@ -538,11 +538,11 @@ async fn register_provider_command_is_idempotent() {
                 request_id: actual,
                 message,
                 ..
-            } if actual == request_id => panic!("default-agent selection rejected: {message}"),
+            } if actual == request_id => panic!("Bot-default selection rejected: {message}"),
             _ => {}
         }
     }
-    assert!(saved, "gateway did not confirm the default-agent selection");
+    assert!(saved, "gateway did not confirm the Bot-default selection");
 
     let (store, mut persisted) = ConfigStore::open(state.clone()).expect("configured default");
     persisted
@@ -582,9 +582,9 @@ async fn register_provider_command_is_idempotent() {
             configured.model_ids.as_slice(),
             configured.reasoning_efforts.as_slice(),
             config
-                .default_agent
+                .bot_defaults
                 .as_ref()
-                .expect("default agent")
+                .expect("Bot defaults")
                 .config
                 .provider
                 .reasoning_effort

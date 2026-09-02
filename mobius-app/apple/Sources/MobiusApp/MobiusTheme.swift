@@ -15,7 +15,7 @@ enum MobiusSymbol {
 
     /// Semantic protocol tokens plus provider artwork known by this client.
     private static let vocabulary: [String: MobiusGlyph] = [
-        "agent": .robot,
+        "agent": .aiScan,
         "brain": .brain,
         "branch": .gitBranch,
         "chat": .chatCircle,

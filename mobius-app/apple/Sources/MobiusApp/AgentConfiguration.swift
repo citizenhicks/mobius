@@ -438,7 +438,7 @@ struct DailyUsage: Codable, Equatable, Sendable {
     let usage: TokenUsage
 }
 
-enum CronScheduleKind: String, Codable, CaseIterable, Identifiable, Sendable {
+enum RoutineScheduleKind: String, Codable, CaseIterable, Identifiable, Sendable {
     case once
     case interval
     case cron
@@ -446,8 +446,8 @@ enum CronScheduleKind: String, Codable, CaseIterable, Identifiable, Sendable {
     var id: Self { self }
 }
 
-struct CronSchedule: Codable, Equatable, Sendable {
-    let kind: CronScheduleKind
+struct RoutineSchedule: Codable, Equatable, Sendable {
+    let kind: RoutineScheduleKind
     let at: Int64?
     let everySeconds: Int64?
     let expression: String?
@@ -472,55 +472,56 @@ struct CronSchedule: Codable, Equatable, Sendable {
     }
 }
 
-struct SimpleCronSchedule: Equatable {
+struct SimpleRoutineSchedule: Equatable {
     let minute: Int
     let hour: Int
     let weekday: Int?
 }
 
-func simpleCronSchedule(_ expression: String) -> SimpleCronSchedule? {
+func simpleRoutineSchedule(_ expression: String) -> SimpleRoutineSchedule? {
     let fields = expression.split(whereSeparator: \.isWhitespace)
     guard fields.count == 5,
           fields[2] == "*", fields[3] == "*",
           let minute = Int(fields[0]), (0..<60).contains(minute),
           let hour = Int(fields[1]), (0..<24).contains(hour)
     else { return nil }
-    if fields[4] == "*" { return SimpleCronSchedule(minute: minute, hour: hour, weekday: nil) }
+    if fields[4] == "*" { return SimpleRoutineSchedule(minute: minute, hour: hour, weekday: nil) }
     guard let weekday = Int(fields[4]), (0...7).contains(weekday) else { return nil }
-    return SimpleCronSchedule(minute: minute, hour: hour, weekday: weekday == 7 ? 0 : weekday)
+    return SimpleRoutineSchedule(minute: minute, hour: hour, weekday: weekday == 7 ? 0 : weekday)
 }
 
-struct CronTask: Identifiable, Codable, Equatable, Sendable {
+struct Routine: Identifiable, Codable, Equatable, Sendable {
     let id: String
-    let sourceSessionId: String
-    let task: String
-    let schedule: CronSchedule
+    let botId: String
+    let workspace: String
+    let instructions: String
+    let schedule: RoutineSchedule
     let endsAt: Int64?
     let enabled: Bool
     let finished: Bool
     let nextRunAt: Int64?
 }
 
-struct CronRun: Identifiable, Codable, Equatable, Sendable {
+struct RoutineRun: Identifiable, Codable, Equatable, Sendable {
     let id: String
-    let taskId: String
-    let sourceSessionId: String
+    let routineId: String
+    let botId: String
     let startedAt: Int64
     let finishedAt: Int64?
-    let status: CronRunStatus
+    let status: RoutineRunStatus
     let sessionId: String?
     let message: String?
 }
 
-struct CronRunPreview: Decodable, Sendable {
+struct RoutineRunPreview: Decodable, Sendable {
     let requestID: String
-    let task: CronTask
-    let run: CronRun
+    let routine: Routine
+    let run: RoutineRun
     let records: [RecordedEvent]
     let nextBeforeSequence: UInt64?
 }
 
-enum CronRunStatus: String, Codable, Equatable, Sendable {
+enum RoutineRunStatus: String, Codable, Equatable, Sendable {
     case running
     case succeeded
     case failed

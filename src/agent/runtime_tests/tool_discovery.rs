@@ -161,6 +161,7 @@ fn discovery_config(
         ))]))]),
         "test prompt",
     )
+    .session_context(test_session_context())
     .session_id(session_id)
 }
 
@@ -369,6 +370,7 @@ async fn tool_hidden_after_inference_never_reaches_approval() {
         ]),
         "test prompt",
     )
+    .session_context(test_session_context())
     .session_id("live-tool-exposure");
     let mut agent = create_agent(config).await.expect("create agent");
     agent
@@ -452,6 +454,7 @@ async fn compaction_preserves_loaded_deferred_tools() {
         ]),
         "test prompt",
     )
+    .session_context(test_session_context())
     .session_id("compacted-tool-discovery");
     let mut agent = create_agent(config).await.expect("create agent");
 

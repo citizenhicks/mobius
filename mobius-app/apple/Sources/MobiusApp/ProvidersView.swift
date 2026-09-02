@@ -344,8 +344,8 @@ private struct ProviderFormSections: View {
                 SettingsStackedField(
                     title: "Model ID(s)",
                     info: status.modelIdsConfigurable
-                        ? "Enter one or more exact provider model IDs separated by commas. Whitespace, empty entries, and duplicates are ignored. Pick one per chat in the composer."
-                        : "Every model above is available. Pick one per chat in the composer."
+                        ? "Enter one or more exact provider model IDs separated by commas. Whitespace, empty entries, and duplicates are ignored. Assign one to each Bot in Bots."
+                        : "Every model above is available to assign to Bots."
                 ) {
                     if status.modelIdsConfigurable {
                         TextField(

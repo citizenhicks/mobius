@@ -15,6 +15,7 @@ use mobius::backend::sandbox::{
 };
 use mobius::middleware::artifacts::Artifacts;
 use mobius::middleware::attachments::Attachments;
+use mobius::middleware::bots::{Bots, BotsBackend};
 use mobius::middleware::compaction::Compaction;
 use mobius::middleware::context_offloading::ContextOffloading;
 use mobius::middleware::extensions::{Extensions, MANIFEST as EXTENSIONS_MANIFEST};
@@ -24,7 +25,6 @@ use mobius::middleware::scratchpad::{Scratchpad, ScratchpadStore};
 use mobius::middleware::session_files::SessionFileStore;
 use mobius::middleware::sessions::Sessions;
 use mobius::middleware::subagents::{SubagentLaunch, SubagentLauncher, Subagents};
-use mobius::middleware::swarm::{Swarm, SwarmBackend};
 use mobius::middleware::tasks::Tasks;
 use mobius::middleware::tools::Tools;
 use mobius::middleware::{Middleware, MiddlewareStack};
@@ -65,7 +65,7 @@ pub(crate) async fn assemble(
     checkpoints: Arc<dyn CheckpointStore>,
     scratchpad: ScratchpadStore,
     session_files: SessionFileStore,
-    swarm: Arc<dyn SwarmBackend>,
+    swarm: Arc<dyn BotsBackend>,
     session_id: Option<String>,
     origin_label: &str,
     override_saved_model_route: bool,
@@ -166,6 +166,7 @@ pub(crate) async fn assemble(
     let (middleware, template) = build_middleware(
         &chat.agent.config.middleware,
         &chat.workspace,
+        &chat.bot_id,
         Arc::clone(&gateway),
         scratchpad,
         session_files,
@@ -188,27 +189,28 @@ pub(crate) async fn assemble(
     let max_model_steps = usize::try_from(chat.agent.config.max_model_steps).map_err(|_| {
         Error::Config("maximum model steps exceed this platform's supported range".into())
     })?;
-    let mut agent_config = AgentConfig::new(
-        models,
-        sandbox,
-        checkpoints,
-        middleware,
-        chat.agent.config.system_prompt.clone(),
-    )
-    .context_window(context_window)
-    .initial_replay_batches(0)
-    .max_model_steps(max_model_steps)
-    .metadata(metadata)
-    .usage_observer(move |route, usage| {
-        persist_usage(&gateway, &usage_store, &model_providers, route, usage)
-    })
-    .session_context(SessionContext {
-        user_name: local_user_name(),
-        workspace_id: Some(workspace.id),
-        workspace_label: Some(workspace.path.display().to_string()),
-        origin_label: Some(origin_label.into()),
-        ..SessionContext::default()
-    });
+    let system_prompt = format!(
+        "{}\n\n{}",
+        chat.bot_description, chat.agent.config.system_prompt
+    );
+    let mut agent_config =
+        AgentConfig::new(models, sandbox, checkpoints, middleware, system_prompt)
+            .context_window(context_window)
+            .catalog_visible(chat.catalog_visible)
+            .initial_replay_batches(0)
+            .max_model_steps(max_model_steps)
+            .metadata(metadata)
+            .usage_observer(move |route, usage| {
+                persist_usage(&gateway, &usage_store, &model_providers, route, usage)
+            })
+            .session_context(SessionContext {
+                bot_id: chat.bot_id.clone(),
+                user_name: local_user_name(),
+                workspace_id: Some(workspace.id),
+                workspace_label: Some(workspace.path.display().to_string()),
+                origin_label: Some(origin_label.into()),
+                ..SessionContext::default()
+            });
     if let Some(session_id) = session_id {
         agent_config = agent_config.session_id(session_id);
     }
@@ -497,10 +499,11 @@ fn unavailable_models(
 fn build_middleware(
     settings: &MiddlewareConfig,
     workspace: &std::path::Path,
+    bot_id: &str,
     gateway: Arc<Mutex<GatewayConfig>>,
     scratchpad: ScratchpadStore,
     session_files: SessionFileStore,
-    swarm: Arc<dyn SwarmBackend>,
+    swarm: Arc<dyn BotsBackend>,
     backend: Arc<dyn SandboxBackend>,
     resolved_extensions: &ResolvedExtensions,
     mut extensions: Option<Extensions>,
@@ -521,7 +524,8 @@ fn build_middleware(
             BuiltinMiddleware::Tools => Arc::new(Tools::coding()),
             BuiltinMiddleware::Instructions => Arc::new(Instructions::discover(workspace)?),
             BuiltinMiddleware::Scratchpad => Arc::new(
-                Scratchpad::new(scratchpad.clone()).agent_enabled(settings.enabled("scratchpad")),
+                Scratchpad::new(scratchpad.clone(), Arc::clone(&swarm), bot_id.to_owned())
+                    .agent_enabled(settings.enabled("scratchpad")),
             ),
             BuiltinMiddleware::Extensions => Arc::new(
                 extensions
@@ -603,7 +607,7 @@ fn build_middleware(
             BuiltinMiddleware::Sessions => Arc::new(Sessions::new(
                 crate::middleware_manifest::usize_setting(settings, "sessions", "page_size")?,
             )?),
-            BuiltinMiddleware::Swarm => Arc::new(Swarm::new(Arc::clone(&swarm))),
+            BuiltinMiddleware::Bots => Arc::new(Bots::new(Arc::clone(&swarm), bot_id.to_owned())),
         };
         entries.push(middleware);
     }

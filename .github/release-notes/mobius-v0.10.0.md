@@ -1,0 +1,1 @@
+Make Bot identity required session context, add Bot-scoped BM25 thread search, replace the Swarm middleware with Bot-owned collaboration, and extend scratchpads with explicit Swarm promotion and shared notes. Checkpoint 12 and SQLite schema 8 are strict; older state requires an offline migration.

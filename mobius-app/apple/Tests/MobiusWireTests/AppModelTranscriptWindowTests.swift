@@ -262,6 +262,7 @@ extension AppModelTests {
             store: store,
             requestSender: { request in await recorder.record(request) }
         )
+        model.bots = [bot()]
         model.accounts = [account]
         model.selectedAccountID = account.id
         model.connectionState = .ready
@@ -441,6 +442,7 @@ extension AppModelTests {
             store: store,
             requestSender: { request in await recorder.record(request) }
         )
+        model.bots = [bot()]
         model.accounts = [account]
         model.selectedAccountID = account.id
         model.connectionState = .ready
@@ -525,6 +527,7 @@ extension AppModelTests {
             store: store,
             requestSender: { request in await recorder.record(request) }
         )
+        model.bots = [bot()]
         model.accounts = [account]
         model.selectedAccountID = account.id
         model.connectionState = .ready

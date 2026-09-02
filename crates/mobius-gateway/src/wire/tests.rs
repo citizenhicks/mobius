@@ -67,10 +67,13 @@ fn swarm_message_records_use_text_as_the_payload_name() {
     let record = SwarmMessageRecord {
         id: "message-a".into(),
         sequence: 1,
-        author_session_id: "session-a".into(),
-        author_handle: "agent_a".into(),
+        author_bot_id: "bot-a".into(),
+        author_handle: "reviewer".into(),
+        source_session_id: "session-a".into(),
         text: "Review this".into(),
         created_at_ms: 1,
+        in_reply_to_message_id: None,
+        reply_depth: 0,
     };
 
     let encoded = serde_json::to_value(record).expect("encode swarm message");
@@ -80,10 +83,13 @@ fn swarm_message_records_use_text_as_the_payload_name() {
         serde_json::json!({
             "id": "message-a",
             "sequence": 1,
-            "author_session_id": "session-a",
-            "author_handle": "agent_a",
+            "author_bot_id": "bot-a",
+            "author_handle": "reviewer",
+            "source_session_id": "session-a",
             "text": "Review this",
             "created_at_ms": 1,
+            "in_reply_to_message_id": null,
+            "reply_depth": 0,
         })
     );
 }
@@ -183,8 +189,9 @@ fn ssh_identity_wire_record_has_no_key_or_path_material() {
 
 #[tokio::test]
 async fn framed_reader_retains_a_partial_prefix_when_cancelled() {
-    let first = ClientFrame::new(ClientMessage::ListCron {
+    let first = ClientFrame::new(ClientMessage::ListRoutines {
         request_id: "request-a".into(),
+        bot_id: None,
     });
     let second = ClientFrame::new(ClientMessage::GetProfile {
         request_id: "request-b".into(),
@@ -315,10 +322,11 @@ fn protocol_v10_rejects_an_untargeted_capability_shape() {
 }
 
 #[test]
-fn session_creation_uses_a_gateway_host_workspace() {
+fn session_creation_requires_a_gateway_workspace_and_bot() {
     let frame = ClientFrame::new(ClientMessage::CreateSession {
         request_id: "request-a".into(),
         workspace: PathBuf::from("/srv/mobius/project"),
+        bot_id: "bot-a".into(),
     });
 
     let encoded = serde_json::to_value(frame).expect("encode session creation");
@@ -329,7 +337,8 @@ fn session_creation_uses_a_gateway_host_workspace() {
             "version": PROTOCOL_VERSION,
             "type": "create_session",
             "request_id": "request-a",
-            "workspace": "/srv/mobius/project"
+            "workspace": "/srv/mobius/project",
+            "bot_id": "bot-a"
         })
     );
 }
@@ -338,8 +347,9 @@ fn session_creation_uses_a_gateway_host_workspace() {
 fn swarm_management_frames_keep_request_correlation_out_of_broadcasts() {
     let create = ClientFrame::new(ClientMessage::CreateSwarm {
         request_id: "request-swarm".into(),
-        leader_session_id: "leader".into(),
-        member_session_ids: vec!["leader".into(), "reviewer".into()],
+        title: "Review team".into(),
+        leader_bot_id: "leader".into(),
+        member_bot_ids: vec!["leader".into(), "reviewer".into()],
     });
     let broadcast = ServerFrame::new(ServerMessage::Swarms {
         request_id: None,
@@ -352,8 +362,9 @@ fn swarm_management_frames_keep_request_correlation_out_of_broadcasts() {
             "version": PROTOCOL_VERSION,
             "type": "create_swarm",
             "request_id": "request-swarm",
-            "leader_session_id": "leader",
-            "member_session_ids": ["leader", "reviewer"]
+            "title": "Review team",
+            "leader_bot_id": "leader",
+            "member_bot_ids": ["leader", "reviewer"]
         })
     );
     assert!(
@@ -403,7 +414,6 @@ fn provider_registration_is_gateway_scoped() {
         tint: Default::default(),
         model_ids: Vec::new(),
         reasoning_efforts: Vec::new(),
-        replace_existing_selections: false,
     });
 
     let encoded = serde_json::to_value(frame).expect("encode provider registration");
@@ -413,7 +423,6 @@ fn provider_registration_is_gateway_scoped() {
     assert_eq!(encoded["config"]["endpoint_auth"], "provider_default");
     assert_eq!(encoded["model_ids"], serde_json::json!([]));
     assert_eq!(encoded["reasoning_efforts"], serde_json::json!([]));
-    assert_eq!(encoded["replace_existing_selections"], false);
     assert!(encoded.get("session_id").is_none());
 }
 
@@ -452,8 +461,7 @@ fn provider_registration_requires_a_reasoning_catalog() {
         },
         "label": "OpenRouter",
         "tint": "blue",
-        "model_ids": ["openai/gpt-5"],
-        "replace_existing_selections": false
+        "model_ids": ["openai/gpt-5"]
     });
 
     let error = serde_json::from_value::<ClientFrame>(frame)
@@ -495,18 +503,20 @@ fn opening_a_session_owns_its_replay_cursor() {
 }
 
 #[test]
-fn cron_management_is_gateway_scoped_and_structured() {
+fn routine_management_is_bot_owned_and_structured() {
     let frames = [
-        ClientMessage::ListCron {
+        ClientMessage::ListRoutines {
             request_id: "list".into(),
+            bot_id: Some("bot-a".into()),
         },
-        ClientMessage::UpdateCron {
+        ClientMessage::UpdateRoutine {
             request_id: "reschedule".into(),
-            id: "cron-a".into(),
-            source_session_id: "session-a".into(),
-            task: "Review pull requests".into(),
-            schedule: CronSchedule {
-                kind: CronScheduleKind::Cron,
+            id: "routine-a".into(),
+            bot_id: "bot-a".into(),
+            workspace: PathBuf::from("/srv/mobius/project"),
+            instructions: "Review pull requests".into(),
+            schedule: RoutineSchedule {
+                kind: RoutineScheduleKind::Cron,
                 at: None,
                 every_seconds: None,
                 expression: Some("0 9 * * *".into()),
@@ -515,15 +525,15 @@ fn cron_management_is_gateway_scoped_and_structured() {
             ends_at: None,
             enabled: true,
         },
-        ClientMessage::DeleteCron {
+        ClientMessage::DeleteRoutine {
             request_id: "delete".into(),
-            id: "cron-a".into(),
+            id: "routine-a".into(),
         },
-        ClientMessage::RunCron {
+        ClientMessage::RunRoutine {
             request_id: "run".into(),
-            id: "cron-a".into(),
+            id: "routine-a".into(),
         },
-        ClientMessage::ListCronHistory {
+        ClientMessage::ListRoutineHistory {
             request_id: "history".into(),
             id: None,
         },
@@ -532,7 +542,7 @@ fn cron_management_is_gateway_scoped_and_structured() {
     let encoded = frames
         .into_iter()
         .map(ClientFrame::new)
-        .map(|frame| serde_json::to_value(frame).expect("encode cron operation"))
+        .map(|frame| serde_json::to_value(frame).expect("encode routine operation"))
         .collect::<Vec<_>>();
 
     assert!(
@@ -545,17 +555,30 @@ fn cron_management_is_gateway_scoped_and_structured() {
 }
 
 #[test]
-fn cron_run_preview_is_correlated_and_cursored() {
-    let request = ClientFrame::new(ClientMessage::GetCronRunPreview {
+fn routine_run_preview_is_correlated_and_cursored() {
+    let request = ClientFrame::new(ClientMessage::GetRoutineRunPreview {
         request_id: "preview".into(),
         id: "run-a".into(),
         before_sequence: Some(8),
     });
     let encoded = serde_json::to_value(request).expect("encode preview request");
 
-    assert_eq!(encoded["type"], "get_cron_run_preview");
+    assert_eq!(encoded["type"], "get_routine_run_preview");
     assert_eq!(encoded["id"], "run-a");
     assert_eq!(encoded["before_sequence"], 8);
+}
+
+#[test]
+fn routine_run_deletion_is_correlated() {
+    let request = ClientFrame::new(ClientMessage::DeleteRoutineRun {
+        request_id: "delete-run".into(),
+        id: "run-a".into(),
+    });
+    let encoded = serde_json::to_value(request).expect("encode run deletion");
+
+    assert_eq!(encoded["type"], "delete_routine_run");
+    assert_eq!(encoded["request_id"], "delete-run");
+    assert_eq!(encoded["id"], "run-a");
 }
 
 #[test]
@@ -762,7 +785,10 @@ fn agent_events_preserve_every_web_search_query() {
 fn session_record_exposes_only_frontend_catalog_fields() {
     let record = SessionRecord {
         session_id: "session-a".into(),
-        session_context: mobius::protocol::SessionContext::default(),
+        session_context: mobius::protocol::SessionContext {
+            bot_id: "bot-a".into(),
+            ..mobius::protocol::SessionContext::default()
+        },
         parent_session_id: None,
         parent_sequence: None,
         sequence: 3,
@@ -889,11 +915,12 @@ fn gateway_ready_contains_no_selected_session() {
     let frame = ServerFrame::new(ServerMessage::Ready {
         payload: ReadyPayload {
             machine_name: "snowwhite.local".into(),
+            bots: Vec::new(),
             sessions: Vec::new(),
             swarms: Vec::new(),
             providers: Vec::new(),
             provider_instances: Vec::new(),
-            default_config: Some(VersionedAgentConfig {
+            bot_defaults: Some(VersionedAgentConfig {
                 revision: 1,
                 config: AgentComposition::default(),
             }),
@@ -952,7 +979,9 @@ fn server_frame_decodes_session_opened_with_a_widget_action_tag() {
             "git": null,
             "session": {
                 "session_id": "session-a",
-                "context": {},
+                "context": {
+                    "bot_id": "bot-a"
+                },
                 "model": {
                     "route": "default",
                     "model": "model-a",
@@ -1005,30 +1034,6 @@ fn server_frame_decodes_session_opened_with_a_widget_action_tag() {
                     "total_tokens": 0
                 },
                 "active": null
-            },
-            "config": {
-                "revision": 1,
-                "config": {
-                    "provider": {
-                        "instance": "openai_codex",
-                        "provider": "openai_codex",
-                        "model": "model-a",
-                        "endpoint_auth": "provider_default",
-                        "reasoning_effort": null,
-                        "web_search": "off"
-                    },
-                    "middleware": {
-                        "enabled": [
-                            "compaction", "context_offloading", "extensions", "subagents"
-                        ],
-                        "settings": {
-                            "context_offloading": {"stale_after_tokens": 50000}
-                        }
-                    },
-                    "extensions": [],
-                    "system_prompt": "test",
-                    "max_model_steps": 256
-                }
             }
         }
     });
@@ -1149,7 +1154,7 @@ fn validate_version_requires_the_exact_protocol() {
 }
 
 #[test]
-fn global_scratchpad_messages_are_gateway_scoped() {
+fn scratchpad_messages_carry_their_management_scope() {
     let operation = Op::CapabilityCommand {
         capability: "scratchpad".into(),
         command: "scratchpad".into(),
@@ -1157,17 +1162,22 @@ fn global_scratchpad_messages_are_gateway_scoped() {
         input: None,
         target: None,
     };
-    let request = serde_json::to_value(ClientFrame::new(ClientMessage::SubmitGlobalScratchpad {
+    let request = serde_json::to_value(ClientFrame::new(ClientMessage::SubmitScratchpad {
         request_id: "scratchpad-1".into(),
+        scope: ScratchpadScope::Swarm {
+            id: "f517e178-38e3-4f2c-89ec-f787860964ea".into(),
+        },
         operation,
     }))
-    .expect("encode global scratchpad request");
+    .expect("encode scratchpad request");
 
-    assert_eq!(request["type"], "submit_global_scratchpad");
+    assert_eq!(request["type"], "submit_scratchpad");
+    assert_eq!(request["scope"]["type"], "swarm");
     assert!(request.get("session_id").is_none());
 
-    let response = ServerFrame::new(ServerMessage::GlobalScratchpadChanged {
+    let response = ServerFrame::new(ServerMessage::ScratchpadChanged {
         request_id: "scratchpad-1".into(),
+        scope: ScratchpadScope::Global,
         contribution: FrontendContribution {
             capability: "scratchpad".into(),
             ..FrontendContribution::default()

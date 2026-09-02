@@ -1,6 +1,6 @@
 [manifest]
 label = "Sessions"
-description = "Resume and fork durable chats; always available"
+description = "Resume, fork, and search Bot-owned durable chats"
 
 [setting.page_size]
 label = "Catalog page size"
@@ -15,6 +15,15 @@ description = "resume a saved chat"
 
 [command.fork]
 description = "create a resumable branch from this chat"
+
+[render]
+search_threads = "Search Bot threads"
+
+[tool.search_threads]
+description = "Search this Bot's other conversation threads using BM25 relevance ranking."
+
+[tool.search_threads.parameter.query]
+description = "Words or phrases to find in this bot's prior threads."
 
 [widget]
 fork_chat = "Fork chat"

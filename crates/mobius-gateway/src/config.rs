@@ -38,8 +38,8 @@ pub(crate) use self::validation::{effective_reasoning_effort, model_route_id};
 use self::workspace::*;
 pub(crate) use self::workspace::{create_workspace_directory, local_user_name};
 
-const CONFIG_VERSION: u32 = 21;
-const CHAT_SPEC_VERSION: u32 = 10;
+const CONFIG_VERSION: u32 = 22;
+const CHAT_SPEC_VERSION: u32 = 13;
 pub(crate) const CHAT_SPEC_METADATA_KEY: &str = "mobius_gateway.chat";
 const CONFIG_FILE: &str = "gateway.toml";
 const CLOUDFLARE_TOKEN_FILE: &str = "cloudflare-token";
@@ -96,7 +96,7 @@ pub struct GatewayConfig {
     pub listen: SocketAddr,
     pub tls: Option<TlsConfig>,
     pub cloudflare: Option<CloudflareConfig>,
-    pub default_agent: Option<VersionedAgentConfig>,
+    pub bot_defaults: Option<VersionedAgentConfig>,
     pub(crate) configured_providers: BTreeMap<String, ConfiguredProvider>,
     pub(crate) installed_extensions: BTreeMap<String, crate::extensions::InstalledExtension>,
     usage: UsageHistory,
@@ -113,13 +113,23 @@ pub(crate) struct ConfiguredProvider {
     pub(crate) reasoning_efforts: Vec<String>,
 }
 
-/// Durable runtime recipe copied into one chat checkpoint.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// Runtime recipe resolved from one durable Bot profile and chat workspace.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ChatSpec {
     version: u32,
     pub(crate) workspace: PathBuf,
+    pub(crate) bot_id: String,
+    pub(crate) bot_description: String,
     pub(crate) agent: VersionedAgentConfig,
+    pub(crate) catalog_visible: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredChatSpec {
+    version: u32,
+    workspace: PathBuf,
+    bot_id: String,
 }
 
 impl Default for AgentComposition {
@@ -151,14 +161,14 @@ impl Default for AgentComposition {
 }
 
 impl GatewayConfig {
-    /// Builds validated machine-wide settings and new-chat defaults.
+    /// Builds validated machine-wide settings and Bot-creation defaults.
     pub fn new(listen: SocketAddr, tls: Option<TlsConfig>) -> Result<Self> {
         let config = Self {
             version: CONFIG_VERSION,
             listen,
             tls,
             cloudflare: None,
-            default_agent: None,
+            bot_defaults: None,
             configured_providers: BTreeMap::new(),
             installed_extensions: BTreeMap::new(),
             usage: UsageHistory::default(),
@@ -175,7 +185,7 @@ impl GatewayConfig {
         Ok(config)
     }
 
-    /// Registers one configured provider and establishes the first as the new-chat default.
+    /// Registers one configured provider and establishes the first Bot defaults.
     pub(crate) fn registering_provider(
         &self,
         selection: ProviderConfig,
@@ -202,12 +212,12 @@ impl GatewayConfig {
         let mut next = self.clone();
         next.configured_providers
             .insert(selection.instance.clone(), configured);
-        if self.default_agent.is_none() {
+        if self.bot_defaults.is_none() {
             let config = AgentComposition {
                 provider: selection,
                 ..AgentComposition::default()
             };
-            next.default_agent = Some(VersionedAgentConfig {
+            next.bot_defaults = Some(VersionedAgentConfig {
                 revision: 1,
                 config,
             });
@@ -224,28 +234,28 @@ impl GatewayConfig {
             )));
         }
         if self
-            .default_agent
+            .bot_defaults
             .as_ref()
             .is_some_and(|default| default.config.provider.instance == instance)
         {
             return Err(Error::Config(
-                "choose another gateway default before removing this provider".into(),
+                "choose another provider for Bot defaults before removing this provider".into(),
             ));
         }
         let mut next = self.clone();
         next.configured_providers.remove(instance);
-        let mut default_config = next
-            .default_agent
+        let mut bot_defaults = next
+            .bot_defaults
             .as_ref()
             .expect("a removable provider cannot be the only configured provider")
             .config
             .clone();
-        if clear_missing_model_routes(&mut default_config, &next)? {
+        if clear_missing_model_routes(&mut bot_defaults, &next)? {
             let default = next
-                .default_agent
+                .bot_defaults
                 .as_mut()
                 .expect("a removable provider cannot be the only configured provider");
-            default.config = default_config;
+            default.config = bot_defaults;
             default.revision = default
                 .revision
                 .checked_add(1)
@@ -255,40 +265,14 @@ impl GatewayConfig {
         Ok(next)
     }
 
-    /// Replaces a same-provider new-chat default during an explicit fleet cutover.
-    pub(crate) fn replacing_provider_default(&self, selection: &ProviderConfig) -> Result<Self> {
-        let Some(current) = self.default_agent.as_ref() else {
-            return Err(Error::Config(
-                "register a provider before replacing its default".into(),
-            ));
-        };
-        if current.config.provider.instance != selection.instance
-            || current.config.provider == *selection
-        {
-            return Ok(self.clone());
-        }
-        let mut next = self.clone();
-        let mut config = current.config.clone();
-        config.provider = selection.clone();
-        next.default_agent = Some(VersionedAgentConfig {
-            revision: current
-                .revision
-                .checked_add(1)
-                .ok_or_else(|| Error::Config("configuration revision overflow".into()))?,
-            config,
-        });
-        next.validate()?;
-        Ok(next)
-    }
-
     /// Replaces only the defaults copied into future chats.
-    pub(crate) fn replacing_default_agent(
+    pub(crate) fn replacing_bot_defaults(
         &self,
         expected_revision: u64,
         composition: AgentComposition,
     ) -> Result<Self> {
         let current = self
-            .default_agent
+            .bot_defaults
             .as_ref()
             .ok_or_else(|| Error::Config("configure a provider before saving defaults".into()))?;
         if current.revision != expected_revision {
@@ -298,7 +282,7 @@ impl GatewayConfig {
             )));
         }
         let mut next = self.clone();
-        next.default_agent = Some(VersionedAgentConfig {
+        next.bot_defaults = Some(VersionedAgentConfig {
             revision: current
                 .revision
                 .checked_add(1)
@@ -378,9 +362,9 @@ impl GatewayConfig {
         if let Some(cloudflare) = &self.cloudflare {
             cloudflare.validate()?;
         }
-        if self.configured_providers.is_empty() != self.default_agent.is_none() {
+        if self.configured_providers.is_empty() != self.bot_defaults.is_none() {
             return Err(Error::Config(
-                "the gateway default must exist exactly when a provider is configured".into(),
+                "Bot defaults must exist exactly when a provider is configured".into(),
             ));
         }
         for (instance, configured) in &self.configured_providers {
@@ -394,7 +378,7 @@ impl GatewayConfig {
         }
         crate::extensions::validate_installed(&self.installed_extensions)?;
         validate_custom_model_route_count(&self.configured_providers)?;
-        if let Some(default) = &self.default_agent {
+        if let Some(default) = &self.bot_defaults {
             if default.revision == 0 {
                 return Err(Error::Config(
                     "configuration revision must be positive".into(),
@@ -407,7 +391,7 @@ impl GatewayConfig {
             {
                 if !crate::provider_catalog::configured_route_exists(self, route)? {
                     return Err(Error::Config(format!(
-                        "gateway default middleware setting `{middleware}.{setting}` is not a configured model route"
+                        "Bot default middleware setting `{middleware}.{setting}` is not a configured model route"
                     )));
                 }
             }
@@ -423,16 +407,19 @@ impl GatewayConfig {
 }
 
 impl ChatSpec {
-    pub(crate) fn new(
+    pub(crate) fn for_bot(
         workspace: &Path,
-        agent: VersionedAgentConfig,
+        bot: &crate::wire::BotRecord,
         state_dir: &Path,
         tls: Option<&TlsConfig>,
     ) -> Result<Self> {
         let spec = Self {
             version: CHAT_SPEC_VERSION,
             workspace: validate_chat_workspace(workspace, state_dir, tls)?,
-            agent,
+            bot_id: bot.id.clone(),
+            bot_description: bot.description.clone(),
+            agent: bot.config.clone(),
+            catalog_visible: true,
         };
         spec.validate(state_dir, tls)?;
         Ok(spec)
@@ -440,23 +427,34 @@ impl ChatSpec {
 
     pub(crate) fn from_metadata(
         metadata: &BTreeMap<String, Value>,
+        bots: &crate::bots::BotStore,
         state_dir: &Path,
         tls: Option<&TlsConfig>,
     ) -> Result<Self> {
-        Self::from_metadata_if_present(metadata, state_dir, tls)?.ok_or_else(|| {
+        Self::from_metadata_if_present(metadata, bots, state_dir, tls)?.ok_or_else(|| {
             Error::Config("chat checkpoint has no gateway runtime configuration".into())
         })
     }
 
     pub(crate) fn from_metadata_if_present(
         metadata: &BTreeMap<String, Value>,
+        bots: &crate::bots::BotStore,
         state_dir: &Path,
         tls: Option<&TlsConfig>,
     ) -> Result<Option<Self>> {
         let Some(value) = metadata.get(CHAT_SPEC_METADATA_KEY) else {
             return Ok(None);
         };
-        let spec: Self = serde_json::from_value(value.clone())?;
+        let stored: StoredChatSpec = serde_json::from_value(value.clone())?;
+        let bot = bots.bot(&stored.bot_id)?;
+        let spec = Self {
+            version: stored.version,
+            workspace: stored.workspace,
+            bot_id: bot.id,
+            bot_description: bot.description,
+            agent: bot.config,
+            catalog_visible: true,
+        };
         spec.validate(state_dir, tls)?;
         Ok(Some(spec))
     }
@@ -464,7 +462,11 @@ impl ChatSpec {
     pub(crate) fn metadata(&self) -> Result<BTreeMap<String, Value>> {
         Ok(BTreeMap::from([(
             CHAT_SPEC_METADATA_KEY.into(),
-            serde_json::to_value(self)?,
+            serde_json::to_value(StoredChatSpec {
+                version: self.version,
+                workspace: self.workspace.clone(),
+                bot_id: self.bot_id.clone(),
+            })?,
         )]))
     }
 
@@ -474,84 +476,6 @@ impl ChatSpec {
             id: workspace_id(&self.workspace),
             path: self.workspace.clone(),
         }
-    }
-
-    pub(crate) fn replacing_agent(
-        &self,
-        expected_revision: u64,
-        composition: AgentComposition,
-        gateway: &GatewayConfig,
-        state_dir: &Path,
-        tls: Option<&TlsConfig>,
-    ) -> Result<Self> {
-        if expected_revision != self.agent.revision {
-            return Err(Error::Config(format!(
-                "configuration revision changed from {expected_revision} to {}",
-                self.agent.revision
-            )));
-        }
-        let mut next = self.clone();
-        next.agent = VersionedAgentConfig {
-            revision: self
-                .agent
-                .revision
-                .checked_add(1)
-                .ok_or_else(|| Error::Config("configuration revision overflow".into()))?,
-            config: composition,
-        };
-        next.validate(state_dir, tls)?;
-        gateway.validate_provider_selection(&next.agent.config.provider)?;
-        Ok(next)
-    }
-
-    pub(crate) fn replacing_provider_selection(
-        &self,
-        selection: &ProviderConfig,
-        gateway: &GatewayConfig,
-        state_dir: &Path,
-        tls: Option<&TlsConfig>,
-    ) -> Result<Option<Self>> {
-        if self.agent.config.provider.instance != selection.instance
-            || self.agent.config.provider == *selection
-        {
-            return Ok(None);
-        }
-        let mut composition = self.agent.config.clone();
-        composition.provider = selection.clone();
-        self.replacing_agent(self.agent.revision, composition, gateway, state_dir, tls)
-            .map(Some)
-    }
-
-    /// Falls back from provider entries removed since this chat last ran.
-    pub(crate) fn normalizing_provider_catalog(
-        &self,
-        gateway: &GatewayConfig,
-        state_dir: &Path,
-        tls: Option<&TlsConfig>,
-    ) -> Result<Self> {
-        if gateway.configured_providers.is_empty() {
-            return Ok(self.clone());
-        }
-        let mut composition = self.agent.config.clone();
-        let mut changed = false;
-        if !gateway
-            .configured_providers
-            .contains_key(&composition.provider.instance)
-        {
-            composition.provider = gateway
-                .default_agent
-                .as_ref()
-                .ok_or_else(|| Error::Config("gateway has no default provider".into()))?
-                .config
-                .provider
-                .clone();
-            changed = true;
-        }
-        changed |= clear_missing_model_routes(&mut composition, gateway)?;
-        if !changed {
-            return Ok(self.clone());
-        }
-        self.replacing_agent(self.agent.revision, composition, gateway, state_dir, tls)
     }
 
     fn validate(&self, state_dir: &Path, tls: Option<&TlsConfig>) -> Result<()> {
@@ -565,6 +489,9 @@ impl ChatSpec {
             return Err(Error::Config(
                 "chat configuration revision must be positive".into(),
             ));
+        }
+        if self.bot_id.is_empty() || self.bot_description.trim().is_empty() {
+            return Err(Error::Config("chat Bot ownership is invalid".into()));
         }
         let workspace = validate_chat_workspace(&self.workspace, state_dir, tls)?;
         if workspace != self.workspace {

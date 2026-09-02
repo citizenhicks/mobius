@@ -1,6 +1,23 @@
 import Foundation
 import SwiftUI
 
+func formatDuration(_ interval: TimeInterval) -> String {
+    let seconds = max(0, Int(interval))
+    return Duration.seconds(seconds).formatted(.time(pattern: .minuteSecond(padMinuteToLength: 1)))
+}
+
+func formatCompactDuration(_ interval: TimeInterval, locale: Locale) -> String {
+    let seconds = max(0, Int64(interval))
+    let (value, unit) = if seconds >= 3_600 {
+        (seconds / 3_600, "hrs")
+    } else if seconds >= 60 {
+        (seconds / 60, "mins")
+    } else {
+        (seconds, "secs")
+    }
+    return "\(value.formatted(.number.locale(locale))) \(unit)"
+}
+
 /// Keeps app copy localizable while making server, user, and generated text explicitly
 /// verbatim. `Text` resolves resources from the active SwiftUI locale; `resolved` exists
 /// for the animated title renderer, which needs a concrete string.
@@ -94,7 +111,7 @@ enum MobiusStyle {
     static let iconButtonSize = rowTouch
 
     // MARK: Transcript
-    /// The chat, a subagent preview, and a scheduled run draw the same transcript, so they
+    /// The chat, a subagent preview, and a Bot routine draw the same transcript, so they
     /// read these rather than each carrying their own copy of the numbers.
     static let transcriptWidth: CGFloat = 880
     static let transcriptRowSpacing = MobiusSpace.m
@@ -142,6 +159,7 @@ struct MobiusGlyph: Hashable {
     static let arrowUp = Self("hi.arrowUp")
     static let arrowUp02 = Self("hi.arrowUp02")
     static let arrowUpRight01 = Self("hi.arrowUpRight01")
+    static let aiScan = Self("hi.aiScan")
     static let aiSecurity02 = Self("hi.aiSecurity02")
     static let brain = Self("hi.brain")
     static let calendarDots = Self("hi.calendarDots")
@@ -212,7 +230,6 @@ struct MobiusGlyph: Hashable {
     static let pushPinSlash = Self("hi.pushPinSlash")
     static let question = Self("hi.question")
     static let queue01 = Self("hi.queue01")
-    static let robot = Self("hi.robot")
     static let rust = Self("hi.rust")
     static let saveAll = Self("hi.saveAll")
     static let sealCheck = Self("hi.sealCheck")

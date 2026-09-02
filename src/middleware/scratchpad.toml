@@ -1,14 +1,14 @@
 [manifest]
 label = "Scratchpad"
-description = "Keep concise session notes and explicitly approved global lessons"
+description = "Keep concise session notes and explicitly approved Swarm or global lessons"
 
 [prompt]
-main = "Use `write_scratchpad` only for concise conclusions that will improve later work in this chat. The scratchpad is a diary of learned facts, decisions, preferences, and reusable lessons, not a reasoning log. Never store chain-of-thought, private reasoning, raw tool or model output, secrets, credentials, or transient progress. Use `promote_scratchpad` only when an exact existing session note should help future chats; promotion requires approval."
+main = "Use `write_scratchpad` only for concise conclusions that will improve later work in this chat. The scratchpad is a diary of learned facts, decisions, preferences, and reusable lessons, not a reasoning log. Never store chain-of-thought, private reasoning, raw tool or model output, secrets, credentials, or transient progress. Use `promote_scratchpad` only when an exact existing session note should help either this Bot's current Swarm or every future chat; promotion requires approval."
 
 [command]
-arguments = "[read|refresh|promote <note-id>|edit <session|global> <note-id>|forget <session|global> <note-id>]"
-description = "read or manage session and global agent notes"
-usage = "! usage: scratchpad [read|refresh|promote <note-id>|edit <session|global> <note-id>|forget <session|global> <note-id>]"
+arguments = "[read|refresh|promote <global|swarm> <note-id>|edit <session|swarm|global> <note-id>|forget <session|swarm|global> <note-id>]"
+description = "read or manage session, Swarm, and global agent notes"
+usage = "! usage: scratchpad [read|refresh|promote <global|swarm> <note-id>|edit <session|swarm|global> <note-id>|forget <session|swarm|global> <note-id>]"
 
 [render]
 remember = "Remember"
@@ -21,18 +21,23 @@ description = "Add one concise learned conclusion to this session's scratchpad. 
 description = "Concise reusable fact, decision, preference, or lesson."
 
 [tool.promote_scratchpad]
-description = "Copy one exact existing session scratchpad note into the global scratchpad after approval."
+description = "Copy one exact existing session scratchpad note into the selected Swarm or global scratchpad after approval."
 
 [tool.promote_scratchpad.parameter.note]
 description = "Exact content of an existing session scratchpad note."
 
+[tool.promote_scratchpad.parameter.target]
+description = "Promotion destination: `swarm` for this Bot's current Swarm, or `global` for every chat."
+
 [widget]
 text = "Scratchpad"
 global_title = "Global Scratchpad"
+swarm_title = "Swarm Scratchpad"
 session_title = "Chat Scratchpad"
 
 [action]
-promote = "Promote"
+promote_global = "Promote Globally"
+promote_swarm = "Promote to Swarm"
 edit = "Edit"
 delete = "Delete"
 
@@ -44,11 +49,16 @@ updated_session = "updated the session scratchpad note"
 existing_session = "the session scratchpad already contains that note"
 promoted_global = "promoted the scratchpad note globally"
 upgraded_global = "upgraded the global scratchpad note provenance"
+promoted_swarm = "promoted the scratchpad note to the Swarm"
+upgraded_swarm = "upgraded the Swarm scratchpad note provenance"
 updated_provenance = "Updated the scratchpad note provenance."
 global_existing = "The global scratchpad already contains that note."
 existing_global = "the global scratchpad already contains that note"
+existing_swarm = "the Swarm scratchpad already contains that note"
+swarm_existing = "The Swarm scratchpad already contains that note."
 no_notes = "No notes."
 session_heading = "Session"
+swarm_heading = "Swarm"
 global_heading = "Global"
 agent_observation = "agent observation"
 user_confirmed = "user confirmed"

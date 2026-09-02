@@ -124,13 +124,21 @@ impl HostState {
                 }
             }
         }
-        if let Err(error) = fail_active_cron(
-            &self.cron,
-            &mut self.active_cron,
-            "the agent stopped before the scheduled run completed",
+        self.commands.close();
+        if let Some(rejection) = fail_queued_routine_commands(&mut self.commands, &self.bots) {
+            self.broadcast(ServerMessage::Error {
+                code: "routine_state_error".into(),
+                message: rejection.message,
+                fatal: false,
+            });
+        }
+        if let Err(error) = fail_active_routine(
+            &self.bots,
+            &mut self.active_routine,
+            "the agent stopped before the Bot routine completed",
         ) {
             self.broadcast(ServerMessage::Error {
-                code: "cron_state_error".into(),
+                code: "routine_state_error".into(),
                 message: error.to_string(),
                 fatal: false,
             });
@@ -138,10 +146,10 @@ impl HostState {
         for waiter in self.idle_waiters.drain(..) {
             let _ = waiter.send(());
         }
-        let session_id = self.running.session_id.clone();
+        let bot_id = self.spec.bot_id.clone();
         shutdown_agent(self.running).await;
         self.alive.store(false, Ordering::Release);
-        self.swarm.notify_pending(&session_id);
+        self.swarm.notify_pending(&bot_id);
     }
 
     pub(super) async fn handle(&mut self, command: HostCommand) -> bool {
@@ -187,7 +195,11 @@ impl HostState {
                         }
                     );
                     let result = match &submission.op {
-                        Op::SetModel { route } => self.set_model(route).await,
+                        Op::SetModel { .. } => Err(Rejection {
+                            code: "bot_configuration_required",
+                            message: "change the model on this chat's Bot profile".into(),
+                            fatal: false,
+                        }),
                         _ => self.submit(submission),
                     };
                     if result.is_ok()
@@ -205,16 +217,8 @@ impl HostState {
                 .await;
                 let _ = reply.send(result);
             }
-            HostCommand::Configure {
-                expected_revision,
-                config,
-                reply,
-            } => {
-                let result = async {
-                    let _mutation = self.begin_session_mutation()?;
-                    self.configure(expected_revision, config).await
-                }
-                .await;
+            HostCommand::ReloadBot { bot, reply } => {
+                let result = self.reload_bot(bot).await;
                 let _ = reply.send(result);
             }
             HostCommand::GitDiff { scope, reply } => {
@@ -279,23 +283,21 @@ impl HostState {
             }
             HostCommand::ProviderCutoverStatus { reply } => {
                 let _ = reply.send(ProviderCutoverStatus {
-                    selection: self.spec.agent.config.provider.clone(),
-                    provider_epoch: self.running.provider_epoch,
                     idle: self.is_idle(),
                 });
             }
-            HostCommand::CutOverProvider { selection, reply } => {
-                let result = self.cut_over_provider(&selection).await;
-                let _ = reply.send(result);
-            }
-            HostCommand::ReloadProviderCatalog { reply } => {
-                let result = self.reload_provider_catalog().await;
-                let _ = reply.send(result);
-            }
-            HostCommand::RunCron { run, input, reply } => {
-                let result = self
-                    .begin_session_mutation()
-                    .and_then(|_mutation| self.run_cron(run, input));
+            HostCommand::RunRoutine { run, input, reply } => {
+                let result = match self.begin_session_mutation() {
+                    Ok(_mutation) => self.run_routine(run, input),
+                    Err(rejection) => match self.bots.finish_run(
+                        run,
+                        RoutineRunStatus::Failed,
+                        Some(rejection.message.clone()),
+                    ) {
+                        Ok(_) => Err(rejection),
+                        Err(error) => Err(internal(error)),
+                    },
+                };
                 let _ = reply.send(result);
             }
             HostCommand::WaitIdle { reply } => {
@@ -453,23 +455,23 @@ impl HostState {
         Ok(())
     }
 
-    pub(super) fn run_cron(
+    pub(super) fn run_routine(
         &mut self,
-        run: ActiveCronRun,
+        run: ActiveRoutineRun,
         input: String,
     ) -> std::result::Result<(), Rejection> {
         if let Err(rejection) = self.require_idle() {
-            self.cron
+            self.bots
                 .finish_run(
                     run,
-                    CronRunStatus::Failed,
+                    RoutineRunStatus::Failed,
                     Some("the agent was busy when this invocation became due".into()),
                 )
                 .map_err(internal)?;
             return Err(rejection);
         }
         let submission_id = Uuid::new_v4().to_string();
-        self.active_cron = Some(ActiveCron {
+        self.active_routine = Some(ActiveRoutine {
             run,
             submission_id: submission_id.clone(),
             turn_id: None,
@@ -488,11 +490,14 @@ impl HostState {
             },
         };
         if let Err(rejection) = self.submit(submission) {
-            let active = self.active_cron.take().expect("active cron was just set");
-            self.cron
+            let active = self
+                .active_routine
+                .take()
+                .expect("active routine was just set");
+            self.bots
                 .finish_run(
                     active.run,
-                    CronRunStatus::Failed,
+                    RoutineRunStatus::Failed,
                     Some(rejection.message.clone()),
                 )
                 .map_err(internal)?;
@@ -529,88 +534,30 @@ impl HostState {
         Ok(())
     }
 
-    pub(super) async fn configure(
+    async fn reload_bot(
         &mut self,
-        expected_revision: u64,
-        composition: AgentComposition,
+        bot: crate::wire::BotRecord,
     ) -> std::result::Result<(), Rejection> {
         self.require_idle()?;
-        if expected_revision != self.spec.agent.revision {
-            return Err(Rejection {
-                code: "revision_conflict",
-                message: format!("configuration revision is now {}", self.spec.agent.revision),
-                fatal: false,
-            });
+        if self.spec.bot_id != bot.id {
+            return Err(invalid_config("Bot identity does not own this chat"));
         }
         let gateway = self
             .gateway
             .lock()
             .map_err(|_| internal("gateway configuration lock is poisoned"))?
             .clone();
-        let models =
-            configured_model_choices(&gateway, &self.store, &self.credentials).map_err(internal)?;
-        crate::middleware_manifest::validate_choices(&composition.middleware, &models)
+        gateway
+            .validate_provider_selection(&bot.config.config.provider)
             .map_err(invalid_config)?;
-        let next = self
-            .spec
-            .replacing_agent(
-                expected_revision,
-                composition,
-                &gateway,
-                self.store.state_dir(),
-                gateway.tls.as_ref(),
-            )
-            .map_err(invalid_config)?;
-        let reusable_router = reusable_model_router(&self.spec, &next, &self.running);
+        let mut next = self.spec.clone();
+        next.bot_description = bot.description;
+        next.agent = bot.config;
+        let reusable_router = (self.running.provider_epoch
+            == self.provider_epoch.load(Ordering::Acquire))
+        .then(|| reusable_model_router(&self.spec, &next, &self.running))
+        .flatten();
         self.replace_running(next, reusable_router).await
-    }
-
-    async fn cut_over_provider(
-        &mut self,
-        selection: &ProviderConfig,
-    ) -> std::result::Result<(), Rejection> {
-        self.require_idle()?;
-        let gateway = self
-            .gateway
-            .lock()
-            .map_err(|_| internal("gateway configuration lock is poisoned"))?
-            .clone();
-        let next = if self.spec.agent.config.provider.instance == selection.instance
-            && self.spec.agent.config.provider != *selection
-        {
-            let mut composition = self.spec.agent.config.clone();
-            composition.provider = selection.clone();
-            self.spec
-                .replacing_agent(
-                    self.spec.agent.revision,
-                    composition,
-                    &gateway,
-                    self.store.state_dir(),
-                    gateway.tls.as_ref(),
-                )
-                .map_err(invalid_config)?
-        } else {
-            self.spec.clone()
-        };
-        let models =
-            configured_model_choices(&gateway, &self.store, &self.credentials).map_err(internal)?;
-        crate::middleware_manifest::validate_choices(&next.agent.config.middleware, &models)
-            .map_err(invalid_config)?;
-        self.replace_running(next, None).await
-    }
-
-    async fn reload_provider_catalog(&mut self) -> std::result::Result<(), Rejection> {
-        self.require_idle()?;
-        let gateway = self
-            .gateway
-            .lock()
-            .map_err(|_| internal("gateway configuration lock is poisoned"))?
-            .clone();
-        let next = self
-            .spec
-            .normalizing_provider_catalog(&gateway, self.store.state_dir(), gateway.tls.as_ref())
-            .map_err(invalid_config)?;
-        self.replace_running(next, None).await
     }
 
     async fn replace_running(
@@ -697,29 +644,6 @@ impl HostState {
         Ok(())
     }
 
-    pub(super) async fn set_model(&mut self, route: &str) -> std::result::Result<(), Rejection> {
-        self.require_idle()?;
-        let gateway = self
-            .gateway
-            .lock()
-            .map_err(|_| internal("gateway configuration lock is poisoned"))?
-            .clone();
-        let mut provider =
-            configured_provider_for_route(&gateway, &self.store, &self.credentials, route)
-                .map_err(invalid_config)?;
-        if provider.instance == self.spec.agent.config.provider.instance {
-            provider.base_url = self.spec.agent.config.provider.base_url.clone();
-            provider.web_search = self.spec.agent.config.provider.web_search;
-        }
-        if self.running.session.model.route == route && self.spec.agent.config.provider == provider
-        {
-            return Ok(());
-        }
-        let mut composition = self.spec.agent.config.clone();
-        composition.provider = provider;
-        self.configure(self.spec.agent.revision, composition).await
-    }
-
     pub(super) async fn refresh_provider(
         &mut self,
         scope: &ProviderRefresh,
@@ -799,4 +723,30 @@ impl HostState {
         self.running.subagent_template.take();
         Ok(())
     }
+}
+
+pub(in crate::host) fn fail_queued_routine_commands(
+    commands: &mut mpsc::Receiver<HostCommand>,
+    bots: &BotStore,
+) -> Option<Rejection> {
+    let mut first_error = None;
+    while let Ok(command) = commands.try_recv() {
+        let HostCommand::RunRoutine { run, reply, .. } = command else {
+            continue;
+        };
+        let rejection = match bots.finish_run(
+            run,
+            RoutineRunStatus::Failed,
+            Some("the agent stopped before the Bot routine began".into()),
+        ) {
+            Ok(_) => stopped(),
+            Err(error) => {
+                let rejection = internal(error);
+                first_error.get_or_insert_with(|| rejection.clone());
+                rejection
+            }
+        };
+        let _ = reply.send(Err(rejection));
+    }
+    first_error
 }

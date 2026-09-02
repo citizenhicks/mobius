@@ -23,7 +23,7 @@ impl GatewayHost {
         let result = async {
             let state = self.state.lock().await;
             let gate = Arc::clone(&state.session_mutations);
-            let _sessions = gate.write_owned().await;
+            let sessions_guard = gate.write_owned().await;
             let next = {
                 let current = state
                     .config
@@ -43,7 +43,8 @@ impl GatewayHost {
             self.commit_extensions(&state, next)?;
             let sessions = state.sessions.values().cloned().collect();
             drop(state);
-            self.finish_extension_mutation(sessions, &id).await
+            self.finish_extension_mutation(sessions, &id, sessions_guard)
+                .await
         }
         .await;
         if result.is_err() {
@@ -101,7 +102,7 @@ impl GatewayHost {
         let result = async {
             let state = self.state.lock().await;
             let gate = Arc::clone(&state.session_mutations);
-            let _sessions = gate.write_owned().await;
+            let sessions_guard = gate.write_owned().await;
             let next = {
                 let current = state
                     .config
@@ -122,7 +123,8 @@ impl GatewayHost {
             self.commit_extensions(&state, next)?;
             let sessions = state.sessions.values().cloned().collect();
             drop(state);
-            self.finish_extension_mutation(sessions, &id).await
+            self.finish_extension_mutation(sessions, &id, sessions_guard)
+                .await
         }
         .await;
         if result.is_err() {
@@ -143,12 +145,35 @@ impl GatewayHost {
         let _extension_mutation = mutation.lock_owned().await;
         let state = self.state.lock().await;
         let gate = Arc::clone(&state.session_mutations);
-        let _sessions = gate.write_owned().await;
+        let sessions_guard = gate.write_owned().await;
+        let selected_by = state
+            .bots
+            .bots()
+            .map_err(internal)?
+            .into_iter()
+            .find(|bot| bot.config.config.extensions.contains(&id))
+            .map(|bot| format!("Bot @{}", bot.handle));
         let next = {
             let current = state
                 .config
                 .lock()
                 .map_err(|_| internal("gateway configuration lock is poisoned"))?;
+            let selected_by = selected_by.or_else(|| {
+                current
+                    .bot_defaults
+                    .as_ref()
+                    .filter(|agent| agent.config.extensions.contains(&id))
+                    .map(|_| "the default Bot template".to_owned())
+            });
+            if let Some(selected_by) = selected_by {
+                return Err(Rejection {
+                    code: "extension_in_use",
+                    message: format!(
+                        "extension `{id}` is selected by {selected_by}; remove it from that profile first"
+                    ),
+                    fatal: false,
+                });
+            }
             let mut next = current.clone();
             next.installed_extensions
                 .remove(&id)
@@ -158,7 +183,8 @@ impl GatewayHost {
         self.commit_extensions(&state, next)?;
         let sessions = state.sessions.values().cloned().collect();
         drop(state);
-        self.finish_extension_mutation(sessions, &id).await
+        self.finish_extension_mutation(sessions, &id, sessions_guard)
+            .await
     }
 
     pub(crate) async fn set_extension_hooks_trusted(
@@ -174,7 +200,7 @@ impl GatewayHost {
         let _extension_mutation = mutation.lock_owned().await;
         let state = self.state.lock().await;
         let gate = Arc::clone(&state.session_mutations);
-        let _sessions = gate.write_owned().await;
+        let sessions_guard = gate.write_owned().await;
         let next = {
             let current = state
                 .config
@@ -203,7 +229,8 @@ impl GatewayHost {
         self.commit_extensions(&state, next)?;
         let sessions = state.sessions.values().cloned().collect();
         drop(state);
-        self.finish_extension_mutation(sessions, &id).await
+        self.finish_extension_mutation(sessions, &id, sessions_guard)
+            .await
     }
 
     fn commit_extensions(
@@ -223,6 +250,7 @@ impl GatewayHost {
         &self,
         sessions: Vec<HostHandle>,
         id: &str,
+        sessions_guard: tokio::sync::OwnedRwLockWriteGuard<()>,
     ) -> std::result::Result<ReadyPayload, Rejection> {
         for host in sessions {
             if let Err(rejection) = host.refresh_extension(id.to_owned()).await
@@ -231,8 +259,10 @@ impl GatewayHost {
                 return Err(rejection);
             }
         }
+        drop(sessions_guard);
         let state = self.state.lock().await;
         let payload = gateway_ready(&state).await?;
+        drop(state);
         let _ = self.events.send(ServerFrame::new(ServerMessage::Ready {
             payload: payload.clone(),
         }));
@@ -274,23 +304,24 @@ fn unknown_extension(id: &str) -> Rejection {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    use tokio::sync::{Notify, broadcast, mpsc, oneshot};
 
     use super::*;
+    use crate::bots::BotStore;
     use crate::config::{ConfigStore, CredentialStore};
-    use crate::cron::CronStore;
     use crate::extensions::{ExtensionSource, InstalledExtension};
     use crate::wire::{ExtensionHookRecord, ExtensionKind};
 
     const EXTENSION_ID: &str = "skill:fixture";
 
-    async fn gateway_with_selected_extension() -> (tempfile::TempDir, GatewayHost, HostHandle) {
+    async fn gateway_with_selected_extension() -> (tempfile::TempDir, GatewayHost) {
         let root = tempfile::tempdir().expect("root");
-        let workspace = root.path().join("workspace");
-        std::fs::create_dir(&workspace).expect("workspace");
         let listen = "127.0.0.1:8741".parse().expect("listen address");
         let (store, config) =
             ConfigStore::initialize(root.path().join("state"), listen, None).expect("config");
-        let mut config = config
+        let config = config
             .registering_provider(
                 AgentComposition::default().provider,
                 "Test".into(),
@@ -299,21 +330,17 @@ mod tests {
                 Vec::new(),
             )
             .expect("provider");
-        config
-            .default_agent
-            .as_mut()
-            .expect("default agent")
+        let mut bot_config = config
+            .bot_defaults
+            .as_ref()
+            .expect("Bot defaults")
             .config
-            .extensions
-            .insert(EXTENSION_ID.into());
+            .clone();
+        bot_config.extensions.insert(EXTENSION_ID.into());
         let credentials =
             Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
-        let cron = Arc::new(CronStore::open(store.state_dir()).expect("cron"));
-        let gateway = GatewayHost::start(store, config, credentials, cron).expect("gateway");
-        let host = gateway
-            .create_session(&workspace)
-            .await
-            .expect("create session");
+        let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
+        let gateway = GatewayHost::start(store, config, credentials, bots).expect("gateway");
         {
             let state = gateway.state.lock().await;
             state
@@ -322,8 +349,12 @@ mod tests {
                 .expect("gateway config")
                 .installed_extensions
                 .insert(EXTENSION_ID.into(), installed_extension());
+            state
+                .bots
+                .create_bot("fixture", "Fixture", bot_config)
+                .expect("Bot");
         }
-        (root, gateway, host)
+        (root, gateway)
     }
 
     fn installed_extension() -> InstalledExtension {
@@ -345,57 +376,97 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn committed_mutation_refreshes_selected_session_before_ready_failure() {
-        let (_root, gateway, host) = gateway_with_selected_extension().await;
-        let mut updates = host.subscribe();
-        let activities = Arc::clone(&gateway.state.lock().await.activities);
-        let poisoned = std::thread::spawn(move || {
-            let _guard = activities.lock().expect("activities");
-            panic!("poison activities");
-        })
-        .join();
-        assert!(poisoned.is_err());
-
-        let rejection = gateway
-            .uninstall_extension(EXTENSION_ID.into())
-            .await
-            .expect_err("ready must fail");
-        let installed = gateway
-            .state
-            .lock()
-            .await
-            .config
-            .lock()
-            .expect("gateway config")
-            .installed_extensions
-            .contains_key(EXTENSION_ID);
-
-        assert!(!installed);
-        assert!(
-            rejection
-                .message
-                .contains("session activity lock is poisoned")
-        );
-        assert!(matches!(
-            updates.try_recv().expect("session refresh"),
-            ServerFrame {
-                message: ServerMessage::SessionChanged { .. },
-                ..
+    fn fake_extension_race_host(
+        bot_id: &str,
+    ) -> (HostHandle, mpsc::UnboundedReceiver<()>, Arc<Notify>) {
+        let (commands, mut receiver) = mpsc::channel(8);
+        let (events, _) = broadcast::channel(8);
+        let (refresh_started, refresh_started_receiver) = mpsc::unbounded_channel();
+        let release_refresh = Arc::new(Notify::new());
+        let actor_release = Arc::clone(&release_refresh);
+        tokio::spawn(async move {
+            while let Some(command) = receiver.recv().await {
+                match command {
+                    HostCommand::RefreshExtension { reply, .. } => {
+                        let _ = refresh_started.send(());
+                        actor_release.notified().await;
+                        let _ = reply.send(Ok(()));
+                    }
+                    HostCommand::ProviderCutoverStatus { reply } => {
+                        let _ = reply.send(ProviderCutoverStatus { idle: true });
+                    }
+                    HostCommand::ReloadBot { reply, .. } => {
+                        let _ = reply.send(Ok(()));
+                    }
+                    HostCommand::CapacityChanged => {}
+                    _ => panic!("unexpected host command during extension race"),
+                }
             }
-        ));
+        });
+        (
+            HostHandle {
+                inner: Arc::new(HostInner {
+                    session_id: Arc::from("extension-race-session"),
+                    bot_id: Arc::from(bot_id),
+                    commands,
+                    events,
+                    accepts_file_attachments: Arc::new(AtomicBool::new(false)),
+                    alive: Arc::new(AtomicBool::new(true)),
+                }),
+            },
+            refresh_started_receiver,
+            release_refresh,
+        )
+    }
+
+    #[test]
+    fn startup_rejects_a_bot_with_a_missing_selected_extension() {
+        let root = tempfile::tempdir().expect("root");
+        let listen = "127.0.0.1:8741".parse().expect("listen address");
+        let (store, config) =
+            ConfigStore::initialize(root.path().join("state"), listen, None).expect("config");
+        let config = config
+            .registering_provider(
+                AgentComposition::default().provider,
+                "Test".into(),
+                Default::default(),
+                Vec::new(),
+                Vec::new(),
+            )
+            .expect("provider");
+        let mut bot_config = config
+            .bot_defaults
+            .as_ref()
+            .expect("Bot defaults")
+            .config
+            .clone();
+        bot_config.extensions.insert(EXTENSION_ID.into());
+        let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
+        bots.seed_default(config.bot_defaults.as_ref().expect("Bot defaults"))
+            .expect("seed Mobius Bot");
+        bots.create_bot("fixture", "Fixture", bot_config)
+            .expect("Bot");
+        let credentials =
+            Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
+
+        let error = match GatewayHost::start(store, config, credentials, bots) {
+            Ok(_) => panic!("missing selected extension must fail startup"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("selected extension `skill:fixture` is not installed")
+        );
     }
 
     #[tokio::test]
-    async fn committed_mutation_ignores_stopped_session_refresh() {
-        let (_root, gateway, host) = gateway_with_selected_extension().await;
-        let mut updates = gateway.subscribe();
-        assert!(host.stop_if_idle().await);
-
-        let ready = gateway
+    async fn uninstall_rejects_an_extension_selected_by_a_bot() {
+        let (_root, gateway) = gateway_with_selected_extension().await;
+        let rejection = gateway
             .uninstall_extension(EXTENSION_ID.into())
             .await
-            .expect("stopped session refresh must not reject a committed mutation");
+            .expect_err("selected extension");
         let installed = gateway
             .state
             .lock()
@@ -406,20 +477,101 @@ mod tests {
             .installed_extensions
             .contains_key(EXTENSION_ID);
 
-        assert!(!installed);
-        assert!(
-            ready
-                .extensions
-                .iter()
-                .all(|extension| extension.id != EXTENSION_ID)
-        );
-        assert!(matches!(
-            updates.try_recv().expect("gateway-ready broadcast"),
-            ServerFrame {
-                message: ServerMessage::Ready { .. },
-                ..
+        assert!(installed);
+        assert_eq!(rejection.code, "extension_in_use");
+        assert!(rejection.message.contains("Bot @fixture"));
+    }
+
+    #[tokio::test]
+    async fn extension_refresh_releases_the_session_gate_before_ready_state() {
+        let (_root, gateway) = gateway_with_selected_extension().await;
+        let bot = gateway
+            .state
+            .lock()
+            .await
+            .bots
+            .bots()
+            .expect("Bots")
+            .into_iter()
+            .next()
+            .expect("fixture Bot");
+        let digest = {
+            let state = gateway.state.lock().await;
+            let mut config = state.config.lock().expect("gateway config");
+            let installed = config
+                .installed_extensions
+                .get_mut(EXTENSION_ID)
+                .expect("installed extension");
+            installed.hooks.push(ExtensionHookRecord {
+                event: "SessionStart".into(),
+                matcher: None,
+                command: "true".into(),
+                timeout_seconds: 5,
+            });
+            installed.digest.clone()
+        };
+        let (resident, mut refresh_started, release_refresh) = fake_extension_race_host(&bot.id);
+        gateway
+            .state
+            .lock()
+            .await
+            .sessions
+            .insert(resident.session_id().into(), resident);
+
+        let extension_update = tokio::spawn({
+            let gateway = gateway.clone();
+            async move {
+                gateway
+                    .set_extension_hooks_trusted(EXTENSION_ID.into(), digest, true)
+                    .await
             }
-        ));
+        });
+        refresh_started
+            .recv()
+            .await
+            .expect("extension refresh started");
+
+        let mut next_config = bot.config.config.clone();
+        next_config.system_prompt = "Updated during extension refresh".into();
+        let (bot_started, bot_waiting) = oneshot::channel();
+        let bot_update = tokio::spawn({
+            let gateway = gateway.clone();
+            let bot = bot.clone();
+            async move {
+                let _ = bot_started.send(());
+                gateway
+                    .update_bot(
+                        &bot.id,
+                        bot.config.revision,
+                        "Fixture",
+                        &bot.description,
+                        bot.tint,
+                        next_config,
+                    )
+                    .await
+            }
+        });
+        bot_waiting.await.expect("Bot update started");
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while gateway.state.try_lock().is_ok() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("Bot update must own GatewayState while waiting for the session mutation gate");
+
+        release_refresh.notify_one();
+        let (extension_result, bot_result) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                tokio::join!(extension_update, bot_update)
+            })
+            .await
+            .expect("extension refresh and Bot update must not deadlock");
+
+        extension_result
+            .expect("extension task")
+            .expect("extension update");
+        bot_result.expect("Bot task").expect("Bot update");
     }
 
     #[test]

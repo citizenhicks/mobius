@@ -63,6 +63,7 @@ use mobius::protocol::ModelEvent;
 use mobius::protocol::ModelStepContentPhase;
 use mobius::protocol::Op;
 use mobius::protocol::ReviewDecision;
+use mobius::protocol::SessionContext;
 use mobius::protocol::SessionFileReference;
 use mobius::protocol::TokenUsage;
 use mobius::protocol::ToolDiscoveryMode;
@@ -101,6 +102,13 @@ struct RecordedCompactRequest {
 struct PromptExtension(Arc<AtomicUsize>);
 
 struct StaticPrompt(&'static str);
+
+fn test_session_context() -> SessionContext {
+    SessionContext {
+        bot_id: "test-bot".into(),
+        ..SessionContext::default()
+    }
+}
 
 impl Middleware for PromptExtension {
     fn name(&self) -> &'static str {
@@ -390,6 +398,7 @@ fn test_config_with_router(
         MiddlewareStack::new(middleware).expect("middleware"),
         "test system prompt",
     )
+    .session_context(test_session_context())
 }
 
 fn user_message(text: impl Into<String>) -> Op {

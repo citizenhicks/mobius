@@ -97,6 +97,7 @@ extension AppModelTests {
         addTeardownBlock { try await store.remove(account) }
         await store.saveChatCatalog(
             CachedChatCatalog(
+                bots: [bot()],
                 sessions: [session(state: .idle)],
                 swarms: [],
                 lastSessionID: "chat-1"
@@ -220,6 +221,215 @@ extension AppModelTests {
         XCTAssertEqual(defaults.string(forKey: "theme"), ThemePreference.light.rawValue)
         XCTAssertEqual(defaults.string(forKey: "language"), AppLanguage.english.rawValue)
         XCTAssertEqual(defaults.string(forKey: "accent-tint"), AccentTint.orange.rawValue)
+    }
+
+    func testNotificationPreferenceUsesSystemAuthorizationAndPersistsInstallation() async throws {
+        let suiteName = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        var authorization = RemoteNotificationAuthorization.denied
+        var authorizationRequests = 0
+        var registrations = 0
+        var unregistrations = 0
+        var removals = 0
+        var settingsOpens = 0
+        let system = RemoteNotificationSystem(
+            authorization: { authorization },
+            requestAuthorization: {
+                authorizationRequests += 1
+                return false
+            },
+            register: { registrations += 1 },
+            unregister: { unregistrations += 1 },
+            removeAll: { removals += 1 },
+            openSettings: { settingsOpens += 1 }
+        )
+        let model = AppModel(
+            client: GatewayClient(),
+            store: GatewayStore(defaults: defaults),
+            settingsDefaults: defaults,
+            remoteNotifications: system
+        )
+        model.cloudSession = MobiusCloudSession(userID: UUID(), expiresAt: .distantFuture)
+
+        await model.setNotificationsEnabled(true)
+
+        XCTAssertTrue(model.notificationsEnabled)
+        XCTAssertTrue(defaults.bool(forKey: notificationsEnabledKey))
+        XCTAssertEqual(settingsOpens, 1)
+        XCTAssertEqual(authorizationRequests, 0)
+        XCTAssertEqual(registrations, 0)
+
+        model.cloudSession = nil
+        let staleNotification = RemoteSessionNotification(
+            eventID: "stale-event",
+            kind: .completed,
+            sessionID: "chat-1",
+            runCount: 1
+        )
+        model.receivedForegroundRemoteNotification(staleNotification)
+        model.openRemoteNotification(staleNotification)
+        XCTAssertTrue(
+            model.pendingRemoteNotification == nil
+                && model.remoteNotificationEventIDs.isEmpty
+        )
+
+        model.pendingRemoteNotification = RemoteSessionNotification(
+            eventID: "event-1",
+            kind: .completed,
+            sessionID: "chat-1",
+            runCount: 1
+        )
+        model.remoteNotificationEventIDs = ["event-1"]
+        await model.setNotificationsEnabled(false)
+        XCTAssertFalse(model.notificationsEnabled)
+        XCTAssertFalse(defaults.bool(forKey: notificationsEnabledKey))
+        XCTAssertEqual(unregistrations, 1)
+        XCTAssertEqual(removals, 1)
+        XCTAssertNil(model.pendingRemoteNotification)
+        XCTAssertTrue(model.remoteNotificationEventIDs.isEmpty)
+
+        model.cloudSession = MobiusCloudSession(userID: UUID(), expiresAt: .distantFuture)
+        authorization = .notDetermined
+        await model.setNotificationsEnabled(true)
+        XCTAssertEqual(authorizationRequests, 1)
+        XCTAssertEqual(settingsOpens, 2)
+        XCTAssertEqual(model.notificationError, "Notifications are off in Settings.")
+
+        authorization = .authorized
+        await model.cloudAuthenticationDidChange()
+        XCTAssertEqual(registrations, 1)
+        XCTAssertNil(model.notificationError)
+
+        model.remoteNotificationDeviceToken = "0011"
+        do {
+            try await model.unregisterRemoteNotificationsForCloudSignOut()
+            XCTFail("Expected push-token removal without a stored credential to fail")
+        } catch {}
+        XCTAssertEqual(unregistrations, 1)
+        XCTAssertEqual(removals, 1)
+        XCTAssertEqual(model.remoteNotificationDeviceToken, "0011")
+        XCTAssertTrue(model.pushTokenRemovalPending)
+
+        let relaunched = AppModel(
+            client: GatewayClient(),
+            store: GatewayStore(defaults: defaults),
+            settingsDefaults: defaults,
+            remoteNotifications: system
+        )
+        XCTAssertTrue(relaunched.notificationsEnabled)
+        XCTAssertEqual(relaunched.pushInstallationID, model.pushInstallationID)
+    }
+
+    func testForegroundRemoteThenGatewayCompletionShowsOneSharedToast() throws {
+        let model = try model()
+        model.cloudSession = MobiusCloudSession(userID: UUID(), expiresAt: .distantFuture)
+        model.notificationsEnabled = true
+        model.sessions = [session(
+            state: .running,
+            turnID: "turn-1",
+            executionStats: ExecutionStats(runCount: 0),
+            title: "Deploy"
+        )]
+        model.receivedForegroundRemoteNotification(RemoteSessionNotification(
+            eventID: "event-1",
+            kind: .completed,
+            sessionID: "chat-1",
+            runCount: 1
+        ))
+        let remoteToastID = try XCTUnwrap(model.toast?.id)
+        XCTAssertEqual(model.toast?.message, "Deploy is ready.")
+
+        model.applySessions([session(
+            state: .idle,
+            outcome: .completed,
+            executionStats: ExecutionStats(runCount: 1),
+            sequence: 2,
+            title: "Deploy"
+        )])
+
+        XCTAssertEqual(model.toast?.id, remoteToastID)
+        XCTAssertEqual(model.toast?.message, "Deploy is ready.")
+    }
+
+    func testGatewayThenForegroundApprovalShowsOneSharedToast() throws {
+        let model = try model()
+        model.notificationsEnabled = true
+        model.sessions = [session(state: .running, turnID: "turn-1", title: "Deploy")]
+        model.applySessions([session(
+            state: .awaitingApproval,
+            turnID: "turn-1",
+            sequence: 2,
+            title: "Deploy"
+        )])
+        let gatewayToastID = try XCTUnwrap(model.toast?.id)
+        XCTAssertEqual(model.toast?.message, "Deploy needs approval.")
+
+        model.receivedForegroundRemoteNotification(RemoteSessionNotification(
+            eventID: "event-approval",
+            kind: .awaitingApproval,
+            sessionID: "chat-1",
+            turnID: "turn-1"
+        ))
+
+        XCTAssertEqual(model.toast?.id, gatewayToastID)
+        XCTAssertEqual(model.toast?.message, "Deploy needs approval.")
+    }
+
+    func testNotificationTapWaitsForCloudCatalogThenOpensChat() throws {
+        let model = try model()
+        let userID = UUID()
+        let cloudGateway = GatewayAccount(
+            endpoint: try GatewayEndpoint("tcp://localhost:9191"),
+            cloudUserID: userID
+        )
+        model.cloudSession = MobiusCloudSession(userID: userID, expiresAt: .distantFuture)
+        model.notificationsEnabled = true
+        model.accounts = [cloudGateway]
+        model.selectedAccountID = cloudGateway.id
+        model.connectionState = .loading
+        let notification = RemoteSessionNotification(
+            eventID: "event-tap",
+            kind: .completed,
+            sessionID: "chat-1",
+            runCount: 1
+        )
+
+        model.openRemoteNotification(notification)
+        XCTAssertEqual(model.pendingRemoteNotification, notification)
+
+        model.sessions = [session(state: .idle)]
+        model.connectionState = .ready
+        XCTAssertTrue(model.openPendingRemoteNotification())
+        XCTAssertNil(model.pendingRemoteNotification)
+        XCTAssertEqual(model.navigationPath, [.chat(.session("chat-1"))])
+    }
+
+    func testRemoteNotificationPayloadRequiresAStableCursorForItsKind() throws {
+        XCTAssertEqual(
+            RemoteSessionNotification(userInfo: [
+                "eventId": "event-1",
+                "kind": "session.completed",
+                "sessionId": "chat-1",
+                "runCount": 7,
+            ]),
+            RemoteSessionNotification(
+                eventID: "event-1",
+                kind: .completed,
+                sessionID: "chat-1",
+                runCount: 7
+            )
+        )
+        XCTAssertNil(RemoteSessionNotification(userInfo: [
+            "eventId": "event-2",
+            "kind": "session.completed",
+            "sessionId": "chat-1",
+        ]))
+        XCTAssertNil(RemoteSessionNotification(userInfo: [
+            "eventId": "event-3",
+            "kind": "session.awaiting_approval",
+            "sessionId": "chat-1",
+        ]))
     }
 
     func testLanguageLocalesPreserveTheSystemChoice() {

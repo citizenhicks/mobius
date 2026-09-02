@@ -128,7 +128,10 @@ async fn idle_peer_messages_start_turns_and_replay_without_becoming_user_prompts
         .await
         .expect("load checkpoint")
         .expect("saved checkpoint");
-    assert_eq!(saved.first_user_message, None);
+    assert_eq!(
+        saved.first_user_message.as_deref(),
+        Some("Review the parser boundary.")
+    );
     {
         let inputs = model.inputs.lock().expect("model input lock");
         let first_peer = inputs[0]
@@ -198,6 +201,7 @@ async fn active_peer_message_steers_the_current_turn() {
             )))]),
             "test prompt",
         )
+        .session_context(test_session_context())
         .session_id("active-peer"),
     )
     .await

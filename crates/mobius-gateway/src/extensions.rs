@@ -182,9 +182,9 @@ impl ExtensionStore {
         validate_ids(ids)?;
         let mut resolved = ResolvedExtensions::default();
         for id in ids {
-            let Some(installed) = config.installed_extensions.get(id) else {
-                continue;
-            };
+            let installed = config.installed_extensions.get(id).ok_or_else(|| {
+                Error::Config(format!("selected extension `{id}` is not installed"))
+            })?;
             let package = self.snapshot_root(&installed.digest);
             match installed.kind {
                 ExtensionKind::Skill => resolved.skill_roots.push(

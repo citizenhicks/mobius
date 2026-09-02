@@ -68,7 +68,8 @@ async fn sqlite_persists_latest_checkpoint_transcript_and_fork_lineage() {
     let workspace = TempDir::new().expect("create workspace");
     let path = workspace.path().join("mobius.sqlite3");
     let store = SqliteCheckpoint::new(&path).expect("open checkpoint database");
-    let empty = Checkpoint::empty("session");
+    let mut empty = Checkpoint::empty("session");
+    empty.session_context.bot_id = "test-bot".into();
     store
         .save(&empty, &[], None)
         .await
@@ -116,6 +117,7 @@ async fn sqlite_persists_latest_checkpoint_transcript_and_fork_lineage() {
     let branch_user = mobius::backend::model::user_message("branch question");
     let latest = compacted;
     let mut branch = Checkpoint::empty("branch");
+    branch.session_context.clone_from(&latest.session_context);
     branch.context.clone_from(&latest.context);
     let branch_summary = store
         .fork("session", latest.sequence, &branch)

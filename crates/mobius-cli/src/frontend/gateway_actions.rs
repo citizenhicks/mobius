@@ -1,6 +1,4 @@
-use std::path::PathBuf;
-
-use mobius::{Error, Result};
+use mobius::Result;
 use mobius_gateway::wire::{ClientMessage, ProfileSnapshot, ProviderInstance, ServerMessage};
 use uuid::Uuid;
 
@@ -11,7 +9,6 @@ pub(super) type PreparedAction = Box<ClientMessage>;
 
 pub(super) fn prepare(action: GatewayAction) -> Result<PreparedAction> {
     match action {
-        GatewayAction::Workspace(arguments) => prepare_workspace(&arguments),
         GatewayAction::Pair => Ok(send(|request_id| ClientMessage::CreatePairingCode {
             request_id,
         })),
@@ -47,23 +44,6 @@ pub(super) fn render_response(
         }
         ServerMessage::Profile { profile, .. } => Some(render_profile(profile, provider_instances)),
         _ => None,
-    }
-}
-
-fn prepare_workspace(arguments: &str) -> Result<PreparedAction> {
-    let path = required(arguments, "usage: /workspace <gateway-path>")?;
-    Ok(send(|request_id| ClientMessage::CreateSession {
-        request_id,
-        workspace: PathBuf::from(path),
-    }))
-}
-
-fn required<'a>(value: &'a str, usage: &str) -> Result<&'a str> {
-    let value = value.trim();
-    if value.is_empty() {
-        Err(Error::Config(usage.into()))
-    } else {
-        Ok(value)
     }
 }
 
@@ -135,16 +115,5 @@ mod tests {
         };
 
         assert!(render_response(&accepted, &[]).is_none());
-    }
-
-    #[test]
-    fn workspace_command_creates_a_chat_without_local_path_resolution() {
-        let message = prepare_workspace("/srv/mobius/project").expect("prepare workspace");
-
-        assert!(matches!(
-            *message,
-            ClientMessage::CreateSession { workspace, .. }
-                if workspace == std::path::Path::new("/srv/mobius/project")
-        ));
     }
 }

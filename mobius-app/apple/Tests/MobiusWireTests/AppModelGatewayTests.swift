@@ -40,6 +40,7 @@ extension AppModelTests {
         addTeardownBlock { try await store.remove(account) }
         await store.saveChatCatalog(
             CachedChatCatalog(
+                bots: [bot()],
                 sessions: [session(state: .running, sequence: 7)],
                 swarms: [],
                 lastSessionID: "chat-1"
@@ -102,7 +103,7 @@ extension AppModelTests {
         try store.save(account, token: "test-token")
         addTeardownBlock { try await store.remove(account) }
         let payload = ready(
-            defaultConfig: VersionedAgentConfig(revision: 1, config: composition())
+            botDefaults: VersionedAgentConfig(revision: 1, config: composition())
         )
         var attempts = 0
         let model = AppModel(
@@ -310,7 +311,7 @@ extension AppModelTests {
         let model = AppModel(client: GatewayClient(), store: store)
 
         model.applyGatewayCatalog(ready(
-            defaultConfig: VersionedAgentConfig(revision: 1, config: composition())
+            botDefaults: VersionedAgentConfig(revision: 1, config: composition())
         ))
 
         XCTAssertEqual(model.selectedAccount?.machineName, "snowwhite.local")
@@ -416,7 +417,7 @@ extension AppModelTests {
         XCTAssertEqual(connectedAttempts, 2)
         await harness.yield(.authenticated)
         await harness.yield(.ready(ready(
-            defaultConfig: VersionedAgentConfig(revision: 1, config: composition())
+            botDefaults: VersionedAgentConfig(revision: 1, config: composition())
         )))
         let gatewayReady = await eventually { model.connectionState.isReady }
         XCTAssertTrue(gatewayReady)

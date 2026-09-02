@@ -1,5 +1,5 @@
 use std::env;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
 use std::fs::{File, OpenOptions};
 use std::io::{IsTerminal as _, Read as _};
 #[cfg(unix)]
@@ -21,14 +21,14 @@ use mobius_gateway::client::{
 };
 use mobius_gateway::config::state_dir;
 use mobius_gateway::wire::{
-    ClientKind, ClientMessage, ReadyPayload, ServerFrame, ServerMessage, SessionActivityState,
-    SessionReadyPayload, SessionRecord, SwarmRecord,
+    BotRecord, ClientKind, ClientMessage, ReadyPayload, ServerFrame, ServerMessage,
+    SessionActivityState, SessionReadyPayload, SessionRecord,
 };
 use tokio::process::{Child, Command};
 use uuid::Uuid;
 
 const USAGE: &str =
-    "usage: mobius [extensions | run <task-file> | pair <endpoint> <one-time-code>]";
+    "usage: mobius [extensions | run <bot-handle> <task-file> | pair <endpoint> <one-time-code>]";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(40);
 const DEFAULT_LOCAL_ENDPOINT: &str = "tcp://127.0.0.1:8741";
@@ -41,8 +41,12 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     match args.next() {
         None => run_interactive().await?,
         Some(command) if command == OsStr::new("run") => {
-            let task = one_argument(args, USAGE)?;
-            run_task(Path::new(&task)).await?;
+            let bot = args.next().ok_or_else(|| Error::Config(USAGE.into()))?;
+            let task = args.next().ok_or_else(|| Error::Config(USAGE.into()))?;
+            if args.next().is_some() {
+                return Err(Error::Config(USAGE.into()).into());
+            }
+            run_task(text(&bot, "Bot handle")?, Path::new(&task)).await?;
         }
         Some(command) if command == OsStr::new("pair") => {
             let endpoint = args.next().ok_or_else(|| Error::Config(USAGE.into()))?;
@@ -78,7 +82,7 @@ async fn run_interactive() -> Result<()> {
         mut disposable_session,
         mut local_gateway,
         mut endpoint,
-    ) = connect(None).await?;
+    ) = connect(None, None).await?;
     loop {
         let (exit, next_sender, next_events) = frontend::run(
             sender,
@@ -93,30 +97,6 @@ async fn run_interactive() -> Result<()> {
         events = next_events;
         match exit {
             FrontendExit::Exit => return Ok(()),
-            FrontendExit::Discard => {
-                if let Some(session_id) = disposable_session.as_deref() {
-                    discard_session(&sender, &mut events, &mut gateway, session_id).await?;
-                }
-                return Ok(());
-            }
-            FrontendExit::New => {
-                discard_pristine_bootstrap(
-                    &sender,
-                    &mut events,
-                    &mut gateway,
-                    disposable_session.as_deref(),
-                    &session.session.session_id,
-                )
-                .await?;
-                session = create_session(
-                    &sender,
-                    &mut events,
-                    &mut gateway,
-                    session.workspace.path.clone(),
-                )
-                .await?;
-                disposable_session = None;
-            }
             FrontendExit::Resume(session_id) => {
                 if session_id != session.session.session_id {
                     discard_pristine_bootstrap(
@@ -131,7 +111,20 @@ async fn run_interactive() -> Result<()> {
                 session = open_session(&sender, &mut events, &mut gateway, session_id).await?;
                 disposable_session = None;
             }
-            FrontendExit::Reload => {}
+            FrontendExit::Reload => {
+                if let Some(bootstrap) = disposable_session.take()
+                    && bootstrap != session.session.session_id
+                {
+                    discard_pristine_bootstrap(
+                        &sender,
+                        &mut events,
+                        &mut gateway,
+                        Some(&bootstrap),
+                        &bootstrap,
+                    )
+                    .await?;
+                }
+            }
             FrontendExit::Reconnect => {
                 let selected = Some((endpoint.clone(), session.session.session_id.clone()));
                 (
@@ -142,22 +135,22 @@ async fn run_interactive() -> Result<()> {
                     disposable_session,
                     local_gateway,
                     endpoint,
-                ) = connect(selected).await?;
+                ) = connect(selected, None).await?;
             }
         }
     }
 }
 
-async fn run_task(task_file: &Path) -> Result<()> {
+async fn run_task(bot_handle: &str, task_file: &Path) -> Result<()> {
     let task = std::fs::read_to_string(task_file)?;
     let (sender, mut events, mut gateway, session, disposable_session, _, _) =
-        connect(None).await?;
-    if gateway.default_config.is_none() || gateway.models.is_empty() {
+        connect(None, Some(bot_handle)).await?;
+    if gateway.models.is_empty() {
         if let Some(session_id) = disposable_session.as_deref() {
             discard_session(&sender, &mut events, &mut gateway, session_id).await?;
         }
         return Err(Error::Config(
-            "run `mobius` interactively to configure a provider before using `mobius run`".into(),
+            "configure the selected Bot's provider before using `mobius run`".into(),
         ));
     }
     if let Some(message) =
@@ -199,6 +192,7 @@ async fn pair(endpoint: &str, code: &str) -> std::result::Result<(), mobius_gate
 
 async fn connect(
     selected: Option<(Endpoint, String)>,
+    preferred_bot: Option<&str>,
 ) -> Result<(
     GatewaySender,
     GatewayEvents,
@@ -216,10 +210,28 @@ async fn connect(
             (session, None)
         }
         None if local_gateway => {
-            let session =
-                create_session(&sender, &mut events, &mut gateway, env::current_dir()?).await?;
+            if preferred_bot.is_none() && gateway.bot_defaults.is_none() {
+                frontend::run_gateway_login(&sender, &mut events, &mut gateway).await?;
+            }
+            let bot_id = preferred_bot.map_or_else(
+                || resolve_bot(&gateway.bots, "@mobius"),
+                |preferred| resolve_bot(&gateway.bots, preferred),
+            )?;
+            let session = create_session(
+                &sender,
+                &mut events,
+                &mut gateway,
+                env::current_dir()?,
+                bot_id,
+            )
+            .await?;
             let disposable_session = Some(session.session.session_id.clone());
             (session, disposable_session)
+        }
+        None if preferred_bot.is_some() => {
+            return Err(Error::Config(
+                "`mobius run` requires a local gateway workspace".into(),
+            ));
         }
         None => {
             let session_id = gateway
@@ -592,16 +604,26 @@ async fn create_session(
     events: &mut GatewayEvents,
     gateway: &mut ReadyPayload,
     workspace: PathBuf,
+    bot_id: String,
 ) -> Result<SessionReadyPayload> {
     let request_id = Uuid::new_v4().to_string();
     sender
         .send(ClientMessage::CreateSession {
             request_id: request_id.clone(),
             workspace,
+            bot_id,
         })
         .await
         .map_err(gateway_error)?;
     wait_session_opened(events, gateway, &request_id).await
+}
+
+fn resolve_bot(bots: &[BotRecord], preferred: &str) -> Result<String> {
+    let preferred = preferred.trim().trim_start_matches('@');
+    bots.iter()
+        .find(|bot| bot.handle == preferred || bot.id == preferred)
+        .map(|bot| bot.id.clone())
+        .ok_or_else(|| Error::Config(format!("Bot `@{preferred}` was not found")))
 }
 
 async fn discard_session(
@@ -714,10 +736,10 @@ fn pristine_bootstrap(gateway: &ReadyPayload, session_id: &str) -> bool {
         .sessions
         .iter()
         .find(|session| session.session_id == session_id)
-        .is_some_and(|session| pristine_session(session, &gateway.swarms))
+        .is_some_and(pristine_session)
 }
 
-fn pristine_session(session: &SessionRecord, swarms: &[SwarmRecord]) -> bool {
+fn pristine_session(session: &SessionRecord) -> bool {
     session.parent_session_id.is_none()
         && session.first_user_message.is_none()
         && session.execution_stats.run_count == 0
@@ -725,12 +747,6 @@ fn pristine_session(session: &SessionRecord, swarms: &[SwarmRecord]) -> bool {
         && !session.pinned
         && session.session_context.origin_label.is_none()
         && session.activity.state == SessionActivityState::Idle
-        && !swarms.iter().any(|swarm| {
-            swarm
-                .members
-                .iter()
-                .any(|member| member.session_id == session.session_id)
-        })
 }
 
 async fn wait_gateway_ready(events: &mut GatewayEvents) -> Result<ReadyPayload> {
@@ -783,12 +799,6 @@ async fn wait_session_opened(
     };
     events.prepend(deferred).map_err(gateway_error)?;
     result
-}
-
-fn one_argument(mut args: impl Iterator<Item = OsString>, usage: &str) -> Result<OsString> {
-    args.next()
-        .filter(|_| args.next().is_none())
-        .ok_or_else(|| Error::Config(usage.into()))
 }
 
 fn text<'a>(value: &'a OsStr, name: &str) -> Result<&'a str> {
@@ -895,10 +905,40 @@ mod tests {
 
     #[test]
     fn stdout_filters_terminal_controls_but_preserves_piped_output() {
-        let cron_output = "task: reset\u{1b}[2J.md";
+        let routine_output = "task: reset\u{1b}[2J.md";
 
-        assert_eq!(output_text(cron_output, true), "task: reset[2J.md");
-        assert_eq!(output_text(cron_output, false), cron_output);
+        assert_eq!(output_text(routine_output, true), "task: reset[2J.md");
+        assert_eq!(output_text(routine_output, false), routine_output);
+    }
+
+    #[test]
+    fn explicit_bot_handle_resolves_to_its_stable_id() {
+        let bots = [BotRecord {
+            id: "bot-1".into(),
+            handle: "builder".into(),
+            name: "Builder".into(),
+            description: "Own build work.".into(),
+            tint: Default::default(),
+            config: mobius_gateway::wire::VersionedAgentConfig {
+                revision: 1,
+                config: mobius_gateway::wire::AgentComposition::default(),
+            },
+        }];
+
+        assert_eq!(
+            resolve_bot(&bots, "@builder").expect("selected Bot"),
+            "bot-1"
+        );
+    }
+
+    #[test]
+    fn unknown_bot_handle_is_rejected() {
+        let error = resolve_bot(&[], "@builder").expect_err("unknown Bot must fail");
+
+        assert_eq!(
+            error.to_string(),
+            "configuration error: Bot `@builder` was not found"
+        );
     }
 
     #[test]
@@ -918,8 +958,8 @@ mod tests {
             updated_at: 0,
         };
 
-        assert!(pristine_session(&session, &[]));
+        assert!(pristine_session(&session));
         session.first_user_message = Some("keep this chat".into());
-        assert!(!pristine_session(&session, &[]));
+        assert!(!pristine_session(&session));
     }
 }

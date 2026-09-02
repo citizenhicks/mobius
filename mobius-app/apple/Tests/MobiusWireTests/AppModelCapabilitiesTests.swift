@@ -3,60 +3,96 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
-    func testSimpleCronScheduleRecognizesEditorModes() {
+    func testSimpleRoutineScheduleRecognizesEditorModes() {
         XCTAssertEqual(
-            simpleCronSchedule("30 14 * * *"),
-            SimpleCronSchedule(minute: 30, hour: 14, weekday: nil)
+            simpleRoutineSchedule("30 14 * * *"),
+            SimpleRoutineSchedule(minute: 30, hour: 14, weekday: nil)
         )
         XCTAssertEqual(
-            simpleCronSchedule("0 9 * * 1"),
-            SimpleCronSchedule(minute: 0, hour: 9, weekday: 1)
+            simpleRoutineSchedule("0 9 * * 1"),
+            SimpleRoutineSchedule(minute: 0, hour: 9, weekday: 1)
         )
-        XCTAssertNil(simpleCronSchedule("0 9 * * 1-5"))
+        XCTAssertNil(simpleRoutineSchedule("0 9 * * 1-5"))
     }
 
-    func testScheduledTaskManagementIsGlobal() async throws {
+    func testRoutineManagementIsBotScoped() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
         model.connectionState = .ready
-        let task = CronTask(
-            id: "cron-1",
-            sourceSessionId: "chat-1",
-            task: "Historical task",
+        let routine = Routine(
+            id: "routine-1",
+            botId: "bot-1",
+            workspace: "/srv/mobius",
+            instructions: "Historical task",
             schedule: .cron("0 9 * * *"),
             endsAt: nil,
             enabled: true,
             finished: false,
             nextRunAt: nil
         )
-        model.runCron(task)
-        model.deleteCron(task)
-        model.updateCron(
-            task,
-            sourceSessionID: "chat-1",
+        model.runRoutine(routine)
+        model.deleteRoutine(routine)
+        model.updateRoutine(
+            routine,
+            botID: "bot-1",
+            workspace: "/srv/mobius",
             instructions: "Updated task",
             schedule: .cron("0 10 * * *"),
             endsAt: nil,
             enabled: false
         )
-        model.createCron(
-            sourceSessionID: "chat-1",
-            task: "New task",
+        model.createRoutine(
+            botID: "bot-1",
+            workspace: "/srv/mobius",
+            instructions: "New task",
             schedule: .interval(seconds: 120),
             endsAt: nil
         )
 
-        model.refreshCron()
+        model.refreshRoutines()
         let requestsArrived = await eventually { await recorder.requestCount() == 6 }
         XCTAssertTrue(requestsArrived)
         let readRequests = await recorder.requests()
-        XCTAssertTrue(readRequests.contains { if case .listCron = $0 { true } else { false } })
-        XCTAssertTrue(readRequests.contains { if case .listCronHistory = $0 { true } else { false } })
+        XCTAssertTrue(readRequests.contains {
+            if case .listRoutines(_, nil) = $0 { true } else { false }
+        })
+        XCTAssertTrue(readRequests.contains {
+            if case .listRoutineHistory = $0 { true } else { false }
+        })
     }
 
-    func testCronRunPreviewDoesNotMutateSelectedTranscript() throws {
+    func testCompletedRoutineRunCanBeDeleted() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model(requestSender: { request in
+            await recorder.record(request)
+        })
+        model.connectionState = .ready
+        let run = RoutineRun(
+            id: "run-1",
+            routineId: "routine-1",
+            botId: "bot-1",
+            startedAt: 100,
+            finishedAt: 200,
+            status: .succeeded,
+            sessionId: "session-1",
+            message: nil
+        )
+
+        model.deleteRoutineRun(run)
+
+        let requestArrived = await eventually { await recorder.requestCount() == 1 }
+        XCTAssertTrue(requestArrived)
+        let requests = await recorder.requests()
+        guard let request = requests.first,
+              case .deleteRoutineRun(_, "run-1") = request
+        else {
+            return XCTFail("Expected routine run deletion")
+        }
+    }
+
+    func testRoutineRunPreviewDoesNotMutateSelectedTranscript() throws {
         let model = try model()
         model.selectedSessionID = "chat-1"
         model.transcript = [TranscriptEntry(
@@ -66,37 +102,38 @@ extension AppModelTests {
             format: "plain_text",
             pending: false
         )]
-        let task = CronTask(
-            id: "cron-1",
-            sourceSessionId: "chat-1",
-            task: "Review nightly",
+        let routine = Routine(
+            id: "routine-1",
+            botId: "bot-1",
+            workspace: "/srv/mobius",
+            instructions: "Review nightly",
             schedule: .interval(seconds: 120),
             endsAt: nil,
             enabled: true,
             finished: false,
             nextRunAt: nil
         )
-        let run = CronRun(
+        let run = RoutineRun(
             id: "run-1",
-            taskId: task.id,
-            sourceSessionId: task.sourceSessionId,
+            routineId: routine.id,
+            botId: routine.botId,
             startedAt: 100,
             finishedAt: nil,
             status: .running,
             sessionId: nil,
             message: nil
         )
-        model.cronRunPreviewRequestID = "preview-1"
-        model.applyCronRunPreview(CronRunPreview(
+        model.routineRunPreviewRequestID = "preview-1"
+        model.applyRoutineRunPreview(RoutineRunPreview(
             requestID: "preview-1",
-            task: task,
+            routine: routine,
             run: run,
             records: [RecordedEvent(
                 sequence: 1,
                 recordedAtMs: 1_000,
                 event: AgentEventRecord(
                     submissionId: nil,
-                    msg: testMessageEvent(text: "Scheduled transcript")
+                    msg: testMessageEvent(text: "Routine transcript")
                 ),
                 streamMetrics: [],
                 blocks: [],
@@ -106,8 +143,8 @@ extension AppModelTests {
         ))
 
         XCTAssertEqual(model.transcript.map(\.text), ["Selected chat"])
-        XCTAssertEqual(model.cronRunPreviewEntries.map(\.text), ["Scheduled transcript"])
-        XCTAssertEqual(model.presentedCronRun?.id, "run-1")
+        XCTAssertEqual(model.routineRunPreviewEntries.map(\.text), ["Routine transcript"])
+        XCTAssertEqual(model.presentedRoutineRun?.id, "run-1")
     }
 
     func testDisabledScratchpadActionDoesNotSubmitUntilEnabled() async throws {
@@ -174,7 +211,7 @@ extension AppModelTests {
             references: []
         )
         model.applyGatewayCatalog(ready(
-            defaultConfig: VersionedAgentConfig(revision: 1, config: composition()),
+            botDefaults: VersionedAgentConfig(revision: 1, config: composition()),
             contributions: [contribution]
         ))
         model.connectionState = .ready
@@ -182,12 +219,12 @@ extension AppModelTests {
         XCTAssertNil(model.selectedSessionID)
         XCTAssertEqual(model.globalScratchpadWidget?.title, "Global Scratchpad")
 
-        model.refreshGlobalScratchpad()
+        model.refreshScratchpad(scope: .global)
         let request = await recorder.firstRequest(after: 0) {
-            if case .submitGlobalScratchpad = $0 { return true }
+            if case .submitScratchpad = $0 { return true }
             return false
         }
-        guard case .submitGlobalScratchpad(_, let operation) = try XCTUnwrap(request),
+        guard case .submitScratchpad(_, let scope, let operation) = try XCTUnwrap(request),
               case .capabilityCommand(
                 let capability,
                 let command,
@@ -196,8 +233,64 @@ extension AppModelTests {
                 let target
               ) = operation
         else { return XCTFail("Expected a gateway-scoped scratchpad refresh") }
+        XCTAssertEqual(scope, .global)
         XCTAssertEqual([capability, command, arguments], ["scratchpad", "scratchpad", "refresh"])
         XCTAssertNil(target)
+    }
+
+    func testSwarmScratchpadRefreshAndContributionStayWithSelectedSwarm() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model { request in await recorder.record(request) }
+        let helper = bot()
+        let swarm = SwarmRecord(
+            id: "swarm-1",
+            title: "Reviewers",
+            leaderBotId: helper.id,
+            members: [SwarmMemberRecord(botId: helper.id, handle: helper.handle)],
+            messages: [],
+            updatedAtMs: 100
+        )
+        model.bots = [helper]
+        model.swarms = [swarm]
+        model.connectionState = .ready
+
+        model.refreshScratchpad(scope: .swarm(id: swarm.id))
+        let request = await recorder.firstRequest(after: 0) {
+            if case .submitScratchpad = $0 { return true }
+            return false
+        }
+        guard case .submitScratchpad(_, let scope, _) = try XCTUnwrap(request) else {
+            return XCTFail("Expected a scoped scratchpad refresh")
+        }
+        XCTAssertEqual(scope, .swarm(id: swarm.id))
+
+        let contribution = FrontendContribution(
+            capability: "scratchpad",
+            acceptsFileAttachments: false,
+            count: 1,
+            commands: [],
+            widgets: [FrontendWidget(
+                id: "swarm",
+                slot: .navigation,
+                text: "Scratchpad",
+                tone: "neutral",
+                symbol: "brain",
+                iconOnly: false,
+                progress: nil,
+                content: .actionList(title: "Swarm Scratchpad", items: []),
+                action: nil
+            )],
+            references: []
+        )
+        model.handle(.scratchpadChanged(
+            requestID: "scratchpad-1",
+            scope: .swarm(id: swarm.id),
+            contribution: contribution
+        ))
+
+        XCTAssertEqual(model.swarmScratchpadContributions[swarm.id]?.count, 1)
+        XCTAssertEqual(model.swarmScratchpadWidget(swarmID: swarm.id)?.title, "Swarm Scratchpad")
+        XCTAssertNil(model.globalScratchpadWidget)
     }
 
 
@@ -283,7 +376,7 @@ extension AppModelTests {
         var config = composition()
         config.extensions.insert("plugin:ponytail")
         model.applyGatewayCatalog(ready(
-            defaultConfig: VersionedAgentConfig(revision: 1, config: config),
+            botDefaults: VersionedAgentConfig(revision: 1, config: config),
             extensions: [extensionRecord()],
             contributions: [FrontendContribution(
                 capability: "gateway-skills",
@@ -661,7 +754,7 @@ extension AppModelTests {
         let model = try model()
         model.applySessions([session(state: .idle)])
         model.selectedSessionID = "chat-1"
-        model.destination = .agent
+        model.destination = .botDefaults
         model.setChatVisible(false)
 
         model.applySessions([session(state: .running, turnID: "turn-1")])
@@ -670,6 +763,7 @@ extension AppModelTests {
 
         model.applySessions([session(state: .awaitingApproval, turnID: "turn-1")])
         XCTAssertEqual(model.toast?.tone, .warning)
+        XCTAssertEqual(model.toast?.sessionID, "chat-1")
         XCTAssertEqual(model.attentionSessionIDs, ["chat-1"])
 
         model.applySessions([session(state: .idle, outcome: .completed)])
@@ -745,6 +839,7 @@ extension AppModelTests {
 
         XCTAssertEqual(model.toast?.message, "Review failed: Provider failed.")
         XCTAssertEqual(model.toast?.tone, .error)
+        XCTAssertEqual(model.toast?.sessionID, "chat-1")
         XCTAssertTrue(model.unreadSessionIDs.contains("chat-1"))
 
         model.showToast("Credential saved.", tone: .success)
@@ -788,6 +883,14 @@ extension AppModelTests {
 
         XCTAssertEqual(model.toast?.message, "Enter the one-time code shown by the gateway.")
         XCTAssertEqual(model.toast?.tone, .error)
+
+        model.pairingCode = "code with spaces"
+        model.pair()
+
+        XCTAssertEqual(
+            model.pairingError,
+            GatewayWireError.invalidPairingSetup.localizedDescription
+        )
 
         model.dismissToast()
         model.saveProviderCredential()

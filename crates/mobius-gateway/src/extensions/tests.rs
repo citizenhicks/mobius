@@ -142,7 +142,7 @@ fn prune_removes_only_unreferenced_snapshots() {
 }
 
 #[test]
-fn resolve_disables_missing_extensions_but_keeps_untrusted_plugin_skills() {
+fn resolve_rejects_missing_extensions_and_keeps_untrusted_plugin_skills() {
     let temporary = tempfile::tempdir().expect("temporary extensions");
     let store = ExtensionStore {
         root: temporary.path().join("store"),
@@ -175,12 +175,18 @@ fn resolve_disables_missing_extensions_but_keeps_untrusted_plugin_skills() {
         ),
     );
 
+    let error = match store.resolve(
+        &config,
+        &BTreeSet::from(["plugin:hooked".into(), "skill:missing".into()]),
+    ) {
+        Ok(_) => panic!("missing extension must fail"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("is not installed"));
+
     let resolved = store
-        .resolve(
-            &config,
-            &BTreeSet::from(["plugin:hooked".into(), "skill:missing".into()]),
-        )
-        .expect("disabled extensions");
+        .resolve(&config, &BTreeSet::from(["plugin:hooked".into()]))
+        .expect("installed extension");
 
     assert!(resolved.skill_roots.is_empty());
     assert_eq!(resolved.plugins.len(), 1);

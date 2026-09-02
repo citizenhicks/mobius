@@ -127,6 +127,8 @@ extension AppModel {
         pendingPresentedTranscript = nil
         sessionMutationRequestID = nil
         swarmMutationRequestID = nil
+        botMutationRequestID = nil
+        botMutationSuccessMessage = nil
         pendingDeletedSessionID = nil
         pendingDeletedPresentedSessionID = nil
         if preservingSession {
@@ -135,13 +137,14 @@ extension AppModel {
             }
         }
         sessionToRestoreID = nil
-        configRequestID = nil
-        defaultConfigRequestID = nil
-        submittedDefaultAgentDraft = nil
-        chatAgentApplyState = .idle
-        defaultAgentApplyState = .idle
+        botDefaultsRequestID = nil
+        submittedBotDefaultsDraft = nil
+        botApplyState = .idle
+        botDefaultsApplyState = .idle
         workspaceError = nil
         isChangingWorkspace = false
+        pendingNewChatWorkspace = nil
+        pendingNewChatBotID = nil
         showsWorkspaceBrowser = false
         directoryListing = nil
         directoryError = nil
@@ -169,6 +172,8 @@ extension AppModel {
             titleEligibleSessionIDs.removeAll()
             pendingChatTitles.removeAll()
             sessions = []
+            chatBotFilterIDs.removeAll()
+            bots = []
             swarms = []
             gatewayMachineName = ""
             selectedSessionID = nil
@@ -183,11 +188,18 @@ extension AppModel {
             middlewareFeatures = []
             extensions = []
             gatewayContributions = []
+            swarmScratchpadContributions = [:]
             providerStatuses = []
             providerInstances = []
             sessionFileLimits = nil
-            defaultAgentSnapshot = nil
-            defaultAgentDraft = nil
+            botDefaultsSnapshot = nil
+            botDefaultsDraft = nil
+            editingBotID = nil
+            editingBotRevision = nil
+            botDraft = nil
+            botNameDraft = ""
+            botDescriptionDraft = ""
+            botTintDraft = .appDefault
             providerDraft = nil
         }
         providerAPIKey = ""
@@ -263,22 +275,20 @@ extension AppModel {
         contributions = []
         agentSnapshot = nil
         agentDraft = nil
-        chatAgentApplyState = .idle
-        configRequestID = nil
-        cronTasks = []
-        cronRuns = []
-        cronError = nil
-        cronRequestIDs.removeAll()
-        cronRunPreviewPollingTask?.cancel()
-        cronRunPreviewPollingTask = nil
-        cronRunPreviewRequestID = nil
-        cronRunPreviewRequestBeforeSequence = nil
-        presentedCronRun = nil
-        cronRunPreview = nil
-        cronRunPreviewEntries = []
-        cronRunPreviewNextBeforeSequence = nil
-        isLoadingCronRunPreview = false
-        cronRunPreviewError = nil
+        routines = []
+        routineRuns = []
+        routineError = nil
+        routineRequestIDs.removeAll()
+        routineRunPreviewPollingTask?.cancel()
+        routineRunPreviewPollingTask = nil
+        routineRunPreviewRequestID = nil
+        routineRunPreviewRequestBeforeSequence = nil
+        presentedRoutineRun = nil
+        routineRunPreview = nil
+        routineRunPreviewEntries = []
+        routineRunPreviewNextBeforeSequence = nil
+        isLoadingRoutineRunPreview = false
+        routineRunPreviewError = nil
         transcript = []
         deltaFlushTask?.cancel()
         deltaFlushTask = nil

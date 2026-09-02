@@ -34,6 +34,12 @@ final class AppModel {
         didSet { committedGitDiffRevision &+= 1 }
     }
     var sessions: [SessionRecord] = []
+    var chatBotFilterIDs: Set<String> = []
+    var chatCatalogSessions: [SessionRecord] {
+        guard !chatBotFilterIDs.isEmpty else { return sessions }
+        return sessions.filter { chatBotFilterIDs.contains($0.sessionContext.botId) }
+    }
+    var bots: [BotRecord] = []
     var swarms: [SwarmRecord] = []
     var cloudSession: MobiusCloudSession?
     var cloudAccount: MobiusCloudAccount?
@@ -174,6 +180,7 @@ final class AppModel {
     var extensionCatalogError: String?
     var isLoadingExtensionCatalog = false
     var gatewayContributions: [FrontendContribution] = []
+    var swarmScratchpadContributions: [String: FrontendContribution] = [:]
     var extensionInstallSource = ""
     var selectedModelRoute = ""
     private(set) var contributionsRevision = 0
@@ -215,29 +222,37 @@ final class AppModel {
     var runStats = RunStats()
     var currentUsage = TokenUsage()
     var lastUsage = TokenUsage()
-    var cronTasks: [CronTask] = []
-    var cronRuns: [CronRun] = []
-    var cronError: String?
-    var presentedCronRun: CronRun?
-    var cronRunPreview: CronRunPreview?
-    var cronRunPreviewEntries: [TranscriptEntry] = []
-    var cronRunPreviewNextBeforeSequence: UInt64?
-    var isLoadingCronRunPreview = false
-    var cronRunPreviewError: String?
+    var routines: [Routine] = []
+    var routineRuns: [RoutineRun] = []
+    var routineError: String?
+    var presentedRoutineRun: RoutineRun?
+    var routineRunPreview: RoutineRunPreview?
+    var routineRunPreviewEntries: [TranscriptEntry] = []
+    var routineRunPreviewNextBeforeSequence: UInt64?
+    var isLoadingRoutineRunPreview = false
+    var routineRunPreviewError: String?
     var workspaceError: String?
     var isChangingWorkspace = false
+    var pendingNewChatWorkspace: String?
+    var pendingNewChatBotID: String?
     var showsWorkspaceBrowser = false
     var directoryListing: DirectoryListing?
     var directoryError: String?
     var isLoadingDirectories = false
 
     var agentSnapshot: VersionedAgentConfig?
-    var defaultAgentSnapshot: VersionedAgentConfig?
+    var botDefaultsSnapshot: VersionedAgentConfig?
     var agentDraft: AgentComposition?
-    var defaultAgentDraft: AgentComposition?
+    var botDefaultsDraft: AgentComposition?
+    var editingBotID: String?
+    var editingBotRevision: UInt64?
+    var botDraft: AgentComposition?
+    var botNameDraft = ""
+    var botDescriptionDraft = ""
+    var botTintDraft: AccentTint = .appDefault
+    var botApplyState: ApplyState = .idle
     var providerDraft: ProviderConfig?
-    var chatAgentApplyState: ApplyState = .idle
-    var defaultAgentApplyState: ApplyState = .idle
+    var botDefaultsApplyState: ApplyState = .idle
     var providerStatuses: [ProviderStatus] = []
     var providerInstances: [ProviderInstance] = []
     var sessionFileLimits: SessionFileLimits?
@@ -263,6 +278,9 @@ final class AppModel {
     var isClearingLocalData = false
     var appLockAuthenticationMethod: AppLockAuthenticationMethod
     var appLockError: String?
+    var notificationsEnabled: Bool
+    var isUpdatingNotifications = false
+    var notificationError: String?
 
     @ObservationIgnored let client: GatewayClient
     @ObservationIgnored let store: GatewayStore
@@ -270,6 +288,8 @@ final class AppModel {
     @ObservationIgnored let cloudPurchases: MobiusCloudPurchases
     @ObservationIgnored let settingsDefaults: UserDefaults
     @ObservationIgnored let appLockAuthenticator: AppLockAuthenticator
+    @ObservationIgnored let remoteNotifications: RemoteNotificationSystem
+    @ObservationIgnored let pushInstallationID: UUID
     @ObservationIgnored let requestSender:
         @MainActor @Sendable (GatewayRequest) async throws -> Void
     @ObservationIgnored let connectionOpener:
@@ -316,12 +336,13 @@ final class AppModel {
     @ObservationIgnored var pendingCachedTranscript: CachedTranscript?
     var sessionMutationRequestID: String?
     var swarmMutationRequestID: String?
+    var botMutationRequestID: String?
+    var botMutationSuccessMessage: String?
     @ObservationIgnored var pendingDeletedSessionID: String?
     @ObservationIgnored var pendingDeletedPresentedSessionID: String?
     @ObservationIgnored var sessionToRestoreID: String?
-    @ObservationIgnored var configRequestID: String?
-    @ObservationIgnored var defaultConfigRequestID: String?
-    @ObservationIgnored var submittedDefaultAgentDraft: AgentComposition?
+    @ObservationIgnored var botDefaultsRequestID: String?
+    @ObservationIgnored var submittedBotDefaultsDraft: AgentComposition?
     @ObservationIgnored var approvalRequestID: String?
     @ObservationIgnored var directoryRequestID: String?
     @ObservationIgnored var gitDiffRequestID: String?
@@ -361,10 +382,10 @@ final class AppModel {
     @ObservationIgnored var providerRegistrationRequestID: String?
     var pendingProviderRemoval: (requestID: String, instance: String)?
     @ObservationIgnored var extensionRequestID: String?
-    @ObservationIgnored var cronRequestIDs: Set<String> = []
-    @ObservationIgnored var cronRunPreviewRequestID: String?
-    @ObservationIgnored var cronRunPreviewRequestBeforeSequence: UInt64?
-    @ObservationIgnored var cronRunPreviewPollingTask: Task<Void, Never>?
+    @ObservationIgnored var routineRequestIDs: Set<String> = []
+    @ObservationIgnored var routineRunPreviewRequestID: String?
+    @ObservationIgnored var routineRunPreviewRequestBeforeSequence: UInt64?
+    @ObservationIgnored var routineRunPreviewPollingTask: Task<Void, Never>?
     @ObservationIgnored var toastDismissTask: Task<Void, Never>?
     @ObservationIgnored var isChatVisible = false
     @ObservationIgnored var latestSequence: UInt64?
@@ -379,12 +400,20 @@ final class AppModel {
     @ObservationIgnored var previewSelections: [String: FrontendPickerOption] = [:]
     @ObservationIgnored var previewPageRequestID: String?
     @ObservationIgnored var appIsInBackground = true
+    @ObservationIgnored var remoteNotificationDeviceToken: String?
+    @ObservationIgnored var pushTokenRemovalPending: Bool
+    @ObservationIgnored var pendingRemoteNotification: RemoteSessionNotification?
+    @ObservationIgnored var remoteNotificationEventIDs: Set<String> = []
+    @ObservationIgnored var remoteNotificationEventOrder: [String] = []
+    @ObservationIgnored var sessionNotificationKeys: Set<SessionNotificationKey> = []
+    @ObservationIgnored var sessionNotificationKeyOrder: [SessionNotificationKey] = []
 
     init(
         client: GatewayClient? = nil,
         store: GatewayStore? = nil,
         settingsDefaults: UserDefaults = .standard,
         appLockAuthenticator: AppLockAuthenticator? = nil,
+        remoteNotifications: RemoteNotificationSystem? = nil,
         requestSender: (@MainActor @Sendable (GatewayRequest) async throws -> Void)? = nil,
         connectionOpener: (
             @MainActor @Sendable (GatewayEndpoint) async throws
@@ -400,6 +429,9 @@ final class AppModel {
         let cloudClient = cloudClient ?? MobiusCloudClient()
         let appLockAuthenticator = appLockAuthenticator ?? AppLockAuthenticator()
         let appLockEnabled = settingsDefaults.bool(forKey: appLockEnabledKey)
+        let pushInstallationID = settingsDefaults.string(forKey: pushInstallationIDKey)
+            .flatMap(UUID.init(uuidString:)) ?? UUID()
+        settingsDefaults.set(pushInstallationID.uuidString, forKey: pushInstallationIDKey)
         self.client = client
         self.store = store
         self.cloudClient = cloudClient
@@ -407,6 +439,11 @@ final class AppModel {
         self.cloudSession = try? cloudClient.loadSession()
         self.settingsDefaults = settingsDefaults
         self.appLockAuthenticator = appLockAuthenticator
+        self.remoteNotifications = remoteNotifications ?? .live()
+        self.pushInstallationID = pushInstallationID
+        self.pushTokenRemovalPending = settingsDefaults.bool(
+            forKey: pushTokenRemovalPendingKey
+        )
         self.titleWriter = titleWriter ?? ChatTitleWriter()
         self.requestSender = requestSender ?? { request in
             try await client.send(request)
@@ -433,6 +470,7 @@ final class AppModel {
         self.appLockEnabled = appLockEnabled
         self.isAppLocked = appLockEnabled
         self.appLockAuthenticationMethod = appLockAuthenticator.method
+        self.notificationsEnabled = settingsDefaults.bool(forKey: notificationsEnabledKey)
         if selectedAccountID == nil { selectedAccountID = accounts.first?.id }
         restoreSessionReadState()
         showsPairing = accounts.isEmpty
@@ -447,9 +485,9 @@ final class AppModel {
         switch ProcessInfo.processInfo.environment["MOBIUS_PAGE"] {
         case "gateway": destination = .gateway
         case "providers": destination = .providers
-        case "agent": destination = .agent
+        case "bot-defaults": destination = .botDefaults
         case "extensions": destination = .extensions
-        case "cron": destination = .cron
+        case "bots": destination = .bots
         case "profile": destination = .profile
         default: break
         }
@@ -488,6 +526,12 @@ final class AppModel {
               case .chat(let route) = navigationPath.last
         else { return nil }
         return route.sessionID
+    }
+
+    var isPresentingChat: Bool {
+        destination == .chats && navigationPath.last.map {
+            if case .chat = $0 { true } else { false }
+        } == true
     }
 
     var canOpenSession: Bool {
@@ -584,13 +628,18 @@ final class AppModel {
 
     var canSendComposer: Bool {
         guard connectionState.isReady,
-              let sessionID = selectedSessionID,
               sessionRequestID == nil,
               !isLoadingComposerDraft,
               !isLoadingComposerEditRecovery
         else { return false }
+        let sessionID = selectedSessionID
+        let hasPendingSession = sessionID == nil
+            && pendingNewChatWorkspace != nil
+            && pendingNewChatBotID.map { botID in bots.contains { $0.id == botID } } == true
+        guard sessionID != nil || hasPendingSession else { return false }
         if let pending = pendingWidgetEdit {
-            guard let accountID = selectedAccountID,
+            guard let sessionID,
+                  let accountID = selectedAccountID,
                   pending.owner == ComposerDraftOwner(accountID: accountID, sessionID: sessionID),
                   pending.recovery.phase == .editing
             else { return false }
@@ -629,15 +678,33 @@ final class AppModel {
         connectionState.isReady && swarmMutationRequestID == nil
     }
 
+    var canMutateBots: Bool {
+        connectionState.isReady && botMutationRequestID == nil
+    }
+
+    func canMutateBot(_ botID: String) -> Bool {
+        guard canMutateBots else { return false }
+        if selectedSession?.sessionContext.botId == botID, activeTurnID != nil {
+            return false
+        }
+        return !sessions.contains {
+            $0.sessionContext.botId == botID && $0.activity.state != .idle
+        }
+    }
+
+    var canMutateSelectedBot: Bool {
+        guard let selectedBot else { return false }
+        return canMutateBot(selectedBot.id)
+    }
+
     var isApplyingConfiguration: Bool {
-        configRequestID != nil
-            || defaultConfigRequestID != nil
+        botDefaultsRequestID != nil
+            || botMutationRequestID != nil
             || providerRegistrationRequestID != nil
             || pendingProviderRemoval != nil
-            || chatAgentApplyState == .applying
-            || chatAgentApplyState == .restarting
-            || defaultAgentApplyState == .applying
-            || defaultAgentApplyState == .restarting
+            || botApplyState == .applying
+            || botDefaultsApplyState == .applying
+            || botDefaultsApplyState == .restarting
     }
 
     var contextFillFraction: Double {
@@ -1039,7 +1106,7 @@ final class AppModel {
 
     var extensionSkillReferences: [FrontendReference] {
         let selected = agentSnapshot?.config.extensions
-            ?? defaultAgentSnapshot?.config.extensions
+            ?? botDefaultsSnapshot?.config.extensions
             ?? []
         var seen = Set(extensions
             .filter { selected.contains($0.id) }
@@ -1059,6 +1126,28 @@ final class AppModel {
     var selectedSession: SessionRecord? {
         guard let selectedSessionID else { return nil }
         return sessions.first { $0.sessionId == selectedSessionID }
+    }
+
+    var selectedBot: BotRecord? {
+        guard let botID = selectedSession?.sessionContext.botId ?? pendingNewChatBotID else {
+            return nil
+        }
+        return bots.first { $0.id == botID }
+    }
+
+    func bot(for session: SessionRecord) -> BotRecord? {
+        bots.first { $0.id == session.sessionContext.botId }
+    }
+
+    func bot(forSessionID sessionID: String?) -> BotRecord? {
+        guard let sessionID,
+              let session = sessions.first(where: { $0.sessionId == sessionID })
+        else { return nil }
+        return bot(for: session)
+    }
+
+    var selectedBotSwarm: SwarmRecord? {
+        selectedSession.flatMap { swarm(containingBot: $0.sessionContext.botId) }
     }
 
     func beginRenamingSession(_ session: SessionRecord) {
@@ -1098,9 +1187,18 @@ final class AppModel {
     var navigationWidgets: [MountedWidget] { widgets(in: .navigation) }
     var chatMenuWidgets: [MountedWidget] { widgets(in: .chatMenu) }
     var globalScratchpadWidget: MountedWidget? {
-        guard let contribution = gatewayContributions.first(where: {
+        scratchpadWidget(in: gatewayContributions.first(where: {
             $0.capability == "scratchpad"
-        }), let widget = contribution.widgets.first(where: { $0.slot == .navigation })
+        }))
+    }
+
+    func swarmScratchpadWidget(swarmID: String) -> MountedWidget? {
+        scratchpadWidget(in: swarmScratchpadContributions[swarmID])
+    }
+
+    private func scratchpadWidget(in contribution: FrontendContribution?) -> MountedWidget? {
+        guard let contribution,
+              let widget = contribution.widgets.first(where: { $0.slot == .navigation })
         else { return nil }
         return MountedWidget(capability: contribution.capability, widget: widget)
     }

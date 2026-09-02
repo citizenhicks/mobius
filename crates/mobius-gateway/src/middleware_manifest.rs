@@ -23,7 +23,7 @@ pub(crate) enum BuiltinMiddleware {
     Compaction,
     Scratchpad,
     Sessions,
-    Swarm,
+    Bots,
 }
 
 pub(crate) struct MiddlewareRegistration {
@@ -85,8 +85,8 @@ pub(crate) const MIDDLEWARE: [MiddlewareRegistration; 14] = [
         manifest: &mobius::middleware::sessions::MANIFEST,
     },
     MiddlewareRegistration {
-        kind: BuiltinMiddleware::Swarm,
-        manifest: &mobius::middleware::swarm::MANIFEST,
+        kind: BuiltinMiddleware::Bots,
+        manifest: &mobius::middleware::bots::MANIFEST,
     },
 ];
 
@@ -285,7 +285,7 @@ mod tests {
                 .filter(|feature| feature.required)
                 .map(|feature| feature.id.as_str())
                 .collect::<BTreeSet<_>>(),
-            BTreeSet::from(["sandbox", "sessions", "messages", "swarm", "tools"])
+            BTreeSet::from(["bots", "messages", "sandbox", "sessions", "tools"])
         );
 
         let mut invalid = config;

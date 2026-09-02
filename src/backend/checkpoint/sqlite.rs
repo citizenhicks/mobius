@@ -48,7 +48,7 @@ mod event_journal;
 use self::event_journal::StreamMetricAccumulator;
 use self::event_journal::store_event;
 
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 8;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 const SCHEMA: &str = "
@@ -106,7 +106,7 @@ CREATE INDEX IF NOT EXISTS execution_journal_recent_idx
     ON execution_journal(started_at_ms DESC, session_id DESC, sequence DESC);
 CREATE INDEX IF NOT EXISTS event_journal_step_idx
     ON event_journal(session_id, model_step_id, event_kind);
-PRAGMA user_version = 6;
+PRAGMA user_version = 8;
 COMMIT;
 ";
 
@@ -898,6 +898,7 @@ fn session_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
 
 fn summary_from_row(row: SessionRow) -> Result<SessionSummary> {
     let session_context: SessionContext = serde_json::from_str(&row.6)?;
+    validate_session_context(&session_context)?;
     let execution_stats: ExecutionStats = serde_json::from_str(&row.7)?;
     Ok(SessionSummary {
         session_id: row.0,
@@ -985,6 +986,7 @@ fn validate_checkpoint(checkpoint: &Checkpoint) -> Result<()> {
             "pending model or tool work has no active execution".into(),
         ));
     }
+    validate_session_context(&checkpoint.session_context)?;
     if let Some(step) = &checkpoint.active_model_step {
         let execution = checkpoint
             .active_execution
@@ -1018,6 +1020,13 @@ fn validate_checkpoint(checkpoint: &Checkpoint) -> Result<()> {
                 message.id(),
             )));
         }
+    }
+    Ok(())
+}
+
+fn validate_session_context(context: &SessionContext) -> Result<()> {
+    if context.bot_id.trim().is_empty() {
+        return Err(Error::Checkpoint("session Bot ID cannot be blank".into()));
     }
     Ok(())
 }

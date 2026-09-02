@@ -18,7 +18,6 @@ use mobius::protocol::MessageEvent;
 use mobius::protocol::ModelStepCompletedEvent;
 use mobius::protocol::ModelStepContentPhase;
 use mobius::protocol::ModelStepOutcome;
-use mobius::protocol::Op;
 use mobius::protocol::RenderedBlock;
 use mobius::protocol::TokenUsageInfo;
 use mobius_gateway::wire::RecordedEvent;
@@ -263,35 +262,10 @@ impl TuiState {
             FrontendEvent::Picker { title, options } => {
                 self.preview = None;
                 self.capability_overlay = None;
-                let selected = options
-                    .iter()
-                    .position(|option| {
-                        matches!(
-                            &option.op,
-                            Op::SetModel { route } if route == &self.model_route
-                        )
-                    })
-                    .or_else(|| {
-                        let group = self
-                            .model_choices
-                            .iter()
-                            .find(|choice| choice.route == self.model_route)?
-                            .group
-                            .as_str();
-                        options.iter().position(|option| {
-                            let Op::SetModel { route } = &option.op else {
-                                return false;
-                            };
-                            self.model_choices
-                                .iter()
-                                .any(|choice| choice.route == *route && choice.group == group)
-                        })
-                    })
-                    .unwrap_or_default();
                 self.picker = Some(PickerState {
                     title: terminal_text(&title),
-                    options,
-                    selected,
+                    options: options.into_iter().map(Into::into).collect(),
+                    selected: 0,
                 });
             }
             // Preview transcripts arrive as gateway-rendered records.

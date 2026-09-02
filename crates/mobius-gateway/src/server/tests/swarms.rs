@@ -57,9 +57,9 @@ async fn authenticated_client_creates_adds_leaves_and_disbands_a_swarm() {
         .expect("pair frontend");
     let (sender, mut events) = connection.into_parts();
     wait_gateway_ready(&mut events).await;
-    let leader = create_chat(&sender, &mut events, &workspace).await;
-    let reviewer = create_chat(&sender, &mut events, &workspace).await;
-    let tester = create_chat(&sender, &mut events, &workspace).await;
+    let (leader, leader_bot) = create_bot_chat(&sender, &mut events, &workspace).await;
+    let (_, reviewer_bot) = create_bot_chat(&sender, &mut events, &workspace).await;
+    let (tester, tester_bot) = create_bot_chat(&sender, &mut events, &workspace).await;
 
     sender
         .send(ClientMessage::Submit {
@@ -101,8 +101,9 @@ async fn authenticated_client_creates_adds_leaves_and_disbands_a_swarm() {
     sender
         .send(ClientMessage::CreateSwarm {
             request_id: "create-swarm".into(),
-            leader_session_id: leader.clone(),
-            member_session_ids: vec![leader.clone(), reviewer.clone()],
+            title: "Review team".into(),
+            leader_bot_id: leader_bot.clone(),
+            member_bot_ids: vec![reviewer_bot],
         })
         .await
         .expect("create swarm");
@@ -111,10 +112,23 @@ async fn authenticated_client_creates_adds_leaves_and_disbands_a_swarm() {
     assert_eq!(created[0].members.len(), 2);
 
     sender
+        .send(ClientMessage::RenameSwarm {
+            request_id: "rename-swarm".into(),
+            swarm_id: swarm_id.clone(),
+            title: "Release team".into(),
+        })
+        .await
+        .expect("rename swarm");
+    assert_eq!(
+        correlated_swarms(&mut events, "rename-swarm").await[0].title,
+        "Release team"
+    );
+
+    sender
         .send(ClientMessage::AddSwarmMember {
             request_id: "add-member".into(),
             swarm_id: swarm_id.clone(),
-            session_id: tester.clone(),
+            bot_id: tester_bot.clone(),
         })
         .await
         .expect("add swarm member");
@@ -129,7 +143,7 @@ async fn authenticated_client_creates_adds_leaves_and_disbands_a_swarm() {
         .send(ClientMessage::LeaveSwarm {
             request_id: "leave-swarm".into(),
             swarm_id: swarm_id.clone(),
-            session_id: tester,
+            bot_id: tester_bot,
         })
         .await
         .expect("leave swarm");

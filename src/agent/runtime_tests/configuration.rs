@@ -149,6 +149,7 @@ async fn request_only_input_reaches_the_model_without_entering_the_checkpoint() 
         test_middleware(vec![Arc::new(RequestOnlyMiddleware)]),
         "test prompt",
     )
+    .session_context(test_session_context())
     .session_id("request-only");
     let mut agent = create_agent(config).await.expect("create agent");
     agent.next_event().await.expect("configured event");
@@ -211,6 +212,7 @@ async fn configured_model_step_limit_stops_after_primary_model_calls() {
         test_middleware(Vec::new()),
         "test prompt",
     )
+    .session_context(test_session_context())
     .session_id("model-step-limit")
     .max_model_steps(2);
     let mut agent = create_agent(config).await.expect("create agent");
@@ -277,6 +279,7 @@ async fn completed_pre_model_effects_are_settled_when_a_later_hook_fails() {
         ]),
         "test prompt",
     )
+    .session_context(test_session_context())
     .session_id("settled-hooks")
     .usage_observer(move |route, usage| {
         usage_observer

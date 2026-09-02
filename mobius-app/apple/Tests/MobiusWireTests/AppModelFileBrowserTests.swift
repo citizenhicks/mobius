@@ -532,44 +532,44 @@ extension AppModelTests {
         XCTAssertFalse(model.isLoadingFilePresentation)
     }
 
-    func testCronRunThumbnailUsesTheExecutionSession() async throws {
+    func testRoutineRunThumbnailUsesTheExecutionSession() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
         model.connectionState = .ready
         model.selectedSessionID = "chat-1"
-        model.presentedCronRun = CronRun(
+        model.presentedRoutineRun = RoutineRun(
             id: "run-1",
-            taskId: "cron-1",
-            sourceSessionId: "chat-1",
+            routineId: "routine-1",
+            botId: "bot-1",
             startedAt: 100,
             finishedAt: 200,
             status: .succeeded,
-            sessionId: "cron-session-1",
+            sessionId: "routine-session-1",
             message: nil
         )
         let data = try tinyPNGData()
         let file = SessionFileReference(
-            id: "cron-image",
+            id: "routine-image",
             name: "report.png",
             size: Int64(data.count),
             mediaType: "image/png"
         )
 
-        model.requestSessionFileThumbnail(file, sessionID: "cron-session-1")
+        model.requestSessionFileThumbnail(file, sessionID: "routine-session-1")
         let request = await recorder.firstRequest(after: 0) {
             guard case .readSessionFile(_, let sessionID, let fileID, _, _) = $0 else {
                 return false
             }
-            return sessionID == "cron-session-1" && fileID == file.id
+            return sessionID == "routine-session-1" && fileID == file.id
         }
         guard case .readSessionFile(let requestID, _, _, _, _) = try XCTUnwrap(request)
-        else { return XCTFail("Expected cron thumbnail read") }
+        else { return XCTFail("Expected routine thumbnail read") }
 
         model.handle(.sessionFileChunk(
             requestID: requestID,
-            sessionID: "cron-session-1",
+            sessionID: "routine-session-1",
             fileID: file.id,
             offset: 0,
             data: data,
@@ -577,7 +577,7 @@ extension AppModelTests {
         ))
 
         let thumbnailLoaded = await eventually {
-            model.fileThumbnail(for: file, sessionID: "cron-session-1") != nil
+            model.fileThumbnail(for: file, sessionID: "routine-session-1") != nil
         }
         XCTAssertTrue(thumbnailLoaded)
     }
@@ -593,10 +593,10 @@ extension AppModelTests {
         )
 
         model.requestSessionFileThumbnail(file, sessionID: "chat-1")
-        model.requestSessionFileThumbnail(file, sessionID: "cron-session-1")
+        model.requestSessionFileThumbnail(file, sessionID: "routine-session-1")
 
         XCTAssertEqual(model.sessionFileThumbnailDownload?.sessionID, "chat-1")
-        XCTAssertEqual(model.queuedSessionFileThumbnails.first?.sessionID, "cron-session-1")
+        XCTAssertEqual(model.queuedSessionFileThumbnails.first?.sessionID, "routine-session-1")
         XCTAssertEqual(model.requestedSessionFileThumbnailKeys.count, 2)
         model.cancelSessionFileThumbnailDownloads()
     }

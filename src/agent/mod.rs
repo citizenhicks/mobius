@@ -87,6 +87,7 @@ pub struct AgentConfig {
     default_context_window: i64,
     session_context: SessionContext,
     metadata: BTreeMap<String, Value>,
+    catalog_visible: bool,
     usage_observer: Option<UsageObserver>,
     metadata_configured: bool,
     model_route_configured: bool,
@@ -118,6 +119,7 @@ impl AgentConfig {
             default_context_window: 272_000,
             session_context: SessionContext::default(),
             metadata: BTreeMap::new(),
+            catalog_visible: true,
             usage_observer: None,
             metadata_configured: false,
             model_route_configured: false,
@@ -138,6 +140,13 @@ impl AgentConfig {
     #[must_use]
     pub fn session_context(mut self, context: SessionContext) -> Self {
         self.session_context = context;
+        self
+    }
+
+    /// Sets whether a newly created session appears in the session catalog.
+    #[must_use]
+    pub fn catalog_visible(mut self, visible: bool) -> Self {
+        self.catalog_visible = visible;
         self
     }
 

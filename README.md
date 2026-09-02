@@ -57,7 +57,7 @@ All hooks run in declaration order except `session_end`. `pre_model` and
 `model_request` are two complete stack passes, so no request-only decoration can
 precede a later durable rewrite. Policy decisions are typed outcomes; hook
 errors remain infrastructure failures. Static prompt sections are composed once
-when the agent is created, and changing a chat recipe recreates its prompt and
+when the agent is created, and changing its Bot profile recreates the prompt and
 tool catalog without adding either to conversation history.
 
 `continue: false` is a typed core decision at session-start and compaction
@@ -73,11 +73,11 @@ app contributions are not yet supported.
 
 The gateway installs skills and plugins from credential-free HTTPS Git sources
 as content-addressed, read-only snapshots. Installation is inactive. An extension
-may be selected independently for the default agent or one chat; its skills load
-immediately, while executable hooks stay disabled until their complete package
-digest is reviewed. Selections follow an installed extension across updates, and
-changed executable code requires a new review. An uninstalled ID simply resolves
-inactive.
+may be selected independently for the Bot-creation template or one Bot; its skills
+load immediately, while executable hooks stay disabled until their complete
+package digest is reviewed. Selections follow an installed extension across
+updates, and changed executable code requires a new review. Selected extensions
+must be removed from every Bot profile before they can be uninstalled.
 User-level Agent/Codex skill roots and project-local `.agents/skills` and
 `.codex/skills` remain discovered, read-only inputs outside the managed catalog.
 
@@ -107,11 +107,12 @@ gateway state and credentials; file tools remain workspace-scoped.
 ### Gateway
 
 [`mobius-gateway`](https://crates.io/crates/mobius-gateway) is the only shipped
-owner of an `Agent`. It explicitly assembles one agent per active chat and owns
-authentication, paired clients, chat recipes, workspaces, artifacts, Git, usage,
-cron, and the extension catalog. Its versioned wire protocol translates
-authenticated client requests into core operations and publishes core events
-plus capability contributions.
+owner of an `Agent`. It explicitly assembles one agent per active conversation
+from its owning Bot and owns authentication, paired clients, workspaces,
+artifacts, Git, usage, Bot profiles and routines, manual Bot swarms, and the
+extension catalog. Its versioned wire protocol translates authenticated client
+requests into core operations and publishes core events plus capability
+contributions.
 
 ### CLI
 
@@ -156,13 +157,13 @@ mobius
 On first use, the CLI initializes the machine-wide gateway with a loopback listener
 and Cloudflare Quick Tunnel, provisions its local credential, starts the gateway in
 the background, and opens `/login` when no provider is configured. The first
-configured model becomes the gateway default for new chats. Each CLI invocation
-creates an independent chat for its current directory; other terminal and app
-frontends can connect to the same gateway and open separate or shared chats.
-Workspace, model, reasoning, agent features, approval policy, and prompt are
-chat-scoped. The gateway owns the available-model catalog and new-chat default;
-a chat only selects from that catalog. The core `mobius` crate is linked into the
-binaries and is not a separate runtime prerequisite.
+configured model becomes the Bot-creation template default. Each CLI invocation
+selects an existing Bot and creates an independent conversation for its current
+directory; other terminal and app frontends can connect to the same gateway and
+open separate or shared conversations. The conversation owns its workspace and
+transcript. Its Bot owns the model, reasoning, capabilities, approval policy,
+extensions, and prompt. The core `mobius` crate is linked into the binaries and
+is not a separate runtime prerequisite.
 
 Plaintext remains limited to loopback. Run `mobius-gateway connect` to advertise
 both that local TCP endpoint and the Quick Tunnel's public WSS endpoint with one

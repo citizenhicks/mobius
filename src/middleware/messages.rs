@@ -57,7 +57,7 @@ const SETTINGS: &[MiddlewareSettingManifest] = &[
         unset_label: None,
         default: Some("steer"),
         max_bytes: 8,
-        composer: true,
+        composer: false,
     },
     MiddlewareSettingManifest::Integer {
         id: "max_pending",
@@ -294,6 +294,13 @@ mod tests {
 
     #[test]
     fn manifest_advertises_delivery_symbols() {
+        assert!(
+            MANIFEST
+                .feature(&[])
+                .settings
+                .iter()
+                .all(|setting| !setting.composer)
+        );
         assert_eq!(
             DELIVERIES
                 .iter()

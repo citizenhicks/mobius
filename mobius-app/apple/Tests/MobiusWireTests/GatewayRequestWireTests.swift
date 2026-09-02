@@ -2,9 +2,10 @@ import Foundation
 import XCTest
 
 extension GatewayWireTests {
-    func testGlobalScratchpadRequestAndResponseAreGatewayScoped() throws {
-        let request = try requestObject(.submitGlobalScratchpad(
+    func testScratchpadRequestAndResponseCarryTheirManagementScope() throws {
+        let request = try requestObject(.submitScratchpad(
             requestID: "scratchpad-1",
+            scope: .swarm(id: "swarm-1"),
             operation: .capabilityCommand(
                 capability: "scratchpad",
                 command: "scratchpad",
@@ -13,34 +14,41 @@ extension GatewayWireTests {
                 target: nil
             )
         ))
-        XCTAssertEqual(request["type"] as? String, "submit_global_scratchpad")
+        XCTAssertEqual(request["type"] as? String, "submit_scratchpad")
         XCTAssertNil(request["session_id"])
+        XCTAssertEqual(
+            request["scope"] as? [String: String],
+            ["type": "swarm", "id": "swarm-1"]
+        )
         XCTAssertEqual(
             (request["operation"] as? [String: Any])?["arguments"] as? String,
             "refresh"
         )
 
         let response = try decodeEnvelope(
-            #"{"version":48,"type":"global_scratchpad_changed","request_id":"scratchpad-1","contribution":{"capability":"scratchpad","accepts_file_attachments":false,"count":0,"commands":[],"widgets":[],"references":[]}}"#
+            #"{"version":58,"type":"scratchpad_changed","request_id":"scratchpad-1","scope":{"type":"global"},"contribution":{"capability":"scratchpad","accepts_file_attachments":false,"count":0,"commands":[],"widgets":[],"references":[]}}"#
         )
-        guard case .globalScratchpadChanged(let requestID, let contribution) = response else {
-            return XCTFail("Expected a global scratchpad response")
+        guard case .scratchpadChanged(let requestID, let scope, let contribution) = response else {
+            return XCTFail("Expected a scoped scratchpad response")
         }
         XCTAssertEqual(requestID, "scratchpad-1")
+        XCTAssertEqual(scope, .global)
         XCTAssertEqual(contribution.capability, "scratchpad")
     }
 
-    func testSessionCatalogRequestsMatchV28() throws {
+    func testSessionCatalogRequestsMatchBotOwnedContract() throws {
         let list = try requestObject(.listSessions(requestID: "list-1"))
         XCTAssertEqual(list["type"] as? String, "list_sessions")
         XCTAssertEqual(list["request_id"] as? String, "list-1")
 
         let create = try requestObject(.createSession(
             requestID: "create-1",
-            workspace: "/srv/mobius"
+            workspace: "/srv/mobius",
+            botID: "bot-1"
         ))
         XCTAssertEqual(create["type"] as? String, "create_session")
         XCTAssertEqual(create["workspace"] as? String, "/srv/mobius")
+        XCTAssertEqual(create["bot_id"] as? String, "bot-1")
 
         let open = try requestObject(.openSession(
             requestID: "open-1",
@@ -61,38 +69,70 @@ extension GatewayWireTests {
         XCTAssertNil(freshOpen["replay_epoch"])
     }
 
-    func testSwarmManagementRequestsEncodeGatewayOwnedIdentityInputs() throws {
+    func testBotMutationRequestsUseDerivedIdentityAndRevision() throws {
+        let create = try requestObject(.createBot(
+            requestID: "bot-create-1",
+            name: "Reviewer",
+            description: "Reviews focused changes."
+        ))
+        XCTAssertEqual(create["type"] as? String, "create_bot")
+        XCTAssertEqual(create["name"] as? String, "Reviewer")
+        XCTAssertEqual(create["description"] as? String, "Reviews focused changes.")
+        XCTAssertNil(create["handle"])
+        XCTAssertNil(create["tint"])
+        XCTAssertNil(create["config"])
+
+        let delete = try requestObject(.deleteBot(
+            requestID: "bot-delete-1",
+            id: "bot-1",
+            expectedRevision: 7
+        ))
+        XCTAssertEqual(delete["type"] as? String, "delete_bot")
+        XCTAssertEqual(delete["id"] as? String, "bot-1")
+        XCTAssertEqual(delete["expected_revision"] as? Int, 7)
+    }
+
+    func testSwarmManagementRequestsEncodeBotOwnedIdentityInputs() throws {
         let create = try requestObject(.createSwarm(
             requestID: "swarm-create-1",
-            leaderSessionID: "chat-1",
-            memberSessionIDs: ["chat-1", "chat-2", "chat-3"]
+            title: "Quiet Foxes",
+            leaderBotID: "bot-1",
+            memberBotIDs: ["bot-2", "bot-3"]
         ))
         XCTAssertEqual(create["type"] as? String, "create_swarm")
         XCTAssertEqual(create["request_id"] as? String, "swarm-create-1")
-        XCTAssertEqual(create["leader_session_id"] as? String, "chat-1")
+        XCTAssertEqual(create["title"] as? String, "Quiet Foxes")
+        XCTAssertEqual(create["leader_bot_id"] as? String, "bot-1")
         XCTAssertEqual(
-            create["member_session_ids"] as? [String],
-            ["chat-1", "chat-2", "chat-3"]
+            create["member_bot_ids"] as? [String],
+            ["bot-2", "bot-3"]
         )
-        XCTAssertNil(create["title"])
-        XCTAssertNil(create["handles"])
 
         let add = try requestObject(.addSwarmMember(
             requestID: "swarm-add-1",
             swarmID: "swarm-1",
-            sessionID: "chat-4"
+            botID: "bot-4"
         ))
         XCTAssertEqual(add["type"] as? String, "add_swarm_member")
         XCTAssertEqual(add["swarm_id"] as? String, "swarm-1")
-        XCTAssertEqual(add["session_id"] as? String, "chat-4")
+        XCTAssertEqual(add["bot_id"] as? String, "bot-4")
 
         let leave = try requestObject(.leaveSwarm(
             requestID: "swarm-leave-1",
             swarmID: "swarm-1",
-            sessionID: "chat-4"
+            botID: "bot-4"
         ))
         XCTAssertEqual(leave["type"] as? String, "leave_swarm")
-        XCTAssertEqual(leave["session_id"] as? String, "chat-4")
+        XCTAssertEqual(leave["bot_id"] as? String, "bot-4")
+
+        let rename = try requestObject(.renameSwarm(
+            requestID: "swarm-rename-1",
+            swarmID: "swarm-1",
+            title: "Night Shift"
+        ))
+        XCTAssertEqual(rename["type"] as? String, "rename_swarm")
+        XCTAssertEqual(rename["swarm_id"] as? String, "swarm-1")
+        XCTAssertEqual(rename["title"] as? String, "Night Shift")
 
         let disband = try requestObject(.disbandSwarm(
             requestID: "swarm-disband-1",
@@ -119,12 +159,6 @@ extension GatewayWireTests {
             (.setSessionPinned(requestID: "pin-1", sessionID: "chat-1", pinned: true), "set_session_pinned"),
             (.deleteSession(requestID: "delete-1", sessionID: "chat-1"), "delete_session"),
             (.submit(sessionID: "chat-1", submission: submission), "submit"),
-            (.configureSession(
-                requestID: "config-1",
-                sessionID: "chat-1",
-                expectedRevision: 4,
-                config: composition
-            ), "configure_session"),
             (.getGitDiff(
                 requestID: "diff-1",
                 sessionID: "chat-1",
@@ -145,12 +179,20 @@ extension GatewayWireTests {
             XCTAssertEqual(object["session_id"] as? String, "chat-1")
         }
 
-        let configure = try requestObject(.configureSession(
-            requestID: "config-1",
-            sessionID: "chat-1",
+        let configure = try requestObject(.updateBot(
+            requestID: "bot-config-1",
+            id: "bot-1",
             expectedRevision: 4,
+            name: "Helper",
+            description: "Reviews focused changes.",
+            tint: .purple,
             config: composition
         ))
+        XCTAssertEqual(configure["type"] as? String, "update_bot")
+        XCTAssertEqual(configure["id"] as? String, "bot-1")
+        XCTAssertEqual(configure["name"] as? String, "Helper")
+        XCTAssertEqual(configure["description"] as? String, "Reviews focused changes.")
+        XCTAssertEqual(configure["tint"] as? String, "purple")
         let encodedConfig = try XCTUnwrap(configure["config"] as? [String: Any])
         XCTAssertNil(encodedConfig["approval"])
         XCTAssertEqual(encodedConfig["max_model_steps"] as? Int, 256)
@@ -169,47 +211,58 @@ extension GatewayWireTests {
         ))
         XCTAssertEqual(branch["branch"] as? String, "feature")
 
-        let schedule = CronSchedule.interval(seconds: 3_700)
-        let create = try requestObject(.createCron(
-            requestID: "cron-1",
-            sourceSessionID: "chat-1",
-            task: "Review nightly",
+        let schedule = RoutineSchedule.interval(seconds: 3_700)
+        let create = try requestObject(.createRoutine(
+            requestID: "routine-1",
+            botID: "bot-1",
+            workspace: "/srv/mobius",
+            instructions: "Review nightly",
             schedule: schedule,
             endsAt: nil
         ))
-        XCTAssertEqual(create["type"] as? String, "create_cron")
-        XCTAssertEqual(create["source_session_id"] as? String, "chat-1")
+        XCTAssertEqual(create["type"] as? String, "create_routine")
+        XCTAssertEqual(create["bot_id"] as? String, "bot-1")
+        XCTAssertEqual(create["workspace"] as? String, "/srv/mobius")
+        XCTAssertEqual(create["instructions"] as? String, "Review nightly")
         XCTAssertEqual((create["schedule"] as? [String: Any])?["kind"] as? String, "interval")
         XCTAssertEqual((create["schedule"] as? [String: Any])?["every_seconds"] as? Int, 3_700)
 
-        let update = try requestObject(.updateCron(
-            requestID: "cron-2",
-            id: "task-1",
-            sourceSessionID: "chat-1",
-            task: "Review nightly",
+        let update = try requestObject(.updateRoutine(
+            requestID: "routine-2",
+            id: "routine-1",
+            botID: "bot-1",
+            workspace: "/srv/mobius",
+            instructions: "Review nightly",
             schedule: .cron("0 9 * * *", timeZone: "America/New_York"),
             endsAt: 500,
             enabled: false
         ))
-        XCTAssertEqual(update["type"] as? String, "update_cron")
-        XCTAssertEqual(update["id"] as? String, "task-1")
+        XCTAssertEqual(update["type"] as? String, "update_routine")
+        XCTAssertEqual(update["id"] as? String, "routine-1")
         XCTAssertEqual(update["enabled"] as? Bool, false)
         XCTAssertEqual(
             (update["schedule"] as? [String: Any])?["time_zone"] as? String,
             "America/New_York"
         )
 
-        let list = try requestObject(.listCron(requestID: "cron-3"))
-        XCTAssertNil(list["session_id"])
-        let history = try requestObject(.listCronHistory(requestID: "cron-4", id: nil))
+        let list = try requestObject(.listRoutines(requestID: "routine-3", botID: "bot-1"))
+        XCTAssertEqual(list["bot_id"] as? String, "bot-1")
+        let history = try requestObject(.listRoutineHistory(requestID: "routine-4", id: nil))
         XCTAssertTrue(history["id"] is NSNull)
 
-        let preview = try requestObject(.getCronRunPreview(
-            requestID: "cron-5",
+        let deleteRun = try requestObject(.deleteRoutineRun(
+            requestID: "routine-delete-run",
+            id: "run-1"
+        ))
+        XCTAssertEqual(deleteRun["type"] as? String, "delete_routine_run")
+        XCTAssertEqual(deleteRun["id"] as? String, "run-1")
+
+        let preview = try requestObject(.getRoutineRunPreview(
+            requestID: "routine-5",
             id: "run-1",
             beforeSequence: 12
         ))
-        XCTAssertEqual(preview["type"] as? String, "get_cron_run_preview")
+        XCTAssertEqual(preview["type"] as? String, "get_routine_run_preview")
         XCTAssertEqual(preview["before_sequence"] as? Int, 12)
     }
 

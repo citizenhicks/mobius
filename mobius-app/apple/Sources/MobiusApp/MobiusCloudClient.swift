@@ -106,6 +106,7 @@ enum MobiusCloudError: LocalizedError {
     case invalidAuthorization
     case invalidExtensionCatalog
     case invalidGatewayResponse
+    case invalidPushToken
     case invalidPurchaseJWS
     case keychain(OSStatus)
     case oversizedResponse
@@ -129,6 +130,7 @@ enum MobiusCloudError: LocalizedError {
         case .invalidAuthorization: "Apple sign-in could not be completed."
         case .invalidExtensionCatalog: "möbius Cloud returned an invalid extension catalog."
         case .invalidGatewayResponse: "möbius Cloud returned an invalid gateway response."
+        case .invalidPushToken: "Apple notification registration returned an invalid device token."
         case .invalidPurchaseJWS: "The App Store transaction is invalid."
         case .keychain: "The Cloud sign-in could not be saved securely."
         case .oversizedResponse: "möbius Cloud returned too much data."
@@ -276,6 +278,16 @@ final class MobiusCloudClient {
         let appTransactionJws: String
     }
 
+    private struct PushTokenRequest: Encodable {
+        let installationId: UUID
+        let token: String
+        let environment: APNsEnvironment
+    }
+
+    private struct PushTokenRemovalRequest: Encodable {
+        let installationId: UUID
+    }
+
     private struct ErrorResponse: Decodable {
         let error: String
     }
@@ -311,6 +323,7 @@ final class MobiusCloudClient {
     private static let accountURL = cloudURL("api/mobile/account")
     private static let subscriptionURL = cloudURL("api/mobile/subscription")
     private static let gatewayURL = cloudURL("api/mobile/gateway")
+    private static let pushTokenURL = cloudURL("api/mobile/push-token")
     private static let extensionCatalogURL = cloudURL("api/mobile/extensions/catalog")
     private static let maximumResponseBytes = 64 * 1024
     private static let maximumPurchaseJWSBytes = 16 * 1024
@@ -473,6 +486,41 @@ final class MobiusCloudClient {
             body: try encoder.encode(SubscriptionRequest(
                 jws: jws,
                 appTransactionJws: appTransactionJWS
+            )),
+            authenticated: true
+        )
+    }
+
+    func registerPushToken(
+        installationID: UUID,
+        token: String,
+        environment: APNsEnvironment
+    ) async throws {
+        guard !token.isEmpty,
+              token.utf8.count <= 2_048,
+              token.utf8.count.isMultiple(of: 2),
+              token.utf8.allSatisfy({ byte in
+                  (byte >= 0x30 && byte <= 0x39) || (byte >= 0x61 && byte <= 0x66)
+              })
+        else { throw MobiusCloudError.invalidPushToken }
+        _ = try await send(
+            url: Self.pushTokenURL,
+            method: "PUT",
+            body: try encoder.encode(PushTokenRequest(
+                installationId: installationID,
+                token: token,
+                environment: environment
+            )),
+            authenticated: true
+        )
+    }
+
+    func unregisterPushToken(installationID: UUID) async throws {
+        _ = try await send(
+            url: Self.pushTokenURL,
+            method: "DELETE",
+            body: try encoder.encode(PushTokenRemovalRequest(
+                installationId: installationID
             )),
             authenticated: true
         )

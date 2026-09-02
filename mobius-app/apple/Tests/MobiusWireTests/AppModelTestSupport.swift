@@ -223,6 +223,7 @@ final class AppModelTests: XCTestCase {
             titleWriter: titleWriter
         )
         model.sessionFileLimits = testSessionFileLimits()
+        model.bots = [bot()]
         return model
     }
 
@@ -319,18 +320,20 @@ final class AppModelTests: XCTestCase {
     }
 
     func ready(
-        defaultConfig: VersionedAgentConfig,
+        botDefaults: VersionedAgentConfig,
+        bots: [BotRecord]? = nil,
         sessions: [SessionRecord]? = nil,
         extensions: [ExtensionRecord] = [],
         contributions: [FrontendContribution] = []
     ) -> ReadyPayload {
         ReadyPayload(
             machineName: "snowwhite.local",
+            bots: bots ?? [bot(config: botDefaults)],
             sessions: sessions ?? [session(state: .idle)],
             swarms: [],
             providers: [],
             providerInstances: [],
-            defaultConfig: defaultConfig,
+            botDefaults: botDefaults,
             models: [],
             modelProviders: [:],
             middlewareFeatures: [],
@@ -338,6 +341,24 @@ final class AppModelTests: XCTestCase {
             contributions: contributions,
             maxActiveSessions: 4,
             sessionFileLimits: testSessionFileLimits()
+        )
+    }
+
+    func bot(
+        id: String = "bot-1",
+        handle: String = "helper",
+        name: String = "Helper",
+        description: String = "You are möbius, a concise coding agent. Inspect the real code path before editing, make the smallest focused change, and preserve unrelated work.",
+        tint: AccentTint = .blue,
+        config: VersionedAgentConfig? = nil
+    ) -> BotRecord {
+        BotRecord(
+            id: id,
+            handle: handle,
+            name: name,
+            description: description,
+            tint: tint,
+            config: config ?? VersionedAgentConfig(revision: 1, config: composition())
         )
     }
 
@@ -457,6 +478,7 @@ final class AppModelTests: XCTestCase {
             session: SessionConfigured(
                 sessionId: sessionID,
                 context: SessionContext(
+                    botId: "bot-1",
                     tenantId: nil,
                     userId: nil,
                     userName: nil,
@@ -476,8 +498,7 @@ final class AppModelTests: XCTestCase {
             toolCount: 0,
             compactionCount: compactionCount,
             contextLimitTokens: 200_000,
-            runStats: runStats,
-            config: VersionedAgentConfig(revision: 1, config: composition())
+            runStats: runStats
         )
     }
 
@@ -490,15 +511,20 @@ final class AppModelTests: XCTestCase {
         model.accounts = [account]
         model.selectedAccountID = account.id
         model.connectionState = .ready
+        let helper = bot()
+        model.bots = [helper]
         let requestCount = await recorder.requestCount()
         model.chooseWorkspace("/srv/mobius")
+        model.selectBotForNewChat(helper)
+        model.createPendingSession()
         let request = await recorder.firstRequest(after: requestCount) {
             if case .createSession = $0 { return true }
             return false
         }
-        guard case .createSession(let requestID, _) = try XCTUnwrap(request) else {
+        guard case .createSession(let requestID, _, let botID) = try XCTUnwrap(request) else {
             return XCTFail("Expected a create-session request")
         }
+        XCTAssertEqual(botID, "bot-1")
         model.handle(.sessionOpened(
             requestID: requestID,
             payload: sessionReady(latestSequence: 0, sessionID: sessionID)
@@ -607,11 +633,13 @@ final class AppModelTests: XCTestCase {
         title: String? = nil,
         workspaceID: String = "workspace-1",
         workspaceLabel: String = "/srv/mobius",
-        originLabel: String? = nil
+        originLabel: String? = nil,
+        botID: String = "bot-1"
     ) -> SessionRecord {
         SessionRecord(
             sessionId: sessionID,
             sessionContext: SessionContext(
+                botId: botID,
                 tenantId: nil,
                 userId: nil,
                 userName: nil,

@@ -1,14 +1,14 @@
 use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayEvents, GatewaySender, MAX_PENDING_FRAMES};
 use mobius_gateway::wire::{
-    AgentComposition, ClientMessage, ProviderConfig, ReadyPayload, ServerFrame, ServerMessage,
-    SessionReadyPayload,
+    AgentComposition, BotRecord, ClientMessage, ProviderConfig, ReadyPayload, ServerFrame,
+    ServerMessage,
 };
 use ratatui::crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use tokio::time::MissedTickBehavior;
 use uuid::Uuid;
 
-use super::state::{ApplyTarget, Authentication, Flow, SetupState};
+use super::state::{Authentication, Flow, SetupState};
 use super::view::draw;
 use super::{SetupMode, SetupTerminal};
 use crate::frontend::terminal::{INPUT_POLL, MAX_INPUT_BATCH, poll_event};
@@ -110,9 +110,15 @@ pub(super) async fn apply(
     sender: &GatewaySender,
     events: &mut GatewayEvents,
     gateway: &mut ReadyPayload,
-    session: &mut SessionReadyPayload,
+    bot_id: &str,
 ) -> Result<()> {
-    let config = state.agent_composition(&session.config.config)?;
+    let bot = gateway
+        .bots
+        .iter()
+        .find(|bot| bot.id == bot_id)
+        .ok_or_else(|| Error::Config("this chat's Bot is not in the gateway catalog".into()))?
+        .clone();
+    let config = state.agent_composition(&bot.config.config)?;
     if state.mode == SetupMode::Login {
         state.set_progress(
             "Registering provider",
@@ -122,44 +128,14 @@ pub(super) async fn apply(
         *gateway =
             register_provider(terminal, state, sender, events, config.provider.clone()).await?;
     }
-    match state.target {
-        ApplyTarget::Session => {
-            if config == session.config.config {
-                return Ok(());
-            }
-            state.set_progress(
-                "Applying agent configuration",
-                "The gateway is restarting the agent while preserving this session…",
-            );
-            draw(terminal, state)?;
-            let session_id = session.session.session_id.clone();
-            *session = configure_session(
-                terminal,
-                state,
-                sender,
-                events,
-                &session_id,
-                session.config.revision,
-                config,
-            )
-            .await?;
-        }
-        ApplyTarget::Default => {
-            let default = gateway.default_config.as_ref().ok_or_else(|| {
-                Error::Config("configure a provider before saving defaults".into())
-            })?;
-            if config == default.config {
-                return Ok(());
-            }
-            state.set_progress(
-                "Saving gateway defaults",
-                "Future chats will use this agent configuration…",
-            );
-            draw(terminal, state)?;
-            *gateway =
-                configure_default_agent(terminal, state, sender, events, default.revision, config)
-                    .await?;
-        }
+    if config == bot.config.config {
+        return Ok(());
+    }
+    state.set_progress("Updating Bot", "Applying this profile to the Bot's chats…");
+    draw(terminal, state)?;
+    let updated = update_bot(terminal, state, sender, events, &bot, config).await?;
+    if let Some(current) = gateway.bots.iter_mut().find(|current| current.id == bot.id) {
+        *current = updated;
     }
     Ok(())
 }
@@ -182,19 +158,19 @@ pub(super) async fn apply_gateway(
             register_provider(terminal, state, sender, events, config.provider.clone()).await?;
     }
     let default = gateway
-        .default_config
+        .bot_defaults
         .as_ref()
         .ok_or_else(|| Error::Config("configure a provider before saving defaults".into()))?;
     if config == default.config {
         return Ok(());
     }
     state.set_progress(
-        "Saving gateway defaults",
-        "Future chats will use this agent configuration…",
+        "Saving Bot template",
+        "Future Bots will start with this configuration…",
     );
     draw(terminal, state)?;
     *gateway =
-        configure_default_agent(terminal, state, sender, events, default.revision, config).await?;
+        configure_bot_defaults(terminal, state, sender, events, default.revision, config).await?;
     Ok(())
 }
 
@@ -220,7 +196,6 @@ pub(super) async fn register_provider(
                 .unwrap_or_default(),
             model_ids,
             reasoning_efforts,
-            replace_existing_selections: false,
         })
         .await
         .map_err(gateway_error)?;
@@ -234,7 +209,7 @@ pub(super) async fn register_provider(
     .await
 }
 
-pub(super) async fn configure_default_agent(
+pub(super) async fn configure_bot_defaults(
     terminal: &mut SetupTerminal,
     state: &mut SetupState,
     sender: &GatewaySender,
@@ -244,21 +219,70 @@ pub(super) async fn configure_default_agent(
 ) -> Result<ReadyPayload> {
     let request_id = Uuid::new_v4().to_string();
     sender
-        .send(ClientMessage::ConfigureDefaultAgent {
+        .send(ClientMessage::ConfigureBotDefaults {
             request_id: request_id.clone(),
             expected_revision,
             config,
         })
         .await
         .map_err(gateway_error)?;
-    wait_gateway_configured(
-        terminal,
-        state,
-        events,
-        &request_id,
-        "saving gateway defaults",
-    )
-    .await
+    wait_gateway_configured(terminal, state, events, &request_id, "saving Bot defaults").await
+}
+
+pub(super) async fn update_bot(
+    terminal: &mut SetupTerminal,
+    state: &mut SetupState,
+    sender: &GatewaySender,
+    events: &mut GatewayEvents,
+    bot: &BotRecord,
+    config: AgentComposition,
+) -> Result<BotRecord> {
+    let request_id = Uuid::new_v4().to_string();
+    sender
+        .send(ClientMessage::UpdateBot {
+            request_id: request_id.clone(),
+            id: bot.id.clone(),
+            expected_revision: bot.config.revision,
+            name: bot.name.clone(),
+            description: bot.description.clone(),
+            tint: bot.tint,
+            config,
+        })
+        .await
+        .map_err(gateway_error)?;
+    let mut deferred = Vec::new();
+    let result = loop {
+        let frame = match next_frame(terminal, state, events, false).await {
+            Ok(frame) => frame,
+            Err(error) => break Err(error),
+        };
+        match frame.message {
+            ServerMessage::Bots {
+                request_id: Some(actual),
+                bots,
+            } if actual == request_id => {
+                let updated = bots
+                    .into_iter()
+                    .find(|updated| updated.id == bot.id)
+                    .ok_or_else(|| Error::Stopped("gateway did not return the updated Bot".into()));
+                break updated;
+            }
+            ServerMessage::Rejected {
+                request_id: actual,
+                message,
+                ..
+            } if actual == request_id => break Err(Error::Stopped(message)),
+            ServerMessage::Error { message, .. } => break Err(Error::Stopped(message)),
+            message if deferred.len() == MAX_PENDING_FRAMES => {
+                break Err(Error::Stopped(format!(
+                    "gateway event backlog exceeds {MAX_PENDING_FRAMES} frames while updating the Bot: {message:?}"
+                )));
+            }
+            message => deferred.push(ServerFrame::new(message)),
+        }
+    };
+    events.prepend(deferred).map_err(gateway_error)?;
+    result
 }
 
 pub(super) async fn wait_gateway_configured(
@@ -323,7 +347,7 @@ pub(super) async fn set_credential(
         },
     };
     sender.send(message).await.map_err(gateway_error)?;
-    let _ = wait_for_response(
+    wait_for_response(
         terminal,
         state,
         events,
@@ -352,7 +376,7 @@ pub(super) async fn device_login(
         })
         .await
         .map_err(gateway_error)?;
-    let _ = wait_for_response(
+    wait_for_response(
         terminal,
         state,
         events,
@@ -363,39 +387,6 @@ pub(super) async fn device_login(
     Ok(())
 }
 
-pub(super) async fn configure_session(
-    terminal: &mut SetupTerminal,
-    state: &mut SetupState,
-    sender: &GatewaySender,
-    events: &mut GatewayEvents,
-    session_id: &str,
-    expected_revision: u64,
-    config: AgentComposition,
-) -> Result<SessionReadyPayload> {
-    let request_id = Uuid::new_v4().to_string();
-    sender
-        .send(ClientMessage::ConfigureSession {
-            request_id: request_id.clone(),
-            session_id: session_id.into(),
-            expected_revision,
-            config,
-        })
-        .await
-        .map_err(gateway_error)?;
-    wait_for_response(
-        terminal,
-        state,
-        events,
-        &request_id,
-        ExpectedResponse::Configure {
-            session_id,
-            revision: expected_revision,
-        },
-    )
-    .await?
-    .ok_or_else(|| Error::Stopped("gateway did not return the configured chat".into()))
-}
-
 #[derive(Clone, Copy)]
 pub(super) enum ExpectedResponse<'a> {
     Credential {
@@ -403,10 +394,6 @@ pub(super) enum ExpectedResponse<'a> {
         provider: &'a str,
     },
     Login(&'a str),
-    Configure {
-        session_id: &'a str,
-        revision: u64,
-    },
 }
 
 impl ExpectedResponse<'_> {
@@ -428,15 +415,13 @@ impl ExpectedResponse<'_> {
 struct ResponseProgress {
     accepted: bool,
     completed: bool,
-    snapshot: Option<(usize, SessionReadyPayload)>,
 }
 
 impl ResponseProgress {
     fn new(expected: ExpectedResponse<'_>) -> Self {
         Self {
             accepted: matches!(expected, ExpectedResponse::Credential { .. }),
-            completed: matches!(expected, ExpectedResponse::Configure { .. }),
-            snapshot: None,
+            completed: false,
         }
     }
 }
@@ -447,7 +432,7 @@ pub(super) async fn wait_for_response(
     events: &mut GatewayEvents,
     request_id: &str,
     expected: ExpectedResponse<'_>,
-) -> Result<Option<SessionReadyPayload>> {
+) -> Result<()> {
     let mut progress = ResponseProgress::new(expected);
     let mut deferred = Vec::new();
     let result = loop {
@@ -462,16 +447,14 @@ pub(super) async fn wait_for_response(
             request_id,
             expected,
             &mut progress,
-            deferred.len(),
         ) {
             Ok(defer) => defer,
             Err(error) => break Err(error),
         };
-        if let Some(response) = completed_response(expected, &mut progress) {
-            break Ok(response);
+        if progress.accepted && progress.completed {
+            break Ok(());
         }
-        if defer && deferred.len() + usize::from(progress.snapshot.is_some()) == MAX_PENDING_FRAMES
-        {
+        if defer && deferred.len() == MAX_PENDING_FRAMES {
             break Err(Error::Stopped(format!(
                 "gateway event backlog exceeds {MAX_PENDING_FRAMES} frames"
             )));
@@ -480,14 +463,6 @@ pub(super) async fn wait_for_response(
             deferred.push(frame);
         }
     };
-    if result.is_err()
-        && let Some((index, snapshot)) = progress.snapshot
-    {
-        deferred.insert(
-            index,
-            ServerFrame::new(ServerMessage::SessionChanged { payload: snapshot }),
-        );
-    }
     events.prepend(deferred).map_err(gateway_error)?;
     result
 }
@@ -499,7 +474,6 @@ fn observe_response(
     request_id: &str,
     expected: ExpectedResponse<'_>,
     progress: &mut ResponseProgress,
-    deferred_len: usize,
 ) -> Result<bool> {
     match message {
         ServerMessage::Accepted { request_id: actual } if actual == request_id => {
@@ -521,17 +495,6 @@ fn observe_response(
         ExpectedResponse::Login(provider) => {
             observe_login(terminal, state, message, request_id, provider, progress)
         }
-        ExpectedResponse::Configure {
-            session_id,
-            revision,
-        } => observe_configure(
-            message,
-            request_id,
-            session_id,
-            revision,
-            progress,
-            deferred_len,
-        ),
     }
 }
 
@@ -590,25 +553,6 @@ fn observe_login(
     Ok(true)
 }
 
-fn observe_configure(
-    message: &ServerMessage,
-    request_id: &str,
-    session_id: &str,
-    revision: u64,
-    progress: &mut ResponseProgress,
-    deferred_len: usize,
-) -> Result<bool> {
-    if let ServerMessage::SessionChanged { payload } = message
-        && payload.session.session_id == session_id
-        && payload.config.revision > revision
-    {
-        progress.snapshot = Some((deferred_len, payload.clone()));
-        return Ok(false);
-    }
-    reject_invalid_setup_response(message, request_id)?;
-    Ok(true)
-}
-
 fn reject_invalid_setup_response(message: &ServerMessage, request_id: &str) -> Result<()> {
     let actual = match message {
         ServerMessage::ProviderCredentialSaved { request_id, .. }
@@ -622,21 +566,6 @@ fn reject_invalid_setup_response(message: &ServerMessage, request_id: &str) -> R
         ));
     }
     Ok(())
-}
-
-fn completed_response(
-    expected: ExpectedResponse<'_>,
-    progress: &mut ResponseProgress,
-) -> Option<Option<SessionReadyPayload>> {
-    if !progress.accepted || !progress.completed {
-        return None;
-    }
-    match expected {
-        ExpectedResponse::Configure { .. } => {
-            progress.snapshot.take().map(|(_, payload)| Some(payload))
-        }
-        ExpectedResponse::Credential { .. } | ExpectedResponse::Login(_) => Some(None),
-    }
 }
 
 pub(super) async fn next_frame(

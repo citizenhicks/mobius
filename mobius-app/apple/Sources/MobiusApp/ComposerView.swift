@@ -5,6 +5,7 @@ import UIKit
 
 struct ComposerView: View {
     @Environment(AppModel.self) private var model
+    let showBotSettings: () -> Void
 
     var body: some View {
         VStack(spacing: MobiusSpace.s) {
@@ -17,7 +18,7 @@ struct ComposerView: View {
             if let picker = model.pendingPicker {
                 FrontendPickerView(picker: picker)
             }
-            ComposerStack()
+            ComposerStack(showBotSettings: showBotSettings)
         }
         .frame(maxWidth: MobiusStyle.transcriptWidth)
         .frame(maxWidth: .infinity)
@@ -27,9 +28,11 @@ struct ComposerView: View {
 }
 
 private struct ComposerStack: View {
+    let showBotSettings: () -> Void
+
     var body: some View {
         VStack(spacing: MobiusSpace.xs) {
-            ComposerActivityView()
+            ComposerActivityView(showBotSettings: showBotSettings)
             ComposerSurface()
         }
     }
@@ -393,38 +396,50 @@ private struct ComposerActivityView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
     @State private var totals = DiffLineTotals()
+    let showBotSettings: () -> Void
 
     var body: some View {
         GlassEffectContainer(spacing: MobiusSpace.s) {
             HStack(spacing: MobiusSpace.s) {
-                ForEach(model.composerFooterWidgets) { widget in
-                    FrontendWidgetView(widget: widget)
-                }
-                if totals.added > 0 || totals.removed > 0 {
-                    Button { model.showFiles(.unstaged) } label: {
-                        HStack(spacing: MobiusSpace.s) {
-                            Text("+\(totals.added)").foregroundStyle(palette.signal)
-                            Text("−\(totals.removed)").foregroundStyle(palette.danger)
-                        }
-                        .font(MobiusStyle.badgeFont)
-                        .padding(.horizontal, MobiusSpace.m)
-                        .frame(height: MobiusStyle.badgeHeight)
-                        .mobiusGlass(in: Capsule(), interactive: true)
-                        .frame(
-                            minWidth: MobiusStyle.iconButtonSize,
-                            minHeight: MobiusStyle.iconButtonSize
-                        )
-                        .contentShape(Rectangle())
+                if showsBotChoices {
+                    ForEach(model.bots) { bot in
+                        BotChoiceBadge(bot: bot)
+                            .transition(.opacity)
                     }
-                    .buttonStyle(.mobiusPlain)
-                    .accessibilityLabel("Code changes")
-                    .accessibilityValue("\(totals.added) additions, \(totals.removed) deletions")
-                    .accessibilityHint("Opens modified files")
-                }
+                } else {
+                    ForEach(model.composerFooterWidgets) { widget in
+                        FrontendWidgetView(widget: widget)
+                    }
+                    if totals.added > 0 || totals.removed > 0 {
+                        Button { model.showFiles(.unstaged) } label: {
+                            HStack(spacing: MobiusSpace.s) {
+                                Text("+\(totals.added)").foregroundStyle(palette.signal)
+                                Text("−\(totals.removed)").foregroundStyle(palette.danger)
+                            }
+                            .font(MobiusStyle.badgeFont)
+                            .padding(.horizontal, MobiusSpace.m)
+                            .frame(height: MobiusStyle.badgeHeight)
+                            .mobiusGlass(in: Capsule(), interactive: true)
+                            .frame(
+                                minWidth: MobiusStyle.iconButtonSize,
+                                minHeight: MobiusStyle.iconButtonSize
+                            )
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.mobiusPlain)
+                        .accessibilityLabel("Code changes")
+                        .accessibilityValue("\(totals.added) additions, \(totals.removed) deletions")
+                        .accessibilityHint("Opens modified files")
+                    }
 
-                SessionStatsBadge()
+                    if let bot = model.selectedBot {
+                        BotActivityBadge(bot: bot, action: showBotSettings)
+                    }
+                    SessionStatsBadge()
+                }
             }
             .frame(minHeight: MobiusStyle.iconButtonSize)
+            .animation(.easeInOut(duration: 0.2), value: showsBotChoices)
             .scrollableRow()
         }
         .frame(maxWidth: .infinity)
@@ -440,11 +455,63 @@ private struct ComposerActivityView: View {
         }
     }
 
+    private var showsBotChoices: Bool {
+        model.selectedSessionID == nil && model.pendingNewChatWorkspace != nil
+    }
+}
+
+private struct BotChoiceBadge: View {
+    @Environment(AppModel.self) private var model
+    let bot: BotRecord
+
+    var body: some View {
+        let selected = model.pendingNewChatBotID == bot.id
+        Button {
+            model.selectBotForNewChat(bot)
+        } label: {
+            MobiusBadge(
+                text: .verbatim(bot.name),
+                glyph: .aiScan,
+                glyphColor: bot.tint.color,
+                interactive: true,
+                selected: selected
+            )
+            .frame(minWidth: MobiusStyle.iconButtonSize, minHeight: MobiusStyle.iconButtonSize)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.mobiusPlain)
+        .disabled(model.sessionRequestID != nil)
+        .accessibilityLabel(Text(verbatim: "Start with Bot \(bot.name)"))
+        .accessibilityValue(selected ? Text("Selected") : Text("Not selected"))
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .sensoryFeedback(.selection, trigger: selected)
+    }
+}
+
+private struct BotActivityBadge: View {
+    let bot: BotRecord
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            MobiusBadge(
+                text: .verbatim(bot.name),
+                glyph: .aiScan,
+                glyphColor: bot.tint.color,
+                interactive: true
+            )
+            .frame(minWidth: MobiusStyle.iconButtonSize, minHeight: MobiusStyle.iconButtonSize)
+        }
+        .buttonStyle(.mobiusPlain)
+        .accessibilityLabel(Text(verbatim: "Bot \(bot.name)"))
+        .accessibilityHint("Opens Bot agent settings")
+    }
 }
 
 /// Context fill and elapsed execution time stay visible; deeper run totals live in the popover.
 private struct SessionStatsBadge: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.locale) private var locale
     @State private var showsDetail = false
 
     var body: some View {
@@ -454,7 +521,7 @@ private struct SessionStatsBadge: View {
                 Button { showsDetail = true } label: {
                     MobiusBadge(
                         text: .verbatim(
-                            "\(model.contextFillPercent)% · \(formatDuration(elapsed))"
+                            "\(model.contextFillPercent)% · \(formatCompactDuration(elapsed, locale: locale))"
                         ),
                         progress: model.contextFillFraction,
                         interactive: true
@@ -468,7 +535,7 @@ private struct SessionStatsBadge: View {
                 .buttonStyle(.mobiusPlain)
                 .accessibilityLabel("Session observability")
                 .accessibilityValue(
-                    "\(model.contextFillPercent) percent context used, \(formatDuration(elapsed)) elapsed"
+                    "\(model.contextFillPercent) percent context used, \(formatCompactDuration(elapsed, locale: locale)) elapsed"
                 )
                 .sensoryFeedback(.selection, trigger: showsDetail)
                 .popover(isPresented: $showsDetail, arrowEdge: .bottom) {

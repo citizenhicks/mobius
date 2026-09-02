@@ -2,7 +2,7 @@ use super::*;
 use mobius::middleware::session_files::session_file_limits;
 use mobius::protocol::{MessageAuthor, Submission};
 
-use crate::wire::{AgentComposition, GitDiffScope, WorkspaceFileScope};
+use crate::wire::{GitDiffScope, WorkspaceFileScope};
 
 pub(super) struct SelectedChat {
     pub(super) host: HostHandle,
@@ -35,7 +35,7 @@ pub(super) async fn handle_message(
     message: ClientMessage,
     auth: &AuthStore,
     gateway: &GatewayHost,
-    cron: &CronStore,
+    bots: &BotStore,
     client: &AuthenticatedClient<'_>,
     mut connection: ConnectionSessionState<'_>,
     writer: &mut (impl AsyncWrite + Unpin),
@@ -64,9 +64,17 @@ pub(super) async fn handle_message(
         ClientMessage::CreateSession {
             request_id,
             workspace,
+            bot_id,
         } => {
-            return create_session(writer, connection.selected, request_id, workspace, gateway)
-                .await;
+            return create_session(
+                writer,
+                connection.selected,
+                request_id,
+                workspace,
+                bot_id,
+                gateway,
+            )
+            .await;
         }
         ClientMessage::CreateWorkspaceDirectory {
             request_id,
@@ -126,14 +134,15 @@ pub(super) async fn handle_message(
         }
         ClientMessage::CreateSwarm {
             request_id,
-            leader_session_id,
-            member_session_ids,
+            title,
+            leader_bot_id,
+            member_bot_ids,
         } => {
             return write_swarms_result(
                 writer,
                 request_id,
                 gateway
-                    .create_swarm(leader_session_id, member_session_ids)
+                    .create_swarm(title, leader_bot_id, member_bot_ids)
                     .await,
             )
             .await;
@@ -141,24 +150,36 @@ pub(super) async fn handle_message(
         ClientMessage::AddSwarmMember {
             request_id,
             swarm_id,
-            session_id,
+            bot_id,
         } => {
             return write_swarms_result(
                 writer,
                 request_id,
-                gateway.add_swarm_member(&swarm_id, session_id).await,
+                gateway.add_swarm_member(&swarm_id, bot_id).await,
             )
             .await;
         }
         ClientMessage::LeaveSwarm {
             request_id,
             swarm_id,
-            session_id,
+            bot_id,
         } => {
             return write_swarms_result(
                 writer,
                 request_id,
-                gateway.leave_swarm(&swarm_id, &session_id).await,
+                gateway.leave_swarm(&swarm_id, &bot_id).await,
+            )
+            .await;
+        }
+        ClientMessage::RenameSwarm {
+            request_id,
+            swarm_id,
+            title,
+        } => {
+            return write_swarms_result(
+                writer,
+                request_id,
+                gateway.rename_swarm(&swarm_id, title).await,
             )
             .await;
         }
@@ -173,10 +194,11 @@ pub(super) async fn handle_message(
             session_id,
             submission,
         } => return submit(writer, &connection, session_id, submission).await,
-        ClientMessage::SubmitGlobalScratchpad {
+        ClientMessage::SubmitScratchpad {
             request_id,
+            scope,
             operation,
-        } => return submit_global_scratchpad(writer, request_id, operation, gateway).await,
+        } => return submit_scratchpad(writer, request_id, scope, operation, gateway).await,
         ClientMessage::BeginSessionFileUpload {
             request_id,
             session_id,
@@ -230,7 +252,7 @@ pub(super) async fn handle_message(
         ClientMessage::ListSessionFiles {
             request_id,
             session_id,
-        } => return list_session_files(writer, &connection, request_id, session_id, gateway).await,
+        } => return list_session_files(writer, &connection, request_id, session_id).await,
         ClientMessage::ReadSessionFile {
             request_id,
             session_id,
@@ -246,27 +268,58 @@ pub(super) async fn handle_message(
                 file_id,
                 offset,
                 max_bytes,
+            )
+            .await;
+        }
+        ClientMessage::CreateBot {
+            request_id,
+            name,
+            description,
+        } => {
+            return write_bot_result(
+                writer,
+                request_id,
+                gateway.create_bot(&name, &description).await,
                 gateway,
             )
             .await;
         }
-        ClientMessage::ConfigureSession {
+        ClientMessage::ListBots { request_id } => {
+            return list_bots(writer, request_id, gateway).await;
+        }
+        ClientMessage::UpdateBot {
             request_id,
-            session_id,
+            id,
             expected_revision,
+            name,
+            description,
+            tint,
             config,
         } => {
-            return configure_session(
+            return write_bot_result(
                 writer,
-                &connection,
                 request_id,
-                session_id,
-                expected_revision,
-                config,
+                gateway
+                    .update_bot(&id, expected_revision, &name, &description, tint, config)
+                    .await,
+                gateway,
             )
             .await;
         }
-        ClientMessage::ConfigureDefaultAgent {
+        ClientMessage::DeleteBot {
+            request_id,
+            id,
+            expected_revision,
+        } => {
+            return write_bot_catalog_result(
+                writer,
+                &mut connection,
+                request_id,
+                gateway.delete_bot(&id, expected_revision).await,
+            )
+            .await;
+        }
+        ClientMessage::ConfigureBotDefaults {
             request_id,
             expected_revision,
             config,
@@ -275,7 +328,7 @@ pub(super) async fn handle_message(
                 writer,
                 request_id,
                 gateway
-                    .configure_default_agent(expected_revision, config)
+                    .configure_bot_defaults(expected_revision, config)
                     .await,
             )
             .await;
@@ -445,20 +498,12 @@ pub(super) async fn handle_message(
             tint,
             model_ids,
             reasoning_efforts,
-            replace_existing_selections,
         } => {
             return write_gateway_result(
                 writer,
                 request_id,
                 gateway
-                    .register_provider(
-                        config,
-                        label,
-                        tint,
-                        model_ids,
-                        reasoning_efforts,
-                        replace_existing_selections,
-                    )
+                    .register_provider(config, label, tint, model_ids, reasoning_efforts)
                     .await,
             )
             .await;
@@ -491,10 +536,11 @@ pub(super) async fn handle_message(
         ClientMessage::GetProfile { request_id } => {
             return get_profile(writer, request_id, gateway).await;
         }
-        ClientMessage::CreateCron {
+        ClientMessage::CreateRoutine {
             request_id,
-            task,
-            source_session_id,
+            bot_id,
+            workspace,
+            instructions,
             schedule,
             ends_at,
         } => {
@@ -502,44 +548,55 @@ pub(super) async fn handle_message(
                 writer,
                 request_id,
                 gateway
-                    .create_cron(&source_session_id, &task, schedule, ends_at)
+                    .create_routine(&bot_id, &workspace, &instructions, schedule, ends_at)
                     .await,
             )
             .await;
         }
-        ClientMessage::ListCron { request_id } => {
-            return list_cron(writer, request_id, cron).await;
+        ClientMessage::ListRoutines { request_id, bot_id } => {
+            return list_routines(writer, request_id, bot_id, bots).await;
         }
-        ClientMessage::UpdateCron {
+        ClientMessage::UpdateRoutine {
             request_id,
             id,
-            source_session_id,
-            task,
+            bot_id,
+            workspace,
+            instructions,
             schedule,
             ends_at,
             enabled,
         } => {
             let result = gateway
-                .update_cron(&id, &source_session_id, &task, schedule, ends_at, enabled)
+                .update_routine(
+                    &id,
+                    &bot_id,
+                    &workspace,
+                    &instructions,
+                    schedule,
+                    ends_at,
+                    enabled,
+                )
                 .await;
             return write_result(writer, request_id, result).await;
         }
-        ClientMessage::DeleteCron { request_id, id } => {
-            let result = cron.delete(&id).map(|_| ()).map_err(cron_rejection);
-            return write_result(writer, request_id, result).await;
+        ClientMessage::DeleteRoutine { request_id, id } => {
+            return write_result(writer, request_id, gateway.delete_routine(&id).await).await;
         }
-        ClientMessage::RunCron { request_id, id } => {
-            return write_result(writer, request_id, gateway.run_cron(id).await).await;
+        ClientMessage::RunRoutine { request_id, id } => {
+            return write_result(writer, request_id, gateway.run_routine(id).await).await;
         }
-        ClientMessage::ListCronHistory { request_id, id } => {
-            return list_cron_history(writer, request_id, id, cron).await;
+        ClientMessage::ListRoutineHistory { request_id, id } => {
+            return list_routine_history(writer, request_id, id, bots).await;
         }
-        ClientMessage::GetCronRunPreview {
+        ClientMessage::DeleteRoutineRun { request_id, id } => {
+            return write_result(writer, request_id, gateway.delete_routine_run(&id).await).await;
+        }
+        ClientMessage::GetRoutineRunPreview {
             request_id,
             id,
             before_sequence,
         } => {
-            get_cron_run_preview(writer, request_id, id, before_sequence, gateway).await?;
+            get_routine_run_preview(writer, request_id, id, before_sequence, gateway).await?;
         }
     }
     Ok(())
@@ -625,9 +682,10 @@ async fn create_session(
     selected: &mut Option<SelectedChat>,
     request_id: String,
     workspace: PathBuf,
+    bot_id: String,
     gateway: &GatewayHost,
 ) -> Result<()> {
-    match gateway.create_session(&workspace).await {
+    match gateway.create_session(&workspace, &bot_id).await {
         Ok(host) => open_selected(writer, selected, request_id, host, None).await,
         Err(rejection) => write_rejection(writer, request_id, rejection).await,
     }
@@ -720,24 +778,71 @@ async fn set_session_pinned(
     .await
 }
 
-async fn configure_session(
+async fn list_bots(
     writer: &mut (impl AsyncWrite + Unpin),
-    connection: &ConnectionSessionState<'_>,
     request_id: String,
-    session_id: String,
-    expected_revision: u64,
-    config: AgentComposition,
+    gateway: &GatewayHost,
 ) -> Result<()> {
-    let host = match require_selected(&*connection.selected, &session_id) {
-        Ok(host) => host,
-        Err(rejection) => return write_rejection(writer, request_id, rejection).await,
-    };
-    write_result(
-        writer,
-        request_id,
-        host.configure(expected_revision, config).await,
-    )
-    .await
+    match gateway.bots().await {
+        Ok(bots) => {
+            write_frame(
+                writer,
+                &ServerFrame::new(ServerMessage::Bots {
+                    request_id: Some(request_id),
+                    bots,
+                }),
+            )
+            .await
+        }
+        Err(rejection) => write_rejection(writer, request_id, rejection).await,
+    }
+}
+
+async fn write_bot_result(
+    writer: &mut (impl AsyncWrite + Unpin),
+    request_id: String,
+    result: std::result::Result<crate::wire::BotRecord, Rejection>,
+    gateway: &GatewayHost,
+) -> Result<()> {
+    match result {
+        Ok(_) => {
+            let bots = match gateway.bots().await {
+                Ok(bots) => bots,
+                Err(rejection) => return write_rejection(writer, request_id, rejection).await,
+            };
+            write_frame(
+                writer,
+                &ServerFrame::new(ServerMessage::Bots {
+                    request_id: Some(request_id),
+                    bots,
+                }),
+            )
+            .await
+        }
+        Err(rejection) => write_rejection(writer, request_id, rejection).await,
+    }
+}
+
+async fn write_bot_catalog_result(
+    writer: &mut (impl AsyncWrite + Unpin),
+    connection: &mut ConnectionSessionState<'_>,
+    request_id: String,
+    result: std::result::Result<(Vec<crate::wire::BotRecord>, Vec<String>), Rejection>,
+) -> Result<()> {
+    match result {
+        Ok((bots, deleted_sessions)) => {
+            forget_deleted_sessions(connection, &deleted_sessions);
+            write_frame(
+                writer,
+                &ServerFrame::new(ServerMessage::Bots {
+                    request_id: Some(request_id),
+                    bots,
+                }),
+            )
+            .await
+        }
+        Err(rejection) => write_rejection(writer, request_id, rejection).await,
+    }
 }
 
 async fn delete_session(
@@ -749,19 +854,23 @@ async fn delete_session(
 ) -> Result<()> {
     match gateway.delete_session(&session_id).await {
         Ok(deleted) => {
-            connection
-                .uploads
-                .retain(|(session_id, _), _| !deleted.contains(session_id));
-            if connection.selected.as_ref().is_some_and(|selected| {
-                deleted
-                    .iter()
-                    .any(|session_id| session_id == selected.host.session_id())
-            }) {
-                *connection.selected = None;
-            }
+            forget_deleted_sessions(connection, &deleted);
             write_result(writer, request_id, Ok(())).await
         }
         Err(rejection) => write_result(writer, request_id, Err(rejection)).await,
+    }
+}
+
+fn forget_deleted_sessions(connection: &mut ConnectionSessionState<'_>, deleted: &[String]) {
+    connection
+        .uploads
+        .retain(|(session_id, _), _| !deleted.contains(session_id));
+    if connection.selected.as_ref().is_some_and(|selected| {
+        deleted
+            .iter()
+            .any(|session_id| session_id == selected.host.session_id())
+    }) {
+        *connection.selected = None;
     }
 }
 
@@ -825,18 +934,20 @@ async fn submit(
     write_result(writer, request_id, host.submit(submission).await).await
 }
 
-async fn submit_global_scratchpad(
+async fn submit_scratchpad(
     writer: &mut (impl AsyncWrite + Unpin),
     request_id: String,
+    scope: crate::wire::ScratchpadScope,
     operation: Op,
     gateway: &GatewayHost,
 ) -> Result<()> {
-    match gateway.submit_global_scratchpad(operation).await {
+    match gateway.submit_scratchpad(&scope, operation).await {
         Ok(contribution) => {
             write_frame(
                 writer,
-                &ServerFrame::new(ServerMessage::GlobalScratchpadChanged {
+                &ServerFrame::new(ServerMessage::ScratchpadChanged {
                     request_id,
+                    scope,
                     contribution,
                 }),
             )
@@ -972,22 +1083,11 @@ async fn finish_session_file_upload(
     }
 }
 
-/// Files are readable for the selected chat, and for the session a scheduled run executed in.
-/// A run session is never selected on a connection, so without this its artifacts are the one
-/// part of a transcript the client can already read but not open.
-async fn require_readable_files(
+fn require_readable_files(
     selected: &Option<SelectedChat>,
     session_id: &str,
-    gateway: &GatewayHost,
 ) -> std::result::Result<(), Rejection> {
-    let Err(rejection) = require_selected(selected, session_id) else {
-        return Ok(());
-    };
-    if gateway.is_cron_execution_session(session_id).await? {
-        Ok(())
-    } else {
-        Err(rejection)
-    }
+    require_selected(selected, session_id).map(|_| ())
 }
 
 async fn list_session_files(
@@ -995,11 +1095,8 @@ async fn list_session_files(
     connection: &ConnectionSessionState<'_>,
     request_id: String,
     session_id: String,
-    gateway: &GatewayHost,
 ) -> Result<()> {
-    if let Err(rejection) =
-        require_readable_files(&*connection.selected, &session_id, gateway).await
-    {
+    if let Err(rejection) = require_readable_files(&*connection.selected, &session_id) {
         return write_rejection(writer, request_id, rejection).await;
     }
     match connection.session_files.list_files(&session_id).await {
@@ -1018,10 +1115,6 @@ async fn list_session_files(
     }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "wire read fields remain explicit at the dispatch boundary"
-)]
 async fn read_session_file(
     writer: &mut (impl AsyncWrite + Unpin),
     connection: &ConnectionSessionState<'_>,
@@ -1030,11 +1123,8 @@ async fn read_session_file(
     file_id: String,
     offset: u64,
     max_bytes: usize,
-    gateway: &GatewayHost,
 ) -> Result<()> {
-    if let Err(rejection) =
-        require_readable_files(&*connection.selected, &session_id, gateway).await
-    {
+    if let Err(rejection) = require_readable_files(&*connection.selected, &session_id) {
         return write_rejection(writer, request_id, rejection).await;
     }
     match connection
@@ -1371,53 +1461,57 @@ async fn get_profile(
     }
 }
 
-async fn list_cron(
+async fn list_routines(
     writer: &mut (impl AsyncWrite + Unpin),
     request_id: String,
-    cron: &CronStore,
+    bot_id: Option<String>,
+    bots: &BotStore,
 ) -> Result<()> {
-    match cron.records(Utc::now().timestamp()) {
-        Ok(tasks) => {
+    match bots.routine_records(bot_id.as_deref(), Utc::now().timestamp()) {
+        Ok(routines) => {
             write_frame(
                 writer,
-                &ServerFrame::new(ServerMessage::CronTasks { request_id, tasks }),
+                &ServerFrame::new(ServerMessage::Routines {
+                    request_id,
+                    routines,
+                }),
             )
             .await
         }
-        Err(error) => write_rejection(writer, request_id, cron_rejection(error)).await,
+        Err(error) => write_rejection(writer, request_id, routine_rejection(error)).await,
     }
 }
 
-async fn list_cron_history(
+async fn list_routine_history(
     writer: &mut (impl AsyncWrite + Unpin),
     request_id: String,
     id: Option<String>,
-    cron: &CronStore,
+    bots: &BotStore,
 ) -> Result<()> {
-    match cron.history(id.as_deref()) {
+    match bots.history(id.as_deref()) {
         Ok(runs) => {
             write_frame(
                 writer,
-                &ServerFrame::new(ServerMessage::CronHistory { request_id, runs }),
+                &ServerFrame::new(ServerMessage::RoutineHistory { request_id, runs }),
             )
             .await
         }
-        Err(error) => write_rejection(writer, request_id, cron_rejection(error)).await,
+        Err(error) => write_rejection(writer, request_id, routine_rejection(error)).await,
     }
 }
 
-async fn get_cron_run_preview(
+async fn get_routine_run_preview(
     writer: &mut (impl AsyncWrite + Unpin),
     request_id: String,
     id: String,
     before_sequence: Option<u64>,
     gateway: &GatewayHost,
 ) -> Result<()> {
-    match gateway.cron_run_preview(&id, before_sequence).await {
+    match gateway.routine_run_preview(&id, before_sequence).await {
         Ok(preview) => {
             write_frame(
                 writer,
-                &ServerFrame::new(ServerMessage::CronRunPreview {
+                &ServerFrame::new(ServerMessage::RoutineRunPreview {
                     request_id,
                     preview,
                 }),

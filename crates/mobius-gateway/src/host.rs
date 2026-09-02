@@ -18,9 +18,9 @@ use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use chrono::Utc;
 use mobius::agent::{AgentConfig, AgentSender};
 use mobius::backend::checkpoint::{
-    ActiveExecution, Checkpoint, CheckpointStore, EventPageRequest, ExecutionOutcome,
-    ExecutionRecord, ExecutionStats, JournalEvent, SessionPageRequest, SessionSummary,
-    event_turn_page, sqlite::SqliteCheckpoint,
+    ActiveExecution, CheckpointStore, EventPageRequest, ExecutionOutcome, ExecutionRecord,
+    ExecutionStats, JournalEvent, SessionPageRequest, SessionSummary, event_turn_page,
+    sqlite::SqliteCheckpoint,
 };
 use mobius::backend::model::ModelRouter;
 use mobius::middleware::scratchpad::ScratchpadStore;
@@ -34,24 +34,23 @@ use tokio::sync::{Mutex, RwLock, broadcast, mpsc, oneshot};
 use uuid::Uuid;
 
 use crate::assembly::{BuiltAgent, assemble};
+use crate::bots::swarm::{BoardEntry, SwarmDelivery, SwarmStore, validate_swarm_members};
+use crate::bots::{ActiveRoutineRun, BeginRun, BotStore};
 use crate::config::{
     ChatSpec, ConfigStore, CredentialStore, GatewayConfig,
     create_workspace_directory as create_workspace_directory_on_disk,
 };
-use crate::cron::{ActiveCronRun, BeginRun, CronStore};
 use crate::extensions::ExtensionStore;
 use crate::provider_catalog::{
-    configured_model_choices, configured_model_routes, configured_provider_for_route,
-    provider_instances, provider_statuses,
+    configured_model_choices, configured_model_routes, provider_instances, provider_statuses,
 };
 use crate::sandbox::GatewaySandbox;
-use crate::swarm::{BoardEntry, SwarmDelivery, SwarmStore, validate_swarm_members};
 use crate::wire::{
-    AgentComposition, CronRunStatus, GitDiffScope, MAX_FRAME_BYTES, ProfileSnapshot,
-    ProviderConfig, ReadyPayload, RecordedEvent, RenderedEvent, RenderedPreview, RunStats,
-    RunSummary, ServerFrame, ServerMessage, SessionActivity, SessionActivityState, SessionOutcome,
+    AgentComposition, GitDiffScope, MAX_FRAME_BYTES, ProfileSnapshot, ProviderConfig, ReadyPayload,
+    RecordedEvent, RenderedEvent, RenderedPreview, RoutineRunStatus, RunStats, RunSummary,
+    ServerFrame, ServerMessage, SessionActivity, SessionActivityState, SessionOutcome,
     SessionReadyPayload, SessionRecord, SessionRunGroup, SessionWidget, SshIdentityRecord,
-    SwarmRecord, VersionedAgentConfig, WorkspaceFileScope, validate_session_id,
+    SwarmRecord, WorkspaceFileScope, validate_session_id,
 };
 use crate::{Error, Result};
 
@@ -83,13 +82,6 @@ const SESSION_PAGE_SIZE: usize = 100;
 const RECENT_RUN_LIMIT: usize = 30;
 pub(crate) const MAX_ACTIVE_SESSIONS: usize = 32;
 
-fn scheduled_execution_spec(mut spec: ChatSpec) -> ChatSpec {
-    spec.agent.config.system_prompt.push_str(
-        "\n\nExecute the scheduled task in the next user message. Do not create or modify schedules.",
-    );
-    spec
-}
-
 type SessionActivities = Arc<StdMutex<HashMap<String, SessionActivity>>>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,7 +109,7 @@ struct GatewayState {
     store: ConfigStore,
     config: Arc<StdMutex<GatewayConfig>>,
     credentials: Arc<CredentialStore>,
-    cron: Arc<CronStore>,
+    bots: Arc<BotStore>,
     checkpoints: Arc<dyn CheckpointStore>,
     scratchpad: ScratchpadStore,
     session_files: SessionFileStore,
@@ -155,26 +147,43 @@ impl GatewayHost {
         store: ConfigStore,
         config: GatewayConfig,
         credentials: Arc<CredentialStore>,
-        cron: Arc<CronStore>,
+        bots: Arc<BotStore>,
     ) -> Result<Self> {
+        if let Some(defaults) = &config.bot_defaults {
+            bots.seed_default(defaults)?;
+        }
         let extensions = ExtensionStore::new(&store);
         extensions.prune(&config)?;
         extensions.verify_installed_snapshots(&config)?;
+        if let Some(default) = &config.bot_defaults {
+            extensions.resolve(&config, &default.config.extensions)?;
+        }
+        let models = configured_model_choices(&config, &store, &credentials)?;
+        for bot in bots.bots()? {
+            config.validate_provider_selection(&bot.config.config.provider)?;
+            crate::middleware_manifest::validate_choices(&bot.config.config.middleware, &models)?;
+            extensions.resolve(&config, &bot.config.config.extensions)?;
+        }
         let contributions =
             vec![mobius::middleware::extensions::Extensions::discover_installed([])?.frontend()];
         let checkpoints: Arc<dyn CheckpointStore> =
             Arc::new(SqliteCheckpoint::new(store.checkpoints_path())?);
         let scratchpad = ScratchpadStore::new(Arc::clone(&checkpoints));
         let session_files = SessionFileStore::new(store.state_dir());
-        let (swarm, deliveries) = SwarmStore::new(Arc::clone(&checkpoints));
+        let config = Arc::new(StdMutex::new(config));
+        let (swarm, deliveries) = SwarmStore::new(
+            Arc::clone(&checkpoints),
+            Arc::clone(&bots),
+            Arc::clone(&config),
+        );
         let swarm = Arc::new(swarm);
         let (events, _) = broadcast::channel(BROADCAST_CAPACITY);
         let host = Self {
             state: Arc::new(Mutex::new(GatewayState {
                 store,
-                config: Arc::new(StdMutex::new(config)),
+                config,
                 credentials,
-                cron,
+                bots,
                 checkpoints,
                 scratchpad,
                 session_files,
@@ -207,8 +216,9 @@ impl GatewayHost {
         gateway_ready(&state).await
     }
 
-    pub(crate) async fn submit_global_scratchpad(
+    pub(crate) async fn submit_scratchpad(
         &self,
+        scope: &crate::wire::ScratchpadScope,
         operation: Op,
     ) -> std::result::Result<FrontendContribution, Rejection> {
         let Op::CapabilityCommand {
@@ -219,28 +229,78 @@ impl GatewayHost {
             target,
         } = operation
         else {
-            return Err(invalid_global_scratchpad_operation());
+            return Err(invalid_scratchpad_operation());
         };
         if capability != "scratchpad" || command != "scratchpad" || target.is_some() {
-            return Err(invalid_global_scratchpad_operation());
+            return Err(invalid_scratchpad_operation());
         }
         let mut arguments = arguments.split_whitespace();
         let operation = arguments.next();
-        let scope = arguments.next();
+        let argument_scope = arguments.next();
         let id = arguments.next();
         if arguments.next().is_some() {
-            return Err(invalid_global_scratchpad_operation());
+            return Err(invalid_scratchpad_operation());
         }
-        let scratchpad = self.state.lock().await.scratchpad.clone();
-        match (operation, scope, id, input.as_deref()) {
-            (Some("refresh"), None, None, None) => scratchpad.global_contribution().await,
-            (Some("edit"), Some("global"), Some(id), Some(note)) => {
-                scratchpad.edit_global(id, note).await
+        let (scratchpad, swarm) = {
+            let state = self.state.lock().await;
+            (state.scratchpad.clone(), Arc::clone(&state.swarm))
+        };
+        if let crate::wire::ScratchpadScope::Swarm { id } = scope
+            && !swarm
+                .contains_swarm(id)
+                .await
+                .map_err(invalid_scratchpad_store)?
+        {
+            return Err(Rejection {
+                code: "unknown_swarm",
+                message: format!("unknown swarm `{id}`"),
+                fatal: false,
+            });
+        }
+        match (scope, operation, argument_scope, id, input.as_deref()) {
+            (crate::wire::ScratchpadScope::Global, Some("refresh"), None, None, None) => {
+                scratchpad.global_contribution().await
             }
-            (Some("forget"), Some("global"), Some(id), None) => scratchpad.forget_global(id).await,
-            _ => return Err(invalid_global_scratchpad_operation()),
+            (crate::wire::ScratchpadScope::Global, Some("add"), None, None, Some(note)) => {
+                scratchpad.add_global(note).await
+            }
+            (
+                crate::wire::ScratchpadScope::Global,
+                Some("edit"),
+                Some("global"),
+                Some(id),
+                Some(note),
+            ) => scratchpad.edit_global(id, note).await,
+            (
+                crate::wire::ScratchpadScope::Global,
+                Some("forget"),
+                Some("global"),
+                Some(id),
+                None,
+            ) => scratchpad.forget_global(id).await,
+            (crate::wire::ScratchpadScope::Swarm { id }, Some("refresh"), None, None, None) => {
+                scratchpad.swarm_contribution(id).await
+            }
+            (crate::wire::ScratchpadScope::Swarm { id }, Some("add"), None, None, Some(note)) => {
+                scratchpad.add_swarm(id, note).await
+            }
+            (
+                crate::wire::ScratchpadScope::Swarm { id: swarm_id },
+                Some("edit"),
+                Some("swarm"),
+                Some(id),
+                Some(note),
+            ) => scratchpad.edit_swarm(swarm_id, id, note).await,
+            (
+                crate::wire::ScratchpadScope::Swarm { id: swarm_id },
+                Some("forget"),
+                Some("swarm"),
+                Some(id),
+                None,
+            ) => scratchpad.forget_swarm(swarm_id, id).await,
+            _ => return Err(invalid_scratchpad_operation()),
         }
-        .map_err(global_scratchpad_error)
+        .map_err(scratchpad_error)
     }
 
     pub(crate) async fn sessions(&self) -> std::result::Result<Vec<SessionRecord>, Rejection> {
@@ -252,16 +312,25 @@ impl GatewayHost {
 
     pub(crate) async fn create_swarm(
         &self,
-        leader_session_id: String,
-        member_session_ids: Vec<String>,
+        title: String,
+        leader_bot_id: String,
+        member_bot_ids: Vec<String>,
     ) -> std::result::Result<Vec<SwarmRecord>, Rejection> {
-        validate_swarm_members(&leader_session_id, &member_session_ids).map_err(invalid_swarm)?;
         let swarms = {
             let state = self.state.lock().await;
-            require_swarm_sessions(&state, &member_session_ids).await?;
+            let mut ids = vec![leader_bot_id.clone()];
+            ids.extend(
+                member_bot_ids
+                    .into_iter()
+                    .filter(|bot_id| bot_id != &leader_bot_id),
+            );
+            for bot_id in &ids {
+                state.bots.bot(bot_id).map_err(invalid_bot)?;
+            }
+            validate_swarm_members(&leader_bot_id, &ids).map_err(invalid_swarm)?;
             state
                 .swarm
-                .create(leader_session_id, member_session_ids)
+                .create(title, leader_bot_id, ids)
                 .await
                 .map_err(invalid_swarm)?;
             state.swarm.records().await.map_err(internal)?
@@ -273,28 +342,14 @@ impl GatewayHost {
     pub(crate) async fn add_swarm_member(
         &self,
         swarm_id: &str,
-        session_id: String,
+        bot_id: String,
     ) -> std::result::Result<Vec<SwarmRecord>, Rejection> {
         let swarms = {
             let state = self.state.lock().await;
-            let swarm = state
-                .swarm
-                .summaries()
-                .await
-                .map_err(internal)?
-                .into_iter()
-                .find(|swarm| swarm.id == swarm_id)
-                .ok_or_else(|| invalid_swarm(format!("unknown swarm `{swarm_id}`")))?;
-            let mut member_session_ids = swarm
-                .members
-                .into_iter()
-                .map(|member| member.session_id)
-                .collect::<Vec<_>>();
-            member_session_ids.push(session_id.clone());
-            require_swarm_sessions(&state, &member_session_ids).await?;
+            state.bots.bot(&bot_id).map_err(invalid_bot)?;
             state
                 .swarm
-                .join(swarm_id, session_id)
+                .join(swarm_id, bot_id)
                 .await
                 .map_err(invalid_swarm)?;
             state.swarm.records().await.map_err(internal)?
@@ -306,14 +361,29 @@ impl GatewayHost {
     pub(crate) async fn leave_swarm(
         &self,
         swarm_id: &str,
-        session_id: &str,
+        bot_id: &str,
+    ) -> std::result::Result<Vec<SwarmRecord>, Rejection> {
+        let swarm = {
+            let state = self.state.lock().await;
+            state.bots.bot(bot_id).map_err(invalid_bot)?;
+            Arc::clone(&state.swarm)
+        };
+        swarm.leave(swarm_id, bot_id).await.map_err(invalid_swarm)?;
+        let swarms = swarm.records().await.map_err(internal)?;
+        self.broadcast_swarms(&swarms);
+        Ok(swarms)
+    }
+
+    pub(crate) async fn rename_swarm(
+        &self,
+        swarm_id: &str,
+        title: String,
     ) -> std::result::Result<Vec<SwarmRecord>, Rejection> {
         let swarms = {
             let state = self.state.lock().await;
-            require_catalog_session(&state, session_id).await?;
             state
                 .swarm
-                .leave(swarm_id, session_id)
+                .rename(swarm_id, title)
                 .await
                 .map_err(invalid_swarm)?;
             state.swarm.records().await.map_err(internal)?
@@ -326,11 +396,12 @@ impl GatewayHost {
         &self,
         swarm_id: &str,
     ) -> std::result::Result<Vec<SwarmRecord>, Rejection> {
-        let swarms = {
+        let (swarm, scratchpad) = {
             let state = self.state.lock().await;
-            state.swarm.disband(swarm_id).await.map_err(invalid_swarm)?;
-            state.swarm.records().await.map_err(internal)?
+            (Arc::clone(&state.swarm), state.scratchpad.clone())
         };
+        disband_swarm_with_scratchpad(&swarm, &scratchpad, swarm_id).await?;
+        let swarms = swarm.records().await.map_err(internal)?;
         self.broadcast_swarms(&swarms);
         Ok(swarms)
     }
@@ -351,6 +422,160 @@ impl GatewayHost {
         approve_git_credential_on_host(target, username, token).await
     }
 
+    pub(crate) async fn bots(&self) -> std::result::Result<Vec<crate::wire::BotRecord>, Rejection> {
+        self.state.lock().await.bots.bots().map_err(internal)
+    }
+
+    pub(crate) async fn create_bot(
+        &self,
+        name: &str,
+        description: &str,
+    ) -> std::result::Result<crate::wire::BotRecord, Rejection> {
+        let state = self.state.lock().await;
+        let defaults = state
+            .config
+            .lock()
+            .map_err(|_| internal("gateway configuration lock is poisoned"))?
+            .bot_defaults
+            .clone()
+            .ok_or_else(|| Rejection {
+                code: "gateway_setup_required",
+                message: "configure a provider before creating a Bot".into(),
+                fatal: false,
+            })?;
+        let config = defaults.config;
+        validate_bot_config(&state, &config)?;
+        let bot = state
+            .bots
+            .create_bot(name, description, config)
+            .map_err(invalid_bot)?;
+        let bots = state.bots.bots().map_err(internal)?;
+        drop(state);
+        self.broadcast_bots(&bots);
+        Ok(bot)
+    }
+
+    pub(crate) async fn update_bot(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        name: &str,
+        description: &str,
+        tint: crate::wire::ProviderTint,
+        config: AgentComposition,
+    ) -> std::result::Result<crate::wire::BotRecord, Rejection> {
+        let mut state = self.state.lock().await;
+        let mutation_gate = Arc::clone(&state.session_mutations);
+        let _mutation = mutation_gate.write_owned().await;
+        validate_bot_config(&state, &config)?;
+        let previous = state.bots.bot(id).map_err(invalid_bot)?;
+        if previous.config.revision != expected_revision {
+            return Err(Rejection {
+                code: "revision_conflict",
+                message: format!(
+                    "Bot configuration revision is now {}",
+                    previous.config.revision
+                ),
+                fatal: false,
+            });
+        }
+        let residents = bot_update_residents(&mut state, id).await?;
+        if residents.iter().any(|(_, status)| !status.idle) {
+            return Err(Rejection {
+                code: "agent_busy",
+                message: "finish or interrupt active Bot turns before updating its profile".into(),
+                fatal: false,
+            });
+        }
+        let residents = residents
+            .into_iter()
+            .map(|(host, _)| host)
+            .collect::<Vec<_>>();
+        let bot =
+            match state
+                .bots
+                .update_bot(id, expected_revision, name, description, tint, config)
+            {
+                Ok(bot) => bot,
+                Err(error) => return Err(invalid_bot(error)),
+            };
+        for (index, host) in residents.iter().enumerate() {
+            if let Err(rejection) = host.reload_bot(bot.clone()).await {
+                let rejection =
+                    rollback_bot_update(&mut state, &residents, index, &previous, &bot, rejection)
+                        .await;
+                let bots = state.bots.bots();
+                drop(state);
+                if let Ok(bots) = bots {
+                    self.broadcast_bots(&bots);
+                }
+                return Err(rejection);
+            }
+        }
+        let bots = state.bots.bots().map_err(internal)?;
+        drop(state);
+        self.broadcast_bots(&bots);
+        Ok(bot)
+    }
+
+    pub(crate) async fn delete_bot(
+        &self,
+        id: &str,
+        expected_revision: u64,
+    ) -> std::result::Result<(Vec<crate::wire::BotRecord>, Vec<String>), Rejection> {
+        let mut state = self.state.lock().await;
+        let mutation_gate = Arc::clone(&state.session_mutations);
+        let _mutation = mutation_gate.write_owned().await;
+        let bot = state.bots.bot(id).map_err(invalid_bot)?;
+        if bot.config.revision != expected_revision {
+            return Err(Rejection {
+                code: "revision_conflict",
+                message: format!("Bot configuration revision is now {}", bot.config.revision),
+                fatal: false,
+            });
+        }
+        if bot.handle == "mobius" {
+            return Err(bot_delete_rejection(
+                "bot_undeletable",
+                "the built-in @mobius Bot cannot be deleted",
+            ));
+        }
+        let deletion = state
+            .bots
+            .prepare_bot_deletion(id, expected_revision)
+            .map_err(invalid_bot)?;
+        let summaries = gateway_session_summaries(&state.checkpoints)
+            .await
+            .map_err(internal)?;
+        let (session_roots, session_ids) = bot_session_trees(id, &summaries);
+        let swarm = state.swarm.snapshot_for_bot(id).await.map_err(internal)?;
+        delete_session_trees(&mut state, &session_roots, &session_ids).await?;
+        if let Some(snapshot) = &swarm {
+            if snapshot.swarm.leader_bot_id == id {
+                disband_swarm_with_scratchpad(&state.swarm, &state.scratchpad, &snapshot.swarm.id)
+                    .await?;
+            } else {
+                state
+                    .swarm
+                    .leave(&snapshot.swarm.id, id)
+                    .await
+                    .map_err(invalid_swarm)?;
+            }
+        }
+        state.bots.delete_bot(deletion).map_err(invalid_bot)?;
+        let bots = state.bots.bots().map_err(internal)?;
+        let swarms = state.swarm.records().await.map_err(internal)?;
+        drop(state);
+        if !session_ids.is_empty() {
+            self.broadcast_sessions().await?;
+        }
+        if swarm.is_some() {
+            self.broadcast_swarms(&swarms);
+        }
+        self.broadcast_bots(&bots);
+        Ok((bots, session_ids))
+    }
+
     pub(crate) async fn ssh_identities(
         &self,
     ) -> std::result::Result<Vec<SshIdentityRecord>, Rejection> {
@@ -368,36 +593,37 @@ impl GatewayHost {
     pub(crate) async fn create_session(
         &self,
         workspace: &Path,
+        bot_id: &str,
     ) -> std::result::Result<HostHandle, Rejection> {
+        self.create_session_with_id(workspace, bot_id, Uuid::new_v4().to_string())
+            .await
+    }
+
+    async fn create_session_with_id(
+        &self,
+        workspace: &Path,
+        bot_id: &str,
+        session_id: String,
+    ) -> std::result::Result<HostHandle, Rejection> {
+        validate_session_id(&session_id).map_err(|_| invalid_session_id())?;
         let mut state = self.state.lock().await;
         state.ensure_capacity().await?;
-        let (default_agent, tls) = {
+        let tls = {
             let config = state
                 .config
                 .lock()
                 .map_err(|_| internal("gateway configuration lock is poisoned"))?;
-            (
-                config
-                    .default_agent
-                    .clone()
-                    .unwrap_or_else(setup_agent_config),
-                config.tls.clone(),
-            )
+            config.tls.clone()
         };
-        let spec = ChatSpec::new(
-            workspace,
-            default_agent,
-            state.store.state_dir(),
-            tls.as_ref(),
-        )
-        .map_err(invalid_workspace)?;
-        let session_id = Uuid::new_v4().to_string();
+        let bot = state.bots.bot(bot_id).map_err(invalid_bot)?;
+        let spec = ChatSpec::for_bot(workspace, &bot, state.store.state_dir(), tls.as_ref())
+            .map_err(invalid_workspace)?;
         let host = HostHandle::start(
             state.store.clone(),
             Arc::clone(&state.config),
             spec,
             Arc::clone(&state.credentials),
-            Arc::clone(&state.cron),
+            Arc::clone(&state.bots),
             Arc::clone(&state.checkpoints),
             state.scratchpad.clone(),
             state.session_files.clone(),
@@ -449,7 +675,7 @@ impl GatewayHost {
             .open_session_with_cache(session_id, true)
             .await
             .map(|(host, _)| host)?;
-        self.state.lock().await.swarm.notify_pending(session_id);
+        self.state.lock().await.swarm.notify_pending(host.bot_id());
         Ok(host)
     }
 
@@ -479,9 +705,16 @@ impl GatewayHost {
             .map_err(|_| internal("gateway configuration lock is poisoned"))?
             .tls
             .clone();
-        let spec =
-            ChatSpec::from_metadata(&checkpoint.metadata, state.store.state_dir(), tls.as_ref())
-                .map_err(invalid_config)?;
+        let spec = ChatSpec::from_metadata(
+            &checkpoint.metadata,
+            &state.bots,
+            state.store.state_dir(),
+            tls.as_ref(),
+        )
+        .map_err(invalid_config)?;
+        if checkpoint.session_context.bot_id != spec.bot_id {
+            return Err(invalid_session_bot());
+        }
         let workspace = spec.workspace_info();
         let workspace_label = workspace.path.display().to_string();
         if checkpoint.session_context.workspace_id.as_deref() != Some(workspace.id.as_str())
@@ -495,7 +728,7 @@ impl GatewayHost {
             Arc::clone(&state.config),
             spec,
             Arc::clone(&state.credentials),
-            Arc::clone(&state.cron),
+            Arc::clone(&state.bots),
             Arc::clone(&state.checkpoints),
             state.scratchpad.clone(),
             state.session_files.clone(),
@@ -524,7 +757,7 @@ impl GatewayHost {
                 return;
             };
             let swarm = Arc::clone(&gateway_state.lock().await.swarm);
-            let startup = match swarm.pending_recipient_session_ids().await {
+            let startup = match swarm.pending_recipient_bot_ids().await {
                 Ok(startup) => startup,
                 Err(error) => {
                     let _ = events.send(ServerFrame::new(ServerMessage::Error {
@@ -538,7 +771,7 @@ impl GatewayHost {
             drop(gateway_state);
 
             let mut attempts = HashMap::new();
-            for target_session_id in startup {
+            for target_bot_id in startup {
                 let Some(gateway_state) = state.upgrade() else {
                     return;
                 };
@@ -547,10 +780,7 @@ impl GatewayHost {
                     events: events.clone(),
                 };
                 gateway
-                    .handle_swarm_delivery(
-                        SwarmDelivery::Pending { target_session_id },
-                        &mut attempts,
-                    )
+                    .handle_swarm_delivery(SwarmDelivery::Pending { target_bot_id }, &mut attempts)
                     .await;
             }
 
@@ -586,12 +816,25 @@ impl GatewayHost {
             }
             return;
         }
+        if matches!(&delivery, SwarmDelivery::CatalogChanged) {
+            match self.bots().await {
+                Ok(bots) => self.broadcast_bots(&bots),
+                Err(error) => {
+                    let _ = self.events.send(ServerFrame::new(ServerMessage::Error {
+                        code: "bot_catalog".into(),
+                        message: error.message,
+                        fatal: false,
+                    }));
+                }
+            }
+            return;
+        }
         if matches!(&delivery, SwarmDelivery::RetryPending) {
             let swarm = Arc::clone(&self.state.lock().await.swarm);
-            match swarm.pending_recipient_session_ids().await {
+            match swarm.pending_recipient_bot_ids().await {
                 Ok(targets) => {
-                    for target_session_id in targets {
-                        swarm.notify_pending(&target_session_id);
+                    for target_bot_id in targets {
+                        swarm.notify_pending(&target_bot_id);
                     }
                 }
                 Err(error) => {
@@ -604,70 +847,58 @@ impl GatewayHost {
             }
             return;
         }
-        let target_session_id = match delivery {
-            SwarmDelivery::Changed | SwarmDelivery::RetryPending => {
+        let target_bot_id = match delivery {
+            SwarmDelivery::Changed
+            | SwarmDelivery::CatalogChanged
+            | SwarmDelivery::RetryPending => {
                 unreachable!("handled above")
             }
             SwarmDelivery::Acknowledged {
-                target_session_id,
+                target_bot_id,
                 message_id,
             } => {
                 if attempts
-                    .get(&target_session_id)
+                    .get(&target_bot_id)
                     .is_some_and(|current| current.message_id() != message_id)
                 {
                     return;
                 }
-                attempts.remove(&target_session_id);
-                target_session_id
+                attempts.remove(&target_bot_id);
+                target_bot_id
             }
             SwarmDelivery::Rejected {
-                target_session_id,
+                target_bot_id,
                 message_id,
             } => {
-                let Some(SwarmDeliveryAttempt::Submitted(current)) =
-                    attempts.get(&target_session_id)
+                let Some(SwarmDeliveryAttempt::Submitted(current)) = attempts.get(&target_bot_id)
                 else {
                     return;
                 };
                 if current != &message_id {
                     return;
                 }
-                attempts.insert(
-                    target_session_id,
-                    SwarmDeliveryAttempt::Rejected(message_id),
-                );
+                attempts.insert(target_bot_id, SwarmDeliveryAttempt::Rejected(message_id));
                 return;
             }
-            SwarmDelivery::CapacityAvailable { target_session_id } => {
+            SwarmDelivery::CapacityAvailable { target_bot_id } => {
                 if !matches!(
-                    attempts.get(&target_session_id),
+                    attempts.get(&target_bot_id),
                     Some(SwarmDeliveryAttempt::Rejected(_))
                 ) {
                     return;
                 }
-                attempts.remove(&target_session_id);
-                target_session_id
+                attempts.remove(&target_bot_id);
+                target_bot_id
             }
-            SwarmDelivery::Pending { target_session_id } => {
-                if attempts.contains_key(&target_session_id) {
-                    let alive = self
-                        .state
-                        .lock()
-                        .await
-                        .sessions
-                        .get(&target_session_id)
-                        .is_some_and(HostHandle::is_alive);
-                    if alive {
-                        return;
-                    }
-                    attempts.remove(&target_session_id);
+            SwarmDelivery::Pending { target_bot_id } => {
+                if attempts.contains_key(&target_bot_id) {
+                    return;
                 }
-                target_session_id
+                target_bot_id
             }
         };
         if let Err(rejection) = self
-            .deliver_next_swarm_message(&target_session_id, attempts)
+            .deliver_next_swarm_message(&target_bot_id, attempts)
             .await
         {
             let _ = self.events.send(ServerFrame::new(ServerMessage::Error {
@@ -680,46 +911,93 @@ impl GatewayHost {
 
     async fn deliver_next_swarm_message(
         &self,
-        target_session_id: &str,
+        target_bot_id: &str,
         attempts: &mut HashMap<String, SwarmDeliveryAttempt>,
     ) -> std::result::Result<(), Rejection> {
-        let swarm = Arc::clone(&self.state.lock().await.swarm);
-        if swarm
-            .pending_deliveries(target_session_id)
+        let (swarm, session_mutations) = {
+            let state = self.state.lock().await;
+            (
+                Arc::clone(&state.swarm),
+                Arc::clone(&state.session_mutations),
+            )
+        };
+        let Some(claim) = swarm
+            .claim_next_delivery(target_bot_id)
             .await
             .map_err(internal)?
-            .is_empty()
-        {
-            return Ok(());
-        }
-        let (host, _) = self
-            .open_session_with_cache(target_session_id, true)
-            .await?;
-        let Some(delivery) = swarm
-            .pending_deliveries(target_session_id)
-            .await
-            .map_err(internal)?
-            .into_iter()
-            .next()
         else {
             return Ok(());
         };
-        let message_id = delivery.entry.id.clone();
-        let submission = peer_message_submission(delivery.entry);
-        match host.submit(submission).await {
+        let message_id = claim.delivery().entry.id.clone();
+        let session_id = claim.session_id().to_owned();
+        let workspace = {
+            let state = self.state.lock().await;
+            let checkpoint = state
+                .checkpoints
+                .load(&claim.delivery().entry.source_session_id)
+                .await
+                .map_err(internal)?
+                .ok_or_else(unknown_session)?;
+            let tls = state
+                .config
+                .lock()
+                .map_err(|_| internal("gateway configuration lock is poisoned"))?
+                .tls
+                .clone();
+            ChatSpec::from_metadata(
+                &checkpoint.metadata,
+                &state.bots,
+                state.store.state_dir(),
+                tls.as_ref(),
+            )
+            .map_err(invalid_config)?
+            .workspace
+        };
+        let checkpoint_exists = {
+            let state = self.state.lock().await;
+            state
+                .checkpoints
+                .load(&session_id)
+                .await
+                .map_err(internal)?
+                .is_some()
+        };
+        let host = if checkpoint_exists {
+            self.open_session_with_cache(&session_id, true).await?.0
+        } else {
+            self.create_session_with_id(&workspace, target_bot_id, session_id)
+                .await?
+        };
+        let submission = peer_message_submission(claim.delivery().entry.clone());
+        let Some(submission) = claim
+            .accept(host.submit(submission))
+            .await
+            .map_err(internal)?
+        else {
+            return Ok(());
+        };
+        match submission {
             Ok(()) => {
                 attempts.insert(
-                    target_session_id.to_owned(),
+                    target_bot_id.to_owned(),
                     SwarmDeliveryAttempt::Submitted(message_id),
                 );
                 Ok(())
             }
             Err(rejection) if matches!(rejection.code, "agent_busy" | "agent_stopped") => {
-                let target_session_id = target_session_id.to_owned();
+                let target_bot_id = target_bot_id.to_owned();
                 tokio::spawn(async move {
                     host.wait_idle().await;
-                    swarm.notify_pending(&target_session_id);
+                    swarm.notify_pending(&target_bot_id);
                 });
+                Ok(())
+            }
+            Err(rejection) if rejection.code == "gateway_busy" => {
+                tokio::spawn(notify_swarm_delivery_after_mutation(
+                    session_mutations,
+                    swarm,
+                    target_bot_id.to_owned(),
+                ));
                 Ok(())
             }
             Err(rejection) => Err(rejection),
@@ -819,160 +1097,134 @@ impl GatewayHost {
             .await
             .map_err(internal)?;
         let session_ids = session_tree_ids(session_id, &summaries).ok_or_else(unknown_session)?;
-        for id in &session_ids {
-            if state
-                .swarm
-                .snapshot_for_session(id)
-                .await
-                .map_err(internal)?
-                .is_some()
-            {
-                return Err(Rejection {
-                    code: "session_in_swarm",
-                    message: "leave or disband the swarm before deleting this chat".into(),
-                    fatal: false,
-                });
-            }
-        }
-        for id in &session_ids {
-            let Some(host) = state.sessions.get(id).cloned() else {
-                continue;
-            };
-            if !host.stop_if_idle().await {
-                return Err(Rejection {
-                    code: "agent_busy",
-                    message: "finish or interrupt the active turn before deleting this chat".into(),
-                    fatal: false,
-                });
-            }
-        }
-        for id in &session_ids {
-            state.sessions.remove(id);
-        }
-        for id in &session_ids {
-            state.cron.delete_session(id).map_err(internal)?;
-            state
-                .session_files
-                .delete_session(id)
-                .await
-                .map_err(internal)?;
-        }
-        let catalog_lock = Arc::clone(&state.catalog_lock);
-        let _catalog = catalog_lock.lock().await;
-        let mut metadata = load_session_metadata(&state.checkpoints)
-            .await
-            .map_err(internal)?;
-        for id in &session_ids {
-            metadata.remove(id);
-        }
-        save_session_metadata(&state.checkpoints, &metadata)
-            .await
-            .map_err(internal)?;
-        if !state
-            .checkpoints
-            .delete_session(session_id)
-            .await
-            .map_err(internal)?
-        {
-            return Err(unknown_session());
-        }
-        state
-            .activities
-            .lock()
-            .map_err(|_| internal("session activity lock is poisoned"))?
-            .retain(|id, _| !session_ids.iter().any(|deleted| deleted == id));
-        drop(_catalog);
+        delete_session_trees(&mut state, &[session_id.into()], &session_ids).await?;
         drop(state);
         self.broadcast_sessions().await?;
         Ok(session_ids)
     }
 
-    pub(crate) async fn create_cron(
+    pub(crate) async fn create_routine(
         &self,
-        source_session_id: &str,
-        task: &str,
-        schedule: crate::wire::CronSchedule,
+        bot_id: &str,
+        workspace: &Path,
+        instructions: &str,
+        schedule: crate::wire::RoutineSchedule,
         ends_at: Option<i64>,
     ) -> std::result::Result<(), Rejection> {
         let state = self.state.lock().await;
-        require_cron_source(&state, source_session_id).await?;
+        validate_bot_workspace(&state, bot_id, workspace)?;
         state
-            .cron
-            .create(source_session_id, task, schedule, ends_at)
+            .bots
+            .create_routine(bot_id, workspace, instructions, schedule, ends_at)
             .map(|_| ())
-            .map_err(invalid_cron)
+            .map_err(invalid_routine)
     }
 
-    pub(crate) async fn update_cron(
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a routine replacement is one wire record"
+    )]
+    pub(crate) async fn update_routine(
         &self,
         id: &str,
-        source_session_id: &str,
-        task: &str,
-        schedule: crate::wire::CronSchedule,
+        bot_id: &str,
+        workspace: &Path,
+        instructions: &str,
+        schedule: crate::wire::RoutineSchedule,
         ends_at: Option<i64>,
         enabled: bool,
     ) -> std::result::Result<(), Rejection> {
         let state = self.state.lock().await;
-        require_cron_source(&state, source_session_id).await?;
+        validate_bot_workspace(&state, bot_id, workspace)?;
         state
-            .cron
-            .reschedule(id, source_session_id, task, schedule, ends_at, enabled)
+            .bots
+            .update_routine(
+                id,
+                bot_id,
+                workspace,
+                instructions,
+                schedule,
+                ends_at,
+                enabled,
+            )
             .map(|_| ())
-            .map_err(invalid_cron)
+            .map_err(invalid_routine)
     }
 
-    pub(crate) async fn run_cron(&self, task_id: String) -> std::result::Result<(), Rejection> {
+    pub(crate) async fn delete_routine(
+        &self,
+        routine_id: &str,
+    ) -> std::result::Result<(), Rejection> {
+        let mut state = self.state.lock().await;
+        let mutation_gate = Arc::clone(&state.session_mutations);
+        let _mutation = mutation_gate.write_owned().await;
+        let deletion = state
+            .bots
+            .prepare_routine_deletion(routine_id)
+            .map_err(invalid_routine)?;
+        let summaries = gateway_session_summaries(&state.checkpoints)
+            .await
+            .map_err(internal)?;
+        let roots = deletion
+            .session_ids()
+            .iter()
+            .filter(|root| summaries.iter().any(|session| session.session_id == **root))
+            .cloned()
+            .collect();
+        let (session_roots, session_ids) = session_trees(roots, &summaries);
+        delete_session_trees(&mut state, &session_roots, &session_ids).await?;
+        state
+            .bots
+            .delete_routine(deletion)
+            .map_err(invalid_routine)?;
+        drop(state);
+        if !session_ids.is_empty() {
+            self.broadcast_sessions().await?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn run_routine(
+        &self,
+        routine_id: String,
+    ) -> std::result::Result<(), Rejection> {
         let state = self.state.lock().await;
-        let run = match state.cron.begin_run(&task_id).map_err(invalid_cron)? {
+        let run = match state.bots.begin_run(&routine_id).map_err(invalid_routine)? {
             BeginRun::Started(run) => run,
             BeginRun::Skipped => {
                 return Err(Rejection {
-                    code: "cron_overlap",
-                    message: format!("cron task {task_id} is already running"),
+                    code: "routine_overlap",
+                    message: format!("routine {routine_id} is already running"),
                     fatal: false,
                 });
             }
         };
-        self.run_cron_with_state(state, task_id, run).await
+        self.run_routine_with_state(state, routine_id, run).await
     }
 
-    pub(crate) async fn run_due_cron(
+    pub(crate) async fn run_due_routine(
         &self,
-        task_id: String,
-        run: ActiveCronRun,
+        routine_id: String,
+        run: ActiveRoutineRun,
     ) -> std::result::Result<(), Rejection> {
         let state = self.state.lock().await;
-        self.run_cron_with_state(state, task_id, run).await
+        self.run_routine_with_state(state, routine_id, run).await
     }
 
-    pub(crate) async fn is_cron_execution_session(
-        &self,
-        session_id: &str,
-    ) -> std::result::Result<bool, Rejection> {
-        validate_session_id(session_id).map_err(|_| invalid_session_id())?;
-        let checkpoints = Arc::clone(&self.state.lock().await.checkpoints);
-        Ok(checkpoints
-            .load(session_id)
-            .await
-            .map_err(internal)?
-            .as_ref()
-            .is_some_and(is_cron_execution_checkpoint))
-    }
-
-    pub(crate) async fn cron_run_preview(
+    pub(crate) async fn routine_run_preview(
         &self,
         run_id: &str,
         before_sequence: Option<u64>,
-    ) -> std::result::Result<crate::wire::CronRunPreview, Rejection> {
-        let (cron, run) = {
+    ) -> std::result::Result<crate::wire::RoutineRunPreview, Rejection> {
+        let (bots, run) = {
             let state = self.state.lock().await;
-            let cron = Arc::clone(&state.cron);
-            let run = cron.run(run_id).map_err(invalid_cron)?;
-            (cron, run)
+            let bots = Arc::clone(&state.bots);
+            let run = bots.run(run_id).map_err(invalid_routine)?;
+            (bots, run)
         };
         let session_id = run.session_id.clone().ok_or_else(|| Rejection {
-            code: "cron_run_unavailable",
-            message: "this scheduled run has no execution session".into(),
+            code: "routine_run_unavailable",
+            message: "this routine run has no execution session".into(),
             fatal: false,
         })?;
         let (host, temporary) = self.open_session_with_cache(&session_id, false).await?;
@@ -981,122 +1233,114 @@ impl GatewayHost {
             let _ = host.stop_if_idle().await;
         }
         let page = page?;
-        let task = cron
-            .record(&run.task_id, Utc::now().timestamp())
-            .map_err(invalid_cron)?;
-        Ok(crate::wire::CronRunPreview {
-            task,
+        let routine = bots
+            .routine_record(&run.routine_id, Utc::now().timestamp())
+            .map_err(invalid_routine)?;
+        Ok(crate::wire::RoutineRunPreview {
+            routine,
             run,
             records: page.records,
             next_before_sequence: page.next_before_sequence,
         })
     }
 
-    async fn run_cron_with_state(
+    pub(crate) async fn delete_routine_run(
+        &self,
+        run_id: &str,
+    ) -> std::result::Result<(), Rejection> {
+        let mut state = self.state.lock().await;
+        let mutation_gate = Arc::clone(&state.session_mutations);
+        let _mutation = mutation_gate.write_owned().await;
+        let run = state.bots.run(run_id).map_err(invalid_routine)?;
+        if run.status == RoutineRunStatus::Running {
+            return Err(Rejection {
+                code: "routine_run_active",
+                message: format!("routine run {run_id} is currently running"),
+                fatal: false,
+            });
+        }
+        let session_root = run.session_id;
+        let session_ids = if let Some(session_id) = session_root.as_deref() {
+            let summaries = gateway_session_summaries(&state.checkpoints)
+                .await
+                .map_err(internal)?;
+            session_tree_ids(session_id, &summaries).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        if let Some(session_root) = session_root.filter(|_| !session_ids.is_empty()) {
+            delete_session_trees(&mut state, &[session_root], &session_ids).await?;
+        }
+        state.bots.delete_run(run_id).map_err(invalid_routine)?;
+        drop(state);
+        if !session_ids.is_empty() {
+            self.broadcast_sessions().await?;
+        }
+        Ok(())
+    }
+
+    async fn run_routine_with_state(
         &self,
         mut state: tokio::sync::MutexGuard<'_, GatewayState>,
-        task_id: String,
-        run: ActiveCronRun,
+        routine_id: String,
+        run: ActiveRoutineRun,
     ) -> std::result::Result<(), Rejection> {
-        let preflight: std::result::Result<_, Rejection> = async {
-            let task = state.cron.task(&task_id).map_err(invalid_cron)?;
-            let source_session_id = task.session_id.clone();
-            let (_, input) = state.cron.task_input(&task.id).map_err(invalid_cron)?;
-            let checkpoint = state
-                .checkpoints
-                .load(&source_session_id)
-                .await
-                .map_err(internal)?
-                .ok_or_else(unknown_session)?;
+        let preflight: std::result::Result<_, Rejection> = (|| {
+            let routine = state.bots.routine(&routine_id).map_err(invalid_routine)?;
+            let (_, input) = state
+                .bots
+                .routine_input(&routine.id)
+                .map_err(invalid_routine)?;
+            let bot = state.bots.bot(&routine.bot_id).map_err(invalid_bot)?;
             let tls = state
                 .config
                 .lock()
                 .map_err(|_| internal("gateway configuration lock is poisoned"))?
                 .tls
                 .clone();
-            let spec = scheduled_execution_spec(
-                ChatSpec::from_metadata(
-                    &checkpoint.metadata,
-                    state.store.state_dir(),
-                    tls.as_ref(),
-                )
-                .map_err(invalid_config)?,
-            );
-            let workspace = spec.workspace_info();
-            let workspace_label = workspace.path.display().to_string();
-            if checkpoint.session_context.workspace_id.as_deref() != Some(workspace.id.as_str())
-                || checkpoint.session_context.workspace_label.as_deref()
-                    != Some(workspace_label.as_str())
-            {
-                return Err(invalid_session_workspace());
-            }
-            let execution_metadata = spec.metadata().map_err(invalid_config)?;
-            Ok((
-                task,
-                source_session_id,
-                input,
-                checkpoint,
-                spec,
-                execution_metadata,
-            ))
-        }
-        .await;
-        let (task, source_session_id, input, checkpoint, spec, execution_metadata) = match preflight
-        {
+            let mut spec = ChatSpec::for_bot(
+                &routine.workspace,
+                &bot,
+                state.store.state_dir(),
+                tls.as_ref(),
+            )
+            .map_err(invalid_workspace)?;
+            spec.catalog_visible = false;
+            Ok((routine, input, spec))
+        })();
+        let (routine, input, spec) = match preflight {
             Ok(preflight) => preflight,
             Err(rejection) => {
                 state
-                    .cron
-                    .finish_run(run, CronRunStatus::Failed, Some(rejection.message.clone()))
+                    .bots
+                    .finish_run(
+                        run,
+                        crate::wire::RoutineRunStatus::Failed,
+                        Some(rejection.message.clone()),
+                    )
                     .map_err(internal)?;
                 return Err(rejection);
             }
         };
         if let Err(rejection) = state.ensure_capacity().await {
             state
-                .cron
+                .bots
                 .finish_run(
                     run,
-                    CronRunStatus::Skipped,
+                    crate::wire::RoutineRunStatus::Skipped,
                     Some("the gateway active-chat limit was reached".into()),
                 )
                 .map_err(internal)?;
             return Err(rejection);
         }
-        let source_sequence = checkpoint.sequence;
-        let session_id = Uuid::new_v4().to_string();
-        let label = format!("cron · {}", task.id.get(..8).unwrap_or(&task.id));
-        let mut checkpoint = cron_execution_checkpoint(&checkpoint, &session_id, &label);
-        checkpoint.metadata.extend(execution_metadata);
-        if let Err(error) = state
-            .checkpoints
-            .fork(&source_session_id, source_sequence, &checkpoint)
-            .await
-        {
-            let message = error.to_string();
-            state
-                .cron
-                .finish_run(run, CronRunStatus::Failed, Some(message.clone()))
-                .map_err(internal)?;
-            return Err(internal(message));
-        }
-        if let Err(error) = state.cron.attach_execution_session(&run, &session_id) {
-            let message = error.to_string();
-            state
-                .cron
-                .finish_run(run, CronRunStatus::Failed, Some(message.clone()))
-                .map_err(internal)?;
-            hide_checkpoint(&state.checkpoints, &session_id)
-                .await
-                .map_err(internal)?;
-            return Err(invalid_cron(message));
-        }
+        let session_id = run.session_id().to_owned();
+        let label = format!("routine · {}", routine.id.get(..8).unwrap_or(&routine.id));
         let host = match HostHandle::start(
             state.store.clone(),
             Arc::clone(&state.config),
             spec,
             Arc::clone(&state.credentials),
-            Arc::clone(&state.cron),
+            Arc::clone(&state.bots),
             Arc::clone(&state.checkpoints),
             state.scratchpad.clone(),
             state.session_files.clone(),
@@ -1115,34 +1359,35 @@ impl GatewayHost {
             Err(error) => {
                 let message = error.to_string();
                 state
-                    .cron
-                    .finish_run(run, CronRunStatus::Failed, Some(message.clone()))
-                    .map_err(internal)?;
-                hide_checkpoint(&state.checkpoints, &session_id)
-                    .await
+                    .bots
+                    .finish_run(
+                        run,
+                        crate::wire::RoutineRunStatus::Failed,
+                        Some(message.clone()),
+                    )
                     .map_err(internal)?;
                 return Err(internal(message));
             }
         };
-        let cron = Arc::clone(&state.cron);
-        let checkpoints = Arc::clone(&state.checkpoints);
+        let bots = Arc::clone(&state.bots);
         state.sessions.insert(session_id.clone(), host.clone());
+        let accepted =
+            accept_routine_while_state_locked(&mut state, &host, run, input, bots.as_ref()).await;
         drop(state);
-        match host.run_cron(run, input, &cron).await {
+        match accepted {
             Ok(()) => {
+                let broadcast = self.broadcast_sessions().await;
                 let gateway = self.clone();
                 tokio::spawn(async move {
                     host.wait_idle().await;
                     gateway.state.lock().await.sessions.remove(&session_id);
+                    let _ = gateway.broadcast_sessions().await;
                 });
-                Ok(())
+                broadcast
             }
             Err(rejection) => {
                 let _ = host.stop_if_idle().await;
                 self.state.lock().await.sessions.remove(&session_id);
-                hide_checkpoint(&checkpoints, &session_id)
-                    .await
-                    .map_err(internal)?;
                 Err(rejection)
             }
         }
@@ -1189,12 +1434,167 @@ impl GatewayHost {
         Ok(())
     }
 
+    fn broadcast_bots(&self, bots: &[crate::wire::BotRecord]) {
+        let _ = self.events.send(ServerFrame::new(ServerMessage::Bots {
+            request_id: None,
+            bots: bots.to_vec(),
+        }));
+    }
+
     fn broadcast_swarms(&self, swarms: &[SwarmRecord]) {
         let _ = self.events.send(ServerFrame::new(ServerMessage::Swarms {
             request_id: None,
             swarms: swarms.to_vec(),
         }));
     }
+}
+
+async fn accept_routine_while_state_locked(
+    _state: &mut tokio::sync::MutexGuard<'_, GatewayState>,
+    host: &HostHandle,
+    run: ActiveRoutineRun,
+    input: String,
+    bots: &BotStore,
+) -> std::result::Result<(), Rejection> {
+    host.run_routine(run, input, bots).await
+}
+
+async fn rollback_bot_update(
+    state: &mut GatewayState,
+    residents: &[HostHandle],
+    configured_count: usize,
+    previous: &crate::wire::BotRecord,
+    attempted: &crate::wire::BotRecord,
+    cause: Rejection,
+) -> Rejection {
+    let mut failures = Vec::new();
+    if let Err(error) = state.bots.restore_bot(previous.clone()) {
+        failures.push(format!("restoring the Bot profile failed: {error}"));
+    }
+    let authoritative = match state.bots.bot(&previous.id) {
+        Ok(bot) => Some(bot),
+        Err(error) => {
+            failures.push(format!(
+                "reading the authoritative Bot profile failed: {error}"
+            ));
+            None
+        }
+    };
+    for (index, host) in residents.iter().enumerate() {
+        let proven = authoritative.as_ref().is_some_and(|authoritative| {
+            (index < configured_count && authoritative == attempted)
+                || (index > configured_count && authoritative == previous)
+        });
+        if proven {
+            continue;
+        }
+        let restored = match &authoritative {
+            Some(authoritative) => host.reload_bot(authoritative.clone()).await.is_ok(),
+            None => false,
+        };
+        if restored {
+            continue;
+        }
+        failures.push(format!(
+            "session {} could not be reconciled to the authoritative Bot profile",
+            host.session_id()
+        ));
+        if !host.stop_if_idle().await {
+            failures.push(format!(
+                "session {} could not be stopped after rollback",
+                host.session_id()
+            ));
+        }
+        state.sessions.remove(host.session_id());
+    }
+    if failures.is_empty() {
+        cause
+    } else {
+        internal(format!(
+            "{}; Bot rollback was incomplete: {}",
+            cause.message,
+            failures.join("; ")
+        ))
+    }
+}
+
+async fn bot_update_residents(
+    state: &mut GatewayState,
+    bot_id: &str,
+) -> std::result::Result<Vec<(HostHandle, ProviderCutoverStatus)>, Rejection> {
+    let sessions = state
+        .sessions
+        .iter()
+        .filter(|(_, host)| host.bot_id() == bot_id)
+        .map(|(id, host)| (id.clone(), host.clone()))
+        .collect::<Vec<_>>();
+    let mut sessions = sessions;
+    sessions.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut residents = Vec::new();
+    let mut stopped = Vec::new();
+    for (id, host) in sessions {
+        if !host.is_alive() {
+            stopped.push(id);
+            continue;
+        }
+        match host.provider_cutover_status().await {
+            Ok(status) => residents.push((host, status)),
+            Err(rejection) if rejection.code == "gateway_stopped" => stopped.push(id),
+            Err(rejection) => return Err(rejection),
+        }
+    }
+    for id in stopped {
+        state.sessions.remove(&id);
+    }
+    Ok(residents)
+}
+
+async fn notify_swarm_delivery_after_mutation(
+    session_mutations: Arc<RwLock<()>>,
+    swarm: Arc<SwarmStore>,
+    target_bot_id: String,
+) {
+    let completed = session_mutations.read_owned().await;
+    drop(completed);
+    swarm.notify_pending(&target_bot_id);
+}
+
+fn validate_bot_config(
+    state: &GatewayState,
+    config: &AgentComposition,
+) -> std::result::Result<(), Rejection> {
+    let gateway = state
+        .config
+        .lock()
+        .map_err(|_| internal("gateway configuration lock is poisoned"))?;
+    gateway
+        .validate_provider_selection(&config.provider)
+        .map_err(invalid_config)?;
+    let models =
+        configured_model_choices(&gateway, &state.store, &state.credentials).map_err(internal)?;
+    crate::middleware_manifest::validate_choices(&config.middleware, &models)
+        .map_err(invalid_config)?;
+    ExtensionStore::new(&state.store)
+        .resolve(&gateway, &config.extensions)
+        .map(|_| ())
+        .map_err(invalid_config)
+}
+
+fn validate_bot_workspace(
+    state: &GatewayState,
+    bot_id: &str,
+    workspace: &Path,
+) -> std::result::Result<(), Rejection> {
+    let bot = state.bots.bot(bot_id).map_err(invalid_bot)?;
+    let tls = state
+        .config
+        .lock()
+        .map_err(|_| internal("gateway configuration lock is poisoned"))?
+        .tls
+        .clone();
+    ChatSpec::for_bot(workspace, &bot, state.store.state_dir(), tls.as_ref())
+        .map(|_| ())
+        .map_err(invalid_workspace)
 }
 
 impl GatewayState {
@@ -1226,6 +1626,121 @@ impl GatewayState {
         })
     }
 }
+
+fn bot_session_trees(bot_id: &str, summaries: &[SessionSummary]) -> (Vec<String>, Vec<String>) {
+    let owned = summaries
+        .iter()
+        .filter(|session| session.session_context.bot_id == bot_id)
+        .map(|session| session.session_id.clone())
+        .collect::<HashSet<_>>();
+    let roots = summaries
+        .iter()
+        .filter(|session| {
+            owned.contains(&session.session_id)
+                && session
+                    .parent_session_id
+                    .as_ref()
+                    .is_none_or(|parent| !owned.contains(parent))
+        })
+        .map(|session| session.session_id.clone())
+        .collect::<Vec<_>>();
+    session_trees(roots, summaries)
+}
+
+fn session_trees(roots: Vec<String>, summaries: &[SessionSummary]) -> (Vec<String>, Vec<String>) {
+    let mut seen = HashSet::new();
+    let mut session_ids = Vec::new();
+    for root in &roots {
+        if let Some(tree) = session_tree_ids(root, summaries) {
+            for session_id in tree {
+                if seen.insert(session_id.clone()) {
+                    session_ids.push(session_id);
+                }
+            }
+        }
+    }
+    (roots, session_ids)
+}
+
+async fn delete_session_trees(
+    state: &mut GatewayState,
+    roots: &[String],
+    session_ids: &[String],
+) -> std::result::Result<(), Rejection> {
+    if session_ids.is_empty() {
+        return Ok(());
+    }
+    if state
+        .swarm
+        .has_pending_source_sessions(session_ids)
+        .await
+        .map_err(internal)?
+    {
+        return Err(Rejection {
+            code: "session_has_pending_swarm_delivery",
+            message: "wait for this chat's pending Swarm deliveries before deleting it".into(),
+            fatal: false,
+        });
+    }
+    for id in session_ids {
+        let Some(host) = state.sessions.get(id).cloned() else {
+            continue;
+        };
+        if !host.stop_if_idle().await {
+            return Err(Rejection {
+                code: "agent_busy",
+                message: "finish or interrupt the active turn before deleting this chat".into(),
+                fatal: false,
+            });
+        }
+    }
+    for id in session_ids {
+        state.sessions.remove(id);
+        state
+            .session_files
+            .delete_session(id)
+            .await
+            .map_err(internal)?;
+    }
+    let catalog_lock = Arc::clone(&state.catalog_lock);
+    let _catalog = catalog_lock.lock().await;
+    let mut metadata = load_session_metadata(&state.checkpoints)
+        .await
+        .map_err(internal)?;
+    for id in session_ids {
+        metadata.remove(id);
+    }
+    save_session_metadata(&state.checkpoints, &metadata)
+        .await
+        .map_err(internal)?;
+    for root in roots {
+        if !state
+            .checkpoints
+            .delete_session(root)
+            .await
+            .map_err(internal)?
+        {
+            return Err(unknown_session());
+        }
+    }
+    state
+        .activities
+        .lock()
+        .map_err(|_| internal("session activity lock is poisoned"))?
+        .retain(|id, _| !session_ids.iter().any(|deleted| deleted == id));
+    Ok(())
+}
+
+async fn disband_swarm_with_scratchpad(
+    swarm: &SwarmStore,
+    scratchpad: &ScratchpadStore,
+    swarm_id: &str,
+) -> std::result::Result<(), Rejection> {
+    scratchpad.clear_swarm(swarm_id).await.map_err(internal)?;
+    swarm.disband(swarm_id).await.map_err(invalid_swarm)?;
+    Ok(())
+}
+
 async fn receive<T>(
     receiver: oneshot::Receiver<std::result::Result<T, Rejection>>,
 ) -> std::result::Result<T, Rejection> {
@@ -1240,7 +1755,7 @@ fn peer_message_submission(entry: BoardEntry) -> Submission {
             message: MessageSubmission {
                 author: MessageAuthor::Peer {
                     message_id,
-                    session_id: entry.author.session_id,
+                    session_id: entry.source_session_id,
                     handle: entry.author.handle,
                 },
                 text: entry.text,
@@ -1276,6 +1791,14 @@ fn invalid_config(error: impl std::fmt::Display) -> Rejection {
     }
 }
 
+fn bot_delete_rejection(code: &'static str, message: &str) -> Rejection {
+    Rejection {
+        code,
+        message: message.into(),
+        fatal: false,
+    }
+}
+
 fn invalid_workspace(error: impl std::fmt::Display) -> Rejection {
     Rejection {
         code: "invalid_workspace",
@@ -1292,19 +1815,20 @@ fn invalid_session_workspace() -> Rejection {
     }
 }
 
+fn invalid_session_bot() -> Rejection {
+    Rejection {
+        code: "invalid_session_bot",
+        message: "the requested session Bot identity does not match its durable owner".into(),
+        fatal: false,
+    }
+}
+
 fn unknown_session() -> Rejection {
     Rejection {
         code: "unknown_session",
         message: "the requested chat does not exist".into(),
         fatal: false,
     }
-}
-
-async fn require_cron_source(
-    state: &GatewayState,
-    session_id: &str,
-) -> std::result::Result<(), Rejection> {
-    require_catalog_session(state, session_id).await
 }
 
 async fn require_catalog_session(
@@ -1320,37 +1844,6 @@ async fn require_catalog_session(
         .ok_or_else(unknown_session)?;
     if !checkpoint.catalog_visible {
         return Err(unknown_session());
-    }
-    Ok(())
-}
-
-async fn require_swarm_sessions(
-    state: &GatewayState,
-    session_ids: &[String],
-) -> std::result::Result<(), Rejection> {
-    let sessions = session_catalog(&state.checkpoints, &state.activities)
-        .await
-        .map_err(internal)?;
-    let mut workspace_id = None;
-    for session_id in session_ids {
-        let session = sessions
-            .iter()
-            .find(|session| &session.session_id == session_id)
-            .ok_or_else(unknown_session)?;
-        if session.parent_session_id.is_some() {
-            return Err(invalid_swarm("a swarm can contain only top-level chats"));
-        }
-        let current_workspace = session
-            .session_context
-            .workspace_id
-            .as_deref()
-            .ok_or_else(|| invalid_swarm("a swarm chat has no workspace identity"))?;
-        if workspace_id.is_some_and(|workspace| workspace != current_workspace) {
-            return Err(invalid_swarm(
-                "all swarm chats must belong to the same workspace",
-            ));
-        }
-        workspace_id = Some(current_workspace);
     }
     Ok(())
 }
@@ -1371,31 +1864,46 @@ fn invalid_session_id() -> Rejection {
     }
 }
 
-fn invalid_cron(error: impl std::fmt::Display) -> Rejection {
+fn invalid_bot(error: impl std::fmt::Display) -> Rejection {
     Rejection {
-        code: "invalid_cron",
+        code: "invalid_bot",
         message: error.to_string(),
         fatal: false,
     }
 }
 
-fn invalid_global_scratchpad_operation() -> Rejection {
+fn invalid_routine(error: impl std::fmt::Display) -> Rejection {
     Rejection {
-        code: "invalid_global_scratchpad",
-        message: "global scratchpad accepts only refresh, edit global <id>, or forget global <id>"
-            .into(),
+        code: "invalid_routine",
+        message: error.to_string(),
         fatal: false,
     }
 }
 
-fn global_scratchpad_error(error: mobius::Error) -> Rejection {
+fn invalid_scratchpad_operation() -> Rejection {
+    Rejection {
+        code: "invalid_scratchpad",
+        message: "scratchpad operation does not match its selected management scope".into(),
+        fatal: false,
+    }
+}
+
+fn scratchpad_error(error: mobius::Error) -> Rejection {
     match error {
         mobius::Error::Tool(message) => Rejection {
-            code: "invalid_global_scratchpad",
+            code: "invalid_scratchpad",
             message,
             fatal: false,
         },
         error => internal(error),
+    }
+}
+
+fn invalid_scratchpad_store(error: impl std::fmt::Display) -> Rejection {
+    Rejection {
+        code: "invalid_scratchpad",
+        message: error.to_string(),
+        fatal: false,
     }
 }
 

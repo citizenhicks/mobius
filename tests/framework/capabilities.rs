@@ -42,18 +42,21 @@ async fn external_skill_resources_use_the_generic_read_tool() {
         ),
         ApprovalPolicy::Ask,
     ));
-    let mut agent = create_agent(AgentConfig::new(
-        Arc::new(ModelRouter::new("test", route)),
-        sandbox,
-        Arc::new(MemoryCheckpoints::default()),
-        MiddlewareStack::new(vec![
-            Arc::new(Messages::default()),
-            Arc::new(Tools::coding()),
-            Arc::new(extensions),
-        ])
-        .expect("middleware"),
-        "test system prompt",
-    ))
+    let mut agent = create_agent(
+        AgentConfig::new(
+            Arc::new(ModelRouter::new("test", route)),
+            sandbox,
+            Arc::new(MemoryCheckpoints::default()),
+            MiddlewareStack::new(vec![
+                Arc::new(Messages::default()),
+                Arc::new(Tools::coding()),
+                Arc::new(extensions),
+            ])
+            .expect("middleware"),
+            "test system prompt",
+        )
+        .session_context(test_session_context()),
+    )
     .await
     .expect("create agent");
 
@@ -210,6 +213,7 @@ async fn async_subagent_uses_configured_model_reasoning_and_durable_fork() {
         .expect("middleware"),
         "test system prompt",
     )
+    .session_context(test_session_context())
     .session_id("root");
     assert!(template.set(config.clone()).is_ok());
     let mut agent = create_agent(config).await.expect("create agent");

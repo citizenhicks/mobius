@@ -12,7 +12,7 @@ use mobius::protocol::{
     FrontendBlockRole, FrontendBlockState, FrontendBlockUpdate, FrontendCommand,
     FrontendContribution, FrontendEvent, FrontendListItemState, FrontendPreviewUpdate,
     FrontendSlot, FrontendSymbol, FrontendTone, FrontendWidget, FrontendWidgetContent,
-    MessageAuthor, MessageDelivery, MessageEvent, MessageSubmission, ModelChoice, ModelStepContent,
+    MessageAuthor, MessageDelivery, MessageEvent, MessageSubmission, ModelStepContent,
     ModelStepContentPhase, RenderedBlock, ReviewDecision,
 };
 use mobius_gateway::wire::{RecordedEvent, RenderedEvent, RenderedPreview};

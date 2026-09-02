@@ -1,11 +1,17 @@
-//! Chat catalog and durable forking middleware.
+//! Chat catalog, durable forking, and Bot-scoped thread search middleware.
 
+use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use uuid::Uuid;
 
 use super::Middleware;
 use super::MiddlewareCommandContext;
 use super::MiddlewareCommandOutput;
+use super::RuntimeContext;
 use super::manifest::{MiddlewareManifest, MiddlewareSettingManifest};
+use super::tools::{Catalog, Tool, ToolContext, rank_bm25, render_tool_event};
 use crate::BoxFuture;
 use crate::Error;
 use crate::Result;
@@ -15,7 +21,9 @@ use crate::backend::checkpoint::SessionPage;
 use crate::backend::checkpoint::SessionPageRequest;
 use crate::backend::checkpoint::SessionSummary;
 use crate::backend::checkpoint::TranscriptPageRequest;
+use crate::backend::model::ToolDefinition;
 use crate::protocol::EventMsg;
+use crate::protocol::FrontendBlock;
 use crate::protocol::FrontendCommand;
 use crate::protocol::FrontendContribution;
 use crate::protocol::FrontendEvent;
@@ -34,6 +42,11 @@ mod text {
 }
 
 const MAX_PAGE_SIZE: usize = 1_000;
+const MAX_THREAD_SEARCH_QUERY_BYTES: usize = 512;
+const MAX_THREAD_SEARCH_RESULTS: usize = 8;
+const MAX_THREAD_SEARCH_BATCHES: usize = 64;
+const MAX_THREAD_SEARCH_DOCUMENT_CHARS: usize = 12_000;
+const MAX_THREAD_SEARCH_EXCERPT_CHARS: usize = 800;
 const _: () = {
     assert!(text::DEFAULTS_PAGE_SIZE >= 1);
     assert!(text::DEFAULTS_PAGE_SIZE <= MAX_PAGE_SIZE as i64);
@@ -91,6 +104,14 @@ impl Middleware for Sessions {
         MANIFEST.id
     }
 
+    fn register(&self, catalog: &mut Catalog, runtime: &RuntimeContext) -> Result<()> {
+        catalog.register(Arc::new(SearchThreads {
+            checkpoints: Arc::clone(&runtime.checkpoints),
+            session_id: runtime.session_id.clone(),
+            bot_id: runtime.session_context.bot_id.clone(),
+        }))
+    }
+
     fn frontend(&self) -> FrontendContribution {
         FrontendContribution {
             capability: self.name().into(),
@@ -131,6 +152,21 @@ impl Middleware for Sessions {
         }
     }
 
+    fn render(&self, event: &EventMsg, _session_id: &str) -> Option<FrontendBlock> {
+        render_tool_event(
+            event,
+            |name| name == "search_threads",
+            |_, arguments| super::tools::ToolHeading {
+                title: text::RENDER_SEARCH_THREADS.into(),
+                detail: arguments
+                    .get("query")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .into(),
+            },
+        )
+    }
+
     fn command<'a>(
         &'a self,
         context: MiddlewareCommandContext<'a>,
@@ -143,6 +179,196 @@ impl Middleware for Sessions {
             }
         })
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SearchThreadsArgs {
+    query: String,
+}
+
+#[derive(Serialize)]
+struct ThreadSearchHit {
+    session_id: String,
+    workspace: Option<String>,
+    started_with: Option<String>,
+    excerpt: String,
+    updated_at: i64,
+}
+
+struct ThreadSearchDocument {
+    summary: SessionSummary,
+    messages: Vec<String>,
+    text: String,
+}
+
+struct SearchThreads {
+    checkpoints: Arc<dyn crate::backend::checkpoint::CheckpointStore>,
+    session_id: String,
+    bot_id: String,
+}
+
+impl Tool for SearchThreads {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "search_threads".into(),
+            description: text::TOOL_SEARCH_THREADS_DESCRIPTION.into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": text::TOOL_SEARCH_THREADS_PARAMETER_QUERY_DESCRIPTION
+                    }
+                },
+                "required": ["query"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn call<'a>(
+        &'a self,
+        _context: ToolContext,
+        arguments: Value,
+    ) -> BoxFuture<'a, Result<String>> {
+        Box::pin(async move {
+            let arguments: SearchThreadsArgs = serde_json::from_value(arguments)?;
+            let query = arguments.query.trim();
+            if query.is_empty() {
+                return Err(Error::Tool("search_threads query cannot be empty".into()));
+            }
+            if query.len() > MAX_THREAD_SEARCH_QUERY_BYTES {
+                return Err(Error::Tool(format!(
+                    "search_threads query exceeds {MAX_THREAD_SEARCH_QUERY_BYTES} bytes"
+                )));
+            }
+
+            let documents = self.documents().await?;
+            let searchable = documents
+                .iter()
+                .map(|document| document.text.clone())
+                .collect::<Vec<_>>();
+            let hits = rank_bm25(&searchable, query, MAX_THREAD_SEARCH_RESULTS)
+                .into_iter()
+                .filter_map(|index| documents.get(index))
+                .map(|document| ThreadSearchHit {
+                    session_id: document.summary.session_id.clone(),
+                    workspace: document.summary.session_context.workspace_label.clone(),
+                    started_with: document.summary.first_user_message.clone(),
+                    excerpt: search_excerpt(&document.messages, query),
+                    updated_at: document.summary.updated_at,
+                })
+                .collect::<Vec<_>>();
+            Ok(serde_json::to_string(&hits)?)
+        })
+    }
+}
+
+impl SearchThreads {
+    async fn documents(&self) -> Result<Vec<ThreadSearchDocument>> {
+        // ponytail: index the newest 1,000 matching threads; page deeper if one Bot exceeds that.
+        let mut cursor = None;
+        let mut summaries = Vec::new();
+        while summaries.len() < MAX_PAGE_SIZE {
+            let page = self
+                .checkpoints
+                .list_sessions_page(SessionPageRequest {
+                    cursor,
+                    limit: MAX_PAGE_SIZE,
+                })
+                .await?;
+            let remaining = MAX_PAGE_SIZE - summaries.len();
+            summaries.extend(
+                page.sessions
+                    .into_iter()
+                    .filter(|summary| {
+                        is_searchable_bot_thread(summary, &self.session_id, &self.bot_id)
+                    })
+                    .take(remaining),
+            );
+            let Some(next) = page.next_cursor else { break };
+            cursor = Some(next);
+        }
+
+        let mut documents = Vec::new();
+        for summary in summaries {
+            let page = self
+                .checkpoints
+                .transcript_page(
+                    &summary.session_id,
+                    TranscriptPageRequest {
+                        before_sequence: None,
+                        max_batches: MAX_THREAD_SEARCH_BATCHES,
+                    },
+                )
+                .await?;
+            let mut messages = replay_events(
+                &page.into_positioned_items_chronological(),
+                &summary.session_id,
+            )
+            .into_iter()
+            .filter_map(searchable_event_text)
+            .collect::<Vec<_>>();
+            if let Some(message) = summary.first_user_message.clone()
+                && messages.first() != Some(&message)
+            {
+                messages.insert(0, message);
+            }
+            let text = messages
+                .iter()
+                .flat_map(|message| message.chars().chain(std::iter::once('\n')))
+                .take(MAX_THREAD_SEARCH_DOCUMENT_CHARS)
+                .collect();
+            documents.push(ThreadSearchDocument {
+                summary,
+                messages,
+                text,
+            });
+        }
+        Ok(documents)
+    }
+}
+
+fn is_searchable_bot_thread(
+    summary: &SessionSummary,
+    current_session_id: &str,
+    bot_id: &str,
+) -> bool {
+    summary.catalog_visible
+        && summary.session_id != current_session_id
+        && summary.session_context.bot_id == bot_id
+}
+
+fn searchable_event_text(event: EventMsg) -> Option<String> {
+    match event {
+        EventMsg::Message(message) => Some(message.text),
+        EventMsg::AssistantMessage(message) => assistant_message_text(&message.content),
+        _ => None,
+    }
+}
+
+fn search_excerpt(messages: &[String], query: &str) -> String {
+    let query = query.to_lowercase();
+    let terms = query.split_whitespace().collect::<Vec<_>>();
+    let message = messages
+        .iter()
+        .find(|message| message.to_lowercase().contains(&query))
+        .or_else(|| {
+            messages.iter().find(|message| {
+                let message = message.to_lowercase();
+                terms.iter().any(|term| message.contains(term))
+            })
+        })
+        .or_else(|| messages.first())
+        .map_or("", String::as_str);
+    message
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(MAX_THREAD_SEARCH_EXCERPT_CHARS)
+        .collect()
 }
 
 async fn fork(context: MiddlewareCommandContext<'_>) -> Result<MiddlewareCommandOutput> {
@@ -472,6 +698,125 @@ mod tests {
     use super::*;
 
     #[test]
+    fn thread_search_is_bot_scoped_and_bm25_ranked() {
+        let summary = |session_id: &str, bot_id: &str| SessionSummary {
+            session_id: session_id.into(),
+            session_context: crate::protocol::SessionContext {
+                bot_id: bot_id.into(),
+                ..crate::protocol::SessionContext::default()
+            },
+            parent_session_id: None,
+            parent_sequence: None,
+            sequence: 1,
+            catalog_visible: true,
+            first_user_message: None,
+            execution_stats: Default::default(),
+            created_at: 0,
+            updated_at: 0,
+        };
+
+        assert!(is_searchable_bot_thread(
+            &summary("prior", "researcher"),
+            "current",
+            "researcher"
+        ));
+        assert!(!is_searchable_bot_thread(
+            &summary("other-bot", "writer"),
+            "current",
+            "researcher"
+        ));
+        assert!(!is_searchable_bot_thread(
+            &summary("current", "researcher"),
+            "current",
+            "researcher"
+        ));
+        let mut hidden = summary("routine", "researcher");
+        hidden.catalog_visible = false;
+        assert!(!is_searchable_bot_thread(&hidden, "current", "researcher"));
+        let documents = vec![
+            "Release checklist and changelog".into(),
+            "Hermes durable Bot memory design".into(),
+        ];
+        assert_eq!(rank_bm25(&documents, "durable Bot", 1), [1]);
+        assert_eq!(
+            search_excerpt(&documents, "durable Bot"),
+            "Hermes durable Bot memory design"
+        );
+    }
+
+    #[test]
+    fn thread_search_registers_for_the_required_bot() {
+        let state = tempfile::tempdir().expect("state");
+        let checkpoints: Arc<dyn crate::backend::checkpoint::CheckpointStore> = Arc::new(
+            crate::backend::checkpoint::sqlite::SqliteCheckpoint::new(
+                state.path().join("checkpoints.sqlite3"),
+            )
+            .expect("checkpoint store"),
+        );
+        let runtime = RuntimeContext {
+            sender: crate::agent::test_sender(),
+            checkpoints,
+            session_id: "session".into(),
+            model_route: "model".into(),
+            model: "model".into(),
+            approval_policy: crate::backend::sandbox::ApprovalPolicy::Ask,
+            session_context: crate::protocol::SessionContext {
+                bot_id: "bot-1".into(),
+                ..crate::protocol::SessionContext::default()
+            },
+            metadata: std::collections::BTreeMap::new(),
+            role: crate::agent::AgentRole::Main,
+            frontend: Arc::new(|_| Ok(())),
+        };
+        let mut catalog = Catalog::default();
+        Sessions::default()
+            .register(&mut catalog, &runtime)
+            .expect("register session tools");
+
+        assert_eq!(catalog.registered_definitions()[0].name, "search_threads");
+    }
+
+    #[tokio::test]
+    async fn thread_search_reads_only_the_owning_bots_other_transcripts() {
+        let state = tempfile::tempdir().expect("state");
+        let checkpoints: Arc<dyn crate::backend::checkpoint::CheckpointStore> = Arc::new(
+            crate::backend::checkpoint::sqlite::SqliteCheckpoint::new(
+                state.path().join("checkpoints.sqlite3"),
+            )
+            .expect("checkpoint store"),
+        );
+        for (session_id, bot_id, message) in [
+            ("prior", "researcher", "Hermes durable memory"),
+            ("current", "researcher", "Current conversation"),
+            ("other", "writer", "Hermes private draft"),
+        ] {
+            let mut checkpoint = Checkpoint::empty(session_id);
+            checkpoint.sequence = 1;
+            checkpoint.session_context.bot_id = bot_id.into();
+            checkpoint.first_user_message = Some(message.into());
+            let input = serde_json::json!({"role": "user", "content": message});
+            checkpoint.context.push(input.clone());
+            checkpoints
+                .save(&checkpoint, &[input], None)
+                .await
+                .expect("save thread");
+        }
+
+        let documents = SearchThreads {
+            checkpoints,
+            session_id: "current".into(),
+            bot_id: "researcher".into(),
+        }
+        .documents()
+        .await
+        .expect("search documents");
+
+        assert_eq!(documents.len(), 1);
+        assert_eq!(documents[0].summary.session_id, "prior");
+        assert!(documents[0].text.contains("Hermes durable memory"));
+    }
+
+    #[test]
     fn sessions_rejects_page_sizes_outside_its_manifest_bounds() {
         assert!(Sessions::new(0).is_err());
         assert!(Sessions::new(MAX_PAGE_SIZE + 1).is_err());
@@ -732,10 +1077,10 @@ mod tests {
     fn resume_description_includes_workspace_and_origin_labels() {
         let option = resume_option(
             SessionSummary {
-                session_id: "scheduled".into(),
+                session_id: "routine".into(),
                 session_context: crate::protocol::SessionContext {
                     workspace_label: Some("Project One".into()),
-                    origin_label: Some("cron".into()),
+                    origin_label: Some("routine".into()),
                     ..crate::protocol::SessionContext::default()
                 },
                 parent_session_id: None,
@@ -753,7 +1098,7 @@ mod tests {
 
         assert_eq!(
             option.description,
-            "Project One · cron · created at Unix time 42"
+            "Project One · routine · created at Unix time 42"
         );
     }
 
@@ -776,9 +1121,10 @@ mod tests {
             serde_json::json!({"workspace": "/srv/project"}),
         );
         parent.session_context = crate::protocol::SessionContext {
+            bot_id: "bot-1".into(),
             workspace_id: Some("workspace-1".into()),
             workspace_label: Some("Project One".into()),
-            origin_label: Some("cron".into()),
+            origin_label: Some("routine".into()),
             ..crate::protocol::SessionContext::default()
         };
 
@@ -790,6 +1136,7 @@ mod tests {
         assert_eq!(
             fork.session_context,
             crate::protocol::SessionContext {
+                bot_id: "bot-1".into(),
                 workspace_id: Some("workspace-1".into()),
                 workspace_label: Some("Project One".into()),
                 ..crate::protocol::SessionContext::default()

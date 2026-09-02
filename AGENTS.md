@@ -14,7 +14,7 @@ layers, parallel registries, or speculative extension points.
 | `src/backend/checkpoint/` | Durable checkpoints, journals, and session catalog |
 | `src/middleware/` | Optional capabilities and their tools, hooks, state, and UI contributions |
 | `src/protocol/` | Frontend-neutral operations, events, and presentation records |
-| `crates/mobius-gateway/` | Headless composition, auth, sessions, artifacts, usage, and cron |
+| `crates/mobius-gateway/` | Headless composition, auth, Bots, sessions, routines, Swarms, artifacts, and usage |
 | `crates/mobius-cli/src/frontend/` | Thin terminal gateway client and rendering |
 
 `mobius-gateway` is the only shipped owner of an `Agent`. The CLI sends gateway

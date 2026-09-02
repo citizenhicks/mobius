@@ -5,10 +5,10 @@ import LocalAuthentication
 enum AppDestination: Hashable {
     case chats
     case gateway
-    case agent
+    case botDefaults
     case providers
     case extensions
-    case cron
+    case bots
     case scratchpad
     case profile
     case contribution(String)
@@ -17,10 +17,10 @@ enum AppDestination: Hashable {
         switch self {
         case .chats: .note01
         case .gateway: .cellTower
-        case .agent: .slidersHorizontal
+        case .botDefaults: .slidersHorizontal
         case .providers: .plugsConnected
         case .extensions: .squaresFour
-        case .cron: .calendarDots
+        case .bots: .aiScan
         case .scratchpad: .brain
         case .profile: .gear
         case .contribution: .squaresFour
@@ -39,17 +39,71 @@ enum SettingsRoute: Hashable {
 /// chats so the interactive back gesture pops the page instead of the column.
 enum AppRoute: Hashable {
     case chat(ChatRoute)
+    case bot(String)
     case swarm(String)
     case settings(SettingsRoute)
 }
 
+struct WorkspaceSessions: Identifiable {
+    let id: String
+    let name: String
+    let path: String
+    let sessions: [SessionRecord]
+
+    var latestUpdatedAt: Int64 {
+        sessions.first?.updatedAt ?? 0
+    }
+
+    static func grouped(
+        _ sessions: [SessionRecord],
+        prioritizing workspaceID: String?
+    ) -> [WorkspaceSessions] {
+        Dictionary(grouping: sessions, by: workspaceID(for:)).map { id, sessions in
+            let path = sessions.first?.sessionContext.workspaceLabel ?? "Workspace"
+            return WorkspaceSessions(
+                id: id,
+                name: workspaceName(path),
+                path: path,
+                sessions: sessions.sorted(by: pinnedThenRecent)
+            )
+        }
+        .sorted {
+            if $0.id == workspaceID { return true }
+            if $1.id == workspaceID { return false }
+            if $0.latestUpdatedAt != $1.latestUpdatedAt {
+                return $0.latestUpdatedAt > $1.latestUpdatedAt
+            }
+            return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+    }
+
+    private static func workspaceID(for session: SessionRecord) -> String {
+        session.sessionContext.workspaceId
+            ?? session.sessionContext.workspaceLabel
+            ?? "workspace"
+    }
+
+    private static func workspaceName(_ path: String) -> String {
+        let name = URL(fileURLWithPath: path).lastPathComponent
+        return name.isEmpty ? path : name
+    }
+
+    private static func pinnedThenRecent(_ first: SessionRecord, _ second: SessionRecord) -> Bool {
+        if first.pinned != second.pinned { return first.pinned }
+        if first.updatedAt != second.updatedAt { return first.updatedAt > second.updatedAt }
+        return first.sessionId < second.sessionId
+    }
+}
+
 enum ChatRoute: Identifiable, Hashable {
+    case new
     case session(String)
 
-    var id: String { sessionID }
+    var id: String { sessionID ?? "new" }
 
-    var sessionID: String {
+    var sessionID: String? {
         switch self {
+        case .new: nil
         case .session(let sessionID): sessionID
         }
     }
@@ -590,11 +644,6 @@ struct MountedReference: Identifiable, Sendable {
 
     var id: String { "\(capability)\u{0}\(reference.trigger)\u{0}\(reference.value)" }
     var label: String { "\(reference.trigger)\(reference.value)" }
-}
-
-enum ConfigurationTarget {
-    case session
-    case defaultAgent
 }
 
 struct ReferenceSuggestions: Sendable {

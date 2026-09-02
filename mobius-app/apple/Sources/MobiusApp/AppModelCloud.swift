@@ -364,6 +364,7 @@ extension AppModel {
     func signOutOfCloud() async {
         let cloudGateway = mobiusCloudGateway
         do {
+            try await unregisterRemoteNotificationsForCloudSignOut()
             try cloudClient.signOut()
         } catch {
             showToast(verbatim: localizedErrorDescription(error), tone: .error)
@@ -390,6 +391,7 @@ extension AppModel {
         await composerIO?.value
 
         do {
+            try await unregisterRemoteNotificationsForCloudSignOut()
             try cloudClient.signOut()
             clearCloudAccountState()
             try await store.clearAllData()
@@ -483,6 +485,7 @@ extension AppModel {
         availableExtensions = []
         extensionCatalogError = nil
         isLoadingExtensionCatalog = false
+        stopRemoteNotifications(forgetsCloudInstallation: true)
     }
 
     private func clearCloudError() {

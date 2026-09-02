@@ -6,15 +6,16 @@ async fn session_context_round_trips_through_save_catalog_and_fork() {
     let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
         .expect("open checkpoint database");
     let context = crate::protocol::SessionContext {
+        bot_id: "test-bot".into(),
         workspace_id: Some("workspace-1".into()),
         workspace_label: Some("Project One".into()),
-        origin_label: Some("cron".into()),
+        origin_label: Some("routine".into()),
         ..crate::protocol::SessionContext::default()
     };
-    let mut parent = Checkpoint::empty("parent");
+    let mut parent = checkpoint("parent");
     parent.session_context.clone_from(&context);
     store.save(&parent, &[], None).await.expect("save parent");
-    let mut child = Checkpoint::empty("child");
+    let mut child = checkpoint("child");
     child.session_context.clone_from(&context);
 
     let fork = store
@@ -48,11 +49,64 @@ async fn session_context_round_trips_through_save_catalog_and_fork() {
 }
 
 #[tokio::test]
+async fn save_rejects_a_blank_bot_id() {
+    let workspace = tempfile::tempdir().expect("create workspace");
+    let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
+        .expect("open checkpoint database");
+    let mut checkpoint = checkpoint("session");
+    checkpoint.session_context.bot_id = " ".into();
+
+    let error = store
+        .save(&checkpoint, &[], None)
+        .await
+        .expect_err("blank Bot ID must fail");
+
+    assert_eq!(
+        error.to_string(),
+        "checkpoint error: session Bot ID cannot be blank"
+    );
+}
+
+#[tokio::test]
+async fn session_catalog_rejects_a_blank_bot_id() {
+    let workspace = tempfile::tempdir().expect("create workspace");
+    let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
+        .expect("open checkpoint database");
+    store
+        .save(&checkpoint("session"), &[], None)
+        .await
+        .expect("save session");
+    store
+        .run(|connection| {
+            connection.execute(
+                "UPDATE sessions SET session_context_json = ?1 WHERE session_id = ?2",
+                [r#"{"bot_id":" "}"#, "session"],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("replace session context");
+
+    let error = store
+        .list_sessions_page(SessionPageRequest {
+            cursor: None,
+            limit: 1,
+        })
+        .await
+        .expect_err("blank catalog Bot ID must fail");
+
+    assert_eq!(
+        error.to_string(),
+        "checkpoint error: session Bot ID cannot be blank"
+    );
+}
+
+#[tokio::test]
 async fn delete_session_removes_the_complete_session_tree() {
     let workspace = tempfile::tempdir().expect("create workspace");
     let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
         .expect("open checkpoint database");
-    let mut parent = Checkpoint::empty("parent");
+    let mut parent = checkpoint("parent");
     parent.sequence = 1;
     store
         .save(
@@ -63,11 +117,11 @@ async fn delete_session_removes_the_complete_session_tree() {
         .await
         .expect("save parent");
     store
-        .fork("parent", 1, &Checkpoint::empty("child"))
+        .fork("parent", 1, &checkpoint("child"))
         .await
         .expect("fork child");
     store
-        .fork("child", 0, &Checkpoint::empty("grandchild"))
+        .fork("child", 0, &checkpoint("grandchild"))
         .await
         .expect("fork grandchild");
     for session_id in ["parent", "child", "grandchild"] {
@@ -136,7 +190,7 @@ async fn fork_preserves_a_historical_parent_sequence() {
     let workspace = tempfile::tempdir().expect("create workspace");
     let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
         .expect("open checkpoint database");
-    let mut parent = Checkpoint::empty("parent");
+    let mut parent = checkpoint("parent");
     store.save(&parent, &[], None).await.expect("save parent");
     for sequence in 1..=2 {
         parent.sequence = sequence;
@@ -147,7 +201,7 @@ async fn fork_preserves_a_historical_parent_sequence() {
     }
 
     let fork = store
-        .fork("parent", 1, &Checkpoint::empty("child"))
+        .fork("parent", 1, &checkpoint("child"))
         .await
         .expect("fork historical checkpoint");
 
@@ -160,12 +214,12 @@ async fn fork_rejects_a_future_parent_sequence() {
     let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
         .expect("open checkpoint database");
     store
-        .save(&Checkpoint::empty("parent"), &[], None)
+        .save(&checkpoint("parent"), &[], None)
         .await
         .expect("save parent");
 
     let error = store
-        .fork("parent", 1, &Checkpoint::empty("child"))
+        .fork("parent", 1, &checkpoint("child"))
         .await
         .expect_err("future fork must fail");
 
@@ -182,7 +236,7 @@ async fn fork_rejects_a_missing_parent() {
         .expect("open checkpoint database");
 
     let error = store
-        .fork("missing", 0, &Checkpoint::empty("child"))
+        .fork("missing", 0, &checkpoint("child"))
         .await
         .expect_err("missing parent must fail");
 
@@ -197,12 +251,12 @@ async fn metadata_round_trips_through_save_and_fork() {
     let workspace = tempfile::tempdir().expect("create workspace");
     let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
         .expect("open checkpoint database");
-    let mut parent = Checkpoint::empty("parent");
+    let mut parent = checkpoint("parent");
     parent
         .metadata
         .insert("gateway.chat".into(), json!({"workspace": "/srv/project"}));
     store.save(&parent, &[], None).await.expect("save parent");
-    let mut child = Checkpoint::empty("child");
+    let mut child = checkpoint("child");
     child.metadata.clone_from(&parent.metadata);
 
     store
@@ -232,10 +286,11 @@ async fn session_catalog_reads_context_without_decoding_the_checkpoint() {
     let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
         .expect("open checkpoint database");
     let context = SessionContext {
+        bot_id: "test-bot".into(),
         workspace_id: Some("workspace-1".into()),
         ..SessionContext::default()
     };
-    let mut checkpoint = Checkpoint::empty("session");
+    let mut checkpoint = checkpoint("session");
     checkpoint.session_context.clone_from(&context);
     store
         .save(&checkpoint, &[], None)
@@ -270,7 +325,7 @@ async fn session_catalog_continues_from_a_stable_cursor() {
         .expect("open checkpoint database");
     for session_id in ["a", "b", "c"] {
         store
-            .save(&Checkpoint::empty(session_id), &[], None)
+            .save(&checkpoint(session_id), &[], None)
             .await
             .expect("save session");
     }

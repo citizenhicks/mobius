@@ -151,7 +151,7 @@ async fn websocket_upgrade_and_authentication_share_one_deadline() {
         listener,
         auth,
         host,
-        cron,
+        bots,
         ..
     } = server;
     let client_connections = Arc::new(ClientConnections::default());
@@ -165,7 +165,7 @@ async fn websocket_upgrade_and_authentication_share_one_deadline() {
             stream,
             auth,
             host,
-            cron,
+            bots,
             client_connections,
             client_revocations,
             PlaintextHandshake {

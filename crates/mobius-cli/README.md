@@ -1,7 +1,7 @@
 # möbius CLI
 
-`mobius-cli` is the reference Ratatui client for a `mobius-gateway`. The gateway owns agent
-composition, providers, sessions, sandboxing, usage, and scheduled work.
+`mobius-cli` is the reference Ratatui client for a `mobius-gateway`. The gateway owns Bot
+profiles, providers, conversations, sandboxing, usage, routines, and swarms.
 
 ## Install the client
 
@@ -19,9 +19,6 @@ macOS or Linux architectures can install both commands with Rust 1.98 or newer:
 cargo install --locked mobius-cli
 ```
 
-If the earlier standalone gateway package is installed, run
-`cargo install --force --locked mobius-cli` once to transfer both commands to this package.
-
 ## Gateway included
 
 The CLI package installs its gateway beside `mobius`; the core `mobius` crate is linked into the
@@ -36,12 +33,10 @@ With no explicit gateway endpoint or token, the first run initializes the machin
 gateway with both a loopback listener and Cloudflare Quick Tunnel, provisions the CLI's local
 credential, and starts `mobius-gateway` in the background. A later `mobius-gateway connect`
 advertises the local TCP and public WSS endpoints with one pairing code that works through either
-endpoint.
-If no model provider is configured, the same three-page `/login` flow opens immediately. The
-first configured model becomes the gateway default for new chats.
-Each run creates a chat scoped to the current directory; `/workspace <gateway-path>` creates and
-selects another chat without changing other running chats. For a source checkout, build both
-commands from the CLI package:
+endpoint. On an empty gateway, plain `mobius` opens provider setup; the gateway then creates the
+default Mobius Bot. Each run creates a chat for that Bot in the current directory. `/new` and
+`/workspace <gateway-path>` open the Bot picker without changing other running chats. For a source
+checkout, build both commands from the CLI package:
 
 ```sh
 cargo build -p mobius-cli
@@ -84,14 +79,17 @@ mobius pair tcp://127.0.0.1:8741 <one-time-code>
 Run one task file without the TUI:
 
 ```sh
-mobius run path/to/task.md
+mobius run @builder path/to/task.md
 # From a source checkout:
-cargo run -p mobius-cli --bin mobius -- run path/to/task.md
+cargo run -p mobius-cli --bin mobius -- run @builder path/to/task.md
 ```
 
-The selected chat workspace—not the CLI process—is the command and file boundary. An approval
-prompt aborts a headless run, so scheduled work that edits files or runs commands needs an
-appropriate chat approval policy.
+`mobius run` is noninteractive and never creates or configures a Bot. Run plain `mobius` in a
+terminal first when the gateway has no Bots.
+
+The selected conversation workspace—not the CLI process—is the command and file boundary. An
+approval prompt aborts a headless run, so a Bot routine that edits files or runs commands needs an
+appropriate Bot approval policy.
 
 Manage the gateway extension catalog without creating or opening a chat:
 
@@ -108,10 +106,9 @@ can be pasted into a masked field, the environment variable declared by the prov
 used when the field is empty, and device-login providers show their login flow. There is no
 separate environment-name setting. Setup covers the built-in manifests compiled into both the
 gateway and CLI; injected `ModelRouter` entries are library-only. The final page confirms the
-provider's model and reasoning choice. The gateway owns the complete configured-model catalog and
-new-chat default; `/model` only changes the selected chat to one of those available routes.
-`/agent` opens a one-page capability and approval-policy editor without changing the selected
-provider or system prompt. Required gateway capabilities remain visible but cannot be deselected.
+provider's model and reasoning choice and updates the Bot that owns the current chat. `/bot` opens
+the same Bot-owned capability and approval-policy editor without creating per-chat configuration.
+Required gateway capabilities remain visible but cannot be deselected.
 Secrets are sent directly to the gateway and never returned to the CLI.
 `/gateway` lists saved endpoints and opens a second page to pair a new endpoint; reconnect and
 delete act on the selected saved gateway. Explicit endpoint or token environment variables make
@@ -141,7 +138,7 @@ The TUI is a thin subscriber to the framework capability catalog:
   scan similarly named paths on the client machine.
 
 The CLI owns only shell lifecycle and presentation commands: `/help`, `/gateway`, `/extensions`,
-`/agent`, `/login`, `/pair`, `/profile`, `/new`, `/clear`, `/model`, `/reasoning`, `/status`,
+`/bot`, `/login`, `/pair`, `/profile`, `/new`, `/clear`, `/status`,
 `/interrupt`, and `/exit`. Capabilities contribute commands such as `/artifacts`, so
 the menu changes with the installed gateway capabilities. The gateway always contributes `/resume`
 as the single saved-chat picker; it lists chats across every workspace.

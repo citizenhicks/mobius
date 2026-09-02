@@ -345,7 +345,7 @@ extension AppModelTests {
         XCTAssertTrue(initialConnectionOpened)
         await harness.yield(.authenticated)
         await harness.yield(.ready(ready(
-            defaultConfig: VersionedAgentConfig(revision: 1, config: composition()),
+            botDefaults: VersionedAgentConfig(revision: 1, config: composition()),
             sessions: []
         )))
         let gatewayReady = await eventually { model.connectionState.isReady }
@@ -363,7 +363,7 @@ extension AppModelTests {
         XCTAssertGreaterThanOrEqual(attemptCount, 3)
         await harness.yield(.authenticated)
         await harness.yield(.ready(ready(
-            defaultConfig: VersionedAgentConfig(revision: 1, config: composition()),
+            botDefaults: VersionedAgentConfig(revision: 1, config: composition()),
             sessions: [session(state: .idle, firstUserMessage: nil)]
         )))
         let reconnectRequest = await recorder.firstRequest(

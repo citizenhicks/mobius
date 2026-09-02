@@ -156,6 +156,7 @@ mod tests {
                 .expect("checkpoints"),
         );
         let mut parent = Checkpoint::empty("parent");
+        parent.session_context.bot_id = "bot-fixture".into();
         parent.session_context.workspace_id = Some("workspace".into());
         parent.sequence = 1;
         checkpoints
@@ -163,12 +164,14 @@ mod tests {
             .await
             .expect("save parent");
         let mut empty_root = Checkpoint::empty("empty-root");
+        empty_root.session_context.bot_id = "bot-fixture".into();
         empty_root.session_context.workspace_id = Some("workspace".into());
         checkpoints
             .save(&empty_root, &[], None)
             .await
             .expect("save empty root");
         let mut child = Checkpoint::empty("child");
+        child.session_context.bot_id = "bot-fixture".into();
         child.session_context.workspace_id = Some("workspace".into());
         checkpoints
             .fork("parent", parent.sequence, &child)
@@ -202,6 +205,7 @@ mod tests {
         );
         for index in 0..=SESSION_PAGE_SIZE {
             let mut checkpoint = Checkpoint::empty(format!("{index:03}"));
+            checkpoint.session_context.bot_id = "bot-fixture".into();
             checkpoint.session_context.workspace_id = Some("workspace".into());
             checkpoint.sequence = 1;
             checkpoint.first_user_message = Some(if index == SESSION_PAGE_SIZE {
@@ -239,8 +243,10 @@ mod tests {
             SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
                 .expect("checkpoints"),
         );
+        let mut checkpoint = Checkpoint::empty("active");
+        checkpoint.session_context.bot_id = "bot-fixture".into();
         checkpoints
-            .save(&Checkpoint::empty("active"), &[], None)
+            .save(&checkpoint, &[], None)
             .await
             .expect("save session");
         let activities = activities();

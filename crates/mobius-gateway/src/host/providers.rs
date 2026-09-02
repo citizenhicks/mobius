@@ -1,16 +1,14 @@
-use std::collections::HashSet;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex as StdMutex};
 
-use mobius::backend::checkpoint::CheckpointStore;
 use mobius::backend::model::provider::{ProviderAuth, provider};
 use uuid::Uuid;
 
 use crate::Error;
-use crate::config::{ChatSpec, GatewayConfig};
+use crate::config::GatewayConfig;
 use crate::provider_catalog::{configured_model_choices, credential_is_configured};
 use crate::wire::{
-    AgentComposition, ProviderConfig, ProviderEndpointAuth, ProviderTint, ReadyPayload,
+    AgentComposition, BotRecord, ProviderConfig, ProviderEndpointAuth, ProviderTint, ReadyPayload,
     ServerFrame, ServerMessage,
 };
 
@@ -18,7 +16,7 @@ use super::session::ProviderRefresh;
 use super::{GatewayHost, Rejection, gateway_ready, internal, invalid_config};
 
 impl GatewayHost {
-    pub(crate) async fn configure_default_agent(
+    pub(crate) async fn configure_bot_defaults(
         &self,
         expected_revision: u64,
         config: AgentComposition,
@@ -33,8 +31,11 @@ impl GatewayHost {
                 .map_err(internal)?;
             crate::middleware_manifest::validate_choices(&config.middleware, &models)
                 .map_err(invalid_config)?;
+            crate::extensions::ExtensionStore::new(&state.store)
+                .resolve(&current, &config.extensions)
+                .map_err(invalid_config)?;
             let next = current
-                .replacing_default_agent(expected_revision, config)
+                .replacing_bot_defaults(expected_revision, config)
                 .map_err(invalid_config)?;
             state.store.save(&next).map_err(internal)?;
             *current = next;
@@ -101,7 +102,6 @@ impl GatewayHost {
                 configured.tint,
                 configured.model_ids,
                 configured.reasoning_efforts,
-                true,
             )
             .await?;
             return Ok(());
@@ -244,7 +244,6 @@ impl GatewayHost {
         tint: ProviderTint,
         model_ids: Vec<String>,
         reasoning_efforts: Vec<String>,
-        replace_existing_selections: bool,
     ) -> std::result::Result<ReadyPayload, Rejection> {
         let mut state = self.state.lock().await;
         let mutation_gate = Arc::clone(&state.session_mutations);
@@ -262,96 +261,74 @@ impl GatewayHost {
             .lock()
             .map_err(|_| internal("gateway configuration lock is poisoned"))?
             .clone();
-        let next = provider_registration(
-            &current,
-            &selection,
-            &label,
-            tint,
-            &model_ids,
-            &reasoning_efforts,
-            replace_existing_selections,
-        )
-        .map_err(invalid_config)?;
-        let mut replacements = Vec::new();
-        let mut migrations = Vec::new();
-        let mut target_epoch = state.provider_epoch.load(Ordering::Acquire);
-        if current.configured_providers != next.configured_providers {
-            target_epoch = target_epoch
-                .checked_add(1)
-                .ok_or_else(|| internal("provider catalog epoch overflow"))?;
+        let next = current
+            .registering_provider(
+                selection.clone(),
+                label.clone(),
+                tint,
+                model_ids.clone(),
+                reasoning_efforts.clone(),
+            )
+            .map_err(invalid_config)?;
+        let mut bots = state.bots.bots().map_err(internal)?;
+        validate_bot_catalog(&state, &next, &bots)?;
+        let catalog_changed = current.configured_providers != next.configured_providers;
+        if current == next {
+            return gateway_ready(&state).await;
         }
-        if replace_existing_selections {
-            let residents = provider_cutover_residents(&mut state).await?;
-            let resident_ids = residents
-                .iter()
-                .map(|resident| resident.session_id.clone())
-                .collect::<HashSet<_>>();
-            migrations = residents
-                .iter()
-                .filter(|resident| {
-                    resident.status.provider_epoch != target_epoch
-                        || (resident.status.selection.instance == selection.instance
-                            && resident.status.selection != selection)
-                })
-                .map(|resident| (resident.session_id.clone(), resident.host.clone()))
-                .collect();
-            replacements =
-                provider_checkpoint_replacements(&state, &selection, &next, &resident_ids)
-                    .await
-                    .map_err(internal)?;
-            if current == next && replacements.is_empty() && migrations.is_empty() {
-                return gateway_ready(&state).await;
-            }
-            if residents.iter().any(|resident| !resident.status.idle) {
-                return Err(Rejection {
-                    code: "agent_busy",
-                    message: "finish or interrupt active turns before changing gateway providers"
-                        .into(),
-                    fatal: false,
-                });
-            }
-            save_provider_checkpoint_replacements(&state.checkpoints, &replacements)
-                .await
-                .map_err(internal)?;
+        let target_epoch = catalog_changed
+            .then(|| {
+                state
+                    .provider_epoch
+                    .load(Ordering::Acquire)
+                    .checked_add(1)
+                    .ok_or_else(|| internal("provider catalog epoch overflow"))
+            })
+            .transpose()?;
+        let residents = provider_cutover_residents(&mut state).await?;
+        if residents.iter().any(|resident| !resident.status.idle) {
+            return Err(Rejection {
+                code: "agent_busy",
+                message: "finish or interrupt active Bot turns before changing gateway providers"
+                    .into(),
+                fatal: false,
+            });
         }
-        let commit = commit_provider_registration(
+        commit_provider_registration(
             &state,
             &selection,
             &label,
-            tint,
+            &tint,
             &model_ids,
             &reasoning_efforts,
-            replace_existing_selections,
-        );
-        let catalog_changed = match commit {
-            Ok(catalog_changed) => catalog_changed,
-            Err(error) => {
-                if replace_existing_selections
-                    && let Err(rollback) =
-                        rollback_provider_checkpoints(&state.checkpoints, &replacements).await
-                {
-                    return Err(internal(format!(
-                        "{error}; failed to roll back provider chat selections: {rollback}"
-                    )));
-                }
-                return Err(internal(error));
-            }
-        };
-        if catalog_changed {
+        )
+        .map_err(internal)?;
+        let defaults = state
+            .config
+            .lock()
+            .map_err(|_| internal("gateway configuration lock is poisoned"))?
+            .bot_defaults
+            .clone()
+            .ok_or_else(|| internal("registered provider did not establish Bot defaults"))?;
+        if state
+            .bots
+            .seed_default(&defaults)
+            .map_err(internal)?
+            .is_some()
+        {
+            bots = state.bots.bots().map_err(internal)?;
+            self.broadcast_bots(&bots);
+        }
+        if let Some(target_epoch) = target_epoch {
             state.provider_epoch.store(target_epoch, Ordering::Release);
         }
-        for (session_id, host) in migrations {
-            host.cut_over_provider(&selection).await?;
-            if !host.is_alive() {
-                state.sessions.remove(&session_id);
-                return Err(internal("chat stopped during provider replacement"));
-            }
-        }
+        let reload_failures = reload_provider_residents(&mut state, residents, &bots).await?;
         let payload = gateway_ready(&state).await?;
         let frame = ServerFrame::new(ServerMessage::Ready {
             payload: payload.clone(),
         });
         let _ = self.events.send(frame);
+        broadcast_reload_failures(self, "provider changed", &reload_failures);
         Ok(payload)
     }
 
@@ -362,12 +339,28 @@ impl GatewayHost {
         let mut state = self.state.lock().await;
         let mutation_gate = Arc::clone(&state.session_mutations);
         let _mutation = mutation_gate.write_owned().await;
-        state
+        let current = state
             .config
             .lock()
             .map_err(|_| internal("gateway configuration lock is poisoned"))?
+            .clone();
+        let next = current
             .removing_provider(&instance)
             .map_err(invalid_config)?;
+        let bots = state.bots.bots().map_err(internal)?;
+        for bot in &bots {
+            if bot_references_removed_provider(bot, &instance, &next).map_err(invalid_config)? {
+                return Err(Rejection {
+                    code: "provider_in_use",
+                    message: format!(
+                        "provider `{instance}` is selected by Bot @{}; update that Bot first",
+                        bot.handle
+                    ),
+                    fatal: false,
+                });
+            }
+        }
+        validate_bot_catalog(&state, &next, &bots)?;
         let target_epoch = state
             .provider_epoch
             .load(Ordering::Acquire)
@@ -384,56 +377,13 @@ impl GatewayHost {
         }
         commit_provider_removal(&state, &instance).map_err(internal)?;
         state.provider_epoch.store(target_epoch, Ordering::Release);
-        let mut reload_failures = Vec::new();
-        for resident in residents {
-            if let Err(error) = resident.host.reload_provider_catalog().await {
-                if !resident.host.stop_if_idle().await {
-                    return Err(internal(
-                        "chat became busy after provider removal was committed",
-                    ));
-                }
-                state.sessions.remove(&resident.session_id);
-                reload_failures.push(format!("{}: {}", resident.session_id, error.message));
-            }
-        }
+        let reload_failures = reload_provider_residents(&mut state, residents, &bots).await?;
         let payload = gateway_ready(&state).await?;
         let _ = self.events.send(ServerFrame::new(ServerMessage::Ready {
             payload: payload.clone(),
         }));
-        if !reload_failures.is_empty() {
-            let _ = self.events.send(ServerFrame::new(ServerMessage::Error {
-                code: "provider_reload".into(),
-                message: format!(
-                    "provider removed; reopen chats that could not reload: {}",
-                    reload_failures.join(", ")
-                ),
-                fatal: false,
-            }));
-        }
+        broadcast_reload_failures(self, "provider removed", &reload_failures);
         Ok(payload)
-    }
-}
-
-fn provider_registration(
-    current: &GatewayConfig,
-    selection: &ProviderConfig,
-    label: &str,
-    tint: ProviderTint,
-    model_ids: &[String],
-    reasoning_efforts: &[String],
-    replace_existing_selections: bool,
-) -> crate::Result<GatewayConfig> {
-    let registered = current.registering_provider(
-        selection.clone(),
-        label.to_owned(),
-        tint,
-        model_ids.to_vec(),
-        reasoning_efforts.to_vec(),
-    )?;
-    if replace_existing_selections {
-        registered.replacing_provider_default(selection)
-    } else {
-        Ok(registered)
     }
 }
 
@@ -441,28 +391,24 @@ fn commit_provider_registration(
     state: &super::GatewayState,
     selection: &ProviderConfig,
     label: &str,
-    tint: ProviderTint,
+    tint: &ProviderTint,
     model_ids: &[String],
     reasoning_efforts: &[String],
-    replace_existing_selections: bool,
-) -> crate::Result<bool> {
+) -> crate::Result<()> {
     let mut current = state
         .config
         .lock()
         .map_err(|_| Error::Config("gateway configuration lock is poisoned".into()))?;
-    let next = provider_registration(
-        &current,
-        selection,
-        label,
-        tint,
-        model_ids,
-        reasoning_efforts,
-        replace_existing_selections,
+    let next = current.registering_provider(
+        selection.clone(),
+        label.into(),
+        *tint,
+        model_ids.to_vec(),
+        reasoning_efforts.to_vec(),
     )?;
-    let catalog_changed = current.configured_providers != next.configured_providers;
     state.store.save(&next)?;
     *current = next;
-    Ok(catalog_changed)
+    Ok(())
 }
 
 fn commit_provider_removal(state: &super::GatewayState, instance: &str) -> crate::Result<()> {
@@ -482,13 +428,6 @@ fn commit_provider_removal(state: &super::GatewayState, instance: &str) -> crate
     }
     *current = next;
     Ok(())
-}
-
-struct ProviderCheckpointReplacement {
-    session_id: String,
-    sequence: u64,
-    original: ChatSpec,
-    updated: ChatSpec,
 }
 
 struct ProviderCutoverResident {
@@ -528,114 +467,93 @@ async fn provider_cutover_residents(
     Ok(residents)
 }
 
-async fn provider_checkpoint_replacements(
+fn validate_bot_catalog(
     state: &super::GatewayState,
-    selection: &ProviderConfig,
     gateway: &GatewayConfig,
-    excluded: &HashSet<String>,
-) -> crate::Result<Vec<ProviderCheckpointReplacement>> {
-    let sessions = super::gateway_session_summaries(&state.checkpoints).await?;
-    let mut replacements = Vec::new();
-    for session in sessions {
-        if excluded.contains(&session.session_id) {
-            continue;
+    bots: &[BotRecord],
+) -> std::result::Result<(), Rejection> {
+    let models = configured_model_choices(gateway, &state.store, &state.credentials)
+        .map_err(invalid_config)?;
+    for bot in bots {
+        if let Err(error) = gateway.validate_provider_selection(&bot.config.config.provider) {
+            return Err(bot_catalog_rejection(bot, error));
         }
-        let Some(checkpoint) = state.checkpoints.load(&session.session_id).await? else {
-            continue;
-        };
-        let Some(original) = ChatSpec::from_metadata_if_present(
-            &checkpoint.metadata,
-            state.store.state_dir(),
-            gateway.tls.as_ref(),
-        )?
-        else {
-            continue;
-        };
-        let Some(updated) = original.replacing_provider_selection(
-            selection,
-            gateway,
-            state.store.state_dir(),
-            gateway.tls.as_ref(),
-        )?
-        else {
-            continue;
-        };
-        replacements.push(ProviderCheckpointReplacement {
-            session_id: session.session_id,
-            sequence: checkpoint.sequence,
-            original,
-            updated,
-        });
+        if let Err(error) =
+            crate::middleware_manifest::validate_choices(&bot.config.config.middleware, &models)
+        {
+            return Err(bot_catalog_rejection(bot, error));
+        }
     }
-    Ok(replacements)
+    Ok(())
 }
 
-async fn save_provider_checkpoint_replacements(
-    checkpoints: &Arc<dyn CheckpointStore>,
-    replacements: &[ProviderCheckpointReplacement],
-) -> crate::Result<()> {
-    for (index, replacement) in replacements.iter().enumerate() {
-        let result = async {
-            let mut checkpoint = checkpoints
-                .load(&replacement.session_id)
-                .await?
-                .ok_or_else(|| {
-                    Error::Config("chat disappeared during provider replacement".into())
-                })?;
-            if checkpoint.sequence != replacement.sequence {
-                return Err(Error::Config(
-                    "chat changed during provider replacement".into(),
+fn bot_catalog_rejection(bot: &BotRecord, error: impl std::fmt::Display) -> Rejection {
+    Rejection {
+        code: "provider_in_use",
+        message: format!(
+            "provider catalog change would invalidate Bot @{}: {error}; register the replacement under a new instance, move affected Bots and Bot defaults, then remove the old instance",
+            bot.handle
+        ),
+        fatal: false,
+    }
+}
+
+fn bot_references_removed_provider(
+    bot: &BotRecord,
+    instance: &str,
+    next: &GatewayConfig,
+) -> crate::Result<bool> {
+    if bot.config.config.provider.instance == instance {
+        return Ok(true);
+    }
+    for (_, _, route) in
+        crate::middleware_manifest::configured_model_routes(&bot.config.config.middleware)
+    {
+        if !crate::provider_catalog::configured_route_exists(next, route)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+async fn reload_provider_residents(
+    state: &mut super::GatewayState,
+    residents: Vec<ProviderCutoverResident>,
+    bots: &[BotRecord],
+) -> std::result::Result<Vec<String>, Rejection> {
+    let mut failures = Vec::new();
+    for resident in residents {
+        let bot = bots
+            .iter()
+            .find(|bot| bot.id == resident.host.bot_id())
+            .cloned()
+            .ok_or_else(|| internal("resident chat has no authoritative Bot profile"))?;
+        let result = resident.host.reload_bot(bot).await;
+        if let Err(error) = result {
+            if !resident.host.stop_if_idle().await {
+                return Err(internal(
+                    "chat became busy after the provider catalog was committed",
                 ));
             }
-            checkpoint.sequence = checkpoint
-                .sequence
-                .checked_add(1)
-                .ok_or_else(|| Error::Config("checkpoint sequence overflow".into()))?;
-            checkpoint.metadata.extend(replacement.updated.metadata()?);
-            checkpoints.save(&checkpoint, &[], None).await?;
-            Ok(())
-        }
-        .await;
-        if let Err(error) = result {
-            if let Err(rollback) =
-                rollback_provider_checkpoints(checkpoints, &replacements[..index]).await
-            {
-                return Err(Error::Config(format!(
-                    "{error}; failed to roll back provider chat selections: {rollback}"
-                )));
-            }
-            return Err(error);
+            state.sessions.remove(&resident.session_id);
+            failures.push(format!("{}: {}", resident.session_id, error.message));
         }
     }
-    Ok(())
+    Ok(failures)
 }
 
-async fn rollback_provider_checkpoints(
-    checkpoints: &Arc<dyn CheckpointStore>,
-    replacements: &[ProviderCheckpointReplacement],
-) -> crate::Result<()> {
-    for replacement in replacements.iter().rev() {
-        let mut checkpoint = checkpoints
-            .load(&replacement.session_id)
-            .await?
-            .ok_or_else(|| Error::Config("chat disappeared during provider rollback".into()))?;
-        let replaced_sequence = replacement
-            .sequence
-            .checked_add(1)
-            .ok_or_else(|| Error::Config("checkpoint sequence overflow".into()))?;
-        if checkpoint.sequence != replaced_sequence {
-            return Err(Error::Config(
-                "chat changed during provider rollback".into(),
-            ));
-        }
-        checkpoint.sequence = checkpoint
-            .sequence
-            .checked_add(1)
-            .ok_or_else(|| Error::Config("checkpoint sequence overflow".into()))?;
-        checkpoint.metadata.extend(replacement.original.metadata()?);
-        checkpoints.save(&checkpoint, &[], None).await?;
+fn broadcast_reload_failures(host: &GatewayHost, action: &str, failures: &[String]) {
+    if failures.is_empty() {
+        return;
     }
-    Ok(())
+    let _ = host.events.send(ServerFrame::new(ServerMessage::Error {
+        code: "provider_reload".into(),
+        message: format!(
+            "{action}; reopen chats that could not reload: {}",
+            failures.join(", ")
+        ),
+        fatal: false,
+    }));
 }
 
 fn ensure_provider_login_available(
@@ -678,5 +596,9 @@ fn release_provider_login(
 }
 
 #[cfg(test)]
-#[path = "tests/providers.rs"]
+#[path = "tests/provider_bots.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/providers.rs"]
+mod coverage_tests;

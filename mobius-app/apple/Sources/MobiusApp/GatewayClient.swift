@@ -6,6 +6,7 @@ actor GatewayClient {
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
     private var connection: NWConnection?
+    private var webSocketSession: URLSession?
     private var webSocketTask: URLSessionWebSocketTask?
     private var streamContinuation: AsyncThrowingStream<GatewayEnvelope, Error>.Continuation?
     private var connectionGeneration = UUID()
@@ -23,7 +24,7 @@ actor GatewayClient {
     func connect(to endpoint: GatewayEndpoint) async throws -> AsyncThrowingStream<GatewayEnvelope, Error> {
         disconnect()
         if endpoint.usesWebSocket {
-            return try connectWebSocket(to: endpoint)
+            return try await connectWebSocket(to: endpoint)
         }
         guard let port = NWEndpoint.Port(rawValue: endpoint.port) else {
             throw GatewayWireError.invalidEndpoint("Gateway port is invalid.")
@@ -94,20 +95,41 @@ actor GatewayClient {
         connection = nil
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         webSocketTask = nil
+        webSocketSession?.invalidateAndCancel()
+        webSocketSession = nil
         connectionGeneration = UUID()
     }
 
     private func connectWebSocket(
         to endpoint: GatewayEndpoint
-    ) throws -> AsyncThrowingStream<GatewayEnvelope, Error> {
+    ) async throws -> AsyncThrowingStream<GatewayEnvelope, Error> {
         guard let url = URL(string: endpoint.rawValue) else {
             throw GatewayWireError.invalidEndpoint("The WebSocket gateway address is invalid.")
         }
-        let task = URLSession.shared.webSocketTask(with: url)
-        task.maximumMessageSize = maximumGatewayFrameBytes
         let generation = UUID()
         connectionGeneration = generation
-        webSocketTask = task
+        do {
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<Void, Error>) in
+                let delegate = WebSocketStartDelegate(continuation)
+                let session = URLSession(
+                    configuration: .default,
+                    delegate: delegate,
+                    delegateQueue: nil
+                )
+                let task = session.webSocketTask(with: url)
+                task.maximumMessageSize = maximumGatewayFrameBytes
+                webSocketSession = session
+                webSocketTask = task
+                task.resume()
+            }
+        } catch {
+            cancel(generation: generation)
+            throw error
+        }
+        guard connectionGeneration == generation, let task = webSocketTask else {
+            throw GatewayWireError.disconnected
+        }
 
         var continuation: AsyncThrowingStream<GatewayEnvelope, Error>.Continuation!
         let stream = AsyncThrowingStream<GatewayEnvelope, Error> { continuation = $0 }
@@ -115,7 +137,6 @@ actor GatewayClient {
             Task { await self?.cancel(generation: generation) }
         }
         streamContinuation = continuation
-        task.resume()
         Task { await receiveFrames(from: task, generation: generation, into: continuation) }
         return stream
     }
@@ -226,6 +247,31 @@ actor GatewayClient {
     private func cancel(generation: UUID) {
         guard connectionGeneration == generation else { return }
         disconnect()
+    }
+}
+
+private final class WebSocketStartDelegate: NSObject, URLSessionWebSocketDelegate,
+    @unchecked Sendable {
+    private let gate: ConnectionStartGate
+
+    init(_ continuation: CheckedContinuation<Void, Error>) {
+        gate = ConnectionStartGate(continuation)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        webSocketTask: URLSessionWebSocketTask,
+        didOpenWithProtocol protocol: String?
+    ) {
+        _ = gate.succeed()
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didCompleteWithError error: Error?
+    ) {
+        _ = gate.fail(error ?? GatewayWireError.disconnected)
     }
 }
 

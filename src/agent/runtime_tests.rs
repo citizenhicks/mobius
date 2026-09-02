@@ -98,6 +98,13 @@ use crate::protocol::internal_message_kind;
 use serde_json::Value;
 use tokio::sync::Notify;
 
+fn test_session_context() -> SessionContext {
+    SessionContext {
+        bot_id: "test-bot".into(),
+        ..SessionContext::default()
+    }
+}
+
 struct TestModel;
 
 struct RetryableModel;
@@ -696,6 +703,7 @@ fn auto_review_config(
         test_middleware(middleware),
         "test prompt",
     )
+    .session_context(test_session_context())
     .session_id(session_id)
 }
 
@@ -739,6 +747,7 @@ fn config_with_model(
         test_middleware(Vec::new()),
         "test prompt",
     )
+    .session_context(test_session_context())
     .session_id(session_id)
 }
 
@@ -763,6 +772,7 @@ fn config_with_two_routes(
         test_middleware(Vec::new()),
         "test prompt",
     )
+    .session_context(test_session_context())
     .session_id(session_id)
 }
 
@@ -783,6 +793,7 @@ fn config_with_metadata_probe(
         test_middleware(vec![Arc::new(MetadataProbe { observed })]),
         "test prompt",
     )
+    .session_context(test_session_context())
     .session_id(session_id);
     match metadata {
         Some(metadata) => config.metadata(metadata),

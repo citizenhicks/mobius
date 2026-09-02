@@ -33,7 +33,7 @@ async fn assistant_message_compacts_progressive_deltas_and_preserves_citations()
     let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
         .expect("open checkpoint database");
     store
-        .save(&Checkpoint::empty("session"), &[], None)
+        .save(&checkpoint("session"), &[], None)
         .await
         .expect("save session");
     let event = |msg| Event {
@@ -187,7 +187,7 @@ async fn incomplete_model_steps_retain_progressive_deltas() {
     let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
         .expect("open checkpoint database");
     store
-        .save(&Checkpoint::empty("session"), &[], None)
+        .save(&checkpoint("session"), &[], None)
         .await
         .expect("save session");
     for (model_step_id, outcome) in [

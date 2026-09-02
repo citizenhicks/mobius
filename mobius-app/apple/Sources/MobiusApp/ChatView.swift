@@ -18,8 +18,7 @@ struct ChatView: View {
     @State private var isAtBottom = true
     @State private var scrollToBottomRequest = 0
     @State private var presentedWidget: MountedWidget?
-    @State private var swarmCreation: SwarmCreationSelection?
-    @State private var showsChatAgentSettings = false
+    @State private var presentedBotSettings: BotRecord?
     @State private var hasEntered = false
     @State private var transcriptPresentationID = UUID()
 
@@ -32,7 +31,7 @@ struct ChatView: View {
                 scrollToBottomRequest: scrollToBottomRequest
             )
             .id(transcriptPresentationID)
-            ComposerView()
+            ComposerView(showBotSettings: presentSelectedBotSettings)
                 .onGeometryChange(for: CGFloat.self) { geometry in
                     geometry.size.height
                 } action: { height in
@@ -77,7 +76,7 @@ struct ChatView: View {
                         .font(MobiusStyle.titleFont)
                         .lineLimit(1)
                     if !chatSubtitle.isEmpty {
-                        Text(chatSubtitle)
+                        Text(verbatim: chatSubtitle)
                             .font(MobiusStyle.captionFont)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -88,28 +87,25 @@ struct ChatView: View {
             // One item holding both, so the spacing is this stack's rather than the bar's
             // between two items. The 44pt targets still touch; only the slack goes.
             ToolbarItem(placement: .primaryAction) {
-                HeaderActionGroup {
-                    newChatButton
-                    ChatOptionsMenu(
-                        presentedWidget: $presentedWidget,
-                        swarmCreation: $swarmCreation,
-                        showsAgentSettings: $showsChatAgentSettings
-                    )
+                if model.selectedSessionID != nil {
+                    HeaderActionGroup {
+                        newChatButton
+                        ChatOptionsMenu(
+                            presentedWidget: $presentedWidget,
+                            presentedBotSettings: $presentedBotSettings
+                        )
+                    }
                 }
             }
         }
         .sheet(item: $model.presentedPreview, content: PreviewTranscriptSheet.init)
         .sheet(item: $presentedWidget, content: FrontendWidgetSheet.init)
-        .sheet(item: $swarmCreation) { selection in
-            SwarmCreationPicker(selection: selection)
-                .mobiusSheet()
-        }
-        .sheet(isPresented: $showsChatAgentSettings) {
+        .sheet(item: $presentedBotSettings) { bot in
             NavigationStack {
-                AgentSettingsView(scope: .currentChat)
+                AgentSettingsView(scope: .bot(bot.id))
                     .toolbar {
                         ToolbarItem(placement: .cancellationAction) {
-                            Button("Done") { showsChatAgentSettings = false }
+                            Button("Done") { presentedBotSettings = nil }
                         }
                     }
             }
@@ -134,13 +130,14 @@ struct ChatView: View {
         .help("New chat in this folder")
     }
 
-    private var workspaceName: String {
-        guard let path = model.workspace?.path else { return "" }
-        return path.split { $0 == "/" || $0 == "\\" }.last.map(String.init) ?? path
-    }
-
     private var chatTitle: String {
         model.currentSessionTitle
+    }
+
+    private var workspaceName: String {
+        guard let path = model.workspace?.path else { return "" }
+        let name = URL(fileURLWithPath: path).lastPathComponent
+        return name.isEmpty ? path : name
     }
 
     private var chatSubtitle: String {
@@ -148,17 +145,42 @@ struct ChatView: View {
             .filter { !$0.isEmpty }
             .joined(separator: " • ")
     }
+
+    private func presentSelectedBotSettings() {
+        guard let bot = model.selectedBot else { return }
+        model.beginEditingBot(bot)
+        presentedBotSettings = bot
+    }
+
 }
 
 private struct ChatOptionsMenu: View {
     @Environment(AppModel.self) private var model
     @Binding var presentedWidget: MountedWidget?
-    @Binding var swarmCreation: SwarmCreationSelection?
-    @Binding var showsAgentSettings: Bool
+    @Binding var presentedBotSettings: BotRecord?
 
     var body: some View {
         HeaderOptionsMenu(label: "Chat options") {
-            Section(model.workspace?.path ?? "No chat selected") {
+            Section {
+                Button {} label: {
+                    Text(verbatim: model.workspace?.path ?? "No chat selected")
+                }
+                .disabled(true)
+                if let session = model.selectedSession,
+                   let bot = model.bot(for: session) {
+                    Button {} label: {
+                        botIdentityLabel(bot)
+                    }
+                    .disabled(true)
+                }
+                if let swarm = model.selectedBotSwarm {
+                    Button {} label: {
+                        MobiusLabel(verbatim: swarm.title, glyph: .swarm)
+                    }
+                    .disabled(true)
+                }
+            }
+            Section {
                 if let git = model.gitStatus, !git.currentBranch.isEmpty {
                     Menu {
                         ForEach(git.branches, id: \.self) { branch in
@@ -198,14 +220,13 @@ private struct ChatOptionsMenu: View {
             }
             Section {
                 Button {
-                    showsAgentSettings = true
+                    guard let bot = model.selectedBot else { return }
+                    model.beginEditingBot(bot)
+                    presentedBotSettings = bot
                 } label: {
-                    MobiusLabel(
-                        title: "Chat agent settings",
-                        glyph: .slidersHorizontal
-                    )
+                    MobiusLabel(title: "Bot agent settings", glyph: .slidersHorizontal)
                 }
-                .disabled(model.selectedSessionID == nil || model.agentSnapshot == nil)
+                .disabled(model.selectedBot == nil)
                 ForEach(model.chatMenuWidgets) { widget in
                     Button {
                         activate(widget)
@@ -228,7 +249,6 @@ private struct ChatOptionsMenu: View {
                 .disabled(!model.canCreateSession)
             }
             if let session = model.selectedSession {
-                SwarmMenuSection(session: session, swarmCreation: $swarmCreation)
                 Section {
                     Button {
                         model.setSessionPinned(session, pinned: !session.pinned)
@@ -257,6 +277,20 @@ private struct ChatOptionsMenu: View {
         .groupedHeaderAction()
     }
 
+    @ViewBuilder
+    private func botIdentityLabel(_ bot: BotRecord) -> some View {
+        let title = "\(bot.name) (@\(bot.handle))"
+        if let image = MobiusGlyph.aiScan.menuImage(bot.tint.color) {
+            Label { Text(verbatim: title) } icon: { image }
+        } else {
+            MobiusLabel(
+                verbatim: title,
+                glyph: .aiScan,
+                iconColor: bot.tint.color
+            )
+        }
+    }
+
     private func activate(_ widget: MountedWidget) {
         if widget.widget.action != nil {
             model.submitWidget(widget)
@@ -264,167 +298,5 @@ private struct ChatOptionsMenu: View {
         if widget.widget.content != nil {
             presentedWidget = widget
         }
-    }
-}
-
-private struct SwarmMenuSection: View {
-    @Environment(AppModel.self) private var model
-    @State private var confirmsDisband = false
-    let session: SessionRecord
-    @Binding var swarmCreation: SwarmCreationSelection?
-
-    @ViewBuilder
-    var body: some View {
-        if let swarm = model.swarm(containing: session.sessionId) {
-            Section("Swarm") {
-                if swarm.leaderSessionId == session.sessionId {
-                    Button(role: .destructive) {
-                        confirmsDisband = true
-                    } label: {
-                        MobiusLabel(title: "Disband Swarm", glyph: .trash)
-                    }
-                } else {
-                    Button {
-                        model.leaveSwarm(swarm, sessionID: session.sessionId)
-                    } label: {
-                        MobiusLabel(title: "Leave Swarm", glyph: .x)
-                    }
-                }
-            }
-            .disabled(!model.canMutateSwarm)
-            .alert("Disband this swarm?", isPresented: $confirmsDisband) {
-                Button("Disband Swarm", role: .destructive) {
-                    model.disbandSwarm(swarm, leaderSessionID: session.sessionId)
-                }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("This permanently deletes the shared swarm board.")
-            }
-        } else {
-            availableActions
-        }
-    }
-
-    @ViewBuilder
-    private var availableActions: some View {
-        let candidates = model.swarmCreationCandidates(for: session)
-        let swarms = model.availableSwarms(for: session)
-        if !candidates.isEmpty || !swarms.isEmpty {
-            Section("Swarm") {
-                if !candidates.isEmpty {
-                    Button {
-                        swarmCreation = SwarmCreationSelection(
-                            leader: session,
-                            candidates: candidates
-                        )
-                    } label: {
-                        MobiusLabel(title: "Create Swarm…", glyph: .swarm)
-                    }
-                }
-                if !swarms.isEmpty {
-                    Menu {
-                        ForEach(swarms) { swarm in
-                            Button {
-                                model.addSwarmMember(session, to: swarm)
-                            } label: {
-                                MobiusLabel(verbatim: swarm.title, glyph: .swarm)
-                            }
-                        }
-                    } label: {
-                        MobiusLabel(title: "Add to Swarm", glyph: .swarm)
-                    }
-                }
-            }
-            .disabled(!model.canMutateSwarm)
-        }
-    }
-}
-
-private struct SwarmCreationSelection: Identifiable {
-    var id: String { leader.sessionId }
-
-    let leader: SessionRecord
-    let candidates: [SessionRecord]
-}
-
-private struct SwarmCreationPicker: View {
-    @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.mobiusPalette) private var palette
-    @State private var selectedMemberIDs: Set<String> = []
-    let selection: SwarmCreationSelection
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section("Leader") {
-                    chatRow(selection.leader, selected: true)
-                }
-                Section {
-                    ForEach(selection.candidates) { session in
-                        Button {
-                            if !selectedMemberIDs.insert(session.sessionId).inserted {
-                                selectedMemberIDs.remove(session.sessionId)
-                            }
-                        } label: {
-                            chatRow(
-                                session,
-                                selected: selectedMemberIDs.contains(session.sessionId)
-                            )
-                        }
-                        .buttonStyle(.mobiusPlain)
-                        .accessibilityValue(
-                            selectedMemberIDs.contains(session.sessionId)
-                                ? Text("Selected")
-                                : Text("Not selected")
-                        )
-                        .accessibilityHint("Double-tap to toggle this coworker")
-                    }
-                } header: {
-                    Text("Coworkers")
-                } footer: {
-                    Text("Choose one or more chats from this folder.")
-                }
-            }
-            .scrollContentBackground(.hidden)
-            .navigationTitle("Create Swarm")
-            .toolbarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Create") {
-                        model.createSwarm(
-                            leaderSessionID: selection.leader.sessionId,
-                            memberSessionIDs: selectedMemberIDs
-                        )
-                        dismiss()
-                    }
-                    .disabled(selectedMemberIDs.isEmpty || !model.canMutateSwarm)
-                }
-            }
-        }
-    }
-
-    private func chatRow(_ session: SessionRecord, selected: Bool) -> some View {
-        HStack(spacing: MobiusSpace.s) {
-            MobiusIcon(
-                .chatCircle,
-                foreground: selected ? palette.accent : palette.muted
-            )
-            MobiusTitleText(verbatim: model.displayedTitle(for: session))
-                .lineLimit(1)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            SessionActivityIndicator(
-                state: session.activity.state,
-                isUnread: model.unreadSessionIDs.contains(session.sessionId)
-            )
-            if selected {
-                MobiusIcon(.check, foreground: palette.accent)
-                    .accessibilityHidden(true)
-            }
-        }
-        .contentShape(Rectangle())
     }
 }

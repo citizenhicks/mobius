@@ -396,8 +396,10 @@ mod tests {
             SqliteCheckpoint::new(directory.path().join("checkpoints.sqlite3"))
                 .expect("checkpoint store"),
         );
+        let mut checkpoint = Checkpoint::empty("session-1");
+        checkpoint.session_context.bot_id = "test-bot".into();
         checkpoints
-            .save(&Checkpoint::empty("session-1"), &[], None)
+            .save(&checkpoint, &[], None)
             .await
             .expect("initial checkpoint");
         let (recorder, events) = EventRecorder::spawn(checkpoints, "session-1".into());

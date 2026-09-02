@@ -1242,12 +1242,17 @@ extension View {
         multilineTextAlignment(.trailing)
     }
 
+    /// Removes grouped-form chrome while keeping content in the form's one scroll owner.
+    func settingsBareRow() -> some View {
+        listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0))
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+    }
+
     func settingsStandaloneRow() -> some View {
         Section {
             frame(maxWidth: .infinity)
-                .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0))
-                .listRowBackground(Color.clear)
-                .listRowSeparator(.hidden)
+                .settingsBareRow()
         }
     }
 }

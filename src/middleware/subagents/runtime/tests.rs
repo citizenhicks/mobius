@@ -101,9 +101,11 @@ async fn errored_subagent_preview_ends_with_its_terminal_message() {
         )
         .expect("checkpoint store"),
     );
-    let root = Checkpoint::empty("root");
+    let mut root = Checkpoint::empty("root");
+    root.session_context.bot_id = "test-bot".into();
     checkpoints.save(&root, &[], None).await.expect("save root");
-    let child = Checkpoint::empty("child");
+    let mut child = Checkpoint::empty("child");
+    child.session_context.bot_id = "test-bot".into();
     checkpoints
         .save(&child, &[], None)
         .await

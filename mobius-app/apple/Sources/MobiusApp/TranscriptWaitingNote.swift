@@ -91,7 +91,7 @@ enum TranscriptWaitingNote {
 }
 
 /// The debounce behind the waiting phrase, held by every surface that draws a transcript so
-/// the chat, a subagent preview, and a scheduled run all reveal it on the same terms.
+/// the chat, a subagent preview, and a Bot routine all reveal it on the same terms.
 @MainActor
 @Observable
 final class TranscriptWaitingHold {

@@ -125,8 +125,8 @@ struct AppShell: View {
         .onChange(of: chatIsVisible, initial: true) { _, visible in
             model.setChatVisible(visible)
         }
-        .onChange(of: model.presentedChatSessionID) { _, sessionID in
-            guard sessionID != nil, horizontalSizeClass == .compact else { return }
+        .onChange(of: model.isPresentingChat) { _, isPresentingChat in
+            guard isPresentingChat, horizontalSizeClass == .compact else { return }
             withAnimation(SidebarDrawerMetrics.animation) { sidebarIsOpen = false }
         }
         .onChange(of: model.toast?.id) { _, _ in
@@ -149,6 +149,9 @@ struct AppShell: View {
             await model.start()
             if scenePhase == .active { await model.appDidBecomeActive() }
         }
+        .task(id: model.cloudSession?.credentialID) {
+            await model.cloudAuthenticationDidChange()
+        }
         .environment(\.locale, model.language.locale)
     }
 
@@ -157,8 +160,13 @@ struct AppShell: View {
     }
 
     private func announce(_ toast: AppToast) {
-        var announcement: LocalizedStringResource =
+        var announcement: LocalizedStringResource = if let bot = model.bot(
+            forSessionID: toast.sessionID
+        ) {
+            "\(toast.tone.title), \(bot.name): \(toast.message)"
+        } else {
             "\(toast.tone.title): \(toast.message)"
+        }
         announcement.locale = model.language.locale
         AccessibilityNotification.Announcement(
             String(localized: announcement)
@@ -211,6 +219,7 @@ struct AppShell: View {
                 .navigationDestination(for: AppRoute.self) { route in
                     switch route {
                     case .chat: ChatView()
+                    case .bot(let id): BotDetailView(botID: id)
                     case .swarm(let id): SwarmView(swarmID: id)
                     case .settings(.gateway(let id)): GatewayDetailView(id: id)
                     case .settings(.provider(let instance)): ProviderDetailView(instance: instance)
@@ -277,10 +286,10 @@ struct AppShell: View {
         switch model.destination ?? .chats {
         case .chats: ChatsView()
         case .gateway: GatewayView()
-        case .agent: AgentSettingsView(scope: .gatewayDefault)
+        case .botDefaults: AgentSettingsView(scope: .botDefaults)
         case .providers: ProvidersView()
         case .extensions: ExtensionsView()
-        case .cron: CronView()
+        case .bots: BotsView()
         case .scratchpad: ScratchpadView()
         case .profile: ProfileView()
         case .contribution(let id):
@@ -313,14 +322,14 @@ struct AppShell: View {
             MobiusTitleText(title: "Chats")
         case .gateway:
             MobiusTitleText(title: "Gateway")
-        case .agent:
-            MobiusTitleText(title: "Default agent")
+        case .botDefaults:
+            MobiusTitleText(title: "Bot defaults")
         case .providers:
             MobiusTitleText(title: "Providers")
         case .extensions:
             MobiusTitleText(title: "Extensions")
-        case .cron:
-            MobiusTitleText(title: "Scheduled")
+        case .bots:
+            MobiusTitleText(title: "Bots")
         case .scratchpad:
             if let widget = model.globalScratchpadWidget {
                 MobiusTitleText(title: frontendPresentationText(widget.title))

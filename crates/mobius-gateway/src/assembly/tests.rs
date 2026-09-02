@@ -1,8 +1,9 @@
 use mobius::backend::checkpoint::{Checkpoint, sqlite::SqliteCheckpoint};
 use mobius::backend::model::provider::HostedWebSearch;
+use mobius::middleware::bots::BotsBackend;
 
+use crate::bots::swarm::SwarmStore;
 use crate::provider_catalog::*;
-use crate::swarm::SwarmStore;
 
 use super::*;
 
@@ -122,9 +123,12 @@ fn configured_catalog_resolves_manifest_and_opaque_custom_routes() {
         .iter()
         .find(|choice| choice.model == custom.model)
         .expect("custom choice");
-    let resolved =
-        configured_provider_for_route(&config, &store, &credentials, &custom_route.route)
-            .expect("resolve custom route");
+    let resolved = configured_model_routes(&config, &store, &credentials)
+        .expect("routes")
+        .into_iter()
+        .find(|route| route.choice.route == custom_route.route)
+        .expect("resolve custom route")
+        .provider;
     let model_providers =
         configured_model_providers(&config, &store, &credentials).expect("provider IDs");
 
@@ -338,7 +342,7 @@ fn custom_responses_requires_an_endpoint_bound_stored_credential() {
 }
 
 #[tokio::test]
-async fn updating_the_chat_recipe_preserves_capability_metadata() {
+async fn updating_the_bot_recipe_preserves_capability_metadata() {
     let root = tempfile::tempdir().expect("root");
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).expect("workspace");
@@ -370,17 +374,14 @@ async fn updating_the_chat_recipe_preserves_capability_metadata() {
         Arc::new(SqliteCheckpoint::new(store.checkpoints_path()).expect("checkpoints"));
     let mut original_config = crate::wire::AgentComposition::default();
     original_config.middleware.set_enabled("extensions", true);
-    let original = ChatSpec::new(
-        &workspace,
-        crate::wire::VersionedAgentConfig {
-            revision: 1,
-            config: original_config,
-        },
-        store.state_dir(),
-        None,
-    )
-    .expect("chat spec");
+    let bots = Arc::new(crate::bots::BotStore::open(store.state_dir()).expect("Bots"));
+    let original_bot = bots
+        .create_bot("Fixture", "Own fixture work.", original_config)
+        .expect("Bot");
+    let original =
+        ChatSpec::for_bot(&workspace, &original_bot, store.state_dir(), None).expect("chat spec");
     let mut checkpoint = Checkpoint::empty("chat");
+    checkpoint.session_context.bot_id = original_bot.id.clone();
     checkpoint.metadata = original.metadata().expect("chat metadata");
     checkpoint.metadata.insert(
         "capability.test".into(),
@@ -395,15 +396,28 @@ async fn updating_the_chat_recipe_preserves_capability_metadata() {
     let mut composition = original.agent.config.clone();
     composition.middleware.set_enabled("scratchpad", false);
     composition.system_prompt = "updated instructions".into();
-    let updated = original
-        .replacing_agent(1, composition, &gateway, store.state_dir(), None)
+    let updated_bot = bots
+        .update_bot(
+            &original_bot.id,
+            1,
+            "Fixture",
+            "Own updated fixture work.",
+            crate::wire::ProviderTint::Teal,
+            composition,
+        )
+        .expect("updated Bot");
+    let updated = ChatSpec::for_bot(&workspace, &updated_bot, store.state_dir(), None)
         .expect("updated chat spec");
     let gateway = Arc::new(Mutex::new(gateway));
-    let (swarm, _deliveries) = SwarmStore::new(Arc::clone(&checkpoints));
-    let swarm: Arc<dyn SwarmBackend> = Arc::new(swarm);
+    let (swarm, _deliveries) = SwarmStore::new(
+        Arc::clone(&checkpoints),
+        Arc::clone(&bots),
+        Arc::clone(&gateway),
+    );
+    let swarm: Arc<dyn BotsBackend> = Arc::new(swarm);
 
     let built = assemble(
-        gateway,
+        Arc::clone(&gateway),
         &updated,
         &store,
         credentials,
@@ -446,7 +460,7 @@ async fn updating_the_chat_recipe_preserves_capability_metadata() {
         .await
         .expect("load checkpoint")
         .expect("saved checkpoint");
-    let saved = ChatSpec::from_metadata(&checkpoint.metadata, store.state_dir(), None)
+    let saved = ChatSpec::from_metadata(&checkpoint.metadata, &bots, store.state_dir(), None)
         .expect("saved chat spec");
 
     assert_eq!(
@@ -540,8 +554,10 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
         Arc::new(SqliteCheckpoint::new(store.checkpoints_path()).expect("checkpoints"));
     let scratchpad = ScratchpadStore::new(Arc::clone(&checkpoints));
     let session_files = SessionFileStore::new(store.state_dir());
-    let (swarm, _deliveries) = SwarmStore::new(Arc::clone(&checkpoints));
-    let swarm: Arc<dyn SwarmBackend> = Arc::new(swarm);
+    let bots = Arc::new(crate::bots::BotStore::open(store.state_dir()).expect("Bots"));
+    let (swarm, _deliveries) =
+        SwarmStore::new(Arc::clone(&checkpoints), bots, Arc::clone(&gateway));
+    let swarm: Arc<dyn BotsBackend> = Arc::new(swarm);
     let backend: Arc<dyn SandboxBackend> =
         Arc::new(LocalSandbox::new(&workspace).expect("sandbox"));
     let discover = |resolved: &ResolvedExtensions| {
@@ -560,6 +576,7 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
     let (active, _) = build_middleware(
         &settings,
         &workspace,
+        "bot-fixture",
         Arc::clone(&gateway),
         scratchpad.clone(),
         session_files.clone(),
@@ -572,6 +589,7 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
     let (inactive, _) = build_middleware(
         &settings,
         &workspace,
+        "bot-fixture",
         gateway,
         scratchpad,
         session_files,

@@ -228,9 +228,9 @@ pub(super) fn session_file_rejection(error: impl std::fmt::Display) -> Rejection
     }
 }
 
-pub(super) fn cron_rejection(error: Error) -> Rejection {
+pub(super) fn routine_rejection(error: Error) -> Rejection {
     Rejection {
-        code: "invalid_cron",
+        code: "invalid_routine",
         message: error.to_string(),
         fatal: false,
     }

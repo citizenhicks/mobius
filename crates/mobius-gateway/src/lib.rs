@@ -2,18 +2,17 @@
 
 mod assembly;
 pub mod auth;
+pub mod bots;
 pub mod client;
 mod cloudflare;
 pub mod command;
 pub mod config;
-mod cron;
 mod extensions;
 mod host;
 mod middleware_manifest;
 mod provider_catalog;
 pub mod sandbox;
 pub mod server;
-pub mod swarm;
 pub mod wire;
 
 /// Errors returned by the gateway library.

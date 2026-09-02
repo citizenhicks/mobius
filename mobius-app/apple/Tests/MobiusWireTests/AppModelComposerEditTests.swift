@@ -176,6 +176,7 @@ extension AppModelTests {
             settingsDefaults: defaults,
             requestSender: { request in await recorder.record(request) }
         )
+        model.bots = [bot()]
         model.accounts = [account]
         model.selectedAccountID = account.id
         model.connectionState = .ready
@@ -250,6 +251,7 @@ extension AppModelTests {
             settingsDefaults: defaults,
             requestSender: { request in await recorder.record(request) }
         )
+        model.bots = [bot()]
         model.accounts = [account]
         model.selectedAccountID = account.id
         model.connectionState = .ready
@@ -375,6 +377,7 @@ extension AppModelTests {
                 }
             }
         )
+        model.bots = [bot()]
         let first = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
         let second = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9192"))
         try await beginComposerEdit(in: model, recorder: recorder, account: first)
@@ -459,6 +462,7 @@ extension AppModelTests {
             settingsDefaults: defaults,
             requestSender: { request in await recorder.record(request) }
         )
+        model.bots = [bot()]
         let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
         let second = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9192"))
         model.accounts = [account, second]

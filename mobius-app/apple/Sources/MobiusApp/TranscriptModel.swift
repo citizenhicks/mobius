@@ -846,7 +846,7 @@ private func prettyJSON(_ text: String) -> String? {
 }
 
 /// Derived from the entries a surface actually holds, so the chat, a subagent preview, and a
-/// scheduled run all resolve these against their own transcript rather than the selected chat's.
+/// Bot routine all resolve these against their own transcript rather than the selected chat's.
 func activeStepID(in entries: [TranscriptEntry], isRunning: Bool) -> String? {
     guard isRunning,
           let latest = entries.last,

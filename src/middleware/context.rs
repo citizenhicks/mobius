@@ -234,9 +234,12 @@ impl TryFrom<DurableQueuedMessage> for PreparedMessage {
     fn try_from(message: DurableQueuedMessage) -> Result<Self> {
         let (submission_id, event) = message.into_parts();
         let input = message_input(&event)?;
-        let title_seed = matches!(event.author, MessageAuthor::User)
-            .then(|| event.text.trim().to_string())
-            .filter(|title| !title.is_empty());
+        let title_seed = matches!(
+            event.author,
+            MessageAuthor::User | MessageAuthor::Peer { .. }
+        )
+        .then(|| event.text.trim().to_string())
+        .filter(|title| !title.is_empty());
         Ok(Self {
             submission_id,
             input,

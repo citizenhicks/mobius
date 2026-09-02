@@ -5,7 +5,7 @@ async fn transcript_page_bounds_batches_and_continues_backward() {
     let workspace = tempfile::tempdir().expect("create workspace");
     let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
         .expect("open checkpoint database");
-    let mut checkpoint = Checkpoint::empty("session");
+    let mut checkpoint = checkpoint("session");
     store
         .save(&checkpoint, &[], None)
         .await
@@ -65,7 +65,7 @@ async fn execution_journal_pages_records_and_updates_catalog_stats() {
     let workspace = tempfile::tempdir().expect("create workspace");
     let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
         .expect("open checkpoint database");
-    let mut checkpoint = Checkpoint::empty("session");
+    let mut checkpoint = checkpoint("session");
     store
         .save(&checkpoint, &[], None)
         .await
@@ -146,7 +146,7 @@ async fn execution_insert_failure_rolls_back_checkpoint_and_transcript() {
     let workspace = tempfile::tempdir().expect("create workspace");
     let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
         .expect("open checkpoint database");
-    let original = Checkpoint::empty("session");
+    let original = checkpoint("session");
     store
         .save(&original, &[], None)
         .await
@@ -202,7 +202,7 @@ async fn event_insert_failure_rolls_back_checkpoint_and_event_batch() {
     let workspace = tempfile::tempdir().expect("create workspace");
     let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
         .expect("open checkpoint database");
-    let original = Checkpoint::empty("session");
+    let original = checkpoint("session");
     store
         .save(&original, &[], None)
         .await

@@ -27,7 +27,6 @@ use crate::frontend::dashboard::select_overlay_edge;
 use crate::frontend::setup::SetupMode;
 use crate::frontend::terminal::terminal_text;
 use mobius::protocol::ActiveMessageDelivery;
-use mobius::protocol::EventMsg;
 use mobius::protocol::FrontendSlot;
 use mobius::protocol::FrontendWidget;
 use mobius::protocol::FrontendWidgetContent;
@@ -36,6 +35,8 @@ use mobius::protocol::MessageAuthor;
 use mobius::protocol::MessageSubmission;
 use mobius::protocol::Op;
 use mobius::protocol::ReviewDecision;
+use mobius_gateway::wire::BotRecord;
+use std::path::PathBuf;
 
 const COLLAPSED_PASTE_BYTES: usize = 200;
 const SCROLL_ROWS: usize = 3;
@@ -49,13 +50,21 @@ pub(super) enum UiAction {
     Gateway(GatewayAction),
     GatewaySettings,
     Extensions,
+    Bots,
     Setup {
         mode: SetupMode,
         provider: Option<String>,
     },
     Exit,
-    New,
-    Clear,
+    ChooseBot {
+        workspace: PathBuf,
+        clear: bool,
+    },
+    CreateSession {
+        workspace: PathBuf,
+        bot_id: String,
+        clear: bool,
+    },
 }
 
 impl TuiState {
@@ -340,15 +349,58 @@ impl TuiState {
                 UiAction::None
             }
             KeyCode::Enter => {
-                let op = picker
+                let action = picker
                     .options
                     .get(picker.selected)
-                    .map(|option| option.op.clone());
+                    .map(|option| option.action.clone());
                 self.picker = None;
-                op.map_or(UiAction::None, UiAction::Submit)
+                action.map_or(UiAction::None, |action| match action {
+                    super::PickerAction::Submit(op) => UiAction::Submit(op),
+                    super::PickerAction::CreateSession {
+                        workspace,
+                        bot_id,
+                        clear,
+                    } => UiAction::CreateSession {
+                        workspace,
+                        bot_id,
+                        clear,
+                    },
+                })
             }
             _ => UiAction::None,
         }
+    }
+
+    pub(super) fn open_bot_picker(
+        &mut self,
+        bots: &[BotRecord],
+        workspace: PathBuf,
+        current_bot_id: &str,
+        clear: bool,
+    ) {
+        self.preview = None;
+        self.capability_overlay = None;
+        self.picker = Some(super::PickerState {
+            title: "Select Bot".into(),
+            selected: bots
+                .iter()
+                .position(|bot| bot.id == current_bot_id)
+                .unwrap_or_default(),
+            options: bots
+                .iter()
+                .map(|bot| super::PickerOption {
+                    label: format!("@{}", terminal_text(&bot.handle)),
+                    description: terminal_text(&bot.name),
+                    detail: terminal_text(&bot.config.config.provider.model),
+                    shows_detail: true,
+                    action: super::PickerAction::CreateSession {
+                        workspace: workspace.clone(),
+                        bot_id: bot.id.clone(),
+                        clear,
+                    },
+                })
+                .collect(),
+        });
     }
 
     fn handle_open_surface_key(&mut self, key: KeyEvent) -> Option<UiAction> {
@@ -691,7 +743,6 @@ impl TuiState {
                 CommandContext {
                     active_turn: self.active_turn.as_deref(),
                     status: &status,
-                    model_route: &self.model_route,
                 },
             )
         {
@@ -714,11 +765,8 @@ impl TuiState {
                 CommandAction::Gateway(action) => UiAction::Gateway(action),
                 CommandAction::GatewaySettings => UiAction::GatewaySettings,
                 CommandAction::Extensions => UiAction::Extensions,
+                CommandAction::Bots => UiAction::Bots,
                 CommandAction::Setup { mode, provider } => UiAction::Setup { mode, provider },
-                CommandAction::Frontend(event) => {
-                    self.handle_agent_event(EventMsg::Frontend(event), Vec::new());
-                    UiAction::None
-                }
                 CommandAction::ShowMenu => {
                     self.push(catalog.menu(), TranscriptTone::Neutral);
                     UiAction::None
@@ -728,8 +776,9 @@ impl TuiState {
                     UiAction::None
                 }
                 CommandAction::Exit => UiAction::Exit,
-                CommandAction::New => UiAction::New,
-                CommandAction::Clear => UiAction::Clear,
+                CommandAction::ChooseBot { workspace, clear } => {
+                    UiAction::ChooseBot { workspace, clear }
+                }
             };
         }
         if let Some(id) = self.approval.take() {

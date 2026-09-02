@@ -219,7 +219,7 @@ struct SidebarView: View {
 
                 VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
                     navigationButton("Chats", destination: .chats)
-                    navigationButton("Scheduled", destination: .cron)
+                    navigationButton("Bots", destination: .bots)
                     navigationButton("Scratchpad", destination: .scratchpad)
                     ForEach(model.navigationWidgets.filter { $0.capability != "scratchpad" }) { widget in
                         contributionNavigationButton(widget)
@@ -232,7 +232,7 @@ struct SidebarView: View {
                     navigationButton("Gateway", destination: .gateway)
                     navigationButton("Providers", destination: .providers)
                     navigationButton("Extensions", destination: .extensions)
-                    navigationButton("Default agent", destination: .agent)
+                    navigationButton("Bot defaults", destination: .botDefaults)
                 }
                 .padding(.horizontal, MobiusSpace.m)
                 .padding(.bottom, MobiusSpace.m)

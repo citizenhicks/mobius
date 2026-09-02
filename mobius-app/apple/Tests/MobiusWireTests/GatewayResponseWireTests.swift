@@ -207,9 +207,20 @@ extension GatewayWireTests {
         XCTAssertNil(requestID)
         XCTAssertEqual(sessions.first?.sessionId, "chat-1")
         XCTAssertEqual(sessions.first?.pinned, true)
+        XCTAssertEqual(sessions.first?.sessionContext.botId, "bot-1")
     }
 
-    func testGlobalCronResponsesDecodeV48Fields() throws {
+    func testBotAndRoutineResponsesDecodeProtocolFields() throws {
+        let bots = try decodeEnvelope(
+            #"{"version":56,"type":"bots","request_id":"bots-1","bots":[\#(botJSON)]}"#
+        )
+        guard case .bots(let botsRequestID, let records) = bots else {
+            return XCTFail("Expected bots envelope")
+        }
+        XCTAssertEqual(botsRequestID, "bots-1")
+        XCTAssertEqual(records.first?.handle, "helper")
+        XCTAssertEqual(records.first?.config.revision, 4)
+
         let gitDiff = try decodeEnvelope(#"{"version":27,"type":"git_diff","request_id":"diff-1","session_id":"chat-1","scope":"unstaged","diff":"diff --git a/a b/a"}"#)
         guard case .gitDiff(let diffRequestID, let diffSessionID, let scope, let diff) = gitDiff else {
             return XCTFail("Expected git diff envelope")
@@ -219,41 +230,43 @@ extension GatewayWireTests {
         XCTAssertEqual(scope, .unstaged)
         XCTAssertTrue(diff.hasPrefix("diff --git"))
 
-        let tasks = try decodeEnvelope(#"{"version":27,"type":"cron_tasks","request_id":"cron-1","tasks":[{"id":"task-1","source_session_id":"chat-1","task":"Review open pull requests","schedule":{"kind":"interval","at":null,"every_seconds":120,"expression":null},"ends_at":null,"enabled":true,"finished":false,"next_run_at":500}]}"#)
-        guard case .cronTasks(let taskRequestID, let cronTasks) = tasks else {
-            return XCTFail("Expected cron tasks envelope")
+        let routines = try decodeEnvelope(#"{"version":56,"type":"routines","request_id":"routine-1","routines":[{"id":"routine-1","bot_id":"bot-1","workspace":"/srv/mobius","instructions":"Review open pull requests","schedule":{"kind":"interval","at":null,"every_seconds":120,"expression":null,"time_zone":null},"ends_at":null,"enabled":true,"finished":false,"next_run_at":500}]}"#)
+        guard case .routines(let routineRequestID, let decodedRoutines) = routines else {
+            return XCTFail("Expected routines envelope")
         }
-        XCTAssertEqual(taskRequestID, "cron-1")
-        XCTAssertEqual(cronTasks.first?.sourceSessionId, "chat-1")
-        XCTAssertEqual(cronTasks.first?.task, "Review open pull requests")
-        XCTAssertEqual(cronTasks.first?.schedule.everySeconds, 120)
-        XCTAssertEqual(cronTasks.first?.nextRunAt, 500)
+        XCTAssertEqual(routineRequestID, "routine-1")
+        XCTAssertEqual(decodedRoutines.first?.botId, "bot-1")
+        XCTAssertEqual(decodedRoutines.first?.workspace, "/srv/mobius")
+        XCTAssertEqual(decodedRoutines.first?.instructions, "Review open pull requests")
+        XCTAssertEqual(decodedRoutines.first?.schedule.everySeconds, 120)
+        XCTAssertEqual(decodedRoutines.first?.nextRunAt, 500)
 
-        let history = try decodeEnvelope(#"{"version":27,"type":"cron_history","request_id":"history-1","runs":[{"id":"run-1","task_id":"task-1","source_session_id":"chat-1","started_at":100,"finished_at":110,"status":"succeeded","session_id":"chat-2","message":null}]}"#)
-        guard case .cronHistory(let historyRequestID, let runs) = history else {
-            return XCTFail("Expected cron history envelope")
+        let history = try decodeEnvelope(#"{"version":56,"type":"routine_history","request_id":"history-1","runs":[{"id":"run-1","routine_id":"routine-1","bot_id":"bot-1","started_at":100,"finished_at":110,"status":"succeeded","session_id":"chat-2","message":null}]}"#)
+        guard case .routineHistory(let historyRequestID, let runs) = history else {
+            return XCTFail("Expected routine history envelope")
         }
         XCTAssertEqual(historyRequestID, "history-1")
-        XCTAssertEqual(runs.first?.sourceSessionId, "chat-1")
+        XCTAssertEqual(runs.first?.routineId, "routine-1")
+        XCTAssertEqual(runs.first?.botId, "bot-1")
         XCTAssertEqual(runs.first?.status, .succeeded)
     }
 
-    func testCronRunPreviewDecodesNestedPayload() throws {
-        let envelope = try decodeEnvelope(#"{"version":27,"type":"cron_run_preview","request_id":"preview-1","preview":{"task":{"id":"task-1","source_session_id":"chat-1","task":"Review open pull requests","schedule":{"kind":"interval","at":null,"every_seconds":120,"expression":null,"time_zone":null},"ends_at":null,"enabled":true,"finished":false,"next_run_at":500},"run":{"id":"run-1","task_id":"task-1","source_session_id":"chat-1","started_at":100,"finished_at":null,"status":"running","session_id":"chat-2","message":null},"records":[],"next_before_sequence":42}}"#)
-        guard case .cronRunPreview(let preview) = envelope else {
-            return XCTFail("Expected cron run preview envelope")
+    func testRoutineRunPreviewDecodesNestedPayload() throws {
+        let envelope = try decodeEnvelope(#"{"version":56,"type":"routine_run_preview","request_id":"preview-1","preview":{"routine":{"id":"routine-1","bot_id":"bot-1","workspace":"/srv/mobius","instructions":"Review open pull requests","schedule":{"kind":"interval","at":null,"every_seconds":120,"expression":null,"time_zone":null},"ends_at":null,"enabled":true,"finished":false,"next_run_at":500},"run":{"id":"run-1","routine_id":"routine-1","bot_id":"bot-1","started_at":100,"finished_at":null,"status":"running","session_id":"chat-2","message":null},"records":[],"next_before_sequence":42}}"#)
+        guard case .routineRunPreview(let preview) = envelope else {
+            return XCTFail("Expected routine run preview envelope")
         }
 
         XCTAssertEqual(preview.requestID, "preview-1")
-        XCTAssertEqual(preview.task.id, "task-1")
+        XCTAssertEqual(preview.routine.id, "routine-1")
         XCTAssertEqual(preview.run.id, "run-1")
         XCTAssertEqual(preview.records.count, 0)
         XCTAssertEqual(preview.nextBeforeSequence, 42)
     }
 
-    func testUnknownCronRunStatusIsRejected() {
+    func testUnknownRoutineRunStatusIsRejected() {
         XCTAssertThrowsError(try decodeEnvelope(
-            #"{"version":27,"type":"cron_history","request_id":"history-1","runs":[{"id":"run-1","task_id":"task-1","source_session_id":"chat-1","started_at":100,"finished_at":110,"status":"future_status","session_id":null,"message":null}]}"#
+            #"{"version":56,"type":"routine_history","request_id":"history-1","runs":[{"id":"run-1","routine_id":"routine-1","bot_id":"bot-1","started_at":100,"finished_at":110,"status":"future_status","session_id":null,"message":null}]}"#
         ))
     }
 
@@ -348,7 +361,7 @@ extension GatewayWireTests {
     }
 
     func testSwarmCatalogResponseCarriesOptionalRequestID() throws {
-        let swarm = #"{"id":"swarm-1","title":"Quiet Foxes","leader_session_id":"chat-1","members":[{"session_id":"chat-1","handle":"@leader"},{"session_id":"chat-2","handle":"@builder"}],"messages":[],"updated_at_ms":200}"#
+        let swarm = #"{"id":"swarm-1","title":"Quiet Foxes","leader_bot_id":"bot-1","members":[{"bot_id":"bot-1","handle":"leader"},{"bot_id":"bot-2","handle":"builder"}],"messages":[],"updated_at_ms":200}"#
         let mutation = try decodeEnvelope(
             #"{"version":51,"type":"swarms","request_id":"swarm-create-1","swarms":[\#(swarm)]}"#
         )
@@ -356,8 +369,8 @@ extension GatewayWireTests {
             return XCTFail("Expected correlated swarm catalog")
         }
         XCTAssertEqual(requestID, "swarm-create-1")
-        XCTAssertEqual(records.first?.leaderSessionId, "chat-1")
-        XCTAssertEqual(records.first?.members.last?.handle, "@builder")
+        XCTAssertEqual(records.first?.leaderBotId, "bot-1")
+        XCTAssertEqual(records.first?.members.last?.handle, "builder")
 
         let broadcast = try decodeEnvelope(
             #"{"version":51,"type":"swarms","swarms":[\#(swarm)]}"#

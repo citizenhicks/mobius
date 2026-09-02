@@ -92,6 +92,7 @@ async fn steer_is_durable_before_a_blocked_model_completes() {
             test_middleware(Vec::new()),
             "test prompt",
         )
+        .session_context(test_session_context())
         .session_id("blocked-model"),
     )
     .await
@@ -169,6 +170,7 @@ async fn steer_is_durable_while_pre_model_is_blocked() {
             test_middleware(vec![Arc::new(middleware)]),
             "test prompt",
         )
+        .session_context(test_session_context())
         .session_id("blocked-pre-model"),
     )
     .await
@@ -242,6 +244,7 @@ async fn queued_message_starts_once_after_the_active_turn_finishes() {
             test_middleware(Vec::new()),
             "test prompt",
         )
+        .session_context(test_session_context())
         .session_id("queued-after-turn"),
     )
     .await
@@ -304,6 +307,7 @@ async fn interrupt_discards_partial_pre_model_context() {
             test_middleware(vec![Arc::new(middleware)]),
             "test prompt",
         )
+        .session_context(test_session_context())
         .session_id("interrupt-pre-model"),
     )
     .await
@@ -354,6 +358,7 @@ async fn ready_steer_wins_the_model_completion_barrier() {
             test_middleware(Vec::new()),
             "test prompt",
         )
+        .session_context(test_session_context())
         .session_id("model-steer-barrier"),
     )
     .await
@@ -445,6 +450,7 @@ async fn steer_during_pre_tool_hook_is_persisted_before_the_assistant_message() 
             ]),
             "test prompt",
         )
+        .session_context(test_session_context())
         .session_id("pre-tool-steer"),
     )
     .await

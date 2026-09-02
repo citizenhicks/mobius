@@ -453,19 +453,14 @@ impl Catalog {
         if definitions.is_empty() {
             return Ok(Vec::new());
         }
-        // ponytail: rebuild the tiny index per query; cache it if deferred catalogs become large.
         let documents = definitions
             .iter()
-            .enumerate()
-            .map(|(index, definition)| Document::new(index, tool_search_text(definition)))
+            .map(|definition| tool_search_text(definition))
             .collect::<Vec<_>>();
-        let search_engine =
-            SearchEngineBuilder::<usize>::with_documents(Language::English, documents).build();
 
-        Ok(search_engine
-            .search(query, MAX_TOOL_SEARCH_RESULTS)
+        Ok(rank_bm25(&documents, query, MAX_TOOL_SEARCH_RESULTS)
             .into_iter()
-            .filter_map(|result| definitions.get(result.document.id).copied().cloned())
+            .filter_map(|index| definitions.get(index).copied().cloned())
             .collect())
     }
 
@@ -578,6 +573,25 @@ impl Catalog {
     fn get(&self, name: &str) -> Option<&RegisteredTool> {
         self.tools.get(name)
     }
+}
+
+/// Ranks text with the same BM25 setup used by deferred tool discovery.
+pub(crate) fn rank_bm25(documents: &[String], query: &str, limit: usize) -> Vec<usize> {
+    if documents.is_empty() || limit == 0 {
+        return Vec::new();
+    }
+    // ponytail: rebuild the small index per query; persist one if catalogs become large.
+    let documents = documents
+        .iter()
+        .enumerate()
+        .map(|(index, contents)| Document::new(index, contents.clone()))
+        .collect::<Vec<_>>();
+    SearchEngineBuilder::<usize>::with_documents(Language::English, documents)
+        .build()
+        .search(query, limit)
+        .into_iter()
+        .map(|result| result.document.id)
+        .collect()
 }
 
 fn tool_search_text(definition: &ToolDefinition) -> String {

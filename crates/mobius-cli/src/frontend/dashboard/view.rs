@@ -13,7 +13,6 @@ use ratatui::widgets::{Block, Borders, Clear, HighlightSpacing, List, ListState,
 use super::runtime::{ordered_clients, ordered_sessions};
 use super::state::{ActionInput, CapabilityOverlay, DashboardFocus, DashboardState};
 use crate::frontend::block_text;
-use crate::frontend::provider_instance_label;
 use crate::frontend::terminal::terminal_text;
 use crate::frontend::theme::{Role, current};
 
@@ -22,7 +21,7 @@ pub(super) struct DashboardAreas {
     pub(super) devices: Rect,
     pub(super) chats: Rect,
     pub(super) providers: Rect,
-    pub(super) defaults: Rect,
+    pub(super) bots: Rect,
     pub(super) usage: Rect,
     pub(super) footer: Rect,
 }
@@ -38,7 +37,7 @@ pub(super) fn render(frame: &mut ratatui::Frame<'_>, state: &mut DashboardState)
     render_devices(frame, areas.devices, state);
     render_chats(frame, areas.chats, state);
     render_providers(frame, areas.providers, state);
-    render_defaults(frame, areas.defaults, state);
+    render_bots(frame, areas.bots, state);
     render_usage(frame, areas.usage, state.profile.as_ref());
     let (footer, role) = if let Some((_, label)) = &state.pending_unpair {
         (
@@ -51,7 +50,7 @@ pub(super) fn render(frame: &mut ratatui::Frame<'_>, state: &mut DashboardState)
         (" opening chat capabilities… ".into(), Role::Muted)
     } else {
         (
-            " tab devices/chats · ↑↓ scroll · enter chat capabilities · u unpair · p provider · d defaults · r refresh · q quit ".into(),
+            " tab devices/chats/Bots · ↑↓ scroll · enter open · u unpair · p provider · r refresh · q quit ".into(),
             Role::Muted,
         )
     };
@@ -392,7 +391,7 @@ pub(super) fn dashboard_areas(area: Rect) -> DashboardAreas {
         Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(body);
     let [devices, chats] =
         Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(left);
-    let [providers, defaults, usage] = Layout::vertical([
+    let [providers, bots, usage] = Layout::vertical([
         Constraint::Percentage(34),
         Constraint::Percentage(38),
         Constraint::Percentage(28),
@@ -403,7 +402,7 @@ pub(super) fn dashboard_areas(area: Rect) -> DashboardAreas {
         devices,
         chats,
         providers,
-        defaults,
+        bots,
         usage,
         footer,
     }
@@ -533,9 +532,16 @@ pub(super) fn render_chats(frame: &mut ratatui::Frame<'_>, area: Rect, state: &m
                     SessionActivityState::Running => ("●", Role::Success),
                     SessionActivityState::AwaitingApproval => ("●", Role::Warning),
                 };
+                let bot = session.session_context.bot_id.as_str();
+                let bot = state
+                    .gateway
+                    .bots
+                    .iter()
+                    .find(|candidate| candidate.id == bot)
+                    .map_or_else(String::new, |bot| format!(" · @{}", bot.handle));
                 Line::styled(
                     format!(
-                        " {symbol} {} · {}",
+                        " {symbol} {}{bot} · {}",
                         activity_label(session.activity.state),
                         terminal_text(title)
                     ),
@@ -581,46 +587,33 @@ pub(super) fn render_providers(frame: &mut ratatui::Frame<'_>, area: Rect, state
     );
 }
 
-pub(super) fn render_defaults(frame: &mut ratatui::Frame<'_>, area: Rect, state: &DashboardState) {
-    let lines = state.gateway.default_config.as_ref().map_or_else(
-        || empty("No defaults · configure a provider first"),
-        |default| {
-            let config = &default.config;
-            let provider = provider_instance_label(
-                &state.gateway.provider_instances,
-                &config.provider.instance,
-            )
-            .unwrap_or(&config.provider.provider);
-            let enabled = state
-                .gateway
-                .middleware_features
-                .iter()
-                .filter(|feature| feature.required || config.middleware.enabled(&feature.id))
-                .count();
-            vec![
+pub(super) fn render_bots(frame: &mut ratatui::Frame<'_>, area: Rect, state: &mut DashboardState) {
+    let lines = if state.gateway.bots.is_empty() {
+        empty("No Bots")
+    } else {
+        state
+            .gateway
+            .bots
+            .iter()
+            .map(|bot| {
                 Line::from(format!(
-                    " Model      {} / {}",
-                    terminal_text(provider),
-                    terminal_text(&config.provider.model)
-                )),
-                Line::from(format!(
-                    " Reasoning  {}",
-                    config
-                        .provider
-                        .reasoning_effort
-                        .as_deref()
-                        .unwrap_or("provider default")
-                )),
-                Line::from(format!(" Search     {:?}", config.provider.web_search)),
-                Line::from(format!(" Middleware {enabled}")),
-            ]
-        },
-    );
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(panel("Defaults · d to change", false))
-            .wrap(Wrap { trim: true }),
+                    " @{} · {} · {}",
+                    terminal_text(&bot.handle),
+                    terminal_text(&bot.name),
+                    terminal_text(&bot.config.config.provider.model)
+                ))
+            })
+            .collect()
+    };
+    frame.render_stateful_widget(
+        List::new(lines)
+            .block(panel("Bots", state.focus == DashboardFocus::Bots))
+            .highlight_symbol("› ")
+            .highlight_spacing(HighlightSpacing::Always)
+            .highlight_style(Style::default().add_modifier(Modifier::BOLD))
+            .scroll_padding(1),
         area,
+        &mut state.bot_list,
     );
 }
 

@@ -1668,7 +1668,7 @@ final class MobiusCloudTests: XCTestCase {
         try await gatewayStore.remove(account)
     }
 
-    func testCloudSignOutForgetsCloudGatewayAndClearsPresentedSession() async throws {
+    func testCloudSignOutRetainsAuthenticationUntilPushRemovalSucceeds() async throws {
         let suiteName = "app.mobius.cloud.tests.\(UUID())"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         let root = FileManager.default.temporaryDirectory
@@ -1696,13 +1696,17 @@ final class MobiusCloudTests: XCTestCase {
         let service = "app.mobius.cloud.tests.\(UUID())"
         let sessionStore = MobiusCloudSessionStore(service: service)
         defer { try? sessionStore.remove() }
+        var rejectsPushRemoval = true
         let client = MobiusCloudClient(store: sessionStore) { request in
-            try self.response(
+            if request.url?.path == "/api/mobile/push-token", rejectsPushRemoval {
+                return try self.response(for: request, status: 500, json: "{}")
+            }
+            return try self.response(
                 for: request,
                 json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
             )
         }
-        _ = try await client.authenticate(
+        let session = try await client.authenticate(
             authorizationCode: "apple-code",
             nonce: String(repeating: "n", count: 43)
         )
@@ -1726,6 +1730,15 @@ final class MobiusCloudTests: XCTestCase {
         model.destination = .chats
         model.navigationPath = [.chat(.session("chat-1"))]
 
+        await model.signOutOfCloud()
+
+        XCTAssertEqual(model.cloudSession, session)
+        XCTAssertEqual(try client.loadSession(), session)
+        XCTAssertEqual(model.cloudAccount?.userID, session.userID)
+        XCTAssertEqual(model.accounts, [gateway])
+        XCTAssertEqual(gatewayStore.loadAccounts(), [gateway])
+
+        rejectsPushRemoval = false
         await model.signOutOfCloud()
 
         XCTAssertNil(model.cloudSession)
@@ -1776,7 +1789,7 @@ final class MobiusCloudTests: XCTestCase {
             try? await gatewayStore.remove(secondGateway)
         }
         await gatewayStore.saveChatCatalog(
-            CachedChatCatalog(sessions: [], swarms: [], lastSessionID: nil),
+            CachedChatCatalog(bots: [], sessions: [], swarms: [], lastSessionID: nil),
             accountID: secondGateway.id
         )
         await gatewayStore.saveTranscript(
@@ -2409,6 +2422,67 @@ final class MobiusCloudTests: XCTestCase {
         } catch {
             XCTAssertTrue(error is MobiusCloudError)
         }
+    }
+
+    func testPushTokenContractUsesAuthenticatedInstallationUpsertAndRemoval() async throws {
+        let userID = UUID()
+        let installationID = UUID()
+        let bearer = String(repeating: "t", count: 43)
+        let store = MobiusCloudSessionStore(service: "app.mobius.cloud.tests.\(UUID())")
+        defer { try? store.remove() }
+        var requests: [URLRequest] = []
+        let client = MobiusCloudClient(store: store) { request in
+            requests.append(request)
+            let json = requests.count == 1
+                ? #"{"token":"\#(bearer)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                : "{}"
+            return try self.response(
+                for: request,
+                status: requests.count == 1 ? 200 : 204,
+                json: json
+            )
+        }
+        _ = try await client.authenticate(
+            authorizationCode: "apple-code",
+            nonce: String(repeating: "n", count: 43)
+        )
+
+        try await client.registerPushToken(
+            installationID: installationID,
+            token: "0011aabbccddeeff00112233445566778899aabb",
+            environment: .production
+        )
+        try await client.unregisterPushToken(installationID: installationID)
+
+        XCTAssertEqual(requests.map { $0.url?.path }, [
+            "/api/mobile/auth/apple",
+            "/api/mobile/push-token",
+            "/api/mobile/push-token",
+        ])
+        XCTAssertEqual(requests.map(\.httpMethod), ["POST", "PUT", "DELETE"])
+        XCTAssertNil(requests[0].value(forHTTPHeaderField: "Authorization"))
+        XCTAssertEqual(
+            requests[1].value(forHTTPHeaderField: "Authorization"),
+            "Bearer \(bearer)"
+        )
+        XCTAssertEqual(
+            requests[2].value(forHTTPHeaderField: "Authorization"),
+            "Bearer \(bearer)"
+        )
+        XCTAssertEqual(
+            try JSONSerialization.jsonObject(with: try XCTUnwrap(requests[1].httpBody))
+                as? [String: String],
+            [
+                "installationId": installationID.uuidString,
+                "token": "0011aabbccddeeff00112233445566778899aabb",
+                "environment": "production",
+            ]
+        )
+        XCTAssertEqual(
+            try JSONSerialization.jsonObject(with: try XCTUnwrap(requests[2].httpBody))
+                as? [String: String],
+            ["installationId": installationID.uuidString]
+        )
     }
 
     private func response(

@@ -45,11 +45,18 @@ fn router_reuse_ignores_local_recipe_changes_but_not_provider_changes() {
     let state_dir = root.path().join("state");
     std::fs::create_dir(&workspace).expect("workspace");
     std::fs::create_dir(&state_dir).expect("state directory");
-    let base = ChatSpec::new(
+    let base = ChatSpec::for_bot(
         &workspace,
-        VersionedAgentConfig {
-            revision: 1,
-            config: AgentComposition::default(),
+        &crate::wire::BotRecord {
+            id: Uuid::new_v4().to_string(),
+            handle: "fixture".into(),
+            name: "Fixture".into(),
+            description: "Own fixture work.".into(),
+            tint: crate::wire::ProviderTint::default(),
+            config: crate::wire::VersionedAgentConfig {
+                revision: 1,
+                config: AgentComposition::default(),
+            },
         },
         &state_dir,
         None,
@@ -294,7 +301,10 @@ fn session_summary(
 ) -> SessionSummary {
     SessionSummary {
         session_id: session_id.into(),
-        session_context: SessionContext::default(),
+        session_context: SessionContext {
+            bot_id: "test-bot".into(),
+            ..SessionContext::default()
+        },
         parent_session_id: parent_session_id.map(str::to_owned),
         parent_sequence: parent_session_id.map(|_| 0),
         sequence: 0,

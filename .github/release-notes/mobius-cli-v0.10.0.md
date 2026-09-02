@@ -1,0 +1,1 @@
+Make Bot selection part of conversation creation, inherit the current workspace and Bot for new conversations, add Bot identity throughout the terminal UI, and manage Bot profiles, routines, run history, and manual Swarms from the gateway Bot menu. Includes Gateway 0.10.0 and protocol 60.

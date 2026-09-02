@@ -2,6 +2,12 @@
 
 use super::*;
 
+fn test_checkpoint(session_id: &str) -> Checkpoint {
+    let mut checkpoint = Checkpoint::empty(session_id);
+    checkpoint.session_context.bot_id = "test-bot".into();
+    checkpoint
+}
+
 #[test]
 fn sender_rejects_oversized_input_before_queueing() {
     let (sender, _inbox) = submission_channel(1);
@@ -65,7 +71,7 @@ async fn recorder_persists_an_event_before_delivery() {
             .expect("checkpoint store"),
     );
     checkpoints
-        .save(&Checkpoint::empty("session"), &[], None)
+        .save(&test_checkpoint("session"), &[], None)
         .await
         .expect("initial checkpoint");
     let store: Arc<dyn CheckpointStore> = checkpoints.clone();
@@ -129,7 +135,7 @@ async fn recorder_flush_waits_for_prior_unacknowledged_events() {
             .expect("checkpoint store"),
     );
     checkpoints
-        .save(&Checkpoint::empty("session"), &[], None)
+        .save(&test_checkpoint("session"), &[], None)
         .await
         .expect("initial checkpoint");
     let store: Arc<dyn CheckpointStore> = checkpoints.clone();
@@ -169,7 +175,7 @@ async fn recorder_accepts_a_synchronous_provider_burst() {
             .expect("checkpoint store"),
     );
     checkpoints
-        .save(&Checkpoint::empty("session"), &[], None)
+        .save(&test_checkpoint("session"), &[], None)
         .await
         .expect("initial checkpoint");
     let store: Arc<dyn CheckpointStore> = checkpoints.clone();
@@ -243,7 +249,7 @@ async fn recorder_flush_backpressures_until_ordered_delivery_resumes() {
             .expect("checkpoint store"),
     );
     checkpoints
-        .save(&Checkpoint::empty("session"), &[], None)
+        .save(&test_checkpoint("session"), &[], None)
         .await
         .expect("initial checkpoint");
     let (events, mut receiver) = EventRecorder::spawn(checkpoints, "session".into());

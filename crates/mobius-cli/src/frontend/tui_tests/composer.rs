@@ -75,7 +75,16 @@ fn new_and_clear_keep_distinct_terminal_semantics() {
 
     assert_eq!(
         (new.submit_input(&catalog), clear.submit_input(&catalog)),
-        (UiAction::New, UiAction::Clear)
+        (
+            UiAction::ChooseBot {
+                workspace: catalog.workspace().to_path_buf(),
+                clear: false,
+            },
+            UiAction::ChooseBot {
+                workspace: catalog.workspace().to_path_buf(),
+                clear: true,
+            }
+        )
     );
 }
 
@@ -146,6 +155,49 @@ fn generic_picker_submits_the_selected_operation() {
         UiAction::Submit(Op::ResumeSession {
             session_id: "second".into(),
         })
+    );
+}
+
+#[test]
+fn bot_picker_creates_the_chat_for_the_selected_bot() {
+    let bots = [
+        mobius_gateway::wire::BotRecord {
+            id: "bot-a".into(),
+            handle: "ada".into(),
+            name: "Ada".into(),
+            description: "Own analysis.".into(),
+            tint: Default::default(),
+            config: mobius_gateway::wire::VersionedAgentConfig {
+                revision: 1,
+                config: mobius_gateway::wire::AgentComposition::default(),
+            },
+        },
+        mobius_gateway::wire::BotRecord {
+            id: "bot-b".into(),
+            handle: "grace".into(),
+            name: "Grace".into(),
+            description: "Own implementation.".into(),
+            tint: Default::default(),
+            config: mobius_gateway::wire::VersionedAgentConfig {
+                revision: 1,
+                config: mobius_gateway::wire::AgentComposition::default(),
+            },
+        },
+    ];
+    let workspace = std::path::PathBuf::from("/srv/project");
+    let mut state = state();
+    state.open_bot_picker(&bots, workspace.clone(), "bot-b", false);
+
+    assert_eq!(
+        state.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &default_catalog(),
+        ),
+        UiAction::CreateSession {
+            workspace,
+            bot_id: "bot-b".into(),
+            clear: false,
+        }
     );
 }
 
@@ -226,7 +278,6 @@ fn bare_capability_command_opens_all_of_its_popup_surfaces() {
             widgets: vec![global.clone(), session.clone()],
             references: Vec::new(),
         }],
-        &[],
         std::path::Path::new("/missing-mobius-test-workspace"),
     )
     .expect("scratchpad catalog");

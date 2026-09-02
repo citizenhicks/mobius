@@ -252,4 +252,37 @@ extension AppModelTests {
         XCTAssertNil(turnMessage.targetTurnId)
     }
 
+    func testActiveDeliveryDoesNotRequireAComposerControl() throws {
+        let model = try model()
+        var composition = composition()
+        composition.middleware.settings["messages"] = ["delivery": .string("queue")]
+        model.agentDraft = composition
+        model.middlewareFeatures = [MiddlewareFeature(
+            id: "messages",
+            label: "Messages",
+            description: "Message delivery",
+            required: true,
+            settings: [FrontendSetting(
+                id: "delivery",
+                label: "Delivery",
+                description: "Active turn delivery",
+                composer: false,
+                kind: .select(options: [
+                    FrontendSettingOption(
+                        value: "steer",
+                        label: "Steer",
+                        description: "Steer now"
+                    ),
+                    FrontendSettingOption(
+                        value: "queue",
+                        label: "Queue",
+                        description: "Run next"
+                    ),
+                ], unsetLabel: nil)
+            )]
+        )]
+
+        XCTAssertEqual(model.activeMessageDelivery, .queue)
+    }
+
 }

@@ -37,6 +37,7 @@ struct ProfileView: View {
             .listRowSeparator(.hidden)
             Section("Security and Data") {
                 AppLockSettings()
+                RemoteNotificationSettings()
                 LocalDataSettings()
             }
             .listRowSeparator(.hidden)
@@ -702,6 +703,36 @@ private struct AppLockSettings: View {
             return "Locks möbius when it enters the background. This setting stays on this device."
         }
         return "Set up Face ID or Touch ID in Settings before enabling app lock."
+    }
+}
+
+private struct RemoteNotificationSettings: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.mobiusPalette) private var palette
+
+    var body: some View {
+        HStack(spacing: MobiusSpace.xs) {
+            Toggle("Notifications", isOn: Binding(
+                get: { model.notificationsEnabled },
+                set: { enabled in
+                    Task { await model.setNotificationsEnabled(enabled) }
+                }
+            ))
+            .toggleStyle(.switch)
+            .disabled(model.isUpdatingNotifications)
+            SettingsInfoButton(
+                title: "Notifications",
+                detail: "Alerts you when a Cloud chat needs approval or finishes. This setting stays on this device."
+            )
+        }
+        if model.isUpdatingNotifications {
+            ProgressView("Updating notifications")
+        }
+        if let error = model.notificationError {
+            Text(error)
+                .foregroundStyle(palette.danger)
+                .accessibilityLabel("Notification status: \(error)")
+        }
     }
 }
 

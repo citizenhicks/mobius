@@ -15,8 +15,6 @@ use crate::wire::{
 };
 use crate::{Error, Result};
 
-const MAX_MODEL_ROUTE_BYTES: usize = 4 * 1024;
-
 pub(crate) fn provider_statuses() -> Vec<ProviderStatus> {
     providers().iter().map(provider_status).collect()
 }
@@ -79,24 +77,6 @@ pub(crate) fn configured_model_providers(
         .collect())
 }
 
-pub(crate) fn configured_provider_for_route(
-    gateway: &GatewayConfig,
-    store: &ConfigStore,
-    credentials: &CredentialStore,
-    route: &str,
-) -> Result<ProviderConfig> {
-    if route.trim().is_empty() || route.len() > MAX_MODEL_ROUTE_BYTES {
-        return Err(Error::Config(format!(
-            "model route must be 1–{MAX_MODEL_ROUTE_BYTES} bytes"
-        )));
-    }
-    configured_model_routes(gateway, store, credentials)?
-        .into_iter()
-        .find(|candidate| candidate.choice.route == route)
-        .map(|candidate| candidate.provider)
-        .ok_or_else(|| Error::Config("model route is not in the configured gateway catalog".into()))
-}
-
 pub(crate) fn configured_route_exists(gateway: &GatewayConfig, route: &str) -> Result<bool> {
     for configured in gateway.configured_providers.values() {
         let definition = provider(&configured.selection.provider)?;
@@ -117,7 +97,7 @@ pub(crate) fn configured_model_routes(
 ) -> Result<Vec<CatalogRoute>> {
     let mut routes = Vec::new();
     let default_instance = gateway
-        .default_agent
+        .bot_defaults
         .as_ref()
         .map(|default| default.config.provider.instance.as_str());
     let mut configured = gateway.configured_providers.values().collect::<Vec<_>>();

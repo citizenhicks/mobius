@@ -17,6 +17,12 @@ use crate::protocol::TurnAbortedEvent;
 use crate::protocol::TurnCompleteEvent;
 use crate::protocol::TurnStartedEvent;
 
+fn checkpoint(session_id: impl Into<String>) -> Checkpoint {
+    let mut checkpoint = Checkpoint::empty(session_id);
+    checkpoint.session_context.bot_id = "test-bot".into();
+    checkpoint
+}
+
 fn execution(session_id: &str, turn: u64) -> ExecutionRecord {
     let started_at_ms = i64::try_from(turn * 100).expect("execution start");
     ExecutionRecord {
@@ -45,5 +51,5 @@ mod journals;
 mod model_steps;
 #[path = "sqlite_tests/sessions.rs"]
 mod sessions;
-#[path = "sqlite_tests/store.rs"]
-mod store;
+#[path = "sqlite_tests/strict.rs"]
+mod strict;

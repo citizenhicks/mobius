@@ -468,11 +468,6 @@ func diffTotals(_ text: String) -> DiffLineTotals {
         }
 }
 
-func formatDuration(_ interval: TimeInterval) -> String {
-    let seconds = max(0, Int(interval))
-    return Duration.seconds(seconds).formatted(.time(pattern: .minuteSecond(padMinuteToLength: 1)))
-}
-
 private func diffTitle(_ diff: String) -> String? {
     for line in diff.split(separator: "\n", omittingEmptySubsequences: false) {
         if line.hasPrefix("+++ b/") { return String(line.dropFirst(6)) }

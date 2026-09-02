@@ -74,7 +74,7 @@ pub const USAGE: &str = "usage: mobius-gateway [--state-dir PATH]\n       \
                      [--tls-cert PATH --tls-key PATH] \
                      [--cloudflare-hostname HOST --cloudflare-token-file PATH]\n       \
                      mobius-gateway bootstrap [--state-dir PATH]\n       \
-                     mobius-gateway reset-default-agent [--state-dir PATH]\n       \
+                     mobius-gateway reset-bot-defaults [--state-dir PATH]\n       \
                      mobius-gateway pairing-code [--state-dir PATH] --json\n       \
                      mobius-gateway register-provider [--state-dir PATH] --provider ID \
                      --model ID [--instance ID] [--label TEXT] \
@@ -123,7 +123,7 @@ pub async fn run(
     match parse(arguments)? {
         Command::Init(options) => initialize(options),
         Command::Bootstrap { state_dir } => initialize_bootstrap(state_dir, save_local_client),
-        Command::ResetDefaultAgent { state_dir } => reset_default_agent(state_dir),
+        Command::ResetBotDefaults { state_dir } => reset_bot_defaults(state_dir),
         Command::PairingCode { state_dir } => pairing_code(state_dir, load_local_client).await,
         Command::RegisterProvider(options) => {
             register_provider_command(options, load_local_client).await

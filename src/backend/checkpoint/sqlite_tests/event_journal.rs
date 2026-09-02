@@ -6,7 +6,7 @@ async fn event_journal_sequences_and_pages_normalized_events() {
     let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
         .expect("open checkpoint database");
     store
-        .save(&Checkpoint::empty("session"), &[], None)
+        .save(&checkpoint("session"), &[], None)
         .await
         .expect("save session");
 
@@ -61,7 +61,7 @@ async fn event_turn_page_keeps_long_turns_whole() {
     let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
         .expect("open checkpoint database");
     store
-        .save(&Checkpoint::empty("session"), &[], None)
+        .save(&checkpoint("session"), &[], None)
         .await
         .expect("save session");
 
@@ -196,7 +196,7 @@ async fn transient_controls_advance_sequence_without_entering_history() {
     let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
         .expect("open checkpoint database");
     store
-        .save(&Checkpoint::empty("session"), &[], None)
+        .save(&checkpoint("session"), &[], None)
         .await
         .expect("save session");
     let events = [

@@ -20,21 +20,27 @@ struct MobiusBadge: View {
     private let text: MobiusText
     var tone = "neutral"
     var glyph: MobiusGlyph?
+    var glyphColor: Color?
     var progress: Double?
     var interactive = false
+    var selected = false
 
     init(
         text: MobiusText,
         tone: String = "neutral",
         glyph: MobiusGlyph? = nil,
+        glyphColor: Color? = nil,
         progress: Double? = nil,
-        interactive: Bool = false
+        interactive: Bool = false,
+        selected: Bool = false
     ) {
         self.text = text
         self.tone = tone
         self.glyph = glyph
+        self.glyphColor = glyphColor
         self.progress = progress
         self.interactive = interactive
+        self.selected = selected
     }
 
     var body: some View {
@@ -51,7 +57,12 @@ struct MobiusBadge: View {
                 .accessibilityHidden(true)
             }
             if let glyph {
-                MobiusIcon(glyph, size: MobiusStyle.glyphInline, foreground: foreground, gutter: false)
+                MobiusIcon(
+                    glyph,
+                    size: MobiusStyle.glyphInline,
+                    foreground: glyphColor ?? foreground,
+                    gutter: false
+                )
             }
             if !text.isEmpty { text.text.lineLimit(1) }
         }
@@ -59,10 +70,10 @@ struct MobiusBadge: View {
         .foregroundStyle(foreground)
         .padding(.horizontal, MobiusSpace.m)
         .frame(height: MobiusStyle.badgeHeight)
-        .mobiusGlass(in: Capsule(), interactive: interactive)
+        .mobiusGlass(in: Capsule(), interactive: interactive, prominent: selected)
     }
 
-    private var foreground: Color { palette.tone(tone) }
+    private var foreground: Color { selected ? palette.onAccent : palette.tone(tone) }
 }
 
 /// A menu's current value: the provider's mark, the value itself, and a muted qualifier.

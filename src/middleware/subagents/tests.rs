@@ -167,10 +167,12 @@ async fn active_command_emits_a_subagent_transcript_preview() {
         )
         .expect("checkpoint store"),
     );
-    let root = Checkpoint::empty("root");
+    let mut root = Checkpoint::empty("root");
+    root.session_context.bot_id = "test-bot".into();
     checkpoints.save(&root, &[], None).await.expect("save root");
     let transcript = serde_json::json!({"role": "user", "content": "review this"});
     let mut child = Checkpoint::empty("child");
+    child.session_context.bot_id = "test-bot".into();
     child.sequence = 1;
     child.context.push(transcript.clone());
     checkpoints
@@ -289,9 +291,11 @@ async fn preview_continuation_loads_one_older_turn_through_registered_command() 
         )
         .expect("checkpoint store"),
     );
-    let root = Checkpoint::empty("root");
+    let mut root = Checkpoint::empty("root");
+    root.session_context.bot_id = "test-bot".into();
     checkpoints.save(&root, &[], None).await.expect("save root");
-    let child = Checkpoint::empty("child");
+    let mut child = Checkpoint::empty("child");
+    child.session_context.bot_id = "test-bot".into();
     checkpoints
         .save(&child, &[], None)
         .await
@@ -509,6 +513,7 @@ async fn fork_persists_the_metadata_passed_to_the_child() {
         .expect("checkpoint store"),
     );
     let mut parent = Checkpoint::empty("parent");
+    parent.session_context.bot_id = "test-bot".into();
     parent.metadata.insert(
         "gateway.chat".into(),
         serde_json::json!({"workspace": "/srv/project"}),

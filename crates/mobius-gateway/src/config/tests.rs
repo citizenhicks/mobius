@@ -1,9 +1,16 @@
 use super::*;
 
-fn test_agent() -> VersionedAgentConfig {
-    VersionedAgentConfig {
-        revision: 1,
-        config: AgentComposition::default(),
+fn test_bot() -> crate::wire::BotRecord {
+    crate::wire::BotRecord {
+        id: "bot-fixture".into(),
+        handle: "fixture".into(),
+        name: "Fixture".into(),
+        description: "Own fixture work.".into(),
+        tint: ProviderTint::default(),
+        config: VersionedAgentConfig {
+            revision: 1,
+            config: AgentComposition::default(),
+        },
     }
 }
 
@@ -14,7 +21,7 @@ fn gateway_config_is_machine_scoped() {
 
     assert!(serialized.get("workspace").is_none());
     assert!(serialized["cloudflare"].is_null());
-    assert!(serialized["default_agent"].is_null());
+    assert!(serialized["bot_defaults"].is_null());
     assert_eq!(serialized["configured_providers"], serde_json::json!({}));
     assert!(serialized["usage"].get("sessions").is_none());
 }
@@ -60,14 +67,20 @@ fn quick_cloudflare_config_round_trips_without_a_token() {
 
 #[test]
 fn opening_unmigratable_versions_never_rewrites_config() {
-    for (version, invalid) in [(19, false), (20, false), (22, false), (21, true)] {
+    for (version, invalid) in [
+        (19, false),
+        (20, false),
+        (21, false),
+        (23, false),
+        (22, true),
+    ] {
         let root = tempfile::tempdir().expect("temporary directory");
         let state = root.path().join("state");
         ConfigStore::initialize(state.clone(), DEFAULT_LISTEN, None).expect("initialize gateway");
         let path = state.join(CONFIG_FILE);
         let mut contents = fs::read_to_string(&path)
             .expect("read gateway config")
-            .replacen("version = 21", &format!("version = {version}"), 1);
+            .replacen("version = 22", &format!("version = {version}"), 1);
         if invalid {
             contents = contents.replacen("127.0.0.1:8741", "127.0.0.1:0", 1);
         }
@@ -112,11 +125,11 @@ fn generated_toml_round_trips_manifest_settings() {
     let contents = fs::read_to_string(state.join(CONFIG_FILE)).expect("read config");
     let (_, restored) = ConfigStore::open(state).expect("open config");
 
-    assert!(contents.starts_with("version = 21"));
+    assert!(contents.starts_with("version = 22"));
     assert!(contents.contains("max_model_steps = 2042"));
-    assert!(contents.contains("[default_agent.config.middleware.settings.context_offloading]"));
-    assert!(contents.contains("[default_agent.config.middleware.settings.sessions]"));
-    assert!(contents.contains("[default_agent.config.middleware.settings.messages]"));
+    assert!(contents.contains("[bot_defaults.config.middleware.settings.context_offloading]"));
+    assert!(contents.contains("[bot_defaults.config.middleware.settings.sessions]"));
+    assert!(contents.contains("[bot_defaults.config.middleware.settings.messages]"));
     assert!(contents.contains("delivery = \"steer\""));
     assert_eq!(restored, config);
 }
@@ -138,7 +151,7 @@ fn extension_selection_is_a_stable_optional_reference() {
         .expect("register provider");
     let id = "plugin:ponytail".to_string();
     config
-        .default_agent
+        .bot_defaults
         .as_mut()
         .expect("default")
         .config
@@ -229,7 +242,7 @@ fn provider_registration_never_silently_changes_existing_defaults() {
     assert_eq!(second.configured_providers["openrouter"].model_ids.len(), 2);
     assert_eq!(
         second
-            .default_agent
+            .bot_defaults
             .as_ref()
             .expect("gateway default")
             .config
@@ -270,33 +283,9 @@ fn provider_registration_never_silently_changes_existing_defaults() {
         )
         .expect("update registered provider");
     assert_eq!(third.configured_providers["kimi"].selection, updated);
-    let default = third.default_agent.expect("preserved default");
+    let default = third.bot_defaults.expect("preserved Bot defaults");
     assert_eq!(default.revision, 1);
     assert_eq!(default.config.provider, kimi);
-
-    let replaced = second
-        .registering_provider(
-            updated.clone(),
-            "Test".into(),
-            Default::default(),
-            Vec::new(),
-            Vec::new(),
-        )
-        .expect("update registered provider")
-        .replacing_provider_default(&updated)
-        .expect("replace same-provider default");
-    let default = replaced.default_agent.as_ref().expect("replaced default");
-    assert_eq!(default.revision, 2);
-    assert_eq!(default.config.provider, updated);
-    assert_eq!(
-        replaced
-            .replacing_provider_default(&default.config.provider)
-            .expect("idempotent replacement")
-            .default_agent
-            .expect("unchanged default")
-            .revision,
-        2
-    );
 }
 
 #[test]
@@ -331,7 +320,7 @@ fn configured_custom_provider_keeps_its_endpoint_and_model() {
     );
     assert_eq!(
         config
-            .default_agent
+            .bot_defaults
             .expect("gateway default")
             .config
             .provider,
@@ -714,7 +703,7 @@ fn default_and_persisted_config_validate_custom_reasoning_membership() {
         )
         .expect("register provider");
     let mut replacement = config
-        .default_agent
+        .bot_defaults
         .as_ref()
         .expect("default")
         .config
@@ -722,11 +711,11 @@ fn default_and_persisted_config_validate_custom_reasoning_membership() {
     replacement.provider.reasoning_effort = Some("low".into());
 
     let replace_error = config
-        .replacing_default_agent(1, replacement)
+        .replacing_bot_defaults(1, replacement)
         .expect_err("default reasoning must be in the catalog");
     let mut persisted = config;
     persisted
-        .default_agent
+        .bot_defaults
         .as_mut()
         .expect("default")
         .config
@@ -741,7 +730,7 @@ fn default_and_persisted_config_validate_custom_reasoning_membership() {
 }
 
 #[test]
-fn chat_replacement_rejects_out_of_catalog_model_and_reasoning() {
+fn provider_catalog_rejects_out_of_catalog_model_and_reasoning() {
     let model = "vendor/model".to_string();
     let gateway = GatewayConfig::new(DEFAULT_LISTEN, None)
         .expect("gateway config")
@@ -761,25 +750,26 @@ fn chat_replacement_rejects_out_of_catalog_model_and_reasoning() {
             vec!["high".into(), "medium".into()],
         )
         .expect("register provider");
-    let workspace = tempfile::tempdir().expect("workspace");
-    let state = tempfile::tempdir().expect("state");
-    let chat = ChatSpec::new(
-        workspace.path(),
-        gateway.default_agent.clone().expect("default"),
-        state.path(),
-        None,
-    )
-    .expect("chat spec");
-    let mut invalid_model = chat.agent.config.clone();
+    let mut invalid_model = gateway
+        .bot_defaults
+        .as_ref()
+        .expect("default")
+        .config
+        .clone();
     invalid_model.provider.model = "vendor/unknown".into();
-    let mut invalid_reasoning = chat.agent.config.clone();
+    let mut invalid_reasoning = gateway
+        .bot_defaults
+        .as_ref()
+        .expect("default")
+        .config
+        .clone();
     invalid_reasoning.provider.reasoning_effort = Some("low".into());
 
-    let model_error = chat
-        .replacing_agent(1, invalid_model, &gateway, state.path(), None)
+    let model_error = gateway
+        .validate_provider_selection(&invalid_model.provider)
         .expect_err("chat model must be in the catalog");
-    let reasoning_error = chat
-        .replacing_agent(1, invalid_reasoning, &gateway, state.path(), None)
+    let reasoning_error = gateway
+        .validate_provider_selection(&invalid_reasoning.provider)
         .expect_err("chat reasoning must be in the catalog");
 
     assert!(model_error.to_string().contains("selection model"));
@@ -800,15 +790,17 @@ fn saving_defaults_is_revisioned_and_does_not_change_existing_chat_specs() {
         .expect("register provider");
     let workspace = tempfile::tempdir().expect("workspace");
     let state = tempfile::tempdir().expect("state");
-    let chat = ChatSpec::new(
-        workspace.path(),
-        registered.default_agent.clone().expect("default"),
-        state.path(),
-        None,
-    )
-    .expect("chat spec");
+    let bot = crate::wire::BotRecord {
+        id: "bot-fixture".into(),
+        handle: "fixture".into(),
+        name: "Fixture".into(),
+        description: "Own fixture work.".into(),
+        tint: ProviderTint::default(),
+        config: registered.bot_defaults.clone().expect("Bot defaults"),
+    };
+    let chat = ChatSpec::for_bot(workspace.path(), &bot, state.path(), None).expect("chat spec");
     let mut replacement = registered
-        .default_agent
+        .bot_defaults
         .as_ref()
         .expect("default")
         .config
@@ -816,18 +808,25 @@ fn saving_defaults_is_revisioned_and_does_not_change_existing_chat_specs() {
     replacement.middleware.set_enabled("tasks", true);
 
     let updated = registered
-        .replacing_default_agent(1, replacement.clone())
+        .replacing_bot_defaults(1, replacement.clone())
         .expect("replace defaults");
 
-    assert_eq!(updated.default_agent.as_ref().expect("default").revision, 2);
     assert_eq!(
-        updated.default_agent.as_ref().expect("default").config,
+        updated
+            .bot_defaults
+            .as_ref()
+            .expect("Bot defaults")
+            .revision,
+        2
+    );
+    assert_eq!(
+        updated.bot_defaults.as_ref().expect("Bot defaults").config,
         replacement
     );
     assert_eq!(chat.agent.revision, 1);
     assert!(
         registered
-            .replacing_default_agent(2, AgentComposition::default())
+            .replacing_bot_defaults(2, AgentComposition::default())
             .expect_err("stale revision")
             .to_string()
             .contains("revision changed")
@@ -898,11 +897,11 @@ fn chats_keep_canonical_specs_for_different_worktrees() {
     fs::create_dir(&state).expect("state");
     fs::create_dir_all(&first).expect("first worktree");
     fs::create_dir(&second).expect("second worktree");
-    let agent = test_agent();
+    let bot = test_bot();
 
-    let first_spec = ChatSpec::new(&first.join("..").join("first"), agent.clone(), &state, None)
+    let first_spec = ChatSpec::for_bot(&first.join("..").join("first"), &bot, &state, None)
         .expect("first chat spec");
-    let second_spec = ChatSpec::new(&second, agent, &state, None).expect("second chat spec");
+    let second_spec = ChatSpec::for_bot(&second, &bot, &state, None).expect("second chat spec");
 
     assert_eq!(
         first_spec.workspace,
@@ -924,11 +923,11 @@ fn chat_specs_reject_both_state_overlap_directions() {
     let workspace_inside = state_parent.join("workspace");
     fs::create_dir_all(&state_inside).expect("nested state");
     fs::create_dir_all(&workspace_inside).expect("nested workspace");
-    let agent = test_agent();
+    let bot = test_bot();
 
-    let state_inside_error = ChatSpec::new(&workspace_parent, agent.clone(), &state_inside, None)
+    let state_inside_error = ChatSpec::for_bot(&workspace_parent, &bot, &state_inside, None)
         .expect_err("state inside workspace must fail");
-    let workspace_inside_error = ChatSpec::new(&workspace_inside, agent, &state_parent, None)
+    let workspace_inside_error = ChatSpec::for_bot(&workspace_inside, &bot, &state_parent, None)
         .expect_err("workspace inside state must fail");
 
     assert!(state_inside_error.to_string().contains("must not overlap"));
@@ -1015,9 +1014,9 @@ fn chat_spec_rejects_a_tls_private_key_inside_its_workspace() {
         certificate,
         private_key,
     };
-    let agent = test_agent();
+    let bot = test_bot();
 
-    let error = ChatSpec::new(&workspace, agent, &state, Some(&tls))
+    let error = ChatSpec::for_bot(&workspace, &bot, &state, Some(&tls))
         .expect_err("workspace TLS key must fail");
 
     assert!(error.to_string().contains("outside every chat workspace"));
@@ -1030,26 +1029,34 @@ fn chat_spec_metadata_round_trips_and_revalidates_tampering() {
     let state = root.path().join("state");
     fs::create_dir(&workspace).expect("workspace");
     fs::create_dir(&state).expect("state");
-    let agent = test_agent();
-    let spec = ChatSpec::new(&workspace, agent, &state, None).expect("chat spec");
+    let bots = crate::bots::BotStore::open(&state).expect("Bots");
+    let bot = bots
+        .create_bot("Fixture", "Own fixture work.", AgentComposition::default())
+        .expect("Bot");
+    let spec = ChatSpec::for_bot(&workspace, &bot, &state, None).expect("chat spec");
     let mut metadata = spec.metadata().expect("chat metadata");
+    assert_eq!(metadata[CHAT_SPEC_METADATA_KEY]["version"], 13);
 
     assert_eq!(
-        ChatSpec::from_metadata(&metadata, &state, None).expect("restore chat spec"),
+        ChatSpec::from_metadata(&metadata, &bots, &state, None).expect("restore chat spec"),
         spec
     );
-    let mut previous = metadata.clone();
-    previous
-        .get_mut(CHAT_SPEC_METADATA_KEY)
-        .and_then(Value::as_object_mut)
-        .expect("chat metadata object")
-        .insert("version".into(), Value::from(6));
-    assert!(
-        ChatSpec::from_metadata(&previous, &state, None)
-            .expect_err("v6 chat specification must be rejected")
-            .to_string()
-            .contains("unsupported chat configuration version 6")
-    );
+    for version in [10, 12] {
+        let mut previous = metadata.clone();
+        previous
+            .get_mut(CHAT_SPEC_METADATA_KEY)
+            .and_then(Value::as_object_mut)
+            .expect("chat metadata object")
+            .insert("version".into(), Value::from(version));
+        let unchanged = previous.clone();
+        assert!(
+            ChatSpec::from_metadata(&previous, &bots, &state, None)
+                .expect_err("older chat specification must be rejected")
+                .to_string()
+                .contains(&format!("unsupported chat configuration version {version}"))
+        );
+        assert_eq!(previous, unchanged);
+    }
     metadata
         .get_mut(CHAT_SPEC_METADATA_KEY)
         .and_then(Value::as_object_mut)
@@ -1060,7 +1067,7 @@ fn chat_spec_metadata_round_trips_and_revalidates_tampering() {
                 .expect("state path value"),
         );
 
-    let error = ChatSpec::from_metadata(&metadata, &state, None)
+    let error = ChatSpec::from_metadata(&metadata, &bots, &state, None)
         .expect_err("tampered workspace must be revalidated");
 
     assert!(error.to_string().contains("must not overlap"));

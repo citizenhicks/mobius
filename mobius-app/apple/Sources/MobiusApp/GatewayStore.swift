@@ -169,19 +169,22 @@ struct CachedTranscript: Codable, Sendable {
 }
 
 struct CachedChatCatalog: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 3
 
     let schemaVersion: Int
+    let bots: [BotRecord]
     let sessions: [SessionRecord]
     let swarms: [SwarmRecord]
     let lastSessionID: String?
 
     init(
+        bots: [BotRecord],
         sessions: [SessionRecord],
         swarms: [SwarmRecord],
         lastSessionID: String?
     ) {
         schemaVersion = Self.currentSchemaVersion
+        self.bots = bots
         self.sessions = sessions.map { session in
             SessionRecord(
                 sessionId: session.sessionId,
@@ -208,7 +211,7 @@ struct CachedChatCatalog: Codable, Equatable, Sendable {
             SwarmRecord(
                 id: swarm.id,
                 title: swarm.title,
-                leaderSessionId: swarm.leaderSessionId,
+                leaderBotId: swarm.leaderBotId,
                 members: swarm.members,
                 messages: [],
                 updatedAtMs: swarm.updatedAtMs
@@ -220,17 +223,34 @@ struct CachedChatCatalog: Codable, Equatable, Sendable {
     }
 
     fileprivate var isValid: Bool {
+        let botIDs = Set(bots.map(\.id))
+        let botHandles = Set(bots.map(\.handle))
         let sessionIDs = Set(sessions.map(\.sessionId))
-        return sessions.count <= 100
+        var swarmBotIDs = Set<String>()
+        return bots.count <= 100
+            && botIDs.count == bots.count
+            && !botIDs.contains("")
+            && botHandles.count == bots.count
+            && bots.allSatisfy { bot in
+                bot.handle == bot.handle.trimmingCharacters(in: .whitespacesAndNewlines)
+                    && !bot.handle.isEmpty
+                    && !bot.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    && !bot.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+            && sessions.count <= 100
             && sessionIDs.count == sessions.count
             && !sessionIDs.contains("")
+            && sessions.allSatisfy { botIDs.contains($0.sessionContext.botId) }
             && swarms.count <= 100
             && Set(swarms.map(\.id)).count == swarms.count
             && swarms.allSatisfy { swarm in
                 !swarm.id.isEmpty
                     && swarm.messages.isEmpty
-                    && Set(swarm.members.map(\.sessionId)).count == swarm.members.count
-                    && swarm.members.contains { $0.sessionId == swarm.leaderSessionId }
+                    && Set(swarm.members.map(\.botId)).count == swarm.members.count
+                    && swarm.members.contains { $0.botId == swarm.leaderBotId }
+                    && swarm.members.allSatisfy {
+                        botIDs.contains($0.botId) && swarmBotIDs.insert($0.botId).inserted
+                    }
             }
             && lastSessionID.map(sessionIDs.contains) ?? true
     }

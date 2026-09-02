@@ -60,6 +60,8 @@ struct PairingView: View {
                                     .font(MobiusStyle.controlFont)
                                 SecureField("One-time code", text: $model.pairingCode)
                                     .textFieldStyle(.roundedBorder)
+                                    .textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled()
                                     .controlSize(.large)
                             }
                         }

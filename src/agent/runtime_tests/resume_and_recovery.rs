@@ -42,6 +42,7 @@ async fn failed_message_submit_leaves_the_accepted_message_for_restart() {
             test_middleware(vec![Arc::new(FailFirstMessageSubmit(failed.clone()))]),
             "test prompt",
         )
+        .session_context(test_session_context())
         .session_id("message-submit-restart")
     };
     let checkpoint_store: Arc<dyn CheckpointStore> = checkpoints.clone();
@@ -116,6 +117,7 @@ async fn interrupted_approval_is_one_durable_terminal_transition() {
             )]))]),
             "test prompt",
         )
+        .session_context(test_session_context())
         .session_id("atomic-approval-interrupt")
     };
     let checkpoint_store: Arc<dyn CheckpointStore> = checkpoints.clone();
@@ -234,8 +236,10 @@ async fn resumed_agent_rejects_a_checkpoint_without_its_model_route() {
         SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
             .expect("checkpoint store"),
     );
+    let mut checkpoint = Checkpoint::empty("missing-route");
+    checkpoint.session_context = test_session_context();
     checkpoints
-        .save(&Checkpoint::empty("missing-route"), &[], None)
+        .save(&checkpoint, &[], None)
         .await
         .expect("save checkpoint");
     let checkpoint_store: Arc<dyn CheckpointStore> = checkpoints;
@@ -393,6 +397,7 @@ async fn new_agent_uses_its_configured_model_instead_of_global_state() {
             test_middleware(Vec::new()),
             "test prompt",
         )
+        .session_context(test_session_context())
         .session_id("fresh"),
     )
     .await
@@ -456,8 +461,9 @@ async fn resumed_agent_uses_the_durable_session_context() {
     );
     let checkpoint_store: Arc<dyn CheckpointStore> = checkpoints.clone();
     let durable_context = SessionContext {
+        bot_id: "test-bot".into(),
         workspace_label: Some("Project One".into()),
-        origin_label: Some("cron".into()),
+        origin_label: Some("routine".into()),
         ..SessionContext::default()
     };
     let mut agent = create_agent(
@@ -475,6 +481,7 @@ async fn resumed_agent_uses_the_durable_session_context() {
     let checkpoint_store: Arc<dyn CheckpointStore> = checkpoints;
     let mut resumed = create_agent(
         config(workspace.path(), checkpoint_store, "target").session_context(SessionContext {
+            bot_id: "wrong-bot".into(),
             workspace_label: Some("wrong workspace".into()),
             ..SessionContext::default()
         }),
@@ -582,9 +589,10 @@ async fn resume_request_carries_the_target_session_context() {
             .expect("checkpoint store"),
     );
     let target_context = SessionContext {
+        bot_id: "test-bot".into(),
         workspace_id: Some("workspace-two".into()),
         workspace_label: Some("Project Two".into()),
-        origin_label: Some("cron".into()),
+        origin_label: Some("routine".into()),
         ..SessionContext::default()
     };
     let mut target = Checkpoint::empty("target");
@@ -635,6 +643,7 @@ async fn zero_replay_mode_emits_uncertain_tool_recovery_as_individual_events() {
         arguments: serde_json::json!({"path": "note.txt", "content": "hello"}),
     };
     let mut target = Checkpoint::empty("target");
+    target.session_context = test_session_context();
     target.model_route = Some("test".into());
     target.active_execution = Some(crate::backend::checkpoint::ActiveExecution {
         submission_id: "submission-1".into(),
@@ -753,6 +762,7 @@ async fn restart_resolves_a_durable_turn_completion_instead_of_aborting_it() {
             .expect("checkpoint store"),
     );
     let mut checkpoint = Checkpoint::empty("resume-completion");
+    checkpoint.session_context = test_session_context();
     checkpoint.model_route = Some("test".into());
     checkpoint.active_execution = Some(crate::backend::checkpoint::ActiveExecution {
         submission_id: "submission-1".into(),
@@ -806,6 +816,7 @@ async fn restart_resumes_the_same_model_cursor() {
             .expect("checkpoint store"),
     );
     let mut checkpoint = Checkpoint::empty("resume-model");
+    checkpoint.session_context = test_session_context();
     checkpoint.model_route = Some("test".into());
     checkpoint.active_execution = Some(crate::backend::checkpoint::ActiveExecution {
         submission_id: "submission-1".into(),
@@ -873,6 +884,7 @@ async fn restart_closes_an_active_model_step_with_the_recovery_checkpoint() {
             .expect("checkpoint store"),
     );
     let mut checkpoint = Checkpoint::empty("recover-step");
+    checkpoint.session_context = test_session_context();
     checkpoint.model_route = Some("test".into());
     checkpoint.active_execution = Some(crate::backend::checkpoint::ActiveExecution {
         submission_id: "submission-1".into(),

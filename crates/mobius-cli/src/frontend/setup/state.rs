@@ -49,7 +49,7 @@ pub(super) enum Flow {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ApplyTarget {
-    Session,
+    Bot,
     Default,
 }
 
@@ -181,7 +181,8 @@ impl SetupState {
             original,
             page: match mode {
                 SetupMode::Login => Page::Provider,
-                SetupMode::Agent => Page::Agent,
+                SetupMode::Bot => Page::Agent,
+                SetupMode::BotModel => Page::Models,
             },
             provider,
             new_instance: Uuid::new_v4().to_string(),
@@ -203,7 +204,7 @@ impl SetupState {
             target: if default_only {
                 ApplyTarget::Default
             } else {
-                ApplyTarget::Session
+                ApplyTarget::Bot
             },
             default_only,
             row: 0,
@@ -392,8 +393,7 @@ impl SetupState {
         };
         match (self.default_only, self.row.checked_sub(start)) {
             (true, Some(0)) => Some(ApplyTarget::Default),
-            (false, Some(0)) => Some(ApplyTarget::Session),
-            (false, Some(1)) => Some(ApplyTarget::Default),
+            (false, Some(0)) => Some(ApplyTarget::Bot),
             _ => None,
         }
     }
@@ -406,9 +406,9 @@ impl SetupState {
                 self.model_choice_count()
                     + self.reasoning_choice_count()
                     + self.search_choice_count()
-                    + if self.default_only { 1 } else { 2 }
+                    + 1
             }
-            Page::Agent => self.agent_action_start() + if self.default_only { 1 } else { 2 },
+            Page::Agent => self.agent_action_start() + 1,
         }
     }
 
@@ -522,6 +522,9 @@ impl SetupState {
         let custom_row = self.definition().model_ids_configurable.then_some(0);
         match key.code {
             KeyCode::Esc => {
+                if self.mode == SetupMode::BotModel {
+                    return Flow::Cancel;
+                }
                 self.page = Page::Authentication;
                 self.error = None;
             }
@@ -915,7 +918,7 @@ impl SetupState {
     }
 
     pub(super) fn authentication_ready(&self) -> Result<()> {
-        if self.mode == SetupMode::Agent {
+        if self.mode != SetupMode::Login {
             return Ok(());
         }
         if self.definition().configurable_base_url()
@@ -930,7 +933,7 @@ impl SetupState {
 
     pub(super) fn take_authentication(&mut self) -> Result<Authentication> {
         self.authentication_ready()?;
-        if self.mode == SetupMode::Agent {
+        if self.mode != SetupMode::Login {
             return Ok(Authentication::Reuse);
         }
         match self.definition().auth {
@@ -952,7 +955,7 @@ impl SetupState {
 
     pub(super) fn agent_composition(&self, current: &AgentComposition) -> Result<AgentComposition> {
         let mut config = current.clone();
-        if self.mode == SetupMode::Agent {
+        if self.mode == SetupMode::Bot {
             config.middleware = self.middleware.clone();
             config.extensions = self.selected_extensions.clone();
             return Ok(config);
@@ -1003,6 +1006,10 @@ impl SetupState {
             reasoning_effort,
             web_search,
         };
+        if self.mode == SetupMode::BotModel {
+            config.middleware = current.middleware.clone();
+            config.extensions = current.extensions.clone();
+        }
         Ok(config)
     }
 

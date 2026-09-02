@@ -8,8 +8,8 @@ use ratatui::widgets::{Block, Paragraph, Wrap};
 
 use super::state::{AuthField, MiddlewareRow, Page, Progress, SetupState};
 use super::{
-    CHANGE_CHAT_DESCRIPTION, CHANGE_CHAT_LABEL, MIN_INLINE_DESCRIPTION_WIDTH,
-    SAVE_DEFAULT_DESCRIPTION, SAVE_DEFAULT_LABEL, SetupMode, SetupTerminal,
+    MIN_INLINE_DESCRIPTION_WIDTH, SAVE_DEFAULT_DESCRIPTION, SAVE_DEFAULT_LABEL, SetupMode,
+    SetupTerminal, UPDATE_BOT_DESCRIPTION, UPDATE_BOT_LABEL,
 };
 use crate::frontend::terminal::terminal_text;
 use crate::frontend::theme::{Role, current};
@@ -57,7 +57,7 @@ pub(super) fn render(frame: &mut ratatui::Frame<'_>, state: &SetupState) {
     );
 }
 
-pub(super) fn selection_scroll(lines: &[Line<'_>], area: Rect) -> u16 {
+pub(in crate::frontend) fn selection_scroll(lines: &[Line<'_>], area: Rect) -> u16 {
     if area.width == 0 || area.height == 0 {
         return 0;
     }
@@ -77,7 +77,7 @@ pub(super) fn selection_scroll(lines: &[Line<'_>], area: Rect) -> u16 {
         .min(usize::from(u16::MAX)) as u16
 }
 
-pub(super) fn content_area(area: Rect) -> Rect {
+pub(in crate::frontend) fn content_area(area: Rect) -> Rect {
     let width = area.width.saturating_sub(4).min(82);
     Rect::new(
         area.x + area.width.saturating_sub(width) / 2,
@@ -88,6 +88,13 @@ pub(super) fn content_area(area: Rect) -> Rect {
 }
 
 pub(super) fn header(state: &SetupState) -> Vec<Line<'static>> {
+    brand_header(match state.mode {
+        SetupMode::Login => "provider login",
+        SetupMode::Bot | SetupMode::BotModel => "Bot setup",
+    })
+}
+
+pub(in crate::frontend) fn brand_header(section: &str) -> Vec<Line<'static>> {
     let theme = current();
     vec![Line::from(vec![
         Span::styled("◉ ", theme.style(Role::AccentStrong)),
@@ -95,13 +102,7 @@ pub(super) fn header(state: &SetupState) -> Vec<Line<'static>> {
             "MÖBIUS",
             theme.style(Role::Accent).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            match state.mode {
-                SetupMode::Login => " provider login",
-                SetupMode::Agent => " agent setup",
-            },
-            theme.style(Role::Muted),
-        ),
+        Span::styled(format!(" {section}"), theme.style(Role::Muted)),
     ])]
 }
 
@@ -160,7 +161,7 @@ pub(super) fn page_prompt(state: &SetupState) -> (&'static str, String) {
             "Review the manifest, select defaults, or enter a custom model ID.".into(),
         ),
         Page::Agent => (
-            "Agent settings",
+            "Bot settings",
             "Toggle capabilities, adjust settings, and select installed extensions.".into(),
         ),
     }
@@ -477,11 +478,11 @@ pub(super) fn agent_layout(state: &SetupState, width: usize) -> AgentLayout {
         .map(|extension| 10 + display_width(&terminal_text(&extension.name)))
         .max()
         .unwrap_or(0);
-    let action_end = if state.default_only {
-        6 + display_width(SAVE_DEFAULT_LABEL)
+    let action_end = 6 + display_width(if state.default_only {
+        SAVE_DEFAULT_LABEL
     } else {
-        6 + display_width(CHANGE_CHAT_LABEL).max(display_width(SAVE_DEFAULT_LABEL))
-    };
+        UPDATE_BOT_LABEL
+    });
     let description_column = setting_end
         .max(feature_end)
         .max(extension_end)
@@ -723,7 +724,7 @@ pub(super) fn render_apply_actions(
         apply_choice(
             lines,
             SAVE_DEFAULT_LABEL,
-            "Use these settings for future chats",
+            SAVE_DEFAULT_DESCRIPTION,
             state.row == start,
             layout,
         );
@@ -731,16 +732,9 @@ pub(super) fn render_apply_actions(
     }
     apply_choice(
         lines,
-        CHANGE_CHAT_LABEL,
-        CHANGE_CHAT_DESCRIPTION,
+        UPDATE_BOT_LABEL,
+        UPDATE_BOT_DESCRIPTION,
         state.row == start,
-        layout,
-    );
-    apply_choice(
-        lines,
-        SAVE_DEFAULT_LABEL,
-        SAVE_DEFAULT_DESCRIPTION,
-        state.row == start + 1,
         layout,
     );
 }
@@ -759,7 +753,7 @@ pub(super) fn apply_choice(
     }
 }
 
-pub(super) fn choice(
+pub(in crate::frontend) fn choice(
     lines: &mut Vec<Line<'static>>,
     label: &str,
     description: &str,

@@ -83,6 +83,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
     if is_new {
         state.session_context.clone_from(&config.session_context);
         state.metadata.clone_from(&config.metadata);
+        state.catalog_visible = config.catalog_visible;
     } else {
         config.session_context.clone_from(&state.session_context);
         if config.metadata_configured {

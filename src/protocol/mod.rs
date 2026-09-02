@@ -80,6 +80,8 @@ pub struct Submission {
 /// backends when it creates the agent.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionContext {
+    /// Immutable identity of the Bot that owns this session.
+    pub bot_id: String,
     /// Opaque tenant or organization identifier.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tenant_id: Option<String>,
@@ -640,12 +642,13 @@ mod tests {
         let event = EventMsg::SessionConfigured(SessionConfiguredEvent {
             session_id: "session-1".into(),
             context: SessionContext {
+                bot_id: "bot-1".into(),
                 tenant_id: Some("tenant-1".into()),
                 user_id: Some("user-1".into()),
                 user_name: Some("Ada".into()),
                 workspace_id: Some("workspace-1".into()),
                 workspace_label: Some("Project One".into()),
-                origin_label: Some("cron".into()),
+                origin_label: Some("routine".into()),
             },
             model: ModelChangedEvent {
                 route: "default".into(),
@@ -661,12 +664,13 @@ mod tests {
                 "type": "session_configured",
                 "session_id": "session-1",
                 "context": {
+                    "bot_id": "bot-1",
                     "tenant_id": "tenant-1",
                     "user_id": "user-1",
                     "user_name": "Ada",
                     "workspace_id": "workspace-1",
                     "workspace_label": "Project One",
-                    "origin_label": "cron"
+                    "origin_label": "routine"
                 },
                 "model": {
                     "route": "default",
@@ -683,8 +687,9 @@ mod tests {
         let event = EventMsg::SessionResumeRequested(SessionResumeRequestedEvent {
             session_id: "session-2".into(),
             context: SessionContext {
+                bot_id: "bot-2".into(),
                 workspace_label: Some("Project Two".into()),
-                origin_label: Some("cron".into()),
+                origin_label: Some("routine".into()),
                 ..SessionContext::default()
             },
         });
@@ -695,10 +700,22 @@ mod tests {
                 "type": "session_resume_requested",
                 "session_id": "session-2",
                 "context": {
+                    "bot_id": "bot-2",
                     "workspace_label": "Project Two",
-                    "origin_label": "cron"
+                    "origin_label": "routine"
                 }
             })
+        );
+    }
+
+    #[test]
+    fn session_context_hard_requires_bot_ownership() {
+        assert!(serde_json::from_value::<SessionContext>(json!({})).is_err());
+        assert_eq!(
+            serde_json::from_value::<SessionContext>(json!({"bot_id": "bot-1"}))
+                .expect("required Bot context")
+                .bot_id,
+            "bot-1"
         );
     }
 

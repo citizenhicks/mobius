@@ -14,7 +14,7 @@ use super::runtime::{
     activate_overlay, handle_action_input_key, moved_index, ordered_sessions,
     prepare_overlay_operation,
 };
-use super::state::CapabilityOverlay;
+use super::state::{CapabilityOverlay, DashboardFocus};
 use super::view::{render_action_list, token_total_for_day};
 
 #[test]
@@ -62,6 +62,22 @@ fn moved_index_clamps_scroll_to_the_history() {
 }
 
 #[test]
+fn dashboard_focus_cycles_through_bots() {
+    assert_eq!(
+        (
+            DashboardFocus::Devices.next(),
+            DashboardFocus::Chats.next(),
+            DashboardFocus::Bots.next(),
+        ),
+        (
+            DashboardFocus::Chats,
+            DashboardFocus::Bots,
+            DashboardFocus::Devices,
+        )
+    );
+}
+
+#[test]
 fn session_identity_survives_activity_sorting() {
     let mut sessions = vec![
         session("selected", SessionActivityState::Idle),
@@ -99,8 +115,8 @@ fn open_widget_tracks_updates_and_submits_the_advertised_operation() {
         input: None,
     };
     overlay.sync_selection();
-    let op = Op::SetModel {
-        route: "route-a".into(),
+    let op = Op::ResumeSession {
+        session_id: "session-2".into(),
     };
     overlay.apply(FrontendEvent::Widget {
         capability: key.0.clone(),

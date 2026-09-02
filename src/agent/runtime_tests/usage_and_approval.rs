@@ -19,6 +19,7 @@ async fn idle_session_start_stop_does_not_consume_the_next_prompt() {
         test_middleware(vec![Arc::new(StoppingSessionStart)]),
         "test prompt",
     )
+    .session_context(test_session_context())
     .session_id("startup-session-stop");
     let mut agent = create_agent(config).await.expect("create agent");
     agent
@@ -51,6 +52,7 @@ async fn rejected_prompt_aborts_without_persisting_or_wedging_the_next_turn() {
         test_middleware(vec![Arc::new(RejectFirstPrompt(AtomicBool::new(false)))]),
         "test prompt",
     )
+    .session_context(test_session_context())
     .session_id("rejected-prompt");
     let mut agent = create_agent(config).await.expect("create agent");
     let rejected_submission = agent
@@ -134,6 +136,7 @@ async fn pre_tool_hook_context_is_durable_before_open_call_at_approval() {
         ]),
         "test prompt",
     )
+    .session_context(test_session_context())
     .session_id("pre-tool-hook-approval");
     let mut agent = create_agent(config).await.expect("create agent");
     agent
@@ -216,6 +219,7 @@ async fn post_tool_hook_context_follows_only_executed_tool_outputs() {
         ]),
         "test prompt",
     )
+    .session_context(test_session_context())
     .session_id("tool-hook-context");
     let mut agent = create_agent(config).await.expect("create agent");
     agent
@@ -288,6 +292,7 @@ async fn assert_compaction_stop(
         ]),
         "test prompt",
     )
+    .session_context(test_session_context())
     .session_id(session_id);
     let mut agent = create_agent(config).await.expect("create agent");
     agent
@@ -382,6 +387,7 @@ async fn compaction_marker_survives_transcript_replay() {
         )]),
         "test prompt",
     )
+    .session_context(test_session_context())
     .session_id("durable-compaction");
     let mut agent = create_agent(config).await.expect("create agent");
     agent
@@ -713,6 +719,7 @@ async fn cloned_agent_config_inherits_route_aware_usage_observer() {
         test_middleware(Vec::new()),
         "test prompt",
     )
+    .session_context(test_session_context())
     .usage_observer(move |route, usage| {
         usage_observer
             .lock()
@@ -767,6 +774,7 @@ async fn failing_usage_observer_aborts_before_checkpoint_usage_is_committed() {
         test_middleware(Vec::new()),
         "test prompt",
     )
+    .session_context(test_session_context())
     .session_id("usage-observer-failure")
     .usage_observer(|_, _| Err(Error::Checkpoint("usage sink failed".into())));
     let mut agent = create_agent(config).await.expect("create agent");

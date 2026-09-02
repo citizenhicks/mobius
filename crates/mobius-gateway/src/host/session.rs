@@ -3,10 +3,11 @@ mod runtime;
 
 use super::*;
 use mobius::backend::model::provider::provider;
-use mobius::middleware::swarm::SwarmBackend;
+use mobius::middleware::bots::BotsBackend;
+#[cfg(test)]
+pub(in crate::host) use runtime::fail_queued_routine_commands;
 
 pub(super) type SessionWidgets = Vec<((String, String), mobius::protocol::FrontendWidget)>;
-const CRON_EXECUTION_METADATA_KEY: &str = "mobius_gateway.cron_execution";
 
 #[derive(Clone)]
 pub(crate) struct HostHandle {
@@ -23,6 +24,7 @@ impl Drop for HostHandle {
 
 pub(super) struct HostInner {
     pub(super) session_id: Arc<str>,
+    pub(super) bot_id: Arc<str>,
     pub(super) commands: mpsc::Sender<HostCommand>,
     pub(super) events: broadcast::Sender<ServerFrame>,
     pub(super) accepts_file_attachments: Arc<AtomicBool>,
@@ -34,7 +36,7 @@ struct HostState {
     gateway: Arc<StdMutex<GatewayConfig>>,
     spec: ChatSpec,
     credentials: Arc<CredentialStore>,
-    cron: Arc<CronStore>,
+    bots: Arc<BotStore>,
     checkpoints: Arc<dyn CheckpointStore>,
     scratchpad: ScratchpadStore,
     session_files: SessionFileStore,
@@ -52,7 +54,7 @@ struct HostState {
     turn_error: Option<String>,
     restart_after_turn: bool,
     pending_startup: Vec<ServerFrame>,
-    active_cron: Option<ActiveCron>,
+    active_routine: Option<ActiveRoutine>,
     sequence: u64,
     pub(super) replay: VecDeque<ServerFrame>,
     pub(super) replay_bytes: usize,
@@ -91,13 +93,11 @@ struct ReusableModelRouter {
 }
 
 pub(super) struct ProviderCutoverStatus {
-    pub(super) selection: ProviderConfig,
-    pub(super) provider_epoch: u64,
     pub(super) idle: bool,
 }
 
-pub(super) struct ActiveCron {
-    pub(super) run: ActiveCronRun,
+pub(super) struct ActiveRoutine {
+    pub(super) run: ActiveRoutineRun,
     pub(super) submission_id: String,
     pub(super) turn_id: Option<String>,
     pub(super) failure: Option<String>,
@@ -126,9 +126,8 @@ pub(super) enum HostCommand {
         submission: Submission,
         reply: oneshot::Sender<std::result::Result<(), Rejection>>,
     },
-    Configure {
-        expected_revision: u64,
-        config: AgentComposition,
+    ReloadBot {
+        bot: crate::wire::BotRecord,
         reply: oneshot::Sender<std::result::Result<(), Rejection>>,
     },
     GitDiff {
@@ -165,15 +164,8 @@ pub(super) enum HostCommand {
     ProviderCutoverStatus {
         reply: oneshot::Sender<ProviderCutoverStatus>,
     },
-    CutOverProvider {
-        selection: ProviderConfig,
-        reply: oneshot::Sender<std::result::Result<(), Rejection>>,
-    },
-    ReloadProviderCatalog {
-        reply: oneshot::Sender<std::result::Result<(), Rejection>>,
-    },
-    RunCron {
-        run: ActiveCronRun,
+    RunRoutine {
+        run: ActiveRoutineRun,
         input: String,
         reply: oneshot::Sender<std::result::Result<(), Rejection>>,
     },
@@ -205,6 +197,10 @@ pub(super) enum JournalDelivery {
 }
 
 impl HostHandle {
+    pub(crate) fn bot_id(&self) -> &str {
+        &self.inner.bot_id
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "one chat actor receives each owned gateway dependency explicitly"
@@ -214,7 +210,7 @@ impl HostHandle {
         gateway: Arc<StdMutex<GatewayConfig>>,
         spec: ChatSpec,
         credentials: Arc<CredentialStore>,
-        cron: Arc<CronStore>,
+        bots: Arc<BotStore>,
         checkpoints: Arc<dyn CheckpointStore>,
         scratchpad: ScratchpadStore,
         session_files: SessionFileStore,
@@ -227,17 +223,6 @@ impl HostHandle {
         session_id: String,
         origin_label: &str,
     ) -> Result<Self> {
-        let (spec, override_saved_model_route) = {
-            let config = gateway
-                .lock()
-                .map_err(|_| Error::Config("gateway configuration lock is poisoned".into()))?
-                .clone();
-            let normalized =
-                spec.normalizing_provider_catalog(&config, store.state_dir(), config.tls.as_ref())?;
-            let override_saved_model_route =
-                normalized.agent.config.provider != spec.agent.config.provider;
-            (normalized, override_saved_model_route)
-        };
         let running = start_agent(
             Arc::clone(&gateway),
             &spec,
@@ -249,7 +234,7 @@ impl HostHandle {
             Arc::clone(&swarm),
             session_id.clone(),
             origin_label,
-            override_saved_model_route,
+            true,
             None,
             Arc::clone(&provider_epoch),
         )
@@ -266,12 +251,13 @@ impl HostHandle {
             .map_err(|_| Error::Config("session activity lock is poisoned".into()))?
             .entry(session_id.clone())
             .or_default();
+        let bot_id = spec.bot_id.clone();
         let mut state = HostState {
             store,
             gateway,
             spec,
             credentials,
-            cron,
+            bots,
             checkpoints,
             scratchpad,
             session_files,
@@ -289,7 +275,7 @@ impl HostHandle {
             turn_error: None,
             restart_after_turn: false,
             pending_startup: Vec::new(),
-            active_cron: None,
+            active_routine: None,
             sequence: loaded.latest_sequence,
             replay: loaded.replay,
             replay_bytes: loaded.replay_bytes,
@@ -306,6 +292,7 @@ impl HostHandle {
         Ok(Self {
             inner: Arc::new(HostInner {
                 session_id: session_id.into(),
+                bot_id: bot_id.into(),
                 commands,
                 events,
                 accepts_file_attachments,
@@ -397,18 +384,12 @@ impl HostHandle {
         receive(receiver).await
     }
 
-    pub(crate) async fn configure(
+    pub(crate) async fn reload_bot(
         &self,
-        expected_revision: u64,
-        config: AgentComposition,
+        bot: crate::wire::BotRecord,
     ) -> std::result::Result<(), Rejection> {
         let (reply, receiver) = oneshot::channel();
-        self.send(HostCommand::Configure {
-            expected_revision,
-            config,
-            reply,
-        })
-        .await?;
+        self.send(HostCommand::ReloadBot { bot, reply }).await?;
         receive(receiver).await
     }
 
@@ -499,46 +480,26 @@ impl HostHandle {
         receiver.await.map_err(|_| stopped())
     }
 
-    pub(super) async fn cut_over_provider(
+    pub(crate) async fn run_routine(
         &self,
-        selection: &ProviderConfig,
-    ) -> std::result::Result<(), Rejection> {
-        let (reply, receiver) = oneshot::channel();
-        self.send(HostCommand::CutOverProvider {
-            selection: selection.clone(),
-            reply,
-        })
-        .await?;
-        receive(receiver).await
-    }
-
-    pub(super) async fn reload_provider_catalog(&self) -> std::result::Result<(), Rejection> {
-        let (reply, receiver) = oneshot::channel();
-        self.send(HostCommand::ReloadProviderCatalog { reply })
-            .await?;
-        receive(receiver).await
-    }
-
-    pub(crate) async fn run_cron(
-        &self,
-        run: ActiveCronRun,
+        run: ActiveRoutineRun,
         input: String,
-        cron: &CronStore,
+        bots: &BotStore,
     ) -> std::result::Result<(), Rejection> {
         let (reply, receiver) = oneshot::channel();
         if let Err(error) = self
             .inner
             .commands
-            .send(HostCommand::RunCron { run, input, reply })
+            .send(HostCommand::RunRoutine { run, input, reply })
             .await
         {
-            let HostCommand::RunCron { run, .. } = error.0 else {
-                unreachable!("only a cron command was sent")
+            let HostCommand::RunRoutine { run, .. } = error.0 else {
+                unreachable!("only a routine command was sent")
             };
-            cron.finish_run(
+            bots.finish_run(
                 run,
-                CronRunStatus::Failed,
-                Some("the agent stopped before the scheduled run began".into()),
+                RoutineRunStatus::Failed,
+                Some("the agent stopped before the Bot routine began".into()),
             )
             .map_err(internal)?;
             return Err(stopped());
@@ -611,23 +572,20 @@ pub(super) fn provider_refresh_matches(
     }
 }
 
-pub(super) fn fail_active_cron(
-    cron: &CronStore,
-    active: &mut Option<ActiveCron>,
+pub(super) fn fail_active_routine(
+    bots: &BotStore,
+    active: &mut Option<ActiveRoutine>,
     message: &str,
 ) -> Result<()> {
     let Some(active) = active.take() else {
         return Ok(());
     };
-    cron.finish_run(active.run, CronRunStatus::Failed, Some(message.to_string()))
-        .map(|_| ())
-}
-
-pub(super) fn setup_agent_config() -> VersionedAgentConfig {
-    VersionedAgentConfig {
-        revision: 1,
-        config: AgentComposition::default(),
-    }
+    bots.finish_run(
+        active.run,
+        RoutineRunStatus::Failed,
+        Some(message.to_string()),
+    )
+    .map(|_| ())
 }
 
 #[expect(
@@ -649,7 +607,7 @@ async fn start_agent(
     reusable_model_router: Option<ReusableModelRouter>,
     provider_epoch: Arc<AtomicU64>,
 ) -> Result<RunningAgent> {
-    let swarm: Arc<dyn SwarmBackend> = swarm;
+    let swarm: Arc<dyn BotsBackend> = swarm;
     let reusable_provider_epoch = reusable_model_router
         .as_ref()
         .map(|reusable| reusable.provider_epoch);
@@ -725,49 +683,4 @@ async fn shutdown_agent(agent: RunningAgent) {
     drop(sender);
     while events.recv().await.is_some() {}
     drop(subagent_template);
-}
-
-pub(super) fn cron_execution_checkpoint(
-    source: &Checkpoint,
-    session_id: &str,
-    origin_label: &str,
-) -> Checkpoint {
-    let mut checkpoint = Checkpoint::empty(session_id);
-    checkpoint
-        .session_context
-        .clone_from(&source.session_context);
-    checkpoint.session_context.origin_label = Some(origin_label.into());
-    checkpoint.catalog_visible = false;
-    checkpoint.metadata.clone_from(&source.metadata);
-    checkpoint.metadata.insert(
-        CRON_EXECUTION_METADATA_KEY.into(),
-        serde_json::Value::String(session_id.into()),
-    );
-    checkpoint.model_route.clone_from(&source.model_route);
-    checkpoint
-}
-
-pub(super) fn is_cron_execution_checkpoint(checkpoint: &Checkpoint) -> bool {
-    !checkpoint.catalog_visible
-        && checkpoint
-            .metadata
-            .get(CRON_EXECUTION_METADATA_KEY)
-            .and_then(serde_json::Value::as_str)
-            == Some(checkpoint.session_id.as_str())
-}
-
-pub(super) async fn hide_checkpoint(
-    checkpoints: &Arc<dyn CheckpointStore>,
-    session_id: &str,
-) -> Result<()> {
-    let Some(mut checkpoint) = checkpoints.load(session_id).await? else {
-        return Ok(());
-    };
-    checkpoint.catalog_visible = false;
-    checkpoint.sequence = checkpoint
-        .sequence
-        .checked_add(1)
-        .ok_or_else(|| Error::Config("checkpoint sequence overflow".into()))?;
-    checkpoints.save(&checkpoint, &[], None).await?;
-    Ok(())
 }

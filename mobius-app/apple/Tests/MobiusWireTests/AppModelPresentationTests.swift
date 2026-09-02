@@ -4,6 +4,64 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testWorkspaceSessionGroupingKeepsProjectOrderAndRecentChats() {
+        let sessions = [
+            session(
+                sessionID: "older-current",
+                state: .idle,
+                updatedAt: 100,
+                workspaceID: "current",
+                workspaceLabel: "/srv/current"
+            ),
+            session(
+                sessionID: "other",
+                state: .idle,
+                updatedAt: 300,
+                workspaceID: "other",
+                workspaceLabel: "/srv/other"
+            ),
+            session(
+                sessionID: "newer-current",
+                state: .idle,
+                updatedAt: 200,
+                workspaceID: "current",
+                workspaceLabel: "/srv/current"
+            ),
+        ]
+
+        let groups = WorkspaceSessions.grouped(sessions, prioritizing: "current")
+
+        XCTAssertEqual(groups.map(\.id), ["current", "other"])
+        XCTAssertEqual(groups[0].sessions.map(\.sessionId), ["newer-current", "older-current"])
+    }
+
+    func testChatBotFilterShowsAllOrAnySelectedBots() throws {
+        let model = try model()
+        model.bots = [
+            bot(id: "bot-a", handle: "alpha", name: "Alpha"),
+            bot(id: "bot-b", handle: "beta", name: "Beta"),
+            bot(id: "bot-c", handle: "gamma", name: "Gamma"),
+        ]
+        model.sessions = [
+            session(sessionID: "chat-a", state: .idle, botID: "bot-a"),
+            session(sessionID: "chat-b", state: .idle, botID: "bot-b"),
+            session(sessionID: "chat-c", state: .idle, botID: "bot-c"),
+        ]
+
+        XCTAssertEqual(model.chatCatalogSessions.map(\.sessionId), ["chat-a", "chat-b", "chat-c"])
+
+        model.chatBotFilterIDs = ["bot-a", "bot-c"]
+        XCTAssertEqual(model.chatCatalogSessions.map(\.sessionId), ["chat-a", "chat-c"])
+    }
+
+    func testCollapsedDurationUsesOneCompactNaturalUnit() {
+        let locale = Locale(identifier: "en_US")
+        XCTAssertEqual(formatCompactDuration(59, locale: locale), "59 secs")
+        XCTAssertEqual(formatCompactDuration(60, locale: locale), "1 mins")
+        XCTAssertEqual(formatCompactDuration(3_600, locale: locale), "1 hrs")
+        XCTAssertEqual(formatDuration(3_600), "60:00")
+    }
+
     func testMessageDeliverySymbolsUseTheirRequestedGlyphs() {
         XCTAssertEqual(MobiusSymbol.knownGlyph(for: "steer"), .workflowSquare03)
         XCTAssertEqual(MobiusSymbol.knownGlyph(for: "queue"), .queue01)
@@ -867,6 +925,38 @@ extension AppModelTests {
 
         XCTAssertEqual(model.sessions, [original])
         XCTAssertEqual(model.toast?.tone, .error)
+    }
+
+    func testSessionCatalogRejectsChatsOwnedByUnknownBots() throws {
+        let model = try model()
+        let helper = bot()
+        let original = session(state: .idle, botID: helper.id)
+        model.bots = [helper]
+        model.sessions = [original]
+
+        model.handle(.sessions(
+            requestID: nil,
+            sessions: [session(state: .running, botID: "missing-bot")]
+        ))
+
+        XCTAssertEqual(model.sessions, [original])
+        XCTAssertEqual(model.toast?.message, "The gateway returned a chat with an unknown Bot.")
+    }
+
+    func testAssistantAttributionResolvesCurrentBotCatalogIdentity() throws {
+        let model = try model()
+        model.sessions = [session(state: .idle, botID: "bot-1")]
+        model.bots = [bot(
+            id: "bot-1",
+            handle: "reviewer",
+            name: "Current Reviewer",
+            tint: .purple
+        )]
+
+        let bot = try XCTUnwrap(model.bot(forSessionID: "chat-1"))
+        XCTAssertEqual(bot.name, "Current Reviewer")
+        XCTAssertEqual(bot.tint, .purple)
+        XCTAssertNil(model.bot(forSessionID: "missing-chat"))
     }
 
     func testIdenticalSessionCatalogDoesNotPublishAChange() async throws {

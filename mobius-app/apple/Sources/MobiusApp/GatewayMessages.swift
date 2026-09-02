@@ -6,7 +6,7 @@ enum GatewayRequest: Encodable, Sendable {
     case listClients(requestID: String)
     case unpairClient(requestID: String, clientID: String)
     case listSessions(requestID: String)
-    case createSession(requestID: String, workspace: String)
+    case createSession(requestID: String, workspace: String, botID: String)
     case openSession(
         requestID: String,
         sessionID: String,
@@ -22,21 +22,37 @@ enum GatewayRequest: Encodable, Sendable {
     case deleteSession(requestID: String, sessionID: String)
     case createSwarm(
         requestID: String,
-        leaderSessionID: String,
-        memberSessionIDs: [String]
+        title: String,
+        leaderBotID: String,
+        memberBotIDs: [String]
     )
-    case addSwarmMember(requestID: String, swarmID: String, sessionID: String)
-    case leaveSwarm(requestID: String, swarmID: String, sessionID: String)
+    case addSwarmMember(requestID: String, swarmID: String, botID: String)
+    case leaveSwarm(requestID: String, swarmID: String, botID: String)
+    case renameSwarm(requestID: String, swarmID: String, title: String)
     case disbandSwarm(requestID: String, swarmID: String)
     case submit(sessionID: String, submission: Submission)
-    case submitGlobalScratchpad(requestID: String, operation: AgentOperation)
-    case configureSession(
+    case submitScratchpad(
         requestID: String,
-        sessionID: String,
+        scope: ScratchpadScope,
+        operation: AgentOperation
+    )
+    case createBot(
+        requestID: String,
+        name: String,
+        description: String
+    )
+    case listBots(requestID: String)
+    case updateBot(
+        requestID: String,
+        id: String,
         expectedRevision: UInt64,
+        name: String,
+        description: String,
+        tint: AccentTint,
         config: AgentComposition
     )
-    case configureDefaultAgent(
+    case deleteBot(requestID: String, id: String, expectedRevision: UInt64)
+    case configureBotDefaults(
         requestID: String,
         expectedRevision: UInt64,
         config: AgentComposition
@@ -126,27 +142,30 @@ enum GatewayRequest: Encodable, Sendable {
     case createPairingCode(requestID: String)
     case startProviderLogin(requestID: String, provider: String)
     case getProfile(requestID: String)
-    case createCron(
+    case createRoutine(
         requestID: String,
-        sourceSessionID: String,
-        task: String,
-        schedule: CronSchedule,
+        botID: String,
+        workspace: String,
+        instructions: String,
+        schedule: RoutineSchedule,
         endsAt: Int64?
     )
-    case listCron(requestID: String)
-    case updateCron(
+    case listRoutines(requestID: String, botID: String?)
+    case updateRoutine(
         requestID: String,
         id: String,
-        sourceSessionID: String,
-        task: String,
-        schedule: CronSchedule,
+        botID: String,
+        workspace: String,
+        instructions: String,
+        schedule: RoutineSchedule,
         endsAt: Int64?,
         enabled: Bool
     )
-    case deleteCron(requestID: String, id: String)
-    case runCron(requestID: String, id: String)
-    case listCronHistory(requestID: String, id: String?)
-    case getCronRunPreview(requestID: String, id: String, beforeSequence: UInt64?)
+    case deleteRoutine(requestID: String, id: String)
+    case deleteRoutineRun(requestID: String, id: String)
+    case runRoutine(requestID: String, id: String)
+    case listRoutineHistory(requestID: String, id: String?)
+    case getRoutineRunPreview(requestID: String, id: String, beforeSequence: UInt64?)
 
     // One exhaustive switch is the wire contract; splitting it would add fake dispatch.
     // swift-complexity:disable cyclomatic
@@ -173,10 +192,11 @@ enum GatewayRequest: Encodable, Sendable {
         case .listSessions(let requestID):
             try container.encode("list_sessions", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
-        case .createSession(let requestID, let workspace):
+        case .createSession(let requestID, let workspace, let botID):
             try container.encode("create_session", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
             try container.encode(workspace, forKey: "workspace")
+            try container.encode(botID, forKey: "botId")
         case .openSession(let requestID, let sessionID, let lastSequence):
             try container.encode("open_session", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
@@ -201,21 +221,27 @@ enum GatewayRequest: Encodable, Sendable {
             try container.encode("delete_session", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
             try container.encode(sessionID, forKey: "sessionId")
-        case .createSwarm(let requestID, let leaderSessionID, let memberSessionIDs):
+        case .createSwarm(let requestID, let title, let leaderBotID, let memberBotIDs):
             try container.encode("create_swarm", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
-            try container.encode(leaderSessionID, forKey: "leaderSessionId")
-            try container.encode(memberSessionIDs, forKey: "memberSessionIds")
-        case .addSwarmMember(let requestID, let swarmID, let sessionID):
+            try container.encode(title, forKey: "title")
+            try container.encode(leaderBotID, forKey: "leaderBotId")
+            try container.encode(memberBotIDs, forKey: "memberBotIds")
+        case .addSwarmMember(let requestID, let swarmID, let botID):
             try container.encode("add_swarm_member", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
             try container.encode(swarmID, forKey: "swarmId")
-            try container.encode(sessionID, forKey: "sessionId")
-        case .leaveSwarm(let requestID, let swarmID, let sessionID):
+            try container.encode(botID, forKey: "botId")
+        case .leaveSwarm(let requestID, let swarmID, let botID):
             try container.encode("leave_swarm", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
             try container.encode(swarmID, forKey: "swarmId")
-            try container.encode(sessionID, forKey: "sessionId")
+            try container.encode(botID, forKey: "botId")
+        case .renameSwarm(let requestID, let swarmID, let title):
+            try container.encode("rename_swarm", forKey: "type")
+            try container.encode(requestID, forKey: "requestId")
+            try container.encode(swarmID, forKey: "swarmId")
+            try container.encode(title, forKey: "title")
         case .disbandSwarm(let requestID, let swarmID):
             try container.encode("disband_swarm", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
@@ -224,18 +250,43 @@ enum GatewayRequest: Encodable, Sendable {
             try container.encode("submit", forKey: "type")
             try container.encode(sessionID, forKey: "sessionId")
             try container.encode(submission, forKey: "submission")
-        case .submitGlobalScratchpad(let requestID, let operation):
-            try container.encode("submit_global_scratchpad", forKey: "type")
+        case .submitScratchpad(let requestID, let scope, let operation):
+            try container.encode("submit_scratchpad", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
+            try container.encode(scope, forKey: "scope")
             try container.encode(operation, forKey: "operation")
-        case .configureSession(let requestID, let sessionID, let expectedRevision, let config):
-            try container.encode("configure_session", forKey: "type")
+        case .createBot(let requestID, let name, let description):
+            try container.encode("create_bot", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
-            try container.encode(sessionID, forKey: "sessionId")
+            try container.encode(name, forKey: "name")
+            try container.encode(description, forKey: "description")
+        case .listBots(let requestID):
+            try container.encode("list_bots", forKey: "type")
+            try container.encode(requestID, forKey: "requestId")
+        case .updateBot(
+            let requestID,
+            let id,
+            let expectedRevision,
+            let name,
+            let description,
+            let tint,
+            let config
+        ):
+            try container.encode("update_bot", forKey: "type")
+            try container.encode(requestID, forKey: "requestId")
+            try container.encode(id, forKey: "id")
             try container.encode(expectedRevision, forKey: "expectedRevision")
+            try container.encode(name, forKey: "name")
+            try container.encode(description, forKey: "description")
+            try container.encode(tint, forKey: "tint")
             try container.encode(config, forKey: "config")
-        case .configureDefaultAgent(let requestID, let expectedRevision, let config):
-            try container.encode("configure_default_agent", forKey: "type")
+        case .deleteBot(let requestID, let id, let expectedRevision):
+            try container.encode("delete_bot", forKey: "type")
+            try container.encode(requestID, forKey: "requestId")
+            try container.encode(id, forKey: "id")
+            try container.encode(expectedRevision, forKey: "expectedRevision")
+        case .configureBotDefaults(let requestID, let expectedRevision, let config):
+            try container.encode("configure_bot_defaults", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
             try container.encode(expectedRevision, forKey: "expectedRevision")
             try container.encode(config, forKey: "config")
@@ -381,7 +432,6 @@ enum GatewayRequest: Encodable, Sendable {
             try container.encode(tint, forKey: "tint")
             try container.encode(modelIds, forKey: "modelIds")
             try container.encode(reasoningEfforts, forKey: "reasoningEfforts")
-            try container.encode(false, forKey: "replaceExistingSelections")
         case .removeProvider(let requestID, let instance):
             try container.encode("remove_provider", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
@@ -396,47 +446,62 @@ enum GatewayRequest: Encodable, Sendable {
         case .getProfile(let requestID):
             try container.encode("get_profile", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
-        case .createCron(let requestID, let sourceSessionID, let task, let schedule, let endsAt):
-            try container.encode("create_cron", forKey: "type")
+        case .createRoutine(
+            let requestID,
+            let botID,
+            let workspace,
+            let instructions,
+            let schedule,
+            let endsAt
+        ):
+            try container.encode("create_routine", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
-            try container.encode(sourceSessionID, forKey: "sourceSessionId")
-            try container.encode(task, forKey: "task")
+            try container.encode(botID, forKey: "botId")
+            try container.encode(workspace, forKey: "workspace")
+            try container.encode(instructions, forKey: "instructions")
             try container.encode(schedule, forKey: "schedule")
             try container.encode(endsAt, forKey: "endsAt")
-        case .listCron(let requestID):
-            try container.encode("list_cron", forKey: "type")
+        case .listRoutines(let requestID, let botID):
+            try container.encode("list_routines", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
-        case .updateCron(
+            try container.encode(botID, forKey: "botId")
+        case .updateRoutine(
             let requestID,
             let id,
-            let sourceSessionID,
-            let task,
+            let botID,
+            let workspace,
+            let instructions,
             let schedule,
             let endsAt,
             let enabled
         ):
-            try container.encode("update_cron", forKey: "type")
+            try container.encode("update_routine", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
             try container.encode(id, forKey: "id")
-            try container.encode(sourceSessionID, forKey: "sourceSessionId")
-            try container.encode(task, forKey: "task")
+            try container.encode(botID, forKey: "botId")
+            try container.encode(workspace, forKey: "workspace")
+            try container.encode(instructions, forKey: "instructions")
             try container.encode(schedule, forKey: "schedule")
             try container.encode(endsAt, forKey: "endsAt")
             try container.encode(enabled, forKey: "enabled")
-        case .deleteCron(let requestID, let id):
-            try container.encode("delete_cron", forKey: "type")
+        case .deleteRoutine(let requestID, let id):
+            try container.encode("delete_routine", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
             try container.encode(id, forKey: "id")
-        case .runCron(let requestID, let id):
-            try container.encode("run_cron", forKey: "type")
+        case .deleteRoutineRun(let requestID, let id):
+            try container.encode("delete_routine_run", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
             try container.encode(id, forKey: "id")
-        case .listCronHistory(let requestID, let id):
-            try container.encode("list_cron_history", forKey: "type")
+        case .runRoutine(let requestID, let id):
+            try container.encode("run_routine", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
             try container.encode(id, forKey: "id")
-        case .getCronRunPreview(let requestID, let id, let beforeSequence):
-            try container.encode("get_cron_run_preview", forKey: "type")
+        case .listRoutineHistory(let requestID, let id):
+            try container.encode("list_routine_history", forKey: "type")
+            try container.encode(requestID, forKey: "requestId")
+            try container.encode(id, forKey: "id")
+        case .getRoutineRunPreview(let requestID, let id, let beforeSequence):
+            try container.encode("get_routine_run_preview", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
             try container.encode(id, forKey: "id")
             try container.encode(beforeSequence, forKey: "beforeSequence")
@@ -458,7 +523,11 @@ enum GatewayEnvelope: Decodable, Sendable {
     )
     case sessionChanged(SessionReadyPayload)
     case gatewayConfigured(requestID: String, payload: ReadyPayload)
-    case globalScratchpadChanged(requestID: String, contribution: FrontendContribution)
+    case scratchpadChanged(
+        requestID: String,
+        scope: ScratchpadScope,
+        contribution: FrontendContribution
+    )
     case accepted(requestID: String)
     case rejected(GatewayRejection)
     case agentEvent(
@@ -466,6 +535,7 @@ enum GatewayEnvelope: Decodable, Sendable {
         record: RecordedEvent
     )
     case sessions(requestID: String?, sessions: [SessionRecord])
+    case bots(requestID: String?, bots: [BotRecord])
     case swarms(requestID: String?, swarms: [SwarmRecord])
     case clients(requestID: String, currentClientID: String, clients: [ClientStatus])
     case providerCredentialSaved(requestID: String, instance: String, provider: String)
@@ -528,9 +598,9 @@ enum GatewayEnvelope: Decodable, Sendable {
         nextOffset: Int64?
     )
     case directories(requestID: String, listing: DirectoryListing)
-    case cronTasks(requestID: String, tasks: [CronTask])
-    case cronHistory(requestID: String, runs: [CronRun])
-    case cronRunPreview(CronRunPreview)
+    case routines(requestID: String, routines: [Routine])
+    case routineHistory(requestID: String, runs: [RoutineRun])
+    case routineRunPreview(RoutineRunPreview)
     case error(GatewayFailure)
 
     // One exhaustive switch is the wire contract; splitting it would add fake dispatch.
@@ -587,9 +657,10 @@ enum GatewayEnvelope: Decodable, Sendable {
                     forKey: "payload"
                 ).validated()
             )
-        case "global_scratchpad_changed":
-            self = .globalScratchpadChanged(
+        case "scratchpad_changed":
+            self = .scratchpadChanged(
                 requestID: try container.decode(String.self, forKey: "requestId"),
+                scope: try container.decode(ScratchpadScope.self, forKey: "scope"),
                 contribution: try container.decode(
                     FrontendContribution.self,
                     forKey: "contribution"
@@ -608,6 +679,11 @@ enum GatewayEnvelope: Decodable, Sendable {
             self = .sessions(
                 requestID: try container.decodeIfPresent(String.self, forKey: "requestId"),
                 sessions: try container.decode([SessionRecord].self, forKey: "sessions")
+            )
+        case "bots":
+            self = .bots(
+                requestID: try container.decodeIfPresent(String.self, forKey: "requestId"),
+                bots: try container.decode([BotRecord].self, forKey: "bots")
             )
         case "swarms":
             self = .swarms(
@@ -731,25 +807,25 @@ enum GatewayEnvelope: Decodable, Sendable {
                 requestID: try container.decode(String.self, forKey: "requestId"),
                 listing: try container.decode(DirectoryListing.self, forKey: "listing")
             )
-        case "cron_tasks":
-            self = .cronTasks(
+        case "routines":
+            self = .routines(
                 requestID: try container.decode(String.self, forKey: "requestId"),
-                tasks: try container.decode([CronTask].self, forKey: "tasks")
+                routines: try container.decode([Routine].self, forKey: "routines")
             )
-        case "cron_history":
-            self = .cronHistory(
+        case "routine_history":
+            self = .routineHistory(
                 requestID: try container.decode(String.self, forKey: "requestId"),
-                runs: try container.decode([CronRun].self, forKey: "runs")
+                runs: try container.decode([RoutineRun].self, forKey: "runs")
             )
-        case "cron_run_preview":
+        case "routine_run_preview":
             let preview = try container.nestedContainer(
                 keyedBy: DynamicCodingKey.self,
                 forKey: DynamicCodingKey("preview")
             )
-            self = .cronRunPreview(CronRunPreview(
+            self = .routineRunPreview(RoutineRunPreview(
                 requestID: try container.decode(String.self, forKey: "requestId"),
-                task: try preview.decode(CronTask.self, forKey: "task"),
-                run: try preview.decode(CronRun.self, forKey: "run"),
+                routine: try preview.decode(Routine.self, forKey: "routine"),
+                run: try preview.decode(RoutineRun.self, forKey: "run"),
                 records: try preview.decode([RecordedEvent].self, forKey: "records"),
                 nextBeforeSequence: try preview.decodeIfPresent(
                     UInt64.self,
@@ -787,11 +863,12 @@ struct SessionFileLimits: Decodable, Equatable, Sendable {
 
 struct ReadyPayload: Decodable, Sendable {
     let machineName: String
+    let bots: [BotRecord]
     let sessions: [SessionRecord]
     let swarms: [SwarmRecord]
     let providers: [ProviderStatus]
     let providerInstances: [ProviderInstance]
-    let defaultConfig: VersionedAgentConfig?
+    let botDefaults: VersionedAgentConfig?
     let models: [ModelChoice]
     let modelProviders: [String: String]
     let middlewareFeatures: [MiddlewareFeature]
@@ -851,12 +928,46 @@ struct SessionReadyPayload: Decodable, Sendable {
     let compactionCount: UInt64
     let contextLimitTokens: Int64?
     let runStats: RunStats
-    let config: VersionedAgentConfig
 }
 
 struct SessionWidget: Decodable, Sendable {
     let capability: String
     let item: FrontendWidget
+}
+
+enum ScratchpadScope: Codable, Hashable, Sendable {
+    case global
+    case swarm(id: String)
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: DynamicCodingKey.self)
+        switch try container.decode(String.self, forKey: "type") {
+        case "global":
+            self = .global
+        case "swarm":
+            let id = try container.decode(String.self, forKey: "id")
+            guard !id.isEmpty else {
+                throw GatewayWireError.invalidFrame("scratchpad swarm scope has an empty ID")
+            }
+            self = .swarm(id: id)
+        case let type:
+            throw GatewayWireError.invalidFrame("unknown scratchpad scope \(type)")
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: DynamicCodingKey.self)
+        switch self {
+        case .global:
+            try container.encode("global", forKey: "type")
+        case .swarm(let id):
+            guard !id.isEmpty else {
+                throw GatewayWireError.invalidFrame("scratchpad swarm scope has an empty ID")
+            }
+            try container.encode("swarm", forKey: "type")
+            try container.encode(id, forKey: "id")
+        }
+    }
 }
 
 enum GitDiffScope: String, Codable, CaseIterable, Identifiable, Sendable {
@@ -927,12 +1038,22 @@ struct SessionConfigured: Decodable, Sendable {
 }
 
 struct SessionContext: Codable, Hashable, Sendable {
+    let botId: String
     var tenantId: String?
     var userId: String?
     var userName: String?
     var workspaceId: String?
     var workspaceLabel: String?
     var originLabel: String?
+}
+
+struct BotRecord: Identifiable, Codable, Equatable, Sendable {
+    let id: String
+    let handle: String
+    let name: String
+    let description: String
+    let tint: AccentTint
+    let config: VersionedAgentConfig
 }
 
 struct ModelChanged: Codable, Hashable, Sendable {
@@ -960,25 +1081,28 @@ struct SessionRecord: Identifiable, Codable, Hashable, Sendable {
 }
 
 struct SwarmMemberRecord: Identifiable, Codable, Hashable, Sendable {
-    var id: String { sessionId }
+    var id: String { botId }
 
-    let sessionId: String
+    let botId: String
     let handle: String
 }
 
 struct SwarmMessageRecord: Identifiable, Codable, Hashable, Sendable {
     let id: String
     let sequence: UInt64
-    let authorSessionId: String
+    let authorBotId: String
     let authorHandle: String
+    let sourceSessionId: String
     let text: String
     let createdAtMs: Int64
+    let inReplyToMessageId: String?
+    let replyDepth: UInt64
 }
 
 struct SwarmRecord: Identifiable, Codable, Hashable, Sendable {
     let id: String
     let title: String
-    let leaderSessionId: String
+    let leaderBotId: String
     let members: [SwarmMemberRecord]
     let messages: [SwarmMessageRecord]
     let updatedAtMs: Int64

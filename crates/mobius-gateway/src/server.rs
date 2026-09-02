@@ -35,8 +35,8 @@ use tokio_tungstenite::tungstenite::http::header::{HOST, ORIGIN};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
 use crate::auth::{AuthStore, ClientIdentity, PairingGrant};
+use crate::bots::BotStore;
 use crate::config::{ConfigStore, CredentialStore, GatewayConfig, TlsConfig};
-use crate::cron::CronStore;
 use crate::host::{GatewayHost, HostHandle, Rejection};
 use crate::wire::{
     ClientFrame, ClientKind, ClientMessage, ClientStatus, DirectoryEntry, DirectoryListing,
@@ -52,7 +52,7 @@ use self::transport::*;
 const AUTH_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_CONNECTIONS: usize = 32;
 const INACTIVITY_TIMEOUT: Duration = Duration::from_secs(72 * 60 * 60);
-const SCHEDULER_TICK: Duration = Duration::from_secs(15);
+const ROUTINE_TICK: Duration = Duration::from_secs(15);
 const MAX_DIRECTORY_ENTRIES: usize = 512;
 const MAX_PENDING_UPLOADS: usize = 8;
 const WEBSOCKET_BRIDGE_BYTES: usize = 16 * 1024;
@@ -65,7 +65,7 @@ pub struct GatewayServer {
     listener: TcpListener,
     auth: Arc<AuthStore>,
     host: GatewayHost,
-    cron: Arc<CronStore>,
+    bots: Arc<BotStore>,
 }
 
 impl GatewayServer {
@@ -112,14 +112,14 @@ impl GatewayServer {
     ) -> Result<Self> {
         let auth = Arc::new(AuthStore::open(store.auth_path())?);
         let credentials = Arc::new(CredentialStore::open(store.credentials_path())?);
-        let cron = Arc::new(CronStore::open(store.state_dir())?);
-        let host = GatewayHost::start(store, config.clone(), credentials, Arc::clone(&cron))?;
+        let bots = Arc::new(BotStore::open(store.state_dir())?);
+        let host = GatewayHost::start(store, config.clone(), credentials, Arc::clone(&bots))?;
         Ok(Self {
             config,
             listener,
             auth,
             host,
-            cron,
+            bots,
         })
     }
 
@@ -209,31 +209,31 @@ impl GatewayServer {
         let mut connections = JoinSet::new();
         let client_connections = Arc::new(ClientConnections::default());
         let (client_revocations, _) = broadcast::channel(MAX_CONNECTIONS);
-        let mut has_scheduled_tasks = self.cron.has_active_tasks(Utc::now().timestamp())?;
+        let mut has_active_routines = self.bots.has_active_routines(Utc::now().timestamp())?;
         let inactivity = tokio::time::sleep(inactivity_timeout);
         tokio::pin!(inactivity);
-        let mut scheduler = tokio::time::interval(SCHEDULER_TICK);
-        scheduler.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut routine_timer = tokio::time::interval(ROUTINE_TICK);
+        routine_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         tokio::pin!(shutdown);
         loop {
             tokio::select! {
                 biased;
                 () = &mut shutdown => return Ok(()),
-                _ = scheduler.tick() => {
+                _ = routine_timer.tick() => {
                     let now = Utc::now().timestamp();
-                    let scheduled = self.cron.has_active_tasks(now)?;
-                    if has_scheduled_tasks && !scheduled && connections.is_empty() {
+                    let routines_active = self.bots.has_active_routines(now)?;
+                    if has_active_routines && !routines_active && connections.is_empty() {
                         inactivity.as_mut().reset(tokio::time::Instant::now() + inactivity_timeout);
                     }
-                    has_scheduled_tasks = scheduled;
-                    let due = self.cron.take_due(now)?;
+                    has_active_routines = routines_active;
+                    let due = self.bots.take_due(now)?;
                     if !due.is_empty() {
                         let host = self.host.clone();
                         tokio::spawn(async move {
-                            for (task_id, run) in due {
-                                if let Err(error) = host.run_due_cron(task_id.clone(), run).await {
+                            for (routine_id, run) in due {
+                                if let Err(error) = host.run_due_routine(routine_id.clone(), run).await {
                                     eprintln!(
-                                        "cron run failed: task_id={task_id} code={} message={}",
+                                        "routine run failed: routine_id={routine_id} code={} message={}",
                                         error.code, error.message
                                     );
                                 }
@@ -243,9 +243,9 @@ impl GatewayServer {
                 }
                 Some(_) = connections.join_next(), if !connections.is_empty() => {
                     if connections.is_empty() {
-                        has_scheduled_tasks =
-                            self.cron.has_active_tasks(Utc::now().timestamp())?;
-                        if !has_scheduled_tasks {
+                        has_active_routines =
+                            self.bots.has_active_routines(Utc::now().timestamp())?;
+                        if !has_active_routines {
                             inactivity.as_mut().reset(tokio::time::Instant::now() + inactivity_timeout);
                         }
                     }
@@ -254,7 +254,7 @@ impl GatewayServer {
                     let (stream, _) = accepted?;
                     let auth = Arc::clone(&self.auth);
                     let host = self.host.clone();
-                    let cron = Arc::clone(&self.cron);
+                    let bots = Arc::clone(&self.bots);
                     let client_connections = Arc::clone(&client_connections);
                     let client_revocations = client_revocations.clone();
                     let tls = tls.clone();
@@ -268,7 +268,7 @@ impl GatewayServer {
                                     stream,
                                     auth,
                                     host,
-                                    cron,
+                                    bots,
                                     client_connections,
                                     client_revocations,
                                     Instant::now() + AUTH_TIMEOUT,
@@ -280,7 +280,7 @@ impl GatewayServer {
                                 stream,
                                 auth,
                                 host,
-                                cron,
+                                bots,
                                 client_connections,
                                 client_revocations,
                                 PlaintextHandshake {
@@ -292,9 +292,9 @@ impl GatewayServer {
                         }
                     });
                 }
-                () = &mut inactivity, if connections.is_empty() && !has_scheduled_tasks => {
-                    has_scheduled_tasks = self.cron.has_active_tasks(Utc::now().timestamp())?;
-                    if !has_scheduled_tasks {
+                () = &mut inactivity, if connections.is_empty() && !has_active_routines => {
+                    has_active_routines = self.bots.has_active_routines(Utc::now().timestamp())?;
+                    if !has_active_routines {
                         return Ok(());
                     }
                 }

@@ -8,10 +8,7 @@ use std::sync::OnceLock;
 use mobius::Error;
 use mobius::Result;
 use mobius::protocol::FrontendContribution;
-use mobius::protocol::FrontendEvent;
-use mobius::protocol::FrontendPickerOption;
 use mobius::protocol::FrontendWidget;
-use mobius::protocol::ModelChoice;
 use mobius::protocol::Op;
 
 use super::setup::SetupMode;
@@ -28,7 +25,6 @@ pub(crate) struct UiCatalog {
     references: Vec<UiReference>,
     reference_triggers: Vec<char>,
     widgets: Vec<(String, FrontendWidget)>,
-    model_choices: Vec<ModelChoice>,
     accepts_file_attachments: bool,
     workspace: PathBuf,
     workspace_references: Arc<OnceLock<Vec<UiReference>>>,
@@ -55,15 +51,13 @@ enum CommandHandler {
     Help,
     GatewaySettings,
     Extensions,
-    Agent,
+    Bot,
     Workspace,
     Login,
     Pair,
     Profile,
     New,
     Clear,
-    Model,
-    Reasoning,
     Status,
     Interrupt,
     Exit,
@@ -81,7 +75,6 @@ struct UiReference {
 pub(crate) struct CommandContext<'a> {
     pub active_turn: Option<&'a str>,
     pub status: &'a str,
-    pub model_route: &'a str,
 }
 
 #[derive(Debug, PartialEq)]
@@ -90,31 +83,28 @@ pub(crate) enum CommandAction {
     Gateway(GatewayAction),
     GatewaySettings,
     Extensions,
+    Bots,
     Setup {
         mode: SetupMode,
         provider: Option<String>,
     },
-    Frontend(FrontendEvent),
     ShowMenu,
     Print(String),
     Exit,
-    New,
-    Clear,
+    ChooseBot {
+        workspace: PathBuf,
+        clear: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum GatewayAction {
-    Workspace(String),
     Pair,
     Profile,
 }
 
 impl UiCatalog {
-    pub(crate) fn build(
-        contributions: &[FrontendContribution],
-        model_choices: &[ModelChoice],
-        workspace: &Path,
-    ) -> Result<Self> {
+    pub(crate) fn build(contributions: &[FrontendContribution], workspace: &Path) -> Result<Self> {
         let mut commands = cli_commands();
         let mut references = Vec::new();
         let mut widgets = Vec::new();
@@ -156,7 +146,6 @@ impl UiCatalog {
             references,
             reference_triggers,
             widgets,
-            model_choices: model_choices.to_vec(),
             accepts_file_attachments: contributions
                 .iter()
                 .any(|contribution| contribution.accepts_file_attachments),
@@ -194,14 +183,6 @@ impl UiCatalog {
         self.widgets
             .iter()
             .map(|(capability, widget)| (capability.as_str(), widget))
-    }
-
-    pub(crate) fn model_choices(&self) -> &[ModelChoice] {
-        &self.model_choices
-    }
-
-    pub(crate) fn replace_model_choices(&mut self, choices: &[ModelChoice]) {
-        self.model_choices = choices.to_vec();
     }
 
     pub(crate) fn workspace(&self) -> &Path {
@@ -323,14 +304,15 @@ impl UiCatalog {
             CommandHandler::GatewaySettings => CommandAction::Print("usage: /gateway".into()),
             CommandHandler::Extensions if arguments.is_empty() => CommandAction::Extensions,
             CommandHandler::Extensions => CommandAction::Print("usage: /extensions".into()),
-            CommandHandler::Agent if arguments.is_empty() => CommandAction::Setup {
-                mode: SetupMode::Agent,
-                provider: None,
-            },
-            CommandHandler::Agent => CommandAction::Print("usage: /agent".into()),
-            CommandHandler::Workspace => {
-                CommandAction::Gateway(GatewayAction::Workspace(arguments.into()))
+            CommandHandler::Bot if arguments.is_empty() => CommandAction::Bots,
+            CommandHandler::Bot => CommandAction::Print("usage: /bot".into()),
+            CommandHandler::Workspace if arguments.is_empty() => {
+                CommandAction::Print("usage: /workspace <gateway-path>".into())
             }
+            CommandHandler::Workspace => CommandAction::ChooseBot {
+                workspace: PathBuf::from(arguments),
+                clear: false,
+            },
             CommandHandler::Login if arguments.split_whitespace().count() <= 1 => {
                 CommandAction::Setup {
                     mode: SetupMode::Login,
@@ -340,10 +322,14 @@ impl UiCatalog {
             CommandHandler::Login => CommandAction::Print("usage: /login [provider]".into()),
             CommandHandler::Pair => CommandAction::Gateway(GatewayAction::Pair),
             CommandHandler::Profile => CommandAction::Gateway(GatewayAction::Profile),
-            CommandHandler::New => CommandAction::New,
-            CommandHandler::Clear => CommandAction::Clear,
-            CommandHandler::Model => model_picker(&self.model_choices),
-            CommandHandler::Reasoning => reasoning_picker(context.model_route, &self.model_choices),
+            CommandHandler::New => CommandAction::ChooseBot {
+                workspace: self.workspace.clone(),
+                clear: false,
+            },
+            CommandHandler::Clear => CommandAction::ChooseBot {
+                workspace: self.workspace.clone(),
+                clear: true,
+            },
             CommandHandler::Status => CommandAction::Print(context.status.to_string()),
             CommandHandler::Interrupt => context.active_turn.map_or_else(
                 || CommandAction::Print("no active turn to interrupt".into()),
@@ -408,11 +394,11 @@ fn cli_commands() -> Vec<UiCommand> {
             CommandHandler::Extensions,
         ),
         UiCommand {
-            name: "agent".into(),
+            name: "bot".into(),
             arguments: String::new(),
-            description: "configure agent features".into(),
+            description: "configure this Bot".into(),
             requires_idle: true,
-            handler: CommandHandler::Agent,
+            handler: CommandHandler::Bot,
         },
         UiCommand {
             name: "workspace".into(),
@@ -424,7 +410,7 @@ fn cli_commands() -> Vec<UiCommand> {
         UiCommand {
             name: "login".into(),
             arguments: "[provider]".into(),
-            description: "authenticate a provider and configure its agent".into(),
+            description: "authenticate a provider and configure Bot defaults".into(),
             requires_idle: true,
             handler: CommandHandler::Login,
         },
@@ -446,18 +432,6 @@ fn cli_commands() -> Vec<UiCommand> {
             "clear the terminal and start a new chat",
             true,
             CommandHandler::Clear,
-        ),
-        command(
-            "model",
-            "select a configured model",
-            true,
-            CommandHandler::Model,
-        ),
-        command(
-            "reasoning",
-            "select reasoning effort",
-            true,
-            CommandHandler::Reasoning,
         ),
         command(
             "status",
@@ -530,76 +504,6 @@ fn validate(commands: &[UiCommand], references: &[UiReference]) -> Result<()> {
         }
     }
     Ok(())
-}
-
-fn model_picker(choices: &[ModelChoice]) -> CommandAction {
-    let mut groups = Vec::new();
-    let options = choices
-        .iter()
-        .filter(|choice| {
-            let group = choice.group.as_str();
-            if groups.contains(&group) {
-                false
-            } else {
-                groups.push(group);
-                true
-            }
-        })
-        .map(|choice| FrontendPickerOption {
-            label: choice.model.clone(),
-            description: choice.reasoning_effort.as_ref().map_or_else(
-                || choice.group.clone(),
-                |effort| format!("{} · {effort}", choice.group),
-            ),
-            detail: String::new(),
-            symbol: None,
-            shows_detail: false,
-            op: Op::SetModel {
-                route: choice.route.clone(),
-            },
-        })
-        .collect::<Vec<_>>();
-    if options.is_empty() {
-        return CommandAction::Print("no models are configured".into());
-    }
-    CommandAction::Frontend(FrontendEvent::Picker {
-        title: "Select model".into(),
-        options,
-    })
-}
-
-fn reasoning_picker(route: &str, choices: &[ModelChoice]) -> CommandAction {
-    let Some(current) = choices.iter().find(|choice| choice.route == route) else {
-        return CommandAction::Print("current model route is unavailable".into());
-    };
-    let options = choices
-        .iter()
-        .filter(|choice| choice.group == current.group && choice.model == current.model)
-        .map(|choice| FrontendPickerOption {
-            label: choice
-                .reasoning_effort
-                .clone()
-                .unwrap_or_else(|| "default".into()),
-            description: if choice.route == route {
-                format!("{} · current", choice.model)
-            } else {
-                choice.model.clone()
-            },
-            detail: String::new(),
-            symbol: None,
-            shows_detail: false,
-            op: Op::SetModel {
-                route: choice.route.clone(),
-            },
-        })
-        .collect::<Vec<_>>();
-    if options.len() < 2 {
-        return CommandAction::Print(format!("{} has no reasoning choices", current.model));
-    }
-    CommandAction::Frontend(FrontendEvent::Picker {
-        title: format!("{} reasoning", current.model),
-        options,
-    })
 }
 
 fn workspace_replacement(path: &str) -> String {
@@ -700,31 +604,6 @@ mod tests {
     use super::*;
     use mobius::protocol::FrontendCommand;
     use mobius::protocol::FrontendReference;
-    use mobius::protocol::ToolDiscoveryMode;
-
-    fn model_choices() -> Vec<ModelChoice> {
-        vec![
-            ModelChoice {
-                route: "kimi".into(),
-                group: "kimi".into(),
-                model: "kimi-k3".into(),
-                reasoning_effort: Some("high".into()),
-                context_window: Some(1_048_576),
-                supports_image_input: true,
-                tool_discovery: ToolDiscoveryMode::Rebuild,
-            },
-            ModelChoice {
-                route: "kimi-low".into(),
-                group: "kimi".into(),
-                model: "kimi-k3".into(),
-                reasoning_effort: Some("low".into()),
-                context_window: Some(1_048_576),
-                supports_image_input: true,
-                tool_discovery: ToolDiscoveryMode::Rebuild,
-            },
-        ]
-    }
-
     fn contribution(command: &str) -> FrontendContribution {
         FrontendContribution {
             capability: "test".into(),
@@ -742,13 +621,12 @@ mod tests {
     }
 
     #[test]
-    fn bare_login_and_agent_commands_open_setup() {
+    fn bare_login_and_bot_commands_open_setup() {
         let workspace = tempfile::tempdir().expect("workspace");
-        let catalog = UiCatalog::build(&[], &[], workspace.path()).expect("catalog");
+        let catalog = UiCatalog::build(&[], workspace.path()).expect("catalog");
         let context = CommandContext {
             active_turn: None,
             status: "idle",
-            model_route: "kimi",
         };
 
         assert_eq!(
@@ -758,13 +636,7 @@ mod tests {
                 provider: None,
             })
         );
-        assert_eq!(
-            catalog.dispatch("/agent", context),
-            Some(CommandAction::Setup {
-                mode: SetupMode::Agent,
-                provider: None,
-            })
-        );
+        assert_eq!(catalog.dispatch("/bot", context), Some(CommandAction::Bots));
         assert_eq!(
             catalog.dispatch("/login kimi", context),
             Some(CommandAction::Setup {
@@ -773,8 +645,8 @@ mod tests {
             })
         );
         assert_eq!(
-            catalog.dispatch("/agent {}", context),
-            Some(CommandAction::Print("usage: /agent".into()))
+            catalog.dispatch("/bot {}", context),
+            Some(CommandAction::Print("usage: /bot".into()))
         );
     }
 
@@ -784,7 +656,7 @@ mod tests {
         let mut attachments = contribution("attach");
         attachments.accepts_file_attachments = true;
 
-        let catalog = UiCatalog::build(&[attachments], &[], workspace.path()).expect("catalog");
+        let catalog = UiCatalog::build(&[attachments], workspace.path()).expect("catalog");
 
         assert!(catalog.accepts_file_attachments());
     }
@@ -792,7 +664,7 @@ mod tests {
     #[test]
     fn bare_gateway_command_opens_gateway_settings() {
         let workspace = tempfile::tempdir().expect("workspace");
-        let catalog = UiCatalog::build(&[], &[], workspace.path()).expect("catalog");
+        let catalog = UiCatalog::build(&[], workspace.path()).expect("catalog");
 
         assert_eq!(
             catalog.dispatch(
@@ -800,7 +672,6 @@ mod tests {
                 CommandContext {
                     active_turn: None,
                     status: "idle",
-                    model_route: "kimi",
                 },
             ),
             Some(CommandAction::GatewaySettings)
@@ -810,11 +681,10 @@ mod tests {
     #[test]
     fn extensions_command_opens_the_gateway_catalog_only_when_idle() {
         let workspace = tempfile::tempdir().expect("workspace");
-        let catalog = UiCatalog::build(&[], &[], workspace.path()).expect("catalog");
+        let catalog = UiCatalog::build(&[], workspace.path()).expect("catalog");
         let idle = CommandContext {
             active_turn: None,
             status: "idle",
-            model_route: "kimi",
         };
 
         assert_eq!(
@@ -831,7 +701,6 @@ mod tests {
                 CommandContext {
                     active_turn: Some("turn"),
                     status: "working",
-                    model_route: "kimi",
                 },
             ),
             Some(CommandAction::Print(message)) if message.contains("agent is idle")
@@ -844,11 +713,10 @@ mod tests {
         let mut review = contribution("review");
         review.capability = "review".into();
         review.commands[0].requires_idle = false;
-        let catalog = UiCatalog::build(&[review], &[], workspace.path()).expect("catalog");
+        let catalog = UiCatalog::build(&[review], workspace.path()).expect("catalog");
         let context = CommandContext {
             active_turn: Some("turn"),
             status: "working",
-            model_route: "kimi",
         };
 
         assert!(matches!(
@@ -867,7 +735,7 @@ mod tests {
     #[test]
     fn rejects_middleware_command_collisions_with_the_shell() {
         let workspace = tempfile::tempdir().expect("workspace");
-        let error = match UiCatalog::build(&[contribution("exit")], &[], workspace.path()) {
+        let error = match UiCatalog::build(&[contribution("exit")], workspace.path()) {
             Ok(_) => panic!("duplicate command"),
             Err(error) => error,
         };
@@ -893,12 +761,8 @@ mod tests {
             description: "middleware reference".into(),
         });
 
-        let catalog = UiCatalog::build(
-            &[inspect, contribution("audit")],
-            &model_choices(),
-            workspace.path(),
-        )
-        .expect("catalog");
+        let catalog =
+            UiCatalog::build(&[inspect, contribution("audit")], workspace.path()).expect("catalog");
         catalog
             .start_workspace_inventory(true)
             .await
@@ -908,7 +772,7 @@ mod tests {
 
         assert!(
             commands.contains("/inspect")
-                && commands.contains("/model")
+                && commands.contains("/bot")
                 && commands.contains("/workspace")
                 && commands.contains("/audit")
                 && commands.contains("/pair")

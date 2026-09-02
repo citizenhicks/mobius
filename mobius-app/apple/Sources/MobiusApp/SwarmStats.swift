@@ -213,8 +213,7 @@ struct SwarmStatsSection: View {
     @Binding var isExpanded: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: MobiusSpace.s) {
-            SwarmSectionHeading(title: "Activity", isExpanded: $isExpanded)
+        Section {
             if isExpanded {
                 LazyVGrid(
                     columns: [GridItem(.adaptive(minimum: 132), spacing: MobiusSpace.s)],
@@ -225,7 +224,12 @@ struct SwarmStatsSection: View {
                     SwarmStatTile(title: "Broadcast", value: stats.count(.broadcast))
                     SwarmStatTile(title: "Mentions", value: stats.mentionEdges)
                 }
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
             }
+        } header: {
+            SwarmSectionHeading(title: "Activity", isExpanded: $isExpanded)
+                .textCase(nil)
         }
     }
 }

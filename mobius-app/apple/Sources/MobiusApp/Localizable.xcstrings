@@ -521,28 +521,6 @@
         }
       }
     },
-    "%@ scheduled task: %@" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "%1$@ scheduled task: %2$@"
-          }
-        },
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@, tâche planifiée : %2$@"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ geplante Aufgabe: %2$@"
-          }
-        }
-      }
-    },
     "%@ settings" : {
       "localizations" : {
         "fr" : {
@@ -1813,22 +1791,6 @@
         }
       }
     },
-    "Add scheduled task" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ajouter une tâche planifiée"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Geplante Aufgabe hinzufügen"
-          }
-        }
-      }
-    },
     "Added" : {
       "localizations" : {
         "fr" : {
@@ -1857,22 +1819,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Fügt diesem Gateway-Host GitHub-HTTPS-Anmeldedaten hinzu"
-          }
-        }
-      }
-    },
-    "Advanced cron" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Cron avancé"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Fortgeschrittene Cron"
           }
         }
       }
@@ -4962,70 +4908,6 @@
         }
       }
     },
-    "Default agent" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Agent par défaut"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Standard-Agent"
-          }
-        }
-      }
-    },
-    "Default agent draft reloaded." : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Brouillon de l’agent par défaut rechargé."
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Standard-Agentenentwurf neu geladen."
-          }
-        }
-      }
-    },
-    "Default agent saved for new chats." : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Agent par défaut enregistré pour les nouvelles conversations."
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Standardagent für neue Chats gespeichert."
-          }
-        }
-      }
-    },
-    "Default agent unavailable" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Agent par défaut indisponible"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Standard-Agent nicht verfügbar"
-          }
-        }
-      }
-    },
     "Default AI model" : {
       "localizations" : {
         "fr" : {
@@ -5118,22 +5000,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Diesen Chat löschen?"
-          }
-        }
-      }
-    },
-    "Delete this scheduled task?" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Supprimer cette tâche planifiée ?"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Diese geplante Aufgabe löschen?"
           }
         }
       }
@@ -5438,22 +5304,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Warteschlangennachricht bearbeiten"
-          }
-        }
-      }
-    },
-    "Edit scheduled task" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Modifier la tâche planifiée"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Geplante Aufgabe bearbeiten"
           }
         }
       }
@@ -8961,22 +8811,6 @@
         }
       }
     },
-    "New scheduled task" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nouvelle tâche planifiée"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Neue geplante Aufgabe"
-          }
-        }
-      }
-    },
     "New setup" : {
       "localizations" : {
         "fr" : {
@@ -9293,38 +9127,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Keine öffentlichen Identitäten gefunden."
-          }
-        }
-      }
-    },
-    "No scheduled runs yet." : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Aucune exécution planifiée pour le moment."
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Noch keine geplanten Ausführungen."
-          }
-        }
-      }
-    },
-    "No scheduled tasks yet." : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Aucune tâche planifiée pour le moment."
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Noch keine geplanten Aufgaben."
           }
         }
       }
@@ -12064,38 +11866,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Fälligkeitsplan"
-          }
-        }
-      }
-    },
-    "Scheduled" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Tâches planifiées"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Geplant"
-          }
-        }
-      }
-    },
-    "Scheduled task rejected" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Tâche planifiée refusée"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Geplante Aufgabe abgelehnt"
           }
         }
       }
@@ -15552,6 +15322,134 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ihr privates Gateway, verwaltet von möbius."
+          }
+        }
+      }
+    },
+    "Alerts you when a Cloud chat needs approval or finishes. This setting stays on this device." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vous avertit lorsqu’une discussion Cloud nécessite une approbation ou se termine. Ce réglage reste sur cet appareil."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Benachrichtigt Sie, wenn ein Cloud-Chat eine Genehmigung benötigt oder abgeschlossen ist. Diese Einstellung bleibt auf diesem Gerät."
+          }
+        }
+      }
+    },
+    "Apple notification registration returned an invalid device token." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "L’inscription aux notifications Apple a renvoyé un jeton d’appareil non valide."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die Apple-Mitteilungsregistrierung hat ein ungültiges Geräte-Token zurückgegeben."
+          }
+        }
+      }
+    },
+    "Notification status: %@" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "État des notifications : %1$@"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mitteilungsstatus: %1$@"
+          }
+        }
+      }
+    },
+    "Notifications" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Notifications"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mitteilungen"
+          }
+        }
+      }
+    },
+    "Notifications are off in Settings." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Les notifications sont désactivées dans Réglages."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mitteilungen sind in den Einstellungen deaktiviert."
+          }
+        }
+      }
+    },
+    "Notifications couldn’t be enabled. Try again." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Les notifications n’ont pas pu être activées. Réessayez."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mitteilungen konnten nicht aktiviert werden. Versuchen Sie es erneut."
+          }
+        }
+      }
+    },
+    "Updating notifications" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mise à jour des notifications"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mitteilungen werden aktualisiert"
+          }
+        }
+      }
+    },
+    "möbius Cloud couldn’t update notifications. Try again." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "möbius Cloud n’a pas pu mettre à jour les notifications. Réessayez."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "möbius Cloud konnte die Mitteilungen nicht aktualisieren. Versuchen Sie es erneut."
           }
         }
       }

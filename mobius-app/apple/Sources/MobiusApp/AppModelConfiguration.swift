@@ -1,23 +1,11 @@
 import Foundation
 
 extension AppModel {
-    func selectModel(_ route: String) {
-        guard let sessionID = selectedSessionID, route != selectedModelRoute else { return }
-        transmit(.submit(
-            sessionID: sessionID,
-            submission: Submission(id: requestID("model"), op: .setModel(route: route))
-        ))
+    var botDefaultsDraftModelRoute: String? {
+        modelRoute(for: botDefaultsDraft)
     }
 
-    var agentDraftModelRoute: String? {
-        modelRoute(for: agentDraft)
-    }
-
-    var defaultAgentDraftModelRoute: String? {
-        modelRoute(for: defaultAgentDraft)
-    }
-
-    private func modelRoute(for draft: AgentComposition?) -> String? {
+    func modelRoute(for draft: AgentComposition?) -> String? {
         guard let provider = draft?.provider else { return nil }
         return modelChoices.first { choice in
             choice.model == provider.model
@@ -26,12 +14,16 @@ extension AppModel {
         }?.route
     }
 
-    func selectAgentDraftModel(_ route: String) {
-        agentDraft = draft(agentDraft, selectingModelRoute: route)
+    func selectBotDefaultsDraftModel(_ route: String) {
+        botDefaultsDraft = draft(botDefaultsDraft, selectingModelRoute: route)
     }
 
-    func selectDefaultAgentDraftModel(_ route: String) {
-        defaultAgentDraft = draft(defaultAgentDraft, selectingModelRoute: route)
+    var botDraftModelRoute: String? {
+        modelRoute(for: botDraft)
+    }
+
+    func selectBotDraftModel(_ route: String) {
+        botDraft = draft(botDraft, selectingModelRoute: route)
     }
 
     func draft(
@@ -198,93 +190,154 @@ extension AppModel {
         }
     }
 
-    func changeAgentForCurrentChat() {
-        applyAgentConfiguration(agentDraft, to: .session)
+    func saveBotDefaults() {
+        guard !isApplyingConfiguration,
+              let draft = botDefaultsDraft,
+              let snapshot = botDefaultsSnapshot
+        else { return }
+        let id = requestID("configure-default")
+        botDefaultsApplyState = .applying
+        botDefaultsRequestID = id
+        submittedBotDefaultsDraft = draft
+        transmit(.configureBotDefaults(
+            requestID: id,
+            expectedRevision: snapshot.revision,
+            config: draft
+        )) { [weak self] message in
+            guard self?.botDefaultsRequestID == id else { return }
+            self?.botDefaultsRequestID = nil
+            self?.submittedBotDefaultsDraft = nil
+            self?.botDefaultsApplyState = .failed(message)
+        }
     }
 
-    func saveAgentAsDefault() {
-        applyAgentConfiguration(defaultAgentDraft, to: .defaultAgent)
+    func beginEditingBot(_ bot: BotRecord) {
+        editingBotID = bot.id
+        editingBotRevision = bot.config.revision
+        botNameDraft = bot.name
+        botDescriptionDraft = bot.description
+        botTintDraft = bot.tint
+        botDraft = bot.config.config
+        botApplyState = .idle
     }
 
-    func setAgentSettingForCurrentChat(
+    func selectModelForSelectedBot(_ route: String) {
+        guard let bot = selectedBot,
+              let config = draft(bot.config.config, selectingModelRoute: route),
+              config != bot.config.config
+        else { return }
+        saveSelectedBot(bot, config: config)
+    }
+
+    func setSelectedBotSetting(
         _ value: FrontendSettingValue?,
         middleware: String,
         setting: String
     ) {
-        guard !isApplyingConfiguration,
-              let snapshot = agentSnapshot,
-              var draft = agentDraft
+        guard let bot = selectedBot else { return }
+        var config = bot.config.config
+        guard config.middleware.settings[middleware]?[setting] != value else { return }
+        config.middleware.setSetting(value, middleware: middleware, setting: setting)
+        saveSelectedBot(bot, config: config)
+    }
+
+    private func saveSelectedBot(_ bot: BotRecord, config: AgentComposition) {
+        guard canMutateBot(bot.id) else { return }
+        beginEditingBot(bot)
+        botDraft = config
+        saveBotDraft()
+    }
+
+    func createBot(name rawName: String, description rawDescription: String) {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let description = rawDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard canMutateBots, !name.isEmpty, !description.isEmpty else { return }
+        let id = requestID("bot-create")
+        botMutationRequestID = id
+        botMutationSuccessMessage = localizedString("Bot created.")
+        transmit(.createBot(
+            requestID: id,
+            name: name,
+            description: description
+        )) {
+            [weak self] message in
+            guard self?.botMutationRequestID == id else { return }
+            self?.botMutationRequestID = nil
+            self?.botMutationSuccessMessage = nil
+            self?.botApplyState = .failed(message)
+        }
+    }
+
+    func saveBotDraft() {
+        let name = botNameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let description = botDescriptionDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let id = editingBotID,
+              canMutateBot(id),
+              let expectedRevision = editingBotRevision,
+              bots.contains(where: { $0.id == id }),
+              let draft = botDraft,
+              !name.isEmpty,
+              !description.isEmpty
         else { return }
-        guard draft == snapshot.config else {
-            showToast(
-                "Apply or reload pending agent edits before changing this setting.",
-                tone: .warning
-            )
-            return
-        }
-        guard draft.middleware.settings[middleware]?[setting] != value else { return }
-        draft.middleware.setSetting(value, middleware: middleware, setting: setting)
-        agentDraft = draft
-        applyAgentConfiguration(draft, to: .session)
-    }
-
-    func applyAgentConfiguration(
-        _ draft: AgentComposition?,
-        to target: ConfigurationTarget
-    ) {
-        guard !isApplyingConfiguration, let draft else { return }
-        let id = requestID("configure")
-        switch target {
-        case .session:
-            guard let sessionID = selectedSessionID, let snapshot = agentSnapshot else {
-                chatAgentApplyState = .idle
-                return
-            }
-            chatAgentApplyState = .applying
-            configRequestID = id
-            transmit(.configureSession(
-                requestID: id,
-                sessionID: sessionID,
-                expectedRevision: snapshot.revision,
-                config: draft
-            )) { [weak self] message in
-                guard self?.configRequestID == id else { return }
-                self?.configRequestID = nil
-                self?.chatAgentApplyState = .failed(message)
-            }
-        case .defaultAgent:
-            guard let snapshot = defaultAgentSnapshot else {
-                defaultAgentApplyState = .failed(
-                    "The gateway has no default agent configuration."
-                )
-                return
-            }
-            defaultAgentApplyState = .applying
-            defaultConfigRequestID = id
-            submittedDefaultAgentDraft = draft
-            transmit(.configureDefaultAgent(
-                requestID: id,
-                expectedRevision: snapshot.revision,
-                config: draft
-            )) { [weak self] message in
-                guard self?.defaultConfigRequestID == id else { return }
-                self?.defaultConfigRequestID = nil
-                self?.submittedDefaultAgentDraft = nil
-                self?.defaultAgentApplyState = .failed(message)
-            }
+        let requestID = requestID("bot-update")
+        botMutationRequestID = requestID
+        botMutationSuccessMessage = localizedString("Bot saved.")
+        botApplyState = .applying
+        transmit(.updateBot(
+            requestID: requestID,
+            id: id,
+            expectedRevision: expectedRevision,
+            name: name,
+            description: description,
+            tint: botTintDraft,
+            config: draft
+        )) { [weak self] message in
+            guard self?.botMutationRequestID == requestID else { return }
+            self?.botMutationRequestID = nil
+            self?.botMutationSuccessMessage = nil
+            self?.botApplyState = .failed(message)
         }
     }
 
-    func reloadAgentDraft() {
-        agentDraft = agentSnapshot?.config
-        chatAgentApplyState = .idle
-        showToast("Agent draft reloaded.", tone: .info)
+    func deleteBot(_ bot: BotRecord) {
+        guard canMutateBots, bot.handle != "mobius" else { return }
+        let id = requestID("bot-delete")
+        botMutationRequestID = id
+        botMutationSuccessMessage = localizedString("Bot deleted.")
+        transmit(.deleteBot(
+            requestID: id,
+            id: bot.id,
+            expectedRevision: bot.config.revision
+        )) { [weak self] message in
+            guard self?.botMutationRequestID == id else { return }
+            self?.botMutationRequestID = nil
+            self?.botMutationSuccessMessage = nil
+            self?.botApplyState = .failed(message)
+        }
     }
 
-    func reloadDefaultAgentDraft() {
-        defaultAgentDraft = defaultAgentSnapshot?.config
-        defaultAgentApplyState = .idle
-        showToast("Default agent draft reloaded.", tone: .info)
+    func reloadBotDraft() {
+        guard let editingBotID,
+              let bot = bots.first(where: { $0.id == editingBotID })
+        else { return }
+        botNameDraft = bot.name
+        botDescriptionDraft = bot.description
+        botTintDraft = bot.tint
+        editingBotRevision = bot.config.revision
+        botDraft = bot.config.config
+        botApplyState = .idle
+        showToast("Bot draft reloaded.", tone: .info)
+    }
+
+    func refreshBots() {
+        guard connectionState.isReady else { return }
+        transmit(.listBots(requestID: requestID("bot-list")))
+    }
+
+    func reloadBotDefaultsDraft() {
+        botDefaultsDraft = botDefaultsSnapshot?.config
+        botDefaultsApplyState = .idle
+        showToast("Bot defaults draft reloaded.", tone: .info)
     }
 
     /// Starts a new setup of `provider` with the identity used by credentials and registration.
@@ -541,142 +594,160 @@ extension AppModel {
         }
     }
 
-    func createCron(
-        sourceSessionID: String,
-        task: String,
-        schedule: CronSchedule,
+    func createRoutine(
+        botID: String,
+        workspace: String,
+        instructions: String,
+        schedule: RoutineSchedule,
         endsAt: Int64?
     ) {
-        let task = task.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard connectionState.isReady, !sourceSessionID.isEmpty, !task.isEmpty else { return }
-        let id = requestID("cron-create")
-        cronRequestIDs.insert(id)
-        cronError = nil
-        transmit(.createCron(
+        let instructions = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard connectionState.isReady, !botID.isEmpty, !workspace.isEmpty,
+              !instructions.isEmpty
+        else { return }
+        let id = requestID("routine-create")
+        routineRequestIDs.insert(id)
+        routineError = nil
+        transmit(.createRoutine(
             requestID: id,
-            sourceSessionID: sourceSessionID,
-            task: task,
+            botID: botID,
+            workspace: workspace,
+            instructions: instructions,
             schedule: schedule,
             endsAt: endsAt
         )) { [weak self] message in
-            self?.cronRequestIDs.remove(id)
-            self?.cronError = message
+            self?.routineRequestIDs.remove(id)
+            self?.routineError = message
         }
     }
 
-    func updateCron(
-        _ task: CronTask,
-        sourceSessionID: String,
+    func updateRoutine(
+        _ routine: Routine,
+        botID: String,
+        workspace: String,
         instructions: String,
-        schedule: CronSchedule,
+        schedule: RoutineSchedule,
         endsAt: Int64?,
         enabled: Bool
     ) {
         let instructions = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard connectionState.isReady, !sourceSessionID.isEmpty, !instructions.isEmpty else { return }
-        let id = requestID("cron-update")
-        cronRequestIDs.insert(id)
-        cronError = nil
-        transmit(.updateCron(
+        guard connectionState.isReady, !botID.isEmpty, !workspace.isEmpty,
+              !instructions.isEmpty
+        else { return }
+        let id = requestID("routine-update")
+        routineRequestIDs.insert(id)
+        routineError = nil
+        transmit(.updateRoutine(
             requestID: id,
-            id: task.id,
-            sourceSessionID: sourceSessionID,
-            task: instructions,
+            id: routine.id,
+            botID: botID,
+            workspace: workspace,
+            instructions: instructions,
             schedule: schedule,
             endsAt: endsAt,
             enabled: enabled
         )) { [weak self] message in
-            self?.cronRequestIDs.remove(id)
-            self?.cronError = message
+            self?.routineRequestIDs.remove(id)
+            self?.routineError = message
         }
     }
 
-    func deleteCron(_ task: CronTask) {
+    func deleteRoutine(_ routine: Routine) {
         guard connectionState.isReady else { return }
-        let id = requestID("cron-delete")
-        cronRequestIDs.insert(id)
-        transmit(.deleteCron(requestID: id, id: task.id)) { [weak self] message in
-            self?.cronRequestIDs.remove(id)
-            self?.cronError = message
+        let id = requestID("routine-delete")
+        routineRequestIDs.insert(id)
+        transmit(.deleteRoutine(requestID: id, id: routine.id)) { [weak self] message in
+            self?.routineRequestIDs.remove(id)
+            self?.routineError = message
         }
     }
 
-    func runCron(_ task: CronTask) {
-        guard connectionState.isReady else { return }
-        let id = requestID("cron-run")
-        cronRequestIDs.insert(id)
-        transmit(.runCron(requestID: id, id: task.id)) { [weak self] message in
-            self?.cronRequestIDs.remove(id)
-            self?.cronError = message
+    func deleteRoutineRun(_ run: RoutineRun) {
+        guard connectionState.isReady, run.status != .running else { return }
+        let id = requestID("routine-run-delete")
+        routineRequestIDs.insert(id)
+        transmit(.deleteRoutineRun(requestID: id, id: run.id)) { [weak self] message in
+            self?.routineRequestIDs.remove(id)
+            self?.routineError = message
         }
     }
 
-    func refreshCron() {
+    func runRoutine(_ routine: Routine) {
         guard connectionState.isReady else { return }
-        transmit(.listCron(requestID: requestID("cron-list")))
-        transmit(.listCronHistory(requestID: requestID("cron-history"), id: nil))
+        let id = requestID("routine-run")
+        routineRequestIDs.insert(id)
+        transmit(.runRoutine(requestID: id, id: routine.id)) { [weak self] message in
+            self?.routineRequestIDs.remove(id)
+            self?.routineError = message
+        }
     }
 
-    func presentCronRun(_ run: CronRun) {
+    func refreshRoutines() {
+        guard connectionState.isReady else { return }
+        transmit(.listRoutines(requestID: requestID("routine-list"), botID: nil))
+        transmit(.listRoutineHistory(requestID: requestID("routine-history"), id: nil))
+    }
+
+    func presentRoutineRun(_ run: RoutineRun) {
         cancelSessionFileThumbnailDownloads()
-        presentedCronRun = run
-        cronRunPreview = nil
-        cronRunPreviewEntries = []
-        cronRunPreviewNextBeforeSequence = nil
-        cronRunPreviewError = nil
-        cronRunPreviewPollingTask?.cancel()
-        cronRunPreviewPollingTask = nil
-        loadCronRunPreview(runID: run.id)
-        cronRunPreviewPollingTask = Task { [weak self] in
+        presentedRoutineRun = run
+        routineRunPreview = nil
+        routineRunPreviewEntries = []
+        routineRunPreviewNextBeforeSequence = nil
+        routineRunPreviewError = nil
+        routineRunPreviewPollingTask?.cancel()
+        routineRunPreviewPollingTask = nil
+        loadRoutineRunPreview(runID: run.id)
+        routineRunPreviewPollingTask = Task { [weak self] in
             // ponytail: poll only while a sheet is open; add push subscriptions if live viewers scale.
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(2))
                 guard !Task.isCancelled, let self,
-                      self.presentedCronRun?.id == run.id
+                      self.presentedRoutineRun?.id == run.id
                 else { return }
-                guard (self.cronRunPreview?.run.status ?? run.status) == .running else { return }
-                self.loadCronRunPreview(runID: run.id)
+                guard (self.routineRunPreview?.run.status ?? run.status) == .running else { return }
+                self.loadRoutineRunPreview(runID: run.id)
             }
         }
     }
 
-    func closeCronRunPreview() {
+    func closeRoutineRunPreview() {
         cancelSessionFileThumbnailDownloads()
-        cronRunPreviewPollingTask?.cancel()
-        cronRunPreviewPollingTask = nil
-        cronRunPreviewRequestID = nil
-        cronRunPreviewRequestBeforeSequence = nil
-        presentedCronRun = nil
-        cronRunPreview = nil
-        cronRunPreviewEntries = []
-        cronRunPreviewNextBeforeSequence = nil
-        cronRunPreviewError = nil
-        isLoadingCronRunPreview = false
+        routineRunPreviewPollingTask?.cancel()
+        routineRunPreviewPollingTask = nil
+        routineRunPreviewRequestID = nil
+        routineRunPreviewRequestBeforeSequence = nil
+        presentedRoutineRun = nil
+        routineRunPreview = nil
+        routineRunPreviewEntries = []
+        routineRunPreviewNextBeforeSequence = nil
+        routineRunPreviewError = nil
+        isLoadingRoutineRunPreview = false
     }
 
-    func loadEarlierCronRunPreview() {
-        guard let runID = presentedCronRun?.id,
-              let beforeSequence = cronRunPreviewNextBeforeSequence
+    func loadEarlierRoutineRunPreview() {
+        guard let runID = presentedRoutineRun?.id,
+              let beforeSequence = routineRunPreviewNextBeforeSequence
         else { return }
-        loadCronRunPreview(runID: runID, beforeSequence: beforeSequence)
+        loadRoutineRunPreview(runID: runID, beforeSequence: beforeSequence)
     }
 
-    private func loadCronRunPreview(runID: String, beforeSequence: UInt64? = nil) {
-        guard connectionState.isReady, cronRunPreviewRequestID == nil else { return }
-        let id = requestID("cron-preview")
-        cronRunPreviewRequestID = id
-        cronRunPreviewRequestBeforeSequence = beforeSequence
-        isLoadingCronRunPreview = cronRunPreview == nil || beforeSequence != nil
-        transmit(.getCronRunPreview(
+    private func loadRoutineRunPreview(runID: String, beforeSequence: UInt64? = nil) {
+        guard connectionState.isReady, routineRunPreviewRequestID == nil else { return }
+        let id = requestID("routine-preview")
+        routineRunPreviewRequestID = id
+        routineRunPreviewRequestBeforeSequence = beforeSequence
+        isLoadingRoutineRunPreview = routineRunPreview == nil || beforeSequence != nil
+        transmit(.getRoutineRunPreview(
             requestID: id,
             id: runID,
             beforeSequence: beforeSequence
         )) { [weak self] message in
-            guard let self, self.cronRunPreviewRequestID == id else { return }
-            self.cronRunPreviewRequestID = nil
-            self.cronRunPreviewRequestBeforeSequence = nil
-            self.isLoadingCronRunPreview = false
-            self.cronRunPreviewError = message
+            guard let self, self.routineRunPreviewRequestID == id else { return }
+            self.routineRunPreviewRequestID = nil
+            self.routineRunPreviewRequestBeforeSequence = nil
+            self.isLoadingRoutineRunPreview = false
+            self.routineRunPreviewError = message
         }
     }
 
@@ -730,6 +801,7 @@ extension AppModel {
     func appDidBecomeActive() async {
         appIsInBackground = false
         await unlockApp()
+        await refreshRemoteNotificationRegistration()
     }
 
     func unlockApp() async {

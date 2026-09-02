@@ -57,6 +57,7 @@ pub enum ClientMessage {
     CreateSession {
         request_id: String,
         workspace: PathBuf,
+        bot_id: String,
     },
     CreateWorkspaceDirectory {
         request_id: String,
@@ -89,18 +90,24 @@ pub enum ClientMessage {
     },
     CreateSwarm {
         request_id: String,
-        leader_session_id: String,
-        member_session_ids: Vec<String>,
+        title: String,
+        leader_bot_id: String,
+        member_bot_ids: Vec<String>,
     },
     AddSwarmMember {
         request_id: String,
         swarm_id: String,
-        session_id: String,
+        bot_id: String,
     },
     LeaveSwarm {
         request_id: String,
         swarm_id: String,
-        session_id: String,
+        bot_id: String,
+    },
+    RenameSwarm {
+        request_id: String,
+        swarm_id: String,
+        title: String,
     },
     DisbandSwarm {
         request_id: String,
@@ -110,8 +117,9 @@ pub enum ClientMessage {
         session_id: String,
         submission: Submission,
     },
-    SubmitGlobalScratchpad {
+    SubmitScratchpad {
         request_id: String,
+        scope: ScratchpadScope,
         operation: Op,
     },
     BeginSessionFileUpload {
@@ -145,13 +153,29 @@ pub enum ClientMessage {
         offset: u64,
         max_bytes: usize,
     },
-    ConfigureSession {
+    CreateBot {
         request_id: String,
-        session_id: String,
+        name: String,
+        description: String,
+    },
+    ListBots {
+        request_id: String,
+    },
+    UpdateBot {
+        request_id: String,
+        id: String,
         expected_revision: u64,
+        name: String,
+        description: String,
+        tint: ProviderTint,
         config: AgentComposition,
     },
-    ConfigureDefaultAgent {
+    DeleteBot {
+        request_id: String,
+        id: String,
+        expected_revision: u64,
+    },
+    ConfigureBotDefaults {
         request_id: String,
         expected_revision: u64,
         config: AgentComposition,
@@ -249,7 +273,6 @@ pub enum ClientMessage {
         tint: ProviderTint,
         model_ids: Vec<String>,
         reasoning_efforts: Vec<String>,
-        replace_existing_selections: bool,
     },
     RemoveProvider {
         request_id: String,
@@ -265,38 +288,45 @@ pub enum ClientMessage {
     GetProfile {
         request_id: String,
     },
-    CreateCron {
+    CreateRoutine {
         request_id: String,
-        source_session_id: String,
-        task: String,
-        schedule: CronSchedule,
+        bot_id: String,
+        workspace: PathBuf,
+        instructions: String,
+        schedule: RoutineSchedule,
         ends_at: Option<i64>,
     },
-    ListCron {
+    ListRoutines {
         request_id: String,
+        bot_id: Option<String>,
     },
-    UpdateCron {
+    UpdateRoutine {
         request_id: String,
         id: String,
-        source_session_id: String,
-        task: String,
-        schedule: CronSchedule,
+        bot_id: String,
+        workspace: PathBuf,
+        instructions: String,
+        schedule: RoutineSchedule,
         ends_at: Option<i64>,
         enabled: bool,
     },
-    DeleteCron {
+    DeleteRoutine {
         request_id: String,
         id: String,
     },
-    RunCron {
+    RunRoutine {
         request_id: String,
         id: String,
     },
-    ListCronHistory {
+    ListRoutineHistory {
         request_id: String,
         id: Option<String>,
     },
-    GetCronRunPreview {
+    DeleteRoutineRun {
+        request_id: String,
+        id: String,
+    },
+    GetRoutineRunPreview {
         request_id: String,
         id: String,
         before_sequence: Option<u64>,
@@ -367,8 +397,9 @@ pub enum ServerMessage {
         request_id: String,
         payload: ReadyPayload,
     },
-    GlobalScratchpadChanged {
+    ScratchpadChanged {
         request_id: String,
+        scope: ScratchpadScope,
         contribution: FrontendContribution,
     },
     Accepted {
@@ -419,6 +450,11 @@ pub enum ServerMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         request_id: Option<String>,
         sessions: Vec<SessionRecord>,
+    },
+    Bots {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
+        bots: Vec<BotRecord>,
     },
     Swarms {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -496,17 +532,17 @@ pub enum ServerMessage {
         data: Vec<u8>,
         next_offset: Option<u64>,
     },
-    CronTasks {
+    Routines {
         request_id: String,
-        tasks: Vec<CronTask>,
+        routines: Vec<Routine>,
     },
-    CronHistory {
+    RoutineHistory {
         request_id: String,
-        runs: Vec<CronRun>,
+        runs: Vec<RoutineRun>,
     },
-    CronRunPreview {
+    RoutineRunPreview {
         request_id: String,
-        preview: CronRunPreview,
+        preview: RoutineRunPreview,
     },
     Error {
         code: String,

@@ -497,7 +497,7 @@ struct PreviewTranscriptSheet: View {
                 MobiusMenuLabel(
                     verbatim: model.modelLabel(for: choice),
                     glyph: model.providerSymbol(for: choice)
-                        .flatMap(MobiusSymbol.knownGlyph(for:)) ?? .robot,
+                        .flatMap(MobiusSymbol.knownGlyph(for:)) ?? .aiScan,
                     detail: choice.reasoningEffort?.capitalized,
                     showsDisclosure: false
                 )

@@ -90,20 +90,7 @@ pub(super) fn preview_continuation(arguments: &str) -> Op {
 }
 
 pub(super) fn catalog(workspace: &std::path::Path) -> UiCatalog {
-    UiCatalog::build(
-        &[],
-        &[ModelChoice {
-            route: "kimi".into(),
-            group: "kimi".into(),
-            model: "kimi-k3".into(),
-            reasoning_effort: Some("high".into()),
-            context_window: Some(1_048_576),
-            supports_image_input: true,
-            tool_discovery: mobius::protocol::ToolDiscoveryMode::Rebuild,
-        }],
-        workspace,
-    )
-    .expect("UI catalog")
+    UiCatalog::build(&[], workspace).expect("UI catalog")
 }
 
 pub(super) fn default_catalog() -> UiCatalog {

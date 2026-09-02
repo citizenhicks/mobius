@@ -1,10 +1,12 @@
 # möbius Gateway
 
 `mobius-gateway` is the headless möbius runtime. One process owns machine
-credentials, usage, and scheduled tasks while hosting up to 32 independent
-chat agents. Every chat owns its canonical workspace, model, reasoning, agent
-features, approval policy, and prompt. The terminal, iPhone, and iPad
-clients can independently open different chats or subscribe to the same one.
+credentials, usage, durable Bot profiles, Bot routines, and manual Bot swarms
+while hosting up to 32 independent conversations. Every conversation belongs
+to exactly one Bot and owns only its canonical workspace and transcript; the
+Bot owns its model, reasoning, capabilities, approval policy, extensions, and
+prompt. The terminal, iPhone, and iPad clients can independently open different
+conversations or subscribe to the same one.
 Chats store enabled optional middleware IDs and generic scalar settings. The gateway advertises
 the ordered middleware catalog plus integer and select control schemas, so terminal and iOS
 clients render new middleware and settings without capability-specific code. New chats enable
@@ -19,8 +21,8 @@ Install `mobius-cli` to get both the client and gateway commands:
 cargo install --locked mobius-cli
 ```
 
-`mobius-gateway reset-default-agent` stops the gateway and reapplies the shipped defaults for
-future chats while preserving providers, credentials, installed extensions, existing chats, and
+`mobius-gateway reset-bot-defaults` stops the gateway and reapplies the shipped Bot-creation
+template while preserving providers, credentials, installed extensions, Bots, conversations, and
 workspaces. Start the gateway again after the command completes.
 
 The separately versioned `mobius-gateway` crate is the runtime library used by those binaries.
@@ -101,16 +103,16 @@ Full-access shell commands can use the host filesystem and network while file to
 remain workspace-scoped. Those shell commands can access gateway state, TLS credentials,
 stored provider credentials, and any other files or services available to the gateway
 account.
-The configured-model catalog and new-chat default live in gateway configuration.
-The first configured model becomes the default. A new chat copies that default,
-then stores its own selected model and runtime recipe beside its durable
-checkpoint; changing one chat never changes the catalog, another chat, or its
-workspace.
+The configured-model catalog and Bot-creation template live in gateway configuration.
+The first configured model becomes the template default. A Bot copies that template when it is
+created and remains the authoritative owner of its runtime recipe. A conversation checkpoint stores
+only its workspace and Bot identity, so reopening any of that Bot's conversations uses the current
+Bot profile without coupling unrelated Bots or workspaces.
 
 The gateway also owns the extension catalog. Clients may install a standalone
 Agent Skill or OpenAI plugin from a credential-free HTTPS Git source. Packages
 are stored as content-addressed snapshots and remain inactive until selected for
-the default agent or a chat. Executable plugin hooks require explicit review for
+the Bot-creation template or a Bot. Executable plugin hooks require explicit review for
 the installed package digest. Update and uninstall require deactivation first;
 per-workspace plugin data under `.mobius/extensions` is retained.
 
@@ -136,9 +138,9 @@ mobius-gateway register-provider --provider openrouter --model MODEL \
 The command authenticates over the running loopback gateway, is idempotent, and
 prints `{"provider":"openrouter"}` on success. Credentialless mode is rejected
 for the direct OpenRouter endpoint and for providers that do not advertise it.
-Replacing a registered provider also updates its new-chat default and durable
-chat selections before success. The command fails while a resident chat is busy,
-so automation can retry without retiring the previous endpoint prematurely.
+A provider catalog change is rejected when it would invalidate a Bot profile or
+the Bot-creation template. Register the replacement under a new instance, move
+affected Bots and defaults explicitly, then remove the old instance.
 
 On macOS or Linux, open the live dashboard or gracefully stop the configured
 gateway from another terminal:
@@ -173,12 +175,15 @@ mobius-gateway exit
 mobius-gateway connect # add --endpoint tls://HOST:PORT for TLS
 ```
 
-The internal scheduler accepts one-time, interval, and standard five-field cron
-schedules, optionally bounded by an end time. Authenticated frontends manage
-them directly through the gateway protocol; task text contains only executable
-instructions. Runs use hidden durable möbius sessions and never install system
-crontab entries or spawn a child CLI. Task files are owner-only under the
-gateway state directory. With no clients and no active scheduled tasks, the
-gateway exits after 72 hours. Stopping it manually also stops scheduled work;
-cron occurrences are not replayed after restart, and intervals catch up at most
-one overdue occurrence.
+Each Bot may own routines with one-time, interval, or standard five-field cron
+schedules, optionally bounded by an end time and pinned to a workspace. Every invocation creates a
+fresh hidden conversation owned by that Bot, exposed through routine history rather than the chat
+catalog; it never installs a system crontab entry or spawns a child CLI. Routine instructions are
+owner-only under the gateway state directory. With no clients
+and no active routines, the gateway exits after 72 hours. Stopping it manually also stops routine
+work; cron occurrences are not replayed after restart, and intervals catch up at most one overdue
+occurrence.
+
+Swarms are manual groups of Bots. A Bot belongs to at most one swarm. Mentioning a coworker from
+any conversation durably creates a fresh target conversation in the source workspace, while the
+shared board and membership remain independent of any one conversation.

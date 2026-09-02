@@ -21,6 +21,7 @@ use uuid::Uuid;
 use super::REFRESH_INTERVAL;
 use super::state::{ActionInput, CapabilityOverlay, DashboardFocus, DashboardState};
 use super::view::{dashboard_areas, render};
+use crate::frontend::bots;
 use crate::frontend::setup::{self, SetupMode};
 use crate::frontend::terminal::{INPUT_POLL, MAX_INPUT_BATCH, poll_event, terminal_text};
 use crate::gateway_accounts::{configured_token, dashboard_gateway_endpoint};
@@ -54,8 +55,10 @@ pub(super) async fn connect(
             current_client_id: None,
             selected_client_id: None,
             selected_session_id: None,
+            selected_bot_id: None,
             device_list: ListState::default(),
             chat_list: ListState::default(),
+            bot_list: ListState::default(),
             focus: DashboardFocus::Devices,
             pending_unpair: None,
             profile: None,
@@ -92,6 +95,7 @@ pub(super) async fn dashboard_loop(
     let mut refresh = tokio::time::interval(REFRESH_INTERVAL);
     refresh.set_missed_tick_behavior(MissedTickBehavior::Skip);
     sync_chat_selection(state);
+    sync_bot_selection(state);
     let mut dirty = true;
     loop {
         if dirty {
@@ -172,9 +176,27 @@ pub(super) async fn handle_key(
         open_selected_session(sender, state).await?;
         return Ok(false);
     }
+    if state.focus == DashboardFocus::Bots && key.code == KeyCode::Enter {
+        let selected = state.selected_bot_id.clone();
+        state.error = bots::run(
+            terminal,
+            sender,
+            events,
+            &mut state.gateway,
+            selected.as_deref(),
+            None,
+        )
+        .await
+        .err()
+        .map(|error| error.to_string());
+        sync_bot_selection(state);
+        sync_chat_selection(state);
+        terminal.clear()?;
+        request_snapshot(sender).await?;
+        return Ok(false);
+    }
     let mode = match key.code {
         KeyCode::Char('p') => Some(SetupMode::Login),
-        KeyCode::Char('d') => Some(SetupMode::Agent),
         KeyCode::Char('r') => {
             state.error = None;
             request_snapshot(sender).await?;
@@ -507,16 +529,12 @@ pub(super) fn handle_navigation_key(state: &mut DashboardState, key: KeyEvent, a
     let page = match state.focus {
         DashboardFocus::Devices => areas.devices.height.saturating_sub(2),
         DashboardFocus::Chats => areas.chats.height.saturating_sub(2),
+        DashboardFocus::Bots => areas.bots.height.saturating_sub(2),
     }
     .max(1);
     let page = isize::try_from(page).unwrap_or(isize::MAX);
     match key.code {
-        KeyCode::Tab => {
-            state.focus = match state.focus {
-                DashboardFocus::Devices => DashboardFocus::Chats,
-                DashboardFocus::Chats => DashboardFocus::Devices,
-            }
-        }
+        KeyCode::Tab => state.focus = state.focus.next(),
         KeyCode::Up | KeyCode::Char('k') => move_selection(state, -1),
         KeyCode::Down | KeyCode::Char('j') => move_selection(state, 1),
         KeyCode::PageUp => move_selection(state, -page),
@@ -542,6 +560,12 @@ pub(super) fn handle_mouse(state: &mut DashboardState, mouse: MouseEvent, area: 
         }
         MouseEventKind::ScrollDown if contains(areas.chats, mouse.column, mouse.row) => {
             (DashboardFocus::Chats, 3)
+        }
+        MouseEventKind::ScrollUp if contains(areas.bots, mouse.column, mouse.row) => {
+            (DashboardFocus::Bots, -3)
+        }
+        MouseEventKind::ScrollDown if contains(areas.bots, mouse.column, mouse.row) => {
+            (DashboardFocus::Bots, 3)
         }
         _ => return,
     };
@@ -575,6 +599,15 @@ pub(super) fn move_selection(state: &mut DashboardState, delta: isize) {
             state.selected_session_id = selected.map(|index| ordered[index].session_id.clone());
             state.chat_list.select(selected);
         }
+        DashboardFocus::Bots => {
+            let current = state
+                .selected_bot_id
+                .as_deref()
+                .and_then(|id| state.gateway.bots.iter().position(|bot| bot.id == id));
+            let selected = moved_index(current, state.gateway.bots.len(), delta);
+            state.selected_bot_id = selected.map(|index| state.gateway.bots[index].id.clone());
+            state.bot_list.select(selected);
+        }
     }
 }
 
@@ -582,6 +615,7 @@ pub(super) fn select_edge(state: &mut DashboardState, last: bool) {
     let length = match state.focus {
         DashboardFocus::Devices => state.clients.len(),
         DashboardFocus::Chats => state.gateway.sessions.len(),
+        DashboardFocus::Bots => state.gateway.bots.len(),
     };
     let Some(selected) = length
         .checked_sub(1)
@@ -599,6 +633,10 @@ pub(super) fn select_edge(state: &mut DashboardState, last: bool) {
             let ordered = ordered_sessions(&state.gateway.sessions);
             state.selected_session_id = Some(ordered[selected].session_id.clone());
             state.chat_list.select(Some(selected));
+        }
+        DashboardFocus::Bots => {
+            state.selected_bot_id = Some(state.gateway.bots[selected].id.clone());
+            state.bot_list.select(Some(selected));
         }
     }
 }
@@ -665,11 +703,17 @@ pub(super) fn handle_frame(state: &mut DashboardState, message: ServerMessage) -
         ServerMessage::Ready { payload } | ServerMessage::GatewayConfigured { payload, .. } => {
             state.gateway = payload;
             sync_chat_selection(state);
+            sync_bot_selection(state);
         }
         ServerMessage::Sessions { sessions, .. } => {
             state.gateway.sessions = sessions;
             sync_chat_selection(state);
         }
+        ServerMessage::Bots { bots, .. } => {
+            state.gateway.bots = bots;
+            sync_bot_selection(state);
+        }
+        ServerMessage::Swarms { swarms, .. } => state.gateway.swarms = swarms,
         ServerMessage::Clients {
             current_client_id,
             clients,
@@ -756,6 +800,16 @@ pub(super) fn sync_chat_selection(state: &mut DashboardState) {
         .or_else(|| (!ordered.is_empty()).then_some(0));
     state.selected_session_id = selected.map(|index| ordered[index].session_id.clone());
     state.chat_list.select(selected);
+}
+
+pub(super) fn sync_bot_selection(state: &mut DashboardState) {
+    let selected = state
+        .selected_bot_id
+        .as_deref()
+        .and_then(|id| state.gateway.bots.iter().position(|bot| bot.id == id))
+        .or_else(|| (!state.gateway.bots.is_empty()).then_some(0));
+    state.selected_bot_id = selected.map(|index| state.gateway.bots[index].id.clone());
+    state.bot_list.select(selected);
 }
 
 pub(super) fn ordered_clients(clients: &[ClientStatus]) -> Vec<&ClientStatus> {
