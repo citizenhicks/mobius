@@ -112,7 +112,9 @@ from its owning Bot and owns authentication, paired clients, workspaces,
 artifacts, Git, usage, Bot profiles and routines, manual Bot swarms, and the
 extension catalog. Its versioned wire protocol translates authenticated client
 requests into core operations and publishes core events plus capability
-contributions.
+contributions. [Bots and context](https://github.com/citizenhicks/mobius/blob/main/crates/mobius-gateway/BOTS.md)
+defines the conversation, Swarm, routine, subagent, scratchpad, and escalation
+boundaries.
 
 ### CLI
 
@@ -188,7 +190,7 @@ möbius requires Rust 1.98 or newer.
 
 ```toml
 [dependencies]
-mobius = "0.9"
+mobius = "0.11"
 ```
 
 The caller owns composition:

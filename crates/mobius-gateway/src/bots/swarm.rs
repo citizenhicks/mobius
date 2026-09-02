@@ -3812,7 +3812,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn human_swarm_chat_defaults_to_the_leader() {
+    async fn human_and_bot_messages_share_the_leaders_swarm_conversation() {
         let (directory, checkpoints, store, _deliveries) = store();
         let swarm = create_swarm(&store).await;
         let workspace = directory.path().to_path_buf();
@@ -3828,7 +3828,10 @@ mod tests {
 
         assert_eq!(posted.entry.author.bot_id, USER_AUTHOR_ID);
         assert_eq!(posted.entry.author.handle, USER_HANDLE);
-        assert_eq!(posted.resolved_recipient_bot_ids, vec![swarm.leader_bot_id]);
+        assert_eq!(
+            posted.resolved_recipient_bot_ids.as_slice(),
+            std::slice::from_ref(&swarm.leader_bot_id)
+        );
         let (reloaded, _deliveries) = reload(checkpoints, &store);
         let delivery = reloaded
             .claim_next_delivery(&posted.resolved_recipient_bot_ids[0])
@@ -3836,6 +3839,41 @@ mod tests {
             .expect("claim")
             .expect("leader delivery");
         assert_eq!(delivery.delivery().entry.id, posted.entry.id);
+        let session_id = delivery.session_id().to_owned();
+        assert_eq!(
+            session_id,
+            participant_session_id(&swarm.id, &swarm.leader_bot_id)
+        );
+        drop(delivery);
+        reloaded
+            .settle_delivery(
+                &posted.entry.id,
+                &session_id,
+                &swarm.leader_bot_id,
+                SwarmRunOutcome::Succeeded {
+                    summary: "Coordinated".into(),
+                },
+            )
+            .await
+            .expect("settle human post");
+
+        let peer_post = post(&reloaded, "reviewer", "@leader please follow up".into())
+            .await
+            .expect("Bot post");
+        let peer_delivery = reloaded
+            .claim_next_delivery(&swarm.leader_bot_id)
+            .await
+            .expect("claim Bot post")
+            .expect("leader delivery");
+
+        assert_eq!(peer_delivery.session_id(), session_id);
+        let context = reloaded
+            .swarm_chat_context(&swarm.leader_bot_id, &session_id)
+            .await
+            .expect("Swarm Chat context")
+            .expect("active participant context");
+        assert!(context.contains(&posted.entry.id));
+        assert!(context.contains(&peer_post.entry.id));
     }
 
     #[tokio::test]

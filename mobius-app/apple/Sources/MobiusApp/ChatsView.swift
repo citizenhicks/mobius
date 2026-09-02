@@ -98,20 +98,56 @@ struct ChatsView: View {
         HStack(spacing: MobiusSpace.s) {
             Text(organization.heading)
                 .font(.title2.weight(.semibold))
+                .layoutPriority(1)
+            if !filteredBots.isEmpty {
+                ScrollView(.horizontal) {
+                    HStack(spacing: MobiusSpace.s) {
+                        ForEach(filteredBots) { bot in
+                            HStack(spacing: MobiusSpace.xs) {
+                                Text(verbatim: "•")
+                                    .accessibilityHidden(true)
+                                MobiusLabel(
+                                    verbatim: "@\(bot.handle)",
+                                    glyph: .aiScan,
+                                    iconColor: bot.tint.color,
+                                    iconSize: MobiusStyle.glyphInline
+                                )
+                            }
+                            .font(MobiusStyle.captionFont)
+                            .foregroundStyle(palette.muted)
+                        }
+                    }
+                    .fixedSize(horizontal: true, vertical: false)
+                }
+                .scrollIndicators(.hidden)
+                .scrollBounceBehavior(.basedOnSize)
+            }
             if showsLoadingCatalog {
                 MobiusSpinner(size: MobiusStyle.glyphMark)
             }
-            Spacer()
+            Spacer(minLength: 0)
+            if !model.chatBotFilterIDs.isEmpty {
+                Button {
+                    model.chatBotFilterIDs.removeAll()
+                } label: {
+                    MobiusIcon(.filterMailRemove)
+                }
+                .buttonStyle(MobiusIconButtonStyle(bare: true))
+                .accessibilityLabel("Clear Bot filters")
+                .accessibilityValue(Text("\(model.chatBotFilterIDs.count) selected"))
+                .help("Clear Bot filters")
+                .disabled(showsLoadingCatalog)
+            }
             Button {
                 showsAttentionOnly.toggle()
             } label: {
-                MobiusIcon(.notificationSquare)
+                MobiusIcon(attentionFilterGlyph)
             }
             .buttonStyle(MobiusIconButtonStyle(prominent: showsAttentionOnly, bare: true))
             .accessibilityLabel(
                 "Filter chats needing attention"
             )
-            .accessibilityValue(showsAttentionOnly ? Text("On") : Text("Off"))
+            .accessibilityValue(attentionFilterAccessibilityValue)
             .accessibilityAddTraits(showsAttentionOnly ? .isSelected : [])
             .help(
                 showsAttentionOnly
@@ -309,6 +345,23 @@ struct ChatsView: View {
         model.bots.sorted {
             $0.name.localizedStandardCompare($1.name) == .orderedAscending
         }
+    }
+
+    private var filteredBots: [BotRecord] {
+        orderedBots.filter { model.chatBotFilterIDs.contains($0.id) }
+    }
+
+    private var attentionFilterGlyph: MobiusGlyph {
+        if showsAttentionOnly { return .bellOff }
+        return model.attentionSessionIDs.isEmpty ? .bell : .bellDot
+    }
+
+    private var attentionFilterAccessibilityValue: Text {
+        if showsAttentionOnly { return Text("On") }
+        let count = model.attentionSessionIDs.count
+        return count == 0
+            ? Text("Off, no chats need attention")
+            : Text("Off, \(count) chats need attention")
     }
 
     @ViewBuilder

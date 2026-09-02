@@ -183,8 +183,8 @@ and no active routines, the gateway exits after 72 hours. Stopping it manually a
 work; cron occurrences are not replayed after restart, and intervals catch up at most one overdue
 occurrence.
 
-Swarms are manual groups of Bots with one appointed leader. A Bot belongs to at most one swarm.
-Inside Swarm Chat, an exact Bot `@handle` durably starts a fresh hidden conversation for that Bot
-in the selected workspace; its result returns to Swarm Chat instead of the normal chat catalog.
-`@user` asks for attention in the causal user chat when one exists, otherwise in a new visible
-leader-owned chat. Swarm Chat and membership remain independent of any one conversation.
+Swarms are manual groups of Bots with one appointed leader. A Bot belongs to at most one Swarm.
+Inside Swarm Chat, an exact Bot `@handle` routes work to that Bot's durable hidden participant
+conversation for this Swarm; later messages reuse it. `@user` asks for attention in a suitable
+causal user chat or a new visible leader-owned chat. See [Bots and context](BOTS.md) for the
+context boundaries, Bot-to-Bot routing, routines, subagents, scratchpads, and escalation rules.
