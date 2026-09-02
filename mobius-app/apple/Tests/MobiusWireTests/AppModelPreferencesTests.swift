@@ -4,6 +4,58 @@ import UIKit
 import XCTest
 
 @MainActor
+private final class PushTokenRaceHarness {
+    private var pendingRegistration: CheckedContinuation<Void, Never>?
+    private(set) var hasInstallation = false
+    private(set) var methods: [String] = []
+
+    var registrationIsWaiting: Bool { pendingRegistration != nil }
+
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        let method = request.httpMethod ?? ""
+        methods.append(method)
+        switch method {
+        case "POST":
+            return try response(
+                for: request,
+                status: 200,
+                json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
+            )
+        case "PUT":
+            await withCheckedContinuation { pendingRegistration = $0 }
+            hasInstallation = true
+            return try response(for: request, status: 204)
+        case "DELETE":
+            hasInstallation = false
+            return try response(for: request, status: 204)
+        default:
+            throw URLError(.badServerResponse)
+        }
+    }
+
+    func completeRegistration() {
+        let continuation = pendingRegistration
+        pendingRegistration = nil
+        continuation?.resume()
+    }
+
+    private func response(
+        for request: URLRequest,
+        status: Int,
+        json: String = ""
+    ) throws -> (Data, HTTPURLResponse) {
+        let url = try XCTUnwrap(request.url)
+        let response = try XCTUnwrap(HTTPURLResponse(
+            url: url,
+            statusCode: status,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+        ))
+        return (Data(json.utf8), response)
+    }
+}
+
+@MainActor
 extension AppModelTests {
     func testAppLockAuthenticatesBeforePersistingAndKeepsWorkspaceDraftInMemory() async throws {
         let suiteName = UUID().uuidString
@@ -319,6 +371,87 @@ extension AppModelTests {
         )
         XCTAssertTrue(relaunched.notificationsEnabled)
         XCTAssertEqual(relaunched.pushInstallationID, model.pushInstallationID)
+    }
+
+    func testNotificationOptOutRemovesRegistrationThatFinishesAfterInitialDelete() async throws {
+        let suiteName = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        let cloudStore = MobiusCloudSessionStore(service: suiteName)
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            try? cloudStore.remove()
+        }
+        defaults.set(true, forKey: notificationsEnabledKey)
+        let harness = PushTokenRaceHarness()
+        let cloudClient = MobiusCloudClient(store: cloudStore, transport: harness.send)
+        let cloudSession = try await cloudClient.authenticate(
+            authorizationCode: "apple-code",
+            nonce: String(repeating: "n", count: 43)
+        )
+        let model = AppModel(
+            client: GatewayClient(),
+            store: GatewayStore(defaults: defaults),
+            settingsDefaults: defaults,
+            cloudClient: cloudClient
+        )
+        model.cloudSession = cloudSession
+
+        model.receivedRemoteNotificationDeviceToken(Data([0x00, 0x11]))
+        let registrationStarted = await eventually { harness.registrationIsWaiting }
+        XCTAssertTrue(registrationStarted)
+
+        await model.setNotificationsEnabled(false)
+        XCTAssertEqual(harness.methods, ["POST", "PUT", "DELETE"])
+        XCTAssertFalse(harness.hasInstallation)
+
+        harness.completeRegistration()
+        let staleRegistrationRemoved = await eventually {
+            harness.methods == ["POST", "PUT", "DELETE", "DELETE"]
+                && !harness.hasInstallation
+        }
+        XCTAssertTrue(staleRegistrationRemoved)
+        XCTAssertFalse(model.notificationsEnabled)
+        XCTAssertFalse(model.pushTokenRemovalPending)
+        XCTAssertNil(model.notificationError)
+    }
+
+    func testCloudSignOutWaitsForRegistrationBeforeRemovingInstallation() async throws {
+        let suiteName = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        let cloudStore = MobiusCloudSessionStore(service: suiteName)
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            try? cloudStore.remove()
+        }
+        defaults.set(true, forKey: notificationsEnabledKey)
+        let harness = PushTokenRaceHarness()
+        let cloudClient = MobiusCloudClient(store: cloudStore, transport: harness.send)
+        let cloudSession = try await cloudClient.authenticate(
+            authorizationCode: "apple-code",
+            nonce: String(repeating: "n", count: 43)
+        )
+        let model = AppModel(
+            client: GatewayClient(),
+            store: GatewayStore(defaults: defaults),
+            settingsDefaults: defaults,
+            cloudClient: cloudClient
+        )
+        model.cloudSession = cloudSession
+        model.receivedRemoteNotificationDeviceToken(Data([0x00, 0x11]))
+        let registrationStarted = await eventually { harness.registrationIsWaiting }
+        XCTAssertTrue(registrationStarted)
+
+        let signOut = Task { await model.signOutOfCloud() }
+        let removalPending = await eventually { model.pushTokenRemovalPending }
+        XCTAssertTrue(removalPending)
+        XCTAssertEqual(harness.methods, ["POST", "PUT"])
+
+        harness.completeRegistration()
+        await signOut.value
+        XCTAssertEqual(harness.methods, ["POST", "PUT", "DELETE"])
+        XCTAssertFalse(harness.hasInstallation)
+        XCTAssertNil(model.cloudSession)
+        XCTAssertFalse(model.pushTokenRemovalPending)
     }
 
     func testCanonicalGatewayCompletionRefinesAnEarlierRichRemotePreview() throws {

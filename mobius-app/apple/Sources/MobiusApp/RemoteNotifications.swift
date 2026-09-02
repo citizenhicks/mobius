@@ -255,6 +255,8 @@ extension AppModel {
         defer { isUpdatingNotifications = false }
 
         if enabled {
+            pushTokenRemovalPending = false
+            settingsDefaults.set(false, forKey: pushTokenRemovalPendingKey)
             await refreshRemoteNotificationRegistration(opensSettingsWhenDenied: true)
         } else {
             pushTokenRemovalPending = true
@@ -310,8 +312,12 @@ extension AppModel {
         let token = deviceToken.map { String(format: "%02x", $0) }.joined()
         guard !token.isEmpty else { return }
         remoteNotificationDeviceToken = token
-        guard notificationsEnabled else { return }
-        Task { [weak self] in await self?.registerCloudPushToken(token) }
+        guard notificationsEnabled, !pushTokenRemovalPending else { return }
+        let previousRegistration = remoteNotificationRegistrationTask
+        remoteNotificationRegistrationTask = Task { [weak self] in
+            await previousRegistration?.value
+            await self?.registerCloudPushToken(token)
+        }
     }
 
     func remoteNotificationRegistrationFailed() {
@@ -441,9 +447,9 @@ extension AppModel {
         guard cloudSession != nil else { return }
         pushTokenRemovalPending = true
         settingsDefaults.set(true, forKey: pushTokenRemovalPendingKey)
+        await remoteNotificationRegistrationTask?.value
+        remoteNotificationRegistrationTask = nil
         try await cloudClient.unregisterPushToken(installationID: pushInstallationID)
-        pushTokenRemovalPending = false
-        settingsDefaults.set(false, forKey: pushTokenRemovalPendingKey)
     }
 
     func stopRemoteNotifications(forgetsCloudInstallation: Bool = false) {
@@ -463,7 +469,10 @@ extension AppModel {
     }
 
     private func registerCloudPushToken(_ token: String) async {
-        guard notificationsEnabled, let requestedSession = cloudSession else { return }
+        guard notificationsEnabled,
+              !pushTokenRemovalPending,
+              let requestedSession = cloudSession
+        else { return }
         do {
             try await cloudClient.registerPushToken(
                 installationID: pushInstallationID,
@@ -471,13 +480,23 @@ extension AppModel {
                 environment: .current
             )
             guard cloudSession == requestedSession else { return }
+            guard notificationsEnabled else {
+                pushTokenRemovalPending = true
+                settingsDefaults.set(true, forKey: pushTokenRemovalPendingKey)
+                await removeCloudPushInstallation(reportsErrors: false)
+                return
+            }
+            guard !pushTokenRemovalPending else { return }
             pushTokenRemovalPending = false
             settingsDefaults.set(false, forKey: pushTokenRemovalPendingKey)
             notificationError = nil
         } catch is CancellationError {
             return
         } catch {
-            guard cloudSession == requestedSession else { return }
+            guard notificationsEnabled,
+                  !pushTokenRemovalPending,
+                  cloudSession == requestedSession
+            else { return }
             notificationError = localizedString(
                 "möbius Cloud couldn’t update notifications. Try again."
             )

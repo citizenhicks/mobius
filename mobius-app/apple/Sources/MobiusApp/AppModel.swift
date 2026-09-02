@@ -408,6 +408,7 @@ final class AppModel {
     @ObservationIgnored var previewPageRequestID: String?
     @ObservationIgnored var appIsInBackground = true
     @ObservationIgnored var remoteNotificationDeviceToken: String?
+    @ObservationIgnored var remoteNotificationRegistrationTask: Task<Void, Never>?
     @ObservationIgnored var pushTokenRemovalPending: Bool
     @ObservationIgnored var pendingRemoteNotification: RemoteSessionNotification?
     @ObservationIgnored var remoteNotificationEventIDs: Set<String> = []
