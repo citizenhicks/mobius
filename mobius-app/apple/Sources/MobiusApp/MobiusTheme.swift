@@ -30,7 +30,6 @@ enum MobiusSymbol {
         "queue": .queue01,
         "route": .path,
         "search": .magnifyingGlass,
-        "security_review": .aiSecurity02,
         "shield": .shield02,
         "shield_alert": .shieldAlert,
         "shield_check": .shieldCheck,

@@ -125,10 +125,7 @@ private struct AgentEventValidator {
                 throw GatewayWireError.invalidFrame("tool_load has invalid tools")
             }
         case "exec_approval_request":
-            try validateApprovalCalls(reasonRequired: true)
-        case "exec_approval_review":
-            try validateApprovalCalls(reasonRequired: false)
-            try validateApprovalReviewStatus()
+            try validateApprovalCalls()
         case "token_count":
             try validateTokenCount()
         case "web_search_begin":
@@ -342,9 +339,8 @@ private struct AgentEventValidator {
         try requireIntegers(positionKeys, in: annotation)
     }
 
-    private func validateApprovalCalls(reasonRequired: Bool) throws {
-        try requireStrings(["id", "turnId"])
-        if reasonRequired { try requireString("reason") }
+    private func validateApprovalCalls() throws {
+        try requireStrings(["id", "turnId", "reason"])
         guard let calls = msg["calls"]?.arrayValue else {
             throw GatewayWireError.invalidFrame("\(type) has invalid calls")
         }
@@ -354,34 +350,6 @@ private struct AgentEventValidator {
             guard call["arguments"] != nil else {
                 throw GatewayWireError.invalidFrame("\(type) has invalid arguments")
             }
-        }
-    }
-
-    private func validateApprovalReviewStatus() throws {
-        switch msg["status"]?.stringValue {
-        case "reviewing", "approved":
-            if let reason = msg["reason"], reason != .null {
-                throw GatewayWireError.invalidFrame(
-                    "exec_approval_review has an unexpected reason"
-                )
-            }
-        case "escalated":
-            guard let reason = msg["reason"]?.stringValue,
-                [
-                    "reviewer_asked",
-                    "review_data_unavailable",
-                    "reviewer_unavailable",
-                    "invalid_response",
-                ].contains(reason)
-            else {
-                throw GatewayWireError.invalidFrame(
-                    "exec_approval_review has an invalid reason"
-                )
-            }
-        default:
-            throw GatewayWireError.invalidFrame(
-                "exec_approval_review has an invalid status"
-            )
         }
     }
 

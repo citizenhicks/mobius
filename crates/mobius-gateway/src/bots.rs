@@ -25,7 +25,7 @@ use crate::wire::{
 };
 use crate::{Error, Result};
 
-const STATE_VERSION: u32 = 3;
+const STATE_VERSION: u32 = 4;
 const STATE_FILE: &str = "bots.json";
 const STATE_LOCK_FILE: &str = "bots-state.lock";
 const ROUTINES_DIR: &str = "routines";

@@ -81,7 +81,7 @@ impl HookEvent {
 
 pub(super) const fn permission_mode(policy: ApprovalPolicy) -> &'static str {
     match policy {
-        ApprovalPolicy::Ask | ApprovalPolicy::AutoApprove => "default",
+        ApprovalPolicy::Ask => "default",
         ApprovalPolicy::Allow | ApprovalPolicy::AllowNetwork => "dontAsk",
         ApprovalPolicy::FullAccess => "bypassPermissions",
     }
@@ -935,17 +935,10 @@ mod tests {
                 ApprovalPolicy::Ask,
                 ApprovalPolicy::Allow,
                 ApprovalPolicy::AllowNetwork,
-                ApprovalPolicy::AutoApprove,
                 ApprovalPolicy::FullAccess,
             ]
             .map(permission_mode),
-            [
-                "default",
-                "dontAsk",
-                "dontAsk",
-                "default",
-                "bypassPermissions",
-            ]
+            ["default", "dontAsk", "dontAsk", "bypassPermissions",]
         );
     }
 

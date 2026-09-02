@@ -1646,7 +1646,7 @@ final class MobiusCloudTests: XCTestCase {
         defer { try? sessionStore.remove() }
         let token = String(repeating: "t", count: 43)
         let client = MobiusCloudClient(store: sessionStore) { request in
-            try self.response(
+            return try self.response(
                 for: request,
                 json: #"{"token":"\#(token)","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
             )
@@ -1668,7 +1668,7 @@ final class MobiusCloudTests: XCTestCase {
         try await gatewayStore.remove(account)
     }
 
-    func testCloudSignOutRetainsAuthenticationUntilPushRemovalSucceeds() async throws {
+    func testCloudSignOutClearsLocalAuthenticationWhenPushRemovalFails() async throws {
         let suiteName = "app.mobius.cloud.tests.\(UUID())"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         let root = FileManager.default.temporaryDirectory
@@ -1696,9 +1696,10 @@ final class MobiusCloudTests: XCTestCase {
         let service = "app.mobius.cloud.tests.\(UUID())"
         let sessionStore = MobiusCloudSessionStore(service: service)
         defer { try? sessionStore.remove() }
-        var rejectsPushRemoval = true
+        var requestedPushRemoval = false
         let client = MobiusCloudClient(store: sessionStore) { request in
-            if request.url?.path == "/api/mobile/push-token", rejectsPushRemoval {
+            if request.url?.path == "/api/mobile/push-token" {
+                requestedPushRemoval = true
                 return try self.response(for: request, status: 500, json: "{}")
             }
             return try self.response(
@@ -1706,7 +1707,7 @@ final class MobiusCloudTests: XCTestCase {
                 json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
             )
         }
-        let session = try await client.authenticate(
+        _ = try await client.authenticate(
             authorizationCode: "apple-code",
             nonce: String(repeating: "n", count: 43)
         )
@@ -1732,15 +1733,7 @@ final class MobiusCloudTests: XCTestCase {
 
         await model.signOutOfCloud()
 
-        XCTAssertEqual(model.cloudSession, session)
-        XCTAssertEqual(try client.loadSession(), session)
-        XCTAssertEqual(model.cloudAccount?.userID, session.userID)
-        XCTAssertEqual(model.accounts, [gateway])
-        XCTAssertEqual(gatewayStore.loadAccounts(), [gateway])
-
-        rejectsPushRemoval = false
-        await model.signOutOfCloud()
-
+        XCTAssertTrue(requestedPushRemoval)
         XCTAssertNil(model.cloudSession)
         XCTAssertNil(model.cloudAccount)
         XCTAssertNil(try client.loadSession())
@@ -1757,6 +1750,139 @@ final class MobiusCloudTests: XCTestCase {
                 return XCTFail("Expected the gateway token to be removed")
             }
         }
+    }
+
+    func testCloudSignOutDisconnectsAndReportsCloudKeychainDeletionFailure() async throws {
+        let suiteName = "app.mobius.cloud.tests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        var failNextGatewayDelete = false
+        let gatewayStore = GatewayStore(
+            defaults: defaults,
+            keychainDelete: { query in
+                if failNextGatewayDelete {
+                    failNextGatewayDelete = false
+                    return errSecInteractionNotAllowed
+                }
+                return SecItemDelete(query)
+            }
+        )
+        let cloudUserID = try XCTUnwrap(UUID(
+            uuidString: "00000000-0000-0000-0000-000000000001"
+        ))
+        let gateway = GatewayAccount(
+            endpoint: try GatewayEndpoint("wss://gateway.example"),
+            displayName: "möbius Cloud",
+            machineName: mobiusCloudGatewayDisplayName,
+            cloudUserID: cloudUserID
+        )
+        try gatewayStore.save(gateway, token: "gateway-token")
+        addTeardownBlock { try? await gatewayStore.remove(gateway) }
+
+        let service = "app.mobius.cloud.tests.\(UUID())"
+        var failNextCloudDelete = false
+        let sessionStore = MobiusCloudSessionStore(
+            service: service,
+            keychainDelete: { query in
+                if failNextCloudDelete {
+                    failNextCloudDelete = false
+                    return errSecInteractionNotAllowed
+                }
+                return SecItemDelete(query)
+            }
+        )
+        defer { try? sessionStore.remove() }
+        let client = MobiusCloudClient(store: sessionStore) { request in
+            try self.response(
+                for: request,
+                json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
+            )
+        }
+        _ = try await client.authenticate(
+            authorizationCode: "apple-code",
+            nonce: String(repeating: "n", count: 43)
+        )
+        let model = AppModel(
+            store: gatewayStore,
+            settingsDefaults: defaults,
+            requestSender: { _ in },
+            connectionOpener: { _ in AsyncThrowingStream { _ in } },
+            cloudClient: client
+        )
+        model.cloudAccount = MobiusCloudAccount(
+            userID: cloudUserID,
+            email: nil,
+            subscribed: true,
+            sharesDiagnostics: false
+        )
+        model.connectionState = .ready
+        model.selectedSessionID = "chat-1"
+        failNextGatewayDelete = true
+        failNextCloudDelete = true
+
+        await model.signOutOfCloud()
+
+        XCTAssertNil(model.cloudSession)
+        XCTAssertTrue(model.accounts.isEmpty)
+        XCTAssertTrue(gatewayStore.loadAccounts().isEmpty)
+        XCTAssertNil(model.selectedAccountID)
+        XCTAssertNil(gatewayStore.selectedAccountID())
+        XCTAssertNil(model.selectedSessionID)
+        XCTAssertEqual(model.connectionState, .disconnected)
+        XCTAssertTrue(model.showsPairing)
+        XCTAssertNotNil(try client.loadSession())
+        XCTAssertEqual(try gatewayStore.token(for: gateway), "gateway-token")
+        XCTAssertEqual(model.toast?.tone, .error)
+        XCTAssertNotEqual(model.toast?.message, "Gateway removed.")
+    }
+
+    func testGatewayStoreClearAllDataContinuesAfterKeychainDeletionFailure() async throws {
+        let suiteName = "app.mobius.cloud.tests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let draftDirectory = root.appendingPathComponent("Drafts", isDirectory: true)
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: root)
+        }
+        var failNextDelete = false
+        let gatewayStore = GatewayStore(
+            defaults: defaults,
+            catalogDirectory: root.appendingPathComponent("Catalogs", isDirectory: true),
+            transcriptDirectory: root.appendingPathComponent("Transcripts", isDirectory: true),
+            thumbnailDirectory: root.appendingPathComponent("Thumbnails", isDirectory: true),
+            draftDirectory: draftDirectory,
+            keychainDelete: { query in
+                if failNextDelete {
+                    failNextDelete = false
+                    return errSecInteractionNotAllowed
+                }
+                return SecItemDelete(query)
+            }
+        )
+        let gateway = GatewayAccount(endpoint: try GatewayEndpoint("wss://gateway.example"))
+        try gatewayStore.save(gateway, token: "gateway-token")
+        addTeardownBlock { try? await gatewayStore.remove(gateway) }
+        try FileManager.default.createDirectory(at: draftDirectory, withIntermediateDirectories: true)
+        let privateDraft = draftDirectory.appendingPathComponent("private.txt")
+        try Data("private draft".utf8).write(to: privateDraft)
+        failNextDelete = true
+
+        do {
+            try await gatewayStore.clearAllData()
+            XCTFail("Expected Keychain deletion to fail")
+        } catch let error as GatewayStore.StoreError {
+            guard case .keychain(let status) = error else {
+                return XCTFail("Expected a Keychain error")
+            }
+            XCTAssertEqual(status, errSecInteractionNotAllowed)
+        }
+
+        XCTAssertTrue(gatewayStore.loadAccounts().isEmpty)
+        XCTAssertNil(gatewayStore.selectedAccountID())
+        XCTAssertFalse(FileManager.default.fileExists(atPath: privateDraft.path))
+        XCTAssertEqual(try gatewayStore.token(for: gateway), "gateway-token")
     }
 
     func testClearDataAndGatewayInformationPerformsALocalCleanReset() async throws {
@@ -1824,7 +1950,10 @@ final class MobiusCloudTests: XCTestCase {
         let sessionStore = MobiusCloudSessionStore(service: service)
         defer { try? sessionStore.remove() }
         let client = MobiusCloudClient(store: sessionStore) { request in
-            try self.response(
+            if request.url?.path == "/api/mobile/push-token" {
+                return try self.response(for: request, status: 500, json: "{}")
+            }
+            return try self.response(
                 for: request,
                 json:
                     #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#

@@ -66,6 +66,7 @@ async fn stale_acknowledgement_does_not_clear_a_newer_delivery_attempt() {
         "target-bot".into(),
         SwarmDeliveryAttempt::Submitted("new-message".into()),
     )]);
+    let mut attention_attempts = HashSet::new();
 
     gateway
         .handle_swarm_delivery(
@@ -74,6 +75,7 @@ async fn stale_acknowledgement_does_not_clear_a_newer_delivery_attempt() {
                 message_id: "old-message".into(),
             },
             &mut attempts,
+            &mut attention_attempts,
         )
         .await;
 
@@ -81,6 +83,44 @@ async fn stale_acknowledgement_does_not_clear_a_newer_delivery_attempt() {
         attempts.get("target-bot"),
         Some(&SwarmDeliveryAttempt::Submitted("new-message".into()))
     );
+}
+
+#[tokio::test]
+async fn duplicate_user_attention_waits_for_its_exact_acknowledgement() {
+    let root = tempfile::tempdir().expect("root");
+    let listen = "127.0.0.1:8741".parse().expect("listen address");
+    let (store, config) =
+        ConfigStore::initialize(root.path().join("state"), listen, None).expect("config");
+    let credentials =
+        Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
+    let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
+    let gateway = GatewayHost::start(store, config, credentials, bots)
+        .await
+        .expect("gateway");
+    let mut attempts = HashMap::new();
+    let mut attention_attempts = HashSet::from(["attention-1".into()]);
+
+    gateway
+        .handle_swarm_delivery(
+            SwarmDelivery::UserAttention {
+                message_id: "attention-1".into(),
+            },
+            &mut attempts,
+            &mut attention_attempts,
+        )
+        .await;
+    assert!(attention_attempts.contains("attention-1"));
+
+    gateway
+        .handle_swarm_delivery(
+            SwarmDelivery::UserAttentionAcknowledged {
+                message_id: "attention-1".into(),
+            },
+            &mut attempts,
+            &mut attention_attempts,
+        )
+        .await;
+    assert!(attention_attempts.is_empty());
 }
 
 #[tokio::test]
@@ -99,6 +139,7 @@ async fn rejected_delivery_waits_for_bot_capacity_before_retrying() {
         "target-bot".into(),
         SwarmDeliveryAttempt::Submitted("message-1".into()),
     )]);
+    let mut attention_attempts = HashSet::new();
 
     gateway
         .handle_swarm_delivery(
@@ -107,6 +148,7 @@ async fn rejected_delivery_waits_for_bot_capacity_before_retrying() {
                 message_id: "message-1".into(),
             },
             &mut attempts,
+            &mut attention_attempts,
         )
         .await;
     assert_eq!(
@@ -115,7 +157,11 @@ async fn rejected_delivery_waits_for_bot_capacity_before_retrying() {
     );
 
     gateway
-        .handle_swarm_delivery(SwarmDelivery::RetryPending, &mut attempts)
+        .handle_swarm_delivery(
+            SwarmDelivery::RetryPending,
+            &mut attempts,
+            &mut attention_attempts,
+        )
         .await;
     assert!(matches!(
         attempts.get("target-bot"),
@@ -128,6 +174,7 @@ async fn rejected_delivery_waits_for_bot_capacity_before_retrying() {
                 target_bot_id: "target-bot".into(),
             },
             &mut attempts,
+            &mut attention_attempts,
         )
         .await;
     assert!(!attempts.contains_key("target-bot"));
@@ -234,10 +281,11 @@ async fn gateway_with_swarm(
 }
 
 #[tokio::test]
-async fn mention_delivery_uses_one_fresh_reserved_bot_conversation() {
+async fn mention_delivery_uses_the_bots_private_swarm_conversation() {
     let root = tempfile::tempdir().expect("root");
     let (gateway, _, source, source_bot, target, target_bot, swarm_id) =
         gateway_with_swarm(&root).await;
+    let mut gateway_events = gateway.subscribe();
     let source_session_id = source.session_id().to_owned();
     let original_target_session_id = target.session_id().to_owned();
     let swarm = Arc::clone(&gateway.state.lock().await.swarm);
@@ -249,6 +297,11 @@ async fn mention_delivery_uses_one_fresh_reserved_bot_conversation() {
 
     let assigned_session_id = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
+            if let Ok(frame) = gateway_events.try_recv()
+                && let ServerMessage::Error { code, message, .. } = frame.message
+            {
+                panic!("swarm delivery failed ({code}): {message}");
+            }
             let entry = swarm
                 .board_page(&swarm_id, None, 32)
                 .await
@@ -297,6 +350,15 @@ async fn mention_delivery_uses_one_fresh_reserved_bot_conversation() {
         .expect("fresh target checkpoint");
     assert_eq!(checkpoint.session_context.bot_id, target_bot.id);
     assert!(!checkpoint.catalog_visible);
+    assert_eq!(
+        checkpoint.session_context.origin_label.as_deref(),
+        Some("Swarm Chat · Review team")
+    );
+    let background_workspace = gateway.state.lock().await.background_workspace.clone();
+    assert_eq!(
+        checkpoint.session_context.workspace_label.as_deref(),
+        Some(background_workspace.to_string_lossy().as_ref())
+    );
     let page = gateway
         .state
         .lock()
@@ -327,13 +389,42 @@ async fn mention_delivery_uses_one_fresh_reserved_bot_conversation() {
                 && message_text == &text
         )
     }));
+
+    let second = swarm
+        .post(
+            &source_bot.id,
+            &source_session_id,
+            format!("@{} review the follow-up", target_bot.handle),
+            None,
+        )
+        .await
+        .expect("post follow-up mention");
+    let reused_session_id = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let entry = swarm
+                .board_page(&swarm_id, None, 32)
+                .await
+                .expect("board")
+                .entries
+                .into_iter()
+                .find(|entry| entry.id == second.entry.id)
+                .expect("follow-up entry");
+            if let Some(session_id) = entry.assigned_recipient_session_ids.get(&target_bot.id) {
+                break session_id.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("follow-up delivery");
+    assert_eq!(reused_session_id, assigned_session_id);
 }
 
 #[tokio::test]
 async fn startup_ack_reuses_the_reserved_conversation_without_resubmitting() {
     let root = tempfile::tempdir().expect("root");
     let state_dir = root.path().join("state");
-    let (gateway, workspace, source, source_bot, target, target_bot, _) =
+    let (gateway, _workspace, source, source_bot, target, target_bot, _) =
         gateway_with_swarm(&root).await;
     let source_session_id = source.session_id().to_owned();
     let visible_tool_count = target
@@ -372,8 +463,11 @@ async fn startup_ack_reuses_the_reserved_conversation_without_resubmitting() {
     drop(claim);
     let mut checkpoint = Checkpoint::empty(&assigned_session_id);
     checkpoint.catalog_visible = false;
+    let background_workspace =
+        prepare_background_workspace(store.state_dir(), None).expect("background workspace");
     let target_spec =
-        ChatSpec::for_bot(&workspace, &target_bot, store.state_dir(), None).expect("target spec");
+        ChatSpec::for_bot(&background_workspace, &target_bot, store.state_dir(), None)
+            .expect("target spec");
     let target_workspace = target_spec.workspace_info();
     checkpoint.metadata = target_spec.metadata().expect("target metadata");
     checkpoint.session_context.bot_id = target_bot.id.clone();
@@ -542,10 +636,11 @@ async fn startup_ack_reuses_the_reserved_conversation_without_resubmitting() {
     assert!(
         swarm
             .settle_delivery(
+                &post.entry.id,
                 &assigned_session_id,
                 &target_bot.id,
                 SwarmRunOutcome::Succeeded {
-                    summary: Some("Replayed work completed".into()),
+                    summary: "Replayed work completed".into(),
                 },
             )
             .await
@@ -554,6 +649,7 @@ async fn startup_ack_reuses_the_reserved_conversation_without_resubmitting() {
     assert!(
         !swarm
             .settle_delivery(
+                &post.entry.id,
                 &assigned_session_id,
                 &target_bot.id,
                 SwarmRunOutcome::Failed {

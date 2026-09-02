@@ -1,7 +1,7 @@
 import Foundation
 import UIKit
 
-let gatewayProtocolVersion = 61
+let gatewayProtocolVersion = 62
 let maximumGatewayFrameBytes = 50 * 1024 * 1024
 let maximumComposerBytes = 1024 * 1024
 let maximumWireSessionFileReferences = 16
@@ -43,26 +43,6 @@ struct GatewayPairingSetup: Equatable, Sendable {
             throw GatewayWireError.invalidPairingSetup
         }
         try self.init(endpoint: String(parts[1]), code: String(parts[2]))
-    }
-
-    init(url: URL) throws {
-        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              components.scheme?.lowercased() == "mobius",
-              components.host?.lowercased() == "pair",
-              components.user == nil,
-              components.password == nil,
-              components.port == nil,
-              components.path.isEmpty || components.path == "/",
-              components.fragment == nil,
-              let queryItems = components.queryItems,
-              queryItems.count == 2,
-              Set(queryItems.map(\.name)) == ["endpoint", "code"],
-              let endpoint = queryItems.first(where: { $0.name == "endpoint" })?.value,
-              let code = queryItems.first(where: { $0.name == "code" })?.value
-        else {
-            throw GatewayWireError.invalidPairingSetup
-        }
-        try self.init(endpoint: endpoint, code: code)
     }
 
     init(endpoint: String, code: String) throws {

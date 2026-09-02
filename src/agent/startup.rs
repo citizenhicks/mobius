@@ -409,7 +409,6 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         system_prompt,
         catalog,
         state,
-        review_session_id: uuid::Uuid::new_v4().to_string(),
         transcript_delta: Vec::new(),
         pending_session_start_stop,
         turn_end_turn_id: None,

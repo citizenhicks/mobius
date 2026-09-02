@@ -1531,7 +1531,7 @@ dependencies = [
 
 [[package]]
 name = "mobius"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "base64",
  "bm25",
@@ -1554,7 +1554,7 @@ dependencies = [
 
 [[package]]
 name = "mobius-cli"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "arboard",
  "chrono",
@@ -1575,7 +1575,7 @@ dependencies = [
 
 [[package]]
 name = "mobius-gateway"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "base64",
  "chrono",
@@ -1584,7 +1584,6 @@ dependencies = [
  "futures-util",
  "mobius",
  "nix",
- "qrcode",
  "rustls",
  "rustls-pemfile",
  "serde",
@@ -2083,12 +2082,6 @@ name = "pxfm"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
-
-[[package]]
-name = "qrcode"
-version = "0.14.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
 
 [[package]]
 name = "quick-error"

@@ -50,10 +50,9 @@ failure aborting setup. möbius stores the token in an owner-only file outside
 `gateway.toml` and starts `cloudflared` with `--token-file`. The
 GitHub binary archives include a pinned `cloudflared` sidecar; source and
 `cargo install` builds require `cloudflared` beside `mobius-gateway` or on
-`PATH`. The gateway also prints a copyable `mobius-pair:v1` setup code and, in an
-interactive terminal, an iPhone/iPad QR. Both contain only the public endpoint
-and short-lived möbius pairing code. They prefill the Apple pairing form for
-confirmation and never contain the Cloudflare token.
+`PATH`. The gateway also prints a copyable `mobius-pair:v1` setup code containing
+only the public endpoint and short-lived möbius pairing code. It prefills the
+Apple pairing form for confirmation and never contains the Cloudflare token.
 
 If the selected state directory already exists, interactive initialization asks
 for explicit confirmation before stopping the old gateway and deleting its

@@ -647,6 +647,7 @@ final class GatewayStore {
     private let selectedAccountKey = "selected-gateway"
     private let sessionReadCursorsKeyPrefix = "session-read-cursors."
     private let keychainService = "app.mobius.gateway"
+    private let keychainDelete: (CFDictionary) -> OSStatus
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
@@ -655,9 +656,11 @@ final class GatewayStore {
         catalogDirectory: URL? = nil,
         transcriptDirectory: URL? = nil,
         thumbnailDirectory: URL? = nil,
-        draftDirectory: URL? = nil
+        draftDirectory: URL? = nil,
+        keychainDelete: @escaping (CFDictionary) -> OSStatus = { SecItemDelete($0) }
     ) {
         self.defaults = defaults
+        self.keychainDelete = keychainDelete
         let cacheDirectory = URL.cachesDirectory
             .appendingPathComponent("mobius", isDirectory: true)
         diskStore = GatewayDiskStore(
@@ -773,7 +776,12 @@ final class GatewayStore {
     }
 
     func remove(_ account: GatewayAccount) async throws {
-        try removeToken(accountID: account.id)
+        var tokenRemovalError: Error?
+        do {
+            try removeToken(accountID: account.id)
+        } catch {
+            tokenRemovalError = error
+        }
         let accounts = loadAccounts().filter { $0.id != account.id }
         defaults.set(try encoder.encode(accounts), forKey: accountsKey)
         if selectedAccountID() == account.id {
@@ -781,6 +789,7 @@ final class GatewayStore {
         }
         defaults.removeObject(forKey: sessionReadCursorsKey(account.id))
         await diskStore.removeAccount(account.id)
+        if let tokenRemovalError { throw tokenRemovalError }
     }
 
     func loadChatCatalog(accountID: UUID) async -> CachedChatCatalog? {
@@ -903,17 +912,22 @@ final class GatewayStore {
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: keychainService,
         ]
-        let status = SecItemDelete(query as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw StoreError.keychain(status)
-        }
+        let status = keychainDelete(query as CFDictionary)
+        var localError: Error? = status == errSecSuccess || status == errSecItemNotFound
+            ? nil
+            : StoreError.keychain(status)
         for key in defaults.dictionaryRepresentation().keys
         where key.hasPrefix(sessionReadCursorsKeyPrefix) {
             defaults.removeObject(forKey: key)
         }
         defaults.removeObject(forKey: accountsKey)
         defaults.removeObject(forKey: selectedAccountKey)
-        try await diskStore.clearAllData()
+        do {
+            try await diskStore.clearAllData()
+        } catch {
+            localError = localError ?? error
+        }
+        if let localError { throw localError }
     }
 
     private func sessionReadCursorsKey(_ accountID: UUID) -> String {
@@ -948,7 +962,7 @@ final class GatewayStore {
             kSecAttrService: keychainService,
             kSecAttrAccount: accountID.uuidString,
         ]
-        let status = SecItemDelete(query as CFDictionary)
+        let status = keychainDelete(query as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw StoreError.keychain(status)
         }

@@ -39,38 +39,6 @@ extension GatewayWireTests {
         XCTAssertNil(record.preview)
     }
 
-    func testExecApprovalReviewLifecycleEventsAreAccepted() throws {
-        let fixtures: [(fixture: String, status: String, reason: String?)] = [
-            (#"{"version":28,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1234,"event":{"submission_id":"input-1","msg":{"type":"exec_approval_review","id":"approval-1","turn_id":"turn-1","calls":[{"call_id":"call-1","name":"bash","arguments":{"command":"git status"}}],"status":"reviewing"}},"stream_metrics":[],"blocks":[],"preview":null}}"#, "reviewing", nil),
-            (#"{"version":28,"type":"agent_event","session_id":"chat-1","record":{"sequence":9,"recorded_at_ms":1235,"event":{"submission_id":"input-1","msg":{"type":"exec_approval_review","id":"approval-1","turn_id":"turn-1","calls":[{"call_id":"call-1","name":"bash","arguments":{"command":"git status"}}],"status":"approved"}},"stream_metrics":[],"blocks":[],"preview":null}}"#, "approved", nil),
-            (#"{"version":28,"type":"agent_event","session_id":"chat-1","record":{"sequence":10,"recorded_at_ms":1236,"event":{"submission_id":"input-1","msg":{"type":"exec_approval_review","id":"approval-1","turn_id":"turn-1","calls":[{"call_id":"call-1","name":"bash","arguments":{"command":"git status"}}],"status":"escalated","reason":"reviewer_asked"}},"stream_metrics":[],"blocks":[],"preview":null}}"#, "escalated", "reviewer_asked"),
-        ]
-
-        for fixture in fixtures {
-            guard case .agentEvent(_, let record) = try decodeEnvelope(fixture.fixture) else {
-                return XCTFail("Expected agent event envelope")
-            }
-            XCTAssertEqual(record.event.msg["type"]?.stringValue, "exec_approval_review")
-            XCTAssertEqual(record.event.msg["status"]?.stringValue, fixture.status)
-            XCTAssertEqual(record.event.msg["reason"]?.stringValue, fixture.reason)
-            XCTAssertEqual(record.event.msg["calls"]?.arrayValue?.count, 1)
-        }
-    }
-
-    func testMalformedExecApprovalReviewStatusAndReasonAreRejected() {
-        let fixtures = [
-            (#"{"version":28,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"exec_approval_review","id":"approval-1","turn_id":"turn-1","calls":[],"status":"unknown"}},"stream_metrics":[],"blocks":[],"preview":null}}"#, "exec_approval_review has an invalid status"),
-            (#"{"version":28,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"exec_approval_review","id":"approval-1","turn_id":"turn-1","calls":[],"status":"approved","reason":"reviewer_asked"}},"stream_metrics":[],"blocks":[],"preview":null}}"#, "exec_approval_review has an unexpected reason"),
-            (#"{"version":28,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"exec_approval_review","id":"approval-1","turn_id":"turn-1","calls":[],"status":"escalated"}},"stream_metrics":[],"blocks":[],"preview":null}}"#, "exec_approval_review has an invalid reason"),
-        ]
-
-        for (fixture, message) in fixtures {
-            XCTAssertThrowsError(try decodeEnvelope(fixture)) { error in
-                XCTAssertEqual(error as? GatewayWireError, .invalidFrame(message))
-            }
-        }
-    }
-
     func testTypedModelCompletionAndWebActionDecode() throws {
         let completion = try decodeEnvelope(
             #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1400,"event":{"msg":{"type":"model_step_completed","session_id":"chat-1","turn_id":"turn-1","model_step_id":"step-1","step_index":0,"started_at_ms":1000,"completed_at_ms":1400,"outcome":{"status":"completed","end_turn":true,"tool_call_ids":["call-1"],"usage":{"input_tokens":10,"cached_input_tokens":2,"cache_write_input_tokens":0,"output_tokens":3,"reasoning_output_tokens":1,"total_tokens":13}}}},"stream_metrics":[{"phase":"reasoning","first_delta_at_ms":1100,"last_delta_at_ms":1200,"chunk_count":2,"utf8_bytes":7,"longest_gap_ms":100},{"phase":"final_answer","first_delta_at_ms":1300,"last_delta_at_ms":1350,"chunk_count":1,"utf8_bytes":4,"longest_gap_ms":0}],"blocks":[],"preview":null}}"#

@@ -351,7 +351,6 @@ pub enum EventMsg {
     ToolCallEnd(ToolCallEndEvent),
     ToolLoad(ToolLoadEvent),
     ExecApprovalRequest(ExecApprovalRequestEvent),
-    ExecApprovalReview(ExecApprovalReviewEvent),
     TokenCount(TokenCountEvent),
     ContextCompacted,
     WebSearchBegin(WebSearchBeginEvent),
@@ -897,54 +896,6 @@ mod tests {
         assert_eq!(
             serde_json::to_value(EventMsg::ContextCompacted).expect("serialize compaction"),
             json!({"type": "context_compacted"})
-        );
-    }
-
-    #[test]
-    fn approval_review_serializes_the_wire_contract() {
-        let calls = || {
-            vec![ApprovalCall {
-                call_id: "call-1".into(),
-                name: "bash".into(),
-                arguments: json!({"command": "git status"}),
-            }]
-        };
-        let reviewing = EventMsg::ExecApprovalReview(ExecApprovalReviewEvent {
-            id: "approval-1".into(),
-            turn_id: "turn-1".into(),
-            calls: calls(),
-            status: ApprovalReviewStatus::Reviewing,
-            reason: None,
-        });
-        let escalated = EventMsg::ExecApprovalReview(ExecApprovalReviewEvent {
-            id: "approval-1".into(),
-            turn_id: "turn-1".into(),
-            calls: calls(),
-            status: ApprovalReviewStatus::Escalated,
-            reason: Some(ApprovalReviewEscalation::ReviewerAsked),
-        });
-
-        // Clients reject a null reason for reviewing/approved, so the key stays absent.
-        assert_eq!(
-            serde_json::to_value(reviewing).expect("serialize reviewing"),
-            json!({
-                "type": "exec_approval_review",
-                "id": "approval-1",
-                "turn_id": "turn-1",
-                "calls": [{"call_id": "call-1", "name": "bash", "arguments": {"command": "git status"}}],
-                "status": "reviewing"
-            })
-        );
-        assert_eq!(
-            serde_json::to_value(escalated).expect("serialize escalated"),
-            json!({
-                "type": "exec_approval_review",
-                "id": "approval-1",
-                "turn_id": "turn-1",
-                "calls": [{"call_id": "call-1", "name": "bash", "arguments": {"command": "git status"}}],
-                "status": "escalated",
-                "reason": "reviewer_asked"
-            })
         );
     }
 

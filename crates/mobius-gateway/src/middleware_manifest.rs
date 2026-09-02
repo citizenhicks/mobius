@@ -357,17 +357,15 @@ mod tests {
         assert!(sandbox.required);
         assert_eq!(
             config.setting("sandbox", "approval_policy"),
-            Some(&FrontendSettingValue::String("auto_approve".into()))
+            Some(&FrontendSettingValue::String("ask".into()))
         );
         assert_eq!(
-            config.setting("sandbox", "reviewer_strictness"),
-            Some(&FrontendSettingValue::String("strict".into()))
-        );
-        assert!(
             sandbox
                 .settings
                 .iter()
-                .any(|setting| setting.id == "reviewer_model_route")
+                .map(|setting| setting.id.as_str())
+                .collect::<Vec<_>>(),
+            ["approval_policy"]
         );
     }
 

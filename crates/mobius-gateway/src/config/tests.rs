@@ -71,8 +71,9 @@ fn opening_unmigratable_versions_never_rewrites_config() {
         (19, false),
         (20, false),
         (21, false),
-        (23, false),
-        (22, true),
+        (22, false),
+        (24, false),
+        (23, true),
     ] {
         let root = tempfile::tempdir().expect("temporary directory");
         let state = root.path().join("state");
@@ -80,7 +81,7 @@ fn opening_unmigratable_versions_never_rewrites_config() {
         let path = state.join(CONFIG_FILE);
         let mut contents = fs::read_to_string(&path)
             .expect("read gateway config")
-            .replacen("version = 22", &format!("version = {version}"), 1);
+            .replacen("version = 23", &format!("version = {version}"), 1);
         if invalid {
             contents = contents.replacen("127.0.0.1:8741", "127.0.0.1:0", 1);
         }
@@ -125,13 +126,75 @@ fn generated_toml_round_trips_manifest_settings() {
     let contents = fs::read_to_string(state.join(CONFIG_FILE)).expect("read config");
     let (_, restored) = ConfigStore::open(state).expect("open config");
 
-    assert!(contents.starts_with("version = 22"));
+    assert!(contents.starts_with("version = 23"));
     assert!(contents.contains("max_model_steps = 2042"));
     assert!(contents.contains("[bot_defaults.config.middleware.settings.context_offloading]"));
     assert!(contents.contains("[bot_defaults.config.middleware.settings.sessions]"));
     assert!(contents.contains("[bot_defaults.config.middleware.settings.messages]"));
     assert!(contents.contains("delivery = \"steer\""));
     assert_eq!(restored, config);
+}
+
+#[test]
+fn opening_config_rejects_removed_automatic_approval_settings_without_rewrite() {
+    let root = tempfile::tempdir().expect("temporary directory");
+    let state = root.path().join("state");
+    let (store, config) =
+        ConfigStore::initialize(state.clone(), DEFAULT_LISTEN, None).expect("initialize state");
+    let mut config = config
+        .registering_provider(
+            AgentComposition::default().provider,
+            "Test".into(),
+            Default::default(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("register provider");
+    let middleware = &mut config
+        .bot_defaults
+        .as_mut()
+        .expect("Bot defaults")
+        .config
+        .middleware;
+    middleware.set_setting(
+        "sandbox",
+        "approval_policy",
+        Some(mobius::protocol::FrontendSettingValue::String(
+            "auto_approve".into(),
+        )),
+    );
+    middleware.set_setting(
+        "sandbox",
+        "reviewer_model_route",
+        Some(mobius::protocol::FrontendSettingValue::String(
+            "reviewer".into(),
+        )),
+    );
+    middleware.set_setting(
+        "sandbox",
+        "reviewer_strictness",
+        Some(mobius::protocol::FrontendSettingValue::String(
+            "strict".into(),
+        )),
+    );
+    fs::write(
+        state.join(CONFIG_FILE),
+        toml::to_string_pretty(&config).expect("encode incompatible config"),
+    )
+    .expect("write incompatible config");
+    drop(store);
+
+    let before = fs::read_to_string(state.join(CONFIG_FILE)).expect("config");
+    let error = match ConfigStore::open(state.clone()) {
+        Ok(_) => panic!("removed settings must be rejected"),
+        Err(error) => error,
+    };
+
+    assert!(error.to_string().contains("reviewer_model_route"));
+    assert_eq!(
+        fs::read_to_string(state.join(CONFIG_FILE)).expect("unchanged config"),
+        before
+    );
 }
 
 #[test]
@@ -963,6 +1026,32 @@ fn workspace_directory_creation_creates_one_canonical_git_workspace() {
 }
 
 #[test]
+fn background_workspace_is_private_stable_and_outside_gateway_state() {
+    let root = tempfile::tempdir().expect("root");
+    let state = root.path().join("gateway");
+    let (store, _) =
+        ConfigStore::initialize(state, DEFAULT_LISTEN, None).expect("initialize gateway");
+
+    let first = prepare_background_workspace(store.state_dir(), None)
+        .expect("prepare background workspace");
+    let second =
+        prepare_background_workspace(store.state_dir(), None).expect("reopen background workspace");
+
+    assert_eq!(first, second);
+    assert!(!first.starts_with(store.state_dir()));
+    assert!(first.join(".git").is_dir());
+    #[cfg(unix)]
+    assert_eq!(
+        fs::metadata(first)
+            .expect("background metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700
+    );
+}
+
+#[test]
 fn workspace_directory_creation_rejects_invalid_names_and_existing_targets() {
     let root = tempfile::tempdir().expect("root");
     let parent = root.path().join("parent");
@@ -1035,13 +1124,13 @@ fn chat_spec_metadata_round_trips_and_revalidates_tampering() {
         .expect("Bot");
     let spec = ChatSpec::for_bot(&workspace, &bot, &state, None).expect("chat spec");
     let mut metadata = spec.metadata().expect("chat metadata");
-    assert_eq!(metadata[CHAT_SPEC_METADATA_KEY]["version"], 13);
+    assert_eq!(metadata[CHAT_SPEC_METADATA_KEY]["version"], 14);
 
     assert_eq!(
         ChatSpec::from_metadata(&metadata, &bots, &state, None).expect("restore chat spec"),
         spec
     );
-    for version in [10, 12] {
+    for version in [10, 12, 13] {
         let mut previous = metadata.clone();
         previous
             .get_mut(CHAT_SPEC_METADATA_KEY)

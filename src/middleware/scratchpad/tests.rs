@@ -73,6 +73,14 @@ impl BotsBackend for TestBotsBackend {
         Box::pin(async { unreachable!() })
     }
 
+    fn swarm_chat_context<'a>(
+        &'a self,
+        _bot_id: &'a str,
+        _session_id: &'a str,
+    ) -> BoxFuture<'a, Result<Option<String>>> {
+        Box::pin(async { Ok(None) })
+    }
+
     fn can_reply<'a>(
         &'a self,
         _bot_id: &'a str,

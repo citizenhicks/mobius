@@ -137,8 +137,6 @@ struct TranscriptPaginationButton: View {
 ///
 /// The bottom anchor and an explicit `scrollTo` both correct the same offset, so leaving both
 /// live means the visible result is whichever ran last. Exactly one is active per mode.
-private let transcriptOrbSize: CGFloat = 144
-
 private enum TranscriptScrollMode {
     /// Parked at the end. The bottom anchor follows content growth; nothing else scrolls.
     case followingTail
@@ -150,18 +148,138 @@ private enum TranscriptScrollMode {
     var followsContentGrowth: Bool { self == .followingTail }
 }
 
+/// The scroll state shared by every full transcript surface.
+struct TranscriptScrollState {
+    fileprivate var position = ScrollPosition(edge: .bottom)
+    fileprivate var historyAnchorID: TranscriptPresentationID?
+    fileprivate var mode = TranscriptScrollMode.followingTail
+    fileprivate(set) var historyBoundaryID: TranscriptPresentationID?
+
+    mutating func beginHistoryRestore(
+        projection: TranscriptProjection,
+        boundaryID: TranscriptPresentationID?
+    ) {
+        historyAnchorID = projection.rows.first?.id
+        historyBoundaryID = boundaryID
+        mode = .restoringHistory
+    }
+
+    mutating func stopFollowingTail() {
+        mode = .freeScrolling
+    }
+
+    fileprivate mutating func restoreHistoryAnchor(in projection: TranscriptProjection) {
+        guard mode == .restoringHistory else { return }
+        let anchorRow = projection.rows.first { row in
+            row.id == historyAnchorID
+                || row.records.contains { $0.presentationID == historyBoundaryID }
+        }
+        if let anchorRow {
+            position.scrollTo(id: anchorRow.id, anchor: .top)
+        }
+        mode = .freeScrolling
+    }
+
+    fileprivate mutating func reset() {
+        position = ScrollPosition(edge: .bottom)
+        historyAnchorID = nil
+        historyBoundaryID = nil
+        mode = .followingTail
+    }
+}
+
+private struct TranscriptScrollBehavior: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Binding var scroll: TranscriptScrollState
+    let projection: TranscriptProjection
+    let historyLoadCompletionRevision: Int
+    let conversationID: String?
+    let scrollToBottomRequest: Int
+    let isAtBottom: Binding<Bool>?
+    let loadEarlierHistory: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            // The keyboard insets this scroll view, so the backdrop must belong to the
+            // transcript rather than ending at the keyboard's top edge.
+            .background(MobiusBackdrop())
+            .scrollPosition($scroll.position)
+            .defaultScrollAnchor(.bottom, for: .initialOffset)
+            .defaultScrollAnchor(
+                scroll.mode.followsContentGrowth ? .bottom : nil,
+                for: .sizeChanges
+            )
+            .animation(
+                reduceMotion || !scroll.mode.followsContentGrowth
+                    ? nil
+                    : .easeOut(duration: 0.5),
+                value: projection.structuralRevision
+            )
+            .scrollIndicators(.hidden)
+            .scrollDismissesKeyboard(.interactively)
+            .refreshable { loadEarlierHistory() }
+            .onAppear {
+                scroll.mode = .followingTail
+                scroll.position.scrollTo(edge: .bottom)
+            }
+            .onScrollGeometryChange(for: Bool.self) { Self.atBottom($0) } action: {
+                _, atBottom in
+                isAtBottom?.wrappedValue = atBottom
+            }
+            .onScrollPhaseChange { _, phase, context in
+                guard scroll.mode != .restoringHistory, phase != .animating else { return }
+                scroll.mode = phase == .idle && Self.atBottom(context.geometry)
+                    ? .followingTail
+                    : .freeScrolling
+            }
+            .onChange(of: scrollToBottomRequest) {
+                withAnimation(.easeOut(duration: 0.2)) {
+                    scroll.position.scrollTo(edge: .bottom)
+                }
+            }
+            .onChange(of: historyLoadCompletionRevision) {
+                scroll.restoreHistoryAnchor(in: projection)
+            }
+            .onChange(of: conversationID) { scroll.reset() }
+    }
+
+    private static func atBottom(_ geometry: ScrollGeometry) -> Bool {
+        // The visible rect includes the bottom inset and is the only measure that reaches
+        // the furthest available offset at rest.
+        geometry.visibleRect.maxY >= geometry.contentSize.height - 24
+    }
+}
+
+extension View {
+    func transcriptScrollBehavior(
+        _ scroll: Binding<TranscriptScrollState>,
+        projection: TranscriptProjection,
+        historyLoadCompletionRevision: Int,
+        conversationID: String?,
+        scrollToBottomRequest: Int = 0,
+        isAtBottom: Binding<Bool>? = nil,
+        loadEarlierHistory: @escaping () -> Void
+    ) -> some View {
+        modifier(TranscriptScrollBehavior(
+            scroll: scroll,
+            projection: projection,
+            historyLoadCompletionRevision: historyLoadCompletionRevision,
+            conversationID: conversationID,
+            scrollToBottomRequest: scrollToBottomRequest,
+            isAtBottom: isAtBottom,
+            loadEarlierHistory: loadEarlierHistory
+        ))
+    }
+}
+
 struct TranscriptView: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let bottomInset: CGFloat
     @Binding var isAtBottom: Bool
     let scrollToBottomRequest: Int
     // A restored transcript can land after the scroll view exists. The bottom-edge position
     // survives that late fill, while ChatView supplies a fresh identity for each presentation.
-    @State private var position = ScrollPosition(edge: .bottom)
-    @State private var historyBoundaryID: TranscriptPresentationID?
-    @State private var historyAnchorID: TranscriptPresentationID?
-    @State private var scrollMode = TranscriptScrollMode.followingTail
+    @State private var scroll = TranscriptScrollState()
     @State private var waiting = TranscriptWaitingHold()
     private let rowSpacing = MobiusStyle.transcriptRowSpacing
     private let contentPadding = MobiusStyle.transcriptPadding
@@ -194,7 +312,7 @@ struct TranscriptView: View {
                     activeStepID: model.activeTranscriptStepID,
                     rowSpacing: rowSpacing,
                     turnDiff: { model.turnDiff(for: $0) },
-                    onExpandActivityGroup: { scrollMode = .freeScrolling }
+                    onExpandActivityGroup: { scroll.stopFollowingTail() }
                 )
                 TranscriptTailView(slot: projection.waiting, topSpacing: rowSpacing)
                 ForEach(model.transcriptTailWidgets) { widget in
@@ -209,57 +327,19 @@ struct TranscriptView: View {
             .frame(maxWidth: .infinity)
             .padding(contentPadding)
         }
-        // The keyboard insets this scroll view, so a plain canvas background stops at the
-        // keyboard's top edge and the rounded corners expose black. Every other page paints
-        // its backdrop the same way, which is why only the chat showed the cut.
-        .background(MobiusBackdrop())
-        .scrollPosition($position)
-        .defaultScrollAnchor(.bottom, for: .initialOffset)
-        // The one automatic mechanism, and only while parked at the end. Off, growth lands
-        // below the fold and the reader keeps their place.
-        .defaultScrollAnchor(
-            scrollMode.followsContentGrowth ? .bottom : nil,
-            for: .sizeChanges
+        .transcriptScrollBehavior(
+            $scroll,
+            projection: projection,
+            historyLoadCompletionRevision: model.historyLoadCompletionRevision,
+            conversationID: model.selectedSessionID,
+            scrollToBottomRequest: scrollToBottomRequest,
+            isAtBottom: $isAtBottom,
+            loadEarlierHistory: loadEarlierHistory
         )
-        // Match the row fade so the bottom-anchor correction no longer lands a frame first.
-        .animation(
-            reduceMotion || !scrollMode.followsContentGrowth ? nil : .easeOut(duration: 0.5),
-            value: projection.structuralRevision
-        )
-        .scrollIndicators(.hidden)
-        .scrollDismissesKeyboard(.interactively)
-        .refreshable { loadEarlierHistory() }
-        .onAppear {
-            scrollMode = .followingTail
-            position.scrollTo(edge: .bottom)
-        }
         .overlay {
             if model.displayedTranscript.isEmpty {
                 emptyState
             }
-        }
-        // Measured against the furthest reachable offset, including the bottom inset:
-        // comparing the visible rect to the content height never reads as "at bottom".
-        .onScrollGeometryChange(for: Bool.self) { Self.atBottom($0) } action: { _, atBottom in
-            isAtBottom = atBottom
-        }
-        // The reader's own intent, and the only thing that takes the transcript out of
-        // following. A drag ends the follow; coming to rest at the end restores it.
-        .onScrollPhaseChange { _, phase, context in
-            guard scrollMode != .restoringHistory, phase != .animating else { return }
-            scrollMode = phase == .idle && Self.atBottom(context.geometry)
-                ? .followingTail
-                : .freeScrolling
-        }
-        .onChange(of: scrollToBottomRequest) {
-            withAnimation(.easeOut(duration: 0.2)) { position.scrollTo(edge: .bottom) }
-        }
-        .onChange(of: model.historyLoadCompletionRevision) { restoreHistoryAnchor() }
-        .onChange(of: model.selectedSessionID) {
-            historyBoundaryID = nil
-            historyAnchorID = nil
-            scrollMode = .followingTail
-            position = ScrollPosition(edge: .bottom)
         }
         .onChange(of: model.isWaitingForModel, initial: true) { _, isWaiting in
             rescheduleWaitingPhrase(isWaiting)
@@ -269,7 +349,7 @@ struct TranscriptView: View {
 
     private var projection: TranscriptProjection {
         model.transcriptProjection(
-            breakBefore: historyBoundaryID,
+            breakBefore: scroll.historyBoundaryID,
             waitingPhrase: waitingPhrase
         )
     }
@@ -282,33 +362,16 @@ struct TranscriptView: View {
 
     private func loadEarlierHistory() {
         guard model.canLoadEarlierHistory else { return }
-        historyAnchorID = projection.rows.first?.id
-        historyBoundaryID = model.displayedTranscript.first?.presentationID
-        scrollMode = .restoringHistory
+        scroll.beginHistoryRestore(
+            projection: projection,
+            boundaryID: model.displayedTranscript.first?.presentationID
+        )
         model.loadEarlierHistory()
-    }
-
-    private func restoreHistoryAnchor() {
-        guard scrollMode == .restoringHistory else { return }
-        let anchorRow = projection.rows.first { row in
-            row.id == historyAnchorID
-                || row.records.contains { $0.presentationID == historyBoundaryID }
-        }
-        if let anchorRow {
-            position.scrollTo(id: anchorRow.id, anchor: .top)
-        }
-        scrollMode = .freeScrolling
-    }
-
-    private static func atBottom(_ geometry: ScrollGeometry) -> Bool {
-        // The visible rect covers the toolbar inset that `containerSize` leaves out, so it is
-        // the only measure that reaches the content height at rest.
-        geometry.visibleRect.maxY >= geometry.contentSize.height - 24
     }
 
     private var emptyState: some View {
         MobiusComposingOrb()
-            .frame(width: transcriptOrbSize, height: transcriptOrbSize)
+            .frame(width: MobiusStyle.transcriptOrbSize, height: MobiusStyle.transcriptOrbSize)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(.bottom, bottomInset)
             .accessibilityHidden(true)
@@ -322,7 +385,7 @@ private struct TranscriptLoadingView: View {
         ZStack {
             MobiusBackdrop()
             MobiusComposingOrb()
-                .frame(width: transcriptOrbSize, height: transcriptOrbSize)
+                .frame(width: MobiusStyle.transcriptOrbSize, height: MobiusStyle.transcriptOrbSize)
                 .offset(y: -bottomInset / 2)
         }
         .accessibilityElement(children: .ignore)
@@ -452,6 +515,14 @@ private struct TranscriptRow: View {
 
     private var controls: some View {
         HStack(spacing: 0) {
+            if peerApprovalSource != nil {
+                MessageActionButton(
+                    title: "Open approval",
+                    glyph: .arrowUpRight01,
+                    action: openPeerApproval
+                )
+                .disabled(!model.canOpenSession)
+            }
             MessageActionButton(
                 title: showsCopyConfirmation ? "Copied" : "Copy",
                 glyph: showsCopyConfirmation ? .check : .copy
@@ -481,7 +552,7 @@ private struct TranscriptRow: View {
                     speaker.speak(entry.text)
                 }
             }
-            if !entry.pending, let bot = model.bot(forSessionID: fileSessionID) {
+            if !entry.pending, let bot = displayedBot {
                 HStack(spacing: MobiusSpace.xs) {
                     Text(verbatim: "·")
                         .accessibilityHidden(true)
@@ -499,6 +570,13 @@ private struct TranscriptRow: View {
                 .padding(.horizontal, MobiusSpace.xs)
             }
         }
+    }
+
+    private var displayedBot: BotRecord? {
+        if let handle = entry.messageMetadata?.author.peerFields?.handle {
+            return model.bots.first { $0.handle == handle }
+        }
+        return model.bot(forSessionID: fileSessionID)
     }
 
     @ViewBuilder

@@ -34,7 +34,6 @@ enum GatewayRequest: Encodable, Sendable {
     case postSwarmMessage(
         requestID: String,
         swarmID: String,
-        workspace: String,
         text: String
     )
     case submit(sessionID: String, submission: Submission)
@@ -257,11 +256,10 @@ enum GatewayRequest: Encodable, Sendable {
             try container.encode("disband_swarm", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
             try container.encode(swarmID, forKey: "swarmId")
-        case .postSwarmMessage(let requestID, let swarmID, let workspace, let text):
+        case .postSwarmMessage(let requestID, let swarmID, let text):
             try container.encode("post_swarm_message", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
             try container.encode(swarmID, forKey: "swarmId")
-            try container.encode(workspace, forKey: "workspace")
             try container.encode(text, forKey: "text")
         case .submit(let sessionID, let submission):
             try container.encode("submit", forKey: "type")

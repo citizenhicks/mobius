@@ -52,14 +52,6 @@ extension AppModel {
         prefillPairing { setup }
     }
 
-    func applyPairingURL(_ url: URL) {
-        prefillPairing { try GatewayPairingSetup(url: url) }
-    }
-
-    func handleOpenURL(_ url: URL) {
-        applyPairingURL(url)
-    }
-
     private func prefillPairing(_ parse: () throws -> GatewayPairingSetup) {
         cancelReconnect()
         showsPairing = true
@@ -275,25 +267,30 @@ extension AppModel {
             cancelReconnect()
             discardComposerDraft()
         }
+        await pendingDraftIO?.value
+        var removalError: Error?
         do {
-            await pendingDraftIO?.value
             try await store.remove(account)
-            accounts.removeAll { $0.id == account.id }
-            if isActive {
-                selectedAccountID = nil
-                if let next = accounts.first {
-                    connect(to: next)
-                } else {
-                    resetGatewayState(preservingDrafts: false)
-                    await client.disconnect()
-                    showsPairing = true
-                }
+        } catch {
+            removalError = error
+        }
+        accounts.removeAll { $0.id == account.id }
+        if isActive {
+            selectedAccountID = nil
+            if let next = accounts.first {
+                connect(to: next)
+            } else {
+                resetGatewayState(preservingDrafts: false)
+                await client.disconnect()
+                showsPairing = true
             }
+        }
+        if let removalError {
+            showToast(verbatim: localizedErrorDescription(removalError), tone: .error)
+            return false
+        } else {
             showToast("Gateway removed.", tone: .info)
             return true
-        } catch {
-            showToast(verbatim: localizedErrorDescription(error), tone: .error)
-            return false
         }
     }
 
@@ -696,13 +693,10 @@ extension AppModel {
     @discardableResult
     func postSwarmMessage(
         to swarmID: String,
-        workspace rawWorkspace: String,
         text rawText: String
     ) -> String? {
-        let workspace = rawWorkspace.trimmingCharacters(in: .whitespacesAndNewlines)
         let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canPostSwarmMessage,
-              !workspace.isEmpty,
               !text.isEmpty,
               swarms.contains(where: { $0.id == swarmID })
         else { return nil }
@@ -711,7 +705,6 @@ extension AppModel {
         transmit(.postSwarmMessage(
             requestID: id,
             swarmID: swarmID,
-            workspace: workspace,
             text: text
         )) { [weak self] _ in
             if self?.swarmMessageRequestID == id { self?.swarmMessageRequestID = nil }

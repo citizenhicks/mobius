@@ -158,7 +158,6 @@ fn event_index(event: &EventMsg) -> Result<EventIndex<'_>> {
         EventMsg::ToolCallEnd(_) => plain("tool_call_end"),
         EventMsg::ToolLoad(_) => plain("tool_load"),
         EventMsg::ExecApprovalRequest(_) => plain("exec_approval_request"),
-        EventMsg::ExecApprovalReview(_) => plain("exec_approval_review"),
         EventMsg::TokenCount(_) => plain("token_count"),
         EventMsg::ContextCompacted => plain("context_compacted"),
         EventMsg::WebSearchBegin(search) => step("web_search_begin", &search.model_step_id),

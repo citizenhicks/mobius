@@ -74,28 +74,4 @@ extension GatewayWireTests {
         }
     }
 
-    func testPairingURLParsesOnlyTheExactMobiusPairRoute() throws {
-        let setup = try GatewayPairingSetup(url: try XCTUnwrap(URL(string:
-            "mobius://pair?endpoint=wss%3A%2F%2Fgateway.example&code=0123456789abcdef"
-        )))
-
-        XCTAssertEqual(setup.endpoint.rawValue, "wss://gateway.example")
-        XCTAssertEqual(setup.code, "0123456789abcdef")
-
-        let invalid = [
-            "other://pair?endpoint=wss%3A%2F%2Fgateway.example&code=code",
-            "mobius://other?endpoint=wss%3A%2F%2Fgateway.example&code=code",
-            "mobius://pair/path?endpoint=wss%3A%2F%2Fgateway.example&code=code",
-            "mobius://pair?endpoint=wss%3A%2F%2Fgateway.example",
-            "mobius://pair?endpoint=wss%3A%2F%2Fone.example&endpoint=wss%3A%2F%2Ftwo.example&code=code",
-            "mobius://pair?endpoint=wss%3A%2F%2Fgateway.example&code=code&extra=value",
-            "mobius://pair?endpoint=wss%3A%2F%2Fgateway.example&code=code#fragment",
-        ]
-        for value in invalid {
-            XCTAssertThrowsError(
-                try GatewayPairingSetup(url: try XCTUnwrap(URL(string: value)))
-            )
-        }
-    }
-
 }

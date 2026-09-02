@@ -236,21 +236,6 @@ fn pairing_setup_payload_formats_a_wss_endpoint() {
 }
 
 #[test]
-fn pairing_qr_contains_the_validated_endpoint_and_code() {
-    let endpoint = "wss://mobius.example.com".parse().expect("WSS endpoint");
-
-    assert_eq!(
-        pairing_setup_url(&endpoint, "one-time-code").as_str(),
-        "mobius://pair?endpoint=wss%3A%2F%2Fmobius.example.com&code=one-time-code"
-    );
-    assert!(
-        !pairing_setup_qr(&endpoint, "one-time-code")
-            .expect("pairing QR")
-            .is_empty()
-    );
-}
-
-#[test]
 fn cloudflare_connection_advertises_public_and_local_endpoints_with_one_code() {
     let public_endpoint = "wss://mobius.example.com".parse().expect("WSS endpoint");
     let local_endpoint = "tcp://127.0.0.1:8741".parse().expect("TCP endpoint");
@@ -261,7 +246,6 @@ fn cloudflare_connection_advertises_public_and_local_endpoints_with_one_code() {
         &public_endpoint,
         Some(&local_endpoint),
         "one-time-code",
-        false,
     )
     .expect("write connection");
 

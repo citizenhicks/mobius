@@ -554,7 +554,7 @@ struct BotDetailView: View {
                         ) {
                             SettingsRowLabel(title: "Background work") {
                                 MobiusIcon(
-                                    .workflowSquare03,
+                                    .eyeOff,
                                     size: MobiusStyle.glyphLead,
                                     foreground: bot.tint.color
                                 )
@@ -657,7 +657,7 @@ struct BotSessionsView: View {
                             ForEach(sessions.prefix(visibleCount)) { session in
                                 SessionCatalogRow(
                                     session: session,
-                                    showsWorkspace: true,
+                                    showsWorkspace: false,
                                     showsControls: false,
                                     detail: sessionDetail(session),
                                     open: { model.openBotSession($0.sessionId) }
@@ -701,12 +701,6 @@ struct BotSessionsView: View {
     }
 
     private func sessionDetail(_ session: SessionRecord) -> String? {
-        let path = session.sessionContext.workspaceLabel
-        let workspace = path.map { path in
-            let name = URL(fileURLWithPath: path).lastPathComponent
-            return name.isEmpty ? path : name
-        }
-        let details = [session.sessionContext.originLabel, workspace].compactMap { $0 }
-        return details.isEmpty ? nil : details.joined(separator: " • ")
+        session.sessionContext.originLabel
     }
 }

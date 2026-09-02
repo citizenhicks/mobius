@@ -19,12 +19,11 @@ mobius-gateway init
 mobius-gateway connect
 ```
 
-Choose **Pair self-hosted gateway** and paste the displayed setup code, or scan its QR with
-the iPhone/iPad Camera. The QR opens möbius with the public `wss://` address and
-one-time code prefilled; pairing still requires confirmation. The same one-use
-code works through the advertised local `tcp://` endpoint. Plaintext remote
-endpoints are rejected; a direct TLS listener remains available as an advanced
-option in the gateway guide.
+Choose **Pair self-hosted gateway** and paste the displayed setup code, or enter
+the public `wss://` address and one-time code. Pairing still requires confirmation.
+The same one-use code works through the advertised local `tcp://` endpoint.
+Plaintext remote endpoints are rejected; a direct TLS listener remains available
+as an advanced option in the gateway guide.
 
 ## möbius Cloud beta
 

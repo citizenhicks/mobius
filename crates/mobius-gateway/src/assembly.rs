@@ -10,9 +10,7 @@ use mobius::backend::model::provider::{
     provider, streaming_client,
 };
 use mobius::backend::model::{Model, ModelEventSink, ModelOutput, ModelRequest, ModelRouter};
-use mobius::backend::sandbox::{
-    ApprovalPolicy, ApprovalReviewerConfig, ApprovalStrictness, Sandbox, SandboxBackend,
-};
+use mobius::backend::sandbox::{ApprovalPolicy, Sandbox, SandboxBackend};
 use mobius::middleware::artifacts::Artifacts;
 use mobius::middleware::attachments::Attachments;
 use mobius::middleware::bots::{Bots, BotsBackend};
@@ -144,25 +142,7 @@ pub(crate) async fn assemble(
     )?
     .ok_or_else(|| Error::Config("missing middleware setting `sandbox.approval_policy`".into()))?
     .parse::<ApprovalPolicy>()?;
-    let reviewer_strictness = crate::middleware_manifest::string_setting(
-        &chat.agent.config.middleware,
-        "sandbox",
-        "reviewer_strictness",
-    )?
-    .ok_or_else(|| {
-        Error::Config("missing middleware setting `sandbox.reviewer_strictness`".into())
-    })?
-    .parse::<ApprovalStrictness>()?;
-    let mut reviewer = ApprovalReviewerConfig::default().strictness(reviewer_strictness);
-    if let Some(route) = crate::middleware_manifest::string_setting(
-        &chat.agent.config.middleware,
-        "sandbox",
-        "reviewer_model_route",
-    )? {
-        reviewer = reviewer.model_route(route)?;
-    }
-    let sandbox =
-        Arc::new(Sandbox::new(Arc::clone(&backend), approval_policy).approval_reviewer(reviewer));
+    let sandbox = Arc::new(Sandbox::new(Arc::clone(&backend), approval_policy));
     let (middleware, template) = build_middleware(
         &chat.agent.config.middleware,
         &chat.workspace,

@@ -64,13 +64,6 @@ const APPROVAL_POLICIES: &[MiddlewareSettingChoice] = &[
         tone: FrontendTone::Warning,
     },
     MiddlewareSettingChoice {
-        value: "auto_approve",
-        label: text::APPROVAL_POLICY_AUTO_APPROVE_LABEL,
-        description: text::APPROVAL_POLICY_AUTO_APPROVE_DESCRIPTION,
-        symbol: Some("security_review"),
-        tone: FrontendTone::Warning,
-    },
-    MiddlewareSettingChoice {
         value: "full_access",
         label: text::APPROVAL_POLICY_FULL_ACCESS_LABEL,
         description: text::APPROVAL_POLICY_FULL_ACCESS_DESCRIPTION,
@@ -78,61 +71,16 @@ const APPROVAL_POLICIES: &[MiddlewareSettingChoice] = &[
         tone: FrontendTone::Error,
     },
 ];
-const REVIEWER_STRICTNESS: &[MiddlewareSettingChoice] = &[
-    MiddlewareSettingChoice {
-        value: "relaxed",
-        label: text::REVIEWER_STRICTNESS_RELAXED_LABEL,
-        description: text::REVIEWER_STRICTNESS_RELAXED_DESCRIPTION,
-        symbol: None,
-        tone: FrontendTone::Neutral,
-    },
-    MiddlewareSettingChoice {
-        value: "standard",
-        label: text::REVIEWER_STRICTNESS_STANDARD_LABEL,
-        description: text::REVIEWER_STRICTNESS_STANDARD_DESCRIPTION,
-        symbol: None,
-        tone: FrontendTone::Neutral,
-    },
-    MiddlewareSettingChoice {
-        value: "strict",
-        label: text::REVIEWER_STRICTNESS_STRICT_LABEL,
-        description: text::REVIEWER_STRICTNESS_STRICT_DESCRIPTION,
-        symbol: None,
-        tone: FrontendTone::Neutral,
-    },
-];
-const SETTINGS: &[MiddlewareSettingManifest] = &[
-    MiddlewareSettingManifest::Select {
-        id: "approval_policy",
-        label: text::SETTING_APPROVAL_POLICY_LABEL,
-        description: text::SETTING_APPROVAL_POLICY_DESCRIPTION,
-        choices: MiddlewareSettingChoices::Static(APPROVAL_POLICIES),
-        unset_label: None,
-        default: Some(text::DEFAULTS_APPROVAL_POLICY),
-        max_bytes: 32,
-        composer: true,
-    },
-    MiddlewareSettingManifest::Select {
-        id: "reviewer_model_route",
-        label: text::SETTING_REVIEWER_MODEL_ROUTE_LABEL,
-        description: text::SETTING_REVIEWER_MODEL_ROUTE_DESCRIPTION,
-        choices: MiddlewareSettingChoices::ModelRoutes,
-        unset_label: Some(text::SETTING_REVIEWER_MODEL_ROUTE_UNSET_LABEL),
-        default: None,
-        max_bytes: 4 * 1024,
-        composer: false,
-    },
-    MiddlewareSettingManifest::Select {
-        id: "reviewer_strictness",
-        label: text::SETTING_REVIEWER_STRICTNESS_LABEL,
-        description: text::SETTING_REVIEWER_STRICTNESS_DESCRIPTION,
-        choices: MiddlewareSettingChoices::Static(REVIEWER_STRICTNESS),
-        unset_label: None,
-        default: Some(text::DEFAULTS_REVIEWER_STRICTNESS),
-        max_bytes: 16,
-        composer: false,
-    },
-];
+const SETTINGS: &[MiddlewareSettingManifest] = &[MiddlewareSettingManifest::Select {
+    id: "approval_policy",
+    label: text::SETTING_APPROVAL_POLICY_LABEL,
+    description: text::SETTING_APPROVAL_POLICY_DESCRIPTION,
+    choices: MiddlewareSettingChoices::Static(APPROVAL_POLICIES),
+    unset_label: None,
+    default: Some(text::DEFAULTS_APPROVAL_POLICY),
+    max_bytes: 32,
+    composer: true,
+}];
 
 /// Configuration and presentation metadata for sandbox approval policy.
 pub const MANIFEST: MiddlewareManifest = MiddlewareManifest {
@@ -145,8 +93,6 @@ pub const MANIFEST: MiddlewareManifest = MiddlewareManifest {
 };
 
 pub use approval::ApprovalPolicy;
-pub use approval::ApprovalReviewerConfig;
-pub use approval::ApprovalStrictness;
 #[cfg(target_os = "macos")]
 #[doc(hidden)]
 pub use process_group::MACOS_COMMAND_WRAPPER;
@@ -310,13 +256,6 @@ impl Sandbox {
 
     pub(crate) const fn approval_policy(&self) -> ApprovalPolicy {
         self.approval.policy()
-    }
-
-    /// Configures the isolated model reviewer used by automatic approval.
-    #[must_use]
-    pub fn approval_reviewer(mut self, reviewer: ApprovalReviewerConfig) -> Self {
-        self.approval = self.approval.with_reviewer(reviewer);
-        self
     }
 
     /// Reads a UTF-8 file.
@@ -570,17 +509,10 @@ impl ToolPermissions {
 
 pub(crate) enum SandboxAuthorization {
     Execute(SandboxPermissions),
-    Review(SandboxReview),
     Approval {
         request: SandboxApprovalRequest,
         permissions: SandboxPermissions,
     },
-}
-
-pub(crate) struct SandboxReview {
-    pub(crate) request: SandboxApprovalRequest,
-    pub(crate) reviewer: ApprovalReviewerConfig,
-    pub(crate) permissions: SandboxPermissions,
 }
 
 pub(crate) struct SandboxApprovalRequest {
@@ -609,9 +541,8 @@ mod tests {
 
         assert_eq!(setting.id, "approval_policy");
         assert_eq!(options[0].symbol, Some(FrontendSymbol::ShieldCheck));
-        assert_eq!(options[3].symbol, Some(FrontendSymbol::SecurityReview));
-        assert_eq!(options[4].symbol, Some(FrontendSymbol::ShieldOff));
-        assert_eq!(options[4].tone, FrontendTone::Error);
+        assert_eq!(options[3].symbol, Some(FrontendSymbol::ShieldOff));
+        assert_eq!(options[3].tone, FrontendTone::Error);
     }
 
     #[tokio::test]

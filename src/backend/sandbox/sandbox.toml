@@ -8,8 +8,7 @@ macos = "möbius is running on macOS."
 other = "möbius is running on an unsupported operating system."
 
 [defaults]
-approval_policy = "auto_approve"
-reviewer_strictness = "strict"
+approval_policy = "ask"
 
 [approval_policy.ask]
 label = "Ask"
@@ -23,35 +22,10 @@ description = "Run approval-required actions without network access"
 label = "Allow · network"
 description = "Run approval-required actions with network access"
 
-[approval_policy.auto_approve]
-label = "Auto approve"
-description = "Use an independent reviewer with network access; ask when uncertain"
-
 [approval_policy.full_access]
 label = "Full access"
 description = "Run shell commands with host filesystem and network access without approval"
 
-[reviewer_strictness.relaxed]
-label = "Relaxed"
-description = "Approve reasonably aligned and bounded actions"
-
-[reviewer_strictness.standard]
-label = "Standard"
-description = "Require actions to be clearly aligned and proportionate"
-
-[reviewer_strictness.strict]
-label = "Strict"
-description = "Require actions to be unambiguous and narrowly scoped"
-
 [setting.approval_policy]
 label = "Approval policy"
 description = "How approval-required actions receive mutation authority"
-
-[setting.reviewer_model_route]
-label = "Reviewer model"
-description = "Model route used for independent automatic approval review"
-unset_label = "Inherit main"
-
-[setting.reviewer_strictness]
-label = "Reviewer strictness"
-description = "How cautiously the independent reviewer grants authority"

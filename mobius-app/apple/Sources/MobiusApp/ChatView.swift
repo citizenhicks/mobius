@@ -159,7 +159,8 @@ struct ChatView: View {
     }
 
     private var chatSubtitle: String {
-        [workspaceName, model.gatewayMachineName]
+        if model.selectedSessionIsHidden { return model.gatewayMachineName }
+        return [workspaceName, model.gatewayMachineName]
             .filter { !$0.isEmpty }
             .joined(separator: " • ")
     }

@@ -37,16 +37,26 @@ pub async fn read_frame<T>(reader: &mut FrameReader<impl AsyncRead + Unpin>) -> 
 where
     T: DeserializeOwned,
 {
+    read_frame_with_limit(reader, MAX_FRAME_BYTES).await
+}
+
+pub(crate) async fn read_frame_with_limit<T>(
+    reader: &mut FrameReader<impl AsyncRead + Unpin>,
+    max_bytes: usize,
+) -> Result<Option<T>>
+where
+    T: DeserializeOwned,
+{
     loop {
-        if reader.buffer.len() >= 4 {
+        let needed = if reader.buffer.len() >= 4 {
             let prefix = reader.buffer[..4]
                 .try_into()
                 .map_err(|_| Error::Protocol("frame length is unsupported".into()))?;
             let length = usize::try_from(u32::from_be_bytes(prefix))
                 .map_err(|_| Error::Protocol("frame length is unsupported".into()))?;
-            if length == 0 || length > MAX_FRAME_BYTES {
+            if length == 0 || length > max_bytes {
                 return Err(Error::Protocol(format!(
-                    "frame length must be 1–{MAX_FRAME_BYTES} bytes"
+                    "frame length must be 1–{max_bytes} bytes"
                 )));
             }
             let frame_end = 4 + length;
@@ -55,9 +65,13 @@ where
                 reader.buffer.drain(..frame_end);
                 return Ok(Some(frame));
             }
-        }
+            frame_end - reader.buffer.len()
+        } else {
+            4 - reader.buffer.len()
+        };
         let mut chunk = [0_u8; 8 * 1024];
-        let read = reader.reader.read(&mut chunk).await?;
+        let chunk_bytes = needed.min(chunk.len());
+        let read = reader.reader.read(&mut chunk[..chunk_bytes]).await?;
         if read == 0 {
             if reader.buffer.is_empty() {
                 return Ok(None);

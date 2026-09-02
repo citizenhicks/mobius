@@ -41,7 +41,7 @@ use crate::bots::swarm::{
 use crate::bots::{ActiveRoutineRun, BeginRun, BotStore};
 use crate::config::{
     ChatSpec, ConfigStore, CredentialStore, GatewayConfig,
-    create_workspace_directory as create_workspace_directory_on_disk,
+    create_workspace_directory as create_workspace_directory_on_disk, prepare_background_workspace,
 };
 use crate::extensions::ExtensionStore;
 use crate::provider_catalog::{
@@ -116,6 +116,7 @@ struct GatewayState {
     checkpoints: Arc<dyn CheckpointStore>,
     scratchpad: ScratchpadStore,
     session_files: SessionFileStore,
+    background_workspace: PathBuf,
     swarm: Arc<SwarmStore>,
     contributions: Vec<FrontendContribution>,
     // ponytail: one lock is enough for at most 32 tiny catalog writes.
@@ -173,6 +174,8 @@ impl GatewayHost {
             Arc::new(SqliteCheckpoint::new(store.checkpoints_path())?);
         let scratchpad = ScratchpadStore::new(Arc::clone(&checkpoints));
         let session_files = SessionFileStore::new(store.state_dir());
+        let background_workspace =
+            prepare_background_workspace(store.state_dir(), config.tls.as_ref())?;
         let config = Arc::new(StdMutex::new(config));
         let (swarm, deliveries) = SwarmStore::new(
             Arc::clone(&checkpoints),
@@ -190,6 +193,7 @@ impl GatewayHost {
                 checkpoints,
                 scratchpad,
                 session_files,
+                background_workspace,
                 swarm,
                 contributions,
                 catalog_lock: Arc::new(Mutex::new(())),
@@ -528,30 +532,12 @@ impl GatewayHost {
     pub(crate) async fn post_swarm_message(
         &self,
         swarm_id: &str,
-        workspace: &Path,
         text: String,
     ) -> std::result::Result<Vec<SwarmRecord>, Rejection> {
         let _mutation = self.begin_mutation().await?;
         let (swarm, workspace) = {
             let state = self.state.lock().await;
-            let record = state
-                .swarm
-                .records()
-                .await
-                .map_err(internal)?
-                .into_iter()
-                .find(|swarm| swarm.id == swarm_id)
-                .ok_or_else(|| invalid_swarm(format!("unknown swarm `{swarm_id}`")))?;
-            let bot = state.bots.bot(&record.leader_bot_id).map_err(invalid_bot)?;
-            let tls = state
-                .config
-                .lock()
-                .map_err(|_| internal("gateway configuration lock is poisoned"))?
-                .tls
-                .clone();
-            let spec = ChatSpec::for_bot(workspace, &bot, state.store.state_dir(), tls.as_ref())
-                .map_err(invalid_workspace)?;
-            (Arc::clone(&state.swarm), spec.workspace)
+            (Arc::clone(&state.swarm), state.background_workspace.clone())
         };
         swarm
             .post_user(swarm_id, workspace, text)
@@ -794,8 +780,14 @@ impl GatewayHost {
         bot_id: &str,
     ) -> std::result::Result<HostHandle, Rejection> {
         let _mutation = self.begin_mutation().await?;
-        self.create_session_with_id(workspace, bot_id, Uuid::new_v4().to_string(), true)
-            .await
+        self.create_session_with_id(
+            workspace,
+            bot_id,
+            Uuid::new_v4().to_string(),
+            true,
+            "mobius-gateway",
+        )
+        .await
     }
 
     pub(crate) async fn hidden_bot_sessions(
@@ -816,6 +808,7 @@ impl GatewayHost {
         bot_id: &str,
         session_id: String,
         catalog_visible: bool,
+        origin_label: &str,
     ) -> std::result::Result<HostHandle, Rejection> {
         validate_session_id(&session_id).map_err(|_| invalid_session_id())?;
         let mut state = self.state.lock().await;
@@ -847,7 +840,7 @@ impl GatewayHost {
             Arc::clone(&state.activities),
             self.events.clone(),
             session_id.clone(),
-            "mobius-gateway",
+            origin_label,
         )
         .await
         .map_err(internal)?;
@@ -1015,6 +1008,7 @@ impl GatewayHost {
             drop(gateway_state);
 
             let mut attempts = HashMap::new();
+            let mut attention_attempts = HashSet::new();
             if let Ok(attention) = swarm.pending_user_attention().await {
                 for request in attention {
                     swarm.notify_user_attention(&request.entry.id);
@@ -1029,7 +1023,11 @@ impl GatewayHost {
                     events: events.clone(),
                 };
                 gateway
-                    .handle_swarm_delivery(SwarmDelivery::Pending { target_bot_id }, &mut attempts)
+                    .handle_swarm_delivery(
+                        SwarmDelivery::Pending { target_bot_id },
+                        &mut attempts,
+                        &mut attention_attempts,
+                    )
                     .await;
             }
 
@@ -1041,7 +1039,9 @@ impl GatewayHost {
                     state: gateway_state,
                     events: events.clone(),
                 };
-                gateway.handle_swarm_delivery(delivery, &mut attempts).await;
+                gateway
+                    .handle_swarm_delivery(delivery, &mut attempts, &mut attention_attempts)
+                    .await;
             }
         });
     }
@@ -1050,6 +1050,7 @@ impl GatewayHost {
         &self,
         delivery: SwarmDelivery,
         attempts: &mut HashMap<String, SwarmDeliveryAttempt>,
+        attention_attempts: &mut HashSet<String>,
     ) {
         if matches!(&delivery, SwarmDelivery::Changed) {
             let swarm = Arc::clone(&self.state.lock().await.swarm);
@@ -1101,21 +1102,21 @@ impl GatewayHost {
             }
             return;
         }
+        if let SwarmDelivery::UserAttentionAcknowledged { message_id } = &delivery {
+            attention_attempts.remove(message_id);
+            return;
+        }
         if let SwarmDelivery::UserAttention { message_id } = &delivery {
-            if let Err(rejection) = self.deliver_user_attention(message_id).await {
-                let _ = self.events.send(ServerFrame::new(ServerMessage::Error {
-                    code: "swarm_attention".into(),
-                    message: rejection.message,
-                    fatal: false,
-                }));
-            }
+            self.handle_user_attention_delivery(message_id, attention_attempts)
+                .await;
             return;
         }
         let target_bot_id = match delivery {
             SwarmDelivery::Changed
             | SwarmDelivery::CatalogChanged
             | SwarmDelivery::RetryPending
-            | SwarmDelivery::UserAttention { .. } => {
+            | SwarmDelivery::UserAttention { .. }
+            | SwarmDelivery::UserAttentionAcknowledged { .. } => {
                 unreachable!("handled above")
             }
             SwarmDelivery::Acknowledged {
@@ -1174,17 +1175,42 @@ impl GatewayHost {
         }
     }
 
+    async fn handle_user_attention_delivery(
+        &self,
+        message_id: &str,
+        attempts: &mut HashSet<String>,
+    ) {
+        if !attempts.insert(message_id.to_owned()) {
+            return;
+        }
+        match self.deliver_user_attention(message_id).await {
+            Ok(true) => {}
+            Ok(false) => {
+                attempts.remove(message_id);
+            }
+            Err(rejection) => {
+                attempts.remove(message_id);
+                let _ = self.events.send(ServerFrame::new(ServerMessage::Error {
+                    code: "swarm_attention".into(),
+                    message: rejection.message,
+                    fatal: false,
+                }));
+            }
+        }
+    }
+
     async fn deliver_next_swarm_message(
         &self,
         target_bot_id: &str,
         attempts: &mut HashMap<String, SwarmDeliveryAttempt>,
     ) -> std::result::Result<(), Rejection> {
-        let (swarm, bots, session_mutations) = {
+        let (swarm, bots, session_mutations, background_workspace) = {
             let state = self.state.lock().await;
             (
                 Arc::clone(&state.swarm),
                 Arc::clone(&state.bots),
                 Arc::clone(&state.session_mutations),
+                state.background_workspace.clone(),
             )
         };
         let _mutation = Arc::clone(&session_mutations).read_owned().await;
@@ -1200,31 +1226,6 @@ impl GatewayHost {
         };
         let message_id = claim.delivery().entry.id.clone();
         let session_id = claim.session_id().to_owned();
-        let workspace = if let Some(workspace) = claim.delivery().workspace.clone() {
-            workspace
-        } else {
-            let state = self.state.lock().await;
-            let checkpoint = state
-                .checkpoints
-                .load(&claim.delivery().entry.source_session_id)
-                .await
-                .map_err(internal)?
-                .ok_or_else(unknown_session)?;
-            let tls = state
-                .config
-                .lock()
-                .map_err(|_| internal("gateway configuration lock is poisoned"))?
-                .tls
-                .clone();
-            ChatSpec::from_metadata(
-                &checkpoint.metadata,
-                &state.bots,
-                state.store.state_dir(),
-                tls.as_ref(),
-            )
-            .map_err(invalid_config)?
-            .workspace
-        };
         let (checkpoint_exists, message_recorded) = {
             let state = self.state.lock().await;
             let checkpoint_exists = state
@@ -1245,8 +1246,15 @@ impl GatewayHost {
         let host = if checkpoint_exists {
             self.open_session_with_cache(&session_id, true).await?.0
         } else {
-            self.create_session_with_id(&workspace, target_bot_id, session_id, false)
-                .await?
+            let origin_label = format!("Swarm Chat · {}", claim.delivery().swarm_title);
+            self.create_session_with_id(
+                &background_workspace,
+                target_bot_id,
+                session_id,
+                false,
+                &origin_label,
+            )
+            .await?
         };
         if message_recorded {
             if claim
@@ -1298,7 +1306,10 @@ impl GatewayHost {
         }
     }
 
-    async fn deliver_user_attention(&self, message_id: &str) -> std::result::Result<(), Rejection> {
+    async fn deliver_user_attention(
+        &self,
+        message_id: &str,
+    ) -> std::result::Result<bool, Rejection> {
         let (swarm, checkpoints, bots, state_dir, tls, session_mutations) = {
             let state = self.state.lock().await;
             (
@@ -1317,7 +1328,7 @@ impl GatewayHost {
         };
         let _mutation = session_mutations.read_owned().await;
         if bots.pending_bot_deletion().map_err(internal)?.is_some() {
-            return Ok(());
+            return Ok(false);
         }
         let Some(request) = swarm
             .pending_user_attention()
@@ -1326,7 +1337,7 @@ impl GatewayHost {
             .into_iter()
             .find(|request| request.entry.id == message_id)
         else {
-            return Ok(());
+            return Ok(false);
         };
         let root_checkpoint = checkpoints
             .load(&request.root_source_session_id)
@@ -1370,7 +1381,7 @@ impl GatewayHost {
                 .acknowledge_user_attention(message_id)
                 .await
                 .map_err(internal)?;
-            return Ok(());
+            return Ok(false);
         }
         let host = if assigned_checkpoint.is_some() {
             self.open_session_with_cache(session_id, true).await?.0
@@ -1380,7 +1391,7 @@ impl GatewayHost {
                 .or(root_workspace)
                 .ok_or_else(|| Rejection {
                     code: "swarm_attention_origin",
-                    message: "the causal chat and explicit Swarm Chat workspace are unavailable"
+                    message: "the causal chat and gateway background workspace are unavailable"
                         .into(),
                     fatal: false,
                 })?;
@@ -1389,18 +1400,19 @@ impl GatewayHost {
                 &request.leader_bot_id,
                 session_id.to_owned(),
                 true,
+                "mobius-gateway",
             )
             .await?
         };
         match host.submit(user_attention_submission(request.entry)).await {
-            Ok(()) => Ok(()),
+            Ok(()) => Ok(true),
             Err(rejection) if matches!(rejection.code, "agent_busy" | "agent_stopped") => {
                 let message_id = message_id.to_owned();
                 tokio::spawn(async move {
                     host.wait_idle().await;
                     swarm.notify_user_attention(&message_id);
                 });
-                Ok(())
+                Ok(false)
             }
             Err(rejection) => Err(rejection),
         }

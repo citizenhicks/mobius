@@ -172,6 +172,29 @@ final class TranscriptProjectionTests: XCTestCase {
         )
     }
 
+    func testBotIdentityDoesNotForceAnAssistantMessageOntoTheInputSide() {
+        let bot = TranscriptEntry(
+            id: "bot-message",
+            text: "I found an option",
+            kind: .assistant,
+            format: "plain_text",
+            pending: false,
+            messageMetadata: TranscriptMessageMetadata(
+                author: .peer(
+                    messageID: "bot-message",
+                    sessionID: "session-1",
+                    handle: "researcher"
+                ),
+                delivery: .turn
+            )
+        )
+        let projection = TranscriptProjection(entries: [bot])
+
+        XCTAssertEqual(bot.kind, .assistant)
+        XCTAssertEqual(projection.rows.map(\.kind), [.narrative])
+        XCTAssertEqual(bot.messageMetadata?.author.peerFields?.handle, "researcher")
+    }
+
     func testNewActivityRunBumpsStructuralRevisionOnce() {
         let firstEvent = entry("event:1")
         let user = entry("user:1", kind: .user)

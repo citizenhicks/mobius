@@ -363,15 +363,24 @@ extension AppModel {
 
     func signOutOfCloud() async {
         let cloudGateway = mobiusCloudGateway
+        _ = try? await unregisterRemoteNotificationsForCloudSignOut()
+        var localError: Error?
         do {
-            try await unregisterRemoteNotificationsForCloudSignOut()
             try cloudClient.signOut()
         } catch {
-            showToast(verbatim: localizedErrorDescription(error), tone: .error)
-            return
+            localError = error
         }
         clearCloudAccountState()
-        if let cloudGateway, !(await removeGateway(cloudGateway)) { return }
+        let removedGateway = if let cloudGateway {
+            await removeGateway(cloudGateway)
+        } else {
+            true
+        }
+        if let localError {
+            showToast(verbatim: localizedErrorDescription(localError), tone: .error)
+            return
+        }
+        guard removedGateway else { return }
         showToast("Signed out of möbius Cloud.", tone: .info)
     }
 
@@ -390,17 +399,25 @@ extension AppModel {
         await transcriptIO?.value
         await composerIO?.value
 
+        _ = try? await unregisterRemoteNotificationsForCloudSignOut()
+        var localError: Error?
         do {
-            try await unregisterRemoteNotificationsForCloudSignOut()
             try cloudClient.signOut()
-            clearCloudAccountState()
+        } catch {
+            localError = error
+        }
+        clearCloudAccountState()
+        do {
             try await store.clearAllData()
         } catch {
+            localError = localError ?? error
+        }
+        if let localError {
             accounts = store.loadAccounts()
             selectedAccountID = store.selectedAccountID() ?? accounts.first?.id
             restoreSessionReadState()
             showsPairing = accounts.isEmpty
-            showToast(verbatim: localizedErrorDescription(error), tone: .error)
+            showToast(verbatim: localizedErrorDescription(localError), tone: .error)
             return
         }
 

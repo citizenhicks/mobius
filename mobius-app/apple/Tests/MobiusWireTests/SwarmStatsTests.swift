@@ -52,40 +52,6 @@ final class SwarmStatsTests: XCTestCase {
         XCTAssertEqual(stats.mentionEdges, 0)
     }
 
-    func testMentionHighlightingOnlyTouchesRosterHandlesOutsideCode() {
-        let roster: Set<String> = ["basil", "amber"]
-
-        XCTAssertEqual(
-            swarmHighlightedText("@basil ping @nobody and mail@basil", roster: roster),
-            "**@basil** ping @nobody and mail@basil"
-        )
-        // An @handle in a code span is source the agent posted, not an address.
-        XCTAssertEqual(
-            swarmHighlightedText("run `curl @basil` then ask @amber", roster: roster),
-            "run `curl @basil` then ask **@amber**"
-        )
-        XCTAssertEqual(
-            swarmHighlightedText("run ``curl @basil`` then ask @amber", roster: roster),
-            "run ``curl @basil`` then ask **@amber**"
-        )
-        XCTAssertEqual(
-            swarmHighlightedText(
-                "run ``code\n@basil\ncode`` then ask @amber",
-                roster: roster
-            ),
-            "run ``code\n@basil\ncode`` then ask **@amber**"
-        )
-        XCTAssertEqual(
-            swarmHighlightedText("```\n@basil\n```\n@basil", roster: roster),
-            "```\n@basil\n```\n**@basil**"
-        )
-        XCTAssertEqual(
-            swarmHighlightedText("```swift\n@basil\n~~~\n@amber\n```\n@amber", roster: roster),
-            "```swift\n@basil\n~~~\n@amber\n```\n**@amber**"
-        )
-        XCTAssertEqual(swarmHighlightedText("nothing here", roster: roster), "nothing here")
-    }
-
     private func message(
         _ sequence: UInt64,
         _ botID: String,

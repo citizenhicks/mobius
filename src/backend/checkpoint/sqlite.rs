@@ -48,7 +48,7 @@ mod event_journal;
 use self::event_journal::StreamMetricAccumulator;
 use self::event_journal::store_event;
 
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 9;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 const SCHEMA: &str = "
@@ -106,7 +106,7 @@ CREATE INDEX IF NOT EXISTS execution_journal_recent_idx
     ON execution_journal(started_at_ms DESC, session_id DESC, sequence DESC);
 CREATE INDEX IF NOT EXISTS event_journal_step_idx
     ON event_journal(session_id, model_step_id, event_kind);
-PRAGMA user_version = 8;
+PRAGMA user_version = 9;
 COMMIT;
 ";
 

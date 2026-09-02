@@ -121,6 +121,52 @@ fn fresh_state_seeds_one_ordinary_immutable_mobius_bot() {
 }
 
 #[test]
+fn opening_bot_state_rejects_removed_automatic_approval_settings_without_rewrite() {
+    let (root, store, _) = fixture();
+    create_bot(&store, "second");
+    let mut state = store.lock_state().expect("Bot state").clone();
+    for bot in &mut state.bots {
+        let middleware = &mut bot.config.config.middleware;
+        middleware.set_setting(
+            "sandbox",
+            "approval_policy",
+            Some(mobius::protocol::FrontendSettingValue::String(
+                "auto_approve".into(),
+            )),
+        );
+        middleware.set_setting(
+            "sandbox",
+            "reviewer_model_route",
+            Some(mobius::protocol::FrontendSettingValue::String(
+                "reviewer".into(),
+            )),
+        );
+        middleware.set_setting(
+            "sandbox",
+            "reviewer_strictness",
+            Some(mobius::protocol::FrontendSettingValue::String(
+                "strict".into(),
+            )),
+        );
+    }
+    store.save(&state).expect("write incompatible Bot state");
+    drop(store);
+
+    let state_dir = root.path().join("state");
+    let before = std::fs::read_to_string(state_dir.join(STATE_FILE)).expect("Bot state");
+    let error = match BotStore::open(&state_dir) {
+        Ok(_) => panic!("removed Bot settings must be rejected"),
+        Err(error) => error,
+    };
+
+    assert!(error.to_string().contains("reviewer_model_route"));
+    assert_eq!(
+        std::fs::read_to_string(state_dir.join(STATE_FILE)).expect("unchanged Bot state"),
+        before
+    );
+}
+
+#[test]
 fn bot_deletion_removes_owned_routines_history_and_scripts() {
     let (_root, store, workspace) = fixture();
     let bot = create_bot(&store, "retired");

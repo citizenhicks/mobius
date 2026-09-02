@@ -178,7 +178,6 @@ extension AppModelTests {
 
         let requestID = try XCTUnwrap(model.postSwarmMessage(
             to: "swarm-1",
-            workspace: "/srv/mobius",
             text: "  @leader check this  "
         ))
         let request = await recorder.firstRequest(after: 0) { request in
@@ -188,14 +187,12 @@ extension AppModelTests {
         guard case .postSwarmMessage(
             let sentID,
             let swarmID,
-            let workspace,
             let text
         ) = try XCTUnwrap(request) else {
             return XCTFail("Expected Swarm post")
         }
         XCTAssertEqual(sentID, requestID)
         XCTAssertEqual(swarmID, "swarm-1")
-        XCTAssertEqual(workspace, "/srv/mobius")
         XCTAssertEqual(text, "@leader check this")
 
         model.handle(.swarms(requestID: nil, swarms: model.swarms))

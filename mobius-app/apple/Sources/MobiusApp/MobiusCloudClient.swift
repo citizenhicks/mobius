@@ -181,11 +181,16 @@ private struct MobiusCloudCredential: Codable {
 final class MobiusCloudSessionStore {
     private let service: String
     private let account = "mobile-session"
+    private let keychainDelete: (CFDictionary) -> OSStatus
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
-    init(service: String = "app.mobius.cloud") {
+    init(
+        service: String = "app.mobius.cloud",
+        keychainDelete: @escaping (CFDictionary) -> OSStatus = { SecItemDelete($0) }
+    ) {
         self.service = service
+        self.keychainDelete = keychainDelete
     }
 
     fileprivate func load() throws -> MobiusCloudCredential? {
@@ -245,7 +250,7 @@ final class MobiusCloudSessionStore {
             kSecAttrService: service,
             kSecAttrAccount: account,
         ]
-        let status = SecItemDelete(query as CFDictionary)
+        let status = keychainDelete(query as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw MobiusCloudError.keychain(status)
         }

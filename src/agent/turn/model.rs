@@ -909,18 +909,7 @@ impl Runner {
                         calls,
                         request,
                         permissions,
-                        Vec::new(),
-                        None,
                     )
-                    .await?
-                else {
-                    return Ok(true);
-                };
-                results
-            }
-            SandboxAuthorization::Review(review) => {
-                let Some(results) = self
-                    .review_and_resolve(inbox, submission_id, turn_id, calls, review)
                     .await?
                 else {
                     return Ok(true);

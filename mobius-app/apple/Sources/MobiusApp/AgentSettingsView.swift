@@ -456,8 +456,6 @@ struct AgentSettingsView: View {
             where options.allSatisfy({ option in
                 model.modelChoices.contains { $0.route == option.value }
             }) && !options.isEmpty:
-            // The gateway advertises reviewer and subagent models as plain selects over
-            // routes. They are model choices like any other, so they get the same split.
             ModelRoutePicker(
                 verbatimLabel: setting.label,
                 detail: setting.description,

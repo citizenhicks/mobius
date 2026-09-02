@@ -120,7 +120,6 @@ pub enum ClientMessage {
     PostSwarmMessage {
         request_id: String,
         swarm_id: String,
-        workspace: PathBuf,
         text: String,
     },
     Submit {

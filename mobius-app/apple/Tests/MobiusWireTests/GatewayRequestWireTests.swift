@@ -145,13 +145,12 @@ extension GatewayWireTests {
         let post = try requestObject(.postSwarmMessage(
             requestID: "swarm-message-1",
             swarmID: "swarm-1",
-            workspace: "/srv/mobius",
             text: "@builder review this"
         ))
         XCTAssertEqual(post["type"] as? String, "post_swarm_message")
         XCTAssertEqual(post["request_id"] as? String, "swarm-message-1")
         XCTAssertEqual(post["swarm_id"] as? String, "swarm-1")
-        XCTAssertEqual(post["workspace"] as? String, "/srv/mobius")
+        XCTAssertNil(post["workspace"])
         XCTAssertEqual(post["text"] as? String, "@builder review this")
 
         let sessions = try requestObject(.listBotSessions(

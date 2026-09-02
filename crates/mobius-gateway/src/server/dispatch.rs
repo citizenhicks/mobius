@@ -629,15 +629,12 @@ async fn handle_collaboration_message(
         ClientMessage::PostSwarmMessage {
             request_id,
             swarm_id,
-            workspace,
             text,
         } => {
             write_swarms_result(
                 writer,
                 request_id,
-                gateway
-                    .post_swarm_message(&swarm_id, &workspace, text)
-                    .await,
+                gateway.post_swarm_message(&swarm_id, text).await,
             )
             .await?;
         }

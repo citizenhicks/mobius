@@ -1,5 +1,50 @@
 use super::*;
 
+pub(crate) fn prepare_background_workspace(
+    state_dir: &Path,
+    tls: Option<&TlsConfig>,
+) -> Result<PathBuf> {
+    let state_dir = fs::canonicalize(state_dir)?;
+    let mut name = state_dir
+        .file_name()
+        .ok_or_else(|| Error::Config("gateway state directory must have a name".into()))?
+        .to_os_string();
+    name.push(".background");
+    let path = state_dir
+        .parent()
+        .ok_or_else(|| Error::Config("gateway state directory must have a parent".into()))?
+        .join(name);
+    let created = match fs::create_dir(&path) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+        Err(error) => return Err(error.into()),
+    };
+    let prepared = (|| {
+        let metadata = fs::symlink_metadata(&path)?;
+        if !metadata.file_type().is_dir() {
+            return Err(Error::Config(
+                "gateway background workspace must be a real directory".into(),
+            ));
+        }
+        #[cfg(unix)]
+        if created {
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
+        } else if metadata.permissions().mode() & 0o077 != 0 {
+            return Err(Error::Config(
+                "gateway background workspace must not be accessible by group or others (use mode 0700)"
+                    .into(),
+            ));
+        }
+        let path = validate_chat_workspace(&path, &state_dir, tls)?;
+        initialize_workspace_repository(&path)?;
+        Ok(path)
+    })();
+    if created && prepared.is_err() {
+        let _ = fs::remove_dir_all(&path);
+    }
+    prepared
+}
+
 pub(super) fn validate_chat_workspace(
     path: &Path,
     state_dir: &Path,

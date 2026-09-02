@@ -938,20 +938,4 @@ extension AppModelTests {
         XCTAssertTrue(requests.isEmpty)
     }
 
-    func testPairingURLPrefillsWithoutPairing() async throws {
-        let recorder = GatewayRequestRecorder()
-        let model = try model { request in await recorder.record(request) }
-
-        model.applyPairingURL(try XCTUnwrap(URL(string:
-            "mobius://pair?endpoint=wss%3A%2F%2Fgateway.example&code=0123456789abcdef"
-        )))
-
-        XCTAssertTrue(model.showsPairing)
-        XCTAssertEqual(model.pairingEndpoint, "wss://gateway.example")
-        XCTAssertEqual(model.pairingCode, "0123456789abcdef")
-        XCTAssertNil(model.pairingError)
-        let requests = await recorder.requests()
-        XCTAssertTrue(requests.isEmpty)
-    }
-
 }

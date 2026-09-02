@@ -329,8 +329,7 @@ pub(super) fn print_connection(
     code: &str,
 ) -> std::io::Result<()> {
     let stdout = std::io::stdout();
-    let show_qr = stdout.is_terminal() && !endpoint.is_plaintext();
-    write_connection(stdout.lock(), endpoint, local_endpoint, code, show_qr)
+    write_connection(stdout.lock(), endpoint, local_endpoint, code)
 }
 
 #[cfg(any(unix, test))]
@@ -339,7 +338,6 @@ pub(super) fn write_connection(
     endpoint: &Endpoint,
     local_endpoint: Option<&Endpoint>,
     code: &str,
-    show_qr: bool,
 ) -> std::io::Result<()> {
     if let Some(local_endpoint) = local_endpoint {
         writeln!(output, "public endpoint: {endpoint}")?;
@@ -354,13 +352,6 @@ pub(super) fn write_connection(
         pairing_setup_payload(endpoint, code)
     )?;
     writeln!(output, "copy the setup code into möbius")?;
-    if show_qr {
-        writeln!(output, "iPhone or iPad: scan this QR")?;
-        let qr = pairing_setup_qr(endpoint, code).map_err(std::io::Error::other)?;
-        for line in qr.lines() {
-            writeln!(output, "\x1b[30;47m{line}\x1b[0m")?;
-        }
-    }
     writeln!(output, "another terminal: mobius pair {endpoint} {code}")?;
     if let Some(local_endpoint) = local_endpoint {
         writeln!(
@@ -374,22 +365,4 @@ pub(super) fn write_connection(
 #[cfg(any(unix, test))]
 pub(super) fn pairing_setup_payload(endpoint: &Endpoint, code: &str) -> String {
     format!("mobius-pair:v1|{endpoint}|{code}")
-}
-
-#[cfg(any(unix, test))]
-pub(super) fn pairing_setup_url(endpoint: &Endpoint, code: &str) -> Url {
-    let mut url = Url::parse("mobius://pair").expect("static pairing URL must be valid");
-    url.query_pairs_mut()
-        .append_pair("endpoint", &endpoint.to_string())
-        .append_pair("code", code);
-    url
-}
-
-#[cfg(any(unix, test))]
-pub(super) fn pairing_setup_qr(
-    endpoint: &Endpoint,
-    code: &str,
-) -> std::result::Result<String, qrcode::types::QrError> {
-    let url = pairing_setup_url(endpoint, code);
-    Ok(QrCode::new(url.as_str())?.render::<Dense1x2>().build())
 }

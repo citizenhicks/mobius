@@ -1,5 +1,74 @@
 use super::*;
 
+async fn next_websocket_frame(websocket: &mut WebSocketStream<TcpStream>) -> ServerFrame {
+    let Message::Binary(payload) = websocket
+        .next()
+        .await
+        .expect("gateway response")
+        .expect("read gateway response")
+    else {
+        panic!("gateway response must be binary");
+    };
+    serde_json::from_slice(&payload).expect("decode gateway frame")
+}
+
+fn append_masked_binary_frame(output: &mut Vec<u8>, payload: &[u8]) {
+    output.push(0x82);
+    if payload.len() <= 125 {
+        output.push(0x80 | u8::try_from(payload.len()).expect("small WebSocket payload"));
+    } else {
+        output.push(0x80 | 126);
+        output.extend_from_slice(
+            &u16::try_from(payload.len())
+                .expect("WebSocket test payload fits u16")
+                .to_be_bytes(),
+        );
+    }
+    let mask = [0x12, 0x34, 0x56, 0x78];
+    output.extend_from_slice(&mask);
+    output.extend(
+        payload
+            .iter()
+            .enumerate()
+            .map(|(index, byte)| byte ^ mask[index % mask.len()]),
+    );
+}
+
+#[tokio::test]
+async fn connection_admission_wakes_waiters_and_bounds_authenticated_clients() {
+    let admission = ConnectionAdmission::new(1, 1);
+    let first = admission.admit().await;
+    let waiting = admission.admit();
+    tokio::pin!(waiting);
+    tokio::select! {
+        biased;
+        _ = &mut waiting => panic!("second pre-auth connection bypassed the bound"),
+        () = std::future::ready(()) => {}
+    }
+    let authenticated = first.promote().expect("promote first connection");
+    let second = waiting.await;
+    assert!(second.promote().is_none());
+    drop(authenticated);
+    assert!(admission.admit().await.promote().is_some());
+}
+
+#[tokio::test]
+async fn pre_auth_reader_rejects_an_oversized_frame_from_its_prefix() {
+    let (mut writer, reader) = tokio::io::duplex(4);
+    let mut reader = FrameReader::new(reader);
+    let oversized = u32::try_from(MAX_PRE_AUTH_FRAME_BYTES + 1).expect("frame limit fits u32");
+    writer
+        .write_all(&oversized.to_be_bytes())
+        .await
+        .expect("write prefix");
+
+    let error = read_frame_with_limit::<PreAuthClientFrame>(&mut reader, MAX_PRE_AUTH_FRAME_BYTES)
+        .await
+        .expect_err("oversized pre-auth frame must fail");
+
+    assert!(matches!(error, Error::Protocol(_)), "{error}");
+}
+
 #[test]
 fn client_inventory_aggregates_connections_and_keeps_inactive_devices() {
     let clients = Arc::new(ClientConnections::default());
@@ -94,7 +163,7 @@ fn websocket_upgrade_accepts_the_cloudflare_host_with_standard_port() {
 }
 
 #[tokio::test]
-async fn websocket_binary_messages_use_unprefixed_json_frames() {
+async fn websocket_preserves_a_pipelined_bulk_frame_across_authentication() {
     let root = tempfile::tempdir().expect("temporary directory");
     let (server, grant) = GatewayServer::bootstrap(
         root.path().join("state"),
@@ -107,31 +176,55 @@ async fn websocket_binary_messages_use_unprefixed_json_frames() {
     let serving = tokio::spawn(server.serve_until(async move {
         let _ = signal.await;
     }));
-    let stream = TcpStream::connect(listen).await.expect("connect gateway");
-    let (mut websocket, _) = tokio_tungstenite::client_async(format!("ws://{listen}/"), stream)
-        .await
-        .expect("upgrade WebSocket");
-    let payload = serde_json::to_vec(&ClientFrame::new(ClientMessage::Pair {
+    let mut stream = TcpStream::connect(listen).await.expect("connect gateway");
+    let mut pipelined = format!(
+        "GET / HTTP/1.1\r\nHost: {listen}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+    )
+    .into_bytes();
+    let pairing = serde_json::to_vec(&ClientFrame::new(ClientMessage::Pair {
         code: grant.code,
         client_label: "WebSocket test".into(),
         client_kind: ClientKind::Ios,
     }))
     .expect("encode pair frame");
-    websocket
-        .send(Message::Binary(payload.into()))
+    append_masked_binary_frame(&mut pipelined, &pairing);
+    let request_id = "x".repeat(MAX_PRE_AUTH_FRAME_BYTES + 1);
+    let post_auth = serde_json::to_vec(&ClientFrame::new(ClientMessage::ListSessions {
+        request_id: request_id.clone(),
+    }))
+    .expect("encode post-auth frame");
+    assert!(post_auth.len() > MAX_PRE_AUTH_FRAME_BYTES);
+    append_masked_binary_frame(&mut pipelined, &post_auth);
+    stream
+        .write_all(&pipelined)
         .await
-        .expect("send pair frame");
-    let Message::Binary(payload) = websocket
-        .next()
-        .await
-        .expect("pairing response")
-        .expect("read pairing response")
-    else {
-        panic!("gateway response must be binary");
-    };
-    let frame = serde_json::from_slice::<ServerFrame>(&payload).expect("decode pairing frame");
+        .expect("pipeline upgrade, pairing, and post-auth frames");
+    let mut response = Vec::new();
+    while !response.ends_with(b"\r\n\r\n") {
+        let mut byte = [0_u8; 1];
+        let read = stream.read(&mut byte).await.expect("read upgrade response");
+        assert_eq!(read, 1, "upgrade response ended early");
+        response.push(byte[0]);
+    }
+    assert!(response.starts_with(b"HTTP/1.1 101"));
+    let mut websocket = WebSocketStream::from_raw_socket(stream, Role::Client, None).await;
+    let paired = next_websocket_frame(&mut websocket).await;
+    let authenticated = next_websocket_frame(&mut websocket).await;
+    let ready = next_websocket_frame(&mut websocket).await;
+    let sessions = next_websocket_frame(&mut websocket).await;
 
-    assert!(matches!(frame.message, ServerMessage::Paired { .. }));
+    assert!(matches!(
+        (paired.message, authenticated.message, ready.message, sessions.message),
+        (
+            ServerMessage::Paired { .. },
+            ServerMessage::Authenticated,
+            ServerMessage::Ready { .. },
+            ServerMessage::Sessions {
+                request_id: Some(actual),
+                ..
+            }
+        ) if actual == request_id
+    ));
     drop(websocket);
     shutdown.send(()).expect("stop gateway");
     serving.await.expect("gateway task").expect("gateway stop");
@@ -156,18 +249,22 @@ async fn websocket_upgrade_and_authentication_share_one_deadline() {
     } = server;
     let client_connections = Arc::new(ClientConnections::default());
     let (client_revocations, _) = broadcast::channel(MAX_CONNECTIONS);
+    let admission = ConnectionAdmission::new(1, 1).admit().await;
     let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
     let serving = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.expect("accept connection");
-        let auth_deadline = Instant::now() + AUTH_TIMEOUT;
+        let auth_deadline = Instant::now() + PRE_AUTH_TIMEOUT;
         accepted_tx.send(()).expect("report accepted connection");
         serve_plaintext_connection(
             stream,
-            auth,
-            host,
-            bots,
-            client_connections,
-            client_revocations,
+            ConnectionContext {
+                auth,
+                host,
+                bots,
+                client_connections,
+                client_revocations,
+                admission,
+            },
             PlaintextHandshake {
                 expected_websocket_host: None,
                 auth_deadline,
@@ -178,10 +275,10 @@ async fn websocket_upgrade_and_authentication_share_one_deadline() {
     let mut stream = TcpStream::connect(listen).await.expect("connect gateway");
     accepted_rx.await.expect("connection accepted");
 
-    tokio::time::advance(Duration::from_secs(5)).await;
+    tokio::time::advance(Duration::from_secs(2)).await;
     stream.write_all(b"G").await.expect("start upgrade");
     tokio::task::yield_now().await;
-    tokio::time::advance(Duration::from_secs(5)).await;
+    tokio::time::advance(Duration::from_secs(2)).await;
     stream
         .write_all(
             format!(
@@ -201,7 +298,7 @@ async fn websocket_upgrade_and_authentication_share_one_deadline() {
     assert!(response.starts_with(b"HTTP/1.1 101"));
     let mut websocket = WebSocketStream::from_raw_socket(stream, Role::Client, None).await;
 
-    tokio::time::advance(Duration::from_secs(6)).await;
+    tokio::time::advance(Duration::from_secs(2)).await;
     tokio::time::resume();
     let closed = tokio::time::timeout(Duration::from_secs(1), websocket.next())
         .await

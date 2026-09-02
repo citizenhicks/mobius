@@ -10,6 +10,7 @@ use mobius::backend::checkpoint::CheckpointStore;
 use mobius::middleware::bots::BotsBackend;
 use mobius::protocol::MAX_MESSAGE_BYTES;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 use tokio::sync::{Mutex, MutexGuard, OwnedMutexGuard, mpsc};
 use uuid::Uuid;
 
@@ -22,7 +23,7 @@ use crate::wire::{
 use crate::{Error, Result};
 
 const STATE_SCOPE: &str = "gateway";
-const STATE_KEY: &str = "bots.swarms.v3";
+const STATE_KEY: &str = "bots.swarms.v4";
 const USER_AUTHOR_ID: &str = "user";
 const USER_HANDLE: &str = "user";
 const MAX_HANDLE_BYTES: usize = 64;
@@ -103,7 +104,7 @@ pub struct BoardEntry {
     pub mentioned_recipient_bot_ids: Vec<String>,
     /// Mentioned Bots which have not acknowledged delivery.
     pub pending_recipient_bot_ids: Vec<String>,
-    /// Fresh conversation assigned to each recipient before delivery starts.
+    /// Durable Swarm participant conversation assigned to each recipient.
     pub assigned_recipient_session_ids: BTreeMap<String, String>,
     /// Parent board message when this entry is a peer reply.
     pub in_reply_to_message_id: Option<String>,
@@ -122,6 +123,7 @@ pub struct SwarmPost {
 }
 
 /// One newest-first page of swarm board entries.
+#[cfg(test)]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BoardPage {
@@ -141,14 +143,12 @@ pub struct PendingDelivery {
     pub swarm_title: String,
     /// Durable message awaiting acknowledgement.
     pub entry: BoardEntry,
-    /// Explicit workspace when the source conversation is not durable.
-    pub workspace: Option<PathBuf>,
 }
 
 /// Terminal state projected from one hidden Bot conversation into Swarm Chat.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SwarmRunOutcome {
-    Succeeded { summary: Option<String> },
+    Succeeded { summary: String },
     Failed { message: String },
 }
 
@@ -188,6 +188,8 @@ pub(crate) enum SwarmDelivery {
     Pending { target_bot_id: String },
     /// One board post explicitly asks for authenticated user attention.
     UserAttention { message_id: String },
+    /// One user-attention message was durably recorded in its visible conversation.
+    UserAttentionAcknowledged { message_id: String },
     /// A target Bot durably recorded one delivered peer message.
     Acknowledged {
         target_bot_id: String,
@@ -704,48 +706,46 @@ impl SwarmStore {
 
     /// Returns this Bot's recent board in the bounded model-tool format.
     pub(crate) async fn tool_read(&self, bot_id: &str) -> Result<String> {
-        let snapshot = self
-            .snapshot_for_bot(bot_id)
-            .await?
+        validate_bot_id(bot_id)?;
+        let state = self.lock_loaded().await?;
+        let catalog = state.as_ref().expect("swarm catalog loaded");
+        let swarm = catalog
+            .swarms
+            .values()
+            .find(|swarm| swarm.members.contains_key(bot_id))
             .ok_or_else(|| config("this Bot is not in a swarm"))?;
-        let page = self
-            .board_page(&snapshot.swarm.id, None, MAX_PAGE_ENTRIES)
-            .await?;
-        let mut entries = Vec::new();
-        let mut has_older = page.next_before_sequence.is_some();
-        for entry in page.entries {
-            let end = entry
-                .text
-                .floor_char_boundary(MAX_TOOL_READ_TEXT_BYTES.min(entry.text.len()));
-            let text = &entry.text[..end];
-            entries.push(serde_json::json!({
-                "id": entry.id,
-                "sequence": entry.sequence,
-                "created_at_ms": entry.created_at_ms,
-                "author_bot_id": entry.author.bot_id,
-                "author_handle": entry.author.handle,
-                "source_session_id": entry.source_session_id,
-                "text": text,
-                "text_truncated": text.len() != entry.text.len(),
-                "in_reply_to_message_id": entry.in_reply_to_message_id,
-                "reply_depth": entry.reply_depth,
-            }));
-            if serde_json::to_vec(&serde_json::json!({
-                "entries": &entries,
-                "has_older": has_older,
-            }))?
-            .len()
-                > MAX_TOOL_READ_BYTES
-            {
-                entries.pop();
-                has_older = true;
-                break;
-            }
+        bounded_board_json(swarm)
+    }
+
+    pub(crate) async fn swarm_chat_context(
+        &self,
+        bot_id: &str,
+        session_id: &str,
+    ) -> Result<Option<String>> {
+        validate_bot_id(bot_id)?;
+        validate_delivery_session_id(session_id)?;
+        let state = self.lock_loaded().await?;
+        let catalog = state.as_ref().expect("swarm catalog loaded");
+        let Some(swarm) = catalog
+            .swarms
+            .values()
+            .find(|swarm| swarm.members.contains_key(bot_id))
+        else {
+            return Ok(None);
+        };
+        if !swarm.board.iter().any(|entry| {
+            entry
+                .assigned_recipient_session_ids
+                .get(bot_id)
+                .is_some_and(|assigned| assigned == session_id)
+                && entry
+                    .pending_recipient_bot_ids
+                    .iter()
+                    .any(|pending| pending == bot_id)
+        }) {
+            return Ok(None);
         }
-        Ok(serde_json::to_string(&serde_json::json!({
-            "entries": entries,
-            "has_older": has_older,
-        }))?)
+        bounded_board_json(swarm).map(Some)
     }
 
     /// Reports whether one addressed Bot may extend a peer reply chain.
@@ -1064,6 +1064,7 @@ impl SwarmStore {
     }
 
     /// Loads one newest-first board page before an optional sequence cursor.
+    #[cfg(test)]
     pub async fn board_page(
         &self,
         swarm_id: &str,
@@ -1104,7 +1105,6 @@ impl SwarmStore {
         validate_bot_id(target_bot_id)?;
         let state = self.lock_loaded().await?;
         let catalog = state.as_ref().expect("swarm catalog loaded");
-        let workspaces = &catalog.message_workspaces;
         Ok(catalog
             .swarms
             .iter()
@@ -1122,7 +1122,6 @@ impl SwarmStore {
                         swarm_id: swarm_id.clone(),
                         swarm_title: swarm.title.clone(),
                         entry: entry.clone(),
-                        workspace: workspaces.get(&entry.id).cloned(),
                     })
             })
             .collect())
@@ -1137,14 +1136,9 @@ impl SwarmStore {
         let gate = Arc::clone(&self.delivery_gate).lock_owned().await;
         let target_bot_id = target_bot_id.to_owned();
         let claimed_target_bot_id = target_bot_id.clone();
-        let new_session_id = Uuid::new_v4().to_string();
         let Some((delivery, session_id)) = self
             .mutate_if_some(move |catalog| {
-                let Catalog {
-                    swarms,
-                    message_workspaces,
-                    ..
-                } = catalog;
+                let Catalog { swarms, .. } = catalog;
                 for (swarm_id, swarm) in swarms {
                     if !swarm.members.contains_key(&target_bot_id) {
                         continue;
@@ -1160,14 +1154,13 @@ impl SwarmStore {
                     let session_id = entry
                         .assigned_recipient_session_ids
                         .entry(target_bot_id.clone())
-                        .or_insert_with(|| new_session_id.clone())
+                        .or_insert_with(|| participant_session_id(swarm_id, &target_bot_id))
                         .clone();
                     return Ok(Some((
                         PendingDelivery {
                             swarm_id: swarm_id.clone(),
                             swarm_title: swarm.title.clone(),
                             entry: entry.clone(),
-                            workspace: message_workspaces.get(&entry.id).cloned(),
                         },
                         session_id,
                     )));
@@ -1326,29 +1319,36 @@ impl SwarmStore {
     /// Atomically completes one hidden mention and appends its terminal board projection.
     pub(crate) async fn settle_delivery(
         &self,
+        message_id: &str,
         session_id: &str,
         target_bot_id: &str,
         outcome: SwarmRunOutcome,
     ) -> Result<bool> {
+        validate_message_id(message_id)?;
         validate_delivery_session_id(session_id)?;
         validate_bot_id(target_bot_id)?;
+        let message_id = message_id.to_owned();
         let session_id = session_id.to_owned();
         let target_bot_id = target_bot_id.to_owned();
         let bots = Arc::clone(&self.bots);
         let Some(settlement) = self
             .mutate_if_some(move |catalog| {
-                let Some((swarm_id, source_id)) = catalog.swarms.iter().find_map(|(id, swarm)| {
-                    swarm.board.iter().find_map(|entry| {
-                        (entry
-                            .assigned_recipient_session_ids
-                            .get(&target_bot_id)
-                            .is_some_and(|assigned| assigned == &session_id)
-                            && entry
-                                .pending_recipient_bot_ids
-                                .iter()
-                                .any(|pending| pending == &target_bot_id))
-                        .then(|| (id.clone(), entry.id.clone()))
-                    })
+                let Some(swarm_id) = catalog.swarms.iter().find_map(|(id, swarm)| {
+                    swarm
+                        .board
+                        .iter()
+                        .any(|entry| {
+                            entry.id == message_id
+                                && entry
+                                    .assigned_recipient_session_ids
+                                    .get(&target_bot_id)
+                                    .is_some_and(|assigned| assigned == &session_id)
+                                && entry
+                                    .pending_recipient_bot_ids
+                                    .iter()
+                                    .any(|pending| pending == &target_bot_id)
+                        })
+                        .then(|| id.clone())
                 }) else {
                     return Ok(None);
                 };
@@ -1359,7 +1359,7 @@ impl SwarmStore {
                 let source = swarm
                     .board
                     .iter()
-                    .find(|entry| entry.id == source_id)
+                    .find(|entry| entry.id == message_id)
                     .cloned()
                     .expect("resolved swarm message exists");
                 let author = current_member(
@@ -1370,19 +1370,12 @@ impl SwarmStore {
                         .get(&target_bot_id)
                         .expect("pending delivery target remains a member"),
                 )?;
-                let leader = current_member(
-                    &bots,
-                    &swarm.leader_bot_id,
-                    swarm
-                        .members
-                        .get(&swarm.leader_bot_id)
-                        .expect("swarm leader remains a member"),
-                )?;
+                let leader_bot_id = swarm.leader_bot_id.clone();
                 let wake_leader =
-                    target_bot_id != leader.bot_id && source.reply_depth < MAX_REPLY_DEPTH;
-                let text = outcome_text(&outcome, wake_leader.then_some(leader.handle.as_str()));
+                    target_bot_id != leader_bot_id && source.reply_depth < MAX_REPLY_DEPTH;
+                let text = outcome_text(&outcome);
                 let recipients = if wake_leader {
-                    vec![leader.bot_id.clone()]
+                    vec![leader_bot_id]
                 } else {
                     Vec::new()
                 };
@@ -1413,7 +1406,7 @@ impl SwarmStore {
                 let original = swarm
                     .board
                     .iter_mut()
-                    .find(|entry| entry.id == source_id)
+                    .find(|entry| entry.id == message_id)
                     .expect("resolved swarm message exists");
                 original
                     .pending_recipient_bot_ids
@@ -1422,7 +1415,7 @@ impl SwarmStore {
                 swarm.updated_at_ms = now;
                 swarm.board.push_back(entry.clone());
                 Ok(Some(Settlement {
-                    message_id: source_id,
+                    message_id,
                     target_bot_id,
                     pending_bot_id: recipients.into_iter().next(),
                     user_attention_message_id: None,
@@ -1551,14 +1544,19 @@ impl SwarmStore {
         &self,
         bot_id: &str,
         source_session_id: &str,
+        source_message_id: Option<&str>,
         source_event_id: &str,
         message: &str,
     ) -> Result<bool> {
         validate_bot_id(bot_id)?;
         validate_session_id(source_session_id)?;
+        if let Some(message_id) = source_message_id {
+            validate_message_id(message_id)?;
+        }
         validate_message_id(source_event_id)?;
         let bot_id = bot_id.to_owned();
         let source_session_id = source_session_id.to_owned();
+        let source_message_id = source_message_id.map(str::to_owned);
         let source_event_id = source_event_id.to_owned();
         let message = message.to_owned();
         let bots = Arc::clone(&self.bots);
@@ -1567,23 +1565,40 @@ impl SwarmStore {
                 let Some(swarm_id) = swarm_id_for_bot(catalog, &bot_id) else {
                     return Ok(None);
                 };
-                let parent = catalog
+                let board = &catalog
                     .swarms
                     .get(&swarm_id)
                     .expect("resolved swarm exists")
-                    .board
-                    .iter()
-                    .find(|entry| {
-                        entry
-                            .assigned_recipient_session_ids
-                            .get(&bot_id)
-                            .is_some_and(|assigned| assigned == &source_session_id)
-                            && entry
-                                .pending_recipient_bot_ids
-                                .iter()
-                                .any(|pending| pending == &bot_id)
-                    })
-                    .cloned();
+                    .board;
+                let participant_has_pending = board.iter().any(|entry| {
+                    entry
+                        .assigned_recipient_session_ids
+                        .get(&bot_id)
+                        .is_some_and(|assigned| assigned == &source_session_id)
+                        && entry
+                            .pending_recipient_bot_ids
+                            .iter()
+                            .any(|pending| pending == &bot_id)
+                });
+                let parent = source_message_id.as_deref().and_then(|message_id| {
+                    board
+                        .iter()
+                        .find(|entry| {
+                            entry.id == message_id
+                                && entry
+                                    .assigned_recipient_session_ids
+                                    .get(&bot_id)
+                                    .is_some_and(|assigned| assigned == &source_session_id)
+                                && entry
+                                    .pending_recipient_bot_ids
+                                    .iter()
+                                    .any(|pending| pending == &bot_id)
+                        })
+                        .cloned()
+                });
+                if participant_has_pending && parent.is_none() {
+                    return Ok(None);
+                }
                 let swarm = catalog
                     .swarms
                     .get_mut(&swarm_id)
@@ -1721,7 +1736,7 @@ impl SwarmStore {
     pub(crate) async fn acknowledge_user_attention(&self, message_id: &str) -> Result<bool> {
         validate_message_id(message_id)?;
         let message_id = message_id.to_owned();
-        Ok(self
+        let Some(message_id) = self
             .mutate_if_some(move |catalog| {
                 if !catalog
                     .pending_user_attention_message_ids
@@ -1735,10 +1750,16 @@ impl SwarmStore {
                 catalog
                     .pending_user_attention_message_ids
                     .remove(&message_id);
-                Ok(Some(true))
+                Ok(Some(message_id))
             })
             .await?
-            .unwrap_or(false))
+        else {
+            return Ok(false);
+        };
+        let _ = self
+            .deliveries
+            .send(SwarmDelivery::UserAttentionAcknowledged { message_id });
+        Ok(true)
     }
 
     fn finish_settlement(&self, settlement: Settlement) {
@@ -2059,6 +2080,18 @@ impl BotsBackend for SwarmStore {
         Box::pin(async move { self.tool_read(bot_id).await.map_err(mobius_error) })
     }
 
+    fn swarm_chat_context<'a>(
+        &'a self,
+        bot_id: &'a str,
+        session_id: &'a str,
+    ) -> mobius::BoxFuture<'a, mobius::Result<Option<String>>> {
+        Box::pin(async move {
+            SwarmStore::swarm_chat_context(self, bot_id, session_id)
+                .await
+                .map_err(mobius_error)
+        })
+    }
+
     fn can_reply<'a>(
         &'a self,
         bot_id: &'a str,
@@ -2245,19 +2278,13 @@ fn user_attention(catalog: &Catalog, message_id: &str) -> Result<UserAttention> 
     })
 }
 
-fn outcome_text(outcome: &SwarmRunOutcome, leader_handle: Option<&str>) -> String {
-    let prefix = leader_handle.map_or_else(String::new, |handle| format!("@{handle} "));
-    let (label, detail) = match outcome {
-        SwarmRunOutcome::Succeeded { summary } => ("completed", summary.as_deref()),
-        SwarmRunOutcome::Failed { message } => ("failed", Some(message.as_str())),
-    };
-    bounded_message(&format!(
-        "{prefix}Task {label}{}",
-        detail.map_or_else(String::new, |detail| format!(
-            ": {}",
-            neutralize_mentions(detail)
-        ))
-    ))
+fn outcome_text(outcome: &SwarmRunOutcome) -> String {
+    match outcome {
+        SwarmRunOutcome::Succeeded { summary } => bounded_message(&neutralize_mentions(summary)),
+        SwarmRunOutcome::Failed { message } => {
+            bounded_message(&format!("Task failed: {}", neutralize_mentions(message)))
+        }
+    }
 }
 
 fn routine_outcome_text(
@@ -2286,6 +2313,58 @@ fn routine_outcome_text(
 
 fn neutralize_mentions(text: &str) -> String {
     text.replace('@', "＠")
+}
+
+fn participant_session_id(swarm_id: &str, bot_id: &str) -> String {
+    let mut hash = Sha256::new();
+    hash.update(b"mobius-swarm-participant-v1\0");
+    hash.update(swarm_id.as_bytes());
+    hash.update(b"\0");
+    hash.update(bot_id.as_bytes());
+    let digest = hash.finalize();
+    let mut bytes = [0; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x80;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Uuid::from_bytes(bytes).to_string()
+}
+
+fn bounded_board_json(swarm: &StoredSwarm) -> Result<String> {
+    let mut entries = Vec::new();
+    let mut has_older = swarm.board.len() > MAX_PAGE_ENTRIES;
+    for entry in swarm.board.iter().rev().take(MAX_PAGE_ENTRIES) {
+        let end = entry
+            .text
+            .floor_char_boundary(MAX_TOOL_READ_TEXT_BYTES.min(entry.text.len()));
+        let text = &entry.text[..end];
+        entries.push(serde_json::json!({
+            "id": entry.id,
+            "sequence": entry.sequence,
+            "created_at_ms": entry.created_at_ms,
+            "author_bot_id": entry.author.bot_id,
+            "author_handle": entry.author.handle,
+            "source_session_id": entry.source_session_id,
+            "text": text,
+            "text_truncated": text.len() != entry.text.len(),
+            "in_reply_to_message_id": entry.in_reply_to_message_id,
+            "reply_depth": entry.reply_depth,
+        }));
+        if serde_json::to_vec(&serde_json::json!({
+            "entries": &entries,
+            "has_older": has_older,
+        }))?
+        .len()
+            > MAX_TOOL_READ_BYTES
+        {
+            entries.pop();
+            has_older = true;
+            break;
+        }
+    }
+    Ok(serde_json::to_string(&serde_json::json!({
+        "entries": entries,
+        "has_older": has_older,
+    }))?)
 }
 
 fn bounded_message(text: &str) -> String {
@@ -2360,7 +2439,6 @@ fn validate_catalog(catalog: &Catalog) -> Result<()> {
     let mut message_ids = BTreeSet::new();
     let mut human_message_ids = BTreeSet::new();
     let mut user_attention_ids = BTreeSet::new();
-    let mut assigned_session_ids = BTreeSet::new();
     for (id, swarm) in &catalog.swarms {
         let mut pending_counts = BTreeMap::<&str, usize>::new();
         validate_swarm_id(id)?;
@@ -2496,9 +2574,10 @@ fn validate_catalog(catalog: &Catalog) -> Result<()> {
                         entry.id
                     )));
                 }
-                if !assigned_session_ids.insert(session_id) {
+                if session_id != &participant_session_id(id, recipient) {
                     return Err(config(format!(
-                        "swarm delivery conversation `{session_id}` appears more than once"
+                        "swarm message `{}` has an invalid participant conversation",
+                        entry.id
                     )));
                 }
             }
@@ -3307,10 +3386,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delivery_claim_reservation_is_durable_and_idempotent() {
+    async fn delivery_claim_reuses_one_durable_participant_conversation() {
         let (_directory, checkpoints, store, _deliveries) = store();
-        create_swarm(&store).await;
-        post(&store, "leader", "@reviewer please review".into())
+        let swarm = create_swarm(&store).await;
+        let first = post(&store, "leader", "@reviewer please review".into())
             .await
             .expect("post");
         let leader = bot_id(&store, "leader");
@@ -3323,6 +3402,21 @@ mod tests {
             .expect("pending delivery");
         let session_id = claim.session_id().to_owned();
         Uuid::parse_str(&session_id).expect("generated session UUID");
+        assert_eq!(session_id, participant_session_id(&swarm.id, &reviewer));
+        assert!(
+            store
+                .swarm_chat_context(&reviewer, &session_id)
+                .await
+                .expect("active participant context")
+                .is_some()
+        );
+        assert!(
+            store
+                .swarm_chat_context(&reviewer, &Uuid::new_v4().to_string())
+                .await
+                .expect("unrelated conversation context")
+                .is_none()
+        );
         drop(claim);
         let repeated = store
             .claim_next_delivery(&reviewer)
@@ -3337,6 +3431,64 @@ mod tests {
                 .await
                 .expect("non-recipient claim")
                 .is_none()
+        );
+        store
+            .settle_delivery(
+                &first.entry.id,
+                &session_id,
+                &reviewer,
+                SwarmRunOutcome::Succeeded {
+                    summary: "First review complete".into(),
+                },
+            )
+            .await
+            .expect("settle first delivery");
+        assert!(
+            store
+                .swarm_chat_context(&reviewer, &session_id)
+                .await
+                .expect("settled participant context")
+                .is_none()
+        );
+        let second_post = post(&store, "leader", "@reviewer please review again".into())
+            .await
+            .expect("second post");
+        let second = store
+            .claim_next_delivery(&reviewer)
+            .await
+            .expect("second claim")
+            .expect("second pending delivery");
+        assert_eq!(second.session_id(), session_id);
+        assert_eq!(second.delivery().entry.id, second_post.entry.id);
+        drop(second);
+        assert!(
+            !store
+                .settle_delivery(
+                    &first.entry.id,
+                    &session_id,
+                    &reviewer,
+                    SwarmRunOutcome::Succeeded {
+                        summary: "stale replay".into(),
+                    },
+                )
+                .await
+                .expect("ignore stale settlement")
+        );
+        assert_eq!(
+            store
+                .pending_deliveries(&reviewer)
+                .await
+                .expect("second delivery remains pending")[0]
+                .entry
+                .id,
+            second_post.entry.id
+        );
+        assert!(
+            store
+                .swarm_chat_context(&reviewer, &session_id)
+                .await
+                .expect("reused participant context")
+                .is_some()
         );
 
         let (reloaded, _deliveries) = reload(checkpoints, &store);
@@ -3660,7 +3812,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn human_swarm_chat_defaults_to_the_leader_with_an_explicit_workspace() {
+    async fn human_swarm_chat_defaults_to_the_leader() {
         let (directory, checkpoints, store, _deliveries) = store();
         let swarm = create_swarm(&store).await;
         let workspace = directory.path().to_path_buf();
@@ -3683,10 +3835,7 @@ mod tests {
             .await
             .expect("claim")
             .expect("leader delivery");
-        assert_eq!(
-            delivery.delivery().workspace.as_deref(),
-            Some(workspace.as_path())
-        );
+        assert_eq!(delivery.delivery().entry.id, posted.entry.id);
     }
 
     #[tokio::test]
@@ -3709,10 +3858,11 @@ mod tests {
         assert!(
             store
                 .settle_delivery(
+                    &posted.entry.id,
                     &session_id,
                     &reviewer,
                     SwarmRunOutcome::Succeeded {
-                        summary: Some("Looks good".into()),
+                        summary: "Looks good".into(),
                     },
                 )
                 .await
@@ -3721,6 +3871,7 @@ mod tests {
         assert!(
             !store
                 .settle_delivery(
+                    &posted.entry.id,
                     &session_id,
                     &reviewer,
                     SwarmRunOutcome::Failed {
@@ -3741,7 +3892,7 @@ mod tests {
             outcome.in_reply_to_message_id.as_deref(),
             Some(posted.entry.id.as_str())
         );
-        assert!(outcome.text.contains("Looks good"));
+        assert_eq!(outcome.text, "Looks good");
         assert!(
             store
                 .pending_deliveries(&reviewer)
@@ -3769,15 +3920,39 @@ mod tests {
         let request_id = Uuid::new_v4().to_string();
 
         assert!(
+            !store
+                .project_attention(
+                    &reviewer,
+                    &session_id,
+                    Some(&Uuid::new_v4().to_string()),
+                    &Uuid::new_v4().to_string(),
+                    "stale approval",
+                )
+                .await
+                .expect("ignore stale approval")
+        );
+        assert!(
             store
-                .project_attention(&reviewer, &session_id, &request_id, "Approve command")
+                .project_attention(
+                    &reviewer,
+                    &session_id,
+                    Some(&posted.entry.id),
+                    &request_id,
+                    "Approve command",
+                )
                 .await
                 .expect("project attention")
         );
         let (reloaded, _deliveries) = reload(checkpoints, &store);
         assert!(
             !reloaded
-                .project_attention(&reviewer, &session_id, &request_id, "Approve command")
+                .project_attention(
+                    &reviewer,
+                    &session_id,
+                    Some(&posted.entry.id),
+                    &request_id,
+                    "Approve command",
+                )
                 .await
                 .expect("dedupe replayed attention")
         );
@@ -3786,6 +3961,7 @@ mod tests {
                 .project_attention(
                     &reviewer,
                     &session_id,
+                    Some(&posted.entry.id),
                     &Uuid::new_v4().to_string(),
                     "Approve another command",
                 )
@@ -3815,10 +3991,11 @@ mod tests {
         assert!(
             reloaded
                 .settle_delivery(
+                    &posted.entry.id,
                     &session_id,
                     &reviewer,
                     SwarmRunOutcome::Succeeded {
-                        summary: Some("Approved work completed".into()),
+                        summary: "Approved work completed".into(),
                     },
                 )
                 .await
@@ -3910,6 +4087,7 @@ mod tests {
             .project_attention(
                 &reviewer,
                 &session_id,
+                Some(&fourth.entry.id),
                 &Uuid::new_v4().to_string(),
                 "Decision needed",
             )
@@ -3917,10 +4095,11 @@ mod tests {
             .expect("attention at cap");
         store
             .settle_delivery(
+                &fourth.entry.id,
                 &session_id,
                 &reviewer,
                 SwarmRunOutcome::Succeeded {
-                    summary: Some("Finished".into()),
+                    summary: "Finished".into(),
                 },
             )
             .await

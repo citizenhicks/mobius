@@ -41,6 +41,7 @@ impl HostState {
                         .project_attention(
                             &self.spec.bot_id,
                             &self.running.session_id,
+                            event.submission_id.as_deref(),
                             &request.id,
                             &request.reason,
                         )
@@ -48,31 +49,35 @@ impl HostState {
                 }
             }
             EventMsg::TurnComplete(_) => {
-                let outcome = self.turn_error.as_ref().map_or_else(
-                    || SwarmRunOutcome::Succeeded {
-                        summary: self.last_assistant_text.clone(),
-                    },
-                    |message| SwarmRunOutcome::Failed {
-                        message: message.clone(),
-                    },
-                );
-                self.swarm
-                    .settle_delivery(&self.running.session_id, &self.spec.bot_id, outcome)
-                    .await?;
+                let outcome =
+                    swarm_run_outcome(self.turn_error.clone(), self.last_assistant_text.clone());
+                if let Some(message_id) = event.submission_id.as_deref() {
+                    self.swarm
+                        .settle_delivery(
+                            message_id,
+                            &self.running.session_id,
+                            &self.spec.bot_id,
+                            outcome,
+                        )
+                        .await?;
+                }
             }
             EventMsg::TurnAborted(turn) => {
-                self.swarm
-                    .settle_delivery(
-                        &self.running.session_id,
-                        &self.spec.bot_id,
-                        SwarmRunOutcome::Failed {
-                            message: self
-                                .turn_error
-                                .clone()
-                                .unwrap_or_else(|| turn.reason.clone()),
-                        },
-                    )
-                    .await?;
+                if let Some(message_id) = event.submission_id.as_deref() {
+                    self.swarm
+                        .settle_delivery(
+                            message_id,
+                            &self.running.session_id,
+                            &self.spec.bot_id,
+                            SwarmRunOutcome::Failed {
+                                message: self
+                                    .turn_error
+                                    .clone()
+                                    .unwrap_or_else(|| turn.reason.clone()),
+                            },
+                        )
+                        .await?;
+                }
             }
             _ => {}
         }
@@ -149,20 +154,28 @@ impl HostState {
                 }
                 EventMsg::Error(event) => error = Some(event.message.clone()),
                 EventMsg::ExecApprovalRequest(event) => {
-                    approvals.insert(event.id.clone(), event.reason.clone());
+                    approvals.insert(
+                        event.id.clone(),
+                        (record.event.submission_id.clone(), event.reason.clone()),
+                    );
                 }
                 EventMsg::TurnComplete(_) => {
-                    terminal = Some(error.clone().map_or_else(
-                        || SwarmRunOutcome::Succeeded {
-                            summary: summary.clone(),
-                        },
-                        |message| SwarmRunOutcome::Failed { message },
-                    ));
+                    terminal = record.event.submission_id.clone().map(|message_id| {
+                        (
+                            message_id,
+                            swarm_run_outcome(error.clone(), summary.clone()),
+                        )
+                    });
                     approvals.clear();
                 }
                 EventMsg::TurnAborted(event) => {
-                    terminal = Some(SwarmRunOutcome::Failed {
-                        message: error.clone().unwrap_or_else(|| event.reason.clone()),
+                    terminal = record.event.submission_id.clone().map(|message_id| {
+                        (
+                            message_id,
+                            SwarmRunOutcome::Failed {
+                                message: error.clone().unwrap_or_else(|| event.reason.clone()),
+                            },
+                        )
                     });
                     approvals.clear();
                 }
@@ -170,20 +183,26 @@ impl HostState {
             }
         }
         if terminal.is_none() && !self.spec.catalog_visible {
-            for (request_id, reason) in approvals {
+            for (request_id, (message_id, reason)) in approvals {
                 self.swarm
                     .project_attention(
                         &self.spec.bot_id,
                         &self.running.session_id,
+                        message_id.as_deref(),
                         &request_id,
                         &reason,
                     )
                     .await?;
             }
         }
-        if let Some(outcome) = terminal {
+        if let Some((message_id, outcome)) = terminal {
             self.swarm
-                .settle_delivery(&self.running.session_id, &self.spec.bot_id, outcome)
+                .settle_delivery(
+                    &message_id,
+                    &self.running.session_id,
+                    &self.spec.bot_id,
+                    outcome,
+                )
                 .await?;
         }
         Ok(())
@@ -570,6 +589,16 @@ fn assistant_text(message: &mobius::protocol::AssistantMessageEvent) -> Option<S
         .map(|content| content.text.as_str())
         .collect::<String>();
     (!text.trim().is_empty()).then_some(text)
+}
+
+fn swarm_run_outcome(error: Option<String>, summary: Option<String>) -> SwarmRunOutcome {
+    match (error, summary) {
+        (Some(message), _) => SwarmRunOutcome::Failed { message },
+        (None, Some(summary)) => SwarmRunOutcome::Succeeded { summary },
+        (None, None) => SwarmRunOutcome::Failed {
+            message: "Bot returned no final response".into(),
+        },
+    }
 }
 
 fn opens_message_capacity(event: &EventMsg) -> bool {

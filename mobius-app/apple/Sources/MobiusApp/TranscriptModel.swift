@@ -164,14 +164,7 @@ final class TranscriptEntry: Identifiable {
     let id: String
     let presentationID: String
     var text: String
-    private var storedKind: Kind
-    var kind: Kind {
-        get { messageMetadata?.kind ?? storedKind }
-        set {
-            precondition(messageMetadata == nil, "message kind is derived from its author")
-            storedKind = newValue
-        }
-    }
+    var kind: Kind
     var capability: String?
     var role: FrontendBlockRole?
     var update: FrontendBlockUpdate?
@@ -222,7 +215,7 @@ final class TranscriptEntry: Identifiable {
         self.id = id
         self.presentationID = presentationID ?? id
         self.text = text
-        storedKind = kind
+        self.kind = kind
         self.capability = capability
         self.role = role
         self.update = update

@@ -9,8 +9,6 @@ mod provider;
 use std::ffi::OsString;
 #[cfg(any(unix, test))]
 use std::fs::{self, File, OpenOptions, TryLockError};
-#[cfg(unix)]
-use std::io::IsTerminal as _;
 #[cfg(any(unix, test))]
 use std::io::Write;
 #[cfg(any(unix, test))]
@@ -25,13 +23,6 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 #[cfg(unix)]
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-
-#[cfg(any(unix, test))]
-use qrcode::QrCode;
-#[cfg(any(unix, test))]
-use qrcode::render::unicode::Dense1x2;
-#[cfg(any(unix, test))]
-use url::Url;
 
 #[cfg(unix)]
 use crate::auth::PairingStatus;

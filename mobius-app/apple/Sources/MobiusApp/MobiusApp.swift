@@ -11,7 +11,6 @@ struct MobiusAppleApp: App {
                 .mobiusTheme()
                 .environment(model)
                 .onAppear { appDelegate.attach(model) }
-                .onOpenURL { model.handleOpenURL($0) }
         }
     }
 }

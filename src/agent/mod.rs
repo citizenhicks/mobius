@@ -523,7 +523,6 @@ struct Runner {
     system_prompt: Arc<str>,
     catalog: Catalog,
     state: Checkpoint,
-    review_session_id: String,
     transcript_delta: Vec<Value>,
     pending_session_start_stop: Option<String>,
     turn_end_turn_id: Option<String>,

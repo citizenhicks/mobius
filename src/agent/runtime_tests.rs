@@ -40,9 +40,9 @@ use crate::backend::model::STREAM_RETRY_LIMIT;
 use crate::backend::model::TOOL_ERROR_FIELD;
 use crate::backend::model::ToolCall;
 use crate::backend::model::ToolDefinition;
+use crate::backend::sandbox::ApprovalPolicy;
 use crate::backend::sandbox::Sandbox;
 use crate::backend::sandbox::local::LocalSandbox;
-use crate::backend::sandbox::{ApprovalPolicy, ApprovalReviewerConfig};
 use crate::middleware::CompactContext;
 use crate::middleware::MessageSubmitContext;
 use crate::middleware::Middleware;
@@ -61,8 +61,6 @@ use crate::middleware::tools::ToolContext;
 use crate::middleware::tools::Tools;
 use crate::middleware::tools::{Tool, ToolExposure};
 use crate::protocol::ActiveMessageDelivery;
-use crate::protocol::ApprovalReviewEscalation;
-use crate::protocol::ApprovalReviewStatus;
 use crate::protocol::ErrorKind;
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
@@ -151,8 +149,6 @@ struct DurableBeforeModel;
 struct FailingBeforeModel;
 
 struct ApprovalRequiredTestTool;
-
-struct DenyPermission;
 
 struct ToolHookContext;
 
@@ -611,19 +607,6 @@ impl Tool for ApprovalRequiredTestTool {
     }
 }
 
-impl Middleware for DenyPermission {
-    fn name(&self) -> &'static str {
-        "deny_permission"
-    }
-
-    fn permission_request<'a>(
-        &'a self,
-        context: &'a mut crate::middleware::PermissionRequestContext<'_>,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move { context.deny("blocked by middleware") })
-    }
-}
-
 fn scripted_usage() -> TokenUsage {
     TokenUsage {
         input_tokens: 1,
@@ -670,41 +653,6 @@ fn scripted_continuation(text: &str) -> ModelOutput {
         scripted_usage(),
     )
     .expect("continuation output")
-}
-
-fn auto_review_config(
-    workspace: &Path,
-    checkpoints: Arc<dyn CheckpointStore>,
-    model: Arc<ScriptedModel>,
-    session_id: &str,
-    mut middleware: Vec<Arc<dyn Middleware>>,
-) -> AgentConfig {
-    let mut models = ModelRouter::new("main", model.clone());
-    models
-        .register("reviewer", model)
-        .expect("reviewer model route");
-    let reviewer = ApprovalReviewerConfig::default()
-        .model_route("reviewer")
-        .expect("reviewer route");
-    middleware.insert(
-        0,
-        Arc::new(Tools::new(vec![Arc::new(ApprovalRequiredTestTool)])),
-    );
-    AgentConfig::new(
-        Arc::new(models),
-        Arc::new(
-            Sandbox::new(
-                Arc::new(LocalSandbox::new(workspace).expect("local sandbox")),
-                ApprovalPolicy::AutoApprove,
-            )
-            .approval_reviewer(reviewer),
-        ),
-        checkpoints,
-        test_middleware(middleware),
-        "test prompt",
-    )
-    .session_context(test_session_context())
-    .session_id(session_id)
 }
 
 fn config(

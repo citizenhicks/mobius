@@ -380,7 +380,6 @@ fn swarm_chat_and_hidden_bot_session_frames_are_gateway_scoped() {
     let post = ClientFrame::new(ClientMessage::PostSwarmMessage {
         request_id: "request-post".into(),
         swarm_id: "swarm-a".into(),
-        workspace: PathBuf::from("/srv/mobius/project"),
         text: "@reviewer check this".into(),
     });
     let list = ClientFrame::new(ClientMessage::ListBotSessions {
@@ -400,7 +399,6 @@ fn swarm_chat_and_hidden_bot_session_frames_are_gateway_scoped() {
             "type": "post_swarm_message",
             "request_id": "request-post",
             "swarm_id": "swarm-a",
-            "workspace": "/srv/mobius/project",
             "text": "@reviewer check this"
         })
     );

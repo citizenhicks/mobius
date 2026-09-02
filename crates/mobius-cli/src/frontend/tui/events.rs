@@ -66,7 +66,6 @@ impl TuiState {
                 self.turn_started_at.get_or_insert_with(Instant::now);
                 self.begin_approval(request.id);
             }
-            EventMsg::ExecApprovalReview(_) => {}
             EventMsg::TokenCount(tokens) => {
                 if let Some(info) = tokens.info {
                     self.usage = usage_status(&info, self.context_limit);

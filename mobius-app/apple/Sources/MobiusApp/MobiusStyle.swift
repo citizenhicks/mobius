@@ -115,6 +115,7 @@ enum MobiusStyle {
     /// read these rather than each carrying their own copy of the numbers.
     static let transcriptWidth: CGFloat = 880
     static let transcriptRowSpacing = MobiusSpace.m
+    static let transcriptOrbSize: CGFloat = 144
     static let transcriptPadding = MobiusSpace.l
 
     // MARK: Glyphs
@@ -160,7 +161,6 @@ struct MobiusGlyph: Hashable {
     static let arrowUp02 = Self("hi.arrowUp02")
     static let arrowUpRight01 = Self("hi.arrowUpRight01")
     static let aiScan = Self("hi.aiScan")
-    static let aiSecurity02 = Self("hi.aiSecurity02")
     static let brain = Self("hi.brain")
     static let calendarDots = Self("hi.calendarDots")
     static let caretDown = Self("hi.caretDown")
@@ -186,6 +186,7 @@ struct MobiusGlyph: Hashable {
     static let deepseek = Self("hi.deepseek")
     static let doc = Self("hi.doc")
     static let dotsThree = Self("hi.dotsThree")
+    static let eyeOff = Self("hi.eyeOff")
     static let expand = Self("hi.expand")
     static let fileAxisThreeD = Self("hi.fileAxisThreeD")
     static let fileMagnifyingGlass = Self("hi.fileMagnifyingGlass")

@@ -41,7 +41,7 @@ use crate::host::{GatewayHost, HostHandle, Rejection};
 use crate::wire::{
     ClientFrame, ClientKind, ClientMessage, ClientStatus, DirectoryEntry, DirectoryListing,
     FrameReader, MAX_FRAME_BYTES, ServerFrame, ServerMessage, framed_to_websocket, read_frame,
-    validate_version, websocket_error, websocket_to_framed, write_frame,
+    read_frame_with_limit, validate_version, websocket_error, websocket_to_framed, write_frame,
 };
 use crate::{Error, Result};
 
@@ -49,8 +49,10 @@ use self::dispatch::*;
 use self::responses::*;
 use self::transport::*;
 
-const AUTH_TIMEOUT: Duration = Duration::from_secs(15);
-const MAX_CONNECTIONS: usize = 32;
+const PRE_AUTH_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_AUTHENTICATED_CONNECTIONS: usize = 32;
+const MAX_PRE_AUTH_CONNECTIONS: usize = 8;
+const MAX_CONNECTIONS: usize = MAX_AUTHENTICATED_CONNECTIONS + MAX_PRE_AUTH_CONNECTIONS;
 const INACTIVITY_TIMEOUT: Duration = Duration::from_secs(72 * 60 * 60);
 const ROUTINE_TICK: Duration = Duration::from_secs(15);
 const MAX_DIRECTORY_ENTRIES: usize = 512;
@@ -208,6 +210,8 @@ impl GatewayServer {
             ));
         }
         let mut connections = JoinSet::new();
+        let connection_admission =
+            ConnectionAdmission::new(MAX_PRE_AUTH_CONNECTIONS, MAX_AUTHENTICATED_CONNECTIONS);
         let client_connections = Arc::new(ClientConnections::default());
         let (client_revocations, _) = broadcast::channel(MAX_CONNECTIONS);
         let mut has_active_routines = self.bots.has_active_routines(Utc::now().timestamp())?;
@@ -251,8 +255,11 @@ impl GatewayServer {
                         }
                     }
                 }
-                accepted = self.listener.accept(), if connections.len() < MAX_CONNECTIONS => {
-                    let (stream, _) = accepted?;
+                accepted = async {
+                    let admission = connection_admission.admit().await;
+                    self.listener.accept().await.map(|accepted| (accepted, admission))
+                }, if connections.len() < MAX_CONNECTIONS => {
+                    let ((stream, _), admission) = accepted?;
                     let auth = Arc::clone(&self.auth);
                     let host = self.host.clone();
                     let bots = Arc::clone(&self.bots);
@@ -261,32 +268,34 @@ impl GatewayServer {
                     let tls = tls.clone();
                     let websocket_host = websocket_host.clone();
                     connections.spawn(async move {
+                        let auth_deadline = Instant::now() + PRE_AUTH_TIMEOUT;
+                        let connection = ConnectionContext {
+                            auth,
+                            host,
+                            bots,
+                            client_connections,
+                            client_revocations,
+                            admission,
+                        };
                         if let Some(tls) = tls {
                             if let Ok(Ok(stream)) =
-                                tokio::time::timeout(AUTH_TIMEOUT, tls.accept(stream)).await
+                                tokio::time::timeout_at(auth_deadline, tls.accept(stream)).await
                             {
                                 let _ = serve_connection(
                                     stream,
-                                    auth,
-                                    host,
-                                    bots,
-                                    client_connections,
-                                    client_revocations,
-                                    Instant::now() + AUTH_TIMEOUT,
+                                    connection,
+                                    auth_deadline,
+                                    None,
                                 )
                                 .await;
                             }
                         } else {
                             let _ = serve_plaintext_connection(
                                 stream,
-                                auth,
-                                host,
-                                bots,
-                                client_connections,
-                                client_revocations,
+                                connection,
                                 PlaintextHandshake {
                                     expected_websocket_host: websocket_host,
-                                    auth_deadline: Instant::now() + AUTH_TIMEOUT,
+                                    auth_deadline,
                                 },
                             )
                             .await;
