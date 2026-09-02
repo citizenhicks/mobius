@@ -130,7 +130,7 @@ struct AppShell: View {
             withAnimation(SidebarDrawerMetrics.animation) { sidebarIsOpen = false }
         }
         .onChange(of: model.toast?.id) { _, _ in
-            guard let toast = model.toast else { return }
+            guard let toast = model.toast, !filePresentationsAreSuppressed else { return }
             announce(toast)
         }
         .sensoryFeedback(.impact(weight: .light), trigger: model.toast?.id) { _, id in id != nil }
@@ -160,13 +160,8 @@ struct AppShell: View {
     }
 
     private func announce(_ toast: AppToast) {
-        var announcement: LocalizedStringResource = if let bot = model.bot(
-            forSessionID: toast.sessionID
-        ) {
-            "\(toast.tone.title), \(bot.name): \(toast.message)"
-        } else {
-            "\(toast.tone.title): \(toast.message)"
-        }
+        var announcement: LocalizedStringResource =
+            "\(toast.tone.title): \(model.accessibilityMessage(for: toast))"
         announcement.locale = model.language.locale
         AccessibilityNotification.Announcement(
             String(localized: announcement)
@@ -220,7 +215,9 @@ struct AppShell: View {
                     switch route {
                     case .chat: ChatView()
                     case .bot(let id): BotDetailView(botID: id)
+                    case .botSessions(let id): BotSessionsView(botID: id)
                     case .swarm(let id): SwarmView(swarmID: id)
+                    case .swarmChat(let id): SwarmChatView(swarmID: id)
                     case .settings(.gateway(let id)): GatewayDetailView(id: id)
                     case .settings(.provider(let instance)): ProviderDetailView(instance: instance)
                     case .settings(.extensionPackage(let id)): ExtensionDetailView(id: id)

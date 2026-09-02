@@ -376,6 +376,51 @@ fn swarm_management_frames_keep_request_correlation_out_of_broadcasts() {
 }
 
 #[test]
+fn swarm_chat_and_hidden_bot_session_frames_are_gateway_scoped() {
+    let post = ClientFrame::new(ClientMessage::PostSwarmMessage {
+        request_id: "request-post".into(),
+        swarm_id: "swarm-a".into(),
+        workspace: PathBuf::from("/srv/mobius/project"),
+        text: "@reviewer check this".into(),
+    });
+    let list = ClientFrame::new(ClientMessage::ListBotSessions {
+        request_id: "request-hidden".into(),
+        bot_id: "bot-a".into(),
+    });
+    let response = ServerFrame::new(ServerMessage::BotSessions {
+        request_id: "request-hidden".into(),
+        bot_id: "bot-a".into(),
+        sessions: Vec::new(),
+    });
+
+    assert_eq!(
+        serde_json::to_value(post).expect("encode human swarm post"),
+        serde_json::json!({
+            "version": PROTOCOL_VERSION,
+            "type": "post_swarm_message",
+            "request_id": "request-post",
+            "swarm_id": "swarm-a",
+            "workspace": "/srv/mobius/project",
+            "text": "@reviewer check this"
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(list).expect("encode hidden Bot sessions request")["type"],
+        "list_bot_sessions"
+    );
+    assert_eq!(
+        serde_json::to_value(response).expect("encode hidden Bot sessions response"),
+        serde_json::json!({
+            "version": PROTOCOL_VERSION,
+            "type": "bot_sessions",
+            "request_id": "request-hidden",
+            "bot_id": "bot-a",
+            "sessions": []
+        })
+    );
+}
+
+#[test]
 fn workspace_directory_creation_uses_a_gateway_host_parent_and_name() {
     let frame = ClientFrame::new(ClientMessage::CreateWorkspaceDirectory {
         request_id: "request-directory".into(),

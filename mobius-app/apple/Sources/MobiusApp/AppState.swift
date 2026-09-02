@@ -40,7 +40,9 @@ enum SettingsRoute: Hashable {
 enum AppRoute: Hashable {
     case chat(ChatRoute)
     case bot(String)
+    case botSessions(String)
     case swarm(String)
+    case swarmChat(String)
     case settings(SettingsRoute)
 }
 

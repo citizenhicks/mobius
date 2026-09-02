@@ -89,7 +89,7 @@ struct BotsView: View {
         } message: {
             if let botToDelete {
                 Text(
-                    "This permanently deletes every conversation, routine, run history, and swarm membership owned by @\(botToDelete.handle). If this Bot leads a swarm, its board and collective scratchpad are also deleted. Active work must finish first."
+                    "This permanently deletes every conversation, routine, run history, and swarm membership owned by @\(botToDelete.handle). If this Bot leads a swarm, its Swarm Chat and collective scratchpad are also deleted. Active work must finish first."
                 )
             }
         }
@@ -126,7 +126,7 @@ struct BotsView: View {
             }
             Button("Cancel", role: .cancel) { swarmToDelete = nil }
         } message: {
-            Text("This permanently deletes the shared swarm board.")
+            Text("This permanently deletes the shared Swarm Chat and collective scratchpad.")
         }
     }
 
@@ -184,7 +184,7 @@ struct BotsView: View {
 
     private func swarmRow(_ swarm: SwarmRecord) -> some View {
         SettingsNavigationRow(
-            hint: "Shows swarm roster and board",
+            hint: "Shows swarm roster and Swarm Chat",
             open: { model.openSwarm(swarm.id) },
             marks: EmptyView.init
         ) {
@@ -547,6 +547,20 @@ struct BotDetailView: View {
                                 .accessibilityHidden(true)
                             }
                         }
+                        SettingsNavigationRow(
+                            hint: "Shows private conversations created by routines and Swarm work",
+                            open: { model.openBotSessions(bot.id) },
+                            marks: EmptyView.init
+                        ) {
+                            SettingsRowLabel(title: "Background work") {
+                                MobiusIcon(
+                                    .workflowSquare03,
+                                    size: MobiusStyle.glyphLead,
+                                    foreground: bot.tint.color
+                                )
+                                .accessibilityHidden(true)
+                            }
+                        }
                     }
                 }
                 .navigationSubtitle("@\(bot.handle)")
@@ -607,5 +621,92 @@ struct BotDetailView: View {
 
     private func routineName(_ id: String) -> String {
         model.routines.first { $0.id == id }?.instructions ?? "Routine"
+    }
+}
+
+struct BotSessionsView: View {
+    private static let pageSize = 10
+
+    @Environment(AppModel.self) private var model
+    @Environment(\.mobiusPalette) private var palette
+    @State private var visibleCount = pageSize
+    let botID: String
+
+    var body: some View {
+        Group {
+            if let bot {
+                PageScaffold(
+                    title: "Background work",
+                    detail: "Private Bot conversations stay out of Chats."
+                ) {
+                    Section {
+                        if model.isLoadingBotSessions && sessions.isEmpty {
+                            HStack(spacing: MobiusSpace.s) {
+                                MobiusSpinner(
+                                    size: MobiusStyle.glyphInline,
+                                    foreground: palette.muted
+                                )
+                                Text("Loading Bot work…")
+                                    .foregroundStyle(palette.muted)
+                            }
+                            .frame(minHeight: MobiusStyle.rowTouch)
+                        } else if sessions.isEmpty {
+                            Text("No background conversations yet.")
+                                .foregroundStyle(palette.muted)
+                        } else {
+                            ForEach(sessions.prefix(visibleCount)) { session in
+                                SessionCatalogRow(
+                                    session: session,
+                                    showsWorkspace: true,
+                                    showsControls: false,
+                                    detail: sessionDetail(session),
+                                    open: { model.openBotSession($0.sessionId) }
+                                )
+                            }
+                            if visibleCount < sessions.count {
+                                CatalogMoreButton(
+                                    accessibilityLabel: "Show more background conversations"
+                                ) {
+                                    visibleCount += Self.pageSize
+                                }
+                            }
+                        }
+                    }
+                }
+                .navigationSubtitle("@\(bot.handle)")
+            } else {
+                MobiusUnavailable(
+                    title: "Bot unavailable",
+                    glyph: .aiScan,
+                    detail: "This Bot is no longer available."
+                )
+            }
+        }
+        .task(id: "\(botID):\(model.connectionState.isReady)") {
+            model.refreshBotSessions(botID)
+        }
+        .refreshable {
+            model.refreshBotSessions(botID)
+        }
+    }
+
+    private var bot: BotRecord? { model.bots.first { $0.id == botID } }
+
+    private var sessions: [SessionRecord] {
+        guard model.botSessionsBotID == botID else { return [] }
+        return model.botSessions.sorted {
+            if $0.updatedAt != $1.updatedAt { return $0.updatedAt > $1.updatedAt }
+            return $0.sessionId < $1.sessionId
+        }
+    }
+
+    private func sessionDetail(_ session: SessionRecord) -> String? {
+        let path = session.sessionContext.workspaceLabel
+        let workspace = path.map { path in
+            let name = URL(fileURLWithPath: path).lastPathComponent
+            return name.isEmpty ? path : name
+        }
+        let details = [session.sessionContext.originLabel, workspace].compactMap { $0 }
+        return details.isEmpty ? nil : details.joined(separator: " • ")
     }
 }

@@ -161,6 +161,242 @@ extension AppModelTests {
         XCTAssertEqual(model.availableBotsForSwarm().map(\.id), ["bot-3"])
     }
 
+    func testSwarmPostClearsOnlyOnItsCorrelatedCatalog() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model { request in await recorder.record(request) }
+        let leader = bot(id: "bot-1", handle: "leader", name: "Leader")
+        model.bots = [leader]
+        model.swarms = [SwarmRecord(
+            id: "swarm-1",
+            title: "Quiet Foxes",
+            leaderBotId: leader.id,
+            members: [SwarmMemberRecord(botId: leader.id, handle: leader.handle)],
+            messages: [],
+            updatedAtMs: 1
+        )]
+        model.connectionState = .ready
+
+        let requestID = try XCTUnwrap(model.postSwarmMessage(
+            to: "swarm-1",
+            workspace: "/srv/mobius",
+            text: "  @leader check this  "
+        ))
+        let request = await recorder.firstRequest(after: 0) { request in
+            if case .postSwarmMessage = request { return true }
+            return false
+        }
+        guard case .postSwarmMessage(
+            let sentID,
+            let swarmID,
+            let workspace,
+            let text
+        ) = try XCTUnwrap(request) else {
+            return XCTFail("Expected Swarm post")
+        }
+        XCTAssertEqual(sentID, requestID)
+        XCTAssertEqual(swarmID, "swarm-1")
+        XCTAssertEqual(workspace, "/srv/mobius")
+        XCTAssertEqual(text, "@leader check this")
+
+        model.handle(.swarms(requestID: nil, swarms: model.swarms))
+        XCTAssertEqual(model.swarmMessageRequestID, requestID)
+        XCTAssertNil(model.completedSwarmMessageRequestID)
+
+        model.handle(.swarms(requestID: requestID, swarms: model.swarms))
+        XCTAssertNil(model.swarmMessageRequestID)
+        XCTAssertEqual(model.completedSwarmMessageRequestID, requestID)
+    }
+
+    func testHiddenBotSessionsStayOutsideChatsAndRemainSelectable() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model { request in await recorder.record(request) }
+        let helper = bot()
+        let visible = session(sessionID: "chat-1", state: .idle, botID: helper.id)
+        let hidden = session(
+            sessionID: "work-1",
+            state: .awaitingApproval,
+            turnID: "turn-1",
+            firstUserMessage: "Review the dependency update",
+            originLabel: "swarm",
+            botID: helper.id
+        )
+        model.bots = [helper]
+        model.sessions = [visible]
+        model.connectionState = .ready
+
+        model.openBotSessions(helper.id)
+        let request = await recorder.firstRequest(after: 0) { request in
+            if case .listBotSessions = request { return true }
+            return false
+        }
+        guard case .listBotSessions(let requestID, let botID) = try XCTUnwrap(request) else {
+            return XCTFail("Expected hidden Bot session listing")
+        }
+        XCTAssertEqual(botID, helper.id)
+        XCTAssertEqual(model.navigationPath, [.botSessions(helper.id)])
+
+        model.handle(.botSessions(
+            requestID: requestID,
+            botID: helper.id,
+            sessions: [hidden]
+        ))
+        XCTAssertEqual(model.botSessions, [hidden])
+        XCTAssertEqual(model.sessions, [visible])
+        XCTAssertEqual(model.chatCatalogSessions, [visible])
+        XCTAssertFalse(model.unreadSessionIDs.contains(hidden.sessionId))
+        XCTAssertNil(model.toast)
+
+        model.selectedSessionID = hidden.sessionId
+        model.applySessions([visible])
+        XCTAssertEqual(model.selectedSession, hidden)
+        XCTAssertTrue(model.selectedSessionIsHidden)
+
+        model.navigationPath.append(.chat(.session(hidden.sessionId)))
+        model.botSessions = []
+        XCTAssertTrue(model.selectedSessionIsHidden)
+    }
+
+    func testSwarmAttentionResumesOnlyTheValidatedHiddenBotSession() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model { request in await recorder.record(request) }
+        let helper = bot()
+        let visible = session(sessionID: "chat-1", state: .idle, botID: helper.id)
+        let hidden = session(
+            sessionID: "work-1",
+            state: .awaitingApproval,
+            turnID: "turn-1",
+            originLabel: "swarm",
+            botID: helper.id
+        )
+        model.bots = [helper]
+        model.sessions = [visible]
+        model.connectionState = .ready
+        model.destination = .bots
+        model.navigationPath = [.swarm("swarm-1"), .swarmChat("swarm-1")]
+
+        model.resumeBotSession(botID: helper.id, sessionID: hidden.sessionId)
+        let listing = await recorder.firstRequest(after: 0) { request in
+            if case .listBotSessions = request { return true }
+            return false
+        }
+        guard case .listBotSessions(let requestID, let botID) = try XCTUnwrap(listing) else {
+            return XCTFail("Expected hidden Bot session discovery")
+        }
+        XCTAssertEqual(botID, helper.id)
+        let requestsBeforeValidation = await recorder.requests()
+        XCTAssertFalse(requestsBeforeValidation.contains { request in
+            if case .openSession = request { return true }
+            return false
+        })
+
+        model.handle(.botSessions(
+            requestID: requestID,
+            botID: helper.id,
+            sessions: [hidden]
+        ))
+        let opening = await recorder.firstRequest(after: 1) { request in
+            guard case .openSession(_, hidden.sessionId, _) = request else { return false }
+            return true
+        }
+
+        XCTAssertNotNil(opening)
+        XCTAssertEqual(model.sessions, [visible])
+        XCTAssertEqual(model.botSessions, [hidden])
+        XCTAssertFalse(model.unreadSessionIDs.contains(hidden.sessionId))
+        XCTAssertEqual(
+            model.navigationPath,
+            [.swarm("swarm-1"), .swarmChat("swarm-1"), .chat(.session(hidden.sessionId))]
+        )
+    }
+
+    func testSwarmAttentionNeverOpensAStaleOrDifferentHiddenSession() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model { request in await recorder.record(request) }
+        let helper = bot()
+        let target = session(
+            sessionID: "work-target",
+            state: .awaitingApproval,
+            turnID: "turn-target",
+            originLabel: "swarm",
+            botID: helper.id
+        )
+        let other = session(
+            sessionID: "work-other",
+            state: .awaitingApproval,
+            turnID: "turn-other",
+            originLabel: "swarm",
+            botID: helper.id
+        )
+        model.bots = [helper]
+        model.connectionState = .ready
+        model.destination = .bots
+        model.navigationPath = [.swarm("swarm-1"), .swarmChat("swarm-1")]
+
+        model.resumeBotSession(botID: helper.id, sessionID: target.sessionId)
+        let listing = await recorder.firstRequest(after: 0) { request in
+            if case .listBotSessions = request { return true }
+            return false
+        }
+        guard case .listBotSessions(let requestID, _) = try XCTUnwrap(listing) else {
+            return XCTFail("Expected hidden Bot session discovery")
+        }
+
+        model.handle(.botSessions(
+            requestID: "stale-request",
+            botID: helper.id,
+            sessions: [target]
+        ))
+        XCTAssertEqual(model.pendingBotSessionResume?.sessionID, target.sessionId)
+
+        model.handle(.botSessions(
+            requestID: requestID,
+            botID: helper.id,
+            sessions: [other]
+        ))
+
+        XCTAssertNil(model.pendingBotSessionResume)
+        XCTAssertEqual(model.botSessions, [other])
+        XCTAssertEqual(
+            model.navigationPath,
+            [.swarm("swarm-1"), .swarmChat("swarm-1")]
+        )
+        XCTAssertEqual(model.toast?.tone, .warning)
+        XCTAssertEqual(model.toast?.message, "That Bot work is no longer available.")
+    }
+
+    func testSwarmAttentionOpensAnExistingVisibleSourceWithoutHiddenDiscovery() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model { request in await recorder.record(request) }
+        let helper = bot()
+        let source = session(sessionID: "chat-source", state: .idle, botID: helper.id)
+        model.bots = [helper]
+        model.sessions = [source]
+        model.connectionState = .ready
+
+        model.resumeBotSession(botID: helper.id, sessionID: source.sessionId)
+        let opening = await recorder.firstRequest(after: 0) { request in
+            guard case .openSession(_, source.sessionId, _) = request else { return false }
+            return true
+        }
+
+        XCTAssertNotNil(opening)
+        XCTAssertEqual(model.destination, .chats)
+        XCTAssertEqual(model.navigationPath, [.chat(.session(source.sessionId))])
+        let requests = await recorder.requests()
+        XCTAssertFalse(requests.contains { request in
+            if case .listBotSessions = request { return true }
+            return false
+        })
+    }
+
+    func testSwarmAttentionMarkerMatchesBoardAndEscalationMessages() {
+        XCTAssertTrue(isSwarmAttentionMessage("@leader Needs user attention: Approve @user"))
+        XCTAssertTrue(isSwarmAttentionMessage(
+            "Swarm escalation: Needs user attention: Approve the command"
+        ))
+        XCTAssertFalse(isSwarmAttentionMessage("Task completed: approved"))
+    }
+
     func testApplyingSwarmsRejectsMissingLeadersAndUnorderedMessages() throws {
         let model = try model { _ in }
         model.bots = [bot()]

@@ -141,6 +141,26 @@ extension GatewayWireTests {
         XCTAssertEqual(disband["type"] as? String, "disband_swarm")
         XCTAssertEqual(disband["swarm_id"] as? String, "swarm-1")
         XCTAssertNil(disband["session_id"])
+
+        let post = try requestObject(.postSwarmMessage(
+            requestID: "swarm-message-1",
+            swarmID: "swarm-1",
+            workspace: "/srv/mobius",
+            text: "@builder review this"
+        ))
+        XCTAssertEqual(post["type"] as? String, "post_swarm_message")
+        XCTAssertEqual(post["request_id"] as? String, "swarm-message-1")
+        XCTAssertEqual(post["swarm_id"] as? String, "swarm-1")
+        XCTAssertEqual(post["workspace"] as? String, "/srv/mobius")
+        XCTAssertEqual(post["text"] as? String, "@builder review this")
+
+        let sessions = try requestObject(.listBotSessions(
+            requestID: "bot-sessions-1",
+            botID: "bot-2"
+        ))
+        XCTAssertEqual(sessions["type"] as? String, "list_bot_sessions")
+        XCTAssertEqual(sessions["request_id"] as? String, "bot-sessions-1")
+        XCTAssertEqual(sessions["bot_id"] as? String, "bot-2")
     }
 
     func testSessionScopedRequestsEncodeSessionID() throws {

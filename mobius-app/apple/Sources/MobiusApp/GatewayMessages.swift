@@ -6,6 +6,7 @@ enum GatewayRequest: Encodable, Sendable {
     case listClients(requestID: String)
     case unpairClient(requestID: String, clientID: String)
     case listSessions(requestID: String)
+    case listBotSessions(requestID: String, botID: String)
     case createSession(requestID: String, workspace: String, botID: String)
     case openSession(
         requestID: String,
@@ -30,6 +31,12 @@ enum GatewayRequest: Encodable, Sendable {
     case leaveSwarm(requestID: String, swarmID: String, botID: String)
     case renameSwarm(requestID: String, swarmID: String, title: String)
     case disbandSwarm(requestID: String, swarmID: String)
+    case postSwarmMessage(
+        requestID: String,
+        swarmID: String,
+        workspace: String,
+        text: String
+    )
     case submit(sessionID: String, submission: Submission)
     case submitScratchpad(
         requestID: String,
@@ -192,6 +199,10 @@ enum GatewayRequest: Encodable, Sendable {
         case .listSessions(let requestID):
             try container.encode("list_sessions", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
+        case .listBotSessions(let requestID, let botID):
+            try container.encode("list_bot_sessions", forKey: "type")
+            try container.encode(requestID, forKey: "requestId")
+            try container.encode(botID, forKey: "botId")
         case .createSession(let requestID, let workspace, let botID):
             try container.encode("create_session", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
@@ -246,6 +257,12 @@ enum GatewayRequest: Encodable, Sendable {
             try container.encode("disband_swarm", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
             try container.encode(swarmID, forKey: "swarmId")
+        case .postSwarmMessage(let requestID, let swarmID, let workspace, let text):
+            try container.encode("post_swarm_message", forKey: "type")
+            try container.encode(requestID, forKey: "requestId")
+            try container.encode(swarmID, forKey: "swarmId")
+            try container.encode(workspace, forKey: "workspace")
+            try container.encode(text, forKey: "text")
         case .submit(let sessionID, let submission):
             try container.encode("submit", forKey: "type")
             try container.encode(sessionID, forKey: "sessionId")
@@ -535,6 +552,7 @@ enum GatewayEnvelope: Decodable, Sendable {
         record: RecordedEvent
     )
     case sessions(requestID: String?, sessions: [SessionRecord])
+    case botSessions(requestID: String, botID: String, sessions: [SessionRecord])
     case bots(requestID: String?, bots: [BotRecord])
     case swarms(requestID: String?, swarms: [SwarmRecord])
     case clients(requestID: String, currentClientID: String, clients: [ClientStatus])
@@ -678,6 +696,12 @@ enum GatewayEnvelope: Decodable, Sendable {
         case "sessions":
             self = .sessions(
                 requestID: try container.decodeIfPresent(String.self, forKey: "requestId"),
+                sessions: try container.decode([SessionRecord].self, forKey: "sessions")
+            )
+        case "bot_sessions":
+            self = .botSessions(
+                requestID: try container.decode(String.self, forKey: "requestId"),
+                botID: try container.decode(String.self, forKey: "botId"),
                 sessions: try container.decode([SessionRecord].self, forKey: "sessions")
             )
         case "bots":

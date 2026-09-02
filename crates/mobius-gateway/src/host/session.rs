@@ -29,6 +29,9 @@ pub(super) struct HostInner {
     pub(super) events: broadcast::Sender<ServerFrame>,
     pub(super) accepts_file_attachments: Arc<AtomicBool>,
     pub(super) alive: Arc<AtomicBool>,
+    pub(super) terminated: Arc<AtomicBool>,
+    pub(super) termination: Arc<tokio::sync::Notify>,
+    pub(super) session_mutations: Arc<RwLock<()>>,
 }
 
 struct HostState {
@@ -43,6 +46,8 @@ struct HostState {
     swarm: Arc<SwarmStore>,
     accepts_file_attachments: Arc<AtomicBool>,
     alive: Arc<AtomicBool>,
+    terminated: Arc<AtomicBool>,
+    termination: Arc<tokio::sync::Notify>,
     catalog_lock: Arc<Mutex<()>>,
     session_mutations: Arc<RwLock<()>>,
     provider_epoch: Arc<AtomicU64>,
@@ -52,6 +57,7 @@ struct HostState {
     pending_messages: HashSet<String>,
     approval_active: bool,
     turn_error: Option<String>,
+    last_assistant_text: Option<String>,
     restart_after_turn: bool,
     pending_startup: Vec<ServerFrame>,
     active_routine: Option<ActiveRoutine>,
@@ -243,6 +249,8 @@ impl HostHandle {
             &running.frontend,
         )));
         let alive = Arc::new(AtomicBool::new(true));
+        let terminated = Arc::new(AtomicBool::new(false));
+        let termination = Arc::new(tokio::sync::Notify::new());
         let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
         let (events, _) = broadcast::channel(BROADCAST_CAPACITY);
         let loaded = load_replay(checkpoints.as_ref(), &session_id, &running.frontend).await?;
@@ -264,8 +272,10 @@ impl HostHandle {
             swarm,
             accepts_file_attachments: Arc::clone(&accepts_file_attachments),
             alive: Arc::clone(&alive),
+            terminated: Arc::clone(&terminated),
+            termination: Arc::clone(&termination),
             catalog_lock,
-            session_mutations,
+            session_mutations: Arc::clone(&session_mutations),
             provider_epoch,
             activities,
             running,
@@ -273,6 +283,7 @@ impl HostHandle {
             pending_messages: HashSet::new(),
             approval_active: false,
             turn_error: None,
+            last_assistant_text: None,
             restart_after_turn: false,
             pending_startup: Vec::new(),
             active_routine: None,
@@ -287,7 +298,7 @@ impl HostHandle {
             idle_waiters: Vec::new(),
         };
         state.reconcile_loaded_startup().await?;
-        state.acknowledge_replayed_peer_messages().await?;
+        state.reconcile_replayed_swarm_work().await?;
         tokio::spawn(state.run());
         Ok(Self {
             inner: Arc::new(HostInner {
@@ -297,6 +308,9 @@ impl HostHandle {
                 events,
                 accepts_file_attachments,
                 alive,
+                terminated,
+                termination,
+                session_mutations,
             }),
         })
     }
@@ -317,6 +331,17 @@ impl HostHandle {
 
     pub(super) fn is_alive(&self) -> bool {
         self.inner.alive.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn begin_session_file_mutation(
+        &self,
+        bots: &BotStore,
+    ) -> std::result::Result<tokio::sync::OwnedRwLockReadGuard<()>, Rejection> {
+        let mutation = try_begin_session_mutation(&self.inner.session_mutations, bots)?;
+        if !self.is_alive() {
+            return Err(stopped());
+        }
+        Ok(mutation)
     }
 
     pub(crate) async fn snapshot(
@@ -520,10 +545,25 @@ impl HostHandle {
 
     pub(super) async fn stop_if_idle(&self) -> bool {
         let (reply, receiver) = oneshot::channel();
-        if self.send(HostCommand::StopIfIdle { reply }).await.is_err() {
-            return true;
+        let stopped = if self.send(HostCommand::StopIfIdle { reply }).await.is_err() {
+            true
+        } else {
+            receiver.await.unwrap_or(true)
+        };
+        if stopped {
+            self.wait_terminated().await;
         }
-        receiver.await.unwrap_or(true)
+        stopped
+    }
+
+    async fn wait_terminated(&self) {
+        while !self.inner.terminated.load(Ordering::Acquire) {
+            let terminated = self.inner.termination.notified();
+            if self.inner.terminated.load(Ordering::Acquire) {
+                return;
+            }
+            terminated.await;
+        }
     }
 
     async fn send(&self, command: HostCommand) -> std::result::Result<(), Rejection> {
@@ -533,6 +573,21 @@ impl HostHandle {
             .await
             .map_err(|_| stopped())
     }
+}
+
+fn try_begin_session_mutation(
+    mutations: &Arc<RwLock<()>>,
+    bots: &BotStore,
+) -> std::result::Result<tokio::sync::OwnedRwLockReadGuard<()>, Rejection> {
+    let mutation = Arc::clone(mutations)
+        .try_read_owned()
+        .map_err(|_| Rejection {
+            code: "gateway_busy",
+            message: "retry after the gateway update finishes".into(),
+            fatal: false,
+        })?;
+    reject_pending_bot_deletion(bots)?;
+    Ok(mutation)
 }
 
 /// Which configured setups one credential change invalidates.

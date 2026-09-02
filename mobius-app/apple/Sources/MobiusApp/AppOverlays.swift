@@ -132,6 +132,8 @@ private struct AppToastView: View {
                 Text(toast.message)
                     .font(MobiusStyle.bodyFont)
                     .foregroundStyle(.primary)
+                    .lineLimit(toast.tone == .success && toast.sessionID != nil ? 1 : nil)
+                    .truncationMode(.tail)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -163,10 +165,7 @@ private struct AppToastView: View {
     }
 
     private var accessibilityLabel: Text {
-        if let bot = model.bot(forSessionID: toast.sessionID) {
-            return Text("\(toast.tone.title), \(bot.name): \(toast.message)")
-        }
-        return Text("\(toast.tone.title): \(toast.message)")
+        Text("\(toast.tone.title): \(model.accessibilityMessage(for: toast))")
     }
 }
 

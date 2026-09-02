@@ -14,7 +14,7 @@ use crate::host::tests::create_test_session;
 
 use super::*;
 
-fn provider_removal_gateway(
+async fn provider_removal_gateway(
     root: &tempfile::TempDir,
 ) -> (
     GatewayHost,
@@ -73,15 +73,16 @@ fn provider_removal_gateway(
         )
         .expect("removable credential");
     let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
-    let gateway =
-        GatewayHost::start(store, config, Arc::clone(&credentials), bots).expect("gateway");
+    let gateway = GatewayHost::start(store, config, Arc::clone(&credentials), bots)
+        .await
+        .expect("gateway");
     (gateway, credentials, primary, removable)
 }
 
 #[tokio::test]
 async fn provider_removal_rejects_bot_defaults_without_changes() {
     let root = tempfile::tempdir().expect("root");
-    let (gateway, credentials, primary, secondary) = provider_removal_gateway(&root);
+    let (gateway, credentials, primary, secondary) = provider_removal_gateway(&root).await;
     let config_path = root.path().join("state").join("gateway.toml");
     let before_file = std::fs::read(&config_path).expect("gateway config");
     let before = gateway
@@ -130,7 +131,7 @@ async fn provider_removal_reloads_idle_bot_chat_and_deletes_credential() {
     let root = tempfile::tempdir().expect("root");
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).expect("workspace");
-    let (gateway, credentials, primary, removable) = provider_removal_gateway(&root);
+    let (gateway, credentials, primary, removable) = provider_removal_gateway(&root).await;
     let host = create_test_session(&gateway, &workspace)
         .await
         .expect("chat");
@@ -188,7 +189,7 @@ async fn provider_removal_reloads_idle_bot_chat_and_deletes_credential() {
 #[tokio::test]
 async fn busy_bot_chat_blocks_provider_removal_without_mutation() {
     let root = tempfile::tempdir().expect("root");
-    let (gateway, credentials, _, removable) = provider_removal_gateway(&root);
+    let (gateway, credentials, _, removable) = provider_removal_gateway(&root).await;
     let before = gateway
         .state
         .lock()
@@ -214,6 +215,9 @@ async fn busy_bot_chat_blocks_provider_removal_without_mutation() {
                 events,
                 accepts_file_attachments: Arc::new(AtomicBool::new(false)),
                 alive: Arc::new(AtomicBool::new(true)),
+                terminated: Arc::new(AtomicBool::new(true)),
+                termination: Arc::new(tokio::sync::Notify::new()),
+                session_mutations: Arc::new(tokio::sync::RwLock::new(())),
             }),
         },
     );
@@ -251,7 +255,7 @@ async fn provider_removal_save_failure_keeps_idle_resident_and_config_usable() {
     let root = tempfile::tempdir().expect("root");
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).expect("workspace");
-    let (gateway, credentials, _, removable) = provider_removal_gateway(&root);
+    let (gateway, credentials, _, removable) = provider_removal_gateway(&root).await;
     let host = create_test_session(&gateway, &workspace)
         .await
         .expect("chat");
@@ -302,7 +306,9 @@ async fn provider_registration_commits_against_latest_usage() {
     let credentials =
         Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
     let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
-    let gateway = GatewayHost::start(store, config, credentials, bots).expect("gateway");
+    let gateway = GatewayHost::start(store, config, credentials, bots)
+        .await
+        .expect("gateway");
     let selection = ProviderConfig {
         instance: "openrouter".into(),
         provider: "openrouter".into(),
@@ -371,8 +377,9 @@ async fn credential_endpoints_are_validated_and_persisted() {
     let credentials =
         Arc::new(CredentialStore::open(store.credentials_path()).expect("credential store"));
     let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
-    let gateway =
-        GatewayHost::start(store, config, Arc::clone(&credentials), bots).expect("gateway");
+    let gateway = GatewayHost::start(store, config, Arc::clone(&credentials), bots)
+        .await
+        .expect("gateway");
     create_test_session(&gateway, &workspace)
         .await
         .expect("chat");
@@ -428,8 +435,9 @@ async fn explicit_key_replaces_credentialless_endpoint_auth() {
     let credentials =
         Arc::new(CredentialStore::open(store.credentials_path()).expect("credential store"));
     let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
-    let gateway =
-        GatewayHost::start(store, config, Arc::clone(&credentials), bots).expect("gateway");
+    let gateway = GatewayHost::start(store, config, Arc::clone(&credentials), bots)
+        .await
+        .expect("gateway");
     let base_url = "https://connector.example/v1";
     let model = "openai/gpt-5.6-luna";
 
@@ -498,7 +506,9 @@ async fn credential_update_refreshes_every_matching_resident_chat() {
         )
         .expect("initial Kimi credential");
     let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
-    let gateway = GatewayHost::start(store, config, credentials, bots).expect("gateway");
+    let gateway = GatewayHost::start(store, config, credentials, bots)
+        .await
+        .expect("gateway");
     gateway
         .register_provider(
             ProviderConfig {

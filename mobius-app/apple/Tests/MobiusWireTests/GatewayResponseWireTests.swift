@@ -381,6 +381,19 @@ extension GatewayWireTests {
         XCTAssertNil(broadcastID)
     }
 
+    func testBotSessionsResponseUsesTheExistingSessionRecord() throws {
+        let envelope = try decodeEnvelope(
+            #"{"version":60,"type":"bot_sessions","request_id":"bot-sessions-1","bot_id":"bot-1","sessions":[\#(sessionRecordJSON)]}"#
+        )
+        guard case .botSessions(let requestID, let botID, let sessions) = envelope else {
+            return XCTFail("Expected Bot sessions")
+        }
+        XCTAssertEqual(requestID, "bot-sessions-1")
+        XCTAssertEqual(botID, "bot-1")
+        XCTAssertEqual(sessions.first?.sessionId, "chat-1")
+        XCTAssertEqual(sessions.first?.sessionContext.botId, "bot-1")
+    }
+
     func testPairedRejectedAndErrorResponsesDecode() throws {
         guard case .paired(let clientID, let token) = try decodeEnvelope(#"{"version":27,"type":"paired","client_id":"phone-7","token":"bearer"}"#) else {
             return XCTFail("Expected paired envelope")

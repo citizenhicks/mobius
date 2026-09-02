@@ -19,6 +19,7 @@ pub(super) struct AuthenticatedClient<'a> {
 pub(super) struct ConnectionSessionState<'a> {
     pub(super) selected: &'a mut Option<SelectedChat>,
     pub(super) session_files: &'a SessionFileStore,
+    pub(super) bots: &'a BotStore,
     pub(super) uploads: &'a mut BTreeMap<(String, String), PendingSessionFileWrite>,
 }
 
@@ -40,6 +41,12 @@ pub(super) async fn handle_message(
     mut connection: ConnectionSessionState<'_>,
     writer: &mut (impl AsyncWrite + Unpin),
 ) -> Result<()> {
+    if let Err(rejection) = gateway.reconcile_pending_bot_deletion().await {
+        return write_server_error(writer, "bot_deletion_recovery", rejection.message, false).await;
+    }
+    let Some(message) = handle_collaboration_message(message, writer, gateway).await? else {
+        return Ok(());
+    };
     match message {
         ClientMessage::Pair { .. } | ClientMessage::Authenticate { .. } => {
             return write_server_error(
@@ -131,64 +138,6 @@ pub(super) async fn handle_message(
             session_id,
         } => {
             return delete_session(writer, &mut connection, request_id, session_id, gateway).await;
-        }
-        ClientMessage::CreateSwarm {
-            request_id,
-            title,
-            leader_bot_id,
-            member_bot_ids,
-        } => {
-            return write_swarms_result(
-                writer,
-                request_id,
-                gateway
-                    .create_swarm(title, leader_bot_id, member_bot_ids)
-                    .await,
-            )
-            .await;
-        }
-        ClientMessage::AddSwarmMember {
-            request_id,
-            swarm_id,
-            bot_id,
-        } => {
-            return write_swarms_result(
-                writer,
-                request_id,
-                gateway.add_swarm_member(&swarm_id, bot_id).await,
-            )
-            .await;
-        }
-        ClientMessage::LeaveSwarm {
-            request_id,
-            swarm_id,
-            bot_id,
-        } => {
-            return write_swarms_result(
-                writer,
-                request_id,
-                gateway.leave_swarm(&swarm_id, &bot_id).await,
-            )
-            .await;
-        }
-        ClientMessage::RenameSwarm {
-            request_id,
-            swarm_id,
-            title,
-        } => {
-            return write_swarms_result(
-                writer,
-                request_id,
-                gateway.rename_swarm(&swarm_id, title).await,
-            )
-            .await;
-        }
-        ClientMessage::DisbandSwarm {
-            request_id,
-            swarm_id,
-        } => {
-            return write_swarms_result(writer, request_id, gateway.disband_swarm(&swarm_id).await)
-                .await;
         }
         ClientMessage::Submit {
             session_id,
@@ -598,8 +547,103 @@ pub(super) async fn handle_message(
         } => {
             get_routine_run_preview(writer, request_id, id, before_sequence, gateway).await?;
         }
+        ClientMessage::ListBotSessions { .. }
+        | ClientMessage::CreateSwarm { .. }
+        | ClientMessage::AddSwarmMember { .. }
+        | ClientMessage::LeaveSwarm { .. }
+        | ClientMessage::RenameSwarm { .. }
+        | ClientMessage::DisbandSwarm { .. }
+        | ClientMessage::PostSwarmMessage { .. } => {
+            unreachable!("collaboration messages are handled before general dispatch")
+        }
     }
     Ok(())
+}
+
+async fn handle_collaboration_message(
+    message: ClientMessage,
+    writer: &mut (impl AsyncWrite + Unpin),
+    gateway: &GatewayHost,
+) -> Result<Option<ClientMessage>> {
+    match message {
+        ClientMessage::ListBotSessions { request_id, bot_id } => {
+            list_bot_sessions(writer, request_id, bot_id, gateway).await?;
+        }
+        ClientMessage::CreateSwarm {
+            request_id,
+            title,
+            leader_bot_id,
+            member_bot_ids,
+        } => {
+            write_swarms_result(
+                writer,
+                request_id,
+                gateway
+                    .create_swarm(title, leader_bot_id, member_bot_ids)
+                    .await,
+            )
+            .await?;
+        }
+        ClientMessage::AddSwarmMember {
+            request_id,
+            swarm_id,
+            bot_id,
+        } => {
+            write_swarms_result(
+                writer,
+                request_id,
+                gateway.add_swarm_member(&swarm_id, bot_id).await,
+            )
+            .await?;
+        }
+        ClientMessage::LeaveSwarm {
+            request_id,
+            swarm_id,
+            bot_id,
+        } => {
+            write_swarms_result(
+                writer,
+                request_id,
+                gateway.leave_swarm(&swarm_id, &bot_id).await,
+            )
+            .await?;
+        }
+        ClientMessage::RenameSwarm {
+            request_id,
+            swarm_id,
+            title,
+        } => {
+            write_swarms_result(
+                writer,
+                request_id,
+                gateway.rename_swarm(&swarm_id, title).await,
+            )
+            .await?;
+        }
+        ClientMessage::DisbandSwarm {
+            request_id,
+            swarm_id,
+        } => {
+            write_swarms_result(writer, request_id, gateway.disband_swarm(&swarm_id).await).await?;
+        }
+        ClientMessage::PostSwarmMessage {
+            request_id,
+            swarm_id,
+            workspace,
+            text,
+        } => {
+            write_swarms_result(
+                writer,
+                request_id,
+                gateway
+                    .post_swarm_message(&swarm_id, &workspace, text)
+                    .await,
+            )
+            .await?;
+        }
+        message => return Ok(Some(message)),
+    }
+    Ok(None)
 }
 
 async fn unpair_client(
@@ -648,6 +692,28 @@ async fn list_sessions(
                 writer,
                 &ServerFrame::new(ServerMessage::Sessions {
                     request_id: Some(request_id),
+                    sessions,
+                }),
+            )
+            .await
+        }
+        Err(rejection) => write_rejection(writer, request_id, rejection).await,
+    }
+}
+
+async fn list_bot_sessions(
+    writer: &mut (impl AsyncWrite + Unpin),
+    request_id: String,
+    bot_id: String,
+    gateway: &GatewayHost,
+) -> Result<()> {
+    match gateway.hidden_bot_sessions(&bot_id).await {
+        Ok(sessions) => {
+            write_frame(
+                writer,
+                &ServerFrame::new(ServerMessage::BotSessions {
+                    request_id,
+                    bot_id,
                     sessions,
                 }),
             )
@@ -966,9 +1032,14 @@ async fn begin_session_file_upload(
     size: u64,
     media_type: String,
 ) -> Result<()> {
-    if let Err(rejection) = require_uploads_enabled(connection.selected, &session_id) {
-        return write_rejection(writer, request_id, rejection).await;
-    }
+    let host = match require_uploads_enabled(connection.selected, &session_id) {
+        Ok(host) => host,
+        Err(rejection) => return write_rejection(writer, request_id, rejection).await,
+    };
+    let _mutation = match host.begin_session_file_mutation(connection.bots) {
+        Ok(mutation) => mutation,
+        Err(rejection) => return write_rejection(writer, request_id, rejection).await,
+    };
     if connection.uploads.len() >= MAX_PENDING_UPLOADS {
         return write_rejection(
             writer,
@@ -1014,10 +1085,20 @@ async fn upload_session_file_chunk(
     data: Vec<u8>,
 ) -> Result<()> {
     let key = (session_id.clone(), upload_id.clone());
-    if let Err(rejection) = require_uploads_enabled(connection.selected, &session_id) {
-        connection.uploads.remove(&key);
-        return write_rejection(writer, request_id, rejection).await;
-    }
+    let host = match require_uploads_enabled(connection.selected, &session_id) {
+        Ok(host) => host,
+        Err(rejection) => {
+            connection.uploads.remove(&key);
+            return write_rejection(writer, request_id, rejection).await;
+        }
+    };
+    let _mutation = match host.begin_session_file_mutation(connection.bots) {
+        Ok(mutation) => mutation,
+        Err(rejection) => {
+            connection.uploads.remove(&key);
+            return write_rejection(writer, request_id, rejection).await;
+        }
+    };
     let Some(upload) = connection.uploads.get_mut(&key) else {
         return write_rejection(
             writer,
@@ -1055,10 +1136,20 @@ async fn finish_session_file_upload(
     upload_id: String,
 ) -> Result<()> {
     let key = (session_id.clone(), upload_id);
-    if let Err(rejection) = require_uploads_enabled(connection.selected, &session_id) {
-        connection.uploads.remove(&key);
-        return write_rejection(writer, request_id, rejection).await;
-    }
+    let host = match require_uploads_enabled(connection.selected, &session_id) {
+        Ok(host) => host,
+        Err(rejection) => {
+            connection.uploads.remove(&key);
+            return write_rejection(writer, request_id, rejection).await;
+        }
+    };
+    let _mutation = match host.begin_session_file_mutation(connection.bots) {
+        Ok(mutation) => mutation,
+        Err(rejection) => {
+            connection.uploads.remove(&key);
+            return write_rejection(writer, request_id, rejection).await;
+        }
+    };
     let Some(upload) = connection.uploads.remove(&key) else {
         return write_rejection(
             writer,

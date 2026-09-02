@@ -335,9 +335,7 @@ fn is_searchable_bot_thread(
     current_session_id: &str,
     bot_id: &str,
 ) -> bool {
-    summary.catalog_visible
-        && summary.session_id != current_session_id
-        && summary.session_context.bot_id == bot_id
+    summary.session_id != current_session_id && summary.session_context.bot_id == bot_id
 }
 
 fn searchable_event_text(event: EventMsg) -> Option<String> {
@@ -732,7 +730,7 @@ mod tests {
         ));
         let mut hidden = summary("routine", "researcher");
         hidden.catalog_visible = false;
-        assert!(!is_searchable_bot_thread(&hidden, "current", "researcher"));
+        assert!(is_searchable_bot_thread(&hidden, "current", "researcher"));
         let documents = vec![
             "Release checklist and changelog".into(),
             "Hermes durable Bot memory design".into(),

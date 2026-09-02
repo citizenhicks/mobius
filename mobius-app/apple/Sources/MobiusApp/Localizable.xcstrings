@@ -403,22 +403,6 @@
         }
       }
     },
-    "%@ is ready." : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Conversation prête : %@."
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ ist bereit."
-          }
-        }
-      }
-    },
     "%@ Its skills can be active now; executable hooks remain disabled until trusted on the Extensions page." : {
       "localizations" : {
         "fr" : {
@@ -2843,6 +2827,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Blau"
+          }
+        }
+      }
+    },
+    "Bot" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bot"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bot"
           }
         }
       }
@@ -6292,6 +6292,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Fertig"
+          }
+        }
+      }
+    },
+    "Finished." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Terminée."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fertig."
           }
         }
       }

@@ -21,6 +21,7 @@ impl GatewayHost {
         expected_revision: u64,
         config: AgentComposition,
     ) -> std::result::Result<ReadyPayload, Rejection> {
+        let _mutation = self.begin_mutation().await?;
         let state = self.state.lock().await;
         {
             let mut current = state
@@ -245,9 +246,8 @@ impl GatewayHost {
         model_ids: Vec<String>,
         reasoning_efforts: Vec<String>,
     ) -> std::result::Result<ReadyPayload, Rejection> {
+        let _mutation = self.begin_exclusive_mutation().await?;
         let mut state = self.state.lock().await;
-        let mutation_gate = Arc::clone(&state.session_mutations);
-        let _mutation = mutation_gate.write_owned().await;
         if !credential_is_configured(&selection, &state.store, &state.credentials)
             .map_err(invalid_config)?
         {
@@ -336,9 +336,8 @@ impl GatewayHost {
         &self,
         instance: String,
     ) -> std::result::Result<ReadyPayload, Rejection> {
+        let _mutation = self.begin_exclusive_mutation().await?;
         let mut state = self.state.lock().await;
-        let mutation_gate = Arc::clone(&state.session_mutations);
-        let _mutation = mutation_gate.write_owned().await;
         let current = state
             .config
             .lock()

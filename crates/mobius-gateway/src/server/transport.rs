@@ -397,6 +397,7 @@ where
             ConnectionSessionState {
                 selected: &mut selected,
                 session_files: &session_files,
+                bots: &bots,
                 uploads: &mut uploads,
             },
             &mut writer,

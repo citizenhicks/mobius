@@ -3,16 +3,13 @@ import SwiftUI
 struct SwarmView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
-    private static let messagePageSize = 25
 
     @State private var confirmsDisband = false
     @State private var showsRename = false
     @State private var renameDraft = ""
-    @State private var visibleMessages = messagePageSize
     @State private var showsActivity = true
     @State private var showsRoster = true
     @State private var showsScratchpad = true
-    @State private var showsBoard = true
     @State private var showsAddScratchpadNote = false
     let swarmID: String
 
@@ -24,9 +21,9 @@ struct SwarmView: View {
                         stats: stats(for: swarm),
                         isExpanded: $showsActivity
                     )
+                    chat(swarm)
                     roster(swarm)
                     scratchpad(swarm)
-                    board(swarm)
                 }
                 .formStyle(.grouped)
                 .listSectionSpacing(MobiusSpace.l)
@@ -60,7 +57,7 @@ struct SwarmView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This permanently deletes the shared swarm board.")
+            Text("This permanently deletes the shared Swarm Chat and collective scratchpad.")
         }
         .alert("Rename swarm", isPresented: $showsRename) {
             TextField("Swarm name", text: $renameDraft)
@@ -206,63 +203,27 @@ struct SwarmView: View {
         }
     }
 
-    private func board(_ swarm: SwarmRecord) -> some View {
-        let ordered = swarm.messages.sorted { $0.sequence < $1.sequence }
-        let windowed = Array(ordered.suffix(visibleMessages))
-        let hidden = ordered.count - windowed.count
-        let roster = Set(swarm.members.map(\.handle))
-
-        return Section {
-            if showsBoard, ordered.isEmpty {
-                VStack(spacing: MobiusSpace.s) {
-                    MobiusIcon(.chatDots, size: 24, foreground: palette.muted, gutter: false)
-                    Text("No swarm messages yet")
-                        .font(MobiusStyle.bodyFont)
-                        .foregroundStyle(palette.muted)
+    private func chat(_ swarm: SwarmRecord) -> some View {
+        Section {
+            SettingsNavigationRow(
+                hint: "Opens the shared Swarm Chat",
+                open: { model.navigationPath.append(.swarmChat(swarm.id)) },
+                marks: EmptyView.init
+            ) {
+                SettingsRowLabel(
+                    title: "Swarm Chat",
+                    detail: swarm.messages.isEmpty
+                        ? "No messages yet"
+                        : "\(swarm.messages.count) messages"
+                ) {
+                    MobiusIcon(
+                        .chatDots,
+                        size: MobiusStyle.glyphLead,
+                        foreground: palette.accent
+                    )
+                    .accessibilityHidden(true)
                 }
-                .frame(maxWidth: .infinity, minHeight: 132)
-                .background(palette.panel, in: MobiusStyle.cardShape)
-                .listRowBackground(Color.clear)
-                .listRowSeparator(.hidden)
-            } else if showsBoard {
-                // One card for the whole board, not one per post: a card per message is what
-                // made a short exchange fill a screen.
-                VStack(alignment: .leading, spacing: 0) {
-                    if hidden > 0 {
-                        Button {
-                            visibleMessages += Self.messagePageSize
-                        } label: {
-                            MobiusLabel(
-                                title: "Show \(hidden) earlier",
-                                glyph: .arrowUp,
-                                iconColor: palette.accent
-                            )
-                            .frame(maxWidth: .infinity, minHeight: MobiusStyle.iconButtonSize)
-                        }
-                        .buttonStyle(.mobiusPlain)
-                        .foregroundStyle(palette.accent)
-                        .padding(.bottom, MobiusSpace.s)
-                    }
-                    ForEach(windowed.enumerated(), id: \.element.id) { index, message in
-                        SwarmMessageRow(
-                            message: message,
-                            roster: roster,
-                            isLeader: message.authorBotId == swarm.leaderBotId,
-                            isLast: index == windowed.count - 1
-                        )
-                    }
-                }
-                .swarmCard()
-                .listRowBackground(Color.clear)
-                .listRowSeparator(.hidden)
             }
-        } header: {
-            SwarmSectionHeading(
-                title: "Message board",
-                trailing: ordered.isEmpty ? nil : "\(ordered.count) posts",
-                isExpanded: $showsBoard
-            )
-            .textCase(nil)
         }
     }
 
@@ -344,6 +305,281 @@ struct SwarmView: View {
 
 }
 
+struct SwarmChatView: View {
+    private static let pageSize = 25
+
+    @Environment(AppModel.self) private var model
+    @Environment(\.mobiusPalette) private var palette
+    @State private var draft = ""
+    @State private var selectedWorkspace = ""
+    @State private var visibleMessages = pageSize
+    @State private var composerHeight: CGFloat = 0
+    @State private var showsWorkspaceBrowser = false
+    @State private var pendingRequestID: String?
+    @State private var pendingText: String?
+    @FocusState private var isComposerFocused: Bool
+    let swarmID: String
+
+    var body: some View {
+        Group {
+            if let swarm {
+                ZStack(alignment: .bottom) {
+                    messages(swarm)
+                    composer(swarm)
+                        .onGeometryChange(for: CGFloat.self) { geometry in
+                            geometry.size.height
+                        } action: { height in
+                            composerHeight = height
+                        }
+                }
+                .navigationTitle(swarm.title)
+                .navigationSubtitle("Swarm Chat")
+            } else {
+                MobiusUnavailable(
+                    title: "Swarm unavailable",
+                    glyph: .swarm,
+                    detail: "This swarm is no longer available on the gateway."
+                )
+                .navigationTitle("Swarm Chat")
+            }
+        }
+        .toolbarTitleDisplayMode(.inline)
+        .background { MobiusBackdrop() }
+        .sheet(isPresented: $showsWorkspaceBrowser) {
+            WorkspaceBrowserView(
+                title: "Choose a workspace for Swarm Chat",
+                onChoose: { selectedWorkspace = $0 }
+            )
+            .frame(idealWidth: 520, idealHeight: 620)
+            .mobiusSheet()
+        }
+        .onChange(of: model.completedSwarmMessageRequestID) { _, requestID in
+            guard requestID == pendingRequestID else { return }
+            if draft.trimmingCharacters(in: .whitespacesAndNewlines) == pendingText {
+                draft = ""
+            }
+            pendingRequestID = nil
+            pendingText = nil
+        }
+    }
+
+    private var swarm: SwarmRecord? {
+        model.swarms.first { $0.id == swarmID }
+    }
+
+    private func messages(_ swarm: SwarmRecord) -> some View {
+        let ordered = swarm.messages.sorted { $0.sequence < $1.sequence }
+        let windowed = Array(ordered.suffix(visibleMessages))
+        let roster = Set(swarm.members.map(\.handle))
+
+        return ScrollView {
+            VStack(alignment: .leading, spacing: MobiusSpace.s) {
+                if ordered.count > windowed.count {
+                    CatalogMoreButton(accessibilityLabel: "Show earlier Swarm messages") {
+                        visibleMessages += Self.pageSize
+                    }
+                }
+                if ordered.isEmpty {
+                    VStack(spacing: MobiusSpace.s) {
+                        MobiusIcon(
+                            .chatDots,
+                            size: 24,
+                            foreground: palette.muted,
+                            gutter: false
+                        )
+                        Text("No Swarm messages yet")
+                            .font(MobiusStyle.bodyFont)
+                            .foregroundStyle(palette.muted)
+                        Text("Choose a workspace, then post a message or mention a Bot.")
+                            .font(MobiusStyle.captionFont)
+                            .foregroundStyle(palette.muted)
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 160)
+                    .swarmCard()
+                } else {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(windowed.enumerated()), id: \.element.id) { index, message in
+                            SwarmMessageRow(
+                                message: message,
+                                roster: roster,
+                                isLeader: message.authorBotId == swarm.leaderBotId,
+                                isUser: message.authorBotId == "user",
+                                isLast: index == windowed.count - 1
+                            )
+                        }
+                    }
+                    .swarmCard()
+                }
+                Color.clear.frame(height: max(1, composerHeight))
+            }
+            .frame(maxWidth: MobiusStyle.transcriptWidth)
+            .frame(maxWidth: .infinity)
+            .padding(MobiusSpace.l)
+        }
+        .defaultScrollAnchor(.bottom, for: .initialOffset)
+        .defaultScrollAnchor(.bottom, for: .sizeChanges)
+        .scrollIndicators(.hidden)
+        .scrollDismissesKeyboard(.interactively)
+    }
+
+    private func composer(_ swarm: SwarmRecord) -> some View {
+        VStack(spacing: 0) {
+            TextField("Message the Swarm", text: $draft, axis: .vertical)
+                .textFieldStyle(.plain)
+                .focused($isComposerFocused)
+                .lineLimit(1...8)
+                .font(MobiusStyle.bodyFont)
+                .accessibilityLabel("Swarm message")
+                .onSubmit(send)
+                .padding(.horizontal, MobiusSpace.l)
+                .padding(.top, MobiusSpace.m)
+                .padding(.bottom, MobiusSpace.xs)
+            HStack(spacing: MobiusSpace.xs) {
+                workspaceMenu
+                mentionMenu(swarm)
+                Spacer(minLength: 0)
+                Button(action: send) {
+                    Label {
+                        Text("Send")
+                    } icon: {
+                        if isPosting {
+                            MobiusSpinner(
+                                size: MobiusStyle.iconSize,
+                                foreground: palette.onAccent
+                            )
+                        } else {
+                            MobiusIcon(.arrowUp02)
+                        }
+                    }
+                }
+                .mobiusProminentIconButton()
+                .disabled(!canSend)
+                .accessibilityHint("Posts to Swarm Chat in the selected workspace")
+            }
+            .padding(.horizontal, MobiusStyle.iconRowPadding)
+            .padding(.bottom, MobiusStyle.iconRowPadding)
+        }
+        .frame(maxWidth: MobiusStyle.transcriptWidth)
+        .mobiusGlass(in: MobiusStyle.cardShape, interactive: true)
+        .shadow(color: palette.shadow.opacity(0.18), radius: 12, y: 6)
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, MobiusSpace.l)
+        .padding(.bottom, MobiusSpace.m)
+    }
+
+    private var workspaceMenu: some View {
+        Menu {
+            ForEach(knownWorkspaces) { workspace in
+                Button {
+                    selectedWorkspace = workspace.path
+                } label: {
+                    MobiusLabel(
+                        verbatim: workspace.name,
+                        glyph: selectedWorkspace == workspace.path ? .check : .folder
+                    )
+                }
+            }
+            if !knownWorkspaces.isEmpty { Divider() }
+            Button("Choose another workspace…", glyph: .folderOpen) {
+                model.loadDirectory(
+                    selectedWorkspace.isEmpty
+                        ? model.workspace?.path ?? (model.selectedGatewayIsMobiusCloud ? "." : "/")
+                        : selectedWorkspace
+                )
+                showsWorkspaceBrowser = true
+            }
+        } label: {
+            MobiusMenuLabel(
+                verbatim: selectedWorkspaceName,
+                glyph: .folder,
+                glyphSize: MobiusStyle.glyphLead
+            )
+        }
+        .buttonStyle(.mobiusPlain)
+        .accessibilityLabel("Workspace")
+        .accessibilityValue(Text(verbatim: selectedWorkspaceName))
+    }
+
+    private func mentionMenu(_ swarm: SwarmRecord) -> some View {
+        Menu {
+            ForEach(swarm.members) { member in
+                Button {
+                    insertMention(member.handle)
+                } label: {
+                    if let bot = model.bots.first(where: { $0.id == member.botId }) {
+                        MobiusLabel(
+                            verbatim: "@\(member.handle)",
+                            glyph: .aiScan,
+                            iconColor: bot.tint.color
+                        )
+                    } else {
+                        MobiusLabel(verbatim: "@\(member.handle)", glyph: .aiScan)
+                    }
+                }
+            }
+        } label: {
+            MobiusIcon(.aiScan, foreground: .primary)
+                .frame(
+                    width: MobiusStyle.iconButtonSize,
+                    height: MobiusStyle.iconButtonSize
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.mobiusPlain)
+        .accessibilityLabel("Mention Bot")
+        .help("Mention Bot")
+    }
+
+    private var knownWorkspaces: [RoutineWorkspace] {
+        var seen = Set<String>()
+        return model.sessions.compactMap { session in
+            guard let path = session.sessionContext.workspaceLabel,
+                  seen.insert(path).inserted
+            else { return nil }
+            let component = URL(fileURLWithPath: path).lastPathComponent
+            return RoutineWorkspace(path: path, name: component.isEmpty ? path : component)
+        }
+        .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    private var selectedWorkspaceName: String {
+        guard !selectedWorkspace.isEmpty else { return "Choose workspace" }
+        let component = URL(fileURLWithPath: selectedWorkspace).lastPathComponent
+        return component.isEmpty ? selectedWorkspace : component
+    }
+
+    private var canSend: Bool {
+        !selectedWorkspace.isEmpty
+            && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && draft.utf8.count <= maximumComposerBytes
+            && model.canPostSwarmMessage
+    }
+
+    private var isPosting: Bool {
+        pendingRequestID != nil && model.swarmMessageRequestID == pendingRequestID
+    }
+
+    private func insertMention(_ handle: String) {
+        if !draft.isEmpty, draft.last?.isWhitespace != true { draft.append(" ") }
+        draft.append("@\(handle) ")
+        isComposerFocused = true
+    }
+
+    private func send() {
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard canSend,
+              let requestID = model.postSwarmMessage(
+                to: swarmID,
+                workspace: selectedWorkspace,
+                text: text
+              )
+        else { return }
+        pendingRequestID = requestID
+        pendingText = text
+    }
+}
+
 private struct AddSwarmScratchpadNoteSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
@@ -404,7 +640,7 @@ private struct SwarmBotRow: View {
 
     var body: some View {
         HStack(spacing: MobiusSpace.s) {
-            MobiusIcon(.aiScan, foreground: isActive ? bot.tint.color : palette.muted)
+            MobiusIcon(.aiScan, foreground: bot.tint.color)
             VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
                 MobiusTitleText(verbatim: bot.name)
                     .lineLimit(1)
@@ -423,8 +659,8 @@ private struct SwarmBotRow: View {
     }
 }
 
-/// One board post: a single header line naming who spoke and when, then what they said.
-private struct SwarmMessageRow: View {
+/// One Swarm Chat post: a single header line naming who spoke and when, then what they said.
+struct SwarmMessageRow: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
     /// The author mark and the name beside it centre in the same box, so the rail node stays
@@ -433,6 +669,7 @@ private struct SwarmMessageRow: View {
     let message: SwarmMessageRecord
     let roster: Set<String>
     let isLeader: Bool
+    let isUser: Bool
     let isLast: Bool
 
     var body: some View {
@@ -447,26 +684,37 @@ private struct SwarmMessageRow: View {
                     streaming: false
                 )
                 .equatable()
+                if canOpenApproval {
+                    Button("Open approval", glyph: .arrowUpRight01, action: openApproval)
+                        .buttonStyle(.mobiusPlain)
+                        .font(MobiusStyle.metadataFont)
+                        .foregroundStyle(palette.accent)
+                        .frame(minHeight: MobiusStyle.iconButtonSize)
+                        .disabled(!model.canOpenSession)
+                        .accessibilityHint("Opens the Bot conversation awaiting approval")
+                }
             }
             .padding(.bottom, isLast ? 0 : MobiusSpace.l)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(Text("Post from \(message.authorHandle)"))
+        .accessibilityLabel(Text("Post from \(displayedAuthor)"))
     }
 
-    /// The board's spine. The author mark is the node, so the header row still reads
+    /// The chat's spine. The author mark is the node, so the header row still reads
     /// icon-then-name while the line carries the eye from one post to the next.
     private var rail: some View {
         // Stacked rather than overlaid: the line starts where the author mark ends, so no
         // stub of it shows above the node.
         VStack(spacing: 0) {
             MobiusIcon(
-                .aiScan,
+                isUser ? .userFocus : .aiScan,
                 size: MobiusStyle.glyphInline,
-                foreground: model.bots.first(where: {
-                    $0.id == message.authorBotId
-                })?.tint.color ?? .primary,
+                foreground: isUser
+                    ? palette.accent
+                    : model.bots.first(where: {
+                        $0.id == message.authorBotId
+                    })?.tint.color ?? .primary,
                 gutter: false
             )
             .frame(height: headerHeight)
@@ -483,7 +731,7 @@ private struct SwarmMessageRow: View {
 
     private var header: some View {
         HStack(spacing: MobiusSpace.xs) {
-            Text(verbatim: message.authorHandle)
+            Text(verbatim: displayedAuthor)
                 .font(MobiusStyle.controlFont)
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -514,5 +762,22 @@ private struct SwarmMessageRow: View {
             .font(MobiusStyle.captionFont)
             .foregroundStyle(palette.muted)
             .accessibilityHidden(true)
+    }
+
+    private var displayedAuthor: String {
+        isUser ? String(localized: "you") : message.authorHandle
+    }
+
+    private var canOpenApproval: Bool {
+        !isUser
+            && isSwarmAttentionMessage(message.text)
+            && model.bots.contains { $0.id == message.authorBotId }
+    }
+
+    private func openApproval() {
+        model.resumeBotSession(
+            botID: message.authorBotId,
+            sessionID: message.sourceSessionId
+        )
     }
 }

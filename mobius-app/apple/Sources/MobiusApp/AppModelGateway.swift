@@ -103,7 +103,7 @@ extension AppModel {
         case .sessionOpened, .sessionReplayComplete, .sessionHistory, .sessionChanged:
             handleSessionEnvelope(envelope)
         case .gatewayConfigured, .scratchpadChanged, .accepted, .rejected,
-             .agentEvent, .sessions, .bots, .swarms, .clients:
+             .agentEvent, .sessions, .botSessions, .bots, .swarms, .clients:
             handleGatewayUpdateEnvelope(envelope)
         case .providerCredentialSaved, .pairingCode, .providerLoginStarted,
              .providerLoginFinished, .gitCredentialStatus, .sshIdentities,
@@ -183,20 +183,7 @@ extension AppModel {
         case .gatewayConfigured(let requestID, let payload):
             applyGatewayConfigurationResponse(requestID: requestID, payload: payload)
         case .scratchpadChanged(_, let scope, let contribution):
-            guard contribution.capability == "scratchpad" else { break }
-            switch scope {
-            case .global:
-                if let index = gatewayContributions.firstIndex(where: {
-                    $0.capability == contribution.capability
-                }) {
-                    gatewayContributions[index] = contribution
-                } else {
-                    gatewayContributions.append(contribution)
-                }
-            case .swarm(let id):
-                guard swarms.contains(where: { $0.id == id }) else { break }
-                swarmScratchpadContributions[id] = contribution
-            }
+            applyScratchpadContribution(contribution, scope: scope)
         case .accepted(let requestID):
             handleAccepted(requestID)
         case .rejected(let rejection):
@@ -209,38 +196,94 @@ extension AppModel {
                 cacheSelectedTranscript()
             }
         case .sessions(let requestID, let sessions):
-            if requestID == sessionMutationRequestID {
-                sessionMutationRequestID = nil
-                pendingDeletedPresentedSessionID = nil
-            }
-            applySessionCatalog(sessions)
+            applySessionResponse(requestID: requestID, sessions: sessions)
+        case .botSessions(let requestID, let botID, let sessions):
+            applyBotSessionsResponse(requestID: requestID, botID: botID, sessions: sessions)
         case .bots(let requestID, let bots):
-            let completedMutation = requestID != nil && requestID == botMutationRequestID
-            if completedMutation { botMutationRequestID = nil }
-            applyBots(bots)
-            if completedMutation {
-                if let editingBotID,
-                   let bot = bots.first(where: { $0.id == editingBotID }) {
-                    editingBotRevision = bot.config.revision
-                    botNameDraft = bot.name
-                    botDescriptionDraft = bot.description
-                    botTintDraft = bot.tint
-                    botDraft = bot.config.config
-                }
-                botApplyState = .applied
-                showToast(
-                    verbatim: botMutationSuccessMessage ?? localizedString("Bot saved."),
-                    tone: .success
-                )
-                botMutationSuccessMessage = nil
-            }
+            applyBotsResponse(requestID: requestID, bots: bots)
         case .swarms(let requestID, let swarms):
-            if requestID == swarmMutationRequestID { swarmMutationRequestID = nil }
-            applySwarms(swarms)
+            applySwarmsResponse(requestID: requestID, swarms: swarms)
         case .clients:
             break
         default:
             break
+        }
+    }
+
+    private func applyScratchpadContribution(
+        _ contribution: FrontendContribution,
+        scope: ScratchpadScope
+    ) {
+        guard contribution.capability == "scratchpad" else { return }
+        switch scope {
+        case .global:
+            if let index = gatewayContributions.firstIndex(where: {
+                $0.capability == contribution.capability
+            }) {
+                gatewayContributions[index] = contribution
+            } else {
+                gatewayContributions.append(contribution)
+            }
+        case .swarm(let id):
+            guard swarms.contains(where: { $0.id == id }) else { return }
+            swarmScratchpadContributions[id] = contribution
+        }
+    }
+
+    private func applySessionResponse(requestID: String?, sessions: [SessionRecord]) {
+        if requestID == sessionMutationRequestID {
+            sessionMutationRequestID = nil
+            pendingDeletedPresentedSessionID = nil
+        }
+        applySessionCatalog(sessions)
+    }
+
+    private func applyBotSessionsResponse(
+        requestID: String?,
+        botID: String,
+        sessions: [SessionRecord]
+    ) {
+        guard requestID == botSessionsRequestID, botID == botSessionsBotID else { return }
+        botSessionsRequestID = nil
+        isLoadingBotSessions = false
+        let valid = applyBotSessions(sessions, botID: botID)
+        guard let resume = pendingBotSessionResume, resume.botID == botID else { return }
+        pendingBotSessionResume = nil
+        guard valid else { return }
+        guard sessions.contains(where: { $0.sessionId == resume.sessionID }) else {
+            showToast("That Bot work is no longer available.", tone: .warning)
+            return
+        }
+        openBotSession(resume.sessionID)
+    }
+
+    private func applyBotsResponse(requestID: String?, bots: [BotRecord]) {
+        let completedMutation = requestID != nil && requestID == botMutationRequestID
+        if completedMutation { botMutationRequestID = nil }
+        applyBots(bots)
+        guard completedMutation else { return }
+        if let editingBotID,
+           let bot = bots.first(where: { $0.id == editingBotID }) {
+            editingBotRevision = bot.config.revision
+            botNameDraft = bot.name
+            botDescriptionDraft = bot.description
+            botTintDraft = bot.tint
+            botDraft = bot.config.config
+        }
+        botApplyState = .applied
+        showToast(
+            verbatim: botMutationSuccessMessage ?? localizedString("Bot saved."),
+            tone: .success
+        )
+        botMutationSuccessMessage = nil
+    }
+
+    private func applySwarmsResponse(requestID: String?, swarms: [SwarmRecord]) {
+        if requestID == swarmMutationRequestID { swarmMutationRequestID = nil }
+        let posted = requestID != nil && requestID == swarmMessageRequestID
+        if posted { swarmMessageRequestID = nil }
+        if applySwarms(swarms), posted {
+            completedSwarmMessageRequestID = requestID
         }
     }
 
@@ -821,54 +864,76 @@ extension AppModel {
             applyExecutionStats(selected.executionStats)
             if selected.activity.state == .idle { runStats.active = nil }
         }
-        if let accountID = selectedAccountID {
-            if var cursors = sessionReadCursors {
-                var readStateChanged = false
-                for session in sessions {
-                    let sessionID = session.sessionId
-                    let cursor = sessionReadCursor(for: session)
-                    if selectedSessionID == sessionID, isChatVisible {
-                        unreadSessionIDs.remove(sessionID)
-                        if cursors[sessionID] != cursor {
-                            cursors[sessionID] = cursor
-                            readStateChanged = true
-                        }
-                    } else if let readCursor = cursors[sessionID] {
-                        if session.activity.state == .idle,
-                           session.sequence > readCursor.sequence || readCursor.wasActive {
-                            unreadSessionIDs.insert(sessionID)
-                        }
-                    } else if session.activity.state == .idle {
-                        if session.sequence > 0 || session.activity.lastOutcome != nil {
-                            unreadSessionIDs.insert(sessionID)
-                        } else {
-                            cursors[sessionID] = cursor
-                            readStateChanged = true
-                        }
-                    }
-                }
-                if readStateChanged {
-                    sessionReadCursors = cursors
-                    store.saveSessionReadCursors(cursors, accountID: accountID)
-                }
-            } else {
-                let cursors = Dictionary(uniqueKeysWithValues: sessions.map { session in
-                    (session.sessionId, sessionReadCursor(for: session))
-                })
-                sessionReadCursors = cursors
-                store.saveSessionReadCursors(cursors, accountID: accountID)
-            }
-        }
+        if let accountID = selectedAccountID { reconcileSessionReadState(accountID: accountID) }
         let visible = Set(sessions.map(\.sessionId))
         unreadSessionIDs.formIntersection(visible)
         reconcileChatTitles()
         cacheChatCatalog()
         if connectionState.isReady, openPendingRemoteNotification() { return }
-        guard let selectedSessionID,
-              !sessions.contains(where: { $0.sessionId == selectedSessionID }),
+        guard selectedSessionID != nil,
+              selectedSession == nil,
               sessionRequestID == nil
         else { return }
         clearSelectedSession()
+    }
+
+    private func reconcileSessionReadState(accountID: UUID) {
+        guard var cursors = sessionReadCursors else {
+            let cursors = Dictionary(uniqueKeysWithValues: sessions.map { session in
+                (session.sessionId, sessionReadCursor(for: session))
+            })
+            sessionReadCursors = cursors
+            store.saveSessionReadCursors(cursors, accountID: accountID)
+            return
+        }
+        var changed = false
+        for session in sessions {
+            if reconcileReadCursor(for: session, cursors: &cursors) { changed = true }
+        }
+        guard changed else { return }
+        sessionReadCursors = cursors
+        store.saveSessionReadCursors(cursors, accountID: accountID)
+    }
+
+    private func reconcileReadCursor(
+        for session: SessionRecord,
+        cursors: inout [String: SessionReadCursor]
+    ) -> Bool {
+        let sessionID = session.sessionId
+        let cursor = sessionReadCursor(for: session)
+        if selectedSessionID == sessionID, isChatVisible {
+            unreadSessionIDs.remove(sessionID)
+            guard cursors[sessionID] != cursor else { return false }
+            cursors[sessionID] = cursor
+            return true
+        }
+        if let readCursor = cursors[sessionID] {
+            if session.activity.state == .idle,
+               session.sequence > readCursor.sequence || readCursor.wasActive {
+                unreadSessionIDs.insert(sessionID)
+            }
+            return false
+        }
+        guard session.activity.state == .idle else { return false }
+        if session.sequence > 0 || session.activity.lastOutcome != nil {
+            unreadSessionIDs.insert(sessionID)
+            return false
+        }
+        cursors[sessionID] = cursor
+        return true
+    }
+
+    @discardableResult
+    func applyBotSessions(_ records: [SessionRecord], botID: String) -> Bool {
+        guard botSessionsBotID == botID,
+              Set(records.map(\.sessionId)).count == records.count,
+              records.allSatisfy({ $0.sessionContext.botId == botID })
+        else {
+            showToast("The gateway returned invalid Bot work.", tone: .error)
+            return false
+        }
+        botSessions = records
+        return true
     }
 
     func applyBots(_ records: [BotRecord]) {
@@ -889,8 +954,21 @@ extension AppModel {
             showToast("The gateway returned invalid Bot state.", tone: .error)
             return
         }
+        let selectedHiddenBotID = selectedSessionIsHidden
+            ? selectedSession?.sessionContext.botId ?? botSessionsBotID
+            : nil
         bots = records
         let botIDs = Set(records.map(\.id))
+        if let botSessionsBotID, !botIDs.contains(botSessionsBotID) {
+            self.botSessionsBotID = nil
+            botSessionsRequestID = nil
+            pendingBotSessionResume = nil
+            botSessions = []
+            isLoadingBotSessions = false
+        }
+        if let selectedHiddenBotID, !botIDs.contains(selectedHiddenBotID) {
+            clearSelectedSession()
+        }
         chatBotFilterIDs.formIntersection(botIDs)
         routines.removeAll { !botIDs.contains($0.botId) }
         routineRuns.removeAll { !botIDs.contains($0.botId) }
@@ -918,7 +996,8 @@ extension AppModel {
         cacheChatCatalog()
     }
 
-    func applySwarms(_ records: [SwarmRecord]) {
+    @discardableResult
+    func applySwarms(_ records: [SwarmRecord]) -> Bool {
         var claimedBotIDs = Set<String>()
         guard Set(records.map(\.id)).count == records.count,
               records.allSatisfy({ swarm in
@@ -935,7 +1014,7 @@ extension AppModel {
               })
         else {
             showToast("The gateway returned invalid swarm state.", tone: .error)
-            return
+            return false
         }
         swarms = records
         let swarmIDs = Set(records.map(\.id))
@@ -943,6 +1022,7 @@ extension AppModel {
             swarmIDs.contains($0.key)
         }
         cacheChatCatalog()
+        return true
     }
 
     private func applyExecutionStats(_ stats: ExecutionStats) {
@@ -988,7 +1068,9 @@ extension AppModel {
             presentSessionNotification(
                 .completed,
                 sessionID: sessionID,
-                runCount: session.executionStats.runCount
+                runCount: session.executionStats.runCount,
+                detail: activity.message,
+                canRefineCompletion: true
             )
         case .aborted:
             presentSessionNotification(
@@ -1250,6 +1332,14 @@ extension AppModel {
     private func handleRejectedCapabilities(_ rejection: GatewayRejection) {
         if rejection.requestId == swarmMutationRequestID {
             swarmMutationRequestID = nil
+        }
+        if rejection.requestId == swarmMessageRequestID {
+            swarmMessageRequestID = nil
+        }
+        if rejection.requestId == botSessionsRequestID {
+            botSessionsRequestID = nil
+            pendingBotSessionResume = nil
+            isLoadingBotSessions = false
         }
         if rejection.requestId == botMutationRequestID {
             botMutationRequestID = nil

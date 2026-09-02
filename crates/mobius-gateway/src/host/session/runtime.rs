@@ -4,13 +4,7 @@ impl HostState {
     fn begin_session_mutation(
         &self,
     ) -> std::result::Result<tokio::sync::OwnedRwLockReadGuard<()>, Rejection> {
-        Arc::clone(&self.session_mutations)
-            .try_read_owned()
-            .map_err(|_| Rejection {
-                code: "gateway_busy",
-                message: "retry after the gateway update finishes".into(),
-                fatal: false,
-            })
+        try_begin_session_mutation(&self.session_mutations, &self.bots)
     }
 
     pub(super) async fn reconcile_loaded_startup(&mut self) -> Result<()> {
@@ -143,12 +137,44 @@ impl HostState {
                 fatal: false,
             });
         }
+        match self.bots.history(None) {
+            Ok(runs) => {
+                for run in runs
+                    .iter()
+                    .filter(|run| run.status != RoutineRunStatus::Running)
+                {
+                    let workspace = self
+                        .bots
+                        .routine(&run.routine_id)
+                        .ok()
+                        .map(|routine| routine.workspace);
+                    if let Err(error) = self
+                        .swarm
+                        .project_routine_outcome(run, None, workspace)
+                        .await
+                    {
+                        self.broadcast(ServerMessage::Error {
+                            code: "routine_state_error".into(),
+                            message: error.to_string(),
+                            fatal: false,
+                        });
+                    }
+                }
+            }
+            Err(error) => self.broadcast(ServerMessage::Error {
+                code: "routine_state_error".into(),
+                message: error.to_string(),
+                fatal: false,
+            }),
+        }
         for waiter in self.idle_waiters.drain(..) {
             let _ = waiter.send(());
         }
         let bot_id = self.spec.bot_id.clone();
         shutdown_agent(self.running).await;
         self.alive.store(false, Ordering::Release);
+        self.terminated.store(true, Ordering::Release);
+        self.termination.notify_waiters();
         self.swarm.notify_pending(&bot_id);
     }
 
@@ -288,13 +314,20 @@ impl HostState {
             }
             HostCommand::RunRoutine { run, input, reply } => {
                 let result = match self.begin_session_mutation() {
-                    Ok(_mutation) => self.run_routine(run, input),
+                    Ok(_mutation) => self.run_routine(run, input).await,
                     Err(rejection) => match self.bots.finish_run(
                         run,
                         RoutineRunStatus::Failed,
                         Some(rejection.message.clone()),
                     ) {
-                        Ok(_) => Err(rejection),
+                        Ok(completed) => match self
+                            .swarm
+                            .project_routine_outcome(&completed, None, None)
+                            .await
+                        {
+                            Ok(_) => Err(rejection),
+                            Err(error) => Err(internal(error)),
+                        },
                         Err(error) => Err(internal(error)),
                     },
                 };
@@ -309,9 +342,13 @@ impl HostState {
             }
             HostCommand::CapacityChanged => self.swarm.retry_pending(),
             HostCommand::StopIfIdle { reply } => {
-                let idle = self.is_idle();
-                let _ = reply.send(idle);
-                return !idle;
+                if !self.is_idle() {
+                    let _ = reply.send(false);
+                    return true;
+                }
+                self.alive.store(false, Ordering::Release);
+                let _ = reply.send(true);
+                return false;
             }
         }
         true
@@ -455,18 +492,23 @@ impl HostState {
         Ok(())
     }
 
-    pub(super) fn run_routine(
+    pub(super) async fn run_routine(
         &mut self,
         run: ActiveRoutineRun,
         input: String,
     ) -> std::result::Result<(), Rejection> {
         if let Err(rejection) = self.require_idle() {
-            self.bots
+            let completed = self
+                .bots
                 .finish_run(
                     run,
                     RoutineRunStatus::Failed,
                     Some("the agent was busy when this invocation became due".into()),
                 )
+                .map_err(internal)?;
+            self.swarm
+                .project_routine_outcome(&completed, None, None)
+                .await
                 .map_err(internal)?;
             return Err(rejection);
         }
@@ -494,12 +536,17 @@ impl HostState {
                 .active_routine
                 .take()
                 .expect("active routine was just set");
-            self.bots
+            let completed = self
+                .bots
                 .finish_run(
                     active.run,
                     RoutineRunStatus::Failed,
                     Some(rejection.message.clone()),
                 )
+                .map_err(internal)?;
+            self.swarm
+                .project_routine_outcome(&completed, None, None)
+                .await
                 .map_err(internal)?;
             return Err(rejection);
         }

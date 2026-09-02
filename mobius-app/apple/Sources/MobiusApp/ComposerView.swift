@@ -712,7 +712,7 @@ private struct ComposerAttachmentRow: View {
     }
 }
 
-private struct ApprovalView: View {
+struct ApprovalView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
     let approval: PendingApproval

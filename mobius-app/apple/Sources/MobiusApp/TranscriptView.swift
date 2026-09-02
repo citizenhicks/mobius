@@ -406,6 +406,15 @@ private struct TranscriptRow: View {
                                 )
                             }
                     }
+                    if peerApprovalSource != nil {
+                        Button("Open approval", glyph: .arrowUpRight01, action: openPeerApproval)
+                            .buttonStyle(.mobiusPlain)
+                            .font(MobiusStyle.metadataFont)
+                            .foregroundStyle(palette.accent)
+                            .frame(minHeight: MobiusStyle.iconButtonSize)
+                            .disabled(!model.canOpenSession)
+                            .accessibilityHint("Opens the Bot conversation awaiting approval")
+                    }
                     messageMetadata
                 }
             }
@@ -426,6 +435,19 @@ private struct TranscriptRow: View {
         if let metadata = entry.messageMetadata {
             MessageMetadata(author: metadata.author, delivery: metadata.delivery)
         }
+    }
+
+    private var peerApprovalSource: (botID: String, sessionID: String)? {
+        guard isSwarmAttentionMessage(entry.text),
+              let peer = entry.messageMetadata?.author.peerFields,
+              let bot = model.bots.first(where: { $0.handle == peer.handle })
+        else { return nil }
+        return (bot.id, peer.sessionID)
+    }
+
+    private func openPeerApproval() {
+        guard let source = peerApprovalSource else { return }
+        model.resumeBotSession(botID: source.botID, sessionID: source.sessionID)
     }
 
     private var controls: some View {

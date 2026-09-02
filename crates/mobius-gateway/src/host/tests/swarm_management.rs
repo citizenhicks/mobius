@@ -1,19 +1,21 @@
 use super::*;
 
-fn gateway(root: &tempfile::TempDir) -> GatewayHost {
+async fn gateway(root: &tempfile::TempDir) -> GatewayHost {
     let listen = "127.0.0.1:8741".parse().expect("listen address");
     let (store, config) =
         ConfigStore::initialize(root.path().join("state"), listen, None).expect("config");
     let credentials =
         Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
     let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
-    GatewayHost::start(store, config, credentials, bots).expect("gateway")
+    GatewayHost::start(store, config, credentials, bots)
+        .await
+        .expect("gateway")
 }
 
 #[tokio::test]
 async fn gateway_manages_bot_swarms_and_broadcasts_the_catalog() {
     let root = tempfile::tempdir().expect("root");
-    let gateway = gateway(&root);
+    let gateway = gateway(&root).await;
     let leader = ensure_test_bot(&gateway).await.expect("leader Bot");
     let (reviewer, tester) = {
         let state = gateway.state.lock().await;
@@ -110,7 +112,7 @@ async fn gateway_manages_bot_swarms_and_broadcasts_the_catalog() {
 #[tokio::test]
 async fn gateway_rejects_unknown_or_already_grouped_bots() {
     let root = tempfile::tempdir().expect("root");
-    let gateway = gateway(&root);
+    let gateway = gateway(&root).await;
     let leader = ensure_test_bot(&gateway).await.expect("leader Bot");
     let reviewer = {
         let state = gateway.state.lock().await;
@@ -144,7 +146,7 @@ async fn gateway_rejects_unknown_or_already_grouped_bots() {
 #[tokio::test]
 async fn gateway_leave_releases_host_state_while_waiting_for_delivery_acceptance() {
     let root = tempfile::tempdir().expect("root");
-    let gateway = gateway(&root);
+    let gateway = gateway(&root).await;
     let leader = ensure_test_bot(&gateway).await.expect("leader Bot");
     let reviewer = {
         let state = gateway.state.lock().await;

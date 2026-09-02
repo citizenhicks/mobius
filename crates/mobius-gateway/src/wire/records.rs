@@ -559,6 +559,7 @@ pub struct Routine {
 
 /// A user-selected scheduling rule.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RoutineSchedule {
     pub kind: RoutineScheduleKind,
     pub at: Option<i64>,

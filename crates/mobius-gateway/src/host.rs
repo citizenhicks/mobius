@@ -24,17 +24,20 @@ use mobius::backend::checkpoint::{
 };
 use mobius::backend::model::ModelRouter;
 use mobius::middleware::scratchpad::ScratchpadStore;
-use mobius::middleware::session_files::SessionFileStore;
+use mobius::middleware::session_files::{SessionFileDeletion, SessionFileStore};
 use mobius::middleware::{FrontendExtensions, Middleware as _};
 use mobius::protocol::{
-    Event, EventMsg, FrontendContribution, FrontendEvent, FrontendPreviewEvent, MessageAuthor,
-    MessageEvent, MessageSubmission, Op, RenderedBlock, ReviewDecision, Submission,
+    ActiveMessageDelivery, Event, EventMsg, FrontendContribution, FrontendEvent,
+    FrontendPreviewEvent, MessageAuthor, MessageEvent, MessageSubmission, ModelStepContentPhase,
+    Op, RenderedBlock, ReviewDecision, Submission,
 };
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc, oneshot};
 use uuid::Uuid;
 
 use crate::assembly::{BuiltAgent, assemble};
-use crate::bots::swarm::{BoardEntry, SwarmDelivery, SwarmStore, validate_swarm_members};
+use crate::bots::swarm::{
+    BoardEntry, SwarmDelivery, SwarmRunOutcome, SwarmStore, validate_swarm_members,
+};
 use crate::bots::{ActiveRoutineRun, BeginRun, BotStore};
 use crate::config::{
     ChatSpec, ConfigStore, CredentialStore, GatewayConfig,
@@ -55,8 +58,8 @@ use crate::wire::{
 use crate::{Error, Result};
 
 use self::catalog::{
-    SessionCatalogMetadata, load_session_metadata, save_session_metadata, session_catalog,
-    validate_session_title,
+    SessionCatalogMetadata, hidden_bot_session_catalog, load_session_metadata,
+    save_session_metadata, session_catalog, validate_session_title,
 };
 use self::files::{
     WorkspaceFiles, WorkspaceRead, list as list_workspace_files, read as read_workspace_file,
@@ -143,7 +146,7 @@ pub(crate) struct Rejection {
 }
 
 impl GatewayHost {
-    pub(crate) fn start(
+    pub(crate) async fn start(
         store: ConfigStore,
         config: GatewayConfig,
         credentials: Arc<CredentialStore>,
@@ -199,8 +202,118 @@ impl GatewayHost {
             })),
             events,
         };
+        host.reconcile_pending_bot_deletion()
+            .await
+            .map_err(|rejection| Error::Config(rejection.message))?;
         host.spawn_swarm_deliveries(deliveries);
         Ok(host)
+    }
+
+    pub(crate) async fn reconcile_pending_bot_deletion(
+        &self,
+    ) -> std::result::Result<(), Rejection> {
+        if self
+            .state
+            .lock()
+            .await
+            .bots
+            .pending_bot_deletion()
+            .map_err(internal)?
+            .is_none()
+        {
+            return Ok(());
+        }
+        let mutation_gate = Arc::clone(&self.state.lock().await.session_mutations);
+        let _mutation = mutation_gate.write_owned().await;
+        let mut state = self.state.lock().await;
+        let Some(intent) = state.bots.pending_bot_deletion().map_err(internal)? else {
+            return Ok(());
+        };
+        let mut deletion = state
+            .bots
+            .bots()
+            .map_err(internal)?
+            .iter()
+            .any(|bot| bot.id == intent.bot_id)
+            .then(|| {
+                state
+                    .bots
+                    .prepare_bot_deletion(&intent.bot_id, intent.expected_revision)
+                    .map_err(invalid_bot)
+            })
+            .transpose()?;
+        if let Some(deletion) = &mut deletion {
+            deletion.release_state_lock();
+        }
+        let mut file_deletion =
+            prepare_session_tree_deletion(&mut state, &intent.session_ids, true).await?;
+        let bot_store = Arc::clone(&state.bots);
+        let swarm_store = Arc::clone(&state.swarm);
+        let scratchpad = state.scratchpad.clone();
+        drop(state);
+
+        swarm_store
+            .remove_bot(&intent.bot_id)
+            .await
+            .map_err(invalid_swarm)?;
+        if let Some(deletion) = deletion {
+            bot_store.delete_bot(deletion).map_err(invalid_bot)?;
+        }
+        let mut state = self.state.lock().await;
+        let file_warning = remove_session_trees(
+            &mut state,
+            &intent.session_roots,
+            &intent.session_ids,
+            &mut file_deletion,
+            true,
+            true,
+        )
+        .await?;
+        drop(state);
+        if let Some(warning) = file_warning {
+            return Err(warning);
+        }
+        bot_store
+            .cleanup_bot_deletion_files(&intent)
+            .map_err(internal)?;
+        if intent.disbanded_swarm
+            && let Some(swarm_id) = &intent.swarm_id
+        {
+            scratchpad.clear_swarm(swarm_id).await.map_err(internal)?;
+        }
+        bot_store
+            .clear_bot_deletion(&intent.bot_id)
+            .map_err(internal)
+    }
+
+    async fn begin_mutation(
+        &self,
+    ) -> std::result::Result<tokio::sync::OwnedRwLockReadGuard<()>, Rejection> {
+        let (gate, bots) = {
+            let state = self.state.lock().await;
+            (
+                Arc::clone(&state.session_mutations),
+                Arc::clone(&state.bots),
+            )
+        };
+        let mutation = gate.read_owned().await;
+        reject_pending_bot_deletion(&bots)?;
+        Ok(mutation)
+    }
+
+    async fn begin_exclusive_mutation(
+        &self,
+    ) -> std::result::Result<tokio::sync::OwnedRwLockWriteGuard<()>, Rejection> {
+        let (gate, bots) = {
+            let state = self.state.lock().await;
+            (
+                Arc::clone(&state.session_mutations),
+                Arc::clone(&state.bots),
+            )
+        };
+        let mutation = gate.write_owned().await;
+        reject_pending_bot_deletion(&bots)?;
+        Ok(mutation)
     }
 
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<ServerFrame> {
@@ -212,6 +325,8 @@ impl GatewayHost {
     }
 
     pub(crate) async fn ready(&self) -> std::result::Result<ReadyPayload, Rejection> {
+        self.reconcile_pending_bot_deletion().await?;
+        let _access = self.begin_mutation().await?;
         let state = self.state.lock().await;
         gateway_ready(&state).await
     }
@@ -221,6 +336,7 @@ impl GatewayHost {
         scope: &crate::wire::ScratchpadScope,
         operation: Op,
     ) -> std::result::Result<FrontendContribution, Rejection> {
+        let _mutation = self.begin_mutation().await?;
         let Op::CapabilityCommand {
             capability,
             command,
@@ -304,6 +420,7 @@ impl GatewayHost {
     }
 
     pub(crate) async fn sessions(&self) -> std::result::Result<Vec<SessionRecord>, Rejection> {
+        let _access = self.begin_mutation().await?;
         let state = self.state.lock().await;
         session_catalog(&state.checkpoints, &state.activities)
             .await
@@ -316,7 +433,8 @@ impl GatewayHost {
         leader_bot_id: String,
         member_bot_ids: Vec<String>,
     ) -> std::result::Result<Vec<SwarmRecord>, Rejection> {
-        let swarms = {
+        let _mutation = self.begin_mutation().await?;
+        let (swarm, ids) = {
             let state = self.state.lock().await;
             let mut ids = vec![leader_bot_id.clone()];
             ids.extend(
@@ -328,13 +446,13 @@ impl GatewayHost {
                 state.bots.bot(bot_id).map_err(invalid_bot)?;
             }
             validate_swarm_members(&leader_bot_id, &ids).map_err(invalid_swarm)?;
-            state
-                .swarm
-                .create(title, leader_bot_id, ids)
-                .await
-                .map_err(invalid_swarm)?;
-            state.swarm.records().await.map_err(internal)?
+            (Arc::clone(&state.swarm), ids)
         };
+        swarm
+            .create(title, leader_bot_id, ids)
+            .await
+            .map_err(invalid_swarm)?;
+        let swarms = swarm.records().await.map_err(internal)?;
         self.broadcast_swarms(&swarms);
         Ok(swarms)
     }
@@ -344,16 +462,14 @@ impl GatewayHost {
         swarm_id: &str,
         bot_id: String,
     ) -> std::result::Result<Vec<SwarmRecord>, Rejection> {
-        let swarms = {
+        let _mutation = self.begin_mutation().await?;
+        let swarm = {
             let state = self.state.lock().await;
             state.bots.bot(&bot_id).map_err(invalid_bot)?;
-            state
-                .swarm
-                .join(swarm_id, bot_id)
-                .await
-                .map_err(invalid_swarm)?;
-            state.swarm.records().await.map_err(internal)?
+            Arc::clone(&state.swarm)
         };
+        swarm.join(swarm_id, bot_id).await.map_err(invalid_swarm)?;
+        let swarms = swarm.records().await.map_err(internal)?;
         self.broadcast_swarms(&swarms);
         Ok(swarms)
     }
@@ -363,6 +479,7 @@ impl GatewayHost {
         swarm_id: &str,
         bot_id: &str,
     ) -> std::result::Result<Vec<SwarmRecord>, Rejection> {
+        let _mutation = self.begin_mutation().await?;
         let swarm = {
             let state = self.state.lock().await;
             state.bots.bot(bot_id).map_err(invalid_bot)?;
@@ -379,6 +496,7 @@ impl GatewayHost {
         swarm_id: &str,
         title: String,
     ) -> std::result::Result<Vec<SwarmRecord>, Rejection> {
+        let _mutation = self.begin_mutation().await?;
         let swarms = {
             let state = self.state.lock().await;
             state
@@ -396,11 +514,49 @@ impl GatewayHost {
         &self,
         swarm_id: &str,
     ) -> std::result::Result<Vec<SwarmRecord>, Rejection> {
+        let _mutation = self.begin_mutation().await?;
         let (swarm, scratchpad) = {
             let state = self.state.lock().await;
             (Arc::clone(&state.swarm), state.scratchpad.clone())
         };
         disband_swarm_with_scratchpad(&swarm, &scratchpad, swarm_id).await?;
+        let swarms = swarm.records().await.map_err(internal)?;
+        self.broadcast_swarms(&swarms);
+        Ok(swarms)
+    }
+
+    pub(crate) async fn post_swarm_message(
+        &self,
+        swarm_id: &str,
+        workspace: &Path,
+        text: String,
+    ) -> std::result::Result<Vec<SwarmRecord>, Rejection> {
+        let _mutation = self.begin_mutation().await?;
+        let (swarm, workspace) = {
+            let state = self.state.lock().await;
+            let record = state
+                .swarm
+                .records()
+                .await
+                .map_err(internal)?
+                .into_iter()
+                .find(|swarm| swarm.id == swarm_id)
+                .ok_or_else(|| invalid_swarm(format!("unknown swarm `{swarm_id}`")))?;
+            let bot = state.bots.bot(&record.leader_bot_id).map_err(invalid_bot)?;
+            let tls = state
+                .config
+                .lock()
+                .map_err(|_| internal("gateway configuration lock is poisoned"))?
+                .tls
+                .clone();
+            let spec = ChatSpec::for_bot(workspace, &bot, state.store.state_dir(), tls.as_ref())
+                .map_err(invalid_workspace)?;
+            (Arc::clone(&state.swarm), spec.workspace)
+        };
+        swarm
+            .post_user(swarm_id, workspace, text)
+            .await
+            .map_err(invalid_swarm)?;
         let swarms = swarm.records().await.map_err(internal)?;
         self.broadcast_swarms(&swarms);
         Ok(swarms)
@@ -423,6 +579,7 @@ impl GatewayHost {
     }
 
     pub(crate) async fn bots(&self) -> std::result::Result<Vec<crate::wire::BotRecord>, Rejection> {
+        let _access = self.begin_mutation().await?;
         self.state.lock().await.bots.bots().map_err(internal)
     }
 
@@ -431,6 +588,7 @@ impl GatewayHost {
         name: &str,
         description: &str,
     ) -> std::result::Result<crate::wire::BotRecord, Rejection> {
+        let _mutation = self.begin_mutation().await?;
         let state = self.state.lock().await;
         let defaults = state
             .config
@@ -464,9 +622,8 @@ impl GatewayHost {
         tint: crate::wire::ProviderTint,
         config: AgentComposition,
     ) -> std::result::Result<crate::wire::BotRecord, Rejection> {
+        let _mutation = self.begin_exclusive_mutation().await?;
         let mut state = self.state.lock().await;
-        let mutation_gate = Arc::clone(&state.session_mutations);
-        let _mutation = mutation_gate.write_owned().await;
         validate_bot_config(&state, &config)?;
         let previous = state.bots.bot(id).map_err(invalid_bot)?;
         if previous.config.revision != expected_revision {
@@ -523,9 +680,8 @@ impl GatewayHost {
         id: &str,
         expected_revision: u64,
     ) -> std::result::Result<(Vec<crate::wire::BotRecord>, Vec<String>), Rejection> {
+        let _mutation = self.begin_exclusive_mutation().await?;
         let mut state = self.state.lock().await;
-        let mutation_gate = Arc::clone(&state.session_mutations);
-        let _mutation = mutation_gate.write_owned().await;
         let bot = state.bots.bot(id).map_err(invalid_bot)?;
         if bot.config.revision != expected_revision {
             return Err(Rejection {
@@ -540,39 +696,81 @@ impl GatewayHost {
                 "the built-in @mobius Bot cannot be deleted",
             ));
         }
-        let deletion = state
+        let (session_roots, session_ids, mut file_deletion) =
+            prepare_bot_session_tree_deletion(&mut state, id).await?;
+        let planned_swarm = state
+            .swarm
+            .planned_bot_removal(id)
+            .await
+            .map_err(invalid_swarm)?;
+        let mut deletion = state
             .bots
             .prepare_bot_deletion(id, expected_revision)
             .map_err(invalid_bot)?;
-        let summaries = gateway_session_summaries(&state.checkpoints)
-            .await
-            .map_err(internal)?;
-        let (session_roots, session_ids) = bot_session_trees(id, &summaries);
-        let swarm = state.swarm.snapshot_for_bot(id).await.map_err(internal)?;
-        delete_session_trees(&mut state, &session_roots, &session_ids).await?;
-        if let Some(snapshot) = &swarm {
-            if snapshot.swarm.leader_bot_id == id {
-                disband_swarm_with_scratchpad(&state.swarm, &state.scratchpad, &snapshot.swarm.id)
-                    .await?;
-            } else {
-                state
-                    .swarm
-                    .leave(&snapshot.swarm.id, id)
-                    .await
-                    .map_err(invalid_swarm)?;
-            }
-        }
-        state.bots.delete_bot(deletion).map_err(invalid_bot)?;
-        let bots = state.bots.bots().map_err(internal)?;
-        let swarms = state.swarm.records().await.map_err(internal)?;
+        let bot_store = Arc::clone(&state.bots);
+        let swarm_store = Arc::clone(&state.swarm);
+        let scratchpad = state.scratchpad.clone();
+        let intent = bot_store
+            .record_bot_deletion(
+                &mut deletion,
+                &session_roots,
+                &session_ids,
+                planned_swarm
+                    .as_ref()
+                    .map(|removal| (removal.swarm_id.as_str(), removal.disbanded)),
+            )
+            .map_err(invalid_bot)?;
         drop(state);
-        if !session_ids.is_empty() {
-            self.broadcast_sessions().await?;
+        let swarm = swarm_store.remove_bot(id).await.map_err(invalid_swarm)?;
+
+        bot_store.delete_bot(deletion).map_err(invalid_bot)?;
+        let bots = bot_store.bots().map_err(internal)?;
+        let mut state = self.state.lock().await;
+        let mut cleanup_errors = Vec::new();
+        match remove_session_trees(
+            &mut state,
+            &session_roots,
+            &session_ids,
+            &mut file_deletion,
+            true,
+            true,
+        )
+        .await
+        {
+            Ok(Some(warning)) => return Err(warning),
+            Ok(None) => {}
+            Err(rejection) => return Err(rejection),
+        }
+        drop(state);
+        bot_store
+            .cleanup_bot_deletion_files(&intent)
+            .map_err(internal)?;
+        if intent.disbanded_swarm
+            && let Some(swarm_id) = &intent.swarm_id
+            && let Err(error) = scratchpad.clear_swarm(swarm_id).await
+        {
+            return Err(internal(error));
+        }
+        bot_store.clear_bot_deletion(id).map_err(invalid_bot)?;
+        if !session_ids.is_empty()
+            && let Err(rejection) = self.broadcast_sessions().await
+        {
+            cleanup_errors.push(rejection.message);
         }
         if swarm.is_some() {
-            self.broadcast_swarms(&swarms);
+            match swarm_store.records().await {
+                Ok(swarms) => self.broadcast_swarms(&swarms),
+                Err(error) => cleanup_errors.push(error.to_string()),
+            }
         }
         self.broadcast_bots(&bots);
+        for message in cleanup_errors {
+            let _ = self.events.send(ServerFrame::new(ServerMessage::Error {
+                code: "bot_cleanup".into(),
+                message,
+                fatal: false,
+            }));
+        }
         Ok((bots, session_ids))
     }
 
@@ -595,8 +793,21 @@ impl GatewayHost {
         workspace: &Path,
         bot_id: &str,
     ) -> std::result::Result<HostHandle, Rejection> {
-        self.create_session_with_id(workspace, bot_id, Uuid::new_v4().to_string())
+        let _mutation = self.begin_mutation().await?;
+        self.create_session_with_id(workspace, bot_id, Uuid::new_v4().to_string(), true)
             .await
+    }
+
+    pub(crate) async fn hidden_bot_sessions(
+        &self,
+        bot_id: &str,
+    ) -> std::result::Result<Vec<SessionRecord>, Rejection> {
+        let _access = self.begin_mutation().await?;
+        let state = self.state.lock().await;
+        state.bots.bot(bot_id).map_err(invalid_bot)?;
+        hidden_bot_session_catalog(&state.checkpoints, &state.activities, bot_id)
+            .await
+            .map_err(internal)
     }
 
     async fn create_session_with_id(
@@ -604,6 +815,7 @@ impl GatewayHost {
         workspace: &Path,
         bot_id: &str,
         session_id: String,
+        catalog_visible: bool,
     ) -> std::result::Result<HostHandle, Rejection> {
         validate_session_id(&session_id).map_err(|_| invalid_session_id())?;
         let mut state = self.state.lock().await;
@@ -616,8 +828,9 @@ impl GatewayHost {
             config.tls.clone()
         };
         let bot = state.bots.bot(bot_id).map_err(invalid_bot)?;
-        let spec = ChatSpec::for_bot(workspace, &bot, state.store.state_dir(), tls.as_ref())
+        let mut spec = ChatSpec::for_bot(workspace, &bot, state.store.state_dir(), tls.as_ref())
             .map_err(invalid_workspace)?;
+        spec.catalog_visible = catalog_visible;
         let host = HostHandle::start(
             state.store.clone(),
             Arc::clone(&state.config),
@@ -640,7 +853,9 @@ impl GatewayHost {
         .map_err(internal)?;
         state.sessions.insert(session_id, host.clone());
         drop(state);
-        self.broadcast_sessions().await?;
+        if catalog_visible {
+            self.broadcast_sessions().await?;
+        }
         Ok(host)
     }
 
@@ -671,6 +886,7 @@ impl GatewayHost {
         &self,
         session_id: &str,
     ) -> std::result::Result<HostHandle, Rejection> {
+        let _mutation = self.begin_mutation().await?;
         let host = self
             .open_session_with_cache(session_id, true)
             .await
@@ -705,13 +921,14 @@ impl GatewayHost {
             .map_err(|_| internal("gateway configuration lock is poisoned"))?
             .tls
             .clone();
-        let spec = ChatSpec::from_metadata(
+        let mut spec = ChatSpec::from_metadata(
             &checkpoint.metadata,
             &state.bots,
             state.store.state_dir(),
             tls.as_ref(),
         )
         .map_err(invalid_config)?;
+        spec.catalog_visible = checkpoint.catalog_visible;
         if checkpoint.session_context.bot_id != spec.bot_id {
             return Err(invalid_session_bot());
         }
@@ -756,7 +973,34 @@ impl GatewayHost {
             let Some(gateway_state) = state.upgrade() else {
                 return;
             };
-            let swarm = Arc::clone(&gateway_state.lock().await.swarm);
+            let (swarm, terminal_runs) = {
+                let gateway = gateway_state.lock().await;
+                (
+                    Arc::clone(&gateway.swarm),
+                    gateway
+                        .bots
+                        .history(None)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|run| {
+                            let workspace = gateway
+                                .bots
+                                .routine(&run.routine_id)
+                                .ok()
+                                .map(|routine| routine.workspace);
+                            (run, workspace)
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            };
+            for (run, workspace) in terminal_runs
+                .iter()
+                .filter(|(run, _)| run.status != RoutineRunStatus::Running)
+            {
+                let _ = swarm
+                    .project_routine_outcome(run, None, workspace.clone())
+                    .await;
+            }
             let startup = match swarm.pending_recipient_bot_ids().await {
                 Ok(startup) => startup,
                 Err(error) => {
@@ -771,6 +1015,11 @@ impl GatewayHost {
             drop(gateway_state);
 
             let mut attempts = HashMap::new();
+            if let Ok(attention) = swarm.pending_user_attention().await {
+                for request in attention {
+                    swarm.notify_user_attention(&request.entry.id);
+                }
+            }
             for target_bot_id in startup {
                 let Some(gateway_state) = state.upgrade() else {
                     return;
@@ -836,6 +1085,11 @@ impl GatewayHost {
                     for target_bot_id in targets {
                         swarm.notify_pending(&target_bot_id);
                     }
+                    if let Ok(attention) = swarm.pending_user_attention().await {
+                        for request in attention {
+                            swarm.notify_user_attention(&request.entry.id);
+                        }
+                    }
                 }
                 Err(error) => {
                     let _ = self.events.send(ServerFrame::new(ServerMessage::Error {
@@ -847,10 +1101,21 @@ impl GatewayHost {
             }
             return;
         }
+        if let SwarmDelivery::UserAttention { message_id } = &delivery {
+            if let Err(rejection) = self.deliver_user_attention(message_id).await {
+                let _ = self.events.send(ServerFrame::new(ServerMessage::Error {
+                    code: "swarm_attention".into(),
+                    message: rejection.message,
+                    fatal: false,
+                }));
+            }
+            return;
+        }
         let target_bot_id = match delivery {
             SwarmDelivery::Changed
             | SwarmDelivery::CatalogChanged
-            | SwarmDelivery::RetryPending => {
+            | SwarmDelivery::RetryPending
+            | SwarmDelivery::UserAttention { .. } => {
                 unreachable!("handled above")
             }
             SwarmDelivery::Acknowledged {
@@ -914,13 +1179,18 @@ impl GatewayHost {
         target_bot_id: &str,
         attempts: &mut HashMap<String, SwarmDeliveryAttempt>,
     ) -> std::result::Result<(), Rejection> {
-        let (swarm, session_mutations) = {
+        let (swarm, bots, session_mutations) = {
             let state = self.state.lock().await;
             (
                 Arc::clone(&state.swarm),
+                Arc::clone(&state.bots),
                 Arc::clone(&state.session_mutations),
             )
         };
+        let _mutation = Arc::clone(&session_mutations).read_owned().await;
+        if bots.pending_bot_deletion().map_err(internal)?.is_some() {
+            return Ok(());
+        }
         let Some(claim) = swarm
             .claim_next_delivery(target_bot_id)
             .await
@@ -930,7 +1200,9 @@ impl GatewayHost {
         };
         let message_id = claim.delivery().entry.id.clone();
         let session_id = claim.session_id().to_owned();
-        let workspace = {
+        let workspace = if let Some(workspace) = claim.delivery().workspace.clone() {
+            workspace
+        } else {
             let state = self.state.lock().await;
             let checkpoint = state
                 .checkpoints
@@ -953,22 +1225,44 @@ impl GatewayHost {
             .map_err(invalid_config)?
             .workspace
         };
-        let checkpoint_exists = {
+        let (checkpoint_exists, message_recorded) = {
             let state = self.state.lock().await;
-            state
+            let checkpoint_exists = state
                 .checkpoints
                 .load(&session_id)
                 .await
                 .map_err(internal)?
-                .is_some()
+                .is_some();
+            let message_recorded = if checkpoint_exists {
+                journal_contains_submission(state.checkpoints.as_ref(), &session_id, &message_id)
+                    .await
+                    .map_err(internal)?
+            } else {
+                false
+            };
+            (checkpoint_exists, message_recorded)
         };
         let host = if checkpoint_exists {
             self.open_session_with_cache(&session_id, true).await?.0
         } else {
-            self.create_session_with_id(&workspace, target_bot_id, session_id)
+            self.create_session_with_id(&workspace, target_bot_id, session_id, false)
                 .await?
         };
-        let submission = peer_message_submission(claim.delivery().entry.clone());
+        if message_recorded {
+            if claim
+                .accept(std::future::ready(()))
+                .await
+                .map_err(internal)?
+                .is_some()
+            {
+                attempts.insert(
+                    target_bot_id.to_owned(),
+                    SwarmDeliveryAttempt::Submitted(message_id),
+                );
+            }
+            return Ok(());
+        }
+        let submission = swarm_message_submission(claim.delivery().entry.clone());
         let Some(submission) = claim
             .accept(host.submit(submission))
             .await
@@ -1004,11 +1298,120 @@ impl GatewayHost {
         }
     }
 
+    async fn deliver_user_attention(&self, message_id: &str) -> std::result::Result<(), Rejection> {
+        let (swarm, checkpoints, bots, state_dir, tls, session_mutations) = {
+            let state = self.state.lock().await;
+            (
+                Arc::clone(&state.swarm),
+                Arc::clone(&state.checkpoints),
+                Arc::clone(&state.bots),
+                state.store.state_dir().to_path_buf(),
+                state
+                    .config
+                    .lock()
+                    .map_err(|_| internal("gateway configuration lock is poisoned"))?
+                    .tls
+                    .clone(),
+                Arc::clone(&state.session_mutations),
+            )
+        };
+        let _mutation = session_mutations.read_owned().await;
+        if bots.pending_bot_deletion().map_err(internal)?.is_some() {
+            return Ok(());
+        }
+        let Some(request) = swarm
+            .pending_user_attention()
+            .await
+            .map_err(internal)?
+            .into_iter()
+            .find(|request| request.entry.id == message_id)
+        else {
+            return Ok(());
+        };
+        let root_checkpoint = checkpoints
+            .load(&request.root_source_session_id)
+            .await
+            .map_err(internal)?;
+        let root_workspace = root_checkpoint
+            .as_ref()
+            .map(|checkpoint| {
+                ChatSpec::from_metadata(&checkpoint.metadata, &bots, &state_dir, tls.as_ref())
+                    .map(|spec| spec.workspace)
+            })
+            .transpose()
+            .map_err(invalid_config)?;
+        let proposed_session_id = request.assigned_session_id.clone().unwrap_or_else(|| {
+            root_checkpoint.as_ref().map_or_else(
+                || Uuid::new_v4().to_string(),
+                |checkpoint| {
+                    if checkpoint.catalog_visible {
+                        request.root_source_session_id.clone()
+                    } else {
+                        Uuid::new_v4().to_string()
+                    }
+                },
+            )
+        });
+        let request = swarm
+            .assign_user_attention(message_id, &proposed_session_id)
+            .await
+            .map_err(internal)?;
+        let session_id = request
+            .assigned_session_id
+            .as_deref()
+            .expect("assigned attention has a conversation");
+        let assigned_checkpoint = checkpoints.load(session_id).await.map_err(internal)?;
+        if assigned_checkpoint.is_some()
+            && journal_contains_submission(checkpoints.as_ref(), session_id, message_id)
+                .await
+                .map_err(internal)?
+        {
+            swarm
+                .acknowledge_user_attention(message_id)
+                .await
+                .map_err(internal)?;
+            return Ok(());
+        }
+        let host = if assigned_checkpoint.is_some() {
+            self.open_session_with_cache(session_id, true).await?.0
+        } else {
+            let workspace = request
+                .workspace
+                .or(root_workspace)
+                .ok_or_else(|| Rejection {
+                    code: "swarm_attention_origin",
+                    message: "the causal chat and explicit Swarm Chat workspace are unavailable"
+                        .into(),
+                    fatal: false,
+                })?;
+            self.create_session_with_id(
+                &workspace,
+                &request.leader_bot_id,
+                session_id.to_owned(),
+                true,
+            )
+            .await?
+        };
+        match host.submit(user_attention_submission(request.entry)).await {
+            Ok(()) => Ok(()),
+            Err(rejection) if matches!(rejection.code, "agent_busy" | "agent_stopped") => {
+                let message_id = message_id.to_owned();
+                tokio::spawn(async move {
+                    host.wait_idle().await;
+                    swarm.notify_user_attention(&message_id);
+                });
+                Ok(())
+            }
+            Err(rejection) => Err(rejection),
+        }
+    }
+
     pub(crate) async fn rename_session(
         &self,
         session_id: &str,
         title: &str,
     ) -> std::result::Result<(), Rejection> {
+        let _mutation = self.begin_mutation().await?;
         let title = validate_session_title(title)?;
         let (host, checkpoints, catalog_lock) = {
             let state = self.state.lock().await;
@@ -1051,6 +1454,7 @@ impl GatewayHost {
         session_id: &str,
         pinned: bool,
     ) -> std::result::Result<(), Rejection> {
+        let _mutation = self.begin_mutation().await?;
         let (host, checkpoints, catalog_lock) = {
             let state = self.state.lock().await;
             require_catalog_session(&state, session_id).await?;
@@ -1091,13 +1495,14 @@ impl GatewayHost {
         &self,
         session_id: &str,
     ) -> std::result::Result<Vec<String>, Rejection> {
+        let _mutation = self.begin_exclusive_mutation().await?;
         let mut state = self.state.lock().await;
         require_catalog_session(&state, session_id).await?;
         let summaries = gateway_session_summaries(&state.checkpoints)
             .await
             .map_err(internal)?;
         let session_ids = session_tree_ids(session_id, &summaries).ok_or_else(unknown_session)?;
-        delete_session_trees(&mut state, &[session_id.into()], &session_ids).await?;
+        delete_session_trees(&mut state, &[session_id.into()], &session_ids, false).await?;
         drop(state);
         self.broadcast_sessions().await?;
         Ok(session_ids)
@@ -1111,6 +1516,7 @@ impl GatewayHost {
         schedule: crate::wire::RoutineSchedule,
         ends_at: Option<i64>,
     ) -> std::result::Result<(), Rejection> {
+        let _mutation = self.begin_mutation().await?;
         let state = self.state.lock().await;
         validate_bot_workspace(&state, bot_id, workspace)?;
         state
@@ -1134,6 +1540,7 @@ impl GatewayHost {
         ends_at: Option<i64>,
         enabled: bool,
     ) -> std::result::Result<(), Rejection> {
+        let _mutation = self.begin_mutation().await?;
         let state = self.state.lock().await;
         validate_bot_workspace(&state, bot_id, workspace)?;
         state
@@ -1155,16 +1562,28 @@ impl GatewayHost {
         &self,
         routine_id: &str,
     ) -> std::result::Result<(), Rejection> {
+        let _mutation = self.begin_exclusive_mutation().await?;
         let mut state = self.state.lock().await;
-        let mutation_gate = Arc::clone(&state.session_mutations);
-        let _mutation = mutation_gate.write_owned().await;
+        let roots = state
+            .bots
+            .history(Some(routine_id))
+            .map_err(invalid_routine)?
+            .into_iter()
+            .filter_map(|run| run.session_id)
+            .collect();
+        let summaries = gateway_session_summaries(&state.checkpoints)
+            .await
+            .map_err(internal)?;
+        let session_ids = session_trees(roots, &summaries).1;
+        let mut file_deletion =
+            prepare_session_tree_deletion(&mut state, &session_ids, false).await?;
+        let summaries = gateway_session_summaries(&state.checkpoints)
+            .await
+            .map_err(internal)?;
         let deletion = state
             .bots
             .prepare_routine_deletion(routine_id)
             .map_err(invalid_routine)?;
-        let summaries = gateway_session_summaries(&state.checkpoints)
-            .await
-            .map_err(internal)?;
         let roots = deletion
             .session_ids()
             .iter()
@@ -1172,14 +1591,32 @@ impl GatewayHost {
             .cloned()
             .collect();
         let (session_roots, session_ids) = session_trees(roots, &summaries);
-        delete_session_trees(&mut state, &session_roots, &session_ids).await?;
         state
             .bots
             .delete_routine(deletion)
             .map_err(invalid_routine)?;
+        let cleanup = remove_session_trees(
+            &mut state,
+            &session_roots,
+            &session_ids,
+            &mut file_deletion,
+            true,
+            true,
+        )
+        .await;
         drop(state);
         if !session_ids.is_empty() {
-            self.broadcast_sessions().await?;
+            let _ = self.broadcast_sessions().await;
+        }
+        if let Some(rejection) = match cleanup {
+            Ok(warning) => warning,
+            Err(rejection) => Some(rejection),
+        } {
+            let _ = self.events.send(ServerFrame::new(ServerMessage::Error {
+                code: "routine_cleanup".into(),
+                message: rejection.message,
+                fatal: false,
+            }));
         }
         Ok(())
     }
@@ -1188,6 +1625,7 @@ impl GatewayHost {
         &self,
         routine_id: String,
     ) -> std::result::Result<(), Rejection> {
+        let _mutation = self.begin_mutation().await?;
         let state = self.state.lock().await;
         let run = match state.bots.begin_run(&routine_id).map_err(invalid_routine)? {
             BeginRun::Started(run) => run,
@@ -1207,6 +1645,33 @@ impl GatewayHost {
         routine_id: String,
         run: ActiveRoutineRun,
     ) -> std::result::Result<(), Rejection> {
+        let _mutation = match self.begin_mutation().await {
+            Ok(mutation) => mutation,
+            Err(rejection) => {
+                let (swarm, completed, workspace) = {
+                    let state = self.state.lock().await;
+                    let workspace = state
+                        .bots
+                        .routine(&routine_id)
+                        .ok()
+                        .map(|routine| routine.workspace);
+                    let completed = state
+                        .bots
+                        .finish_run(
+                            run,
+                            RoutineRunStatus::Skipped,
+                            Some(rejection.message.clone()),
+                        )
+                        .map_err(internal)?;
+                    (Arc::clone(&state.swarm), completed, workspace)
+                };
+                swarm
+                    .project_routine_outcome(&completed, None, workspace)
+                    .await
+                    .map_err(internal)?;
+                return Err(rejection);
+            }
+        };
         let state = self.state.lock().await;
         self.run_routine_with_state(state, routine_id, run).await
     }
@@ -1216,6 +1681,7 @@ impl GatewayHost {
         run_id: &str,
         before_sequence: Option<u64>,
     ) -> std::result::Result<crate::wire::RoutineRunPreview, Rejection> {
+        let _mutation = self.begin_mutation().await?;
         let (bots, run) = {
             let state = self.state.lock().await;
             let bots = Arc::clone(&state.bots);
@@ -1248,9 +1714,8 @@ impl GatewayHost {
         &self,
         run_id: &str,
     ) -> std::result::Result<(), Rejection> {
+        let _mutation = self.begin_exclusive_mutation().await?;
         let mut state = self.state.lock().await;
-        let mutation_gate = Arc::clone(&state.session_mutations);
-        let _mutation = mutation_gate.write_owned().await;
         let run = state.bots.run(run_id).map_err(invalid_routine)?;
         if run.status == RoutineRunStatus::Running {
             return Err(Rejection {
@@ -1268,13 +1733,35 @@ impl GatewayHost {
         } else {
             Vec::new()
         };
-        if let Some(session_root) = session_root.filter(|_| !session_ids.is_empty()) {
-            delete_session_trees(&mut state, &[session_root], &session_ids).await?;
-        }
+        let mut file_deletion =
+            prepare_session_tree_deletion(&mut state, &session_ids, false).await?;
         state.bots.delete_run(run_id).map_err(invalid_routine)?;
+        let cleanup = if let Some(session_root) = session_root.filter(|_| !session_ids.is_empty()) {
+            remove_session_trees(
+                &mut state,
+                &[session_root],
+                &session_ids,
+                &mut file_deletion,
+                true,
+                true,
+            )
+            .await
+        } else {
+            Ok(None)
+        };
         drop(state);
         if !session_ids.is_empty() {
-            self.broadcast_sessions().await?;
+            let _ = self.broadcast_sessions().await;
+        }
+        if let Some(rejection) = match cleanup {
+            Ok(warning) => warning,
+            Err(rejection) => Some(rejection),
+        } {
+            let _ = self.events.send(ServerFrame::new(ServerMessage::Error {
+                code: "routine_cleanup".into(),
+                message: rejection.message,
+                fatal: false,
+            }));
         }
         Ok(())
     }
@@ -1285,6 +1772,11 @@ impl GatewayHost {
         routine_id: String,
         run: ActiveRoutineRun,
     ) -> std::result::Result<(), Rejection> {
+        let routine_workspace = state
+            .bots
+            .routine(&routine_id)
+            .ok()
+            .map(|routine| routine.workspace);
         let preflight: std::result::Result<_, Rejection> = (|| {
             let routine = state.bots.routine(&routine_id).map_err(invalid_routine)?;
             let (_, input) = state
@@ -1311,7 +1803,7 @@ impl GatewayHost {
         let (routine, input, spec) = match preflight {
             Ok(preflight) => preflight,
             Err(rejection) => {
-                state
+                let completed = state
                     .bots
                     .finish_run(
                         run,
@@ -1319,17 +1811,27 @@ impl GatewayHost {
                         Some(rejection.message.clone()),
                     )
                     .map_err(internal)?;
+                state
+                    .swarm
+                    .project_routine_outcome(&completed, None, routine_workspace)
+                    .await
+                    .map_err(internal)?;
                 return Err(rejection);
             }
         };
         if let Err(rejection) = state.ensure_capacity().await {
-            state
+            let completed = state
                 .bots
                 .finish_run(
                     run,
                     crate::wire::RoutineRunStatus::Skipped,
                     Some("the gateway active-chat limit was reached".into()),
                 )
+                .map_err(internal)?;
+            state
+                .swarm
+                .project_routine_outcome(&completed, None, routine_workspace)
+                .await
                 .map_err(internal)?;
             return Err(rejection);
         }
@@ -1358,13 +1860,18 @@ impl GatewayHost {
             Ok(host) => host,
             Err(error) => {
                 let message = error.to_string();
-                state
+                let completed = state
                     .bots
                     .finish_run(
                         run,
                         crate::wire::RoutineRunStatus::Failed,
                         Some(message.clone()),
                     )
+                    .map_err(internal)?;
+                state
+                    .swarm
+                    .project_routine_outcome(&completed, None, Some(routine.workspace.clone()))
+                    .await
                     .map_err(internal)?;
                 return Err(internal(message));
             }
@@ -1386,14 +1893,40 @@ impl GatewayHost {
                 broadcast
             }
             Err(rejection) => {
+                let completed = {
+                    let state = self.state.lock().await;
+                    state
+                        .bots
+                        .history(None)
+                        .map(|runs| {
+                            runs.into_iter()
+                                .find(|run| {
+                                    run.status != RoutineRunStatus::Running
+                                        && run.session_id.as_deref() == Some(session_id.as_str())
+                                })
+                                .map(|run| (Arc::clone(&state.swarm), run))
+                        })
+                        .map_err(internal)
+                };
+                let projection = match completed {
+                    Ok(Some((swarm, run))) => swarm
+                        .project_routine_outcome(&run, None, Some(routine.workspace.clone()))
+                        .await
+                        .map(|_| ())
+                        .map_err(internal),
+                    Ok(None) => Ok(()),
+                    Err(error) => Err(error),
+                };
                 let _ = host.stop_if_idle().await;
                 self.state.lock().await.sessions.remove(&session_id);
+                projection?;
                 Err(rejection)
             }
         }
     }
 
     pub(crate) async fn profile(&self) -> std::result::Result<ProfileSnapshot, Rejection> {
+        let _access = self.begin_mutation().await?;
         let (mut profile, checkpoints) = {
             let state = self.state.lock().await;
             let profile = state
@@ -1559,6 +2092,35 @@ async fn notify_swarm_delivery_after_mutation(
     swarm.notify_pending(&target_bot_id);
 }
 
+async fn journal_contains_submission(
+    checkpoints: &dyn CheckpointStore,
+    session_id: &str,
+    submission_id: &str,
+) -> Result<bool> {
+    let mut before_sequence = None;
+    loop {
+        let page = checkpoints
+            .event_page(
+                session_id,
+                EventPageRequest {
+                    before_sequence,
+                    limit: REPLAY_CAPACITY,
+                },
+            )
+            .await?;
+        if page.events.iter().any(|record| {
+            record.event.submission_id.as_deref() == Some(submission_id)
+                && matches!(record.event.msg, EventMsg::Message(_))
+        }) {
+            return Ok(true);
+        }
+        let Some(next) = page.next_before_sequence else {
+            return Ok(false);
+        };
+        before_sequence = Some(next);
+    }
+}
+
 fn validate_bot_config(
     state: &GatewayState,
     config: &AgentComposition,
@@ -1647,6 +2209,37 @@ fn bot_session_trees(bot_id: &str, summaries: &[SessionSummary]) -> (Vec<String>
     session_trees(roots, summaries)
 }
 
+async fn prepare_bot_session_tree_deletion(
+    state: &mut GatewayState,
+    bot_id: &str,
+) -> std::result::Result<(Vec<String>, Vec<String>, SessionFileDeletion), Rejection> {
+    let residents = state
+        .sessions
+        .values()
+        .filter(|host| host.bot_id() == bot_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    for host in residents {
+        if !host.stop_if_idle().await {
+            return Err(Rejection {
+                code: "agent_busy",
+                message: "finish or interrupt active Bot turns before deleting it".into(),
+                fatal: false,
+            });
+        }
+    }
+    let summaries = gateway_session_summaries(&state.checkpoints)
+        .await
+        .map_err(internal)?;
+    let (_, session_ids) = bot_session_trees(bot_id, &summaries);
+    let file_deletion = prepare_session_tree_deletion(state, &session_ids, true).await?;
+    let summaries = gateway_session_summaries(&state.checkpoints)
+        .await
+        .map_err(internal)?;
+    let (session_roots, session_ids) = bot_session_trees(bot_id, &summaries);
+    Ok((session_roots, session_ids, file_deletion))
+}
+
 fn session_trees(roots: Vec<String>, summaries: &[SessionSummary]) -> (Vec<String>, Vec<String>) {
     let mut seen = HashSet::new();
     let mut session_ids = Vec::new();
@@ -1666,15 +2259,33 @@ async fn delete_session_trees(
     state: &mut GatewayState,
     roots: &[String],
     session_ids: &[String],
+    allow_pending_swarm: bool,
 ) -> std::result::Result<(), Rejection> {
-    if session_ids.is_empty() {
-        return Ok(());
-    }
-    if state
-        .swarm
-        .has_pending_source_sessions(session_ids)
+    let mut file_deletion =
+        prepare_session_tree_deletion(state, session_ids, allow_pending_swarm).await?;
+    remove_session_trees(state, roots, session_ids, &mut file_deletion, false, false)
         .await
-        .map_err(internal)?
+        .map(|_| ())
+}
+
+async fn prepare_session_tree_deletion(
+    state: &mut GatewayState,
+    session_ids: &[String],
+    allow_pending_swarm: bool,
+) -> std::result::Result<SessionFileDeletion, Rejection> {
+    if session_ids.is_empty() {
+        return state
+            .session_files
+            .prepare_delete_sessions(session_ids)
+            .await
+            .map_err(internal);
+    }
+    if !allow_pending_swarm
+        && state
+            .swarm
+            .has_pending_source_sessions(session_ids)
+            .await
+            .map_err(internal)?
     {
         return Err(Rejection {
             code: "session_has_pending_swarm_delivery",
@@ -1694,14 +2305,32 @@ async fn delete_session_trees(
             });
         }
     }
+    state
+        .session_files
+        .prepare_delete_sessions(session_ids)
+        .await
+        .map_err(internal)
+}
+
+async fn remove_session_trees(
+    state: &mut GatewayState,
+    roots: &[String],
+    session_ids: &[String],
+    file_deletion: &mut SessionFileDeletion,
+    continue_after_file_error: bool,
+    missing_roots_are_deleted: bool,
+) -> std::result::Result<Option<Rejection>, Rejection> {
+    if session_ids.is_empty() {
+        return Ok(None);
+    }
     for id in session_ids {
         state.sessions.remove(id);
-        state
-            .session_files
-            .delete_session(id)
-            .await
-            .map_err(internal)?;
     }
+    let file_warning = match file_deletion.delete().await {
+        Ok(()) => None,
+        Err(error) if continue_after_file_error => Some(internal(error)),
+        Err(error) => return Err(internal(error)),
+    };
     let catalog_lock = Arc::clone(&state.catalog_lock);
     let _catalog = catalog_lock.lock().await;
     let mut metadata = load_session_metadata(&state.checkpoints)
@@ -1719,6 +2348,7 @@ async fn delete_session_trees(
             .delete_session(root)
             .await
             .map_err(internal)?
+            && !missing_roots_are_deleted
         {
             return Err(unknown_session());
         }
@@ -1728,7 +2358,7 @@ async fn delete_session_trees(
         .lock()
         .map_err(|_| internal("session activity lock is poisoned"))?
         .retain(|id, _| !session_ids.iter().any(|deleted| deleted == id));
-    Ok(())
+    Ok(file_warning)
 }
 
 async fn disband_swarm_with_scratchpad(
@@ -1736,8 +2366,8 @@ async fn disband_swarm_with_scratchpad(
     scratchpad: &ScratchpadStore,
     swarm_id: &str,
 ) -> std::result::Result<(), Rejection> {
-    scratchpad.clear_swarm(swarm_id).await.map_err(internal)?;
     swarm.disband(swarm_id).await.map_err(invalid_swarm)?;
+    let _ = scratchpad.clear_swarm(swarm_id).await;
     Ok(())
 }
 
@@ -1747,8 +2377,39 @@ async fn receive<T>(
     receiver.await.map_err(|_| stopped())?
 }
 
-fn peer_message_submission(entry: BoardEntry) -> Submission {
+fn swarm_message_submission(entry: BoardEntry) -> Submission {
     let message_id = entry.id;
+    let author = if entry.author.bot_id == "user" {
+        MessageAuthor::User
+    } else {
+        MessageAuthor::Peer {
+            message_id: message_id.clone(),
+            session_id: entry.source_session_id,
+            handle: entry.author.handle,
+        }
+    };
+    Submission {
+        id: message_id.clone(),
+        op: Op::Message {
+            message: MessageSubmission {
+                author,
+                text: entry.text,
+                attachments: Vec::new(),
+                requested_delivery: None,
+                target_turn_id: None,
+            },
+        },
+    }
+}
+
+fn user_attention_submission(entry: BoardEntry) -> Submission {
+    let message_id = entry.id;
+    let text = entry
+        .text
+        .split_whitespace()
+        .filter(|word| !word.starts_with('@'))
+        .collect::<Vec<_>>()
+        .join(" ");
     Submission {
         id: message_id.clone(),
         op: Op::Message {
@@ -1758,9 +2419,9 @@ fn peer_message_submission(entry: BoardEntry) -> Submission {
                     session_id: entry.source_session_id,
                     handle: entry.author.handle,
                 },
-                text: entry.text,
+                text: format!("Swarm escalation: {text}"),
                 attachments: Vec::new(),
-                requested_delivery: None,
+                requested_delivery: Some(ActiveMessageDelivery::Queue),
                 target_turn_id: None,
             },
         },
@@ -1773,6 +2434,17 @@ fn stopped() -> Rejection {
         message: "the gateway host stopped".into(),
         fatal: true,
     }
+}
+
+fn reject_pending_bot_deletion(bots: &BotStore) -> std::result::Result<(), Rejection> {
+    if bots.pending_bot_deletion().map_err(internal)?.is_some() {
+        return Err(Rejection {
+            code: "bot_deletion_recovery",
+            message: "finish Bot deletion recovery before changing gateway state".into(),
+            fatal: false,
+        });
+    }
+    Ok(())
 }
 
 fn internal(error: impl std::fmt::Display) -> Rejection {

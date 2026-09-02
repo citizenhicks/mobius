@@ -26,7 +26,55 @@ impl HostState {
         if let EventMsg::Message(message) = &event.msg
             && let Some(message_id) = peer_message_id(message)
         {
-            self.acknowledge_peer_message(message_id).await?;
+            self.swarm.acknowledge_user_attention(message_id).await?;
+        }
+        match &event.msg {
+            EventMsg::TurnStarted(_) => self.last_assistant_text = None,
+            EventMsg::AssistantMessage(message) => {
+                if let Some(text) = assistant_text(message) {
+                    self.last_assistant_text = Some(text);
+                }
+            }
+            EventMsg::ExecApprovalRequest(request) => {
+                if !self.spec.catalog_visible {
+                    self.swarm
+                        .project_attention(
+                            &self.spec.bot_id,
+                            &self.running.session_id,
+                            &request.id,
+                            &request.reason,
+                        )
+                        .await?;
+                }
+            }
+            EventMsg::TurnComplete(_) => {
+                let outcome = self.turn_error.as_ref().map_or_else(
+                    || SwarmRunOutcome::Succeeded {
+                        summary: self.last_assistant_text.clone(),
+                    },
+                    |message| SwarmRunOutcome::Failed {
+                        message: message.clone(),
+                    },
+                );
+                self.swarm
+                    .settle_delivery(&self.running.session_id, &self.spec.bot_id, outcome)
+                    .await?;
+            }
+            EventMsg::TurnAborted(turn) => {
+                self.swarm
+                    .settle_delivery(
+                        &self.running.session_id,
+                        &self.spec.bot_id,
+                        SwarmRunOutcome::Failed {
+                            message: self
+                                .turn_error
+                                .clone()
+                                .unwrap_or_else(|| turn.reason.clone()),
+                        },
+                    )
+                    .await?;
+            }
+            _ => {}
         }
         if opens_message_capacity(&event.msg) {
             self.swarm.notify_capacity_available(&self.spec.bot_id);
@@ -45,7 +93,13 @@ impl HostState {
         }
         let routine_completion = self.observe_routine_event(&event)?;
         if let Some((active, status, message)) = routine_completion {
-            self.bots.finish_run(active.run, status, message)?;
+            let summary = (status == RoutineRunStatus::Succeeded)
+                .then(|| self.last_assistant_text.clone())
+                .flatten();
+            let run = self.bots.finish_run(active.run, status, message)?;
+            self.swarm
+                .project_routine_outcome(&run, summary, None)
+                .await?;
         }
         if let Some(activity) = next_activity {
             self.set_activity(activity)?;
@@ -67,34 +121,71 @@ impl HostState {
         Ok(restart)
     }
 
-    pub(super) async fn acknowledge_replayed_peer_messages(&self) -> Result<()> {
-        let bot_id = self.spec.bot_id.as_str();
-        let pending = self.swarm.pending_deliveries(bot_id).await?;
-        if pending.is_empty() {
-            return Ok(());
-        }
-        let replayed = self
-            .replay
-            .iter()
-            .filter_map(|frame| match &frame.message {
-                ServerMessage::AgentEvent { record, .. } => match &record.event.msg {
-                    EventMsg::Message(message) => peer_message_id(message).map(str::to_owned),
-                    _ => None,
-                },
-                _ => None,
-            })
-            .collect::<HashSet<_>>();
-        for delivery in pending {
-            if replayed.contains(&delivery.entry.id) {
-                self.acknowledge_peer_message(&delivery.entry.id).await?;
+    pub(super) async fn reconcile_replayed_swarm_work(&self) -> Result<()> {
+        let mut error = None;
+        let mut summary = None;
+        let mut terminal = None;
+        let mut approvals = HashMap::new();
+        for frame in &self.replay {
+            let ServerMessage::AgentEvent { record, .. } = &frame.message else {
+                continue;
+            };
+            match &record.event.msg {
+                EventMsg::Message(message) => {
+                    if let Some(message_id) = peer_message_id(message) {
+                        self.swarm.acknowledge_user_attention(message_id).await?;
+                    }
+                }
+                EventMsg::TurnStarted(_) => {
+                    error = None;
+                    summary = None;
+                    terminal = None;
+                    approvals.clear();
+                }
+                EventMsg::AssistantMessage(message) => {
+                    if let Some(text) = assistant_text(message) {
+                        summary = Some(text);
+                    }
+                }
+                EventMsg::Error(event) => error = Some(event.message.clone()),
+                EventMsg::ExecApprovalRequest(event) => {
+                    approvals.insert(event.id.clone(), event.reason.clone());
+                }
+                EventMsg::TurnComplete(_) => {
+                    terminal = Some(error.clone().map_or_else(
+                        || SwarmRunOutcome::Succeeded {
+                            summary: summary.clone(),
+                        },
+                        |message| SwarmRunOutcome::Failed { message },
+                    ));
+                    approvals.clear();
+                }
+                EventMsg::TurnAborted(event) => {
+                    terminal = Some(SwarmRunOutcome::Failed {
+                        message: error.clone().unwrap_or_else(|| event.reason.clone()),
+                    });
+                    approvals.clear();
+                }
+                _ => {}
             }
         }
-        Ok(())
-    }
-
-    async fn acknowledge_peer_message(&self, message_id: &str) -> Result<()> {
-        let bot_id = self.spec.bot_id.as_str();
-        self.swarm.acknowledge(message_id, bot_id).await?;
+        if terminal.is_none() && !self.spec.catalog_visible {
+            for (request_id, reason) in approvals {
+                self.swarm
+                    .project_attention(
+                        &self.spec.bot_id,
+                        &self.running.session_id,
+                        &request_id,
+                        &reason,
+                    )
+                    .await?;
+            }
+        }
+        if let Some(outcome) = terminal {
+            self.swarm
+                .settle_delivery(&self.running.session_id, &self.spec.bot_id, outcome)
+                .await?;
+        }
         Ok(())
     }
 
@@ -300,18 +391,10 @@ impl HostState {
                 self.turn_error = Some(error.message.clone());
                 None
             }
-            EventMsg::TurnComplete(_) => {
-                let message = self.turn_error.take();
-                Some(SessionActivity {
-                    last_outcome: Some(if message.is_some() {
-                        SessionOutcome::Failed
-                    } else {
-                        SessionOutcome::Completed
-                    }),
-                    message,
-                    ..SessionActivity::default()
-                })
-            }
+            EventMsg::TurnComplete(_) => Some(completed_activity(
+                self.turn_error.take(),
+                self.last_assistant_text.as_deref(),
+            )),
             EventMsg::TurnAborted(turn) => {
                 let error = self.turn_error.take();
                 Some(SessionActivity {
@@ -399,6 +482,48 @@ impl HostState {
     }
 }
 
+const MAX_ACTIVITY_MESSAGE_BYTES: usize = 512;
+
+fn completed_activity(error: Option<String>, final_answer: Option<&str>) -> SessionActivity {
+    let failed = error.is_some();
+    SessionActivity {
+        last_outcome: Some(if failed {
+            SessionOutcome::Failed
+        } else {
+            SessionOutcome::Completed
+        }),
+        message: error.or_else(|| final_answer.map(bounded_activity_message)),
+        ..SessionActivity::default()
+    }
+}
+
+fn bounded_activity_message(message: &str) -> String {
+    if message.len() <= MAX_ACTIVITY_MESSAGE_BYTES {
+        return message.into();
+    }
+    let mut end = MAX_ACTIVITY_MESSAGE_BYTES;
+    while !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    message[..end].into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completed_activity_uses_the_bounded_final_answer_without_masking_failures() {
+        let completed = completed_activity(None, Some(&"é".repeat(300)));
+        assert_eq!(completed.last_outcome, Some(SessionOutcome::Completed));
+        assert!(completed.message.expect("final answer").len() <= MAX_ACTIVITY_MESSAGE_BYTES);
+
+        let failed = completed_activity(Some("model failed".into()), Some("stale answer"));
+        assert_eq!(failed.last_outcome, Some(SessionOutcome::Failed));
+        assert_eq!(failed.message.as_deref(), Some("model failed"));
+    }
+}
+
 fn account_turn_event(
     pending_turns: &mut usize,
     pending_messages: &mut HashSet<String>,
@@ -435,6 +560,16 @@ fn peer_message_id(message: &MessageEvent) -> Option<&str> {
         MessageAuthor::Peer { message_id, .. } => Some(message_id),
         MessageAuthor::User => None,
     }
+}
+
+fn assistant_text(message: &mobius::protocol::AssistantMessageEvent) -> Option<String> {
+    let text = message
+        .content
+        .iter()
+        .filter(|content| content.phase == ModelStepContentPhase::FinalAnswer)
+        .map(|content| content.text.as_str())
+        .collect::<String>();
+    (!text.trim().is_empty()).then_some(text)
 }
 
 fn opens_message_capacity(event: &EventMsg) -> bool {

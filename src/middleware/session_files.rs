@@ -8,7 +8,7 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 use tempfile::TempPath;
 use tokio::io::AsyncWriteExt as _;
-use tokio::sync::{Mutex, OnceCell};
+use tokio::sync::{Mutex, OnceCell, OwnedMutexGuard};
 use uuid::Uuid;
 
 use crate::protocol::{
@@ -75,6 +75,13 @@ pub struct SessionFileStore {
     // ponytail: immutable private blobs reuse one verified SHA-256 while metadata is unchanged.
     validated_blobs: Arc<StdMutex<BTreeMap<String, BlobValidationStamp>>>,
     initialized: Arc<OnceCell<()>>,
+}
+
+/// Prepared deletion whose commit lock prevents new uploads until cleanup finishes.
+pub struct SessionFileDeletion {
+    store: SessionFileStore,
+    session_ids: Vec<String>,
+    _commit: OwnedMutexGuard<()>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -237,19 +244,64 @@ impl SessionFileStore {
 
     /// Permanently removes every upload and artifact owned by one idle session.
     pub async fn delete_session(&self, session_id: &str) -> Result<()> {
-        validate_session_id(session_id)?;
-        self.ensure_initialized().await?;
-        let _commit = self.commits.lock().await;
-        if self
-            .reservations
-            .lock()
-            .map_err(|_| Error::Tool("session file reservation lock is poisoned".into()))?
-            .contains_key(session_id)
-        {
-            return Err(Error::Tool(
-                "session files cannot be deleted while an upload is active".into(),
-            ));
+        let mut deletion = self
+            .prepare_delete_sessions(&[session_id.to_owned()])
+            .await?;
+        deletion.delete().await
+    }
+
+    /// Validates a group deletion and prevents new upload reservations until it completes.
+    pub async fn prepare_delete_sessions(
+        &self,
+        session_ids: &[String],
+    ) -> Result<SessionFileDeletion> {
+        for session_id in session_ids {
+            validate_session_id(session_id)?;
         }
+        self.ensure_initialized().await?;
+        let commit = Arc::clone(&self.commits).lock_owned().await;
+        {
+            let reservations = self
+                .reservations
+                .lock()
+                .map_err(|_| Error::Tool("session file reservation lock is poisoned".into()))?;
+            if let Some(session_id) = session_ids
+                .iter()
+                .find(|session_id| reservations.contains_key(*session_id))
+            {
+                return Err(Error::Tool(format!(
+                    "session files for `{session_id}` cannot be deleted while an upload is active"
+                )));
+            }
+        }
+        for session_id in session_ids {
+            self.validate_session_deletion(session_id).await?;
+        }
+        Ok(SessionFileDeletion {
+            store: self.clone(),
+            session_ids: session_ids.to_vec(),
+            _commit: commit,
+        })
+    }
+
+    async fn validate_session_deletion(&self, session_id: &str) -> Result<()> {
+        let directory = self.session_dir(session_id);
+        match tokio::fs::symlink_metadata(&directory).await {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+                load_optional_attachment_workspace(&directory).await?;
+            }
+            Ok(_) => {
+                return Err(Error::Tool(
+                    "session file directory is not a protected directory".into(),
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        Ok(())
+    }
+
+    async fn delete_session_locked(&self, session_id: &str) -> Result<()> {
         let directory = self.session_dir(session_id);
         match tokio::fs::symlink_metadata(&directory).await {
             Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
@@ -532,6 +584,16 @@ impl SessionFileStore {
                 .is_none_or(|bytes| bytes > MAX_SESSION_BYTES)
         {
             return Err(Error::Tool("session file reservation exceeds quota".into()));
+        }
+        Ok(())
+    }
+}
+
+impl SessionFileDeletion {
+    /// Removes every prepared session while keeping new uploads excluded.
+    pub async fn delete(&mut self) -> Result<()> {
+        for session_id in &self.session_ids {
+            self.store.delete_session_locked(session_id).await?;
         }
         Ok(())
     }

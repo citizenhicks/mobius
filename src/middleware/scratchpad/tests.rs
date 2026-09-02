@@ -9,11 +9,21 @@ use crate::protocol::{
 #[derive(Default)]
 struct TestBotsBackend {
     scope: std::sync::Mutex<Option<String>>,
+    scope_barriers:
+        std::sync::Mutex<Option<(Arc<tokio::sync::Barrier>, Arc<tokio::sync::Barrier>)>>,
 }
 
 impl TestBotsBackend {
     fn set_scope(&self, scope: Option<&str>) {
         *self.scope.lock().expect("swarm scope") = scope.map(str::to_owned);
+    }
+
+    fn block_scope_resolution(
+        &self,
+        entered: Arc<tokio::sync::Barrier>,
+        release: Arc<tokio::sync::Barrier>,
+    ) {
+        *self.scope_barriers.lock().expect("scope barriers") = Some((entered, release));
     }
 }
 
@@ -24,8 +34,14 @@ impl BotsBackend for TestBotsBackend {
     }
 
     fn scratchpad_scope<'a>(&'a self, _bot_id: &'a str) -> BoxFuture<'a, Result<Option<String>>> {
-        let scope = self.scope.lock().expect("swarm scope").clone();
-        Box::pin(async move { Ok(scope) })
+        let barriers = self.scope_barriers.lock().expect("scope barriers").clone();
+        Box::pin(async move {
+            if let Some((entered, release)) = barriers {
+                entered.wait().await;
+                release.wait().await;
+            }
+            Ok(self.scope.lock().expect("swarm scope").clone())
+        })
     }
 
     fn spawn_bot<'a>(
@@ -33,6 +49,18 @@ impl BotsBackend for TestBotsBackend {
         _bot_id: &'a str,
         _name: String,
         _description: String,
+    ) -> BoxFuture<'a, Result<String>> {
+        Box::pin(async { unreachable!() })
+    }
+
+    fn create_routine<'a>(
+        &'a self,
+        _bot_id: &'a str,
+        _bot_handle: Option<String>,
+        _workspace: &'a std::path::Path,
+        _instructions: String,
+        _schedule: serde_json::Value,
+        _ends_at: Option<i64>,
     ) -> BoxFuture<'a, Result<String>> {
         Box::pin(async { unreachable!() })
     }
@@ -588,6 +616,78 @@ async fn active_command_defers_when_scratchpad_lock_is_busy() {
 
     assert_eq!(result, None);
     assert!(events.is_empty());
+}
+
+#[tokio::test]
+async fn swarm_scope_resolution_is_serialized_with_scratchpad_cleanup() {
+    let (_temporary, store) = store().await;
+    let swarm_id = Uuid::new_v4().to_string();
+    store
+        .write_session("session", "promote this")
+        .await
+        .expect("write note");
+    store
+        .add_swarm(&swarm_id, "existing context")
+        .await
+        .expect("seed swarm");
+    let note_id = store
+        .snapshot("session", Some(&swarm_id))
+        .await
+        .expect("snapshot")
+        .session[0]
+        .id
+        .clone();
+    let backend = Arc::new(TestBotsBackend::default());
+    backend.set_scope(Some(&swarm_id));
+    let entered = Arc::new(tokio::sync::Barrier::new(2));
+    let release = Arc::new(tokio::sync::Barrier::new(2));
+    backend.block_scope_resolution(Arc::clone(&entered), Arc::clone(&release));
+    let middleware = Scratchpad::new(store.clone(), backend.clone(), "test-bot");
+    let promotion = tokio::spawn(async move {
+        let checkpoint = crate::backend::checkpoint::Checkpoint::empty("session");
+        let session_context = session_context();
+        middleware
+            .command(MiddlewareCommandContext {
+                command: "scratchpad",
+                arguments: &format!("promote swarm {note_id}"),
+                input: None,
+                target: None,
+                session_id: "session",
+                session_context: &session_context,
+                checkpoint: &checkpoint,
+                checkpoints: Arc::clone(&middleware.store.checkpoints),
+            })
+            .await
+    });
+
+    entered.wait().await;
+    backend.set_scope(None);
+    let cleanup_store = store.clone();
+    let cleanup_swarm_id = swarm_id.clone();
+    let mut cleanup =
+        tokio::spawn(async move { cleanup_store.clear_swarm(&cleanup_swarm_id).await });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), &mut cleanup)
+            .await
+            .is_err(),
+        "cleanup must wait for membership resolution"
+    );
+
+    release.wait().await;
+    assert!(promotion.await.expect("promotion task").is_err());
+    cleanup
+        .await
+        .expect("cleanup task")
+        .expect("clear scratchpad");
+    assert!(
+        store
+            .snapshot("session", Some(&swarm_id))
+            .await
+            .expect("cleared snapshot")
+            .swarm
+            .expect("swarm scope")
+            .is_empty()
+    );
 }
 
 #[tokio::test]

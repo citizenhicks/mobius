@@ -157,7 +157,11 @@ final class MobiusAppDelegate: NSObject, UIApplicationDelegate,
     @preconcurrency UNUserNotificationCenterDelegate {
     private weak var model: AppModel?
     private var pendingDeviceToken: Data?
-    private var pendingForegroundNotification: RemoteSessionNotification?
+    private var pendingForegroundNotification: (
+        notification: RemoteSessionNotification,
+        agentName: String,
+        detail: String
+    )?
     private var pendingNotificationResponse: RemoteSessionNotification?
 
     func application(
@@ -176,7 +180,11 @@ final class MobiusAppDelegate: NSObject, UIApplicationDelegate,
         }
         if let pendingForegroundNotification {
             self.pendingForegroundNotification = nil
-            model.receivedForegroundRemoteNotification(pendingForegroundNotification)
+            model.receivedForegroundRemoteNotification(
+                pendingForegroundNotification.notification,
+                agentName: pendingForegroundNotification.agentName,
+                detail: pendingForegroundNotification.detail
+            )
         }
         if let pendingNotificationResponse {
             self.pendingNotificationResponse = nil
@@ -206,14 +214,19 @@ final class MobiusAppDelegate: NSObject, UIApplicationDelegate,
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
+        let content = notification.request.content
         guard let event = RemoteSessionNotification(
-            userInfo: notification.request.content.userInfo
+            userInfo: content.userInfo
         ) else { return [] }
         guard let model else {
-            pendingForegroundNotification = event
+            pendingForegroundNotification = (event, content.title, content.body)
             return []
         }
-        model.receivedForegroundRemoteNotification(event)
+        model.receivedForegroundRemoteNotification(
+            event,
+            agentName: content.title,
+            detail: content.body
+        )
         return []
     }
 
@@ -306,7 +319,11 @@ extension AppModel {
         notificationError = localizedString("Notifications couldn’t be enabled. Try again.")
     }
 
-    func receivedForegroundRemoteNotification(_ notification: RemoteSessionNotification) {
+    func receivedForegroundRemoteNotification(
+        _ notification: RemoteSessionNotification,
+        agentName: String? = nil,
+        detail: String? = nil
+    ) {
         guard notificationsEnabled,
               cloudSession != nil,
               rememberRemoteNotification(notification.eventID),
@@ -316,7 +333,9 @@ extension AppModel {
             notification.kind,
             sessionID: notification.sessionID,
             runCount: notification.runCount,
-            turnID: notification.turnID
+            turnID: notification.turnID,
+            agentName: agentName,
+            detail: notification.kind == .completed ? detail : nil
         )
     }
 
@@ -353,14 +372,33 @@ extension AppModel {
         sessionID: String,
         runCount: UInt64? = nil,
         turnID: String? = nil,
-        detail: String? = nil
+        agentName: String? = nil,
+        detail: String? = nil,
+        canRefineCompletion: Bool = false
     ) {
+        let completionPreview = detail.map {
+            $0.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        }.flatMap { $0.isEmpty ? nil : $0 }
+        let remoteAgentName = agentName.map {
+            $0.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        }.flatMap { $0.isEmpty ? nil : $0 }
+        let botName = bot(forSessionID: sessionID)?.name
+            ?? remoteAgentName
+            ?? localizedString("Bot")
+        let finished = localizedString("Finished.")
+        let completionMessage = "\(botName): \(completionPreview ?? finished)"
+        let refinesCompletedNotification = canRefineCompletion
+            && kind == .completed
+            && completionPreview != nil
+            && toast?.tone == .success
+            && toast?.sessionID == sessionID
+            && toast?.message != completionMessage
         if let key = sessionNotificationKey(
             kind: kind,
             sessionID: sessionID,
             runCount: runCount,
             turnID: turnID
-        ), !rememberSessionNotification(key) {
+        ), !rememberSessionNotification(key), !refinesCompletedNotification {
             return
         }
         let title = sessionTitle(sessionID)
@@ -370,7 +408,11 @@ extension AppModel {
             showToast("\(title) needs approval.", tone: .warning, sessionID: sessionID)
         case .completed:
             guard !isActiveChat else { return }
-            showToast("\(title) is ready.", tone: .success, sessionID: sessionID)
+            showToast(
+                verbatim: completionMessage,
+                tone: .success,
+                sessionID: sessionID
+            )
         case .aborted:
             guard !isActiveChat else { return }
             if let detail {

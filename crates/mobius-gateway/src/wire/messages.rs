@@ -54,6 +54,10 @@ pub enum ClientMessage {
     ListSessions {
         request_id: String,
     },
+    ListBotSessions {
+        request_id: String,
+        bot_id: String,
+    },
     CreateSession {
         request_id: String,
         workspace: PathBuf,
@@ -112,6 +116,12 @@ pub enum ClientMessage {
     DisbandSwarm {
         request_id: String,
         swarm_id: String,
+    },
+    PostSwarmMessage {
+        request_id: String,
+        swarm_id: String,
+        workspace: PathBuf,
+        text: String,
     },
     Submit {
         session_id: String,
@@ -449,6 +459,11 @@ pub enum ServerMessage {
     Sessions {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         request_id: Option<String>,
+        sessions: Vec<SessionRecord>,
+    },
+    BotSessions {
+        request_id: String,
+        bot_id: String,
         sessions: Vec<SessionRecord>,
     },
     Bots {

@@ -25,12 +25,12 @@ use crate::wire::{
 };
 use crate::{Error, Result};
 
-const STATE_VERSION: u32 = 2;
+const STATE_VERSION: u32 = 3;
 const STATE_FILE: &str = "bots.json";
 const STATE_LOCK_FILE: &str = "bots-state.lock";
 const ROUTINES_DIR: &str = "routines";
 const ROUTINE_SUBMISSION_PREFIX: &str =
-    "Execute the following Bot routine now. Do not create or modify routines.";
+    "# Routine\n\nThe instructions below relate to a routine task.";
 const MAX_ROUTINE_INSTRUCTIONS_BYTES: usize =
     MAX_MESSAGE_BYTES - ROUTINE_SUBMISSION_PREFIX.len() - 2;
 const MAX_STATE_BYTES: u64 = 1024 * 1024;
@@ -38,6 +38,7 @@ const MAX_HANDLE_BYTES: usize = 64;
 const MAX_NAME_BYTES: usize = 128;
 const MAX_DESCRIPTION_BYTES: usize = 2 * 1024;
 pub(crate) const MOBIUS_HANDLE: &str = "mobius";
+const USER_HANDLE: &str = "user";
 const MOBIUS_NAME: &str = "Mobius";
 pub(crate) const MOBIUS_DESCRIPTION: &str = "You are möbius, a concise coding agent. Inspect the real code path before editing, make the smallest focused change, and preserve unrelated work.";
 const BOT_TINTS: [ProviderTint; 7] = [
@@ -165,7 +166,14 @@ pub(crate) struct BotDeletion {
     expected_revision: u64,
     routine_ids: BTreeSet<String>,
     instructions: BTreeSet<PathBuf>,
+    state_lock: Option<File>,
     _routine_locks: Vec<File>,
+}
+
+impl BotDeletion {
+    pub(crate) fn release_state_lock(&mut self) {
+        drop(self.state_lock.take());
+    }
 }
 
 /// Validated routine deletion whose lock stays held through gateway cleanup.
@@ -174,7 +182,21 @@ pub(crate) struct RoutineDeletion {
     routine_id: String,
     session_ids: BTreeSet<String>,
     instructions: PathBuf,
+    _state_lock: File,
     _lock: File,
+}
+
+/// Durable forward-recovery record for a cross-owner Bot cascade.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PendingBotDeletion {
+    pub(crate) bot_id: String,
+    pub(crate) expected_revision: u64,
+    pub(crate) session_roots: Vec<String>,
+    pub(crate) session_ids: Vec<String>,
+    pub(crate) swarm_id: Option<String>,
+    pub(crate) disbanded_swarm: bool,
+    instruction_paths: Vec<PathBuf>,
 }
 
 impl RoutineDeletion {
@@ -202,6 +224,7 @@ struct BotState {
     bots: Vec<BotRecord>,
     routines: Vec<StoredRoutine>,
     runs: Vec<RoutineRun>,
+    pending_bot_deletion: Option<PendingBotDeletion>,
 }
 
 impl Default for BotState {
@@ -211,6 +234,7 @@ impl Default for BotState {
             bots: Vec::new(),
             routines: Vec::new(),
             runs: Vec::new(),
+            pending_bot_deletion: None,
         }
     }
 }
@@ -357,6 +381,8 @@ impl BotStore {
         id: &str,
         expected_revision: u64,
     ) -> Result<BotDeletion> {
+        let state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
+        state_lock.lock()?;
         let state = self.lock_state()?;
         let bot = state
             .bots
@@ -374,16 +400,18 @@ impl BotStore {
                 bot.config.revision
             )));
         }
-        let routine_ids = state
+        let routines = state
             .routines
             .iter()
             .filter(|routine| routine.bot_id == id)
+            .cloned()
+            .collect::<Vec<_>>();
+        let routine_ids = routines
+            .iter()
             .map(|routine| routine.id.clone())
             .collect::<BTreeSet<_>>();
-        let instructions = state
-            .routines
+        let instructions = routines
             .iter()
-            .filter(|routine| routine.bot_id == id)
             .map(|routine| routine.instructions.clone())
             .collect::<BTreeSet<_>>();
         drop(state);
@@ -396,13 +424,89 @@ impl BotStore {
             };
             routine_locks.push(lock);
         }
+        for routine in &routines {
+            self.read_routine_instructions(routine)?;
+        }
         Ok(BotDeletion {
             bot_id: id.into(),
             expected_revision,
             routine_ids,
             instructions,
+            state_lock: Some(state_lock),
             _routine_locks: routine_locks,
         })
+    }
+
+    pub(crate) fn record_bot_deletion(
+        &self,
+        deletion: &mut BotDeletion,
+        session_roots: &[String],
+        session_ids: &[String],
+        swarm: Option<(&str, bool)>,
+    ) -> Result<PendingBotDeletion> {
+        let intent = PendingBotDeletion {
+            bot_id: deletion.bot_id.clone(),
+            expected_revision: deletion.expected_revision,
+            session_roots: session_roots.to_vec(),
+            session_ids: session_ids.to_vec(),
+            swarm_id: swarm.map(|(id, _)| id.to_owned()),
+            disbanded_swarm: swarm.is_some_and(|(_, disbanded)| disbanded),
+            instruction_paths: deletion.instructions.iter().cloned().collect(),
+        };
+        let intent = self.update_locked(|state| {
+            let bot = find_bot_mut(state, &intent.bot_id)?;
+            if bot.config.revision != intent.expected_revision {
+                return Err(Error::Config(format!(
+                    "Bot configuration revision changed from {} to {}",
+                    intent.expected_revision, bot.config.revision
+                )));
+            }
+            if let Some(pending) = &state.pending_bot_deletion
+                && pending != &intent
+            {
+                return Err(Error::Config(
+                    "another Bot deletion is awaiting recovery".into(),
+                ));
+            }
+            state.pending_bot_deletion = Some(intent.clone());
+            Ok(intent.clone())
+        })?;
+        deletion.release_state_lock();
+        Ok(intent)
+    }
+
+    pub(crate) fn pending_bot_deletion(&self) -> Result<Option<PendingBotDeletion>> {
+        Ok(self.lock_state()?.pending_bot_deletion.clone())
+    }
+
+    pub(crate) fn clear_bot_deletion(&self, bot_id: &str) -> Result<()> {
+        let state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
+        state_lock.lock()?;
+        self.update_locked(|state| {
+            let pending = state
+                .pending_bot_deletion
+                .as_ref()
+                .ok_or_else(|| Error::Config("Bot deletion recovery is not pending".into()))?;
+            if pending.bot_id != bot_id {
+                return Err(Error::Config(
+                    "a different Bot deletion is awaiting recovery".into(),
+                ));
+            }
+            state.pending_bot_deletion = None;
+            Ok(())
+        })
+    }
+
+    pub(crate) fn cleanup_bot_deletion_files(&self, intent: &PendingBotDeletion) -> Result<()> {
+        for path in &intent.instruction_paths {
+            if path.parent() != Some(self.routines_dir.as_path()) {
+                return Err(Error::Config(
+                    "pending Bot deletion instructions left the private routine directory".into(),
+                ));
+            }
+            remove_if_present(path)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn delete_bot(&self, deletion: BotDeletion) -> Result<BotRecord> {
@@ -411,12 +515,25 @@ impl BotStore {
             expected_revision,
             routine_ids,
             instructions,
+            state_lock,
             _routine_locks,
         } = deletion;
-        for path in &instructions {
-            remove_if_present(path)?;
-        }
-        let bot = self.update(|state| {
+        let state_lock = match state_lock {
+            Some(state_lock) => state_lock,
+            None => {
+                let state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
+                state_lock.lock()?;
+                state_lock
+            }
+        };
+        let bot = self.update_locked(|state| {
+            if let Some(pending) = &state.pending_bot_deletion
+                && (pending.bot_id != bot_id || pending.expected_revision != expected_revision)
+            {
+                return Err(Error::Config(
+                    "a different Bot deletion is awaiting recovery".into(),
+                ));
+            }
             let index = state
                 .bots
                 .iter()
@@ -461,6 +578,10 @@ impl BotStore {
             Ok(state.bots.remove(index))
         })?;
         drop(_routine_locks);
+        drop(state_lock);
+        for path in &instructions {
+            let _ = remove_if_present(path);
+        }
         Ok(bot)
     }
 
@@ -533,7 +654,6 @@ impl BotStore {
         schedule: RoutineSchedule,
         ends_at: Option<i64>,
     ) -> Result<StoredRoutine> {
-        self.bot(bot_id)?;
         let workspace = validate_workspace(workspace)?;
         validate_instructions(instructions)?;
         validate_schedule(&schedule, ends_at)?;
@@ -541,6 +661,7 @@ impl BotStore {
         let path = self.new_instruction_path();
         write_private_instructions(&self.routines_dir, &path, instructions.as_bytes())?;
         let result = self.update(|state| {
+            find_bot_mut(state, bot_id)?;
             let now = Utc::now().timestamp();
             let mut routine = StoredRoutine {
                 id: Uuid::new_v4().to_string(),
@@ -628,6 +749,7 @@ impl BotStore {
         let path = self.new_instruction_path();
         write_private_instructions(&self.routines_dir, &path, instructions.trim().as_bytes())?;
         let result = self.update(|state| {
+            find_bot_mut(state, bot_id)?;
             let index = resolve_routine(&state.routines, &existing.id)?;
             let stored = &mut state.routines[index];
             stored.bot_id = bot_id.into();
@@ -654,6 +776,8 @@ impl BotStore {
     }
 
     pub(crate) fn prepare_routine_deletion(&self, id: &str) -> Result<RoutineDeletion> {
+        let state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
+        state_lock.lock()?;
         let routine = self.routine(id)?;
         let Some(lock) = self.try_routine_lock(&routine.id)? else {
             return Err(Error::Config(format!(
@@ -661,6 +785,7 @@ impl BotStore {
                 routine.id
             )));
         };
+        self.read_routine_instructions(&routine)?;
         let state = self.lock_state()?;
         let index = resolve_routine(&state.routines, &routine.id)?;
         let routine = &state.routines[index];
@@ -674,6 +799,7 @@ impl BotStore {
             routine_id: routine.id.clone(),
             session_ids,
             instructions: routine.instructions.clone(),
+            _state_lock: state_lock,
             _lock: lock,
         })
     }
@@ -683,10 +809,10 @@ impl BotStore {
             routine_id,
             session_ids,
             instructions,
+            _state_lock,
             _lock,
         } = deletion;
-        remove_if_present(&instructions)?;
-        let deleted = self.update(|state| {
+        let deleted = self.update_locked(|state| {
             let index = resolve_routine(&state.routines, &routine_id)?;
             if state.routines[index].instructions != instructions {
                 return Err(Error::Config(
@@ -709,6 +835,8 @@ impl BotStore {
             Ok(deleted)
         })?;
         drop(_lock);
+        drop(_state_lock);
+        let _ = remove_if_present(&instructions);
         Ok(deleted)
     }
 
@@ -778,8 +906,13 @@ impl BotStore {
 
     /// Reserves due routines and records their invocations atomically.
     pub(crate) fn take_due(&self, now: i64) -> Result<Vec<(String, ActiveRoutineRun)>> {
+        let state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
+        state_lock.lock()?;
+        if self.pending_bot_deletion()?.is_some() {
+            return Ok(Vec::new());
+        }
         let minute = now.div_euclid(60);
-        self.update(|state| {
+        self.update_locked(|state| {
             let mut due = Vec::new();
             for index in 0..state.routines.len() {
                 let routine = &state.routines[index];
@@ -932,7 +1065,9 @@ impl BotStore {
                 "a completed routine run cannot remain running".into(),
             ));
         }
-        self.update(|state| {
+        let state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
+        state_lock.lock()?;
+        self.update_locked(|state| {
             let stored = find_run_mut(state, &run.run_id)?;
             stored.finished_at = Some(Utc::now().timestamp());
             stored.status = status;
@@ -1007,6 +1142,17 @@ impl BotStore {
     fn update<T>(&self, mutate: impl FnOnce(&mut BotState) -> Result<T>) -> Result<T> {
         let _file_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
         _file_lock.lock()?;
+        self.update_locked(|state| {
+            if state.pending_bot_deletion.is_some() {
+                return Err(Error::Config(
+                    "Bot deletion recovery must finish before changing Bot state".into(),
+                ));
+            }
+            mutate(state)
+        })
+    }
+
+    fn update_locked<T>(&self, mutate: impl FnOnce(&mut BotState) -> Result<T>) -> Result<T> {
         let mut state = self.lock_state()?;
         let mut next = state.clone();
         let result = mutate(&mut next)?;
@@ -1067,7 +1213,7 @@ fn next_handle(state: &BotState, name: &str) -> String {
     if base.is_empty() {
         base.push_str("bot");
     }
-    if !state.bots.iter().any(|bot| bot.handle == base) {
+    if base != USER_HANDLE && !state.bots.iter().any(|bot| bot.handle == base) {
         return base;
     }
     for index in 2_u64.. {
@@ -1075,7 +1221,7 @@ fn next_handle(state: &BotState, name: &str) -> String {
         let prefix_len = MAX_HANDLE_BYTES.saturating_sub(suffix.len());
         let prefix = base[..base.len().min(prefix_len)].trim_end_matches('-');
         let candidate = format!("{prefix}{suffix}");
-        if !state.bots.iter().any(|bot| bot.handle == candidate) {
+        if candidate != USER_HANDLE && !state.bots.iter().any(|bot| bot.handle == candidate) {
             return candidate;
         }
     }
@@ -1101,6 +1247,9 @@ fn validate_handle(handle: &str) -> Result<String> {
         return Err(Error::Config(format!(
             "Bot handle must be 1–{MAX_HANDLE_BYTES} lowercase ASCII letters, digits, dashes, or underscores"
         )));
+    }
+    if handle == USER_HANDLE {
+        return Err(Error::Config("Bot handle `user` is reserved".into()));
     }
     Ok(handle.into())
 }
@@ -1306,6 +1455,55 @@ fn validate_state(state: &BotState, routines_dir: &Path) -> Result<()> {
         }
         if let Some(session_id) = &run.session_id {
             validate_session_id(session_id)?;
+        }
+    }
+    if let Some(pending) = &state.pending_bot_deletion {
+        let parsed = Uuid::parse_str(&pending.bot_id)
+            .map_err(|_| Error::Config("invalid pending Bot deletion ID".into()))?;
+        if parsed.to_string() != pending.bot_id || pending.expected_revision == 0 {
+            return Err(Error::Config("invalid pending Bot deletion".into()));
+        }
+        if let Some(bot) = state.bots.iter().find(|bot| bot.id == pending.bot_id)
+            && bot.config.revision != pending.expected_revision
+        {
+            return Err(Error::Config(
+                "pending Bot deletion revision changed".into(),
+            ));
+        }
+        for session_id in pending.session_roots.iter().chain(&pending.session_ids) {
+            validate_session_id(session_id)?;
+        }
+        if pending
+            .session_roots
+            .iter()
+            .any(|root| !pending.session_ids.contains(root))
+        {
+            return Err(Error::Config(
+                "pending Bot deletion root is outside its session set".into(),
+            ));
+        }
+        match (&pending.swarm_id, pending.disbanded_swarm) {
+            (Some(id), _) if Uuid::parse_str(id).is_err() => {
+                return Err(Error::Config(
+                    "invalid pending Bot deletion swarm ID".into(),
+                ));
+            }
+            (None, true) => {
+                return Err(Error::Config(
+                    "pending Bot deletion cannot disband an unknown swarm".into(),
+                ));
+            }
+            _ => {}
+        }
+        if pending
+            .instruction_paths
+            .iter()
+            .any(|path| !path.is_absolute() || path.parent() != Some(routines_dir))
+        {
+            return Err(Error::Config(
+                "pending Bot deletion instructions are outside the private routine directory"
+                    .into(),
+            ));
         }
     }
     Ok(())

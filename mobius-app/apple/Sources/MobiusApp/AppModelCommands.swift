@@ -329,6 +329,69 @@ extension AppModel {
         navigationPath = []
     }
 
+    func openBotSessions(_ botID: String) {
+        guard bots.contains(where: { $0.id == botID }) else { return }
+        if botSessionsBotID != botID {
+            botSessionsRequestID = nil
+            botSessions = []
+            isLoadingBotSessions = false
+        }
+        botSessionsBotID = botID
+        destination = .bots
+        if navigationPath.last != .botSessions(botID) {
+            navigationPath.append(.botSessions(botID))
+        }
+        refreshBotSessions(botID)
+    }
+
+    func refreshBotSessions(_ botID: String) {
+        guard connectionState.isReady,
+              botSessionsRequestID == nil,
+              bots.contains(where: { $0.id == botID })
+        else { return }
+        if botSessionsBotID != botID { botSessions = [] }
+        botSessionsBotID = botID
+        let id = requestID("bot-sessions")
+        botSessionsRequestID = id
+        isLoadingBotSessions = true
+        transmit(.listBotSessions(requestID: id, botID: botID)) { [weak self] _ in
+            guard self?.botSessionsRequestID == id else { return }
+            self?.botSessionsRequestID = nil
+            self?.isLoadingBotSessions = false
+        }
+    }
+
+    func openBotSession(_ sessionID: String) {
+        guard canOpenSession || sessionID == selectedSessionID,
+              botSessions.contains(where: { $0.sessionId == sessionID })
+        else { return }
+        chatPresentationRevision &+= 1
+        openSession(sessionID)
+        navigationPath.append(.chat(.session(sessionID)))
+    }
+
+    func resumeBotSession(botID: String, sessionID: String) {
+        guard bots.contains(where: { $0.id == botID }) else { return }
+        if let visible = sessions.first(where: { $0.sessionId == sessionID }) {
+            guard visible.sessionContext.botId == botID else {
+                showToast("The source conversation belongs to another Bot.", tone: .error)
+                return
+            }
+            pendingBotSessionResume = nil
+            openChat(sessionID)
+            return
+        }
+        guard canOpenSession else { return }
+        pendingBotSessionResume = (botID, sessionID)
+        if botSessionsBotID != botID {
+            botSessionsRequestID = nil
+            botSessions = []
+            isLoadingBotSessions = false
+        }
+        botSessionsBotID = botID
+        refreshBotSessions(botID)
+    }
+
     func openSwarm(_ swarmID: String) {
         guard swarms.contains(where: { $0.id == swarmID }) else { return }
         destination = .bots
@@ -628,6 +691,32 @@ extension AppModel {
         sendSwarmMutation("swarm-disband") { requestID in
             .disbandSwarm(requestID: requestID, swarmID: swarm.id)
         }
+    }
+
+    @discardableResult
+    func postSwarmMessage(
+        to swarmID: String,
+        workspace rawWorkspace: String,
+        text rawText: String
+    ) -> String? {
+        let workspace = rawWorkspace.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard canPostSwarmMessage,
+              !workspace.isEmpty,
+              !text.isEmpty,
+              swarms.contains(where: { $0.id == swarmID })
+        else { return nil }
+        let id = requestID("swarm-message")
+        swarmMessageRequestID = id
+        transmit(.postSwarmMessage(
+            requestID: id,
+            swarmID: swarmID,
+            workspace: workspace,
+            text: text
+        )) { [weak self] _ in
+            if self?.swarmMessageRequestID == id { self?.swarmMessageRequestID = nil }
+        }
+        return id
     }
 
     private func sendSwarmMutation(

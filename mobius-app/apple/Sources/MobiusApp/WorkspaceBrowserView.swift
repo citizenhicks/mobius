@@ -6,6 +6,8 @@ struct WorkspaceBrowserView: View {
     @Environment(\.mobiusPalette) private var palette
     @State private var newFolderName = ""
     @State private var showsNewFolderPrompt = false
+    var title: LocalizedStringResource = "Choose a workspace for the new chat"
+    var onChoose: ((String) -> Void)? = nil
 
     var body: some View {
         NavigationStack {
@@ -13,7 +15,7 @@ struct WorkspaceBrowserView: View {
                 if let listing = model.directoryListing {
                     DirectoryBrowserHeader(
                         path: listing.path,
-                        title: "Choose a workspace for the new chat",
+                        title: title,
                         parent: listing.parent,
                         onParent: model.loadDirectory,
                         onCreateFolder: {
@@ -36,7 +38,7 @@ struct WorkspaceBrowserView: View {
                                 .foregroundStyle(palette.muted)
                                 .listRowSeparator(.hidden)
                         }
-                        if let error = model.directoryError ?? model.workspaceError {
+                        if let error = model.directoryError ?? (onChoose == nil ? model.workspaceError : nil) {
                             MobiusLabel(
                                 verbatim: error,
                                 glyph: .warning,
@@ -58,13 +60,19 @@ struct WorkspaceBrowserView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
-                        model.showsWorkspaceBrowser = false
+                        if onChoose == nil { model.showsWorkspaceBrowser = false }
                         dismiss()
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Choose") {
-                        if let path = model.directoryListing?.path { model.chooseWorkspace(path) }
+                        guard let path = model.directoryListing?.path else { return }
+                        if let onChoose {
+                            onChoose(path)
+                            dismiss()
+                        } else {
+                            model.chooseWorkspace(path)
+                        }
                     }
                     .disabled(
                         model.directoryListing?.parent == nil

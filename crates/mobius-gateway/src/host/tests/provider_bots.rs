@@ -20,7 +20,7 @@ fn selection(instance: &str, provider: &str, model: &str) -> ProviderConfig {
     }
 }
 
-fn gateway_with_providers(
+async fn gateway_with_providers(
     primary: ProviderConfig,
     secondary: Option<ProviderConfig>,
 ) -> (tempfile::TempDir, GatewayHost) {
@@ -55,7 +55,9 @@ fn gateway_with_providers(
     let credentials =
         Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
     let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
-    let gateway = GatewayHost::start(store, config, credentials, bots).expect("gateway");
+    let gateway = GatewayHost::start(store, config, credentials, bots)
+        .await
+        .expect("gateway");
     (root, gateway)
 }
 
@@ -63,7 +65,7 @@ fn gateway_with_providers(
 async fn provider_removal_rejects_a_bot_reference() {
     let primary = selection("primary", "openrouter", "openai/gpt-5");
     let removable = selection("secondary", "openrouter", "openai/gpt-5.1");
-    let (_root, gateway) = gateway_with_providers(primary.clone(), Some(removable.clone()));
+    let (_root, gateway) = gateway_with_providers(primary.clone(), Some(removable.clone())).await;
     let composition = AgentComposition {
         provider: removable.clone(),
         ..AgentComposition::default()
@@ -101,7 +103,7 @@ async fn provider_replacement_rejects_a_bot_reference_without_changing_either_st
     let primary = selection("primary", "openrouter", "openai/gpt-5");
     let original = selection("secondary", "openrouter", "openai/gpt-5.1");
     let replacement = selection("secondary", "openrouter", "openai/gpt-5.2");
-    let (root, gateway) = gateway_with_providers(primary, Some(original.clone()));
+    let (root, gateway) = gateway_with_providers(primary, Some(original.clone())).await;
     let composition = AgentComposition {
         provider: original.clone(),
         ..AgentComposition::default()

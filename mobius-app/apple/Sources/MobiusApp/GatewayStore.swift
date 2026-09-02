@@ -226,7 +226,6 @@ struct CachedChatCatalog: Codable, Equatable, Sendable {
         let botIDs = Set(bots.map(\.id))
         let botHandles = Set(bots.map(\.handle))
         let sessionIDs = Set(sessions.map(\.sessionId))
-        var swarmBotIDs = Set<String>()
         return bots.count <= 100
             && botIDs.count == bots.count
             && !botIDs.contains("")
@@ -241,7 +240,13 @@ struct CachedChatCatalog: Codable, Equatable, Sendable {
             && sessionIDs.count == sessions.count
             && !sessionIDs.contains("")
             && sessions.allSatisfy { botIDs.contains($0.sessionContext.botId) }
-            && swarms.count <= 100
+            && swarmsAreValid(botIDs: botIDs)
+            && lastSessionID.map(sessionIDs.contains) ?? true
+    }
+
+    private func swarmsAreValid(botIDs: Set<String>) -> Bool {
+        var swarmBotIDs = Set<String>()
+        return swarms.count <= 100
             && Set(swarms.map(\.id)).count == swarms.count
             && swarms.allSatisfy { swarm in
                 !swarm.id.isEmpty
@@ -252,7 +257,6 @@ struct CachedChatCatalog: Codable, Equatable, Sendable {
                         botIDs.contains($0.botId) && swarmBotIDs.insert($0.botId).inserted
                     }
             }
-            && lastSessionID.map(sessionIDs.contains) ?? true
     }
 }
 

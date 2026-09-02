@@ -167,6 +167,7 @@ pub(crate) async fn assemble(
         &chat.agent.config.middleware,
         &chat.workspace,
         &chat.bot_id,
+        chat.catalog_visible,
         Arc::clone(&gateway),
         scratchpad,
         session_files,
@@ -500,6 +501,7 @@ fn build_middleware(
     settings: &MiddlewareConfig,
     workspace: &std::path::Path,
     bot_id: &str,
+    catalog_visible: bool,
     gateway: Arc<Mutex<GatewayConfig>>,
     scratchpad: ScratchpadStore,
     session_files: SessionFileStore,
@@ -607,7 +609,14 @@ fn build_middleware(
             BuiltinMiddleware::Sessions => Arc::new(Sessions::new(
                 crate::middleware_manifest::usize_setting(settings, "sessions", "page_size")?,
             )?),
-            BuiltinMiddleware::Bots => Arc::new(Bots::new(Arc::clone(&swarm), bot_id.to_owned())),
+            BuiltinMiddleware::Bots => {
+                let bots = Bots::new(Arc::clone(&swarm), bot_id.to_owned());
+                Arc::new(if catalog_visible {
+                    bots.with_routine_creation(workspace)
+                } else {
+                    bots
+                })
+            }
         };
         entries.push(middleware);
     }

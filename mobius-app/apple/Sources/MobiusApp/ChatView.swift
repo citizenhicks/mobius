@@ -26,24 +26,38 @@ struct ChatView: View {
         @Bindable var model = model
         ZStack(alignment: .bottom) {
             TranscriptView(
-                bottomInset: composerHeight,
+                bottomInset: bottomInset,
                 isAtBottom: $isAtBottom,
                 scrollToBottomRequest: scrollToBottomRequest
             )
             .id(transcriptPresentationID)
-            ComposerView(showBotSettings: presentSelectedBotSettings)
-                .onGeometryChange(for: CGFloat.self) { geometry in
-                    geometry.size.height
-                } action: { height in
-                    composerHeight = height
-                }
-                .zIndex(1)
+            if model.selectedSessionIsHidden, let approval = model.pendingApproval {
+                ApprovalView(approval: approval)
+                    .frame(maxWidth: MobiusStyle.transcriptWidth)
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, MobiusSpace.l)
+                    .padding(.bottom, MobiusSpace.m)
+                    .onGeometryChange(for: CGFloat.self) { geometry in
+                        geometry.size.height
+                    } action: { height in
+                        composerHeight = height
+                    }
+                    .zIndex(1)
+            } else if !model.selectedSessionIsHidden {
+                ComposerView(showBotSettings: presentSelectedBotSettings)
+                    .onGeometryChange(for: CGFloat.self) { geometry in
+                        geometry.size.height
+                    } action: { height in
+                        composerHeight = height
+                    }
+                    .zIndex(1)
+            }
             if !isAtBottom {
                 Button("Scroll to latest", glyph: .arrowDown) {
                     scrollToBottomRequest += 1
                 }
                 .mobiusIconButton()
-                .padding(.bottom, composerHeight + 12)
+                .padding(.bottom, bottomInset + 12)
                 .help("Scroll to latest")
                 .zIndex(2)
             }
@@ -87,7 +101,7 @@ struct ChatView: View {
             // One item holding both, so the spacing is this stack's rather than the bar's
             // between two items. The 44pt targets still touch; only the slack goes.
             ToolbarItem(placement: .primaryAction) {
-                if model.selectedSessionID != nil {
+                if model.selectedSessionID != nil, !model.selectedSessionIsHidden {
                     HeaderActionGroup {
                         newChatButton
                         ChatOptionsMenu(
@@ -132,6 +146,10 @@ struct ChatView: View {
 
     private var chatTitle: String {
         model.currentSessionTitle
+    }
+
+    private var bottomInset: CGFloat {
+        model.selectedSessionIsHidden && model.pendingApproval == nil ? 0 : composerHeight
     }
 
     private var workspaceName: String {

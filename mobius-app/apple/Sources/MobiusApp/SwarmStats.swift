@@ -1,7 +1,7 @@
 import Foundation
 import SwiftUI
 
-/// What a board post turned out to be, derived from its text.
+/// What a chat post turned out to be, derived from its text.
 ///
 /// The wire carries no kind on `SwarmMessageRecord`, so this is read back out of the text the
 /// same way the gateway reads it on the way in. Keep `swarmMentionedHandles` in step with the
@@ -146,7 +146,7 @@ struct SwarmStats: Equatable {
 
     /// Every stored post already passed gateway mention validation. Count the handles preserved
     /// in the post rather than intersecting the current roster, because leaving a swarm does not
-    /// rewrite its board history.
+    /// rewrite its chat history.
     static func make(messages: [SwarmMessageRecord]) -> SwarmStats {
         var counts: [SwarmMessageKind: Int] = [:]
         var edges = 0
@@ -165,7 +165,7 @@ struct SwarmStats: Equatable {
     }
 }
 
-/// The one section heading on the swarm page, so Activity, Roster, and the board cannot drift
+/// The one section heading on the swarm page, so Activity, Roster, and scratchpad cannot drift
 /// apart. Everything drawn above the first of these is page header, not a section.
 struct SwarmSectionHeading: View {
     @Environment(\.mobiusPalette) private var palette
@@ -219,7 +219,7 @@ struct SwarmStatsSection: View {
                     columns: [GridItem(.adaptive(minimum: 132), spacing: MobiusSpace.s)],
                     spacing: MobiusSpace.s
                 ) {
-                    SwarmStatTile(title: "Board posts", value: stats.total)
+                    SwarmStatTile(title: "Chat posts", value: stats.total)
                     SwarmStatTile(title: "Directed", value: stats.count(.directed))
                     SwarmStatTile(title: "Broadcast", value: stats.count(.broadcast))
                     SwarmStatTile(title: "Mentions", value: stats.mentionEdges)

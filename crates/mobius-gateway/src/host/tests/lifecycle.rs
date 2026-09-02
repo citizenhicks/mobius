@@ -1,5 +1,195 @@
 use super::*;
 
+struct BlockingStateStore {
+    inner: Arc<dyn CheckpointStore>,
+    block_next: AtomicBool,
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+impl BlockingStateStore {
+    fn new(inner: Arc<dyn CheckpointStore>) -> Self {
+        Self {
+            inner,
+            block_next: AtomicBool::new(false),
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        }
+    }
+}
+
+impl CheckpointStore for BlockingStateStore {
+    fn load<'a>(
+        &'a self,
+        session_id: &'a str,
+    ) -> mobius::BoxFuture<'a, mobius::Result<Option<mobius::backend::checkpoint::Checkpoint>>>
+    {
+        self.inner.load(session_id)
+    }
+
+    fn delete_session<'a>(
+        &'a self,
+        session_id: &'a str,
+    ) -> mobius::BoxFuture<'a, mobius::Result<bool>> {
+        self.inner.delete_session(session_id)
+    }
+
+    fn save<'a>(
+        &'a self,
+        checkpoint: &'a mobius::backend::checkpoint::Checkpoint,
+        transcript_delta: &'a [serde_json::Value],
+        execution: Option<&'a ExecutionRecord>,
+    ) -> mobius::BoxFuture<'a, mobius::Result<()>> {
+        self.inner.save(checkpoint, transcript_delta, execution)
+    }
+
+    fn save_with_events<'a>(
+        &'a self,
+        checkpoint: &'a mobius::backend::checkpoint::Checkpoint,
+        transcript_delta: &'a [serde_json::Value],
+        execution: Option<&'a ExecutionRecord>,
+        events: &'a [mobius::backend::checkpoint::TimestampedEvent],
+    ) -> mobius::BoxFuture<'a, mobius::Result<Vec<JournalEvent>>> {
+        self.inner
+            .save_with_events(checkpoint, transcript_delta, execution, events)
+    }
+
+    fn append_event<'a>(
+        &'a self,
+        session_id: &'a str,
+        recorded_at_ms: i64,
+        event: &'a Event,
+    ) -> mobius::BoxFuture<'a, mobius::Result<JournalEvent>> {
+        self.inner.append_event(session_id, recorded_at_ms, event)
+    }
+
+    fn event_page<'a>(
+        &'a self,
+        session_id: &'a str,
+        request: EventPageRequest,
+    ) -> mobius::BoxFuture<'a, mobius::Result<mobius::backend::checkpoint::EventPage>> {
+        self.inner.event_page(session_id, request)
+    }
+
+    fn load_state<'a>(
+        &'a self,
+        scope: &'a str,
+        key: &'a str,
+    ) -> mobius::BoxFuture<'a, mobius::Result<Option<serde_json::Value>>> {
+        self.inner.load_state(scope, key)
+    }
+
+    fn save_state<'a>(
+        &'a self,
+        scope: &'a str,
+        key: &'a str,
+        value: &'a serde_json::Value,
+    ) -> mobius::BoxFuture<'a, mobius::Result<()>> {
+        Box::pin(async move {
+            if self.block_next.swap(false, Ordering::SeqCst) {
+                self.entered.notify_one();
+                self.release.notified().await;
+            }
+            self.inner.save_state(scope, key, value).await
+        })
+    }
+}
+
+#[tokio::test]
+async fn idle_stop_waits_for_an_accepted_capability_command_to_finish() {
+    let root = tempfile::tempdir().expect("root");
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).expect("workspace");
+    let listen = "127.0.0.1:8741".parse().expect("listen address");
+    let (store, config) =
+        ConfigStore::initialize(root.path().join("state"), listen, None).expect("config");
+    let credentials =
+        Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
+    let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
+    let gateway = GatewayHost::start(store, config, credentials, Arc::clone(&bots))
+        .await
+        .expect("gateway");
+    let blocking = {
+        let mut state = gateway.state.lock().await;
+        let blocking = Arc::new(BlockingStateStore::new(Arc::clone(&state.checkpoints)));
+        state.scratchpad = ScratchpadStore::new(blocking.clone());
+        blocking
+    };
+    let host = create_test_session(&gateway, &workspace)
+        .await
+        .expect("create session");
+    let session_id = host.session_id().to_owned();
+    let note_id = Uuid::new_v4().to_string();
+    blocking
+        .inner
+        .save_state(
+            &session_id,
+            "scratchpad.v1",
+            &serde_json::json!([{
+                "id": note_id,
+                "note": "before",
+                "basis": { "type": "user_confirmed" },
+                "created_at": "1"
+            }]),
+        )
+        .await
+        .expect("seed note");
+    blocking.block_next.store(true, Ordering::SeqCst);
+    host.submit(Submission {
+        id: Uuid::new_v4().to_string(),
+        op: Op::CapabilityCommand {
+            capability: "scratchpad".into(),
+            command: "scratchpad".into(),
+            arguments: format!("edit session {note_id}"),
+            input: Some("after".into()),
+            target: None,
+        },
+    })
+    .await
+    .expect("accept scratchpad edit");
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        blocking.entered.notified(),
+    )
+    .await
+    .expect("scratchpad edit reached durable save");
+
+    let mut first_stop = tokio::spawn({
+        let host = host.clone();
+        async move { host.stop_if_idle().await }
+    });
+    let mut second_stop = tokio::spawn({
+        let host = host.clone();
+        async move { host.stop_if_idle().await }
+    });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), &mut first_stop)
+            .await
+            .is_err()
+    );
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), &mut second_stop)
+            .await
+            .is_err()
+    );
+    blocking.release.notify_one();
+    for stopping in [first_stop, second_stop] {
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), stopping)
+                .await
+                .expect("stop completed")
+                .expect("stop task")
+        );
+    }
+    let saved = blocking
+        .inner
+        .load_state(&session_id, "scratchpad.v1")
+        .await
+        .expect("load scratchpad")
+        .expect("saved scratchpad");
+    assert_eq!(saved[0]["note"], "after");
+}
+
 #[tokio::test]
 async fn ready_exposes_the_global_scratchpad_without_a_session() {
     let root = tempfile::tempdir().expect("root");
@@ -9,7 +199,9 @@ async fn ready_exposes_the_global_scratchpad_without_a_session() {
     let credentials =
         Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
     let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
-    let gateway = GatewayHost::start(store, config, credentials, bots).expect("gateway");
+    let gateway = GatewayHost::start(store, config, credentials, Arc::clone(&bots))
+        .await
+        .expect("gateway");
     let expected = vec![FrontendContribution {
         capability: "extensions".into(),
         references: vec![mobius::protocol::FrontendReference {
@@ -70,8 +262,9 @@ async fn durable_event_journal_restores_complete_turn_pages() {
     let credentials =
         Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
     let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
-    let gateway =
-        GatewayHost::start(store, config, credentials, Arc::clone(&bots)).expect("gateway");
+    let gateway = GatewayHost::start(store, config, credentials, Arc::clone(&bots))
+        .await
+        .expect("gateway");
     let host = create_test_session(&gateway, &workspace)
         .await
         .expect("create session");
@@ -187,7 +380,9 @@ async fn initial_snapshot_restores_transient_widgets_without_replaying_them() {
     let credentials =
         Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
     let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
-    let gateway = GatewayHost::start(store, config, credentials, bots).expect("gateway");
+    let gateway = GatewayHost::start(store, config, credentials, bots)
+        .await
+        .expect("gateway");
     let host = create_test_session(&gateway, &workspace)
         .await
         .expect("create session");
@@ -235,8 +430,9 @@ async fn delete_session_stops_the_host_and_removes_its_durable_tree() {
     let credentials =
         Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
     let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
-    let gateway =
-        GatewayHost::start(store, config, credentials, Arc::clone(&bots)).expect("gateway");
+    let gateway = GatewayHost::start(store, config, credentials, Arc::clone(&bots))
+        .await
+        .expect("gateway");
     let deleted = create_test_session(&gateway, &workspace)
         .await
         .expect("create deleted session");
@@ -334,7 +530,9 @@ async fn delete_session_keeps_all_resident_hosts_when_a_descendant_is_busy() {
     let credentials =
         Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
     let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
-    let gateway = GatewayHost::start(store, config, credentials, bots).expect("gateway");
+    let gateway = GatewayHost::start(store, config, credentials, bots)
+        .await
+        .expect("gateway");
     let root_host = create_test_session(&gateway, &workspace)
         .await
         .expect("create root session");
@@ -369,6 +567,9 @@ async fn delete_session_keeps_all_resident_hosts_when_a_descendant_is_busy() {
                 events,
                 accepts_file_attachments: Arc::new(AtomicBool::new(false)),
                 alive: Arc::new(AtomicBool::new(true)),
+                terminated: Arc::new(AtomicBool::new(true)),
+                termination: Arc::new(tokio::sync::Notify::new()),
+                session_mutations: Arc::new(tokio::sync::RwLock::new(())),
             }),
         },
     );
@@ -396,7 +597,9 @@ async fn open_session_rejects_invalid_ids_before_checkpoint_lookup() {
     let credentials =
         Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
     let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
-    let gateway = GatewayHost::start(store, config, credentials, bots).expect("gateway");
+    let gateway = GatewayHost::start(store, config, credentials, bots)
+        .await
+        .expect("gateway");
 
     for session_id in [" ".to_owned(), "x".repeat(4097)] {
         let error = match gateway.open_session(&session_id).await {
@@ -419,20 +622,20 @@ async fn opening_a_stopped_cached_chat_creates_a_fresh_actor() {
     let credentials =
         Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
     let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
-    let gateway = GatewayHost::start(store, config, credentials, bots).expect("gateway");
+    let gateway = GatewayHost::start(store, config, credentials, Arc::clone(&bots))
+        .await
+        .expect("gateway");
     let original = create_test_session(&gateway, &workspace)
         .await
         .expect("create chat");
     let session_id = original.session_id().to_string();
 
     assert!(original.stop_if_idle().await);
-    tokio::time::timeout(std::time::Duration::from_secs(1), async {
-        while original.is_alive() {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("actor stopped");
+    assert!(!original.is_alive());
+    let rejection = original
+        .begin_session_file_mutation(&bots)
+        .expect_err("stopped chat must reject a stale upload");
+    assert_eq!(rejection.code, "gateway_stopped");
     let reopened = gateway
         .open_session(&session_id)
         .await
@@ -453,7 +656,9 @@ async fn opening_a_chat_rejects_tampered_bot_identity() {
     let credentials =
         Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
     let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
-    let gateway = GatewayHost::start(store, config, credentials, bots).expect("gateway");
+    let gateway = GatewayHost::start(store, config, credentials, bots)
+        .await
+        .expect("gateway");
     let checkpoints = Arc::clone(&gateway.state.lock().await.checkpoints);
 
     let host = create_test_session(&gateway, &workspace)
@@ -492,7 +697,9 @@ async fn capacity_reclaims_an_unreferenced_idle_chat() {
     let credentials =
         Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
     let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
-    let gateway = GatewayHost::start(store, config, credentials, bots).expect("gateway");
+    let gateway = GatewayHost::start(store, config, credentials, bots)
+        .await
+        .expect("gateway");
     let mut state = gateway.state.lock().await;
     for index in 0..MAX_ACTIVE_SESSIONS {
         let (commands, mut receiver) = mpsc::channel(1);
@@ -513,6 +720,9 @@ async fn capacity_reclaims_an_unreferenced_idle_chat() {
                     events,
                     accepts_file_attachments: Arc::new(AtomicBool::new(false)),
                     alive: Arc::new(AtomicBool::new(true)),
+                    terminated: Arc::new(AtomicBool::new(true)),
+                    termination: Arc::new(tokio::sync::Notify::new()),
+                    session_mutations: Arc::new(tokio::sync::RwLock::new(())),
                 }),
             },
         );

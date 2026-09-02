@@ -28,6 +28,29 @@ pub(super) async fn session_catalog(
     checkpoints: &Arc<dyn CheckpointStore>,
     activities: &SessionActivities,
 ) -> Result<Vec<SessionRecord>> {
+    filtered_session_catalog(checkpoints, activities, CatalogFilter::Visible).await
+}
+
+pub(super) async fn hidden_bot_session_catalog(
+    checkpoints: &Arc<dyn CheckpointStore>,
+    activities: &SessionActivities,
+    bot_id: &str,
+) -> Result<Vec<SessionRecord>> {
+    filtered_session_catalog(checkpoints, activities, CatalogFilter::HiddenBot(bot_id)).await
+}
+
+#[derive(Clone, Copy)]
+enum CatalogFilter<'a> {
+    Visible,
+    HiddenBot(&'a str),
+}
+
+async fn filtered_session_catalog(
+    checkpoints: &Arc<dyn CheckpointStore>,
+    activities: &SessionActivities,
+    filter: CatalogFilter<'_>,
+) -> Result<Vec<SessionRecord>> {
+    let metadata = load_session_metadata(checkpoints).await?;
     let mut cursor = None;
     let mut sessions = Vec::new();
     while sessions.len() < SESSION_PAGE_SIZE {
@@ -37,11 +60,19 @@ pub(super) async fn session_catalog(
                 limit: SESSION_PAGE_SIZE,
             })
             .await?;
-        sessions.extend(
-            page.sessions
-                .into_iter()
-                .filter(|session| session.catalog_visible),
-        );
+        sessions.extend(page.sessions.into_iter().filter(|session| {
+            let manually_hidden = metadata
+                .get(&session.session_id)
+                .is_some_and(|metadata| metadata.hidden);
+            match filter {
+                CatalogFilter::Visible => session.catalog_visible && !manually_hidden,
+                CatalogFilter::HiddenBot(bot_id) => {
+                    session.session_context.bot_id == bot_id
+                        && session.parent_session_id.is_none()
+                        && !session.catalog_visible
+                }
+            }
+        }));
         let Some(next) = page.next_cursor else {
             break;
         };
@@ -59,19 +90,18 @@ pub(super) async fn session_catalog(
             message.truncate(end);
         }
     }
-    let metadata = load_session_metadata(checkpoints).await?;
     let activities = activities
         .lock()
         .map_err(|_| Error::Config("session activity lock is poisoned".into()))?;
     let mut sessions = sessions
         .into_iter()
-        .filter_map(|summary| {
+        .map(|summary| {
             let metadata = metadata.get(&summary.session_id);
             let activity = activities
                 .get(&summary.session_id)
                 .cloned()
                 .unwrap_or_default();
-            (!metadata.is_some_and(|metadata| metadata.hidden)).then(|| SessionRecord {
+            SessionRecord {
                 session_id: summary.session_id,
                 session_context: summary.session_context,
                 parent_session_id: summary.parent_session_id,
@@ -84,7 +114,7 @@ pub(super) async fn session_catalog(
                 activity,
                 created_at: summary.created_at,
                 updated_at: summary.updated_at,
-            })
+            }
         })
         .collect::<Vec<_>>();
     sessions.sort_by(|left, right| {
@@ -266,6 +296,46 @@ mod tests {
             .expect("session catalog");
 
         assert_eq!(sessions[0].activity.state, SessionActivityState::Running);
+    }
+
+    #[tokio::test]
+    async fn hidden_bot_catalog_contains_only_owned_roots() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
+            SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
+                .expect("checkpoints"),
+        );
+        let mut root = Checkpoint::empty("hidden-root");
+        root.catalog_visible = false;
+        root.session_context.bot_id = "bot-a".into();
+        root.sequence = 1;
+        checkpoints.save(&root, &[], None).await.expect("save root");
+        let mut child = Checkpoint::empty("hidden-child");
+        child.catalog_visible = false;
+        child.session_context.bot_id = "bot-a".into();
+        checkpoints
+            .fork("hidden-root", 1, &child)
+            .await
+            .expect("fork child");
+        let mut other = Checkpoint::empty("other-root");
+        other.catalog_visible = false;
+        other.session_context.bot_id = "bot-b".into();
+        checkpoints
+            .save(&other, &[], None)
+            .await
+            .expect("save other");
+
+        let sessions = hidden_bot_session_catalog(&checkpoints, &activities(), "bot-a")
+            .await
+            .expect("hidden Bot sessions");
+
+        assert_eq!(
+            sessions
+                .iter()
+                .map(|session| session.session_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["hidden-root"]
+        );
     }
 
     #[test]

@@ -34,6 +34,9 @@ final class AppModel {
         didSet { committedGitDiffRevision &+= 1 }
     }
     var sessions: [SessionRecord] = []
+    var botSessions: [SessionRecord] = []
+    var botSessionsBotID: String?
+    var isLoadingBotSessions = false
     var chatBotFilterIDs: Set<String> = []
     var chatCatalogSessions: [SessionRecord] {
         guard !chatBotFilterIDs.isEmpty else { return sessions }
@@ -41,6 +44,8 @@ final class AppModel {
     }
     var bots: [BotRecord] = []
     var swarms: [SwarmRecord] = []
+    var swarmMessageRequestID: String?
+    var completedSwarmMessageRequestID: String?
     var cloudSession: MobiusCloudSession?
     var cloudAccount: MobiusCloudAccount?
     var cloudAction: MobiusCloudAction = .idle
@@ -334,6 +339,8 @@ final class AppModel {
     @ObservationIgnored var sessionRequestID: String?
     @ObservationIgnored var sessionOpeningID: String?
     @ObservationIgnored var pendingCachedTranscript: CachedTranscript?
+    @ObservationIgnored var botSessionsRequestID: String?
+    @ObservationIgnored var pendingBotSessionResume: (botID: String, sessionID: String)?
     var sessionMutationRequestID: String?
     var swarmMutationRequestID: String?
     var botMutationRequestID: String?
@@ -553,7 +560,10 @@ final class AppModel {
     }
 
     var canModifySelectedSession: Bool {
-        canOpenSession && activeTurnID == nil && pendingApproval == nil
+        canOpenSession
+            && !selectedSessionIsHidden
+            && activeTurnID == nil
+            && pendingApproval == nil
     }
 
     func isCapabilityEnabled(_ capability: String) -> Bool {
@@ -678,6 +688,10 @@ final class AppModel {
         connectionState.isReady && swarmMutationRequestID == nil
     }
 
+    var canPostSwarmMessage: Bool {
+        connectionState.isReady && swarmMessageRequestID == nil
+    }
+
     var canMutateBots: Bool {
         connectionState.isReady && botMutationRequestID == nil
     }
@@ -788,6 +802,13 @@ final class AppModel {
             self?.toast = nil
             self?.toastDismissTask = nil
         }
+    }
+
+    func accessibilityMessage(for toast: AppToast) -> String {
+        guard let bot = bot(forSessionID: toast.sessionID),
+              !toast.message.hasPrefix("\(bot.name):")
+        else { return toast.message }
+        return "\(bot.name): \(toast.message)"
     }
 
     func dismissToast() {
@@ -1126,6 +1147,21 @@ final class AppModel {
     var selectedSession: SessionRecord? {
         guard let selectedSessionID else { return nil }
         return sessions.first { $0.sessionId == selectedSessionID }
+            ?? botSessions.first { $0.sessionId == selectedSessionID }
+    }
+
+    var selectedSessionIsHidden: Bool {
+        if let selectedSessionID,
+           botSessions.contains(where: { $0.sessionId == selectedSessionID }) {
+            return true
+        }
+        guard let route = navigationPath.last,
+              case .chat(.session) = route
+        else { return false }
+        return navigationPath.dropLast().contains { route in
+            if case .botSessions = route { return true }
+            return false
+        }
     }
 
     var selectedBot: BotRecord? {
@@ -1142,6 +1178,7 @@ final class AppModel {
     func bot(forSessionID sessionID: String?) -> BotRecord? {
         guard let sessionID,
               let session = sessions.first(where: { $0.sessionId == sessionID })
+                ?? botSessions.first(where: { $0.sessionId == sessionID })
         else { return nil }
         return bot(for: session)
     }
@@ -1173,6 +1210,7 @@ final class AppModel {
             return pendingTitle
         }
         let session = sessions.first(where: { $0.sessionId == sessionID })
+            ?? botSessions.first(where: { $0.sessionId == sessionID })
         return session.map { String(displayedTitle(for: $0).prefix(72)) }
             ?? localizedString("new conversation")
     }

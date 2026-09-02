@@ -125,8 +125,15 @@ extension AppModel {
         sessionOpeningID = nil
         pendingCachedTranscript = nil
         pendingPresentedTranscript = nil
+        botSessionsRequestID = nil
+        pendingBotSessionResume = nil
+        botSessions = []
+        botSessionsBotID = nil
+        isLoadingBotSessions = false
         sessionMutationRequestID = nil
         swarmMutationRequestID = nil
+        swarmMessageRequestID = nil
+        completedSwarmMessageRequestID = nil
         botMutationRequestID = nil
         botMutationSuccessMessage = nil
         pendingDeletedSessionID = nil

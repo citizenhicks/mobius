@@ -789,6 +789,27 @@ extension AppModelTests {
         XCTAssertTrue(model.unreadSessionIDs.contains("chat-1"))
     }
 
+    func testCompletedSessionNotificationUsesGatewayFinalAnswerPreviewAndBotIdentity() throws {
+        let model = try model()
+        model.applySessions([session(
+            state: .running,
+            turnID: "turn-1",
+            title: "Do not use this title"
+        )])
+
+        model.applySessions([session(
+            state: .idle,
+            outcome: .completed,
+            message: "  Fixed the parser.\n\nAll focused tests pass.  ",
+            sequence: 2,
+            title: "Do not use this title"
+        )])
+
+        XCTAssertEqual(model.toast?.tone, .success)
+        XCTAssertEqual(model.toast?.sessionID, "chat-1")
+        XCTAssertEqual(model.toast?.message, "Helper: Fixed the parser. All focused tests pass.")
+    }
+
     func testReadSessionStaysReadWhenCatalogMetadataChangesAtSameSequence() throws {
         let model = try model()
         let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))

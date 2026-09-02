@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::*;
 
 fn unseeded_fixture() -> (tempfile::TempDir, BotStore, PathBuf) {
@@ -164,14 +166,11 @@ fn bot_deletion_refuses_to_orphan_instruction_files() {
         .expect("routine");
     std::fs::remove_file(&routine.instructions).expect("remove instruction file");
     std::fs::create_dir(&routine.instructions).expect("replace file with directory");
-    let deletion = store
+    let error = store
         .prepare_bot_deletion(&bot.id, bot.config.revision)
-        .expect("prepare Bot deletion");
+        .expect_err("invalid instructions must fail preflight");
 
-    store
-        .delete_bot(deletion)
-        .expect_err("instruction cleanup must fail deletion");
-
+    assert!(error.to_string().contains("instructions must remain"));
     assert_eq!(store.bot(&bot.id).expect("Bot remains"), bot);
     assert_eq!(
         store.routine(&routine.id).expect("routine remains"),
@@ -211,6 +210,58 @@ fn bot_deletion_rejects_a_running_routine_before_mutation() {
         .expect("finish run");
 }
 
+#[tokio::test]
+async fn routine_creation_cannot_commit_after_its_bot_is_deleted() {
+    let (_root, store, workspace) = fixture();
+    let store = Arc::new(store);
+    let bot = create_bot(&store, "retiring");
+    let deletion = store
+        .prepare_bot_deletion(&bot.id, bot.config.revision)
+        .expect("prepare Bot deletion");
+    let creating = tokio::task::spawn_blocking({
+        let store = Arc::clone(&store);
+        let bot_id = bot.id.clone();
+        move || {
+            store.create_routine(
+                &bot_id,
+                &workspace,
+                "must not outlive its Bot",
+                once(Utc::now().timestamp() + 60),
+                None,
+            )
+        }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            if std::fs::read_dir(&store.routines_dir)
+                .expect("routine directory")
+                .any(|entry| entry.expect("routine entry").path().is_file())
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("routine creation reaches the serialized state update");
+    assert!(!creating.is_finished());
+
+    store.delete_bot(deletion).expect("delete Bot");
+    let error = creating
+        .await
+        .expect("routine task")
+        .expect_err("deleted Bot cannot gain a routine");
+
+    assert!(error.to_string().contains("unknown Bot"));
+    assert!(store.history(None).expect("history").is_empty());
+    assert!(
+        std::fs::read_dir(&store.routines_dir)
+            .expect("routine directory")
+            .next()
+            .is_none()
+    );
+}
+
 #[test]
 fn bot_profile_update_preserves_identity_and_persists_exact_revision() {
     let (root, store, _) = fixture();
@@ -244,7 +295,11 @@ fn bot_handles_are_derived_unique_and_immutable() {
     let duplicate = store
         .create_bot("builder", "Own other work.", AgentComposition::default())
         .expect("second Bot");
+    let reserved = store
+        .create_bot("User", "Human-facing work.", AgentComposition::default())
+        .expect("reserved handle is suffixed");
     assert_eq!(duplicate.handle, "builder-2");
+    assert_eq!(reserved.handle, "user-2");
 
     let updated = store
         .update_bot(
@@ -315,6 +370,70 @@ fn active_routine_run_cannot_be_deleted() {
     store
         .finish_run(active, RoutineRunStatus::Succeeded, None)
         .expect("finish");
+}
+
+#[test]
+fn unrelated_run_finishes_while_bot_deletion_recovery_is_pending() {
+    let (_root, store, workspace) = fixture();
+    let deleting = create_bot(&store, "deleting");
+    let worker = create_bot(&store, "worker");
+    let routine = store
+        .create_routine(
+            &worker.id,
+            &workspace,
+            "finish existing work",
+            once(Utc::now().timestamp() + 60),
+            None,
+        )
+        .expect("routine");
+    let BeginRun::Started(active) = store.begin_run(&routine.id).expect("begin") else {
+        panic!("run must start");
+    };
+    let mut deletion = store
+        .prepare_bot_deletion(&deleting.id, deleting.config.revision)
+        .expect("prepare deletion");
+    store
+        .record_bot_deletion(&mut deletion, &[], &[], None)
+        .expect("record recovery intent");
+    drop(deletion);
+
+    let run = store
+        .finish_run(active, RoutineRunStatus::Succeeded, None)
+        .expect("finish unrelated run");
+
+    assert_eq!(run.status, RoutineRunStatus::Succeeded);
+    assert_eq!(
+        store
+            .pending_bot_deletion()
+            .expect("pending deletion")
+            .map(|pending| pending.bot_id),
+        Some(deleting.id)
+    );
+}
+
+#[test]
+fn due_routines_idle_while_bot_deletion_recovery_is_pending() {
+    let (_root, store, workspace) = fixture();
+    let deleting = create_bot(&store, "deleting");
+    let worker = create_bot(&store, "worker");
+    let now = Utc::now().timestamp();
+    store
+        .create_routine(&worker.id, &workspace, "wait for recovery", once(now), None)
+        .expect("routine");
+    let mut deletion = store
+        .prepare_bot_deletion(&deleting.id, deleting.config.revision)
+        .expect("prepare deletion");
+    store
+        .record_bot_deletion(&mut deletion, &[], &[], None)
+        .expect("record recovery intent");
+    drop(deletion);
+
+    assert!(
+        store
+            .take_due(now)
+            .expect("scheduler remains idle")
+            .is_empty()
+    );
 }
 
 #[test]
@@ -548,7 +667,8 @@ fn routine_input_wraps_raw_instructions_within_the_message_limit() {
     assert_eq!(
         (input, record.instructions, oversized_rejected),
         (
-            format!("{ROUTINE_SUBMISSION_PREFIX}\n\ninspect cache behavior"),
+            "# Routine\n\nThe instructions below relate to a routine task.\n\ninspect cache behavior"
+                .to_string(),
             "inspect cache behavior".to_string(),
             true,
         )
@@ -623,13 +743,11 @@ fn routine_delete_refuses_to_orphan_instruction_files() {
     std::fs::remove_file(&routine.instructions).expect("remove instruction file");
     std::fs::create_dir(&routine.instructions).expect("replace file with directory");
 
-    let deletion = store
+    let error = store
         .prepare_routine_deletion(&routine.id)
-        .expect("prepare routine deletion");
-    store
-        .delete_routine(deletion)
-        .expect_err("instruction cleanup must fail deletion");
+        .expect_err("invalid instructions must fail preflight");
 
+    assert!(error.to_string().contains("instructions must remain"));
     assert_eq!(
         store.routine(&routine.id).expect("routine remains"),
         routine
@@ -925,6 +1043,7 @@ fn previous_state_version_is_rejected_without_compatibility() {
         bots: Vec::new(),
         routines: Vec::new(),
         runs: Vec::new(),
+        pending_bot_deletion: None,
     };
     std::fs::write(
         state_dir.join(STATE_FILE),

@@ -978,6 +978,17 @@ extension AppModelTests {
             sessionId: nil,
             message: nil
         )]
+        model.botSessionsBotID = helper.id
+        model.selectedSessionID = "work-1"
+        model.destination = .bots
+        model.navigationPath = [
+            .botSessions(helper.id),
+            .chat(.session("work-1")),
+        ]
+        XCTAssertTrue(model.selectedSessionIsHidden)
+
+        model.applyBots([mobius, helper])
+        XCTAssertEqual(model.selectedSessionID, "work-1")
 
         model.deleteBot(helper)
         let request = await recorder.firstRequest(after: 0) {
@@ -994,6 +1005,9 @@ extension AppModelTests {
 
         XCTAssertTrue(model.routines.isEmpty)
         XCTAssertTrue(model.routineRuns.isEmpty)
+        XCTAssertTrue(model.botSessions.isEmpty)
+        XCTAssertNil(model.selectedSessionID)
+        XCTAssertTrue(model.navigationPath.isEmpty)
     }
 
     func testProviderRegistrationDoesNotConfigureBotDefaults() async throws {

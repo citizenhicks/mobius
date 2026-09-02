@@ -469,6 +469,7 @@ struct SessionCatalogRow: View {
     var showsWorkspace = false
     var showsControls = true
     var detail: String?
+    var open: ((SessionRecord) -> Void)? = nil
 
     @ViewBuilder
     var body: some View {
@@ -476,7 +477,7 @@ struct SessionCatalogRow: View {
         let isUnread = model.unreadSessionIDs.contains(session.sessionId)
         let row = HStack(spacing: MobiusSpace.xs) {
             Button {
-                model.openChat(session.sessionId)
+                if let open { open(session) } else { model.openChat(session.sessionId) }
             } label: {
                 HStack(spacing: MobiusSpace.s) {
                     VStack(alignment: .leading, spacing: MobiusSpace.xxs) {

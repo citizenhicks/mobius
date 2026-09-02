@@ -113,7 +113,8 @@ impl GatewayServer {
         let auth = Arc::new(AuthStore::open(store.auth_path())?);
         let credentials = Arc::new(CredentialStore::open(store.credentials_path())?);
         let bots = Arc::new(BotStore::open(store.state_dir())?);
-        let host = GatewayHost::start(store, config.clone(), credentials, Arc::clone(&bots))?;
+        let host =
+            GatewayHost::start(store, config.clone(), credentials, Arc::clone(&bots)).await?;
         Ok(Self {
             config,
             listener,

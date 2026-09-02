@@ -321,10 +321,11 @@ extension AppModelTests {
         XCTAssertEqual(relaunched.pushInstallationID, model.pushInstallationID)
     }
 
-    func testForegroundRemoteThenGatewayCompletionShowsOneSharedToast() throws {
+    func testCanonicalGatewayCompletionRefinesAnEarlierRichRemotePreview() throws {
         let model = try model()
         model.cloudSession = MobiusCloudSession(userID: UUID(), expiresAt: .distantFuture)
         model.notificationsEnabled = true
+        model.bots = []
         model.sessions = [session(
             state: .running,
             turnID: "turn-1",
@@ -336,20 +337,135 @@ extension AppModelTests {
             kind: .completed,
             sessionID: "chat-1",
             runCount: 1
-        ))
+        ), agentName: "Luna", detail: "You are right.\nThis was a mistake.")
         let remoteToastID = try XCTUnwrap(model.toast?.id)
-        XCTAssertEqual(model.toast?.message, "Deploy is ready.")
+        XCTAssertEqual(model.toast?.message, "Luna: You are right. This was a mistake.")
 
+        model.bots = [bot()]
         model.applySessions([session(
             state: .idle,
             outcome: .completed,
+            message: "The corrected canonical answer.",
             executionStats: ExecutionStats(runCount: 1),
             sequence: 2,
             title: "Deploy"
         )])
 
-        XCTAssertEqual(model.toast?.id, remoteToastID)
-        XCTAssertEqual(model.toast?.message, "Deploy is ready.")
+        XCTAssertNotEqual(model.toast?.id, remoteToastID)
+        XCTAssertEqual(model.toast?.message, "Helper: The corrected canonical answer.")
+    }
+
+    func testSecondRichRemoteCompletionForTheSameRunIsDeduplicated() throws {
+        let model = try model()
+        model.cloudSession = MobiusCloudSession(userID: UUID(), expiresAt: .distantFuture)
+        model.notificationsEnabled = true
+        model.bots = []
+        model.sessions = [session(
+            state: .running,
+            turnID: "turn-1",
+            executionStats: ExecutionStats(runCount: 0)
+        )]
+        model.receivedForegroundRemoteNotification(RemoteSessionNotification(
+            eventID: "event-1",
+            kind: .completed,
+            sessionID: "chat-1",
+            runCount: 1
+        ), agentName: "Luna", detail: "First answer.")
+        let firstToastID = try XCTUnwrap(model.toast?.id)
+
+        model.receivedForegroundRemoteNotification(RemoteSessionNotification(
+            eventID: "event-2",
+            kind: .completed,
+            sessionID: "chat-1",
+            runCount: 1
+        ), agentName: "Luna", detail: "Second answer.")
+
+        XCTAssertEqual(model.toast?.id, firstToastID)
+        XCTAssertEqual(model.toast?.message, "Luna: First answer.")
+    }
+
+    func testSessionToastAccessibilityIncludesBotWithoutDuplicatingItsName() throws {
+        let model = try model()
+        model.bots = [bot()]
+        model.sessions = [session(state: .idle)]
+
+        XCTAssertEqual(
+            model.accessibilityMessage(for: AppToast(
+                message: "Deploy needs approval.",
+                tone: .warning,
+                sessionID: "chat-1"
+            )),
+            "Helper: Deploy needs approval."
+        )
+        XCTAssertEqual(
+            model.accessibilityMessage(for: AppToast(
+                message: "Helper: Deployment succeeded.",
+                tone: .success,
+                sessionID: "chat-1"
+            )),
+            "Helper: Deployment succeeded."
+        )
+    }
+
+    func testGatewayPreviewRefinesGenericRemoteCompletionWithoutAnEarlierBotCatalog() throws {
+        let model = try model()
+        model.cloudSession = MobiusCloudSession(userID: UUID(), expiresAt: .distantFuture)
+        model.notificationsEnabled = true
+        model.bots = []
+        model.sessions = [session(
+            state: .running,
+            turnID: "turn-1",
+            executionStats: ExecutionStats(runCount: 0)
+        )]
+        model.receivedForegroundRemoteNotification(RemoteSessionNotification(
+            eventID: "event-1",
+            kind: .completed,
+            sessionID: "chat-1",
+            runCount: 1
+        ))
+        let remoteToastID = try XCTUnwrap(model.toast?.id)
+        XCTAssertEqual(model.toast?.message, "Bot: Finished.")
+
+        model.bots = [bot()]
+        model.applySessions([session(
+            state: .idle,
+            outcome: .completed,
+            message: "  Deployment succeeded.\nAll checks passed. ",
+            executionStats: ExecutionStats(runCount: 1),
+            sequence: 2
+        )])
+
+        XCTAssertNotEqual(model.toast?.id, remoteToastID)
+        XCTAssertEqual(model.toast?.message, "Helper: Deployment succeeded. All checks passed.")
+    }
+
+    func testForegroundRemoteDoesNotReplaceAnExistingGatewayCompletionPreview() throws {
+        let model = try model()
+        model.cloudSession = MobiusCloudSession(userID: UUID(), expiresAt: .distantFuture)
+        model.notificationsEnabled = true
+        model.sessions = [session(
+            state: .running,
+            turnID: "turn-1",
+            executionStats: ExecutionStats(runCount: 0)
+        )]
+        model.applySessions([session(
+            state: .idle,
+            outcome: .completed,
+            message: "Deployment succeeded.",
+            executionStats: ExecutionStats(runCount: 1),
+            sequence: 2
+        )])
+        let gatewayToastID = try XCTUnwrap(model.toast?.id)
+
+        model.receivedForegroundRemoteNotification(RemoteSessionNotification(
+            eventID: "event-1",
+            kind: .completed,
+            sessionID: "chat-1",
+            runCount: 1
+        ))
+
+        XCTAssertEqual(model.toast?.id, gatewayToastID)
+        XCTAssertEqual(model.toast?.message, "Helper: Deployment succeeded.")
     }
 
     func testGatewayThenForegroundApprovalShowsOneSharedToast() throws {

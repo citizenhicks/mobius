@@ -314,6 +314,7 @@ impl ScratchpadStore {
         Ok(outcome)
     }
 
+    #[cfg(test)]
     async fn promote_note(
         &self,
         session_id: &str,
@@ -321,8 +322,20 @@ impl ScratchpadStore {
         note: &str,
         target: PromotionTarget,
     ) -> Result<WriteOutcome> {
+        let access = self.lock_access().await;
+        self.promote_note_locked(session_id, swarm_id, note, target, &access)
+            .await
+    }
+
+    async fn promote_note_locked(
+        &self,
+        session_id: &str,
+        swarm_id: Option<&str>,
+        note: &str,
+        target: PromotionTarget,
+        _access: &tokio::sync::MutexGuard<'_, ()>,
+    ) -> Result<WriteOutcome> {
         let note = canonical_note(note).map_err(Error::Tool)?;
-        let _guard = self.access.lock().await;
         let session = self.load(Scope::Session, session_id).await?;
         let entry = session
             .into_iter()
@@ -711,8 +724,8 @@ impl Middleware for Scratchpad {
         context: MiddlewareCommandContext<'a>,
     ) -> BoxFuture<'a, Result<MiddlewareCommandOutput>> {
         Box::pin(async move {
-            let swarm_id = self.swarm.resolve().await?;
             let access = self.store.lock_access().await;
+            let swarm_id = self.swarm.resolve().await?;
             self.execute_command_locked(
                 context.session_id,
                 context.command,
@@ -730,10 +743,10 @@ impl Middleware for Scratchpad {
         context: &'a mut ActiveCommandContext<'_>,
     ) -> BoxFuture<'a, Result<Option<SubmissionResult>>> {
         Box::pin(async move {
-            let swarm_id = self.swarm.resolve().await?;
             let Some(access) = self.store.try_lock_access() else {
                 return Ok(None);
             };
+            let swarm_id = self.swarm.resolve().await?;
             let output = self
                 .execute_command_locked(
                     context.session_id,

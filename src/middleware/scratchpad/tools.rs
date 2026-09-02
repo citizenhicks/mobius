@@ -94,16 +94,19 @@ impl Tool for PromoteScratchpad {
     ) -> BoxFuture<'a, Result<String>> {
         Box::pin(async move {
             let arguments: PromoteArgs = serde_json::from_value(arguments)?;
+            let access = self.store.lock_access().await;
             let swarm_id = self.swarm.resolve().await?;
             let outcome = self
                 .store
-                .promote_note(
+                .promote_note_locked(
                     &self.session_id,
                     swarm_id.as_deref(),
                     &arguments.note,
                     arguments.target,
+                    &access,
                 )
                 .await?;
+            drop(access);
             if outcome != WriteOutcome::Existing {
                 publish_current_widgets(
                     &self.store,

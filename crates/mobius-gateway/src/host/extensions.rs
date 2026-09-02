@@ -21,9 +21,8 @@ impl GatewayHost {
         let snapshot_created = staged.snapshot_created;
         let id = staged.id.clone();
         let result = async {
+            let sessions_guard = self.begin_exclusive_mutation().await?;
             let state = self.state.lock().await;
-            let gate = Arc::clone(&state.session_mutations);
-            let sessions_guard = gate.write_owned().await;
             let next = {
                 let current = state
                     .config
@@ -100,9 +99,8 @@ impl GatewayHost {
         let staged_digest = staged.installed.digest.clone();
         let snapshot_created = staged.snapshot_created;
         let result = async {
+            let sessions_guard = self.begin_exclusive_mutation().await?;
             let state = self.state.lock().await;
-            let gate = Arc::clone(&state.session_mutations);
-            let sessions_guard = gate.write_owned().await;
             let next = {
                 let current = state
                     .config
@@ -143,9 +141,8 @@ impl GatewayHost {
             Arc::clone(&state.extension_mutations)
         };
         let _extension_mutation = mutation.lock_owned().await;
+        let sessions_guard = self.begin_exclusive_mutation().await?;
         let state = self.state.lock().await;
-        let gate = Arc::clone(&state.session_mutations);
-        let sessions_guard = gate.write_owned().await;
         let selected_by = state
             .bots
             .bots()
@@ -198,9 +195,8 @@ impl GatewayHost {
             Arc::clone(&state.extension_mutations)
         };
         let _extension_mutation = mutation.lock_owned().await;
+        let sessions_guard = self.begin_exclusive_mutation().await?;
         let state = self.state.lock().await;
-        let gate = Arc::clone(&state.session_mutations);
-        let sessions_guard = gate.write_owned().await;
         let next = {
             let current = state
                 .config
@@ -250,7 +246,7 @@ impl GatewayHost {
         &self,
         sessions: Vec<HostHandle>,
         id: &str,
-        sessions_guard: tokio::sync::OwnedRwLockWriteGuard<()>,
+        _sessions_guard: tokio::sync::OwnedRwLockWriteGuard<()>,
     ) -> std::result::Result<ReadyPayload, Rejection> {
         for host in sessions {
             if let Err(rejection) = host.refresh_extension(id.to_owned()).await
@@ -259,7 +255,6 @@ impl GatewayHost {
                 return Err(rejection);
             }
         }
-        drop(sessions_guard);
         let state = self.state.lock().await;
         let payload = gateway_ready(&state).await?;
         drop(state);
@@ -340,7 +335,9 @@ mod tests {
         let credentials =
             Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
         let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
-        let gateway = GatewayHost::start(store, config, credentials, bots).expect("gateway");
+        let gateway = GatewayHost::start(store, config, credentials, bots)
+            .await
+            .expect("gateway");
         {
             let state = gateway.state.lock().await;
             state
@@ -412,6 +409,9 @@ mod tests {
                     events,
                     accepts_file_attachments: Arc::new(AtomicBool::new(false)),
                     alive: Arc::new(AtomicBool::new(true)),
+                    terminated: Arc::new(AtomicBool::new(true)),
+                    termination: Arc::new(tokio::sync::Notify::new()),
+                    session_mutations: Arc::new(tokio::sync::RwLock::new(())),
                 }),
             },
             refresh_started_receiver,
@@ -419,8 +419,8 @@ mod tests {
         )
     }
 
-    #[test]
-    fn startup_rejects_a_bot_with_a_missing_selected_extension() {
+    #[tokio::test]
+    async fn startup_rejects_a_bot_with_a_missing_selected_extension() {
         let root = tempfile::tempdir().expect("root");
         let listen = "127.0.0.1:8741".parse().expect("listen address");
         let (store, config) =
@@ -449,7 +449,7 @@ mod tests {
         let credentials =
             Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
 
-        let error = match GatewayHost::start(store, config, credentials, bots) {
+        let error = match GatewayHost::start(store, config, credentials, bots).await {
             Ok(_) => panic!("missing selected extension must fail startup"),
             Err(error) => error,
         };
@@ -483,7 +483,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn extension_refresh_releases_the_session_gate_before_ready_state() {
+    async fn extension_refresh_releases_gateway_state_while_waiting() {
         let (_root, gateway) = gateway_with_selected_extension().await;
         let bot = gateway
             .state
@@ -552,13 +552,13 @@ mod tests {
             }
         });
         bot_waiting.await.expect("Bot update started");
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            while gateway.state.try_lock().is_ok() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("Bot update must own GatewayState while waiting for the session mutation gate");
+        let state = tokio::time::timeout(std::time::Duration::from_secs(1), gateway.state.lock())
+            .await
+            .expect(
+                "Bot update must release GatewayState while waiting for the session mutation gate",
+            );
+        drop(state);
+        assert!(!bot_update.is_finished());
 
         release_refresh.notify_one();
         let (extension_result, bot_result) =
