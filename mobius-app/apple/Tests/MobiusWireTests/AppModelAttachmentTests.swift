@@ -205,6 +205,215 @@ extension AppModelTests {
         XCTAssertTrue(message.attachments.isEmpty)
     }
 
+    func testRemovingLocalAttachmentDoesNotSendGatewayDelete() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model { request in await recorder.record(request) }
+        let attachmentID = UUID()
+        model.connectionState = .ready
+        model.composerAttachments = [ComposerAttachment(
+            id: attachmentID,
+            name: "local.txt",
+            size: 1,
+            mediaType: "text/plain",
+            state: .queued
+        )]
+        model.sessionFileData[attachmentID] = Data([1])
+
+        model.removeComposerAttachment(attachmentID)
+
+        XCTAssertTrue(model.composerAttachments.isEmpty)
+        XCTAssertNil(model.sessionFileData[attachmentID])
+        let requests = await recorder.requests()
+        XCTAssertTrue(requests.isEmpty)
+    }
+
+    func testRemovingAttachmentBeforeUploadReadyDeletesReturnedUpload() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model { request in await recorder.record(request) }
+        let attachmentID = UUID()
+        model.connectionState = .ready
+        model.selectedSessionID = "chat-1"
+        model.composerAttachments = [ComposerAttachment(
+            id: attachmentID,
+            name: "scan.png",
+            size: 3,
+            mediaType: "image/png",
+            state: .uploading(0)
+        )]
+        model.sessionFileData[attachmentID] = Data([1, 2, 3])
+        model.sessionFileUploadRequests["begin-1"] = .begin(
+            localID: attachmentID,
+            sessionID: "chat-1"
+        )
+
+        model.removeComposerAttachment(attachmentID)
+        XCTAssertTrue(model.composerAttachments.isEmpty)
+        XCTAssertNotNil(model.abandonedSessionFileUploadRequests["begin-1"])
+
+        model.handle(.sessionFileUploadReady(
+            requestID: "begin-1",
+            sessionID: "chat-1",
+            uploadID: "file-1",
+            maxChunkBytes: 3
+        ))
+
+        let request = await recorder.firstRequest(after: 0) {
+            if case .deleteSessionFile = $0 { return true }
+            return false
+        }
+        guard case .deleteSessionFile(let requestID, let sessionID, let fileID) =
+            try XCTUnwrap(request)
+        else { return XCTFail("Expected abandoned upload deletion") }
+        XCTAssertEqual(sessionID, "chat-1")
+        XCTAssertEqual(fileID, "file-1")
+        XCTAssertNotNil(model.sessionFileDeleteRequests[requestID])
+        let requests = await recorder.requests()
+        XCTAssertFalse(requests.contains {
+            if case .uploadSessionFileChunk = $0 { return true }
+            return false
+        })
+    }
+
+    func testRejectedAbandonedBeginStartsNextQueuedUpload() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model { request in await recorder.record(request) }
+        let abandonedID = UUID()
+        let queuedID = UUID()
+        model.connectionState = .ready
+        model.selectedSessionID = "chat-1"
+        model.composerAttachments = [
+            ComposerAttachment(
+                id: abandonedID,
+                name: "cancelled.bin",
+                size: 1,
+                mediaType: "application/octet-stream",
+                state: .uploading(0)
+            ),
+            ComposerAttachment(
+                id: queuedID,
+                name: "next.bin",
+                size: 1,
+                mediaType: "application/octet-stream",
+                state: .queued
+            ),
+        ]
+        model.sessionFileData[abandonedID] = Data([1])
+        model.sessionFileData[queuedID] = Data([2])
+        model.sessionFileUploadRequests["begin-1"] = .begin(
+            localID: abandonedID,
+            sessionID: "chat-1"
+        )
+
+        model.removeComposerAttachment(abandonedID)
+        model.handle(.rejected(GatewayRejection(
+            requestId: "begin-1",
+            code: "session_file_rejected",
+            message: "Cancelled upload was rejected",
+            fatal: false
+        )))
+
+        let request = await recorder.firstRequest(after: 0) {
+            guard case .beginSessionFileUpload(_, _, let name, _, _) = $0 else {
+                return false
+            }
+            return name == "next.bin"
+        }
+        XCTAssertNotNil(request)
+        XCTAssertNil(model.toast)
+    }
+
+    func testRejectedUploadedAttachmentDeleteRestoresComposerCard() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model { request in await recorder.record(request) }
+        let file = SessionFileReference(
+            id: "file-1",
+            name: "scan.png",
+            size: 3,
+            mediaType: "image/png"
+        )
+        model.connectionState = .ready
+        model.selectedSessionID = "chat-1"
+        model.composerAttachments = [ComposerAttachment(
+            id: UUID(),
+            name: file.name,
+            size: file.size,
+            mediaType: file.mediaType,
+            state: .uploaded(file)
+        )]
+
+        model.removeComposerAttachment(try XCTUnwrap(model.composerAttachments.first?.id))
+
+        let request = await recorder.firstRequest(after: 0) {
+            if case .deleteSessionFile = $0 { return true }
+            return false
+        }
+        guard case .deleteSessionFile(let requestID, _, _) = try XCTUnwrap(request)
+        else { return XCTFail("Expected uploaded file deletion") }
+        XCTAssertTrue(model.composerAttachments.isEmpty)
+
+        model.handle(.rejected(GatewayRejection(
+            requestId: requestID,
+            code: "session_file_rejected",
+            message: "File could not be deleted",
+            fatal: false
+        )))
+
+        XCTAssertEqual(model.composerAttachments.first?.state, .uploaded(file))
+        XCTAssertEqual(model.toast?.message, "File could not be deleted")
+    }
+
+    func testDiscardingComposerAttachmentsDeletesCompletedUploads() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model { request in await recorder.record(request) }
+        let file = SessionFileReference(
+            id: "file-1",
+            name: "notes.txt",
+            size: 4,
+            mediaType: "text/plain"
+        )
+        model.connectionState = .ready
+        model.selectedSessionID = "chat-1"
+        model.composerAttachments = [ComposerAttachment(
+            id: UUID(),
+            name: file.name,
+            size: file.size,
+            mediaType: file.mediaType,
+            state: .uploaded(file)
+        )]
+
+        model.discardComposerAttachments()
+
+        let request = await recorder.firstRequest(after: 0) {
+            if case .deleteSessionFile = $0 { return true }
+            return false
+        }
+        guard case .deleteSessionFile(_, let sessionID, let fileID) = try XCTUnwrap(request)
+        else { return XCTFail("Expected discarded file deletion") }
+        XCTAssertEqual(sessionID, "chat-1")
+        XCTAssertEqual(fileID, "file-1")
+        XCTAssertTrue(model.composerAttachments.isEmpty)
+    }
+
+    func testConnectionEndClearsAttachmentRemovalRequests() throws {
+        let model = try model()
+        let attachment = ComposerAttachment(
+            id: UUID(),
+            name: "scan.png",
+            size: 3,
+            mediaType: "image/png",
+            state: .uploading(0)
+        )
+        let removed = RemovedComposerAttachment(sessionID: "chat-1", attachment: attachment)
+        model.abandonedSessionFileUploadRequests["begin-1"] = removed
+        model.sessionFileDeleteRequests["delete-1"] = removed
+        let generation = model.connectionGeneration
+
+        model.connectionEnded(generation: generation, message: "Disconnected")
+
+        XCTAssertTrue(model.abandonedSessionFileUploadRequests.isEmpty)
+        XCTAssertTrue(model.sessionFileDeleteRequests.isEmpty)
+    }
+
     func testAttachmentComposerUsesAdvertisedPolicyWithinClientSafetyCaps() throws {
         let model = try model()
         model.sessionFileLimits = SessionFileLimits(

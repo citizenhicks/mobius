@@ -339,6 +339,15 @@ extension GatewayWireTests {
         ))
         XCTAssertEqual(finish["type"] as? String, "finish_session_file_upload")
 
+        let delete = try requestObject(.deleteSessionFile(
+            requestID: "delete-1",
+            sessionID: "chat-1",
+            fileID: "file-1"
+        ))
+        XCTAssertEqual(delete["type"] as? String, "delete_session_file")
+        XCTAssertEqual(delete["session_id"] as? String, "chat-1")
+        XCTAssertEqual(delete["file_id"] as? String, "file-1")
+
         let list = try requestObject(.listSessionFiles(
             requestID: "list-1",
             sessionID: "chat-1"

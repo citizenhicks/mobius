@@ -364,6 +364,9 @@ final class AppModel {
     @ObservationIgnored var workspaceFileWriteRequestID: String?
     @ObservationIgnored var sessionFilesRequestID: String?
     @ObservationIgnored var sessionFileUploadRequests: [String: SessionFileUploadRequest] = [:]
+    @ObservationIgnored var abandonedSessionFileUploadRequests:
+        [String: RemovedComposerAttachment] = [:]
+    @ObservationIgnored var sessionFileDeleteRequests: [String: RemovedComposerAttachment] = [:]
     @ObservationIgnored var sessionFileData: [UUID: Data] = [:]
     @ObservationIgnored var activeSessionFileUpload: ActiveSessionFileUpload?
     @ObservationIgnored var sessionFileDownload: SessionFileDownload?

@@ -675,7 +675,6 @@ private struct ComposerAttachmentRow: View {
                 .labelStyle(.iconOnly)
                 .buttonStyle(.mobiusPlain)
                 .frame(width: MobiusStyle.iconButtonSize, height: MobiusStyle.iconButtonSize)
-                .disabled(isLocked)
             }
             .foregroundStyle(thumbnail == nil ? Color.primary : palette.onMedia)
             .shadow(
@@ -736,13 +735,6 @@ private struct ComposerAttachmentRow: View {
         switch attachment.state {
         case .preparing, .queued, .uploading: true
         case .uploaded, .failed: false
-        }
-    }
-
-    private var isLocked: Bool {
-        switch attachment.state {
-        case .preparing, .uploading: true
-        case .queued, .uploaded, .failed: false
         }
     }
 

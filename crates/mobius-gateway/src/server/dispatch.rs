@@ -198,6 +198,14 @@ pub(super) async fn handle_message(
             )
             .await;
         }
+        ClientMessage::DeleteSessionFile {
+            request_id,
+            session_id,
+            file_id,
+        } => {
+            return delete_session_file(writer, &mut connection, request_id, session_id, file_id)
+                .await;
+        }
         ClientMessage::ListSessionFiles {
             request_id,
             session_id,
@@ -1167,6 +1175,38 @@ async fn finish_session_file_upload(
             )
             .await
         }
+        Err(error) => write_rejection(writer, request_id, session_file_rejection(error)).await,
+    }
+}
+
+async fn delete_session_file(
+    writer: &mut (impl AsyncWrite + Unpin),
+    connection: &mut ConnectionSessionState<'_>,
+    request_id: String,
+    session_id: String,
+    file_id: String,
+) -> Result<()> {
+    let host = match require_selected(&*connection.selected, &session_id) {
+        Ok(host) => host,
+        Err(rejection) => return write_rejection(writer, request_id, rejection).await,
+    };
+    let _mutation = match host.begin_session_file_mutation(connection.bots) {
+        Ok(mutation) => mutation,
+        Err(rejection) => return write_rejection(writer, request_id, rejection).await,
+    };
+    if connection
+        .uploads
+        .remove(&(session_id.clone(), file_id.clone()))
+        .is_some()
+    {
+        return write_result(writer, request_id, Ok(())).await;
+    }
+    match connection
+        .session_files
+        .delete_upload(&session_id, &file_id)
+        .await
+    {
+        Ok(()) => write_result(writer, request_id, Ok(())).await,
         Err(error) => write_rejection(writer, request_id, session_file_rejection(error)).await,
     }
 }

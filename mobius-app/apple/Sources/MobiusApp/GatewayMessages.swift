@@ -112,6 +112,7 @@ enum GatewayRequest: Encodable, Sendable {
         data: Data
     )
     case finishSessionFileUpload(requestID: String, sessionID: String, uploadID: String)
+    case deleteSessionFile(requestID: String, sessionID: String, fileID: String)
     case listSessionFiles(requestID: String, sessionID: String)
     case readSessionFile(
         requestID: String,
@@ -387,6 +388,11 @@ enum GatewayRequest: Encodable, Sendable {
             try container.encode(requestID, forKey: "requestId")
             try container.encode(sessionID, forKey: "sessionId")
             try container.encode(uploadID, forKey: "uploadId")
+        case .deleteSessionFile(let requestID, let sessionID, let fileID):
+            try container.encode("delete_session_file", forKey: "type")
+            try container.encode(requestID, forKey: "requestId")
+            try container.encode(sessionID, forKey: "sessionId")
+            try container.encode(fileID, forKey: "fileId")
         case .listSessionFiles(let requestID, let sessionID):
             try container.encode("list_session_files", forKey: "type")
             try container.encode(requestID, forKey: "requestId")

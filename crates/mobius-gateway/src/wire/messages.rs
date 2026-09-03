@@ -151,6 +151,11 @@ pub enum ClientMessage {
         session_id: String,
         upload_id: String,
     },
+    DeleteSessionFile {
+        request_id: String,
+        session_id: String,
+        file_id: String,
+    },
     ListSessionFiles {
         request_id: String,
         session_id: String,

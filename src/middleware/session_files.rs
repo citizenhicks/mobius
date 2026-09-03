@@ -250,6 +250,23 @@ impl SessionFileStore {
         deletion.delete().await
     }
 
+    /// Permanently removes one completed user upload.
+    pub async fn delete_upload(&self, session_id: &str, file_id: &str) -> Result<()> {
+        validate_session_id(session_id)?;
+        validate_file_id(file_id)?;
+        self.ensure_initialized().await?;
+        let _commit = self.commits.lock().await;
+        let directory = self.session_dir(session_id).join(file_id);
+        match tokio::fs::symlink_metadata(&directory).await {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+            Ok(_) => {}
+        }
+        self.resolve_upload_record(session_id, file_id).await?;
+        tokio::fs::remove_dir_all(directory).await?;
+        gc_unreferenced_blobs(&self.root).await
+    }
+
     /// Validates a group deletion and prevents new upload reservations until it completes.
     pub async fn prepare_delete_sessions(
         &self,

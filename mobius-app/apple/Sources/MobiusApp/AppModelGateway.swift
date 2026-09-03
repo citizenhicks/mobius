@@ -1198,6 +1198,7 @@ extension AppModel {
     }
 
     private func handleAccepted(_ requestID: String) {
+        acceptSessionFileDeletionRequest(requestID)
         if pendingDrafts[requestID] != nil { flushComposerDraft() }
         if requestID == approvalRequestID {
             pendingApproval = nil
@@ -1240,6 +1241,9 @@ extension AppModel {
     }
 
     private func handleRejected(_ rejection: GatewayRejection) {
+        let rejectedAbandonedUpload = discardAbandonedSessionFileUploadRequest(
+            rejection.requestId
+        )
         let rejectedFileThumbnailDownload = sessionFileThumbnailDownload.flatMap { download in
             download.requestID == rejection.requestId ? download : nil
         }
@@ -1256,7 +1260,7 @@ extension AppModel {
         handleRejectedConfiguration(rejection, deletedSessionID: deletedPresentedSessionID)
         handleRejectedWorkspace(rejection)
         handleRejectedCapabilities(rejection)
-        if !rejectedFileThumbnail || rejection.fatal {
+        if (!rejectedFileThumbnail && !rejectedAbandonedUpload) || rejection.fatal {
             showToast(
                 verbatim: rejection.message,
                 tone: rejection.code == "revision_conflict" || rejection.code == "agent_busy"
@@ -1324,6 +1328,12 @@ extension AppModel {
         failSessionFileUploadRequest(
             rejection.requestId,
             message: rejection.message,
+            showsToast: false
+        )
+        failSessionFileDeletionRequest(
+            rejection.requestId,
+            message: rejection.message,
+            refreshesFiles: true,
             showsToast: false
         )
         if rejection.requestId == sessionFilesRequestID {

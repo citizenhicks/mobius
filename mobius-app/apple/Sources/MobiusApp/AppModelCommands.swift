@@ -924,10 +924,9 @@ extension AppModel {
     }
 
     func removeComposerAttachment(_ id: UUID) {
-        guard activeSessionFileUpload?.localID != id else { return }
-        sessionFileData[id] = nil
-        removeFileThumbnail(for: .composer(id))
-        composerAttachments.removeAll { $0.id == id }
+        guard let attachment = composerAttachments.first(where: { $0.id == id }) else { return }
+        discardComposerAttachment(attachment)
+        startNextSessionFileUpload()
         if pendingNewChatBotID != nil, pendingDrafts.count == 1 {
             submitPendingNewChatDraft(requestID: pendingDrafts.keys.first)
         }

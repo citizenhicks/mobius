@@ -42,6 +42,22 @@ fn session_file_bytes_use_standard_base64_and_round_trip() {
 }
 
 #[test]
+fn session_file_deletion_round_trips() {
+    let expected = ClientFrame::new(ClientMessage::DeleteSessionFile {
+        request_id: "request-delete".into(),
+        session_id: "session-a".into(),
+        file_id: "file-a".into(),
+    });
+
+    let encoded = serde_json::to_value(&expected).expect("encode file deletion");
+    let decoded: ClientFrame =
+        serde_json::from_value(encoded.clone()).expect("decode file deletion");
+
+    assert_eq!(encoded["type"], "delete_session_file");
+    assert_eq!(decoded, expected);
+}
+
+#[test]
 fn session_file_list_carries_the_file_origin() {
     let frame = ServerFrame::new(ServerMessage::SessionFiles {
         request_id: "request-list".into(),

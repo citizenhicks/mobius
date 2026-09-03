@@ -24,6 +24,8 @@ extension AppModel {
         eventTask = nil
         connectionState = .failed(message)
         sessionFileUploadRequests.removeAll()
+        abandonedSessionFileUploadRequests.removeAll()
+        sessionFileDeleteRequests.removeAll()
         activeSessionFileUpload = nil
         sessionFilesRequestID = nil
         isLoadingSessionFiles = false
@@ -95,6 +97,8 @@ extension AppModel {
         if !preservingSession { changeComposerDraftOwner(to: nil) }
         if preservingSession { flushStreamDeltas() }
         connectionGeneration = UUID()
+        abandonedSessionFileUploadRequests.removeAll()
+        sessionFileDeleteRequests.removeAll()
         transcriptLoadGeneration = UUID()
         eventTask?.cancel()
         eventTask = nil

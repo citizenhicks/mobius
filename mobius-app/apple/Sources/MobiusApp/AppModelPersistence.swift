@@ -316,6 +316,7 @@ extension AppModel {
         guard connectionState.isReady,
               activeSessionFileUpload == nil,
               sessionFileUploadRequests.isEmpty,
+              abandonedSessionFileUploadRequests.isEmpty,
               let sessionID = selectedSessionID,
               let index = composerAttachments.firstIndex(where: {
                   if case .queued = $0.state { return true }
@@ -327,7 +328,7 @@ extension AppModel {
         let item = composerAttachments[index]
         composerAttachments[index].state = .uploading(0)
         let id = requestID("session-file-begin")
-        sessionFileUploadRequests[id] = .begin(localID: item.id)
+        sessionFileUploadRequests[id] = .begin(localID: item.id, sessionID: sessionID)
         transmit(.beginSessionFileUpload(
             requestID: id,
             sessionID: sessionID,
@@ -345,11 +346,22 @@ extension AppModel {
         uploadID: String,
         maxChunkBytes: Int
     ) {
+        if let removed = abandonedSessionFileUploadRequests.removeValue(forKey: requestID) {
+            guard sessionID == removed.sessionID, !uploadID.isEmpty else {
+                showToast("The gateway returned an invalid upload.", tone: .error)
+                startNextSessionFileUpload()
+                return
+            }
+            requestSessionFileDeletion(removed, fileID: uploadID)
+            startNextSessionFileUpload()
+            return
+        }
         guard let request = sessionFileUploadRequests[requestID] else { return }
-        guard case .begin(let localID) = request else {
+        guard case .begin(let localID, let expectedSessionID) = request else {
             return failAttachment(request.localID, message: "The gateway returned an invalid upload.")
         }
-        guard sessionID == selectedSessionID,
+        guard sessionID == expectedSessionID,
+              sessionID == selectedSessionID,
               !uploadID.isEmpty,
               maxChunkBytes > 0,
               maxChunkBytes <= (sessionFileLimits?.maxUploadChunkBytes ?? 0)
@@ -497,12 +509,100 @@ extension AppModel {
         }
     }
 
-    func discardComposerAttachments() {
-        for attachment in composerAttachments {
-            removeFileThumbnail(for: .composer(attachment.id))
+    func discardComposerAttachment(_ attachment: ComposerAttachment) {
+        let localID = attachment.id
+        let activeUpload = activeSessionFileUpload.flatMap { upload in
+            upload.localID == localID ? upload : nil
         }
-        composerAttachments.removeAll()
-        sessionFileData.removeAll()
+        if let request = sessionFileUploadRequests.first(where: {
+            guard case .begin(let requestLocalID, _) = $0.value else { return false }
+            return requestLocalID == localID
+        }) {
+            guard case .begin(_, let sessionID) = request.value else { return }
+            sessionFileUploadRequests.removeValue(forKey: request.key)
+            abandonedSessionFileUploadRequests[request.key] = RemovedComposerAttachment(
+                sessionID: sessionID,
+                attachment: attachment
+            )
+        } else {
+            sessionFileUploadRequests = sessionFileUploadRequests.filter { _, request in
+                request.localID != localID
+            }
+        }
+        if activeSessionFileUpload?.localID == localID { activeSessionFileUpload = nil }
+        sessionFileData[localID] = nil
+        removeFileThumbnail(for: .composer(localID))
+        composerAttachments.removeAll { $0.id == localID }
+
+        if let activeUpload {
+            requestSessionFileDeletion(
+                RemovedComposerAttachment(
+                    sessionID: activeUpload.sessionID,
+                    attachment: attachment
+                ),
+                fileID: activeUpload.uploadID
+            )
+        } else if case .uploaded(let file) = attachment.state,
+                  let sessionID = selectedSessionID {
+            requestSessionFileDeletion(
+                RemovedComposerAttachment(sessionID: sessionID, attachment: attachment),
+                fileID: file.id
+            )
+        }
+    }
+
+    private func requestSessionFileDeletion(
+        _ removed: RemovedComposerAttachment,
+        fileID: String
+    ) {
+        let id = requestID("session-file-delete")
+        sessionFileDeleteRequests[id] = removed
+        sessionFiles.removeAll { $0.id == fileID }
+        removeFileThumbnail(for: .session(sessionID: removed.sessionID, fileID: fileID))
+        transmit(.deleteSessionFile(
+            requestID: id,
+            sessionID: removed.sessionID,
+            fileID: fileID
+        ))
+    }
+
+    @discardableResult
+    func failSessionFileDeletionRequest(
+        _ requestID: String,
+        message: String,
+        refreshesFiles: Bool = false,
+        showsToast: Bool = true
+    ) -> Bool {
+        guard let removed = sessionFileDeleteRequests.removeValue(forKey: requestID) else {
+            return false
+        }
+        if case .uploaded = removed.attachment.state,
+           selectedSessionID == removed.sessionID,
+           !composerAttachments.contains(where: { $0.id == removed.attachment.id }) {
+            composerAttachments.append(removed.attachment)
+        }
+        if refreshesFiles, selectedSessionID == removed.sessionID { refreshSessionFiles() }
+        if showsToast { showToast(verbatim: message, tone: .error) }
+        startNextSessionFileUpload()
+        return true
+    }
+
+    @discardableResult
+    func discardAbandonedSessionFileUploadRequest(_ requestID: String) -> Bool {
+        guard abandonedSessionFileUploadRequests.removeValue(forKey: requestID) != nil else {
+            return false
+        }
+        startNextSessionFileUpload()
+        return true
+    }
+
+    func acceptSessionFileDeletionRequest(_ requestID: String) {
+        guard sessionFileDeleteRequests.removeValue(forKey: requestID) != nil else { return }
+        startNextSessionFileUpload()
+    }
+
+    func discardComposerAttachments() {
+        for attachment in composerAttachments { discardComposerAttachment(attachment) }
     }
 
     func discardPendingComposerAttachments() {

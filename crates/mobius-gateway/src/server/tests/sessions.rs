@@ -210,6 +210,218 @@ async fn catalogue_mutations_do_not_require_selecting_the_target_chat() {
 }
 
 #[tokio::test]
+async fn paired_client_cancels_and_deletes_session_uploads() {
+    let root = tempfile::tempdir().expect("temporary directory");
+    let workspace = root.path().join("workspace");
+    fs::create_dir(&workspace).expect("workspace");
+    let (server, grant) = configured_test_server(root.path().join("state")).await;
+    let listen = server.config.listen;
+    let files = server.host.session_file_store().await;
+    let (shutdown, signal) = tokio::sync::oneshot::channel();
+    let serving = tokio::spawn(server.serve_until(async move {
+        let _ = signal.await;
+    }));
+    let endpoint = format!("tcp://{listen}")
+        .parse::<Endpoint>()
+        .expect("endpoint");
+    let (connection, _) =
+        GatewayClient::pair(&endpoint, grant.code, "file deletion", ClientKind::Ios)
+            .await
+            .expect("pair frontend");
+    let (sender, mut events) = connection.into_parts();
+    wait_gateway_ready(&mut events).await;
+    let mut config = crate::wire::AgentComposition::default();
+    config.middleware.set_enabled("attachments", true);
+    let (session_id, _) =
+        create_bot_chat_with_config(&sender, &mut events, &workspace, config).await;
+
+    sender
+        .send(ClientMessage::BeginSessionFileUpload {
+            request_id: "begin-cancelled".into(),
+            session_id: session_id.clone(),
+            name: "cancelled.txt".into(),
+            size: 1,
+            media_type: "text/plain".into(),
+        })
+        .await
+        .expect("begin cancelled upload");
+    let cancelled_id = loop {
+        if let ServerMessage::SessionFileUploadReady {
+            request_id,
+            upload_id,
+            ..
+        } = next_gateway_message(&mut events).await
+            && request_id == "begin-cancelled"
+        {
+            break upload_id;
+        }
+    };
+    for request_id in ["cancel-upload", "repeat-cancel"] {
+        sender
+            .send(ClientMessage::DeleteSessionFile {
+                request_id: request_id.into(),
+                session_id: session_id.clone(),
+                file_id: cancelled_id.clone(),
+            })
+            .await
+            .expect("cancel upload");
+        expect_accepted(&mut events, request_id).await;
+    }
+    sender
+        .send(ClientMessage::FinishSessionFileUpload {
+            request_id: "finish-cancelled".into(),
+            session_id: session_id.clone(),
+            upload_id: cancelled_id,
+        })
+        .await
+        .expect("finish cancelled upload");
+    loop {
+        if let ServerMessage::Rejected {
+            request_id,
+            message,
+            ..
+        } = next_gateway_message(&mut events).await
+            && request_id == "finish-cancelled"
+        {
+            assert!(message.contains("not active"));
+            break;
+        }
+    }
+
+    sender
+        .send(ClientMessage::BeginSessionFileUpload {
+            request_id: "begin-deleted".into(),
+            session_id: session_id.clone(),
+            name: "deleted.txt".into(),
+            size: 1,
+            media_type: "text/plain".into(),
+        })
+        .await
+        .expect("begin deleted upload");
+    let deleted_id = loop {
+        if let ServerMessage::SessionFileUploadReady {
+            request_id,
+            upload_id,
+            ..
+        } = next_gateway_message(&mut events).await
+            && request_id == "begin-deleted"
+        {
+            break upload_id;
+        }
+    };
+    sender
+        .send(ClientMessage::UploadSessionFileChunk {
+            request_id: "write-deleted".into(),
+            session_id: session_id.clone(),
+            upload_id: deleted_id.clone(),
+            offset: 0,
+            data: b"x".to_vec(),
+        })
+        .await
+        .expect("write deleted upload");
+    loop {
+        if matches!(
+            next_gateway_message(&mut events).await,
+            ServerMessage::SessionFileUploadChunkAccepted { request_id, .. }
+                if request_id == "write-deleted"
+        ) {
+            break;
+        }
+    }
+    sender
+        .send(ClientMessage::FinishSessionFileUpload {
+            request_id: "finish-deleted".into(),
+            session_id: session_id.clone(),
+            upload_id: deleted_id.clone(),
+        })
+        .await
+        .expect("finish deleted upload");
+    loop {
+        if matches!(
+            next_gateway_message(&mut events).await,
+            ServerMessage::SessionFileUploadCompleted { request_id, .. }
+                if request_id == "finish-deleted"
+        ) {
+            break;
+        }
+    }
+    sender
+        .send(ClientMessage::DeleteSessionFile {
+            request_id: "delete-completed".into(),
+            session_id: session_id.clone(),
+            file_id: deleted_id,
+        })
+        .await
+        .expect("delete completed upload");
+    expect_accepted(&mut events, "delete-completed").await;
+    assert!(
+        files
+            .list_uploads(&session_id)
+            .await
+            .expect("list uploads")
+            .is_empty()
+    );
+
+    let artifact = files
+        .publish_artifact(
+            &session_id,
+            "result.txt".into(),
+            "text/plain".into(),
+            b"result",
+        )
+        .await
+        .expect("publish artifact");
+    sender
+        .send(ClientMessage::DeleteSessionFile {
+            request_id: "reject-artifact".into(),
+            session_id: session_id.clone(),
+            file_id: artifact.id.clone(),
+        })
+        .await
+        .expect("reject artifact deletion");
+    loop {
+        if let ServerMessage::Rejected {
+            request_id, code, ..
+        } = next_gateway_message(&mut events).await
+            && request_id == "reject-artifact"
+        {
+            assert_eq!(code, "session_file_rejected");
+            break;
+        }
+    }
+    assert_eq!(
+        files
+            .list_artifacts(&session_id)
+            .await
+            .expect("list artifacts"),
+        [artifact]
+    );
+
+    create_chat(&sender, &mut events, &workspace).await;
+    sender
+        .send(ClientMessage::DeleteSessionFile {
+            request_id: "reject-unselected-delete".into(),
+            session_id,
+            file_id: Uuid::new_v4().to_string(),
+        })
+        .await
+        .expect("reject unselected deletion");
+    loop {
+        if let ServerMessage::Rejected {
+            request_id, code, ..
+        } = next_gateway_message(&mut events).await
+            && request_id == "reject-unselected-delete"
+        {
+            assert_eq!(code, "session_not_selected");
+            break;
+        }
+    }
+
+    shutdown.send(()).expect("stop gateway");
+    serving.await.expect("gateway task").expect("gateway stop");
+}
+
+#[tokio::test]
 async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
     let root = tempfile::tempdir().expect("temporary directory");
     let workspace = root.path().join("workspace");

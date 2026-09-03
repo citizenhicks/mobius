@@ -241,15 +241,20 @@ struct ReplayUserMessage {
 let maximumObservedReplaySubmissions = 1_024
 
 enum SessionFileUploadRequest {
-    case begin(localID: UUID)
+    case begin(localID: UUID, sessionID: String)
     case chunk(localID: UUID, expectedNextOffset: Int64)
     case finish(localID: UUID)
 
     var localID: UUID {
         switch self {
-        case .begin(let localID), .chunk(let localID, _), .finish(let localID): localID
+        case .begin(let localID, _), .chunk(let localID, _), .finish(let localID): localID
         }
     }
+}
+
+struct RemovedComposerAttachment {
+    let sessionID: String
+    let attachment: ComposerAttachment
 }
 
 struct ActiveSessionFileUpload {
