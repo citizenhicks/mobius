@@ -87,6 +87,7 @@ private struct MobiusMarkdownDocument: View {
             dynamicTypeSize: dynamicTypeSize
         )
         DocumentView(renderableDocument: document, config: request.config, listener: selection)
+            .textSelection(.enabled)
             .environment(\.openURL, OpenURLAction { url in
                 guard let file = model.workspaceFile(for: url) else { return .systemAction }
                 model.previewWorkspaceFile(file)
