@@ -754,7 +754,7 @@ struct ApprovalView: View {
         }
         .padding(MobiusStyle.cardPadding)
         .background(palette.warning.opacity(0.09), in: MobiusStyle.cardShape)
-        .mobiusGlass(in: MobiusStyle.cardShape)
+        .background(palette.panel, in: MobiusStyle.cardShape)
         .overlay {
             MobiusStyle.cardShape
                 .stroke(palette.warning.opacity(0.55), lineWidth: MobiusStyle.borderWidth)
