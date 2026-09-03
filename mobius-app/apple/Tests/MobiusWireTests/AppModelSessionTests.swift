@@ -253,6 +253,62 @@ extension AppModelTests {
         XCTAssertTrue(model.selectedSessionIsHidden)
     }
 
+    func testBackgroundApprovalSnapshotValidatesOwnershipAndNotifiesOncePerRequest() throws {
+        let model = try model()
+        model.connectionState = .ready
+        let first = BackgroundApproval(
+            sessionId: "work-1",
+            botId: "bot-1",
+            turnId: "turn-1",
+            requestId: "approval-1"
+        )
+
+        model.handle(.backgroundApprovals([first]))
+        let firstToastID = try XCTUnwrap(model.toast?.id)
+        XCTAssertEqual(model.backgroundApprovals, [first])
+        XCTAssertEqual(model.toast?.message, "Helper needs approval.")
+        XCTAssertEqual(model.bot(forSessionID: first.sessionId)?.id, first.botId)
+
+        model.handle(.backgroundApprovals([first]))
+        XCTAssertEqual(model.toast?.id, firstToastID)
+
+        let second = BackgroundApproval(
+            sessionId: first.sessionId,
+            botId: first.botId,
+            turnId: first.turnId,
+            requestId: "approval-2"
+        )
+        model.handle(.backgroundApprovals([second]))
+        XCTAssertNotEqual(model.toast?.id, firstToastID)
+
+        XCTAssertFalse(model.applyBackgroundApprovals([
+            BackgroundApproval(
+                sessionId: "work-2",
+                botId: "missing-bot",
+                turnId: "turn-2",
+                requestId: "approval-3"
+            )
+        ], notifyingNew: true))
+        XCTAssertEqual(model.backgroundApprovals, [second])
+    }
+
+    func testStaleBackgroundApprovalToastCannotOpenHiddenWorkAsAChat() throws {
+        let model = try model()
+        model.connectionState = .ready
+        model.backgroundApprovals = [BackgroundApproval(
+            sessionId: "work-1",
+            botId: "bot-1",
+            turnId: "turn-1",
+            requestId: "approval-1"
+        )]
+        model.applyBackgroundApprovals([], notifyingNew: false)
+
+        model.openNotifiedSession("work-1")
+
+        XCTAssertNil(model.selectedSessionID)
+        XCTAssertTrue(model.navigationPath.isEmpty)
+    }
+
     func testSwarmAttentionResumesOnlyTheValidatedHiddenBotSession() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
@@ -384,14 +440,6 @@ extension AppModelTests {
             if case .listBotSessions = request { return true }
             return false
         })
-    }
-
-    func testSwarmAttentionMarkerMatchesBoardAndEscalationMessages() {
-        XCTAssertTrue(isSwarmAttentionMessage("@leader Needs user attention: Approve @user"))
-        XCTAssertTrue(isSwarmAttentionMessage(
-            "Swarm escalation: Needs user attention: Approve the command"
-        ))
-        XCTAssertFalse(isSwarmAttentionMessage("Task completed: approved"))
     }
 
     func testApplyingSwarmsRejectsMissingLeadersAndUnorderedMessages() throws {

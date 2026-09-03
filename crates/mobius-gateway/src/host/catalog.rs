@@ -4,7 +4,7 @@ use std::sync::Arc;
 use mobius::backend::checkpoint::{CheckpointStore, SessionPageRequest};
 use serde::{Deserialize, Serialize};
 
-use crate::wire::SessionRecord;
+use crate::wire::{BackgroundApproval, SessionActivity, SessionActivityState, SessionRecord};
 use crate::{Error, Result};
 
 use super::{Rejection, SessionActivities};
@@ -37,6 +37,109 @@ pub(super) async fn hidden_bot_session_catalog(
     bot_id: &str,
 ) -> Result<Vec<SessionRecord>> {
     filtered_session_catalog(checkpoints, activities, CatalogFilter::HiddenBot(bot_id)).await
+}
+
+pub(super) async fn restore_pending_approval_activities(
+    checkpoints: &Arc<dyn CheckpointStore>,
+    activities: &SessionActivities,
+) -> Result<()> {
+    let mut cursor = None;
+    let mut restored = Vec::new();
+    loop {
+        let page = checkpoints
+            .list_sessions_page(SessionPageRequest {
+                cursor,
+                limit: SESSION_PAGE_SIZE,
+            })
+            .await?;
+        for summary in page.sessions {
+            let Some(checkpoint) = checkpoints.load(&summary.session_id).await? else {
+                continue;
+            };
+            let Some(approval) = checkpoint
+                .pending_approval
+                .filter(|approval| !approval.decision_received)
+            else {
+                continue;
+            };
+            restored.push((
+                summary.session_id,
+                SessionActivity {
+                    state: SessionActivityState::AwaitingApproval,
+                    turn_id: Some(approval.turn_id),
+                    approval_request_id: Some(approval.request_id),
+                    started_at: checkpoint
+                        .active_execution
+                        .map(|execution| execution.started_at_ms.div_euclid(1_000)),
+                    ..SessionActivity::default()
+                },
+            ));
+        }
+        let Some(next) = page.next_cursor else {
+            break;
+        };
+        cursor = Some(next);
+    }
+    activities
+        .lock()
+        .map_err(|_| Error::Config("session activity lock is poisoned".into()))?
+        .extend(restored);
+    Ok(())
+}
+
+pub(super) async fn background_approvals(
+    checkpoints: &Arc<dyn CheckpointStore>,
+    activities: &SessionActivities,
+) -> Result<Vec<BackgroundApproval>> {
+    let mut pending = activities
+        .lock()
+        .map_err(|_| Error::Config("session activity lock is poisoned".into()))?
+        .iter()
+        .filter(|(_, activity)| activity.state == SessionActivityState::AwaitingApproval)
+        .map(|(session_id, activity)| {
+            Ok((
+                session_id.clone(),
+                (
+                    activity
+                        .turn_id
+                        .clone()
+                        .ok_or_else(|| Error::Config("approval activity has no turn id".into()))?,
+                    activity.approval_request_id.clone().ok_or_else(|| {
+                        Error::Config("approval activity has no request id".into())
+                    })?,
+                ),
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    let mut approvals = Vec::new();
+    let mut cursor = None;
+    while !pending.is_empty() {
+        let page = checkpoints
+            .list_sessions_page(SessionPageRequest {
+                cursor,
+                limit: SESSION_PAGE_SIZE,
+            })
+            .await?;
+        for summary in page.sessions {
+            let Some((turn_id, request_id)) = pending.remove(&summary.session_id) else {
+                continue;
+            };
+            if !summary.catalog_visible && summary.parent_session_id.is_none() {
+                approvals.push(BackgroundApproval {
+                    session_id: summary.session_id,
+                    bot_id: summary.session_context.bot_id,
+                    turn_id,
+                    request_id,
+                });
+            }
+        }
+        let Some(next) = page.next_cursor else {
+            break;
+        };
+        cursor = Some(next);
+    }
+    approvals.sort_by(|left, right| left.session_id.cmp(&right.session_id));
+    Ok(approvals)
 }
 
 #[derive(Clone, Copy)]
@@ -168,7 +271,9 @@ pub(super) fn validate_session_title(title: &str) -> std::result::Result<&str, R
 
 #[cfg(test)]
 mod tests {
-    use mobius::backend::checkpoint::{Checkpoint, sqlite::SqliteCheckpoint};
+    use mobius::backend::checkpoint::{
+        ActiveExecution, Checkpoint, ExecutionPhase, PendingApproval, sqlite::SqliteCheckpoint,
+    };
 
     use crate::wire::{SessionActivity, SessionActivityState};
 
@@ -286,8 +391,7 @@ mod tests {
                 state: SessionActivityState::Running,
                 turn_id: Some("turn-a".into()),
                 started_at: Some(1),
-                last_outcome: None,
-                message: None,
+                ..SessionActivity::default()
             },
         );
 
@@ -335,6 +439,82 @@ mod tests {
                 .map(|session| session.session_id.as_str())
                 .collect::<Vec<_>>(),
             vec!["hidden-root"]
+        );
+    }
+
+    #[tokio::test]
+    async fn restores_and_exposes_only_hidden_pending_approvals() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
+            SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
+                .expect("checkpoints"),
+        );
+        for (session_id, visible) in [("background", false), ("chat", true)] {
+            let mut checkpoint = Checkpoint::empty(session_id);
+            checkpoint.catalog_visible = visible;
+            checkpoint.session_context.bot_id = "bot-a".into();
+            checkpoint.active_execution = Some(ActiveExecution {
+                submission_id: "submission".into(),
+                turn_id: "turn".into(),
+                started_at_ms: 1_000,
+                model_calls: 1,
+                tool_calls: 0,
+                failed_tool_calls: 0,
+                usage: Default::default(),
+                next_model_step: 1,
+                stop_hook_active: false,
+                phase: ExecutionPhase::Model,
+            });
+            checkpoint.pending_approval = Some(PendingApproval {
+                submission_id: "submission".into(),
+                turn_id: "turn".into(),
+                request_id: format!("request-{session_id}"),
+                approval_call_ids: Vec::new(),
+                authorized_call_ids: Vec::new(),
+                calls: Vec::new(),
+                reason: "Approve command".into(),
+                sandbox_mode: Default::default(),
+                network_access: Default::default(),
+                decision_received: false,
+            });
+            checkpoints
+                .save(&checkpoint, &[], None)
+                .await
+                .expect("save session");
+        }
+        let mut child = Checkpoint::empty("background-child");
+        child.catalog_visible = false;
+        child.session_context.bot_id = "bot-a".into();
+        checkpoints
+            .fork("background", 0, &child)
+            .await
+            .expect("fork session");
+        let activities = activities();
+
+        restore_pending_approval_activities(&checkpoints, &activities)
+            .await
+            .expect("restore approvals");
+        activities.lock().expect("activities").insert(
+            "background-child".into(),
+            SessionActivity {
+                state: SessionActivityState::AwaitingApproval,
+                turn_id: Some("child-turn".into()),
+                approval_request_id: Some("child-request".into()),
+                ..SessionActivity::default()
+            },
+        );
+        let approvals = background_approvals(&checkpoints, &activities)
+            .await
+            .expect("background approvals");
+
+        assert_eq!(
+            approvals,
+            vec![BackgroundApproval {
+                session_id: "background".into(),
+                bot_id: "bot-a".into(),
+                turn_id: "turn".into(),
+                request_id: "request-background".into(),
+            }]
         );
     }
 

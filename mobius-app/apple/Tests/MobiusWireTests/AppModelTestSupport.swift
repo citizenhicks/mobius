@@ -323,6 +323,7 @@ final class AppModelTests: XCTestCase {
         botDefaults: VersionedAgentConfig,
         bots: [BotRecord]? = nil,
         sessions: [SessionRecord]? = nil,
+        backgroundApprovals: [BackgroundApproval] = [],
         extensions: [ExtensionRecord] = [],
         contributions: [FrontendContribution] = []
     ) -> ReadyPayload {
@@ -330,6 +331,7 @@ final class AppModelTests: XCTestCase {
             machineName: "snowwhite.local",
             bots: bots ?? [bot(config: botDefaults)],
             sessions: sessions ?? [session(state: .idle)],
+            backgroundApprovals: backgroundApprovals,
             swarms: [],
             providers: [],
             providerInstances: [],
@@ -625,6 +627,7 @@ final class AppModelTests: XCTestCase {
         outcome: SessionOutcome? = nil,
         message: String? = nil,
         turnID: String? = nil,
+        approvalRequestID: String? = nil,
         executionStats: ExecutionStats = ExecutionStats(),
         sequence: UInt64 = 1,
         createdAt: Int64 = 100,
@@ -657,6 +660,7 @@ final class AppModelTests: XCTestCase {
             activity: SessionActivity(
                 state: state,
                 turnId: turnID,
+                approvalRequestId: approvalRequestID,
                 startedAt: state == .idle ? nil : 100,
                 lastOutcome: outcome,
                 message: message

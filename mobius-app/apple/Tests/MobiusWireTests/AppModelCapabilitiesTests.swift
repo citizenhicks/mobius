@@ -771,7 +771,11 @@ extension AppModelTests {
         XCTAssertTrue(model.runningSessionIDs.contains("chat-1"))
         XCTAssertEqual(model.attentionSessionIDs, ["chat-1"])
 
-        model.applySessions([session(state: .awaitingApproval, turnID: "turn-1")])
+        model.applySessions([session(
+            state: .awaitingApproval,
+            turnID: "turn-1",
+            approvalRequestID: "approval-1"
+        )])
         XCTAssertEqual(model.toast?.tone, .warning)
         XCTAssertEqual(model.toast?.sessionID, "chat-1")
         XCTAssertEqual(model.attentionSessionIDs, ["chat-1"])

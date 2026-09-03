@@ -550,6 +550,7 @@ enum GatewayEnvelope: Decodable, Sendable {
         record: RecordedEvent
     )
     case sessions(requestID: String?, sessions: [SessionRecord])
+    case backgroundApprovals([BackgroundApproval])
     case botSessions(requestID: String, botID: String, sessions: [SessionRecord])
     case bots(requestID: String?, bots: [BotRecord])
     case swarms(requestID: String?, swarms: [SwarmRecord])
@@ -695,6 +696,10 @@ enum GatewayEnvelope: Decodable, Sendable {
             self = .sessions(
                 requestID: try container.decodeIfPresent(String.self, forKey: "requestId"),
                 sessions: try container.decode([SessionRecord].self, forKey: "sessions")
+            )
+        case "background_approvals":
+            self = .backgroundApprovals(
+                try container.decode([BackgroundApproval].self, forKey: "approvals")
             )
         case "bot_sessions":
             self = .botSessions(
@@ -887,6 +892,7 @@ struct ReadyPayload: Decodable, Sendable {
     let machineName: String
     let bots: [BotRecord]
     let sessions: [SessionRecord]
+    let backgroundApprovals: [BackgroundApproval]
     let swarms: [SwarmRecord]
     let providers: [ProviderStatus]
     let providerInstances: [ProviderInstance]
@@ -1078,6 +1084,13 @@ struct BotRecord: Identifiable, Codable, Equatable, Sendable {
     let config: VersionedAgentConfig
 }
 
+struct BackgroundApproval: Codable, Equatable, Hashable, Sendable {
+    let sessionId: String
+    let botId: String
+    let turnId: String
+    let requestId: String
+}
+
 struct ModelChanged: Codable, Hashable, Sendable {
     let route: String
     let model: String
@@ -1133,6 +1146,7 @@ struct SwarmRecord: Identifiable, Codable, Hashable, Sendable {
 struct SessionActivity: Codable, Hashable, Sendable {
     let state: SessionActivityState
     let turnId: String?
+    let approvalRequestId: String?
     let startedAt: Int64?
     let lastOutcome: SessionOutcome?
     let message: String?

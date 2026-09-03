@@ -29,6 +29,8 @@ extension GatewayWireTests {
         XCTAssertEqual(payload.sessions.first?.title, "Review")
         XCTAssertEqual(payload.sessions.first?.activity.state, .running)
         XCTAssertEqual(payload.sessions.first?.activity.turnId, "turn-1")
+        XCTAssertNil(payload.sessions.first?.activity.approvalRequestId)
+        XCTAssertTrue(payload.backgroundApprovals.isEmpty)
         XCTAssertEqual(payload.sessions.first?.executionStats.toolCalls, 6)
         XCTAssertEqual(payload.providers.first?.defaultApiKeyEnv, "OPENAI_API_KEY")
         XCTAssertEqual(payload.providers.first?.symbol, "chat_gpt")
@@ -94,6 +96,22 @@ extension GatewayWireTests {
         }
         XCTAssertEqual(requestID, "gateway-1")
         XCTAssertEqual(refreshed.maxActiveSessions, 4)
+    }
+
+    func testReadyCarriesBackgroundApprovals() throws {
+        let payload = readyPayloadJSON.replacingOccurrences(
+            of: #""background_approvals":[]"#,
+            with: #""background_approvals":[{"session_id":"work-1","bot_id":"bot-1","turn_id":"turn-1","request_id":"approval-1"}]"#
+        )
+        let envelope = try decodeEnvelope(
+            #"{"version":63,"type":"ready","payload":\#(payload)}"#
+        )
+        guard case .ready(let ready) = envelope else {
+            return XCTFail("Expected ready envelope")
+        }
+        XCTAssertEqual(ready.backgroundApprovals.first?.sessionId, "work-1")
+        XCTAssertEqual(ready.backgroundApprovals.first?.botId, "bot-1")
+        XCTAssertEqual(ready.backgroundApprovals.first?.requestId, "approval-1")
     }
 
     func testGatewayMachineNameRejectsControlCharacters() {

@@ -210,6 +210,21 @@ extension GatewayWireTests {
         XCTAssertEqual(sessions.first?.sessionContext.botId, "bot-1")
     }
 
+    func testBackgroundApprovalResponseCarriesHiddenSessionOwnership() throws {
+        let envelope = try decodeEnvelope(
+            #"{"version":63,"type":"background_approvals","approvals":[{"session_id":"work-1","bot_id":"bot-1","turn_id":"turn-1","request_id":"approval-1"}]}"#
+        )
+        guard case .backgroundApprovals(let approvals) = envelope else {
+            return XCTFail("Expected background approvals")
+        }
+        XCTAssertEqual(approvals, [BackgroundApproval(
+            sessionId: "work-1",
+            botId: "bot-1",
+            turnId: "turn-1",
+            requestId: "approval-1"
+        )])
+    }
+
     func testBotAndRoutineResponsesDecodeProtocolFields() throws {
         let bots = try decodeEnvelope(
             #"{"version":56,"type":"bots","request_id":"bots-1","bots":[\#(botJSON)]}"#

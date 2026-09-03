@@ -461,6 +461,7 @@ async fn startup_ack_reuses_the_reserved_conversation_without_resubmitting() {
         .expect("pending target delivery");
     let assigned_session_id = claim.session_id().to_owned();
     drop(claim);
+    let approval_id = Uuid::new_v4().to_string();
     let mut checkpoint = Checkpoint::empty(&assigned_session_id);
     checkpoint.catalog_visible = false;
     let background_workspace =
@@ -473,6 +474,30 @@ async fn startup_ack_reuses_the_reserved_conversation_without_resubmitting() {
     checkpoint.session_context.bot_id = target_bot.id.clone();
     checkpoint.session_context.workspace_id = Some(target_workspace.id);
     checkpoint.session_context.workspace_label = Some(target_workspace.path.display().to_string());
+    checkpoint.active_execution = Some(ActiveExecution {
+        submission_id: post.entry.id.clone(),
+        turn_id: "replayed-turn".into(),
+        started_at_ms: 1_000,
+        model_calls: 1,
+        tool_calls: 0,
+        failed_tool_calls: 0,
+        usage: Default::default(),
+        next_model_step: 1,
+        stop_hook_active: false,
+        phase: mobius::backend::checkpoint::ExecutionPhase::Model,
+    });
+    checkpoint.pending_approval = Some(mobius::backend::checkpoint::PendingApproval {
+        submission_id: post.entry.id.clone(),
+        turn_id: "replayed-turn".into(),
+        request_id: approval_id.clone(),
+        approval_call_ids: Vec::new(),
+        authorized_call_ids: Vec::new(),
+        calls: Vec::new(),
+        reason: "Approve replayed work".into(),
+        sandbox_mode: Default::default(),
+        network_access: Default::default(),
+        decision_received: false,
+    });
     checkpoints
         .save(&checkpoint, &[], None)
         .await
@@ -498,7 +523,6 @@ async fn startup_ack_reuses_the_reserved_conversation_without_resubmitting() {
         )
         .await
         .expect("persist peer event");
-    let approval_id = Uuid::new_v4().to_string();
     checkpoints
         .append_event(
             &assigned_session_id,
@@ -555,6 +579,10 @@ async fn startup_ack_reuses_the_reserved_conversation_without_resubmitting() {
         .get(&assigned_session_id)
         .cloned()
         .expect("reopened hidden conversation");
+    assert!(
+        !reopened.stop_if_idle().await,
+        "approval keeps the actor active"
+    );
     let hidden = reopened.snapshot(None).await.expect("hidden snapshot");
     assert_eq!(hidden.ready.tool_count + 1, visible_tool_count);
     assert!(
@@ -621,8 +649,8 @@ async fn startup_ack_reuses_the_reserved_conversation_without_resubmitting() {
             .iter()
             .filter(|entry| entry.source_event_id.as_deref() == Some(approval_id.as_str()))
             .count(),
-        1,
-        "replay projects each approval request once"
+        0,
+        "approval replay must not post to Swarm Chat"
     );
     assert_eq!(
         swarm

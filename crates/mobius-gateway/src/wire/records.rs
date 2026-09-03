@@ -6,6 +6,7 @@ pub struct ReadyPayload {
     pub machine_name: String,
     pub bots: Vec<BotRecord>,
     pub sessions: Vec<SessionRecord>,
+    pub background_approvals: Vec<BackgroundApproval>,
     pub swarms: Vec<SwarmRecord>,
     pub providers: Vec<ProviderStatus>,
     pub provider_instances: Vec<ProviderInstance>,
@@ -17,6 +18,15 @@ pub struct ReadyPayload {
     pub contributions: Vec<FrontendContribution>,
     pub max_active_sessions: usize,
     pub session_file_limits: SessionFileLimits,
+}
+
+/// One hidden Bot conversation currently waiting for a human execution decision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackgroundApproval {
+    pub session_id: String,
+    pub bot_id: String,
+    pub turn_id: String,
+    pub request_id: String,
 }
 
 /// One gateway-managed group of durable Bots.
@@ -105,6 +115,7 @@ pub struct SessionRecord {
 pub struct SessionActivity {
     pub state: SessionActivityState,
     pub turn_id: Option<String>,
+    pub approval_request_id: Option<String>,
     pub started_at: Option<i64>,
     pub last_outcome: Option<SessionOutcome>,
     pub message: Option<String>,
@@ -115,6 +126,7 @@ impl Default for SessionActivity {
         Self {
             state: SessionActivityState::Idle,
             turn_id: None,
+            approval_request_id: None,
             started_at: None,
             last_outcome: None,
             message: None,

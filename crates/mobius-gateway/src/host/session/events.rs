@@ -35,19 +35,6 @@ impl HostState {
                     self.last_assistant_text = Some(text);
                 }
             }
-            EventMsg::ExecApprovalRequest(request) => {
-                if !self.spec.catalog_visible {
-                    self.swarm
-                        .project_attention(
-                            &self.spec.bot_id,
-                            &self.running.session_id,
-                            event.submission_id.as_deref(),
-                            &request.id,
-                            &request.reason,
-                        )
-                        .await?;
-                }
-            }
             EventMsg::TurnComplete(_) => {
                 let outcome =
                     swarm_run_outcome(self.turn_error.clone(), self.last_assistant_text.clone());
@@ -130,7 +117,6 @@ impl HostState {
         let mut error = None;
         let mut summary = None;
         let mut terminal = None;
-        let mut approvals = HashMap::new();
         for frame in &self.replay {
             let ServerMessage::AgentEvent { record, .. } = &frame.message else {
                 continue;
@@ -145,7 +131,6 @@ impl HostState {
                     error = None;
                     summary = None;
                     terminal = None;
-                    approvals.clear();
                 }
                 EventMsg::AssistantMessage(message) => {
                     if let Some(text) = assistant_text(message) {
@@ -153,12 +138,6 @@ impl HostState {
                     }
                 }
                 EventMsg::Error(event) => error = Some(event.message.clone()),
-                EventMsg::ExecApprovalRequest(event) => {
-                    approvals.insert(
-                        event.id.clone(),
-                        (record.event.submission_id.clone(), event.reason.clone()),
-                    );
-                }
                 EventMsg::TurnComplete(_) => {
                     terminal = record.event.submission_id.clone().map(|message_id| {
                         (
@@ -166,7 +145,6 @@ impl HostState {
                             swarm_run_outcome(error.clone(), summary.clone()),
                         )
                     });
-                    approvals.clear();
                 }
                 EventMsg::TurnAborted(event) => {
                     terminal = record.event.submission_id.clone().map(|message_id| {
@@ -177,22 +155,8 @@ impl HostState {
                             },
                         )
                     });
-                    approvals.clear();
                 }
                 _ => {}
-            }
-        }
-        if terminal.is_none() && !self.spec.catalog_visible {
-            for (request_id, (message_id, reason)) in approvals {
-                self.swarm
-                    .project_attention(
-                        &self.spec.bot_id,
-                        &self.running.session_id,
-                        message_id.as_deref(),
-                        &request_id,
-                        &reason,
-                    )
-                    .await?;
             }
         }
         if let Some((message_id, outcome)) = terminal {
@@ -367,12 +331,20 @@ impl HostState {
         let sessions = session_catalog(&self.checkpoints, &self.activities)
             .await
             .map_err(internal)?;
+        let approvals = background_approvals(&self.checkpoints, &self.activities)
+            .await
+            .map_err(internal)?;
         self.swarm.retry_pending();
         let _ = self
             .gateway_events
             .send(ServerFrame::new(ServerMessage::Sessions {
                 request_id: None,
                 sessions,
+            }));
+        let _ = self
+            .gateway_events
+            .send(ServerFrame::new(ServerMessage::BackgroundApprovals {
+                approvals,
             }));
         Ok(())
     }
@@ -395,6 +367,7 @@ impl HostState {
             EventMsg::ExecApprovalRequest(request) => Some(SessionActivity {
                 state: SessionActivityState::AwaitingApproval,
                 turn_id: Some(request.turn_id.clone()),
+                approval_request_id: Some(request.id.clone()),
                 started_at: current.started_at.or_else(|| Some(Utc::now().timestamp())),
                 ..SessionActivity::default()
             }),

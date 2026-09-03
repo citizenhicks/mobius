@@ -10,6 +10,7 @@ extension AppModelTests {
             machineName: "snowwhite.local",
             bots: [],
             sessions: [],
+            backgroundApprovals: [],
             swarms: [],
             providers: [ProviderStatus(
                 provider: "openai_socket",
@@ -229,6 +230,7 @@ extension AppModelTests {
                 machineName: "snowwhite.local",
                 bots: [],
                 sessions: [],
+                backgroundApprovals: [],
                 swarms: [],
                 providers: [providerStatus(for: selection)],
                 providerInstances: [],
@@ -686,6 +688,7 @@ extension AppModelTests {
             machineName: "snowwhite.local",
             bots: [],
             sessions: [],
+            backgroundApprovals: [],
             swarms: [],
             providers: [],
             providerInstances: [],

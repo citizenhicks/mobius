@@ -1538,161 +1538,6 @@ impl SwarmStore {
         Ok(true)
     }
 
-    /// Idempotently projects one hidden conversation approval pause to Swarm Chat.
-    pub(crate) async fn project_attention(
-        &self,
-        bot_id: &str,
-        source_session_id: &str,
-        source_message_id: Option<&str>,
-        source_event_id: &str,
-        message: &str,
-    ) -> Result<bool> {
-        validate_bot_id(bot_id)?;
-        validate_session_id(source_session_id)?;
-        if let Some(message_id) = source_message_id {
-            validate_message_id(message_id)?;
-        }
-        validate_message_id(source_event_id)?;
-        let bot_id = bot_id.to_owned();
-        let source_session_id = source_session_id.to_owned();
-        let source_message_id = source_message_id.map(str::to_owned);
-        let source_event_id = source_event_id.to_owned();
-        let message = message.to_owned();
-        let bots = Arc::clone(&self.bots);
-        let projection = self
-            .mutate(move |catalog| {
-                let Some(swarm_id) = swarm_id_for_bot(catalog, &bot_id) else {
-                    return Ok(None);
-                };
-                let board = &catalog
-                    .swarms
-                    .get(&swarm_id)
-                    .expect("resolved swarm exists")
-                    .board;
-                let participant_has_pending = board.iter().any(|entry| {
-                    entry
-                        .assigned_recipient_session_ids
-                        .get(&bot_id)
-                        .is_some_and(|assigned| assigned == &source_session_id)
-                        && entry
-                            .pending_recipient_bot_ids
-                            .iter()
-                            .any(|pending| pending == &bot_id)
-                });
-                let parent = source_message_id.as_deref().and_then(|message_id| {
-                    board
-                        .iter()
-                        .find(|entry| {
-                            entry.id == message_id
-                                && entry
-                                    .assigned_recipient_session_ids
-                                    .get(&bot_id)
-                                    .is_some_and(|assigned| assigned == &source_session_id)
-                                && entry
-                                    .pending_recipient_bot_ids
-                                    .iter()
-                                    .any(|pending| pending == &bot_id)
-                        })
-                        .cloned()
-                });
-                if participant_has_pending && parent.is_none() {
-                    return Ok(None);
-                }
-                let swarm = catalog
-                    .swarms
-                    .get_mut(&swarm_id)
-                    .expect("resolved swarm exists");
-                if swarm.board.iter().any(|entry| {
-                    entry.source_session_id == source_session_id
-                        && entry.source_event_id.as_deref() == Some(source_event_id.as_str())
-                }) {
-                    return Ok(None);
-                }
-                let author = current_member(
-                    &bots,
-                    &bot_id,
-                    swarm
-                        .members
-                        .get(&bot_id)
-                        .expect("resolved swarm contains Bot"),
-                )?;
-                let leader = current_member(
-                    &bots,
-                    &swarm.leader_bot_id,
-                    swarm
-                        .members
-                        .get(&swarm.leader_bot_id)
-                        .expect("swarm leader remains a member"),
-                )?;
-                let can_route_bot = parent
-                    .as_ref()
-                    .is_none_or(|entry| entry.reply_depth < MAX_REPLY_DEPTH);
-                let wake_leader = bot_id != leader.bot_id && can_route_bot;
-                let recipients = if wake_leader {
-                    vec![leader.bot_id.clone()]
-                } else {
-                    Vec::new()
-                };
-                let prefix = if wake_leader {
-                    format!("@{} ", leader.handle)
-                } else {
-                    String::new()
-                };
-                let (in_reply_to_message_id, reply_depth) = parent.map_or_else(
-                    || Ok((None, 0)),
-                    |parent| {
-                        parent
-                            .reply_depth
-                            .checked_add(1)
-                            .filter(|depth| *depth <= MAX_TERMINAL_REPLY_DEPTH)
-                            .map(|depth| (Some(parent.id), depth))
-                            .ok_or_else(|| config("swarm attention reply depth is invalid"))
-                    },
-                )?;
-                let sequence = swarm
-                    .latest_sequence
-                    .checked_add(1)
-                    .ok_or_else(|| config("swarm board sequence exhausted"))?;
-                let now = unix_ms();
-                let entry = BoardEntry {
-                    id: Uuid::new_v4().to_string(),
-                    sequence,
-                    created_at_ms: now,
-                    author,
-                    source_session_id,
-                    source_event_id: Some(source_event_id),
-                    text: bounded_message(&format!(
-                        "{prefix}Needs user attention: {} @user",
-                        neutralize_mentions(&message)
-                    )),
-                    mentioned_recipient_bot_ids: recipients.clone(),
-                    pending_recipient_bot_ids: recipients.clone(),
-                    assigned_recipient_session_ids: BTreeMap::new(),
-                    in_reply_to_message_id,
-                    reply_depth,
-                };
-                swarm.latest_sequence = sequence;
-                swarm.updated_at_ms = now;
-                swarm.board.push_back(entry.clone());
-                catalog
-                    .pending_user_attention_message_ids
-                    .insert(entry.id.clone());
-                Ok(Some((entry.id, recipients.into_iter().next())))
-            })
-            .await?;
-        let Some((message_id, pending_bot_id)) = projection else {
-            return Ok(false);
-        };
-        let _ = self.deliveries.send(SwarmDelivery::Changed);
-        if let Some(bot_id) = pending_bot_id {
-            self.notify_pending(&bot_id);
-        }
-        let _ = self
-            .deliveries
-            .send(SwarmDelivery::UserAttention { message_id });
-        Ok(true)
-    }
-
     /// Returns all durable attention requests awaiting delivery to the user.
     pub(crate) async fn pending_user_attention(&self) -> Result<Vec<UserAttention>> {
         let state = self.lock_loaded().await?;
@@ -3953,126 +3798,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn approval_attention_is_nonterminal_and_dedupes_by_request() {
-        let (_directory, checkpoints, store, _deliveries) = store();
-        let swarm = create_swarm(&store).await;
-        let reviewer = bot_id(&store, "reviewer");
-        let posted = post(&store, "leader", "@reviewer investigate this".into())
-            .await
-            .expect("post");
-        let claim = store
-            .claim_next_delivery(&reviewer)
-            .await
-            .expect("claim")
-            .expect("review delivery");
-        let session_id = claim.session_id().to_owned();
-        drop(claim);
-        let request_id = Uuid::new_v4().to_string();
-
-        assert!(
-            !store
-                .project_attention(
-                    &reviewer,
-                    &session_id,
-                    Some(&Uuid::new_v4().to_string()),
-                    &Uuid::new_v4().to_string(),
-                    "stale approval",
-                )
-                .await
-                .expect("ignore stale approval")
-        );
-        assert!(
-            store
-                .project_attention(
-                    &reviewer,
-                    &session_id,
-                    Some(&posted.entry.id),
-                    &request_id,
-                    "Approve command",
-                )
-                .await
-                .expect("project attention")
-        );
-        let (reloaded, _deliveries) = reload(checkpoints, &store);
-        assert!(
-            !reloaded
-                .project_attention(
-                    &reviewer,
-                    &session_id,
-                    Some(&posted.entry.id),
-                    &request_id,
-                    "Approve command",
-                )
-                .await
-                .expect("dedupe replayed attention")
-        );
-        assert!(
-            reloaded
-                .project_attention(
-                    &reviewer,
-                    &session_id,
-                    Some(&posted.entry.id),
-                    &Uuid::new_v4().to_string(),
-                    "Approve another command",
-                )
-                .await
-                .expect("project distinct attention")
-        );
-        assert_eq!(
-            reloaded
-                .pending_deliveries(&reviewer)
-                .await
-                .expect("original delivery")
-                .iter()
-                .map(|delivery| delivery.entry.id.as_str())
-                .collect::<Vec<_>>(),
-            vec![posted.entry.id.as_str()]
-        );
-        let attention = reloaded
-            .pending_user_attention()
-            .await
-            .expect("pending attention");
-        assert_eq!(attention.len(), 2);
-        assert!(
-            attention
-                .iter()
-                .all(|request| request.root_source_session_id == "leader-thread")
-        );
-        assert!(
-            reloaded
-                .settle_delivery(
-                    &posted.entry.id,
-                    &session_id,
-                    &reviewer,
-                    SwarmRunOutcome::Succeeded {
-                        summary: "Approved work completed".into(),
-                    },
-                )
-                .await
-                .expect("terminal settlement")
-        );
-        assert!(
-            reloaded
-                .pending_deliveries(&reviewer)
-                .await
-                .expect("settled delivery")
-                .is_empty()
-        );
-        assert_eq!(
-            reloaded
-                .board_page(&swarm.id, None, MAX_PAGE_ENTRIES)
-                .await
-                .expect("board")
-                .entries
-                .iter()
-                .filter(|entry| { entry.source_event_id.as_deref() == Some(request_id.as_str()) })
-                .count(),
-            1
-        );
-    }
-
-    #[tokio::test]
-    async fn terminal_and_attention_projections_preserve_the_causal_root_at_the_hop_cap() {
+    async fn terminal_projection_stops_routing_at_the_hop_cap() {
         let (_directory, _checkpoints, store, _deliveries) = store();
         let swarm = create_swarm(&store).await;
         let leader = bot_id(&store, "leader");
@@ -4134,16 +3860,6 @@ mod tests {
         drop(claim);
 
         store
-            .project_attention(
-                &reviewer,
-                &session_id,
-                Some(&fourth.entry.id),
-                &Uuid::new_v4().to_string(),
-                "Decision needed",
-            )
-            .await
-            .expect("attention at cap");
-        store
             .settle_delivery(
                 &fourth.entry.id,
                 &session_id,
@@ -4164,7 +3880,7 @@ mod tests {
             .iter()
             .filter(|entry| entry.reply_depth == MAX_TERMINAL_REPLY_DEPTH)
             .collect::<Vec<_>>();
-        assert_eq!(capped.len(), 2);
+        assert_eq!(capped.len(), 1);
         assert!(capped.iter().all(|entry| {
             entry.in_reply_to_message_id.as_deref() == Some(fourth.entry.id.as_str())
                 && entry.mentioned_recipient_bot_ids.is_empty()
@@ -4177,10 +3893,6 @@ mod tests {
                 .expect("leader delivery")
                 .is_empty()
         );
-        let attention = store.pending_user_attention().await.expect("attention");
-        assert_eq!(attention.len(), 1);
-        assert_eq!(attention[0].root_source_session_id, "causal-visible-chat");
-
         let state = store.lock_loaded().await.expect("catalog");
         let mut invalid = state.as_ref().expect("loaded catalog").clone();
         let terminal = invalid

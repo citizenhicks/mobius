@@ -117,6 +117,7 @@ struct RoutineRunRow: View {
     @State private var confirmsDeletion = false
     let run: RoutineRun
     let name: String
+    let awaitsApproval: Bool
     let open: () -> Void
     let delete: () -> Void
 
@@ -140,6 +141,14 @@ struct RoutineRunRow: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                if awaitsApproval {
+                    MobiusIcon(
+                        .bellDot,
+                        size: MobiusStyle.glyphMark,
+                        foreground: palette.warning
+                    )
+                    .accessibilityHidden(true)
+                }
                 Text(routineRunStatusLabel(run.status))
                     .font(MobiusStyle.metadataFont.weight(.bold))
                     .foregroundStyle(statusColor)
@@ -148,7 +157,12 @@ struct RoutineRunRow: View {
         }
         .buttonStyle(.mobiusPlain)
         .disabled(run.sessionId == nil)
-        .accessibilityHint(run.sessionId == nil ? "No transcript" : "Opens run transcript")
+        .accessibilityValue(awaitsApproval ? "Awaiting approval" : "")
+        .accessibilityHint(
+            run.sessionId == nil
+                ? "No transcript"
+                : awaitsApproval ? "Opens approval" : "Opens run transcript"
+        )
         .mobiusSwipeActions {
             MobiusSwipeAction(
                 title: "Delete",
@@ -351,6 +365,15 @@ struct RoutineEditorSheet: View {
                 detail: summary,
                 showsBackdrop: false
             ) {
+                if asksForApproval {
+                    StatusBanner(
+                        tone: .warning,
+                        title: "Routine may pause",
+                        detail: "This Bot uses Ask. Approval-required actions will wait for you before the routine can continue."
+                    )
+                    .settingsStandaloneRow()
+                }
+
                 Section("Workspace") {
                     Picker("Workspace", selection: $workspace) {
                         ForEach(workspaces) { item in
@@ -526,6 +549,11 @@ struct RoutineEditorSheet: View {
             && schedule != nil
             && (mode != .interval || (schedule?.everySeconds ?? 0) >= 60)
             && (endsAt == nil || endsAt! > Int64(Date.now.timeIntervalSince1970))
+    }
+
+    private var asksForApproval: Bool {
+        model.bots.first { $0.id == botID }?
+            .config.config.middleware.settings["sandbox"]?["approval_policy"] == .string("ask")
     }
 
     private var summary: MobiusText {

@@ -58,8 +58,9 @@ use crate::wire::{
 use crate::{Error, Result};
 
 use self::catalog::{
-    SessionCatalogMetadata, hidden_bot_session_catalog, load_session_metadata,
-    save_session_metadata, session_catalog, validate_session_title,
+    SessionCatalogMetadata, background_approvals, hidden_bot_session_catalog,
+    load_session_metadata, restore_pending_approval_activities, save_session_metadata,
+    session_catalog, validate_session_title,
 };
 use self::files::{
     WorkspaceFiles, WorkspaceRead, list as list_workspace_files, read as read_workspace_file,
@@ -184,6 +185,8 @@ impl GatewayHost {
         );
         let swarm = Arc::new(swarm);
         let (events, _) = broadcast::channel(BROADCAST_CAPACITY);
+        let activities = Arc::new(StdMutex::new(HashMap::new()));
+        restore_pending_approval_activities(&checkpoints, &activities).await?;
         let host = Self {
             state: Arc::new(Mutex::new(GatewayState {
                 store,
@@ -200,7 +203,7 @@ impl GatewayHost {
                 session_mutations: Arc::new(RwLock::new(())),
                 extension_mutations: Arc::new(Mutex::new(())),
                 provider_epoch: Arc::new(AtomicU64::new(0)),
-                activities: Arc::new(StdMutex::new(HashMap::new())),
+                activities,
                 provider_login: Arc::new(StdMutex::new(None)),
                 sessions: HashMap::new(),
             })),
@@ -1970,12 +1973,20 @@ impl GatewayHost {
         let sessions = session_catalog(&state.checkpoints, &state.activities)
             .await
             .map_err(internal)?;
+        let approvals = background_approvals(&state.checkpoints, &state.activities)
+            .await
+            .map_err(internal)?;
         state.swarm.retry_pending();
         drop(state);
         let _ = self.events.send(ServerFrame::new(ServerMessage::Sessions {
             request_id: None,
             sessions,
         }));
+        let _ = self
+            .events
+            .send(ServerFrame::new(ServerMessage::BackgroundApprovals {
+                approvals,
+            }));
         Ok(())
     }
 

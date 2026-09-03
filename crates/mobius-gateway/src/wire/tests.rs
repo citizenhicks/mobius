@@ -842,6 +842,7 @@ fn session_record_exposes_only_frontend_catalog_fields() {
         activity: SessionActivity {
             state: SessionActivityState::Running,
             turn_id: Some("turn-a".into()),
+            approval_request_id: None,
             started_at: Some(2),
             last_outcome: None,
             message: None,
@@ -960,6 +961,7 @@ fn gateway_ready_contains_no_selected_session() {
             machine_name: "snowwhite.local".into(),
             bots: Vec::new(),
             sessions: Vec::new(),
+            background_approvals: Vec::new(),
             swarms: Vec::new(),
             providers: Vec::new(),
             provider_instances: Vec::new(),

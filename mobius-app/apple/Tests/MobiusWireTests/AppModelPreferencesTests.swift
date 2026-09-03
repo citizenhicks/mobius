@@ -603,11 +603,13 @@ extension AppModelTests {
 
     func testGatewayThenForegroundApprovalShowsOneSharedToast() throws {
         let model = try model()
+        model.cloudSession = MobiusCloudSession(userID: UUID(), expiresAt: .distantFuture)
         model.notificationsEnabled = true
         model.sessions = [session(state: .running, turnID: "turn-1", title: "Deploy")]
         model.applySessions([session(
             state: .awaitingApproval,
             turnID: "turn-1",
+            approvalRequestID: "approval-1",
             sequence: 2,
             title: "Deploy"
         )])
@@ -618,11 +620,26 @@ extension AppModelTests {
             eventID: "event-approval",
             kind: .awaitingApproval,
             sessionID: "chat-1",
-            turnID: "turn-1"
+            approvalRequestID: "approval-1"
         ))
 
         XCTAssertEqual(model.toast?.id, gatewayToastID)
         XCTAssertEqual(model.toast?.message, "Deploy needs approval.")
+    }
+
+    func testForegroundHiddenApprovalUsesRemoteBotNameBeforeCatalogArrives() throws {
+        let model = try model()
+        model.cloudSession = MobiusCloudSession(userID: UUID(), expiresAt: .distantFuture)
+        model.notificationsEnabled = true
+
+        model.receivedForegroundRemoteNotification(RemoteSessionNotification(
+            eventID: "event-approval",
+            kind: .awaitingApproval,
+            sessionID: "work-1",
+            approvalRequestID: "approval-1"
+        ), agentName: "Helper")
+
+        XCTAssertEqual(model.toast?.message, "Helper needs approval.")
     }
 
     func testNotificationTapWaitsForCloudCatalogThenOpensChat() throws {
@@ -654,6 +671,65 @@ extension AppModelTests {
         XCTAssertEqual(model.navigationPath, [.chat(.session("chat-1"))])
     }
 
+    func testBackgroundApprovalNotificationTapResumesValidatedHiddenSession() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model { request in await recorder.record(request) }
+        let userID = UUID()
+        let cloudGateway = GatewayAccount(
+            endpoint: try GatewayEndpoint("tcp://localhost:9191"),
+            cloudUserID: userID
+        )
+        let approval = BackgroundApproval(
+            sessionId: "work-1",
+            botId: "bot-1",
+            turnId: "turn-1",
+            requestId: "approval-1"
+        )
+        model.cloudSession = MobiusCloudSession(userID: userID, expiresAt: .distantFuture)
+        model.notificationsEnabled = true
+        model.accounts = [cloudGateway]
+        model.selectedAccountID = cloudGateway.id
+        model.connectionState = .ready
+        XCTAssertTrue(model.applyBackgroundApprovals([approval], notifyingNew: false))
+
+        model.openRemoteNotification(RemoteSessionNotification(
+            eventID: "event-approval",
+            kind: .awaitingApproval,
+            sessionID: approval.sessionId,
+            approvalRequestID: approval.requestId
+        ))
+
+        let listing = await recorder.firstRequest(after: 0) { request in
+            if case .listBotSessions = request { return true }
+            return false
+        }
+        guard case .listBotSessions(let requestID, let botID) = try XCTUnwrap(listing) else {
+            return XCTFail("Expected hidden Bot session discovery")
+        }
+        XCTAssertEqual(botID, approval.botId)
+        XCTAssertNil(model.pendingRemoteNotification)
+
+        let hidden = session(
+            sessionID: approval.sessionId,
+            state: .awaitingApproval,
+            turnID: approval.turnId,
+            approvalRequestID: approval.requestId,
+            originLabel: "routine",
+            botID: approval.botId
+        )
+        model.handle(.botSessions(
+            requestID: requestID,
+            botID: approval.botId,
+            sessions: [hidden]
+        ))
+        let opening = await recorder.firstRequest(after: 1) { request in
+            guard case .openSession(_, approval.sessionId, _) = request else { return false }
+            return true
+        }
+        XCTAssertNotNil(opening)
+        XCTAssertEqual(model.navigationPath, [.chat(.session(approval.sessionId))])
+    }
+
     func testRemoteNotificationPayloadRequiresAStableCursorForItsKind() throws {
         XCTAssertEqual(
             RemoteSessionNotification(userInfo: [
@@ -679,6 +755,20 @@ extension AppModelTests {
             "kind": "session.awaiting_approval",
             "sessionId": "chat-1",
         ]))
+        XCTAssertEqual(
+            RemoteSessionNotification(userInfo: [
+                "eventId": "event-4",
+                "kind": "session.awaiting_approval",
+                "sessionId": "work-1",
+                "approvalRequestId": "approval-1",
+            ]),
+            RemoteSessionNotification(
+                eventID: "event-4",
+                kind: .awaitingApproval,
+                sessionID: "work-1",
+                approvalRequestID: "approval-1"
+            )
+        )
     }
 
     func testLanguageLocalesPreserveTheSystemChoice() {

@@ -460,6 +460,9 @@ pub enum ServerMessage {
         request_id: Option<String>,
         sessions: Vec<SessionRecord>,
     },
+    BackgroundApprovals {
+        approvals: Vec<BackgroundApproval>,
+    },
     BotSessions {
         request_id: String,
         bot_id: String,

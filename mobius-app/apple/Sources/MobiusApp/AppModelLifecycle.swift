@@ -179,6 +179,7 @@ extension AppModel {
             titleEligibleSessionIDs.removeAll()
             pendingChatTitles.removeAll()
             sessions = []
+            backgroundApprovals = []
             chatBotFilterIDs.removeAll()
             bots = []
             swarms = []

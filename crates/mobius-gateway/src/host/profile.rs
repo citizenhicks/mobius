@@ -265,6 +265,9 @@ pub(super) async fn gateway_ready(
         sessions: session_catalog(&state.checkpoints, &state.activities)
             .await
             .map_err(internal)?,
+        background_approvals: background_approvals(&state.checkpoints, &state.activities)
+            .await
+            .map_err(internal)?,
         swarms: state.swarm.records().await.map_err(internal)?,
         providers: provider_statuses(),
         provider_instances: provider_instances(&config, &state.store, &state.credentials)

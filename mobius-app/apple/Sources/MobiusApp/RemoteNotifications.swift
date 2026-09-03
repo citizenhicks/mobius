@@ -86,20 +86,20 @@ struct RemoteSessionNotification: Equatable {
     let kind: SessionNotificationKind
     let sessionID: String
     let runCount: UInt64?
-    let turnID: String?
+    let approvalRequestID: String?
 
     init(
         eventID: String,
         kind: SessionNotificationKind,
         sessionID: String,
         runCount: UInt64? = nil,
-        turnID: String? = nil
+        approvalRequestID: String? = nil
     ) {
         self.eventID = eventID
         self.kind = kind
         self.sessionID = sessionID
         self.runCount = runCount
-        self.turnID = turnID
+        self.approvalRequestID = approvalRequestID
     }
 
     init?(userInfo: [AnyHashable: Any]) {
@@ -109,9 +109,9 @@ struct RemoteSessionNotification: Equatable {
               let sessionID = Self.identifier(userInfo["sessionId"])
         else { return nil }
         let runCount = Self.unsignedInteger(userInfo["runCount"])
-        let turnID = Self.optionalIdentifier(userInfo["turnId"])
+        let approvalRequestID = Self.optionalIdentifier(userInfo["approvalRequestId"])
         let hasRequiredCursor = switch kind {
-        case .awaitingApproval: turnID != nil
+        case .awaitingApproval: approvalRequestID != nil
         case .completed, .aborted, .failed: runCount != nil
         }
         guard hasRequiredCursor else { return nil }
@@ -120,7 +120,7 @@ struct RemoteSessionNotification: Equatable {
             kind: kind,
             sessionID: sessionID,
             runCount: runCount,
-            turnID: turnID
+            approvalRequestID: approvalRequestID
         )
     }
 
@@ -148,7 +148,7 @@ struct RemoteSessionNotification: Equatable {
 }
 
 enum SessionNotificationKey: Hashable {
-    case approval(sessionID: String, turnID: String)
+    case approval(requestID: String)
     case terminal(kind: SessionNotificationKind, sessionID: String, runCount: UInt64)
 }
 
@@ -339,7 +339,7 @@ extension AppModel {
             notification.kind,
             sessionID: notification.sessionID,
             runCount: notification.runCount,
-            turnID: notification.turnID,
+            approvalRequestID: notification.approvalRequestID,
             agentName: agentName,
             detail: notification.kind == .completed ? detail : nil
         )
@@ -362,22 +362,41 @@ extension AppModel {
             return false
         }
         guard connectionState.isReady,
-              sessions.contains(where: { $0.sessionId == notification.sessionID }),
               canOpenSession || selectedSessionID == notification.sessionID
         else { return false }
+        if notification.kind == .awaitingApproval,
+           let requestID = notification.approvalRequestID,
+           let approval = backgroundApprovals.first(where: {
+               $0.sessionId == notification.sessionID && $0.requestId == requestID
+           }) {
+            pendingRemoteNotification = nil
+            prepareToOpenNotifiedSession()
+            resumeBotSession(botID: approval.botId, sessionID: approval.sessionId)
+            return true
+        }
+        guard sessions.contains(where: { $0.sessionId == notification.sessionID }) else {
+            return false
+        }
         pendingRemoteNotification = nil
-        showsInspector = false
-        showsPairing = false
-        showsWorkspaceBrowser = false
+        prepareToOpenNotifiedSession()
         openChat(notification.sessionID)
         return true
+    }
+
+    func openNotifiedSession(_ sessionID: String) {
+        prepareToOpenNotifiedSession()
+        if let approval = backgroundApproval(forSessionID: sessionID) {
+            resumeBotSession(botID: approval.botId, sessionID: approval.sessionId)
+        } else if sessions.contains(where: { $0.sessionId == sessionID }) {
+            openChat(sessionID)
+        }
     }
 
     func presentSessionNotification(
         _ kind: SessionNotificationKind,
         sessionID: String,
         runCount: UInt64? = nil,
-        turnID: String? = nil,
+        approvalRequestID: String? = nil,
         agentName: String? = nil,
         detail: String? = nil,
         canRefineCompletion: Bool = false
@@ -403,11 +422,15 @@ extension AppModel {
             kind: kind,
             sessionID: sessionID,
             runCount: runCount,
-            turnID: turnID
+            approvalRequestID: approvalRequestID
         ), !rememberSessionNotification(key), !refinesCompletedNotification {
             return
         }
-        let title = sessionTitle(sessionID)
+        let isHiddenApproval = kind == .awaitingApproval
+            && !sessions.contains(where: { $0.sessionId == sessionID })
+        let title = backgroundApproval(forSessionID: sessionID) != nil || isHiddenApproval
+            ? botName
+            : sessionTitle(sessionID)
         let isActiveChat = selectedSessionID == sessionID && isChatVisible
         switch kind {
         case .awaitingApproval:
@@ -524,15 +547,21 @@ extension AppModel {
     }
 
     private func catalogAlreadyIncludes(_ notification: RemoteSessionNotification) -> Bool {
-        guard let session = sessions.first(where: {
-            $0.sessionId == notification.sessionID
-        }) else { return false }
         switch notification.kind {
         case .awaitingApproval:
+            guard let requestID = notification.approvalRequestID else { return false }
+            if let approval = backgroundApproval(forSessionID: notification.sessionID) {
+                return approval.requestId == requestID
+            }
+            guard let session = sessions.first(where: {
+                $0.sessionId == notification.sessionID
+            }) else { return false }
             return session.activity.state == .awaitingApproval
-                && session.activity.turnId == notification.turnID
+                && session.activity.approvalRequestId == requestID
         case .completed, .aborted, .failed:
-            guard let runCount = notification.runCount else { return false }
+            guard let session = sessions.first(where: {
+                $0.sessionId == notification.sessionID
+            }), let runCount = notification.runCount else { return false }
             return session.executionStats.runCount >= runCount
         }
     }
@@ -550,11 +579,11 @@ extension AppModel {
         kind: SessionNotificationKind,
         sessionID: String,
         runCount: UInt64?,
-        turnID: String?
+        approvalRequestID: String?
     ) -> SessionNotificationKey? {
         switch kind {
         case .awaitingApproval:
-            turnID.map { .approval(sessionID: sessionID, turnID: $0) }
+            approvalRequestID.map { .approval(requestID: $0) }
         case .completed, .aborted, .failed:
             runCount.map { .terminal(kind: kind, sessionID: sessionID, runCount: $0) }
         }
@@ -567,5 +596,11 @@ extension AppModel {
             sessionNotificationKeys.remove(sessionNotificationKeyOrder.removeFirst())
         }
         return true
+    }
+
+    private func prepareToOpenNotifiedSession() {
+        showsInspector = false
+        showsPairing = false
+        showsWorkspaceBrowser = false
     }
 }

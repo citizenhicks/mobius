@@ -158,7 +158,16 @@ struct BotsView: View {
         return SettingsNavigationRow(
             hint: "Shows Bot details",
             open: { model.navigationPath = [.bot(bot.id)] },
-            marks: EmptyView.init
+            marks: {
+                if model.hasBackgroundApproval(forBotID: bot.id) {
+                    MobiusIcon(
+                        .bellDot,
+                        size: MobiusStyle.glyphMark,
+                        foreground: palette.warning
+                    )
+                    .accessibilityLabel("\(bot.name) has work awaiting approval")
+                }
+            }
         ) {
             HStack(spacing: MobiusSpace.s) {
                 MobiusIcon(
@@ -517,10 +526,23 @@ struct BotDetailView: View {
                                 .foregroundStyle(palette.muted)
                         } else {
                             ForEach(botRuns.prefix(visibleRunCount)) { run in
+                                let approval = model.backgroundApproval(
+                                    forSessionID: run.sessionId
+                                )
                                 RoutineRunRow(
                                     run: run,
                                     name: routineName(run.routineId),
-                                    open: { model.presentRoutineRun(run) },
+                                    awaitsApproval: approval != nil,
+                                    open: {
+                                        if let approval {
+                                            model.resumeBotSession(
+                                                botID: approval.botId,
+                                                sessionID: approval.sessionId
+                                            )
+                                        } else {
+                                            model.presentRoutineRun(run)
+                                        }
+                                    },
                                     delete: { model.deleteRoutineRun(run) }
                                 )
                             }
@@ -550,7 +572,16 @@ struct BotDetailView: View {
                         SettingsNavigationRow(
                             hint: "Shows private conversations created by routines and Swarm work",
                             open: { model.openBotSessions(bot.id) },
-                            marks: EmptyView.init
+                            marks: {
+                                if model.hasBackgroundApproval(forBotID: bot.id) {
+                                    MobiusIcon(
+                                        .bellDot,
+                                        size: MobiusStyle.glyphMark,
+                                        foreground: palette.warning
+                                    )
+                                    .accessibilityLabel("Background work awaiting approval")
+                                }
+                            }
                         ) {
                             SettingsRowLabel(title: "Background work") {
                                 MobiusIcon(

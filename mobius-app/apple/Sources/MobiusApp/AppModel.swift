@@ -43,6 +43,7 @@ final class AppModel {
         return sessions.filter { chatBotFilterIDs.contains($0.sessionContext.botId) }
     }
     var bots: [BotRecord] = []
+    var backgroundApprovals: [BackgroundApproval] = []
     var swarms: [SwarmRecord] = []
     var swarmMessageRequestID: String?
     var completedSwarmMessageRequestID: String?
@@ -1193,11 +1194,22 @@ final class AppModel {
     }
 
     func bot(forSessionID sessionID: String?) -> BotRecord? {
-        guard let sessionID,
-              let session = sessions.first(where: { $0.sessionId == sessionID })
-                ?? botSessions.first(where: { $0.sessionId == sessionID })
-        else { return nil }
-        return bot(for: session)
+        guard let sessionID else { return nil }
+        if let session = sessions.first(where: { $0.sessionId == sessionID })
+            ?? botSessions.first(where: { $0.sessionId == sessionID }) {
+            return bot(for: session)
+        }
+        guard let approval = backgroundApproval(forSessionID: sessionID) else { return nil }
+        return bots.first { $0.id == approval.botId }
+    }
+
+    func backgroundApproval(forSessionID sessionID: String?) -> BackgroundApproval? {
+        guard let sessionID else { return nil }
+        return backgroundApprovals.first { $0.sessionId == sessionID }
+    }
+
+    func hasBackgroundApproval(forBotID botID: String) -> Bool {
+        backgroundApprovals.contains { $0.botId == botID }
     }
 
     var selectedBotSwarm: SwarmRecord? {

@@ -199,6 +199,7 @@ struct CachedChatCatalog: Codable, Equatable, Sendable {
                 activity: SessionActivity(
                     state: .idle,
                     turnId: nil,
+                    approvalRequestId: nil,
                     startedAt: nil,
                     lastOutcome: session.activity.lastOutcome,
                     message: nil

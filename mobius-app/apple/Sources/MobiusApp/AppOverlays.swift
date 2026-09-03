@@ -83,10 +83,7 @@ private struct AppToastView: View {
         HStack(spacing: MobiusSpace.m) {
             if let sessionID = toast.sessionID {
                 Button {
-                    model.showsInspector = false
-                    model.showsPairing = false
-                    model.showsWorkspaceBrowser = false
-                    model.openChat(sessionID)
+                    model.openNotifiedSession(sessionID)
                     dismiss()
                 } label: {
                     toastMessage

@@ -146,10 +146,6 @@ extension MessageAuthor {
     }
 }
 
-func isSwarmAttentionMessage(_ text: String) -> Bool {
-    text.contains("Needs user attention:")
-}
-
 struct MessageSubmission: Codable, Hashable, Sendable {
     let author: MessageAuthor
     let text: String

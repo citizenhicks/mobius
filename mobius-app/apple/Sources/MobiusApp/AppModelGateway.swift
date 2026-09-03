@@ -103,7 +103,8 @@ extension AppModel {
         case .sessionOpened, .sessionReplayComplete, .sessionHistory, .sessionChanged:
             handleSessionEnvelope(envelope)
         case .gatewayConfigured, .scratchpadChanged, .accepted, .rejected,
-             .agentEvent, .sessions, .botSessions, .bots, .swarms, .clients:
+             .agentEvent, .sessions, .backgroundApprovals, .botSessions, .bots, .swarms,
+             .clients:
             handleGatewayUpdateEnvelope(envelope)
         case .providerCredentialSaved, .pairingCode, .providerLoginStarted,
              .providerLoginFinished, .gitCredentialStatus, .sshIdentities,
@@ -197,6 +198,8 @@ extension AppModel {
             }
         case .sessions(let requestID, let sessions):
             applySessionResponse(requestID: requestID, sessions: sessions)
+        case .backgroundApprovals(let approvals):
+            applyBackgroundApprovals(approvals, notifyingNew: true)
         case .botSessions(let requestID, let botID, let sessions):
             applyBotSessionsResponse(requestID: requestID, botID: botID, sessions: sessions)
         case .bots(let requestID, let bots):
@@ -707,6 +710,7 @@ extension AppModel {
         extensions = payload.extensions
         gatewayContributions = payload.contributions
         applyBots(payload.bots)
+        applyBackgroundApprovals(payload.backgroundApprovals, notifyingNew: false)
         applySwarms(payload.swarms)
         botDefaultsSnapshot = payload.botDefaults
         botDefaultsDraft = payload.botDefaults.map { incomingSnapshot in
@@ -977,6 +981,7 @@ extension AppModel {
             clearSelectedSession()
         }
         chatBotFilterIDs.formIntersection(botIDs)
+        backgroundApprovals.removeAll { !botIDs.contains($0.botId) }
         routines.removeAll { !botIDs.contains($0.botId) }
         routineRuns.removeAll { !botIDs.contains($0.botId) }
         if let botID = selectedSession?.sessionContext.botId,
@@ -1043,6 +1048,40 @@ extension AppModel {
         runStats.usage = stats.usage
     }
 
+    @discardableResult
+    func applyBackgroundApprovals(
+        _ records: [BackgroundApproval],
+        notifyingNew: Bool
+    ) -> Bool {
+        let botIDs = Set(bots.map(\.id))
+        guard Set(records.map(\.sessionId)).count == records.count,
+              Set(records.map(\.requestId)).count == records.count,
+              records.allSatisfy({ approval in
+                  !approval.sessionId.isEmpty
+                      && !approval.botId.isEmpty
+                      && !approval.turnId.isEmpty
+                      && !approval.requestId.isEmpty
+                      && botIDs.contains(approval.botId)
+              })
+        else {
+            showToast("The gateway returned invalid background approval state.", tone: .error)
+            return false
+        }
+        let previousRequestIDs = Set(backgroundApprovals.map(\.requestId))
+        backgroundApprovals = records
+        if notifyingNew {
+            for approval in records where !previousRequestIDs.contains(approval.requestId) {
+                presentSessionNotification(
+                    .awaitingApproval,
+                    sessionID: approval.sessionId,
+                    approvalRequestID: approval.requestId
+                )
+            }
+        }
+        if connectionState.isReady { _ = openPendingRemoteNotification() }
+        return true
+    }
+
     private func applyActivityTransition(
         from previous: SessionRecord?,
         to session: SessionRecord
@@ -1051,11 +1090,12 @@ extension AppModel {
         let activity = session.activity
         let sessionID = session.sessionId
         if activity.state == .awaitingApproval,
-           previous.activity.state != .awaitingApproval {
+           let approvalRequestID = activity.approvalRequestId,
+           previous.activity.approvalRequestId != approvalRequestID {
             presentSessionNotification(
                 .awaitingApproval,
                 sessionID: sessionID,
-                turnID: activity.turnId
+                approvalRequestID: approvalRequestID
             )
         }
         guard activity.state == .idle,

@@ -2457,6 +2457,7 @@ mod tests {
             machine_name: "test".into(),
             bots,
             sessions: Vec::new(),
+            background_approvals: Vec::new(),
             swarms: Vec::new(),
             providers: Vec::new(),
             provider_instances: Vec::new(),

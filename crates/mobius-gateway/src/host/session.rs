@@ -254,11 +254,13 @@ impl HostHandle {
         let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
         let (events, _) = broadcast::channel(BROADCAST_CAPACITY);
         let loaded = load_replay(checkpoints.as_ref(), &session_id, &running.frontend).await?;
-        activities
+        let awaiting_approval = activities
             .lock()
             .map_err(|_| Error::Config("session activity lock is poisoned".into()))?
             .entry(session_id.clone())
-            .or_default();
+            .or_default()
+            .state
+            == SessionActivityState::AwaitingApproval;
         let bot_id = spec.bot_id.clone();
         let mut state = HostState {
             store,
@@ -279,9 +281,9 @@ impl HostHandle {
             provider_epoch,
             activities,
             running,
-            pending_turns: 0,
+            pending_turns: usize::from(awaiting_approval),
             pending_messages: HashSet::new(),
-            approval_active: false,
+            approval_active: awaiting_approval,
             turn_error: None,
             last_assistant_text: None,
             restart_after_turn: false,
