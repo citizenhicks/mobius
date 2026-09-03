@@ -469,7 +469,6 @@ struct ComposerOptionsView: View {
     private var canSend: Bool {
         guard model.connectionState.isReady,
               model.canSendComposer,
-              !model.composerHasUnfinishedAttachments,
               model.activeTurnID == nil || model.composerAttachments.isEmpty
         else { return false }
         return !dictation.isActive

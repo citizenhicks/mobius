@@ -3,6 +3,182 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testFirstMessageStagesAttachmentUntilPendingChatOpens() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model(requestSender: { request in
+            await recorder.record(request)
+        })
+        var config = composition()
+        config.middleware.enabled.insert("attachments")
+        model.bots = [bot(config: VersionedAgentConfig(revision: 1, config: config))]
+        model.modelChoices = [ModelChoice(
+            route: "openai",
+            group: "OpenAI",
+            model: "gpt-5.6-sol",
+            reasoningEffort: "high",
+            contextWindow: 200_000,
+            supportsImageInput: true,
+            toolDiscovery: .native
+        )]
+        model.modelProviders = ["openai": "openai-work"]
+        model.connectionState = .ready
+        model.chooseWorkspace("/srv/mobius")
+
+        XCTAssertTrue(model.attachmentsEnabled)
+        XCTAssertTrue(model.canImportAttachments)
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fileURL = directory.appendingPathComponent("scan.png")
+        let bytes = try tinyPNGData()
+        try bytes.write(to: fileURL)
+
+        await model.importAttachments([fileURL])
+
+        XCTAssertEqual(model.composerAttachments.first?.state, .queued)
+        XCTAssertTrue(model.canSendComposer)
+        let stagedRequests = await recorder.requests()
+        XCTAssertFalse(stagedRequests.contains { request in
+            if case .beginSessionFileUpload = request { return true }
+            return false
+        })
+
+        model.composer = "Review this image"
+        XCTAssertTrue(model.sendMessage())
+        let create = await recorder.firstRequest(after: 0) { request in
+            if case .createSession = request { return true }
+            return false
+        }
+        guard case .createSession(let createID, _, _) = try XCTUnwrap(create) else {
+            return XCTFail("Expected session creation")
+        }
+
+        model.handle(.sessionOpened(
+            requestID: createID,
+            payload: sessionReady(
+                latestSequence: 0,
+                sessionID: "chat-created",
+                contributions: [fileAttachmentContribution()]
+            )
+        ))
+        model.handle(.sessionReplayComplete(requestID: createID, sessionID: "chat-created"))
+        model.handle(.sessionChanged(sessionReady(
+            latestSequence: 0,
+            sessionID: "chat-created",
+            contributions: [fileAttachmentContribution()]
+        )))
+        XCTAssertEqual(model.pendingNewChatBotID, "bot-1")
+
+        let begin = await recorder.firstRequest(after: 0) { request in
+            if case .beginSessionFileUpload = request { return true }
+            return false
+        }
+        guard case .beginSessionFileUpload(
+            let beginID,
+            let sessionID,
+            let name,
+            let size,
+            let mediaType
+        ) = try XCTUnwrap(begin) else {
+            return XCTFail("Expected attachment upload")
+        }
+        XCTAssertEqual(sessionID, "chat-created")
+
+        model.handle(.sessionFileUploadReady(
+            requestID: beginID,
+            sessionID: sessionID,
+            uploadID: "upload-1",
+            maxChunkBytes: model.uploadChunkByteLimit
+        ))
+        let chunk = await recorder.firstRequest(after: 0) { request in
+            if case .uploadSessionFileChunk = request { return true }
+            return false
+        }
+        guard case .uploadSessionFileChunk(let chunkID, _, _, _, let data) = try XCTUnwrap(chunk) else {
+            return XCTFail("Expected attachment bytes")
+        }
+        XCTAssertEqual(data, bytes)
+
+        model.handle(.sessionFileUploadChunkAccepted(
+            requestID: chunkID,
+            sessionID: sessionID,
+            uploadID: "upload-1",
+            nextOffset: Int64(data.count)
+        ))
+        let finish = await recorder.firstRequest(after: 0) { request in
+            if case .finishSessionFileUpload = request { return true }
+            return false
+        }
+        guard case .finishSessionFileUpload(let finishID, _, _) = try XCTUnwrap(finish) else {
+            return XCTFail("Expected attachment upload completion")
+        }
+        let attachment = SessionFileReference(
+            id: "file-1",
+            name: name,
+            size: size,
+            mediaType: mediaType
+        )
+        model.handle(.sessionFileUploadCompleted(
+            requestID: finishID,
+            sessionID: sessionID,
+            file: attachment
+        ))
+        XCTAssertFalse(model.canSendComposer)
+
+        let submit = await recorder.firstRequest(after: 0) { request in
+            if case .submit = request { return true }
+            return false
+        }
+        guard case .submit("chat-created", let submission) = try XCTUnwrap(submit),
+              case .message(let message) = submission.op
+        else { return XCTFail("Expected first message submission") }
+        XCTAssertEqual(message.text, "Review this image")
+        XCTAssertEqual(message.attachments, [attachment])
+    }
+
+    func testRemovingFailedFirstMessageAttachmentContinuesPendingSend() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model { request in await recorder.record(request) }
+        let attachmentID = UUID()
+        model.connectionState = .ready
+        model.sessions = [session(sessionID: "chat-created", state: .idle)]
+        model.selectedSessionID = "chat-created"
+        model.pendingNewChatBotID = "bot-1"
+        model.pendingDrafts["create-1"] = PendingComposerDraft(
+            text: "Continue without the file",
+            attachments: []
+        )
+        model.composerAttachments = [ComposerAttachment(
+            id: attachmentID,
+            name: "broken.png",
+            size: 1,
+            mediaType: "image/png",
+            state: .failed("Upload failed")
+        )]
+
+        model.removeComposerAttachment(attachmentID)
+
+        let submitted = await eventually {
+            let requests = await recorder.requests()
+            return requests.contains { request in
+                if case .submit = request { return true }
+                return false
+            }
+        }
+        XCTAssertTrue(submitted)
+        let request = await recorder.firstRequest(after: 0) { request in
+            if case .submit = request { return true }
+            return false
+        }
+        guard case .submit("chat-created", let submission) = try XCTUnwrap(request),
+              case .message(let message) = submission.op
+        else { return XCTFail("Expected the preserved first message") }
+        XCTAssertEqual(message.text, "Continue without the file")
+        XCTAssertTrue(message.attachments.isEmpty)
+    }
+
     func testAttachmentComposerUsesAdvertisedPolicyWithinClientSafetyCaps() throws {
         let model = try model()
         model.sessionFileLimits = SessionFileLimits(

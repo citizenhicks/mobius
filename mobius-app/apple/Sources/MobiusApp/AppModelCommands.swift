@@ -819,7 +819,8 @@ extension AppModel {
     }
 
     func importAttachments(_ urls: [URL]) async {
-        guard canImportAttachments, let sessionID = selectedSessionID else { return }
+        guard canImportAttachments else { return }
+        let sessionID = selectedSessionID
         let generation = attachmentImportGeneration
         let available = max(
             0,
@@ -893,6 +894,9 @@ extension AppModel {
         sessionFileData[id] = nil
         removeFileThumbnail(for: .composer(id))
         composerAttachments.removeAll { $0.id == id }
+        if pendingNewChatBotID != nil, pendingDrafts.count == 1 {
+            submitPendingNewChatDraft(requestID: pendingDrafts.keys.first)
+        }
     }
 
     func retryComposerAttachment(_ id: UUID) {
@@ -1108,17 +1112,13 @@ extension AppModel {
         else { return false }
         let text = composer.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = uploadedComposerAttachments
-        guard attachments.count <= attachmentReferenceLimit else { return false }
-        guard !text.isEmpty || !attachments.isEmpty else { return false }
-        guard attachments.isEmpty || canSubmitAttachments else {
+        guard composerAttachments.count <= attachmentReferenceLimit else { return false }
+        guard !text.isEmpty || !composerAttachments.isEmpty else { return false }
+        guard composerAttachments.isEmpty || canSubmitAttachments else {
             showToast(attachmentSubmissionUnavailableMessage, tone: .warning)
             return false
         }
         guard canSendComposer else { return false }
-        guard !composerHasUnfinishedAttachments else {
-            showToast("Wait for attachments to finish uploading.", tone: .warning)
-            return false
-        }
         guard text.utf8.count <= maximumComposerBytes else {
             showToast("Messages are limited to 1 MiB.", tone: .error)
             return false
@@ -1139,8 +1139,11 @@ extension AppModel {
             suppressesComposerDraftSave = true
             composer = ""
             suppressesComposerDraftSave = false
-            composerAttachments = []
             return true
+        }
+        guard !composerHasUnfinishedAttachments else {
+            showToast("Wait for attachments to finish uploading.", tone: .warning)
+            return false
         }
         guard let sessionID = selectedSessionID else { return false }
         let id = requestID("input")
@@ -1356,6 +1359,10 @@ extension AppModel {
 
     func submitScratchpadOperation(_ operation: AgentOperation, scope: ScratchpadScope) {
         guard connectionState.isReady else { return }
+        if case .swarm(let id) = scope,
+           !swarms.contains(where: { $0.id == id }) {
+            return
+        }
         transmit(.submitScratchpad(
             requestID: requestID("scratchpad"),
             scope: scope,

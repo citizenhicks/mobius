@@ -169,7 +169,7 @@ struct CachedTranscript: Codable, Sendable {
 }
 
 struct CachedChatCatalog: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 3
+    static let currentSchemaVersion = 4
 
     let schemaVersion: Int
     let bots: [BotRecord]

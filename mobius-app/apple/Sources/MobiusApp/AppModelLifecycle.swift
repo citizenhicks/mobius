@@ -249,7 +249,7 @@ extension AppModel {
         isGeneratingSshIdentity = false
     }
 
-    func resetSessionState() {
+    func resetSessionState(preservingComposerAttachments: Bool = false) {
         workspace = nil
         gitStatus = nil
         gitDiff = ""
@@ -270,7 +270,7 @@ extension AppModel {
         filesInspectorTab = .modified
         modifiedFilesScope = .unstaged
         gitBranchRequestID = nil
-        discardComposerAttachments()
+        if !preservingComposerAttachments { discardComposerAttachments() }
         cancelSessionFileThumbnailDownloads()
         sessionFiles = []
         sessionFilesRequestID = nil

@@ -293,6 +293,16 @@ extension AppModelTests {
         XCTAssertNil(model.globalScratchpadWidget)
     }
 
+    func testStaleSwarmScratchpadScopeDoesNotReachGateway() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model { request in await recorder.record(request) }
+        model.connectionState = .ready
+
+        model.refreshScratchpad(scope: .swarm(id: "removed-swarm"))
+
+        let requestCount = await recorder.requestCount()
+        XCTAssertEqual(requestCount, 0)
+    }
 
     func testContributionCatalogReferencesAndWidgetsAreGeneric() throws {
         let model = try model()

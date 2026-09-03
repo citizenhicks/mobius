@@ -426,6 +426,9 @@ extension AppModel {
                 sessionID: sessionID,
                 file: file
             )
+            if pendingNewChatBotID != nil, pendingDrafts.count == 1 {
+                submitPendingNewChatDraft(requestID: pendingDrafts.keys.first)
+            }
         case .sessionFiles(let requestID, let sessionID, let files):
             guard requestID == sessionFilesRequestID, sessionID == selectedSessionID else { break }
             sessionFilesRequestID = nil
@@ -529,11 +532,15 @@ extension AppModel {
         submitPendingNewChatDraft(requestID: completedRequestID)
     }
 
-    private func submitPendingNewChatDraft(requestID: String?) {
+    func submitPendingNewChatDraft(requestID: String?) {
         guard let requestID,
               pendingDrafts[requestID] != nil,
               let sessionID = selectedSessionID
         else { return }
+        guard !composerHasUnfinishedAttachments else {
+            startNextSessionFileUpload()
+            return
+        }
         let draftIO = composerDraftIOTask
         Task { [weak self] in
             await draftIO?.value
@@ -756,7 +763,7 @@ extension AppModel {
             changeComposerDraftOwner(to: selectedAccountID.map {
                 ComposerDraftOwner(accountID: $0, sessionID: payload.session.sessionId)
             })
-            resetSessionState()
+            resetSessionState(preservingComposerAttachments: createdWithPendingDraft)
         }
         if opened {
             latestSequence = cursor
@@ -789,7 +796,7 @@ extension AppModel {
         isChangingWorkspace = false
         showsWorkspaceBrowser = false
         pendingNewChatWorkspace = nil
-        if !createdWithPendingDraft { pendingNewChatBotID = nil }
+        if !createdWithPendingDraft, pendingDrafts.isEmpty { pendingNewChatBotID = nil }
         selectedSessionID = payload.session.sessionId
         if createdByThisClient {
             destination = .chats

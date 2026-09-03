@@ -363,7 +363,7 @@ final class AppModel {
     @ObservationIgnored var sessionFilesRequestID: String?
     @ObservationIgnored var sessionFileUploadRequests: [String: SessionFileUploadRequest] = [:]
     @ObservationIgnored var sessionFileData: [UUID: Data] = [:]
-    @ObservationIgnored var attachmentImportReservations = 0
+    var attachmentImportReservations = 0
     @ObservationIgnored var attachmentImportGeneration = UUID()
     @ObservationIgnored var activeSessionFileUpload: ActiveSessionFileUpload?
     @ObservationIgnored var sessionFileDownload: SessionFileDownload?
@@ -580,17 +580,23 @@ final class AppModel {
     var isSwitchingGitBranch: Bool { gitBranchRequestID != nil }
 
     var attachmentsEnabled: Bool {
-        contributions.contains { $0.acceptsFileAttachments }
+        if selectedSessionID == nil {
+            return selectedBot?.config.config.middleware.enabled.contains("attachments") == true
+        }
+        return contributions.contains { $0.acceptsFileAttachments }
     }
 
     var selectedRouteSupportsImageInput: Bool {
-        modelChoices.first(where: { $0.route == selectedModelRoute })?
+        let route = selectedSessionID == nil
+            ? modelRoute(for: selectedBot?.config.config)
+            : selectedModelRoute
+        return modelChoices.first(where: { $0.route == route })?
             .supportsImageInput == true
     }
 
     var canSubmitAttachments: Bool {
         attachmentsEnabled
-            && (selectedRouteSupportsImageInput || !uploadedComposerAttachments.contains {
+            && (selectedRouteSupportsImageInput || !composerAttachments.contains {
                 $0.mediaType.hasPrefix("image/")
             })
     }
@@ -604,7 +610,8 @@ final class AppModel {
     var canImportAttachments: Bool {
         attachmentsEnabled
             && connectionState.isReady
-            && selectedSessionID != nil
+            && (selectedSessionID != nil
+                || pendingNewChatWorkspace != nil && selectedBot != nil)
             && sessionFileLimits != nil
             && pendingWidgetEdit == nil
     }
@@ -648,6 +655,16 @@ final class AppModel {
             && pendingNewChatWorkspace != nil
             && pendingNewChatBotID.map { botID in bots.contains { $0.id == botID } } == true
         guard sessionID != nil || hasPendingSession else { return false }
+        guard sessionID == nil || pendingNewChatBotID == nil else { return false }
+        guard attachmentImportReservations == 0,
+              composerAttachments.allSatisfy({ attachment in
+                  switch attachment.state {
+                  case .uploaded: true
+                  case .queued: sessionID == nil
+                  case .uploading, .failed: false
+                  }
+              })
+        else { return false }
         if let pending = pendingWidgetEdit {
             guard let sessionID,
                   let accountID = selectedAccountID,
@@ -656,9 +673,8 @@ final class AppModel {
             else { return false }
         }
         let hasText = !composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let uploaded = uploadedComposerAttachments
-        guard uploaded.isEmpty || canSubmitAttachments else { return false }
-        return hasText || !uploaded.isEmpty
+        guard composerAttachments.isEmpty || canSubmitAttachments else { return false }
+        return hasText || !composerAttachments.isEmpty
     }
 
     var uploadedComposerAttachments: [SessionFileReference] {
