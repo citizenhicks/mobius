@@ -365,8 +365,6 @@ final class AppModel {
     @ObservationIgnored var sessionFilesRequestID: String?
     @ObservationIgnored var sessionFileUploadRequests: [String: SessionFileUploadRequest] = [:]
     @ObservationIgnored var sessionFileData: [UUID: Data] = [:]
-    var attachmentImportReservations = 0
-    @ObservationIgnored var attachmentImportGeneration = UUID()
     @ObservationIgnored var activeSessionFileUpload: ActiveSessionFileUpload?
     @ObservationIgnored var sessionFileDownload: SessionFileDownload?
     @ObservationIgnored var fileThumbnailOrder: [FileThumbnailKey] = []
@@ -658,12 +656,11 @@ final class AppModel {
             && pendingNewChatBotID.map { botID in bots.contains { $0.id == botID } } == true
         guard sessionID != nil || hasPendingSession else { return false }
         guard sessionID == nil || pendingNewChatBotID == nil else { return false }
-        guard attachmentImportReservations == 0,
-              composerAttachments.allSatisfy({ attachment in
+        guard composerAttachments.allSatisfy({ attachment in
                   switch attachment.state {
                   case .uploaded: true
                   case .queued: sessionID == nil
-                  case .uploading, .failed: false
+                  case .preparing, .uploading, .failed: false
                   }
               })
         else { return false }
@@ -690,7 +687,7 @@ final class AppModel {
         composerAttachments.contains { item in
             switch item.state {
             case .uploaded: false
-            case .queued, .uploading, .failed: true
+            case .preparing, .queued, .uploading, .failed: true
             }
         }
     }

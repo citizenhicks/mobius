@@ -1,3 +1,4 @@
+@preconcurrency import AVFoundation
 import Foundation
 import ImageIO
 import UniformTypeIdentifiers
@@ -35,10 +36,16 @@ extension AppModel {
             let mediaType = values.contentType?.preferredMIMEType
                 ?? UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
                 ?? "application/octet-stream"
-            let thumbnail = Self.isFileThumbnailCandidate(
+            let thumbnail: CGImage? = if mediaType.lowercased().hasPrefix("video/") {
+                await Self.videoFileThumbnail(from: url)
+            } else if Self.isFileThumbnailCandidate(
                 mediaType: mediaType,
                 size: Int64(data.count)
-            ) ? await Self.downsampledFileThumbnail(from: data) : nil
+            ) {
+                await Self.downsampledFileThumbnail(from: data)
+            } else {
+                nil
+            }
             return ImportedAttachmentData(
                 name: url.lastPathComponent,
                 mediaType: mediaType,
@@ -52,6 +59,22 @@ extension AppModel {
         size >= 0
             && size <= maximumFileThumbnailSourceBytes
             && mediaType.lowercased().hasPrefix("image/")
+    }
+
+    nonisolated static func supportsFileThumbnail(mediaType: String) -> Bool {
+        let mediaType = mediaType.lowercased()
+        return mediaType.hasPrefix("image/") || mediaType.hasPrefix("video/")
+    }
+
+    nonisolated static func videoFileThumbnail(from url: URL) async -> CGImage? {
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+        generator.appliesPreferredTrackTransform = true
+        let maximumDimension = CGFloat(maximumFileThumbnailPixelDimension)
+        generator.maximumSize = CGSize(
+            width: maximumDimension,
+            height: maximumDimension
+        )
+        return try? await generator.image(at: .zero).image
     }
 
     nonisolated static func downsampledFileThumbnail(from data: Data) async -> CGImage? {
@@ -151,13 +174,21 @@ extension AppModel {
     func requestSessionFileThumbnail(_ file: SessionFileReference, sessionID: String?) {
         guard !isClearingLocalData,
               let sessionID,
-              Self.isFileThumbnailCandidate(mediaType: file.mediaType, size: file.size),
+              Self.supportsFileThumbnail(mediaType: file.mediaType),
               fileThumbnails[.session(sessionID: sessionID, fileID: file.id)] == nil
         else { return }
         let key = FileThumbnailKey.session(sessionID: sessionID, fileID: file.id)
+        let canDownloadSource = Self.isFileThumbnailCandidate(
+            mediaType: file.mediaType,
+            size: file.size
+        )
         guard requestedSessionFileThumbnailKeys.insert(key).inserted else { return }
         guard let accountID = selectedAccountID else {
-            queueSessionFileThumbnail(file, sessionID: sessionID, key: key)
+            if canDownloadSource {
+                queueSessionFileThumbnail(file, sessionID: sessionID, key: key)
+            } else {
+                requestedSessionFileThumbnailKeys.remove(key)
+            }
             return
         }
         Task { [weak self, store] in
@@ -188,7 +219,11 @@ extension AppModel {
                     fileID: file.id
                 )
             }
-            self.queueSessionFileThumbnail(file, sessionID: sessionID, key: key)
+            if canDownloadSource {
+                self.queueSessionFileThumbnail(file, sessionID: sessionID, key: key)
+            } else {
+                self.requestedSessionFileThumbnailKeys.remove(key)
+            }
         }
     }
 
@@ -290,7 +325,7 @@ extension AppModel {
         else { return }
 
         let item = composerAttachments[index]
-        composerAttachments[index].state = .uploading
+        composerAttachments[index].state = .uploading(0)
         let id = requestID("session-file-begin")
         sessionFileUploadRequests[id] = .begin(localID: item.id)
         transmit(.beginSessionFileUpload(
@@ -350,6 +385,9 @@ extension AppModel {
             return failAttachment(localID, message: "The gateway returned an invalid upload offset.")
         }
         sessionFileUploadRequests.removeValue(forKey: requestID)
+        if let index = composerAttachments.firstIndex(where: { $0.id == localID }) {
+            composerAttachments[index].state = .uploading(nextOffset)
+        }
         sendNextSessionFileChunk(localID: localID, offset: nextOffset)
     }
 
@@ -460,7 +498,6 @@ extension AppModel {
     }
 
     func discardComposerAttachments() {
-        attachmentImportGeneration = UUID()
         for attachment in composerAttachments {
             removeFileThumbnail(for: .composer(attachment.id))
         }
@@ -469,7 +506,6 @@ extension AppModel {
     }
 
     func discardPendingComposerAttachments() {
-        attachmentImportGeneration = UUID()
         for attachment in composerAttachments {
             if case .uploaded = attachment.state { continue }
             removeFileThumbnail(for: .composer(attachment.id))

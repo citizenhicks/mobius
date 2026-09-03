@@ -203,17 +203,18 @@ enum AppNotificationTarget: Equatable {
 }
 
 enum ComposerAttachmentState: Equatable {
+    case preparing
     case queued
-    case uploading
+    case uploading(Int64)
     case uploaded(SessionFileReference)
     case failed(String)
 }
 
 struct ComposerAttachment: Identifiable, Equatable {
     let id: UUID
-    let name: String
-    let size: Int64
-    let mediaType: String
+    var name: String
+    var size: Int64
+    var mediaType: String
     var state: ComposerAttachmentState
 }
 

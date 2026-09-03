@@ -138,6 +138,32 @@ extension AppModelTests {
         XCTAssertEqual(message.attachments, [attachment])
     }
 
+    func testAttachmentReservationIsVisibleBeforeImportCompletes() async throws {
+        let model = try model()
+        var config = composition()
+        config.middleware.enabled.insert("attachments")
+        model.bots = [bot(config: VersionedAgentConfig(revision: 1, config: config))]
+        model.connectionState = .ready
+        model.chooseWorkspace("/srv/mobius")
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fileURL = directory.appendingPathComponent("clip.mp4")
+        try tinyH264MP4Data().write(to: fileURL)
+
+        let id = try XCTUnwrap(model.reserveComposerAttachment(named: "clip.mp4"))
+
+        XCTAssertEqual(model.composerAttachments.count, 1)
+        XCTAssertEqual(model.composerAttachments.first?.id, id)
+        XCTAssertEqual(model.composerAttachments.first?.state, .preparing)
+
+        await model.completeComposerAttachmentImport(fileURL, reservedID: id)
+
+        XCTAssertEqual(model.composerAttachments.first?.id, id)
+        XCTAssertEqual(model.composerAttachments.first?.state, .queued)
+    }
+
     func testRemovingFailedFirstMessageAttachmentContinuesPendingSend() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
@@ -253,6 +279,7 @@ extension AppModelTests {
         XCTAssertEqual(sessionID, "chat-1")
         XCTAssertEqual(name, "scan.png")
         XCTAssertEqual(size, 3)
+        XCTAssertEqual(model.composerAttachments.first?.state, .uploading(0))
 
         requestCount = await recorder.requestCount()
         model.handle(.sessionFileUploadReady(
@@ -281,6 +308,7 @@ extension AppModelTests {
             uploadID: "upload-1",
             nextOffset: 2
         ))
+        XCTAssertEqual(model.composerAttachments.first?.state, .uploading(2))
         let secondChunkRequest = await recorder.firstRequest(
             after: requestCount
         ) { request in
@@ -301,6 +329,7 @@ extension AppModelTests {
             uploadID: "upload-1",
             nextOffset: 3
         ))
+        XCTAssertEqual(model.composerAttachments.first?.state, .uploading(3))
         let finishRequest = await recorder.firstRequest(
             after: requestCount
         ) { request in
@@ -394,6 +423,30 @@ extension AppModelTests {
         let thumbnail = try XCTUnwrap(model.fileThumbnail(for: attachment))
         XCTAssertEqual(thumbnail.width, 1)
         XCTAssertEqual(thumbnail.height, 1)
+    }
+
+    func testVideoImportCreatesComposerThumbnailFromLocalFile() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model(requestSender: { request in
+            await recorder.record(request)
+        })
+        model.connectionState = .ready
+        model.selectedSessionID = "chat-1"
+        model.contributions = [fileAttachmentContribution()]
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fileURL = directory.appendingPathComponent("clip.mp4")
+        try tinyH264MP4Data().write(to: fileURL)
+
+        await model.importAttachments([fileURL])
+
+        let attachment = try XCTUnwrap(model.composerAttachments.first)
+        let thumbnail = try XCTUnwrap(model.fileThumbnail(for: attachment))
+        XCTAssertGreaterThan(thumbnail.width, 0)
+        XCTAssertGreaterThan(thumbnail.height, 0)
     }
 
     func testNonImageAttachmentSubmitsWithoutImageModelSupport() async throws {

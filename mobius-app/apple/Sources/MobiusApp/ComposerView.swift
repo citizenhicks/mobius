@@ -652,14 +652,21 @@ private struct ComposerAttachmentRow: View {
     let attachment: ComposerAttachment
 
     var body: some View {
+        let thumbnail = model.fileThumbnail(for: attachment)
         FileCard(
             name: attachment.name,
             detail: status,
             detailColor: statusColor,
-            thumbnail: model.fileThumbnail(for: attachment)
-        ) {
-            // A tile has no room for a row of controls, so the state sits in the corner and
-            // the glyph keeps saying which file this is.
+            thumbnail: thumbnail
+        )
+        .blur(radius: isProcessing ? 1.5 : 0)
+        .opacity(isProcessing ? 0.5 : 1)
+        .overlay {
+            if isProcessing {
+                MobiusSpinner(size: 32)
+            }
+        }
+        .overlay(alignment: .topTrailing) {
             HStack(spacing: MobiusSpace.xxs) {
                 stateControl
                 Button("Remove attachment", glyph: .x) {
@@ -668,19 +675,37 @@ private struct ComposerAttachmentRow: View {
                 .labelStyle(.iconOnly)
                 .buttonStyle(.mobiusPlain)
                 .frame(width: MobiusStyle.iconButtonSize, height: MobiusStyle.iconButtonSize)
-                .disabled(isUploading)
+                .disabled(isLocked)
+            }
+            .foregroundStyle(thumbnail == nil ? Color.primary : palette.onMedia)
+            .shadow(
+                color: thumbnail == nil ? .clear : palette.shadow.opacity(0.85),
+                radius: 1,
+                y: 1
+            )
+            .padding(MobiusSpace.xs)
+        }
+        .overlay(alignment: .bottom) {
+            if let uploadProgress {
+                ProgressView(value: uploadProgress)
+                    .progressViewStyle(.linear)
+                    .controlSize(.mini)
+                    .tint(palette.accent)
+                    .padding(.horizontal, MobiusSpace.s)
+                    .padding(.bottom, MobiusSpace.xs)
+                    .frame(maxWidth: .infinity)
+                    .accessibilityLabel("Uploading")
+                    .accessibilityValue(Text(uploadProgress, format: .percent))
             }
         }
+        .clipShape(MobiusStyle.tileShape)
         .accessibilityElement(children: .contain)
     }
 
     @ViewBuilder
     private var stateControl: some View {
         switch attachment.state {
-        case .queued, .uploading:
-            MobiusSpinner(size: MobiusStyle.glyphInline)
-                .frame(width: MobiusStyle.rowCompact, height: MobiusStyle.rowCompact)
-        case .uploaded:
+        case .preparing, .queued, .uploading, .uploaded:
             EmptyView()
         case .failed:
             Button("Retry upload", glyph: .arrowClockwise) {
@@ -694,6 +719,7 @@ private struct ComposerAttachmentRow: View {
 
     private var status: Text {
         switch attachment.state {
+        case .preparing: Text("Uploading")
         case .queued: Text("Waiting to upload")
         case .uploading: Text("Uploading")
         case .uploaded: Text(attachment.size, format: .byteCount(style: .file))
@@ -706,9 +732,25 @@ private struct ComposerAttachmentRow: View {
         return palette.muted
     }
 
-    private var isUploading: Bool {
-        if case .uploading = attachment.state { return true }
-        return false
+    private var isProcessing: Bool {
+        switch attachment.state {
+        case .preparing, .queued, .uploading: true
+        case .uploaded, .failed: false
+        }
+    }
+
+    private var isLocked: Bool {
+        switch attachment.state {
+        case .preparing, .uploading: true
+        case .queued, .uploaded, .failed: false
+        }
+    }
+
+    private var uploadProgress: Double? {
+        guard case .uploading(let bytes) = attachment.state, attachment.size > 0 else {
+            return nil
+        }
+        return min(1, max(0, Double(bytes) / Double(attachment.size)))
     }
 }
 

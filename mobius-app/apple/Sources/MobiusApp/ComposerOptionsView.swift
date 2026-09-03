@@ -193,8 +193,10 @@ struct ComposerOptionsView: View {
         )
         .onChange(of: photoSelection) { _, items in
             guard !items.isEmpty else { return }
+            let imports = reserveMedia(items)
             photoSelection = []
-            Task { await importMedia(items) }
+            guard !imports.isEmpty else { return }
+            Task { await importMedia(imports) }
         }
     }
 
@@ -364,22 +366,43 @@ struct ComposerOptionsView: View {
     }
 
     /// Keep the filename supplied by Photos while taking the same import path and limits as Files.
-    private func importMedia(_ items: [PhotosPickerItem]) async {
-        var urls: [URL] = []
+    private func reserveMedia(
+        _ items: [PhotosPickerItem]
+    ) -> [(item: PhotosPickerItem, id: UUID)] {
+        var imports: [(item: PhotosPickerItem, id: UUID)] = []
         for item in items {
+            guard let id = model.reserveComposerAttachment(
+                named: mediaPlaceholderName(for: item)
+            ) else { break }
+            imports.append((item, id))
+        }
+        return imports
+    }
+
+    private func importMedia(_ imports: [(item: PhotosPickerItem, id: UUID)]) async {
+        var failed = false
+        for (item, id) in imports {
             guard let media = try? await item.loadTransferable(type: ImportedMediaFile.self) else {
+                failed = model.cancelComposerAttachmentImport(id) || failed
                 continue
             }
-            urls.append(media.url)
+            await model.completeComposerAttachmentImport(media.url, reservedID: id)
+            try? FileManager.default.removeItem(at: media.url.deletingLastPathComponent())
         }
-        guard !urls.isEmpty else {
-            if !items.isEmpty {
-                model.showToast("Could not read the selected photos or videos.", tone: .error)
-            }
-            return
+        if failed {
+            model.showToast("Could not read the selected photos or videos.", tone: .error)
         }
-        await model.importAttachments(urls)
-        for url in urls { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+    }
+
+    private func mediaPlaceholderName(for item: PhotosPickerItem) -> String {
+        let type = item.supportedContentTypes.first(where: {
+            $0.conforms(to: .movie) || $0.conforms(to: .video)
+        }) ?? item.supportedContentTypes.first
+        let base = type?.conforms(to: .movie) == true || type?.conforms(to: .video) == true
+            ? "video"
+            : "image"
+        guard let ext = type?.preferredFilenameExtension else { return base }
+        return "\(base).\(ext)"
     }
 
     private var selectedBotModelRoute: String? {

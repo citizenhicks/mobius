@@ -826,12 +826,7 @@ extension AppModel {
 
     func importAttachments(_ urls: [URL]) async {
         guard canImportAttachments else { return }
-        let sessionID = selectedSessionID
-        let generation = attachmentImportGeneration
-        let available = max(
-            0,
-            attachmentReferenceLimit - composerAttachments.count - attachmentImportReservations
-        )
+        let available = max(0, attachmentReferenceLimit - composerAttachments.count)
         let selectedURLs = Array(urls.prefix(available))
         if urls.count > selectedURLs.count {
             showToast(
@@ -841,58 +836,91 @@ extension AppModel {
         }
         guard !selectedURLs.isEmpty else { return }
 
-        var reservedCount = selectedURLs.count
-        attachmentImportReservations += reservedCount
-        defer { attachmentImportReservations -= reservedCount }
-        for url in selectedURLs {
-            guard generation == attachmentImportGeneration else { return }
-            do {
-                let imported = try await Self.loadImportedAttachment(
-                    url,
-                    maximumBytes: attachmentFileByteLimit
+        let imports = selectedURLs.compactMap { url in
+            reserveComposerAttachment(named: url.lastPathComponent).map { ($0, url) }
+        }
+        for (id, url) in imports {
+            await completeComposerAttachmentImport(url, reservedID: id)
+        }
+    }
+
+    @discardableResult
+    func reserveComposerAttachment(named name: String) -> UUID? {
+        guard canImportAttachments else { return nil }
+        guard composerAttachments.count < attachmentReferenceLimit else {
+            showToast(
+                "You can attach up to \(attachmentReferenceLimit) files to a message.",
+                tone: .warning
+            )
+            return nil
+        }
+        let id = UUID()
+        composerAttachments.append(ComposerAttachment(
+            id: id,
+            name: name,
+            size: 0,
+            mediaType: "application/octet-stream",
+            state: .preparing
+        ))
+        return id
+    }
+
+    func completeComposerAttachmentImport(_ url: URL, reservedID: UUID) async {
+        guard composerAttachments.contains(where: {
+            $0.id == reservedID && $0.state == .preparing
+        }) else { return }
+        do {
+            let imported = try await Self.loadImportedAttachment(
+                url,
+                maximumBytes: attachmentFileByteLimit
+            )
+            guard canImportAttachments,
+                  let index = composerAttachments.firstIndex(where: {
+                      $0.id == reservedID && $0.state == .preparing
+                  })
+            else {
+                cancelComposerAttachmentImport(reservedID)
+                return
+            }
+            let currentBytes = composerAttachments.reduce(Int64(0)) { total, attachment in
+                let (sum, overflow) = total.addingReportingOverflow(attachment.size)
+                return overflow || attachment.size < 0 ? .max : sum
+            }
+            if currentBytes > attachmentDraftByteLimit - Int64(imported.data.count) {
+                cancelComposerAttachmentImport(reservedID)
+                showToast(
+                    AttachmentImportError.totalTooLarge(attachmentDraftByteLimit)
+                        .localizedDescriptionResource,
+                    tone: .error
                 )
-                attachmentImportReservations -= 1
-                reservedCount -= 1
-                guard generation == attachmentImportGeneration,
-                      sessionID == selectedSessionID,
-                      canImportAttachments
-                else { return }
-                let currentBytes = composerAttachments.reduce(Int64(0)) { total, attachment in
-                    let (sum, overflow) = total.addingReportingOverflow(attachment.size)
-                    return overflow || attachment.size < 0 ? .max : sum
-                }
-                if currentBytes > attachmentDraftByteLimit - Int64(imported.data.count) {
-                    showToast(
-                        AttachmentImportError.totalTooLarge(attachmentDraftByteLimit)
-                            .localizedDescriptionResource,
-                        tone: .error
-                    )
-                    continue
-                }
-                let id = UUID()
-                sessionFileData[id] = imported.data
-                if let thumbnail = imported.thumbnail {
-                    cacheFileThumbnail(thumbnail, for: .composer(id))
-                }
-                composerAttachments.append(ComposerAttachment(
-                    id: id,
-                    name: imported.name,
-                    size: Int64(imported.data.count),
-                    mediaType: imported.mediaType,
-                    state: .queued
-                ))
-            } catch {
-                attachmentImportReservations -= 1
-                reservedCount -= 1
-                guard generation == attachmentImportGeneration else { return }
-                if let error = error as? AttachmentImportError {
-                    showToast(error.localizedDescriptionResource, tone: .error)
-                } else {
-                    showToast(verbatim: localizedErrorDescription(error), tone: .error)
-                }
+                return
+            }
+            sessionFileData[reservedID] = imported.data
+            if let thumbnail = imported.thumbnail {
+                cacheFileThumbnail(thumbnail, for: .composer(reservedID))
+            }
+            composerAttachments[index].name = imported.name
+            composerAttachments[index].size = Int64(imported.data.count)
+            composerAttachments[index].mediaType = imported.mediaType
+            composerAttachments[index].state = .queued
+            startNextSessionFileUpload()
+        } catch {
+            guard cancelComposerAttachmentImport(reservedID) else { return }
+            if let error = error as? AttachmentImportError {
+                showToast(error.localizedDescriptionResource, tone: .error)
+            } else {
+                showToast(verbatim: localizedErrorDescription(error), tone: .error)
             }
         }
-        startNextSessionFileUpload()
+    }
+
+    @discardableResult
+    func cancelComposerAttachmentImport(_ id: UUID) -> Bool {
+        guard let index = composerAttachments.firstIndex(where: {
+            $0.id == id && $0.state == .preparing
+        }) else { return false }
+        composerAttachments.remove(at: index)
+        return true
     }
 
     func removeComposerAttachment(_ id: UUID) {
