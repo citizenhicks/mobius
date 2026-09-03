@@ -252,6 +252,31 @@ async fn deleting_an_upload_removes_its_last_content_blob() {
 }
 
 #[tokio::test]
+async fn deleting_an_upload_stays_successful_when_blob_cleanup_fails() {
+    let state = tempfile::tempdir().expect("state");
+    let store = SessionFileStore::new(state.path());
+    let mut upload = store
+        .begin_upload("session", "input.txt".into(), 1, "text/plain".into())
+        .await
+        .expect("begin upload");
+    upload.append(0, b"x").await.expect("append upload");
+    let file = upload.finish().await.expect("finish upload");
+    std::fs::create_dir(store.blob_dir().join("invalid-entry")).expect("invalid blob entry");
+
+    store
+        .delete_upload("session", &file.id)
+        .await
+        .expect("committed deletion");
+    assert!(
+        store
+            .list_uploads("session")
+            .await
+            .expect("list uploads")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 async fn accepts_250_mib_and_rejects_larger_files() {
     let state = tempfile::tempdir().expect("state");
     let store = SessionFileStore::new(state.path());

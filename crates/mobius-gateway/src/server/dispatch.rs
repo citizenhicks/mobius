@@ -1190,10 +1190,6 @@ async fn delete_session_file(
         Ok(host) => host,
         Err(rejection) => return write_rejection(writer, request_id, rejection).await,
     };
-    let _mutation = match host.begin_session_file_mutation(connection.bots) {
-        Ok(mutation) => mutation,
-        Err(rejection) => return write_rejection(writer, request_id, rejection).await,
-    };
     if connection
         .uploads
         .remove(&(session_id.clone(), file_id.clone()))
@@ -1201,6 +1197,10 @@ async fn delete_session_file(
     {
         return write_result(writer, request_id, Ok(())).await;
     }
+    let _mutation = match host.begin_session_file_mutation(connection.bots) {
+        Ok(mutation) => mutation,
+        Err(rejection) => return write_rejection(writer, request_id, rejection).await,
+    };
     match connection
         .session_files
         .delete_upload(&session_id, &file_id)

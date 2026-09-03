@@ -249,6 +249,7 @@ extension AppModelTests {
         model.removeComposerAttachment(attachmentID)
         XCTAssertTrue(model.composerAttachments.isEmpty)
         XCTAssertNotNil(model.abandonedSessionFileUploadRequests["begin-1"])
+        XCTAssertFalse(model.canOpenSession)
 
         model.handle(.sessionFileUploadReady(
             requestID: "begin-1",
@@ -267,11 +268,15 @@ extension AppModelTests {
         XCTAssertEqual(sessionID, "chat-1")
         XCTAssertEqual(fileID, "file-1")
         XCTAssertNotNil(model.sessionFileDeleteRequests[requestID])
+        XCTAssertFalse(model.canOpenSession)
         let requests = await recorder.requests()
         XCTAssertFalse(requests.contains {
             if case .uploadSessionFileChunk = $0 { return true }
             return false
         })
+
+        model.handle(.accepted(requestID: requestID))
+        XCTAssertTrue(model.canOpenSession)
     }
 
     func testRejectedAbandonedBeginStartsNextQueuedUpload() async throws {
@@ -380,6 +385,7 @@ extension AppModelTests {
             mediaType: file.mediaType,
             state: .uploaded(file)
         )]
+        XCTAssertFalse(model.canOpenSession)
 
         model.discardComposerAttachments()
 
@@ -387,11 +393,16 @@ extension AppModelTests {
             if case .deleteSessionFile = $0 { return true }
             return false
         }
-        guard case .deleteSessionFile(_, let sessionID, let fileID) = try XCTUnwrap(request)
+        guard case .deleteSessionFile(let requestID, let sessionID, let fileID) =
+            try XCTUnwrap(request)
         else { return XCTFail("Expected discarded file deletion") }
         XCTAssertEqual(sessionID, "chat-1")
         XCTAssertEqual(fileID, "file-1")
         XCTAssertTrue(model.composerAttachments.isEmpty)
+        XCTAssertFalse(model.canOpenSession)
+
+        model.handle(.accepted(requestID: requestID))
+        XCTAssertTrue(model.canOpenSession)
     }
 
     func testConnectionEndClearsAttachmentRemovalRequests() throws {

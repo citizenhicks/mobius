@@ -264,7 +264,8 @@ impl SessionFileStore {
         }
         self.resolve_upload_record(session_id, file_id).await?;
         tokio::fs::remove_dir_all(directory).await?;
-        gc_unreferenced_blobs(&self.root).await
+        let _ = gc_unreferenced_blobs(&self.root).await;
+        Ok(())
     }
 
     /// Validates a group deletion and prevents new upload reservations until it completes.

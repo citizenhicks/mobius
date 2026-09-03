@@ -545,19 +545,33 @@ final class AppModel {
         } == true
     }
 
-    var canOpenSession: Bool {
+    private var canChangeSession: Bool {
         connectionState.isReady
             && pendingDrafts.isEmpty
             && sessionRequestID == nil
             && sessionMutationRequestID == nil
             && gitBranchRequestID == nil
             && sessionFileUploadRequests.isEmpty
+            && abandonedSessionFileUploadRequests.isEmpty
+            && sessionFileDeleteRequests.isEmpty
             && pendingWidgetEdit == nil
             && !isLoadingComposerEditRecovery
             && !isApplyingConfiguration
     }
 
-    var canCreateSession: Bool { canOpenSession }
+    var canOpenSession: Bool {
+        canChangeSession && composerAttachments.isEmpty
+    }
+
+    var canCreateSession: Bool {
+        canChangeSession && (composerAttachments.isEmpty || (
+            selectedSessionID == nil
+                && pendingNewChatWorkspace != nil
+                && composerAttachments.allSatisfy {
+                    if case .queued = $0.state { true } else { false }
+                }
+        ))
+    }
 
     var canRenameSession: Bool {
         connectionState.isReady && sessionMutationRequestID == nil
