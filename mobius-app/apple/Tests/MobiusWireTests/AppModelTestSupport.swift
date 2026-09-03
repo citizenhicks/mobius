@@ -312,7 +312,7 @@ final class AppModelTests: XCTestCase {
     func testSessionFileLimits() -> SessionFileLimits {
         SessionFileLimits(
             maxAttachmentReferences: 16,
-            maxFileBytes: 50 * 1024 * 1024,
+            maxFileBytes: 250 * 1024 * 1024,
             maxSessionFiles: 128,
             maxSessionBytes: 250 * 1024 * 1024,
             maxUploadChunkBytes: 256 * 1024

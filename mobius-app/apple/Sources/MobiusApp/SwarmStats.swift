@@ -74,8 +74,8 @@ struct SwarmStats: Equatable {
 struct SwarmSectionHeading: View {
     @Environment(\.mobiusPalette) private var palette
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    let title: String
-    var trailing: String?
+    let title: LocalizedStringResource
+    var trailing: LocalizedStringResource?
     @Binding var isExpanded: Bool
 
     var body: some View {
@@ -140,7 +140,7 @@ struct SwarmStatsSection: View {
 
 private struct SwarmStatTile: View {
     @Environment(\.mobiusPalette) private var palette
-    let title: String
+    let title: LocalizedStringResource
     let value: Int
 
     var body: some View {
@@ -155,7 +155,8 @@ private struct SwarmStatTile: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .swarmCard()
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(title): \(value)")
+        .accessibilityLabel(Text(title))
+        .accessibilityValue(Text(value.formatted()))
     }
 }
 

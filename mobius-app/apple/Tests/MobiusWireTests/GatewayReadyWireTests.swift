@@ -69,7 +69,7 @@ extension GatewayWireTests {
         XCTAssertEqual(payload.botDefaults?.config.extensions, ["plugin:ponytail"])
         XCTAssertEqual(payload.maxActiveSessions, 4)
         XCTAssertEqual(payload.sessionFileLimits.maxAttachmentReferences, 16)
-        XCTAssertEqual(payload.sessionFileLimits.maxFileBytes, 50 * 1024 * 1024)
+        XCTAssertEqual(payload.sessionFileLimits.maxFileBytes, 250 * 1024 * 1024)
         XCTAssertEqual(payload.sessionFileLimits.maxSessionFiles, 128)
         XCTAssertEqual(payload.sessionFileLimits.maxSessionBytes, 250 * 1024 * 1024)
         XCTAssertEqual(payload.sessionFileLimits.maxUploadChunkBytes, 256 * 1024)

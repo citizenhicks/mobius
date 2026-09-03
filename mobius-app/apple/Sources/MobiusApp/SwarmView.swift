@@ -82,10 +82,11 @@ struct SwarmView: View {
         model.swarms.first { $0.id == swarmID }
     }
 
-    private func subtitle(for swarm: SwarmRecord) -> String {
+    private func subtitle(for swarm: SwarmRecord) -> LocalizedStringResource {
         let members = orderedMembers(in: swarm)
-        let coworkers = members.count == 1 ? "1 Bot" : "\(members.count) Bots"
-        return "\(coworkers) \u{2022} \(activeCount(in: swarm)) active"
+        let active = activeCount(in: swarm)
+        if members.count == 1 { return "1 Bot • \(active) active" }
+        return "\(members.count) Bots • \(active) active"
     }
 
     private func stats(for swarm: SwarmRecord) -> SwarmStats {
@@ -204,7 +205,16 @@ struct SwarmView: View {
     }
 
     private func chat(_ swarm: SwarmRecord) -> some View {
-        Section {
+        let detail: LocalizedStringResource
+        if swarm.messages.isEmpty {
+            detail = "No messages yet"
+        } else if swarm.messages.count == 1 {
+            detail = "1 message"
+        } else {
+            detail = "\(swarm.messages.count) messages"
+        }
+
+        return Section {
             SettingsNavigationRow(
                 hint: "Opens the shared Swarm Chat",
                 open: { model.openSwarmChat(swarm.id) },
@@ -221,9 +231,7 @@ struct SwarmView: View {
             ) {
                 SettingsRowLabel(
                     title: "Swarm Chat",
-                    detail: swarm.messages.isEmpty
-                        ? "No messages yet"
-                        : "\(swarm.messages.count) messages"
+                    detail: detail
                 ) {
                     MobiusIcon(
                         .chatDots,
@@ -267,7 +275,7 @@ struct SwarmView: View {
         } header: {
             SwarmSectionHeading(
                 title: "Collective scratchpad",
-                trailing: count.map { $0 == 1 ? "1 note" : "\($0) notes" },
+                trailing: noteCount(count),
                 isExpanded: $showsScratchpad
             )
             .textCase(nil)
@@ -278,12 +286,16 @@ struct SwarmView: View {
         _ member: SwarmMemberRecord,
         swarm: SwarmRecord
     ) -> some View {
-        HStack(spacing: MobiusSpace.s) {
+        let status: LocalizedStringResource = member.botId == swarm.leaderBotId
+            ? "Leader, unavailable"
+            : "Unavailable"
+
+        return HStack(spacing: MobiusSpace.s) {
             MobiusIcon(.aiScan, foreground: palette.muted)
             VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
                 Text(verbatim: member.handle)
                     .font(MobiusStyle.controlFont)
-                Text(member.botId == swarm.leaderBotId ? "Leader, unavailable" : "Unavailable")
+                Text(status)
                     .font(MobiusStyle.captionFont)
                     .foregroundStyle(palette.muted)
             }
@@ -310,6 +322,11 @@ struct SwarmView: View {
 
     private func activeCount(in swarm: SwarmRecord) -> Int {
         orderedMembers(in: swarm).count { botIsActive($0.botId) }
+    }
+
+    private func noteCount(_ count: Int?) -> LocalizedStringResource? {
+        guard let count else { return nil }
+        return count == 1 ? "1 note" : "\(count) notes"
     }
 
 }
@@ -587,9 +604,15 @@ private struct SwarmBotRow: View {
             VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
                 MobiusTitleText(verbatim: bot.name)
                     .lineLimit(1)
-                Text(verbatim: isLeader ? "@\(bot.handle) • Leader" : "@\(bot.handle)")
-                    .font(MobiusStyle.captionFont)
-                    .foregroundStyle(palette.muted)
+                Group {
+                    if isLeader {
+                        Text("@\(bot.handle) • Leader")
+                    } else {
+                        Text(verbatim: "@\(bot.handle)")
+                    }
+                }
+                .font(MobiusStyle.captionFont)
+                .foregroundStyle(palette.muted)
             }
             Spacer(minLength: 0)
             if isActive {

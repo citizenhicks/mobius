@@ -481,7 +481,7 @@ private struct BotChoiceBadge: View {
         }
         .buttonStyle(.mobiusPlain)
         .disabled(model.sessionRequestID != nil)
-        .accessibilityLabel(Text(verbatim: "Start with Bot \(bot.name)"))
+        .accessibilityLabel(Text("Start with Bot \(bot.name)"))
         .accessibilityValue(selected ? Text("Selected") : Text("Not selected"))
         .accessibilityAddTraits(selected ? .isSelected : [])
         .sensoryFeedback(.selection, trigger: selected)
@@ -503,7 +503,7 @@ private struct BotActivityBadge: View {
             .frame(minWidth: MobiusStyle.iconButtonSize, minHeight: MobiusStyle.iconButtonSize)
         }
         .buttonStyle(.mobiusPlain)
-        .accessibilityLabel(Text(verbatim: "Bot \(bot.name)"))
+        .accessibilityLabel(Text("Bot \(bot.name)"))
         .accessibilityHint("Opens Bot agent settings")
     }
 }

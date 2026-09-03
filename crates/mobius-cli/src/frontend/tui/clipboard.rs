@@ -12,7 +12,7 @@ use tokio::io::AsyncReadExt;
 use uuid::Uuid;
 
 const MAX_SAFE_ATTACHMENT_REFERENCES: usize = 16;
-const MAX_SAFE_FILE_BYTES: u64 = 50 * 1024 * 1024;
+const MAX_SAFE_FILE_BYTES: u64 = 250 * 1024 * 1024;
 const MAX_SAFE_SESSION_FILES: usize = 128;
 const MAX_SAFE_SESSION_BYTES: u64 = 250 * 1024 * 1024;
 const MAX_SAFE_UPLOAD_CHUNK_BYTES: usize = 256 * 1024;
@@ -582,7 +582,7 @@ mod tests {
     const UPLOAD_ID: &str = "6752c95f-f2f6-4845-928d-93db92ee0e2a";
     const TEST_LIMITS: SessionFileLimits = SessionFileLimits {
         max_attachment_references: 16,
-        max_file_bytes: 50 * 1024 * 1024,
+        max_file_bytes: 250 * 1024 * 1024,
         max_session_files: 128,
         max_session_bytes: 250 * 1024 * 1024,
         max_upload_chunk_bytes: 256 * 1024,

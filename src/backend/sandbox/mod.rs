@@ -32,7 +32,7 @@ pub mod local;
 mod process_group;
 
 pub(crate) const MAX_FILE_BYTES: usize = 1024 * 1024;
-const MAX_BINARY_FILE_BYTES: usize = 50 * 1024 * 1024;
+pub(crate) const MAX_BINARY_FILE_BYTES: usize = 50 * 1024 * 1024;
 
 mod text {
     include!(concat!(

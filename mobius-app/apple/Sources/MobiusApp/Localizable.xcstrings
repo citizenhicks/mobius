@@ -15470,6 +15470,2854 @@
         }
       }
     },
+    "%@ has work awaiting approval" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ a du travail en attente d’approbation"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ hat Arbeit, die auf Genehmigung wartet"
+          }
+        }
+      }
+    },
+    "%@ has work needing attention" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Le travail de %@ nécessite votre attention"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Arbeit von %@ erfordert Aufmerksamkeit"
+          }
+        }
+      }
+    },
+    "%@, %lld Bots selected" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@, %2$lld Bots sélectionnés"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@, %2$lld Bots ausgewählt"
+          }
+        }
+      }
+    },
+    "%@, all Bots" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@, tous les Bots"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@, alle Bots"
+          }
+        }
+      }
+    },
+    "%@: %lld" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ : %2$lld"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@: %2$lld"
+          }
+        }
+      }
+    },
+    "%lld selected" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld sélectionnés"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld ausgewählt"
+          }
+        }
+      }
+    },
+    "@%@" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "@%@"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "@%@"
+          }
+        }
+      }
+    },
+    "Add" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ajouter"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hinzufügen"
+          }
+        }
+      }
+    },
+    "Add Bot to Swarm" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ajouter le Bot à l’essaim"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bot zum Schwarm hinzufügen"
+          }
+        }
+      }
+    },
+    "Add Collective Note" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ajouter une note collective"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kollektive Notiz hinzufügen"
+          }
+        }
+      }
+    },
+    "Add collective note" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ajouter une note collective"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kollektive Notiz hinzufügen"
+          }
+        }
+      }
+    },
+    "Advanced cron" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cron avancé"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Erweiterter Cron-Ausdruck"
+          }
+        }
+      }
+    },
+    "All" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tous"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Alle"
+          }
+        }
+      }
+    },
+    "Background work" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Travail en arrière-plan"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hintergrundarbeit"
+          }
+        }
+      }
+    },
+    "Background work awaiting approval" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Travail en arrière-plan en attente d’approbation"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hintergrundarbeit wartet auf Genehmigung"
+          }
+        }
+      }
+    },
+    "Bot AI model" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Modèle d’IA du Bot"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "KI-Modell des Bots"
+          }
+        }
+      }
+    },
+    "Bot agent settings" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Réglages de l’agent du Bot"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bot-Agent-Einstellungen"
+          }
+        }
+      }
+    },
+    "Bot created." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bot créé."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bot erstellt."
+          }
+        }
+      }
+    },
+    "Bot defaults" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Réglages par défaut des Bots"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bot-Standardeinstellungen"
+          }
+        }
+      }
+    },
+    "Bot defaults draft reloaded." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Brouillon des réglages par défaut des Bots rechargé."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Entwurf der Bot-Standardeinstellungen neu geladen."
+          }
+        }
+      }
+    },
+    "Bot defaults model" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Modèle par défaut des Bots"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Standardmodell für Bots"
+          }
+        }
+      }
+    },
+    "Bot defaults saved for new chats." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Réglages par défaut des Bots enregistrés pour les nouvelles conversations."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bot-Standardeinstellungen für neue Chats gespeichert."
+          }
+        }
+      }
+    },
+    "Bot defaults unavailable" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Réglages par défaut des Bots indisponibles"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bot-Standardeinstellungen nicht verfügbar"
+          }
+        }
+      }
+    },
+    "Bot deleted." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bot supprimé."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bot gelöscht."
+          }
+        }
+      }
+    },
+    "Bot draft reloaded." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Brouillon du Bot rechargé."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bot-Entwurf neu geladen."
+          }
+        }
+      }
+    },
+    "Bot name" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nom du Bot"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bot-Name"
+          }
+        }
+      }
+    },
+    "Bot saved." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bot enregistré."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bot gespeichert."
+          }
+        }
+      }
+    },
+    "Bot settings" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Réglages du Bot"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bot-Einstellungen"
+          }
+        }
+      }
+    },
+    "Bot unavailable" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bot indisponible"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bot nicht verfügbar"
+          }
+        }
+      }
+    },
+    "Bots" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bots"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bots"
+          }
+        }
+      }
+    },
+    "Cached data cleared." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Données en cache effacées."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zwischengespeicherte Daten gelöscht."
+          }
+        }
+      }
+    },
+    "Choose a Bot first." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choisissez d’abord un Bot."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wählen Sie zuerst einen Bot aus."
+          }
+        }
+      }
+    },
+    "Choose a leader" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choisir un responsable"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Leiter auswählen"
+          }
+        }
+      }
+    },
+    "Clear Bot filters" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Effacer les filtres de Bots"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bot-Filter löschen"
+          }
+        }
+      }
+    },
+    "Clear cached data" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Effacer les données en cache"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zwischengespeicherte Daten löschen"
+          }
+        }
+      }
+    },
+    "Clear cached data?" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Effacer les données en cache ?"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zwischengespeicherte Daten löschen?"
+          }
+        }
+      }
+    },
+    "Clear data and gateway information" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Effacer les données et les informations de passerelle"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Daten und Gateway-Informationen löschen"
+          }
+        }
+      }
+    },
+    "Clear data and gateway information?" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Effacer les données et les informations de passerelle ?"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Daten und Gateway-Informationen löschen?"
+          }
+        }
+      }
+    },
+    "Conversations" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conversations"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chats"
+          }
+        }
+      }
+    },
+    "Coworkers" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Collaborateurs"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Teammitglieder"
+          }
+        }
+      }
+    },
+    "Delete Bot and All Data" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Supprimer le Bot et toutes ses données"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bot und alle Daten löschen"
+          }
+        }
+      }
+    },
+    "Delete this Bot and all its data?" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Supprimer ce Bot et toutes ses données ?"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Diesen Bot und alle seine Daten löschen?"
+          }
+        }
+      }
+    },
+    "Delete this routine run?" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Supprimer cette exécution de routine ?"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Diese Routine-Ausführung löschen?"
+          }
+        }
+      }
+    },
+    "Delete this routine?" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Supprimer cette routine ?"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Diese Routine löschen?"
+          }
+        }
+      }
+    },
+    "Describe what this Bot should do" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Décrivez ce que ce Bot doit faire"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Beschreiben Sie, was dieser Bot tun soll"
+          }
+        }
+      }
+    },
+    "Description" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Description"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Beschreibung"
+          }
+        }
+      }
+    },
+    "Disband" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dissoudre"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Auflösen"
+          }
+        }
+      }
+    },
+    "Disband Swarm" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dissoudre l’essaim"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Schwarm auflösen"
+          }
+        }
+      }
+    },
+    "Disband this swarm?" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dissoudre cet essaim ?"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Diesen Schwarm auflösen?"
+          }
+        }
+      }
+    },
+    "Durable agents, their routines, and the swarms they form." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Des agents durables, leurs routines et les essaims qu’ils forment."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dauerhafte Agenten, ihre Routinen und die Schwärme, die sie bilden."
+          }
+        }
+      }
+    },
+    "Each Bot can belong to one swarm." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chaque Bot ne peut appartenir qu’à un seul essaim."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jeder Bot kann nur einem Schwarm angehören."
+          }
+        }
+      }
+    },
+    "Edit Bot" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Modifier le Bot"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bot bearbeiten"
+          }
+        }
+      }
+    },
+    "Enter one or more exact provider model IDs separated by commas. Whitespace, empty entries, and duplicates are ignored. Assign one to each Bot in Bots." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Saisissez un ou plusieurs identifiants exacts de modèles du fournisseur, séparés par des virgules. Les espaces, les entrées vides et les doublons sont ignorés. Attribuez-en un à chaque Bot dans Bots."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Geben Sie eine oder mehrere exakte Modell-IDs des Anbieters durch Kommas getrennt ein. Leerzeichen, leere Einträge und Duplikate werden ignoriert. Weisen Sie in „Bots“ jedem Bot eines zu."
+          }
+        }
+      }
+    },
+    "Identity" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Identité"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Identität"
+          }
+        }
+      }
+    },
+    "Leader" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Responsable"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Leiter"
+          }
+        }
+      }
+    },
+    "Leader, unavailable" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Responsable, indisponible"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Leiter nicht verfügbar"
+          }
+        }
+      }
+    },
+    "Loading Bot work…" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chargement du travail du Bot…"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bot-Arbeit wird geladen …"
+          }
+        }
+      }
+    },
+    "Loading collective scratchpad…" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chargement du bloc-notes collectif…"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gemeinsamer Notizbereich wird geladen …"
+          }
+        }
+      }
+    },
+    "Local data and gateway information cleared." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Données locales et informations de passerelle effacées."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lokale Daten und Gateway-Informationen gelöscht."
+          }
+        }
+      }
+    },
+    "Long press to send after this turn" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Appuyez longuement pour envoyer après cet échange"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lange drücken, um nach dieser Runde zu senden"
+          }
+        }
+      }
+    },
+    "Long press to steer the active turn" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Appuyez longuement pour orienter l’échange en cours"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lange drücken, um die aktive Runde zu steuern"
+          }
+        }
+      }
+    },
+    "Members" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Membres"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mitglieder"
+          }
+        }
+      }
+    },
+    "Message the Swarm" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Envoyer un message à l’essaim"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nachricht an den Schwarm"
+          }
+        }
+      }
+    },
+    "Native discovery keeps the cached context. Rebuild mode supports the same tools but starts a new cache prefix when the tool set changes." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La découverte native conserve le contexte en cache. Le mode de reconstruction prend en charge les mêmes outils, mais utilise un nouveau préfixe de cache lorsque le jeu d’outils change."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die native Erkennung behält den zwischengespeicherten Kontext bei. Der Neuaufbau unterstützt dieselben Tools, beginnt bei Änderungen am Toolset jedoch mit einem neuen Cache-Präfix."
+          }
+        }
+      }
+    },
+    "Native dynamic tools" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Outils dynamiques natifs"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Native dynamische Tools"
+          }
+        }
+      }
+    },
+    "New Bot" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nouveau Bot"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Neuer Bot"
+          }
+        }
+      }
+    },
+    "New Swarm" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nouvel essaim"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Neuer Schwarm"
+          }
+        }
+      }
+    },
+    "New routine" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nouvelle routine"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Neue Routine"
+          }
+        }
+      }
+    },
+    "No Bots yet." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aucun Bot pour le moment."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Noch keine Bots."
+          }
+        }
+      }
+    },
+    "No background conversations yet." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aucune conversation en arrière-plan pour le moment."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Noch keine Hintergrundgespräche."
+          }
+        }
+      }
+    },
+    "No chats for the selected Bots" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aucune conversation pour les Bots sélectionnés"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Keine Chats für die ausgewählten Bots"
+          }
+        }
+      }
+    },
+    "No messages yet" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aucun message pour le moment"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Noch keine Nachrichten"
+          }
+        }
+      }
+    },
+    "No routine runs yet." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aucune exécution de routine pour le moment."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Noch keine Routine-Ausführungen."
+          }
+        }
+      }
+    },
+    "No routines yet." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aucune routine pour le moment."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Noch keine Routinen."
+          }
+        }
+      }
+    },
+    "No swarms yet." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aucun essaim pour le moment."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Noch keine Schwärme."
+          }
+        }
+      }
+    },
+    "No transcript" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aucune transcription"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kein Transkript"
+          }
+        }
+      }
+    },
+    "Not selected" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Non sélectionné"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nicht ausgewählt"
+          }
+        }
+      }
+    },
+    "Note" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Note"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Notiz"
+          }
+        }
+      }
+    },
+    "Off, %lld chats need attention" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Désactivé, %lld conversations nécessitent votre attention"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aus, %lld Chats erfordern Aufmerksamkeit"
+          }
+        }
+      }
+    },
+    "Off, no chats need attention" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Désactivé, aucune conversation ne nécessite votre attention"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aus, keine Chats erfordern Aufmerksamkeit"
+          }
+        }
+      }
+    },
+    "Open %@ from %@" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ouvrir %1$@ depuis %2$@"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ aus %2$@ öffnen"
+          }
+        }
+      }
+    },
+    "Opens Bot agent settings" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ouvre les réglages de l’agent du Bot"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Öffnet die Bot-Agent-Einstellungen"
+          }
+        }
+      }
+    },
+    "Opens approval" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ouvre la demande d’approbation"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Öffnet die Genehmigungsanfrage"
+          }
+        }
+      }
+    },
+    "Opens run transcript" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ouvre la transcription de l’exécution"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Öffnet das Ausführungstranskript"
+          }
+        }
+      }
+    },
+    "Opens the shared Swarm Chat" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ouvre la conversation partagée de l’essaim"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Öffnet den gemeinsamen Schwarm-Chat"
+          }
+        }
+      }
+    },
+    "Opens the source in your browser" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ouvre la source dans votre navigateur"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Öffnet die Quelle in Ihrem Browser"
+          }
+        }
+      }
+    },
+    "Operational description" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Description opérationnelle"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aufgabenbeschreibung"
+          }
+        }
+      }
+    },
+    "Organize and filter chats" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Organiser et filtrer les conversations"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chats organisieren und filtern"
+          }
+        }
+      }
+    },
+    "Posts to Swarm Chat" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Publie dans la conversation de l’essaim"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sendet an den Schwarm-Chat"
+          }
+        }
+      }
+    },
+    "Private Bot conversations stay out of Chats." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Les conversations privées des Bots n’apparaissent pas dans Conversations."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Private Bot-Gespräche erscheinen nicht unter „Chats“."
+          }
+        }
+      }
+    },
+    "Rebuilds context · cache miss" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reconstruit le contexte · absence du cache"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Baut den Kontext neu auf · Cache-Miss"
+          }
+        }
+      }
+    },
+    "Remove Coworker" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Retirer un collaborateur"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Teammitglied entfernen"
+          }
+        }
+      }
+    },
+    "Removes cached chats, chat lists, and image thumbnails" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Supprime les conversations en cache, les listes de conversations et les vignettes d’images"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Entfernt zwischengespeicherte Chats, Chatlisten und Bildminiaturen"
+          }
+        }
+      }
+    },
+    "Removes local data, gateway credentials, and the Cloud sign-in" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Supprime les données locales, les identifiants de passerelle et la connexion Cloud"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Entfernt lokale Daten, Gateway-Anmeldedaten und die Cloud-Anmeldung"
+          }
+        }
+      }
+    },
+    "Rename Bot" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Renommer le Bot"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bot umbenennen"
+          }
+        }
+      }
+    },
+    "Rename Swarm" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Renommer l’essaim"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Schwarm umbenennen"
+          }
+        }
+      }
+    },
+    "Rename swarm" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Renommer l’essaim"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Schwarm umbenennen"
+          }
+        }
+      }
+    },
+    "Routine may pause" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La routine peut être mise en pause"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Routine kann pausieren"
+          }
+        }
+      }
+    },
+    "Routine rejected" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Routine refusée"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Routine abgelehnt"
+          }
+        }
+      }
+    },
+    "Routines" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Routines"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Routinen"
+          }
+        }
+      }
+    },
+    "Save Bot" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enregistrer le Bot"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bot speichern"
+          }
+        }
+      }
+    },
+    "Save Bot defaults" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enregistrer les réglages par défaut des Bots"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bot-Standardeinstellungen speichern"
+          }
+        }
+      }
+    },
+    "Save this draft as the defaults for new Bots." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enregistrer ce brouillon comme réglages par défaut des nouveaux Bots."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Diesen Entwurf als Standardeinstellungen für neue Bots speichern."
+          }
+        }
+      }
+    },
+    "Save this durable Bot configuration." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enregistrer cette configuration durable du Bot."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Diese dauerhafte Bot-Konfiguration speichern."
+          }
+        }
+      }
+    },
+    "Security and Data" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sécurité et données"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sicherheit und Daten"
+          }
+        }
+      }
+    },
+    "Send as Queue" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Envoyer dans la file d’attente"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "In Warteschlange senden"
+          }
+        }
+      }
+    },
+    "Send as Steer" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Envoyer pour orienter"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Als Steuerung senden"
+          }
+        }
+      }
+    },
+    "Sets the provider, model, and reasoning inherited by new Bots." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Définit le fournisseur, le modèle et le niveau de raisonnement dont héritent les nouveaux Bots."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Legt Anbieter, Modell und Schlussfolgerung fest, die neue Bots übernehmen."
+          }
+        }
+      }
+    },
+    "Sets the provider, model, and reasoning used by this Bot." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Définit le fournisseur, le modèle et le niveau de raisonnement utilisés par ce Bot."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Legt Anbieter, Modell und Schlussfolgerung für diesen Bot fest."
+          }
+        }
+      }
+    },
+    "Show more" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Afficher plus"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mehr anzeigen"
+          }
+        }
+      }
+    },
+    "Show more background conversations" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Afficher plus de conversations en arrière-plan"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Weitere Hintergrundgespräche anzeigen"
+          }
+        }
+      }
+    },
+    "Show more chats in %@" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Afficher plus de conversations dans %@"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Weitere Chats in %@ anzeigen"
+          }
+        }
+      }
+    },
+    "Show more routine runs" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Afficher plus d’exécutions de routine"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Weitere Routine-Ausführungen anzeigen"
+          }
+        }
+      }
+    },
+    "Shows Bot details" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Affiche les détails du Bot"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zeigt Bot-Details"
+          }
+        }
+      }
+    },
+    "Shows conversations handled by this Bot" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Affiche les conversations gérées par ce Bot"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zeigt die von diesem Bot bearbeiteten Chats"
+          }
+        }
+      }
+    },
+    "Shows private conversations created by routines and Swarm work" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Affiche les conversations privées créées par les routines et le travail de l’essaim"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zeigt private Gespräche aus Routinen und Schwarmarbeit"
+          }
+        }
+      }
+    },
+    "Shows swarm roster and Swarm Chat" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Affiche les membres et la conversation de l’essaim"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zeigt Schwarmmitglieder und Schwarm-Chat"
+          }
+        }
+      }
+    },
+    "Sources" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sources"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quellen"
+          }
+        }
+      }
+    },
+    "Starts a new turn" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Démarre un nouvel échange"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Startet eine neue Runde"
+          }
+        }
+      }
+    },
+    "Swarm" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Essaim"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Schwarm"
+          }
+        }
+      }
+    },
+    "Swarm Chat" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conversation de l’essaim"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Schwarm-Chat"
+          }
+        }
+      }
+    },
+    "Swarm Chat needs attention" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La conversation de l’essaim nécessite votre attention"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Schwarm-Chat erfordert Aufmerksamkeit"
+          }
+        }
+      }
+    },
+    "Swarm message" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Message de l’essaim"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Schwarmnachricht"
+          }
+        }
+      }
+    },
+    "Swarm name" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nom de l’essaim"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Schwarmname"
+          }
+        }
+      }
+    },
+    "Swarm options" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Options de l’essaim"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Schwarmoptionen"
+          }
+        }
+      }
+    },
+    "Swarm unavailable" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Essaim indisponible"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Schwarm nicht verfügbar"
+          }
+        }
+      }
+    },
+    "Swarms" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Essaims"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Schwärme"
+          }
+        }
+      }
+    },
+    "That Bot already belongs to a swarm." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ce Bot appartient déjà à un essaim."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dieser Bot gehört bereits einem Schwarm an."
+          }
+        }
+      }
+    },
+    "That Bot work is no longer available." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ce travail de Bot n’est plus disponible."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Diese Bot-Arbeit ist nicht mehr verfügbar."
+          }
+        }
+      }
+    },
+    "The draft matches the saved Bot defaults." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Le brouillon correspond aux réglages par défaut enregistrés des Bots."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Der Entwurf entspricht den gespeicherten Bot-Standardeinstellungen."
+          }
+        }
+      }
+    },
+    "The draft matches this Bot's saved configuration." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Le brouillon correspond à la configuration enregistrée de ce Bot."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Der Entwurf entspricht der gespeicherten Konfiguration dieses Bots."
+          }
+        }
+      }
+    },
+    "The durable prompt, model, and capabilities used by this Bot." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "L’invite, le modèle et les fonctionnalités durables utilisés par ce Bot."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die dauerhafte Eingabeaufforderung, das Modell und die Funktionen dieses Bots."
+          }
+        }
+      }
+    },
+    "The gateway returned a chat with an unknown Bot." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La passerelle a renvoyé une conversation associée à un Bot inconnu."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Das Gateway hat einen Chat mit einem unbekannten Bot zurückgegeben."
+          }
+        }
+      }
+    },
+    "The gateway returned invalid Bot state." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La passerelle a renvoyé un état de Bot non valide."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Das Gateway hat einen ungültigen Bot-Status zurückgegeben."
+          }
+        }
+      }
+    },
+    "The gateway returned invalid Bot work." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La passerelle a renvoyé un travail de Bot non valide."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Das Gateway hat ungültige Bot-Arbeit zurückgegeben."
+          }
+        }
+      }
+    },
+    "The gateway returned invalid Swarm attention state." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La passerelle a renvoyé un état d’attention de l’essaim non valide."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Das Gateway hat einen ungültigen Aufmerksamkeitsstatus des Schwarms zurückgegeben."
+          }
+        }
+      }
+    },
+    "The gateway returned invalid background approval state." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La passerelle a renvoyé un état d’approbation en arrière-plan non valide."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Das Gateway hat einen ungültigen Genehmigungsstatus für Hintergrundarbeit zurückgegeben."
+          }
+        }
+      }
+    },
+    "The gateway returned invalid swarm state." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La passerelle a renvoyé un état d’essaim non valide."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Das Gateway hat einen ungültigen Schwarmstatus zurückgegeben."
+          }
+        }
+      }
+    },
+    "The prompt, model, and capabilities new Bots start from." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "L’invite, le modèle et les fonctionnalités utilisés au démarrage des nouveaux Bots."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die Eingabeaufforderung, das Modell und die Funktionen, mit denen neue Bots beginnen."
+          }
+        }
+      }
+    },
+    "The source conversation belongs to another Bot." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La conversation source appartient à un autre Bot."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Der Quell-Chat gehört zu einem anderen Bot."
+          }
+        }
+      }
+    },
+    "This Bot is no longer available." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ce Bot n’est plus disponible."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dieser Bot ist nicht mehr verfügbar."
+          }
+        }
+      }
+    },
+    "This Bot uses Ask. Approval-required actions will wait for you before the routine can continue." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ce Bot utilise Demander. Les actions nécessitant une approbation attendront votre réponse avant que la routine puisse continuer."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dieser Bot verwendet „Nachfragen“. Genehmigungspflichtige Aktionen warten auf Sie, bevor die Routine fortgesetzt werden kann."
+          }
+        }
+      }
+    },
+    "This note becomes durable context for every Bot in the Swarm." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cette note devient un contexte durable pour chaque Bot de l’essaim."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Diese Notiz wird zum dauerhaften Kontext für jeden Bot im Schwarm."
+          }
+        }
+      }
+    },
+    "This permanently deletes every conversation, routine, run history, and swarm membership owned by @%@. If this Bot leads a swarm, its Swarm Chat and collective scratchpad are also deleted. Active work must finish first." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cette action supprime définitivement chaque conversation, routine, historique d’exécution et appartenance à un essaim de @%@. Si ce Bot dirige un essaim, la conversation de l’essaim et le bloc-notes collectif sont également supprimés. Le travail en cours doit d’abord se terminer."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dadurch werden alle Chats, Routinen, Ausführungsverläufe und Schwarmmitgliedschaften von @%@ dauerhaft gelöscht. Leitet dieser Bot einen Schwarm, werden auch dessen Schwarm-Chat und gemeinsamer Notizbereich gelöscht. Aktive Arbeit muss zuerst beendet werden."
+          }
+        }
+      }
+    },
+    "This permanently deletes the shared Swarm Chat and collective scratchpad." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cette action supprime définitivement la conversation partagée de l’essaim et le bloc-notes collectif."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dadurch werden der gemeinsame Schwarm-Chat und der gemeinsame Notizbereich dauerhaft gelöscht."
+          }
+        }
+      }
+    },
+    "This removes cached chats, chat lists, and image thumbnails from this device. Gateways, credentials, Cloud sign-in, settings, and drafts are kept." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cette action supprime de cet appareil les conversations en cache, les listes de conversations et les vignettes d’images. Les passerelles, les identifiants, la connexion Cloud, les réglages et les brouillons sont conservés."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dadurch werden zwischengespeicherte Chats, Chatlisten und Bildminiaturen von diesem Gerät entfernt. Gateways, Anmeldedaten, Cloud-Anmeldung, Einstellungen und Entwürfe bleiben erhalten."
+          }
+        }
+      }
+    },
+    "This removes cached data, drafts, paired gateways, saved gateway credentials, and the Cloud sign-in from this device. You’ll need to pair or sign in again. Remote chats, your Cloud account, and your subscription are not deleted." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cette action supprime de cet appareil les données en cache, les brouillons, les passerelles jumelées, les identifiants de passerelle enregistrés et la connexion Cloud. Vous devrez effectuer un nouveau jumelage ou vous reconnecter. Les conversations distantes, votre compte Cloud et votre abonnement ne sont pas supprimés."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dadurch werden zwischengespeicherte Daten, Entwürfe, gekoppelte Gateways, gespeicherte Gateway-Anmeldedaten und die Cloud-Anmeldung von diesem Gerät entfernt. Sie müssen erneut koppeln oder sich anmelden. Remote-Chats, Ihr Cloud-Konto und Ihr Abonnement werden nicht gelöscht."
+          }
+        }
+      }
+    },
+    "This removes the routine and its run history. This cannot be undone." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cette action supprime la routine et son historique d’exécution. Cette opération est irréversible."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dadurch werden die Routine und ihr Ausführungsverlauf gelöscht. Dies kann nicht rückgängig gemacht werden."
+          }
+        }
+      }
+    },
+    "This removes the run history and its conversation transcript." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cette action supprime l’historique d’exécution et la transcription de sa conversation."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dadurch werden der Ausführungsverlauf und das zugehörige Chat-Transkript gelöscht."
+          }
+        }
+      }
+    },
+    "This swarm is no longer available on the gateway." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cet essaim n’est plus disponible sur la passerelle."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dieser Schwarm ist auf dem Gateway nicht mehr verfügbar."
+          }
+        }
+      }
+    },
+    "Those Bots can no longer form a swarm." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ces Bots ne peuvent plus former un essaim."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Diese Bots können keinen Schwarm mehr bilden."
+          }
+        }
+      }
+    },
+    "Time zone" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fuseau horaire"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zeitzone"
+          }
+        }
+      }
+    },
+    "Tool discovery" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Découverte des outils"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tool-Erkennung"
+          }
+        }
+      }
+    },
+    "möbius assigns the handle, color, and current Bot defaults." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "möbius attribue l’identifiant, la couleur et les réglages par défaut actuels des Bots."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "möbius weist Handle, Farbe und die aktuellen Bot-Standardeinstellungen zu."
+          }
+        }
+      }
+    },
+    "steer" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "orienter"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "steuern"
+          }
+        }
+      }
+    },
+    "you" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "vous"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sie"
+          }
+        }
+      }
+    },
+    "%lld" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld"
+          }
+        }
+      }
+    },
+    "%lld Bots · led by %@" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$lld Bots · dirigés par %2$@"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$lld Bots · geleitet von %2$@"
+          }
+        }
+      }
+    },
+    "%@, swarm %@" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@, essaim %2$@"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@, Schwarm %2$@"
+          }
+        }
+      }
+    },
+    "Activity" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Activité"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aktivität"
+          }
+        }
+      }
+    },
+    "Roster" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Membres"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mitglieder"
+          }
+        }
+      }
+    },
+    "Collective scratchpad" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bloc-notes collectif"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gemeinsamer Notizbereich"
+          }
+        }
+      }
+    },
+    "1 Bot • %lld active" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 Bot • %lld actif"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 Bot • %lld aktiv"
+          }
+        }
+      }
+    },
+    "%lld Bots • %lld active" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$lld Bots • %2$lld actifs"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$lld Bots • %2$lld aktiv"
+          }
+        }
+      }
+    },
+    "%lld messages" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld messages"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld Nachrichten"
+          }
+        }
+      }
+    },
+    "1 note" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 note"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 Notiz"
+          }
+        }
+      }
+    },
+    "%lld notes" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld notes"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld Notizen"
+          }
+        }
+      }
+    },
+    "@%@ • Leader" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "@%@ • Responsable"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "@%@ • Leiter"
+          }
+        }
+      }
+    },
+    "Start with Bot %@" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Démarrer avec le Bot %@"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mit Bot %@ starten"
+          }
+        }
+      }
+    },
+    "Bot %@" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bot %@"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bot %@"
+          }
+        }
+      }
+    },
+    "Chat posts" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Messages de conversation"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chatbeiträge"
+          }
+        }
+      }
+    },
+    "Directed" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Adressés"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gerichtet"
+          }
+        }
+      }
+    },
+    "Broadcast" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Diffusés"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Übertragen"
+          }
+        }
+      }
+    },
+    "Mentions" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mentions"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Erwähnungen"
+          }
+        }
+      }
+    },
+    "1 message" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 message"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 Nachricht"
+          }
+        }
+      }
+    },
+    "1 Bot · led by %@" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 Bot · dirigé par %@"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 Bot · geleitet von %@"
+          }
+        }
+      }
+    },
+    "1 selected" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 sélectionné"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 ausgewählt"
+          }
+        }
+      }
+    },
+    "%@, 1 Bot selected" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@, 1 Bot sélectionné"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@, 1 Bot ausgewählt"
+          }
+        }
+      }
+    },
     "German" : {
       "localizations" : {
         "fr" : {

@@ -192,7 +192,11 @@ struct BotsView: View {
     }
 
     private func swarmRow(_ swarm: SwarmRecord) -> some View {
-        SettingsNavigationRow(
+        let detail: LocalizedStringResource = swarm.members.count == 1
+            ? "1 Bot · led by \(leaderHandle(for: swarm))"
+            : "\(swarm.members.count) Bots · led by \(leaderHandle(for: swarm))"
+
+        return SettingsNavigationRow(
             hint: "Shows swarm roster and Swarm Chat",
             open: { model.openSwarm(swarm.id) },
             marks: {
@@ -208,7 +212,7 @@ struct BotsView: View {
         ) {
             SettingsRowLabel(
                 title: .verbatim(swarm.title),
-                detail: .verbatim("\(swarm.members.count) Bots · led by \(leaderHandle(for: swarm))")
+                detail: .localized(detail)
             ) {
                 MobiusIcon(
                     .swarm,
@@ -289,11 +293,12 @@ struct BotOwnershipLine: View {
         .foregroundStyle(palette.muted)
         .lineLimit(1)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Text(verbatim: accessibilityDescription))
+        .accessibilityLabel(accessibilityDescription)
     }
 
-    private var accessibilityDescription: String {
-        swarmName.map { "\(identity), swarm \($0)" } ?? identity
+    private var accessibilityDescription: Text {
+        guard let swarmName else { return Text(verbatim: identity) }
+        return Text("\(identity), swarm \(swarmName)")
     }
 }
 

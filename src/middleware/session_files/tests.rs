@@ -226,7 +226,7 @@ async fn deleting_last_reference_garbage_collects_the_blob() {
 }
 
 #[tokio::test]
-async fn accepts_50_mib_and_rejects_larger_files() {
+async fn accepts_250_mib_and_rejects_larger_files() {
     let state = tempfile::tempdir().expect("state");
     let store = SessionFileStore::new(state.path());
     let limits = session_file_limits();
@@ -238,7 +238,7 @@ async fn accepts_50_mib_and_rejects_larger_files() {
             "application/octet-stream".into(),
         )
         .await
-        .expect("50 MiB upload");
+        .expect("250 MiB upload");
     drop(pending);
     assert!(
         store

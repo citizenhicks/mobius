@@ -134,7 +134,11 @@ struct ChatsView: View {
                 }
                 .buttonStyle(MobiusIconButtonStyle(bare: true))
                 .accessibilityLabel("Clear Bot filters")
-                .accessibilityValue(Text("\(model.chatBotFilterIDs.count) selected"))
+                .accessibilityValue(
+                    model.chatBotFilterIDs.count == 1
+                        ? Text("1 selected")
+                        : Text("\(model.chatBotFilterIDs.count) selected")
+                )
                 .help("Clear Bot filters")
                 .disabled(showsLoadingCatalog)
             }
@@ -212,7 +216,9 @@ struct ChatsView: View {
         .accessibilityValue(
             model.chatBotFilterIDs.isEmpty
                 ? Text("\(organization.title), all Bots")
-                : Text("\(organization.title), \(model.chatBotFilterIDs.count) Bots selected")
+                : model.chatBotFilterIDs.count == 1
+                    ? Text("\(organization.title), 1 Bot selected")
+                    : Text("\(organization.title), \(model.chatBotFilterIDs.count) Bots selected")
         )
     }
 

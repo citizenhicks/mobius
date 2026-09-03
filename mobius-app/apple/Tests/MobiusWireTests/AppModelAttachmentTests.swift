@@ -193,6 +193,16 @@ extension AppModelTests {
         XCTAssertEqual(model.attachmentFileByteLimit, 4 * 1024 * 1024)
         XCTAssertEqual(model.attachmentDraftByteLimit, 6 * 1024 * 1024)
         XCTAssertEqual(model.uploadChunkByteLimit, 64 * 1024)
+
+        model.sessionFileLimits = SessionFileLimits(
+            maxAttachmentReferences: .max,
+            maxFileBytes: .max,
+            maxSessionFiles: .max,
+            maxSessionBytes: .max,
+            maxUploadChunkBytes: .max
+        )
+        XCTAssertEqual(model.attachmentFileByteLimit, 250 * 1024 * 1024)
+        XCTAssertEqual(model.attachmentDraftByteLimit, 250 * 1024 * 1024)
     }
 
     func testSessionFileUploadUsesAcknowledgedChunksAndSendsNativeReferences() async throws {
@@ -552,7 +562,7 @@ extension AppModelTests {
             widgets: [],
             references: []
         )]
-        let fileSize: Int64 = 25 * 1024 * 1024
+        let fileSize = maximumClientComposerAttachmentBytes / 4
         model.composerAttachments = (0..<4).map { index in
             let attachment = SessionFileReference(
                 id: "file-\(index)",
@@ -581,10 +591,10 @@ extension AppModelTests {
         XCTAssertEqual(model.composerAttachments.count, 4)
         let requests = await recorder.requests()
         XCTAssertTrue(requests.isEmpty)
-        XCTAssertEqual(model.toast?.message, "Attachments in one message are limited to 100 MiB total.")
+        XCTAssertEqual(model.toast?.message, "Attachments in one message are limited to 250 MiB total.")
     }
 
-    func testAttachmentImportAccepts50MiBFile() async throws {
+    func testAttachmentImportAcceptsLargeFileWithinLimit() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model(requestSender: { request in
             await recorder.record(request)
@@ -615,7 +625,7 @@ extension AppModelTests {
         XCTAssertEqual(mediaType, "video/mp4")
     }
 
-    func testAttachmentImportRejectsFileOver50MiB() async throws {
+    func testAttachmentImportRejectsFileOver250MiB() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model(requestSender: { request in
             await recorder.record(request)
@@ -629,12 +639,15 @@ extension AppModelTests {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let fileURL = directory.appendingPathComponent("too-large-video.mp4")
-        try Data(repeating: 0, count: 50 * 1024 * 1024 + 1).write(to: fileURL)
+        XCTAssertTrue(FileManager.default.createFile(atPath: fileURL.path, contents: nil))
+        let file = try FileHandle(forWritingTo: fileURL)
+        try file.truncate(atOffset: UInt64(maximumClientAttachmentBytes + 1))
+        try file.close()
 
         await model.importAttachments([fileURL])
 
         XCTAssertTrue(model.composerAttachments.isEmpty)
-        XCTAssertEqual(model.toast?.message, "Attachments are limited to 50 MiB each.")
+        XCTAssertEqual(model.toast?.message, "Attachments are limited to 250 MiB each.")
         let requests = await recorder.requests()
         XCTAssertTrue(requests.isEmpty)
     }

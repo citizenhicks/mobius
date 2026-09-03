@@ -571,8 +571,8 @@ struct AppLockAuthenticator {
 }
 
 let appLockEnabledKey = "app-lock-enabled"
-let maximumClientAttachmentBytes = 50 * 1024 * 1024
-let maximumClientComposerAttachmentBytes: Int64 = 100 * 1024 * 1024
+let maximumClientAttachmentBytes = 250 * 1024 * 1024
+let maximumClientComposerAttachmentBytes: Int64 = 250 * 1024 * 1024
 let maximumClientUploadChunkBytes = 256 * 1024
 let maximumPresentedFileBytes = 50 * 1024 * 1024
 let maximumWorkspaceTextFileBytes = 1024 * 1024

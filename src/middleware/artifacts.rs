@@ -7,12 +7,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::manifest::MiddlewareManifest;
-use super::session_files::{MAX_FILE_BYTES, SessionFileStore};
+use super::session_files::SessionFileStore;
 use super::tools::{
     ApprovalRequirement, Catalog, Tool, ToolContext, labeled_tool_heading, render_tool_event,
 };
 use super::{Middleware, PromptSection, RuntimeContext};
 use crate::backend::model::ToolDefinition;
+use crate::backend::sandbox::MAX_BINARY_FILE_BYTES;
 use crate::protocol::{EventMsg, FrontendBlock, FrontendContribution, SessionFileReference};
 use crate::{BoxFuture, Error, Result};
 
@@ -147,11 +148,9 @@ impl Tool for SendArtifact {
                 .and_then(|name| name.to_str())
                 .ok_or_else(|| Error::Tool("artifact path must name one file".into()))?
                 .to_string();
-            let max_bytes = usize::try_from(MAX_FILE_BYTES)
-                .map_err(|_| Error::Tool("artifact size limit is unsupported".into()))?;
             let bytes = context
                 .sandbox
-                .read_bytes(&arguments.path, max_bytes)
+                .read_bytes(&arguments.path, MAX_BINARY_FILE_BYTES)
                 .await?;
             let file = self
                 .store
