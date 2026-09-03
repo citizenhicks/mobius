@@ -1324,7 +1324,6 @@ impl SwarmStore {
         target_bot_id: &str,
         outcome: SwarmRunOutcome,
     ) -> Result<bool> {
-        validate_message_id(message_id)?;
         validate_delivery_session_id(session_id)?;
         validate_bot_id(target_bot_id)?;
         let message_id = message_id.to_owned();
@@ -3461,6 +3460,19 @@ mod tests {
         assert_eq!(second.session_id(), session_id);
         assert_eq!(second.delivery().entry.id, second_post.entry.id);
         drop(second);
+        assert!(
+            !store
+                .settle_delivery(
+                    "input-client-request",
+                    &session_id,
+                    &reviewer,
+                    SwarmRunOutcome::Succeeded {
+                        summary: "unrelated user turn".into(),
+                    },
+                )
+                .await
+                .expect("ignore unrelated user turn")
+        );
         assert!(
             !store
                 .settle_delivery(
