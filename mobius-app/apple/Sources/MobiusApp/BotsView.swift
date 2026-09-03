@@ -195,7 +195,16 @@ struct BotsView: View {
         SettingsNavigationRow(
             hint: "Shows swarm roster and Swarm Chat",
             open: { model.openSwarm(swarm.id) },
-            marks: EmptyView.init
+            marks: {
+                if model.hasSwarmAttention(forSwarmID: swarm.id) {
+                    MobiusIcon(
+                        .bellDot,
+                        size: MobiusStyle.glyphMark,
+                        foreground: palette.warning
+                    )
+                    .accessibilityLabel("\(swarm.title) has work needing attention")
+                }
+            }
         ) {
             SettingsRowLabel(
                 title: .verbatim(swarm.title),

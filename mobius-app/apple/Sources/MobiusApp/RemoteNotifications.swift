@@ -81,31 +81,34 @@ enum SessionNotificationKind: String, Hashable {
     case failed = "session.failed"
 }
 
-struct RemoteSessionNotification: Equatable {
-    let eventID: String
-    let kind: SessionNotificationKind
-    let sessionID: String
-    let runCount: UInt64?
-    let approvalRequestID: String?
-
-    init(
+enum RemoteNotification: Equatable {
+    case session(
         eventID: String,
         kind: SessionNotificationKind,
         sessionID: String,
-        runCount: UInt64? = nil,
-        approvalRequestID: String? = nil
-    ) {
-        self.eventID = eventID
-        self.kind = kind
-        self.sessionID = sessionID
-        self.runCount = runCount
-        self.approvalRequestID = approvalRequestID
+        runCount: UInt64?,
+        approvalRequestID: String?
+    )
+    case swarmAttention(eventID: String, swarmID: String, messageID: String)
+
+    var eventID: String {
+        switch self {
+        case .session(let eventID, _, _, _, _), .swarmAttention(let eventID, _, _): eventID
+        }
     }
 
     init?(userInfo: [AnyHashable: Any]) {
         guard let eventID = Self.identifier(userInfo["eventId"]),
-              let rawKind = userInfo["kind"] as? String,
-              let kind = SessionNotificationKind(rawValue: rawKind),
+              let rawKind = userInfo["kind"] as? String
+        else { return nil }
+        if rawKind == "swarm.attention" {
+            guard let swarmID = Self.identifier(userInfo["swarmId"]),
+                  let messageID = Self.identifier(userInfo["messageId"])
+            else { return nil }
+            self = .swarmAttention(eventID: eventID, swarmID: swarmID, messageID: messageID)
+            return
+        }
+        guard let kind = SessionNotificationKind(rawValue: rawKind),
               let sessionID = Self.identifier(userInfo["sessionId"])
         else { return nil }
         let runCount = Self.unsignedInteger(userInfo["runCount"])
@@ -115,7 +118,7 @@ struct RemoteSessionNotification: Equatable {
         case .completed, .aborted, .failed: runCount != nil
         }
         guard hasRequiredCursor else { return nil }
-        self.init(
+        self = .session(
             eventID: eventID,
             kind: kind,
             sessionID: sessionID,
@@ -147,9 +150,10 @@ struct RemoteSessionNotification: Equatable {
     }
 }
 
-enum SessionNotificationKey: Hashable {
+enum AppNotificationKey: Hashable {
     case approval(requestID: String)
     case terminal(kind: SessionNotificationKind, sessionID: String, runCount: UInt64)
+    case swarmAttention(messageID: String)
 }
 
 @MainActor
@@ -158,11 +162,11 @@ final class MobiusAppDelegate: NSObject, UIApplicationDelegate,
     private weak var model: AppModel?
     private var pendingDeviceToken: Data?
     private var pendingForegroundNotification: (
-        notification: RemoteSessionNotification,
+        notification: RemoteNotification,
         agentName: String,
         detail: String
     )?
-    private var pendingNotificationResponse: RemoteSessionNotification?
+    private var pendingNotificationResponse: RemoteNotification?
 
     func application(
         _ application: UIApplication,
@@ -215,7 +219,7 @@ final class MobiusAppDelegate: NSObject, UIApplicationDelegate,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
         let content = notification.request.content
-        guard let event = RemoteSessionNotification(
+        guard let event = RemoteNotification(
             userInfo: content.userInfo
         ) else { return [] }
         guard let model else {
@@ -234,7 +238,7 @@ final class MobiusAppDelegate: NSObject, UIApplicationDelegate,
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
-        guard let event = RemoteSessionNotification(
+        guard let event = RemoteNotification(
             userInfo: response.notification.request.content.userInfo
         ) else { return }
         guard let model else {
@@ -326,7 +330,7 @@ extension AppModel {
     }
 
     func receivedForegroundRemoteNotification(
-        _ notification: RemoteSessionNotification,
+        _ notification: RemoteNotification,
         agentName: String? = nil,
         detail: String? = nil
     ) {
@@ -335,17 +339,27 @@ extension AppModel {
               rememberRemoteNotification(notification.eventID),
               !catalogAlreadyIncludes(notification)
         else { return }
-        presentSessionNotification(
-            notification.kind,
-            sessionID: notification.sessionID,
-            runCount: notification.runCount,
-            approvalRequestID: notification.approvalRequestID,
-            agentName: agentName,
-            detail: notification.kind == .completed ? detail : nil
-        )
+        switch notification {
+        case .session(_, let kind, let sessionID, let runCount, let approvalRequestID):
+            presentSessionNotification(
+                kind,
+                sessionID: sessionID,
+                runCount: runCount,
+                approvalRequestID: approvalRequestID,
+                agentName: agentName,
+                detail: kind == .completed ? detail : nil
+            )
+        case .swarmAttention(_, let swarmID, let messageID):
+            presentSwarmAttention(
+                swarmID: swarmID,
+                messageID: messageID,
+                agentName: agentName,
+                text: detail
+            )
+        }
     }
 
-    func openRemoteNotification(_ notification: RemoteSessionNotification) {
+    func openRemoteNotification(_ notification: RemoteNotification) {
         guard notificationsEnabled, cloudSession != nil else { return }
         _ = rememberRemoteNotification(notification.eventID)
         pendingRemoteNotification = notification
@@ -361,34 +375,45 @@ extension AppModel {
             connect(to: cloudGateway)
             return false
         }
-        guard connectionState.isReady,
-              canOpenSession || selectedSessionID == notification.sessionID
-        else { return false }
-        if notification.kind == .awaitingApproval,
-           let requestID = notification.approvalRequestID,
-           let approval = backgroundApprovals.first(where: {
-               $0.sessionId == notification.sessionID && $0.requestId == requestID
-           }) {
+        guard connectionState.isReady else { return false }
+        switch notification {
+        case .swarmAttention(_, let swarmID, _):
+            guard swarms.contains(where: { $0.id == swarmID }) else { return false }
             pendingRemoteNotification = nil
-            prepareToOpenNotifiedSession()
-            resumeBotSession(botID: approval.botId, sessionID: approval.sessionId)
+            prepareToOpenNotification()
+            openSwarmChat(swarmID)
+            return true
+        case .session(_, let kind, let sessionID, _, let requestID):
+            guard canOpenSession || selectedSessionID == sessionID else { return false }
+            if kind == .awaitingApproval,
+               let requestID,
+               let approval = backgroundApprovals.first(where: {
+                   $0.sessionId == sessionID && $0.requestId == requestID
+               }) {
+                pendingRemoteNotification = nil
+                prepareToOpenNotification()
+                resumeBotSession(botID: approval.botId, sessionID: approval.sessionId)
+                return true
+            }
+            guard sessions.contains(where: { $0.sessionId == sessionID }) else { return false }
+            pendingRemoteNotification = nil
+            prepareToOpenNotification()
+            openChat(sessionID)
             return true
         }
-        guard sessions.contains(where: { $0.sessionId == notification.sessionID }) else {
-            return false
-        }
-        pendingRemoteNotification = nil
-        prepareToOpenNotifiedSession()
-        openChat(notification.sessionID)
-        return true
     }
 
-    func openNotifiedSession(_ sessionID: String) {
-        prepareToOpenNotifiedSession()
-        if let approval = backgroundApproval(forSessionID: sessionID) {
-            resumeBotSession(botID: approval.botId, sessionID: approval.sessionId)
-        } else if sessions.contains(where: { $0.sessionId == sessionID }) {
-            openChat(sessionID)
+    func openNotificationTarget(_ target: AppNotificationTarget) {
+        prepareToOpenNotification()
+        switch target {
+        case .session(let sessionID):
+            if let approval = backgroundApproval(forSessionID: sessionID) {
+                resumeBotSession(botID: approval.botId, sessionID: approval.sessionId)
+            } else if sessions.contains(where: { $0.sessionId == sessionID }) {
+                openChat(sessionID)
+            }
+        case .swarm(let swarmID, _):
+            openSwarmChat(swarmID)
         }
     }
 
@@ -416,14 +441,14 @@ extension AppModel {
             && kind == .completed
             && completionPreview != nil
             && toast?.tone == .success
-            && toast?.sessionID == sessionID
+            && toast?.target == .session(sessionID)
             && toast?.message != completionMessage
         if let key = sessionNotificationKey(
             kind: kind,
             sessionID: sessionID,
             runCount: runCount,
             approvalRequestID: approvalRequestID
-        ), !rememberSessionNotification(key), !refinesCompletedNotification {
+        ), !rememberNotification(key), !refinesCompletedNotification {
             return
         }
         let isHiddenApproval = kind == .awaitingApproval
@@ -434,13 +459,13 @@ extension AppModel {
         let isActiveChat = selectedSessionID == sessionID && isChatVisible
         switch kind {
         case .awaitingApproval:
-            showToast("\(title) needs approval.", tone: .warning, sessionID: sessionID)
+            showToast("\(title) needs approval.", tone: .warning, target: .session(sessionID))
         case .completed:
             guard !isActiveChat else { return }
             showToast(
                 verbatim: completionMessage,
                 tone: .success,
-                sessionID: sessionID
+                target: .session(sessionID)
             )
         case .aborted:
             guard !isActiveChat else { return }
@@ -448,22 +473,51 @@ extension AppModel {
                 showToast(
                     "\(title) stopped: \(detail).",
                     tone: .warning,
-                    sessionID: sessionID
+                    target: .session(sessionID)
                 )
             } else {
-                showToast("\(title) stopped.", tone: .warning, sessionID: sessionID)
+                showToast("\(title) stopped.", tone: .warning, target: .session(sessionID))
             }
         case .failed:
             if let detail {
                 showToast(
                     "\(title) failed: \(detail).",
                     tone: .error,
-                    sessionID: sessionID
+                    target: .session(sessionID)
                 )
             } else {
-                showToast("\(title) failed.", tone: .error, sessionID: sessionID)
+                showToast("\(title) failed.", tone: .error, target: .session(sessionID))
             }
         }
+    }
+
+    func presentSwarmAttention(_ attention: SwarmAttention) {
+        presentSwarmAttention(
+            swarmID: attention.swarmId,
+            messageID: attention.messageId,
+            agentName: bots.first { $0.id == attention.botId }?.name,
+            text: attention.text
+        )
+    }
+
+    private func presentSwarmAttention(
+        swarmID: String,
+        messageID: String,
+        agentName: String?,
+        text: String?
+    ) {
+        guard rememberNotification(.swarmAttention(messageID: messageID)) else { return }
+        let name = agentName.map(collapsedNotificationText)
+            .flatMap { $0.isEmpty ? nil : $0 }
+            ?? localizedString("Bot")
+        let detail = text.map(collapsedNotificationText)
+            .flatMap { $0.isEmpty ? nil : $0 }
+            ?? localizedString("Needs attention")
+        showToast(
+            verbatim: "\(name): \(detail)",
+            tone: .warning,
+            target: .swarm(swarmID: swarmID, messageID: messageID)
+        )
     }
 
     func unregisterRemoteNotificationsForCloudSignOut() async throws {
@@ -486,8 +540,8 @@ extension AppModel {
         pendingRemoteNotification = nil
         remoteNotificationEventIDs.removeAll()
         remoteNotificationEventOrder.removeAll()
-        sessionNotificationKeys.removeAll()
-        sessionNotificationKeyOrder.removeAll()
+        notificationKeys.removeAll()
+        notificationKeyOrder.removeAll()
         notificationError = nil
     }
 
@@ -546,22 +600,26 @@ extension AppModel {
         }
     }
 
-    private func catalogAlreadyIncludes(_ notification: RemoteSessionNotification) -> Bool {
-        switch notification.kind {
-        case .awaitingApproval:
-            guard let requestID = notification.approvalRequestID else { return false }
-            if let approval = backgroundApproval(forSessionID: notification.sessionID) {
+    private func catalogAlreadyIncludes(_ notification: RemoteNotification) -> Bool {
+        switch notification {
+        case .swarmAttention(_, _, let messageID):
+            return swarmAttentions.contains { $0.messageId == messageID }
+        case .session(_, .awaitingApproval, let sessionID, _, let requestID):
+            guard let requestID else { return false }
+            if let approval = backgroundApproval(forSessionID: sessionID) {
                 return approval.requestId == requestID
             }
             guard let session = sessions.first(where: {
-                $0.sessionId == notification.sessionID
+                $0.sessionId == sessionID
             }) else { return false }
             return session.activity.state == .awaitingApproval
                 && session.activity.approvalRequestId == requestID
-        case .completed, .aborted, .failed:
+        case .session(_, .completed, let sessionID, let runCount, _),
+             .session(_, .aborted, let sessionID, let runCount, _),
+             .session(_, .failed, let sessionID, let runCount, _):
             guard let session = sessions.first(where: {
-                $0.sessionId == notification.sessionID
-            }), let runCount = notification.runCount else { return false }
+                $0.sessionId == sessionID
+            }), let runCount else { return false }
             return session.executionStats.runCount >= runCount
         }
     }
@@ -580,7 +638,7 @@ extension AppModel {
         sessionID: String,
         runCount: UInt64?,
         approvalRequestID: String?
-    ) -> SessionNotificationKey? {
+    ) -> AppNotificationKey? {
         switch kind {
         case .awaitingApproval:
             approvalRequestID.map { .approval(requestID: $0) }
@@ -589,18 +647,22 @@ extension AppModel {
         }
     }
 
-    private func rememberSessionNotification(_ key: SessionNotificationKey) -> Bool {
-        guard sessionNotificationKeys.insert(key).inserted else { return false }
-        sessionNotificationKeyOrder.append(key)
-        if sessionNotificationKeyOrder.count > 64 {
-            sessionNotificationKeys.remove(sessionNotificationKeyOrder.removeFirst())
+    private func rememberNotification(_ key: AppNotificationKey) -> Bool {
+        guard notificationKeys.insert(key).inserted else { return false }
+        notificationKeyOrder.append(key)
+        if notificationKeyOrder.count > 64 {
+            notificationKeys.remove(notificationKeyOrder.removeFirst())
         }
         return true
     }
 
-    private func prepareToOpenNotifiedSession() {
+    private func prepareToOpenNotification() {
         showsInspector = false
         showsPairing = false
         showsWorkspaceBrowser = false
+    }
+
+    private func collapsedNotificationText(_ text: String) -> String {
+        text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
     }
 }

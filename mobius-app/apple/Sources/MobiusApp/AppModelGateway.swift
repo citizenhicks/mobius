@@ -103,8 +103,8 @@ extension AppModel {
         case .sessionOpened, .sessionReplayComplete, .sessionHistory, .sessionChanged:
             handleSessionEnvelope(envelope)
         case .gatewayConfigured, .scratchpadChanged, .accepted, .rejected,
-             .agentEvent, .sessions, .backgroundApprovals, .botSessions, .bots, .swarms,
-             .clients:
+             .agentEvent, .sessions, .backgroundApprovals, .swarmAttentions, .botSessions,
+             .bots, .swarms, .clients:
             handleGatewayUpdateEnvelope(envelope)
         case .providerCredentialSaved, .pairingCode, .providerLoginStarted,
              .providerLoginFinished, .gitCredentialStatus, .sshIdentities,
@@ -200,6 +200,8 @@ extension AppModel {
             applySessionResponse(requestID: requestID, sessions: sessions)
         case .backgroundApprovals(let approvals):
             applyBackgroundApprovals(approvals, notifyingNew: true)
+        case .swarmAttentions(let attentions):
+            applySwarmAttentions(attentions, notifyingNew: true)
         case .botSessions(let requestID, let botID, let sessions):
             applyBotSessionsResponse(requestID: requestID, botID: botID, sessions: sessions)
         case .bots(let requestID, let bots):
@@ -710,8 +712,9 @@ extension AppModel {
         extensions = payload.extensions
         gatewayContributions = payload.contributions
         applyBots(payload.bots)
-        applyBackgroundApprovals(payload.backgroundApprovals, notifyingNew: false)
         applySwarms(payload.swarms)
+        applyBackgroundApprovals(payload.backgroundApprovals, notifyingNew: false)
+        applySwarmAttentions(payload.swarmAttentions, notifyingNew: false)
         botDefaultsSnapshot = payload.botDefaults
         botDefaultsDraft = payload.botDefaults.map { incomingSnapshot in
             pendingBotDefaultsDraft ?? refreshedAgentDraft(
@@ -982,6 +985,7 @@ extension AppModel {
         }
         chatBotFilterIDs.formIntersection(botIDs)
         backgroundApprovals.removeAll { !botIDs.contains($0.botId) }
+        swarmAttentions.removeAll { !botIDs.contains($0.botId) }
         routines.removeAll { !botIDs.contains($0.botId) }
         routineRuns.removeAll { !botIDs.contains($0.botId) }
         if let botID = selectedSession?.sessionContext.botId,
@@ -1030,6 +1034,7 @@ extension AppModel {
         }
         swarms = records
         let swarmIDs = Set(records.map(\.id))
+        swarmAttentions.removeAll { !swarmIDs.contains($0.swarmId) }
         swarmScratchpadContributions = swarmScratchpadContributions.filter {
             swarmIDs.contains($0.key)
         }
@@ -1076,6 +1081,43 @@ extension AppModel {
                     sessionID: approval.sessionId,
                     approvalRequestID: approval.requestId
                 )
+            }
+        }
+        if connectionState.isReady { _ = openPendingRemoteNotification() }
+        return true
+    }
+
+    @discardableResult
+    func applySwarmAttentions(
+        _ records: [SwarmAttention],
+        notifyingNew: Bool
+    ) -> Bool {
+        let botIDs = Set(bots.map(\.id))
+        let previousMessageIDs = Set(swarmAttentions.map(\.messageId))
+        guard Set(records.map(\.messageId)).count == records.count,
+              records.allSatisfy({ attention in
+                  !attention.swarmId.isEmpty
+                      && !attention.swarmTitle.trimmingCharacters(
+                          in: .whitespacesAndNewlines
+                      ).isEmpty
+                      && !attention.messageId.isEmpty
+                      && !attention.botId.isEmpty
+                      && !attention.text.trimmingCharacters(
+                          in: .whitespacesAndNewlines
+                      ).isEmpty
+                      && swarms.contains { swarm in
+                          swarm.id == attention.swarmId
+                      }
+                      && botIDs.contains(attention.botId)
+              })
+        else {
+            showToast("The gateway returned invalid Swarm attention state.", tone: .error)
+            return false
+        }
+        swarmAttentions = records
+        if notifyingNew {
+            for attention in records where !previousMessageIDs.contains(attention.messageId) {
+                presentSwarmAttention(attention)
             }
         }
         if connectionState.isReady { _ = openPendingRemoteNotification() }

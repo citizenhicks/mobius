@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use mobius::protocol::MessageDelivery;
+use mobius::protocol::{MessageDelivery, MessageEvent};
 
 use super::*;
 
@@ -18,7 +18,6 @@ fn peer_submission_uses_the_board_id_and_defers_delivery_policy() {
             joined_at_ms: 1,
         },
         source_session_id: "source-session".into(),
-        source_event_id: None,
         text: "Review this".into(),
         mentioned_recipient_bot_ids: vec!["target-bot".into()],
         pending_recipient_bot_ids: vec!["target-bot".into()],
@@ -66,8 +65,6 @@ async fn stale_acknowledgement_does_not_clear_a_newer_delivery_attempt() {
         "target-bot".into(),
         SwarmDeliveryAttempt::Submitted("new-message".into()),
     )]);
-    let mut attention_attempts = HashSet::new();
-
     gateway
         .handle_swarm_delivery(
             SwarmDelivery::Acknowledged {
@@ -75,7 +72,6 @@ async fn stale_acknowledgement_does_not_clear_a_newer_delivery_attempt() {
                 message_id: "old-message".into(),
             },
             &mut attempts,
-            &mut attention_attempts,
         )
         .await;
 
@@ -83,44 +79,6 @@ async fn stale_acknowledgement_does_not_clear_a_newer_delivery_attempt() {
         attempts.get("target-bot"),
         Some(&SwarmDeliveryAttempt::Submitted("new-message".into()))
     );
-}
-
-#[tokio::test]
-async fn duplicate_user_attention_waits_for_its_exact_acknowledgement() {
-    let root = tempfile::tempdir().expect("root");
-    let listen = "127.0.0.1:8741".parse().expect("listen address");
-    let (store, config) =
-        ConfigStore::initialize(root.path().join("state"), listen, None).expect("config");
-    let credentials =
-        Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
-    let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
-    let gateway = GatewayHost::start(store, config, credentials, bots)
-        .await
-        .expect("gateway");
-    let mut attempts = HashMap::new();
-    let mut attention_attempts = HashSet::from(["attention-1".into()]);
-
-    gateway
-        .handle_swarm_delivery(
-            SwarmDelivery::UserAttention {
-                message_id: "attention-1".into(),
-            },
-            &mut attempts,
-            &mut attention_attempts,
-        )
-        .await;
-    assert!(attention_attempts.contains("attention-1"));
-
-    gateway
-        .handle_swarm_delivery(
-            SwarmDelivery::UserAttentionAcknowledged {
-                message_id: "attention-1".into(),
-            },
-            &mut attempts,
-            &mut attention_attempts,
-        )
-        .await;
-    assert!(attention_attempts.is_empty());
 }
 
 #[tokio::test]
@@ -139,8 +97,6 @@ async fn rejected_delivery_waits_for_bot_capacity_before_retrying() {
         "target-bot".into(),
         SwarmDeliveryAttempt::Submitted("message-1".into()),
     )]);
-    let mut attention_attempts = HashSet::new();
-
     gateway
         .handle_swarm_delivery(
             SwarmDelivery::Rejected {
@@ -148,7 +104,6 @@ async fn rejected_delivery_waits_for_bot_capacity_before_retrying() {
                 message_id: "message-1".into(),
             },
             &mut attempts,
-            &mut attention_attempts,
         )
         .await;
     assert_eq!(
@@ -157,11 +112,7 @@ async fn rejected_delivery_waits_for_bot_capacity_before_retrying() {
     );
 
     gateway
-        .handle_swarm_delivery(
-            SwarmDelivery::RetryPending,
-            &mut attempts,
-            &mut attention_attempts,
-        )
+        .handle_swarm_delivery(SwarmDelivery::RetryPending, &mut attempts)
         .await;
     assert!(matches!(
         attempts.get("target-bot"),
@@ -174,7 +125,6 @@ async fn rejected_delivery_waits_for_bot_capacity_before_retrying() {
                 target_bot_id: "target-bot".into(),
             },
             &mut attempts,
-            &mut attention_attempts,
         )
         .await;
     assert!(!attempts.contains_key("target-bot"));
@@ -643,15 +593,8 @@ async fn startup_ack_reuses_the_reserved_conversation_without_resubmitting() {
         )
         .await
         .expect("board");
-    assert_eq!(
-        board
-            .entries
-            .iter()
-            .filter(|entry| entry.source_event_id.as_deref() == Some(approval_id.as_str()))
-            .count(),
-        0,
-        "approval replay must not post to Swarm Chat"
-    );
+    assert_eq!(board.entries.len(), 1, "approval replay must not post");
+    assert_eq!(board.entries[0].id, post.entry.id);
     assert_eq!(
         swarm
             .pending_deliveries(&target_bot.id)
@@ -686,114 +629,5 @@ async fn startup_ack_reuses_the_reserved_conversation_without_resubmitting() {
             )
             .await
             .expect("dedupe terminal")
-    );
-}
-
-#[tokio::test]
-async fn startup_attention_ack_does_not_resubmit_a_persisted_visible_message() {
-    let root = tempfile::tempdir().expect("root");
-    let state_dir = root.path().join("state");
-    let (gateway, _, source, source_bot, target, _, _) = gateway_with_swarm(&root).await;
-    let source_session_id = source.session_id().to_owned();
-    for host in [&source, &target] {
-        assert!(host.stop_if_idle().await);
-        while host.is_alive() {
-            tokio::task::yield_now().await;
-        }
-    }
-    drop(source);
-    drop(target);
-    drop(gateway);
-
-    let (store, config) = ConfigStore::open(state_dir).expect("reopen config");
-    let checkpoints: Arc<dyn CheckpointStore> =
-        Arc::new(SqliteCheckpoint::new(store.checkpoints_path()).expect("checkpoints"));
-    let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
-    let gateway_config = Arc::new(StdMutex::new(config.clone()));
-    let (swarm, _deliveries) = SwarmStore::new(Arc::clone(&checkpoints), bots, gateway_config);
-    let post = swarm
-        .post(
-            &source_bot.id,
-            &source_session_id,
-            "Choose the release scope @user".into(),
-            None,
-        )
-        .await
-        .expect("attention post");
-    swarm
-        .assign_user_attention(&post.entry.id, &source_session_id)
-        .await
-        .expect("assign exact causal chat");
-    checkpoints
-        .append_event(
-            &source_session_id,
-            1,
-            &Event {
-                submission_id: Some(post.entry.id.clone()),
-                msg: EventMsg::Message(MessageEvent {
-                    author: MessageAuthor::Peer {
-                        message_id: post.entry.id.clone(),
-                        session_id: source_session_id.clone(),
-                        handle: source_bot.handle,
-                    },
-                    delivery: MessageDelivery::Queue,
-                    text: "Choose the release scope".into(),
-                    attachments: Vec::new(),
-                    message_target: None,
-                }),
-            },
-        )
-        .await
-        .expect("persist attention delivery");
-    drop(swarm);
-    drop(checkpoints);
-
-    let credentials =
-        Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
-    let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
-    let gateway = GatewayHost::start(store, config, credentials, bots)
-        .await
-        .expect("restart gateway");
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if gateway
-                .state
-                .lock()
-                .await
-                .swarm
-                .pending_user_attention()
-                .await
-                .expect("pending attention")
-                .is_empty()
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("startup attention reconciliation");
-
-    let checkpoints = Arc::clone(&gateway.state.lock().await.checkpoints);
-    let page = checkpoints
-        .event_page(
-            &source_session_id,
-            EventPageRequest {
-                before_sequence: None,
-                limit: 128,
-            },
-        )
-        .await
-        .expect("visible journal");
-    assert_eq!(
-        page.events
-            .iter()
-            .filter(|record| {
-                record.event.submission_id.as_deref() == Some(post.entry.id.as_str())
-                    && matches!(record.event.msg, EventMsg::Message(_))
-            })
-            .count(),
-        1,
-        "startup reconciliation must not duplicate the persisted attention message"
     );
 }

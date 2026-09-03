@@ -31,6 +31,7 @@ extension GatewayWireTests {
         XCTAssertEqual(payload.sessions.first?.activity.turnId, "turn-1")
         XCTAssertNil(payload.sessions.first?.activity.approvalRequestId)
         XCTAssertTrue(payload.backgroundApprovals.isEmpty)
+        XCTAssertTrue(payload.swarmAttentions.isEmpty)
         XCTAssertEqual(payload.sessions.first?.executionStats.toolCalls, 6)
         XCTAssertEqual(payload.providers.first?.defaultApiKeyEnv, "OPENAI_API_KEY")
         XCTAssertEqual(payload.providers.first?.symbol, "chat_gpt")
@@ -104,7 +105,7 @@ extension GatewayWireTests {
             with: #""background_approvals":[{"session_id":"work-1","bot_id":"bot-1","turn_id":"turn-1","request_id":"approval-1"}]"#
         )
         let envelope = try decodeEnvelope(
-            #"{"version":63,"type":"ready","payload":\#(payload)}"#
+            #"{"version":64,"type":"ready","payload":\#(payload)}"#
         )
         guard case .ready(let ready) = envelope else {
             return XCTFail("Expected ready envelope")
@@ -112,6 +113,22 @@ extension GatewayWireTests {
         XCTAssertEqual(ready.backgroundApprovals.first?.sessionId, "work-1")
         XCTAssertEqual(ready.backgroundApprovals.first?.botId, "bot-1")
         XCTAssertEqual(ready.backgroundApprovals.first?.requestId, "approval-1")
+    }
+
+    func testReadyCarriesSwarmAttentionBaseline() throws {
+        let payload = readyPayloadJSON.replacingOccurrences(
+            of: #""swarm_attentions":[]"#,
+            with: #""swarm_attentions":[{"swarm_id":"swarm-1","swarm_title":"Quiet Foxes","message_id":"message-1","bot_id":"bot-1","text":"Choose a migration path."}]"#
+        )
+        let envelope = try decodeEnvelope(
+            #"{"version":64,"type":"ready","payload":\#(payload)}"#
+        )
+        guard case .ready(let ready) = envelope else {
+            return XCTFail("Expected ready envelope")
+        }
+        XCTAssertEqual(ready.swarmAttentions.first?.swarmId, "swarm-1")
+        XCTAssertEqual(ready.swarmAttentions.first?.messageId, "message-1")
+        XCTAssertEqual(ready.swarmAttentions.first?.text, "Choose a migration path.")
     }
 
     func testGatewayMachineNameRejectsControlCharacters() {

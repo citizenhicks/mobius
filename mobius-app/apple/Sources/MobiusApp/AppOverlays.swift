@@ -81,9 +81,9 @@ private struct AppToastView: View {
 
     var body: some View {
         HStack(spacing: MobiusSpace.m) {
-            if let sessionID = toast.sessionID {
+            if let target = toast.target {
                 Button {
-                    model.openNotifiedSession(sessionID)
+                    model.openNotificationTarget(target)
                     dismiss()
                 } label: {
                     toastMessage
@@ -129,7 +129,7 @@ private struct AppToastView: View {
                 Text(toast.message)
                     .font(MobiusStyle.bodyFont)
                     .foregroundStyle(.primary)
-                    .lineLimit(toast.tone == .success && toast.sessionID != nil ? 1 : nil)
+                    .lineLimit(toast.tone == .success && toast.target != nil ? 1 : nil)
                     .truncationMode(.tail)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -140,7 +140,7 @@ private struct AppToastView: View {
 
     @ViewBuilder
     private var toastIcon: some View {
-        if let bot = model.bot(forSessionID: toast.sessionID) {
+        if let bot = model.bot(for: toast.target) {
             ZStack {
                 Circle().fill(bot.tint.color.opacity(0.16))
                 MobiusIcon(

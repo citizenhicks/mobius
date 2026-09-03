@@ -463,6 +463,9 @@ pub enum ServerMessage {
     BackgroundApprovals {
         approvals: Vec<BackgroundApproval>,
     },
+    SwarmAttentions {
+        attentions: Vec<SwarmAttention>,
+    },
     BotSessions {
         request_id: String,
         bot_id: String,

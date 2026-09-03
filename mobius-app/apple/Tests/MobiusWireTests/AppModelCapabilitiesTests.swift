@@ -777,7 +777,7 @@ extension AppModelTests {
             approvalRequestID: "approval-1"
         )])
         XCTAssertEqual(model.toast?.tone, .warning)
-        XCTAssertEqual(model.toast?.sessionID, "chat-1")
+        XCTAssertEqual(model.toast?.target, .session("chat-1"))
         XCTAssertEqual(model.attentionSessionIDs, ["chat-1"])
 
         model.applySessions([session(state: .idle, outcome: .completed)])
@@ -785,7 +785,7 @@ extension AppModelTests {
         XCTAssertTrue(model.unreadSessionIDs.contains("chat-1"))
         XCTAssertEqual(model.attentionSessionIDs, ["chat-1"])
         XCTAssertEqual(model.toast?.tone, .success)
-        XCTAssertEqual(model.toast?.sessionID, "chat-1")
+        XCTAssertEqual(model.toast?.target, .session("chat-1"))
 
         model.destination = .chats
         model.navigationPath = [.chat(.session("chat-1"))]
@@ -820,7 +820,7 @@ extension AppModelTests {
         )])
 
         XCTAssertEqual(model.toast?.tone, .success)
-        XCTAssertEqual(model.toast?.sessionID, "chat-1")
+        XCTAssertEqual(model.toast?.target, .session("chat-1"))
         XCTAssertEqual(model.toast?.message, "Helper: Fixed the parser. All focused tests pass.")
     }
 
@@ -874,7 +874,7 @@ extension AppModelTests {
 
         XCTAssertEqual(model.toast?.message, "Review failed: Provider failed.")
         XCTAssertEqual(model.toast?.tone, .error)
-        XCTAssertEqual(model.toast?.sessionID, "chat-1")
+        XCTAssertEqual(model.toast?.target, .session("chat-1"))
         XCTAssertTrue(model.unreadSessionIDs.contains("chat-1"))
 
         model.showToast("Credential saved.", tone: .success)

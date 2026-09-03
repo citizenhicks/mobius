@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::future::Future;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -17,18 +17,19 @@ use uuid::Uuid;
 use crate::bots::BotStore;
 use crate::config::GatewayConfig;
 use crate::wire::{
-    RoutineRun, RoutineRunStatus, RoutineSchedule, SwarmMemberRecord, SwarmMessageRecord,
-    SwarmRecord,
+    RoutineRun, RoutineRunStatus, RoutineSchedule, SwarmAttention, SwarmMemberRecord,
+    SwarmMessageRecord, SwarmRecord,
 };
 use crate::{Error, Result};
 
 const STATE_SCOPE: &str = "gateway";
-const STATE_KEY: &str = "bots.swarms.v4";
+const STATE_KEY: &str = "bots.swarms.v5";
 const USER_AUTHOR_ID: &str = "user";
 const USER_HANDLE: &str = "user";
 const MAX_HANDLE_BYTES: usize = 64;
 const MAX_ID_BYTES: usize = 512;
 const MAX_TITLE_BYTES: usize = 256;
+const MAX_ATTENTION_TEXT_BYTES: usize = 512;
 const MAX_ACKNOWLEDGED_ENTRIES: usize = 256;
 const MAX_PENDING_DELIVERIES_PER_RECIPIENT: usize = 256;
 const MAX_PAGE_ENTRIES: usize = 256;
@@ -96,8 +97,6 @@ pub struct BoardEntry {
     pub author: SwarmMember,
     /// Conversation from which the author posted this entry.
     pub source_session_id: String,
-    /// Stable source event when this entry projects a lifecycle event.
-    pub source_event_id: Option<String>,
     /// Message text.
     pub text: String,
     /// Bot identifiers resolved from the entry's `@handle` mentions.
@@ -152,16 +151,6 @@ pub(crate) enum SwarmRunOutcome {
     Failed { message: String },
 }
 
-/// One durable user-attention request and its causal routing data.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct UserAttention {
-    pub(crate) entry: BoardEntry,
-    pub(crate) leader_bot_id: String,
-    pub(crate) root_source_session_id: String,
-    pub(crate) workspace: Option<PathBuf>,
-    pub(crate) assigned_session_id: Option<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BotSwarmRemoval {
     pub(crate) swarm_id: String,
@@ -172,7 +161,6 @@ struct Settlement {
     message_id: String,
     target_bot_id: String,
     pending_bot_id: Option<String>,
-    user_attention_message_id: Option<String>,
 }
 
 /// Wake-up signal consumed by the gateway's swarm delivery worker.
@@ -186,10 +174,6 @@ pub(crate) enum SwarmDelivery {
     RetryPending,
     /// A target Bot has at least one durable board message awaiting delivery.
     Pending { target_bot_id: String },
-    /// One board post explicitly asks for authenticated user attention.
-    UserAttention { message_id: String },
-    /// One user-attention message was durably recorded in its visible conversation.
-    UserAttentionAcknowledged { message_id: String },
     /// A target Bot durably recorded one delivered peer message.
     Acknowledged {
         target_bot_id: String,
@@ -264,9 +248,7 @@ impl SwarmDeliveryClaim {
 #[serde(deny_unknown_fields)]
 struct Catalog {
     swarms: BTreeMap<String, StoredSwarm>,
-    message_workspaces: BTreeMap<String, PathBuf>,
-    pending_user_attention_message_ids: BTreeSet<String>,
-    assigned_user_attention_session_ids: BTreeMap<String, String>,
+    pending_swarm_attention_message_ids: BTreeSet<String>,
     projected_routine_run_ids: BTreeSet<String>,
 }
 
@@ -325,18 +307,34 @@ impl SwarmStore {
 
     pub(crate) async fn records(&self) -> Result<Vec<SwarmRecord>> {
         let state = self.lock_loaded().await?;
-        state
-            .as_ref()
-            .expect("swarm catalog loaded")
+        let catalog = state.as_ref().expect("swarm catalog loaded");
+        catalog
             .swarms
             .iter()
             .map(|(id, swarm)| {
                 let members = current_members(&self.bots, swarm)?;
-                let mut messages = swarm
+                let attention_entries = pending_attention_board_entries(
+                    &swarm.board,
+                    &catalog.pending_swarm_attention_message_ids,
+                );
+                let remaining = MAX_PAGE_ENTRIES
+                    .checked_sub(attention_entries.len())
+                    .ok_or_else(|| too_many_attention_entries(id))?;
+                let newest_other_entries = swarm
                     .board
                     .iter()
                     .rev()
-                    .take(MAX_PAGE_ENTRIES)
+                    .filter(|entry| !attention_entries.contains(&entry.id))
+                    .take(remaining)
+                    .map(|entry| entry.id.clone())
+                    .collect::<BTreeSet<_>>();
+                let messages = swarm
+                    .board
+                    .iter()
+                    .filter(|entry| {
+                        attention_entries.contains(&entry.id)
+                            || newest_other_entries.contains(&entry.id)
+                    })
                     .map(|entry| SwarmMessageRecord {
                         id: entry.id.clone(),
                         sequence: entry.sequence,
@@ -349,7 +347,6 @@ impl SwarmStore {
                         reply_depth: entry.reply_depth,
                     })
                     .collect::<Vec<_>>();
-                messages.reverse();
                 Ok(SwarmRecord {
                     id: id.clone(),
                     title: swarm.title.clone(),
@@ -366,6 +363,32 @@ impl SwarmStore {
                 })
             })
             .collect()
+    }
+
+    pub(crate) async fn pending_attentions(&self) -> Result<Vec<SwarmAttention>> {
+        let state = self.lock_loaded().await?;
+        let catalog = state.as_ref().expect("swarm catalog loaded");
+        Ok(catalog
+            .swarms
+            .iter()
+            .flat_map(|(swarm_id, swarm)| {
+                swarm
+                    .board
+                    .iter()
+                    .filter(|entry| {
+                        catalog
+                            .pending_swarm_attention_message_ids
+                            .contains(&entry.id)
+                    })
+                    .map(|entry| SwarmAttention {
+                        swarm_id: swarm_id.clone(),
+                        swarm_title: swarm.title.clone(),
+                        message_id: entry.id.clone(),
+                        bot_id: entry.author.bot_id.clone(),
+                        text: swarm_attention_text(&entry.text),
+                    })
+            })
+            .collect())
     }
 
     /// Creates a named swarm from Bot-catalog identities.
@@ -561,6 +584,7 @@ impl SwarmStore {
         for (message_id, target_bot_id) in pending_deliveries {
             self.notify_acknowledged(&message_id, &target_bot_id);
         }
+        let _ = self.deliveries.send(SwarmDelivery::Changed);
         Ok(())
     }
 
@@ -786,7 +810,7 @@ impl SwarmStore {
         let sender_bot_id = sender_bot_id.to_owned();
         let source_session_id = source_session_id.to_owned();
         let bots = Arc::clone(&self.bots);
-        let (post, needs_user_attention) = self
+        let post = self
             .mutate(move |catalog| {
                 let swarm_id = swarm_id_for_bot(catalog, &sender_bot_id)
                     .ok_or_else(|| config(format!("Bot `{sender_bot_id}` is not in a swarm")))?;
@@ -855,7 +879,7 @@ impl SwarmStore {
                     )));
                 }
 
-                let needs_user_attention = handles.contains(USER_HANDLE);
+                let needs_swarm_attention = handles.contains(USER_HANDLE);
                 let mut recipients = handles
                     .iter()
                     .filter(|handle| handle.as_str() != USER_HANDLE)
@@ -868,7 +892,7 @@ impl SwarmStore {
                     .collect::<BTreeSet<_>>()
                     .into_iter()
                     .collect::<Vec<_>>();
-                if needs_user_attention
+                if needs_swarm_attention
                     && sender_bot_id != swarm.leader_bot_id
                     && !recipients.contains(&swarm.leader_bot_id)
                 {
@@ -908,7 +932,6 @@ impl SwarmStore {
                     created_at_ms: unix_ms(),
                     author,
                     source_session_id,
-                    source_event_id: None,
                     text,
                     mentioned_recipient_bot_ids: recipients.clone(),
                     pending_recipient_bot_ids: recipients.clone(),
@@ -919,44 +942,28 @@ impl SwarmStore {
                 swarm.latest_sequence = sequence;
                 swarm.updated_at_ms = entry.created_at_ms;
                 swarm.board.push_back(entry.clone());
-                if needs_user_attention {
+                if needs_swarm_attention {
                     catalog
-                        .pending_user_attention_message_ids
+                        .pending_swarm_attention_message_ids
                         .insert(entry.id.clone());
                 }
-                Ok((
-                    SwarmPost {
-                        entry,
-                        resolved_recipient_bot_ids: recipients,
-                    },
-                    needs_user_attention,
-                ))
+                Ok(SwarmPost {
+                    entry,
+                    resolved_recipient_bot_ids: recipients,
+                })
             })
             .await?;
         let _ = self.deliveries.send(SwarmDelivery::Changed);
         for target_bot_id in &post.resolved_recipient_bot_ids {
             self.notify_pending(target_bot_id);
         }
-        if needs_user_attention {
-            let _ = self.deliveries.send(SwarmDelivery::UserAttention {
-                message_id: post.entry.id.clone(),
-            });
-        }
         Ok(post)
     }
 
-    /// Posts an authenticated human message from an explicitly validated workspace.
-    pub(crate) async fn post_user(
-        &self,
-        swarm_id: &str,
-        workspace: PathBuf,
-        text: String,
-    ) -> Result<SwarmPost> {
+    /// Posts an authenticated human message and clears this Swarm's pending attention.
+    pub(crate) async fn post_user(&self, swarm_id: &str, text: String) -> Result<SwarmPost> {
         validate_swarm_id(swarm_id)?;
         validate_message(&text)?;
-        if !workspace.is_absolute() {
-            return Err(config("swarm message workspace must be absolute"));
-        }
         let swarm_id = swarm_id.to_owned();
         let bots = Arc::clone(&self.bots);
         let post = self
@@ -1038,7 +1045,6 @@ impl SwarmStore {
                         joined_at_ms: now,
                     },
                     source_session_id: format!("swarm-user-{id}"),
-                    source_event_id: None,
                     text,
                     mentioned_recipient_bot_ids: recipients.clone(),
                     pending_recipient_bot_ids: recipients.clone(),
@@ -1049,7 +1055,14 @@ impl SwarmStore {
                 swarm.latest_sequence = sequence;
                 swarm.updated_at_ms = now;
                 swarm.board.push_back(entry.clone());
-                catalog.message_workspaces.insert(id, workspace);
+                let message_ids = swarm
+                    .board
+                    .iter()
+                    .map(|entry| entry.id.as_str())
+                    .collect::<BTreeSet<_>>();
+                catalog
+                    .pending_swarm_attention_message_ids
+                    .retain(|message_id| !message_ids.contains(message_id.as_str()));
                 Ok(SwarmPost {
                     entry,
                     resolved_recipient_bot_ids: recipients,
@@ -1191,19 +1204,6 @@ impl SwarmStore {
             .collect::<BTreeSet<_>>();
         let state = self.lock_loaded().await?;
         let catalog = state.as_ref().expect("swarm catalog loaded");
-        if catalog
-            .assigned_user_attention_session_ids
-            .values()
-            .any(|assigned| session_ids.contains(assigned.as_str()))
-        {
-            return Ok(true);
-        }
-        for message_id in &catalog.pending_user_attention_message_ids {
-            let attention = user_attention(catalog, message_id)?;
-            if session_ids.contains(attention.root_source_session_id.as_str()) {
-                return Ok(true);
-            }
-        }
         Ok(catalog
             .swarms
             .values()
@@ -1233,12 +1233,6 @@ impl SwarmStore {
     pub(crate) fn notify_pending(&self, target_bot_id: &str) {
         let _ = self.deliveries.send(SwarmDelivery::Pending {
             target_bot_id: target_bot_id.to_owned(),
-        });
-    }
-
-    pub(crate) fn notify_user_attention(&self, message_id: &str) {
-        let _ = self.deliveries.send(SwarmDelivery::UserAttention {
-            message_id: message_id.to_owned(),
         });
     }
 
@@ -1394,7 +1388,6 @@ impl SwarmStore {
                     created_at_ms: now,
                     author,
                     source_session_id: session_id,
-                    source_event_id: None,
                     text,
                     mentioned_recipient_bot_ids: recipients.clone(),
                     pending_recipient_bot_ids: recipients.clone(),
@@ -1417,7 +1410,6 @@ impl SwarmStore {
                     message_id,
                     target_bot_id,
                     pending_bot_id: recipients.into_iter().next(),
-                    user_attention_message_id: None,
                 }))
             })
             .await?
@@ -1433,7 +1425,6 @@ impl SwarmStore {
         &self,
         run: &RoutineRun,
         summary: Option<String>,
-        workspace: Option<PathBuf>,
     ) -> Result<bool> {
         validate_message_id(&run.id)?;
         let run = run.clone();
@@ -1467,13 +1458,13 @@ impl SwarmStore {
                         .expect("swarm leader remains a member"),
                 )?;
                 let wake_leader = run.bot_id != leader.bot_id;
-                let needs_user_attention = run.status == RoutineRunStatus::Failed && !wake_leader;
+                let needs_swarm_attention = run.status == RoutineRunStatus::Failed && !wake_leader;
                 let detail = summary.or_else(|| run.message.clone());
                 let text = routine_outcome_text(
                     &run,
                     detail.as_deref(),
                     wake_leader.then_some(leader.handle.as_str()),
-                    needs_user_attention,
+                    needs_swarm_attention,
                 );
                 let recipients = if wake_leader {
                     vec![leader.bot_id.clone()]
@@ -1494,7 +1485,6 @@ impl SwarmStore {
                         .session_id
                         .clone()
                         .unwrap_or_else(|| format!("routine-run-{}", run.id)),
-                    source_event_id: None,
                     text,
                     mentioned_recipient_bot_ids: recipients.clone(),
                     pending_recipient_bot_ids: recipients.clone(),
@@ -1505,21 +1495,15 @@ impl SwarmStore {
                 swarm.latest_sequence = sequence;
                 swarm.updated_at_ms = now;
                 swarm.board.push_back(entry.clone());
-                if let Some(workspace) = workspace {
+                if needs_swarm_attention {
                     catalog
-                        .message_workspaces
-                        .insert(entry.id.clone(), workspace);
-                }
-                if needs_user_attention {
-                    catalog
-                        .pending_user_attention_message_ids
+                        .pending_swarm_attention_message_ids
                         .insert(entry.id.clone());
                 }
                 Ok(Some(Settlement {
-                    message_id: entry.id.clone(),
+                    message_id: entry.id,
                     target_bot_id: run.bot_id,
                     pending_bot_id: recipients.into_iter().next(),
-                    user_attention_message_id: needs_user_attention.then_some(entry.id),
                 }))
             })
             .await?;
@@ -1530,79 +1514,6 @@ impl SwarmStore {
         if let Some(bot_id) = projection.pending_bot_id {
             self.notify_pending(&bot_id);
         }
-        if let Some(message_id) = projection.user_attention_message_id {
-            let _ = self
-                .deliveries
-                .send(SwarmDelivery::UserAttention { message_id });
-        }
-        Ok(true)
-    }
-
-    /// Returns all durable attention requests awaiting delivery to the user.
-    pub(crate) async fn pending_user_attention(&self) -> Result<Vec<UserAttention>> {
-        let state = self.lock_loaded().await?;
-        let catalog = state.as_ref().expect("swarm catalog loaded");
-        catalog
-            .pending_user_attention_message_ids
-            .iter()
-            .map(|message_id| user_attention(catalog, message_id))
-            .collect()
-    }
-
-    /// Durably assigns an exact visible conversation before user-attention delivery.
-    pub(crate) async fn assign_user_attention(
-        &self,
-        message_id: &str,
-        proposed_session_id: &str,
-    ) -> Result<UserAttention> {
-        validate_message_id(message_id)?;
-        validate_delivery_session_id(proposed_session_id)?;
-        let message_id = message_id.to_owned();
-        let proposed_session_id = proposed_session_id.to_owned();
-        self.mutate(move |catalog| {
-            if !catalog
-                .pending_user_attention_message_ids
-                .contains(&message_id)
-            {
-                return Err(config(format!(
-                    "swarm message `{message_id}` is not awaiting user attention"
-                )));
-            }
-            catalog
-                .assigned_user_attention_session_ids
-                .entry(message_id.clone())
-                .or_insert(proposed_session_id);
-            user_attention(catalog, &message_id)
-        })
-        .await
-    }
-
-    pub(crate) async fn acknowledge_user_attention(&self, message_id: &str) -> Result<bool> {
-        validate_message_id(message_id)?;
-        let message_id = message_id.to_owned();
-        let Some(message_id) = self
-            .mutate_if_some(move |catalog| {
-                if !catalog
-                    .pending_user_attention_message_ids
-                    .contains(&message_id)
-                {
-                    return Ok(None);
-                }
-                catalog
-                    .assigned_user_attention_session_ids
-                    .remove(&message_id);
-                catalog
-                    .pending_user_attention_message_ids
-                    .remove(&message_id);
-                Ok(Some(message_id))
-            })
-            .await?
-        else {
-            return Ok(false);
-        };
-        let _ = self
-            .deliveries
-            .send(SwarmDelivery::UserAttentionAcknowledged { message_id });
         Ok(true)
     }
 
@@ -1611,11 +1522,6 @@ impl SwarmStore {
         self.notify_acknowledged(&settlement.message_id, &settlement.target_bot_id);
         if let Some(bot_id) = settlement.pending_bot_id {
             self.notify_pending(&bot_id);
-        }
-        if let Some(message_id) = settlement.user_attention_message_id {
-            let _ = self
-                .deliveries
-                .send(SwarmDelivery::UserAttention { message_id });
         }
     }
 
@@ -2036,9 +1942,9 @@ fn swarm_id_for_bot(catalog: &Catalog, bot_id: &str) -> Option<String> {
 
 fn trim_acknowledged(
     board: &mut VecDeque<BoardEntry>,
-    pending_user_attention_message_ids: &BTreeSet<String>,
+    pending_swarm_attention_message_ids: &BTreeSet<String>,
 ) {
-    let protected_message_ids = protected_board_entries(board, pending_user_attention_message_ids);
+    let protected_message_ids = protected_board_entries(board, pending_swarm_attention_message_ids);
     while board
         .iter()
         .filter(|entry| {
@@ -2065,16 +1971,35 @@ fn trim_acknowledged(
 
 fn protected_board_entries(
     board: &VecDeque<BoardEntry>,
-    pending_user_attention_message_ids: &BTreeSet<String>,
+    pending_swarm_attention_message_ids: &BTreeSet<String>,
 ) -> BTreeSet<String> {
-    let mut protected = board
+    let protected = board
         .iter()
         .filter(|entry| {
             !entry.pending_recipient_bot_ids.is_empty()
-                || pending_user_attention_message_ids.contains(&entry.id)
+                || pending_swarm_attention_message_ids.contains(&entry.id)
         })
         .map(|entry| entry.id.clone())
         .collect::<BTreeSet<_>>();
+    causal_chain_entries(board, protected)
+}
+
+fn pending_attention_board_entries(
+    board: &VecDeque<BoardEntry>,
+    pending_swarm_attention_message_ids: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let protected = board
+        .iter()
+        .filter(|entry| pending_swarm_attention_message_ids.contains(&entry.id))
+        .map(|entry| entry.id.clone())
+        .collect::<BTreeSet<_>>();
+    causal_chain_entries(board, protected)
+}
+
+fn causal_chain_entries(
+    board: &VecDeque<BoardEntry>,
+    mut protected: BTreeSet<String>,
+) -> BTreeSet<String> {
     loop {
         let previous = protected.len();
         for entry in board {
@@ -2090,38 +2015,6 @@ fn protected_board_entries(
     }
 }
 
-fn user_attention(catalog: &Catalog, message_id: &str) -> Result<UserAttention> {
-    let (swarm, entry) = catalog
-        .swarms
-        .values()
-        .find_map(|swarm| {
-            swarm
-                .board
-                .iter()
-                .find(|entry| entry.id == message_id)
-                .map(|entry| (swarm, entry))
-        })
-        .ok_or_else(|| config(format!("unknown swarm message `{message_id}`")))?;
-    let mut root = entry;
-    while let Some(parent_id) = root.in_reply_to_message_id.as_deref() {
-        root = swarm
-            .board
-            .iter()
-            .find(|candidate| candidate.id == parent_id)
-            .ok_or_else(|| config(format!("unknown swarm message `{parent_id}`")))?;
-    }
-    Ok(UserAttention {
-        entry: entry.clone(),
-        leader_bot_id: swarm.leader_bot_id.clone(),
-        root_source_session_id: root.source_session_id.clone(),
-        workspace: catalog.message_workspaces.get(&root.id).cloned(),
-        assigned_session_id: catalog
-            .assigned_user_attention_session_ids
-            .get(message_id)
-            .cloned(),
-    })
-}
-
 fn outcome_text(outcome: &SwarmRunOutcome) -> String {
     match outcome {
         SwarmRunOutcome::Succeeded { summary } => bounded_message(&neutralize_mentions(summary)),
@@ -2135,7 +2028,7 @@ fn routine_outcome_text(
     run: &RoutineRun,
     detail: Option<&str>,
     leader_handle: Option<&str>,
-    needs_user_attention: bool,
+    needs_swarm_attention: bool,
 ) -> String {
     let prefix = leader_handle.map_or_else(String::new, |handle| format!("@{handle} "));
     let status = match run.status {
@@ -2145,7 +2038,7 @@ fn routine_outcome_text(
         RoutineRunStatus::Running => "is still running",
     };
     let routine = run.routine_id.get(..8).unwrap_or(&run.routine_id);
-    let attention = if needs_user_attention { " @user" } else { "" };
+    let attention = if needs_swarm_attention { " @user" } else { "" };
     bounded_message(&format!(
         "{prefix}Routine {routine} {status}{}{attention}",
         detail.map_or_else(String::new, |detail| format!(
@@ -2226,7 +2119,7 @@ fn prune_catalog(catalog: &mut Catalog, live_routine_run_ids: &BTreeSet<String>)
     for swarm in catalog.swarms.values_mut() {
         trim_acknowledged(
             &mut swarm.board,
-            &catalog.pending_user_attention_message_ids,
+            &catalog.pending_swarm_attention_message_ids,
         );
     }
     catalog
@@ -2238,19 +2131,47 @@ fn prune_catalog(catalog: &mut Catalog, live_routine_run_ids: &BTreeSet<String>)
         .flat_map(|swarm| swarm.board.iter().map(|entry| entry.id.clone()))
         .collect::<BTreeSet<_>>();
     catalog
-        .message_workspaces
-        .retain(|message_id, _| live_message_ids.contains(message_id));
-    catalog
-        .pending_user_attention_message_ids
+        .pending_swarm_attention_message_ids
         .retain(|message_id| live_message_ids.contains(message_id));
-    catalog
-        .assigned_user_attention_session_ids
-        .retain(|message_id, _| live_message_ids.contains(message_id));
 }
 
 fn mentioned_handles(text: &str) -> BTreeSet<String> {
-    let bytes = text.as_bytes();
     let mut handles = BTreeSet::new();
+    for_each_mention(text, |_, _, handle| {
+        handles.insert(handle.to_owned());
+    });
+    handles
+}
+
+fn swarm_attention_text(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut copied_through = 0;
+    for_each_mention(text, |start, end, handle| {
+        if handle == USER_HANDLE {
+            output.push_str(&text[copied_through..start]);
+            copied_through = end;
+        }
+    });
+    output.push_str(&text[copied_through..]);
+    let normalized = output.split_whitespace().collect::<Vec<_>>().join(" ");
+    let preview =
+        if normalized.is_empty() || normalized.bytes().all(|byte| byte.is_ascii_punctuation()) {
+            "Needs your attention."
+        } else {
+            &normalized
+        };
+    if preview.len() <= MAX_ATTENTION_TEXT_BYTES {
+        return preview.into();
+    }
+    let mut end = MAX_ATTENTION_TEXT_BYTES - '…'.len_utf8();
+    while !preview.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", preview[..end].trim_end())
+}
+
+fn for_each_mention(text: &str, mut visit: impl FnMut(usize, usize, &str)) {
+    let bytes = text.as_bytes();
     let mut index = 0;
     while index < bytes.len() {
         if bytes[index] != b'@'
@@ -2267,11 +2188,10 @@ fn mentioned_handles(text: &str) -> BTreeSet<String> {
             end += 1;
         }
         if start < end {
-            handles.insert(text[start..end].to_owned());
+            visit(index, end, &text[start..end]);
         }
         index = end.max(index + 1);
     }
-    handles
 }
 
 const fn is_mention_byte(byte: u8) -> bool {
@@ -2281,8 +2201,7 @@ const fn is_mention_byte(byte: u8) -> bool {
 fn validate_catalog(catalog: &Catalog) -> Result<()> {
     let mut bots = BTreeSet::new();
     let mut message_ids = BTreeSet::new();
-    let mut human_message_ids = BTreeSet::new();
-    let mut user_attention_ids = BTreeSet::new();
+    let mut swarm_attention_ids = BTreeSet::new();
     for (id, swarm) in &catalog.swarms {
         let mut pending_counts = BTreeMap::<&str, usize>::new();
         validate_swarm_id(id)?;
@@ -2323,7 +2242,6 @@ fn validate_catalog(catalog: &Catalog) -> Result<()> {
                         "human swarm messages must use the reserved user author",
                     ));
                 }
-                human_message_ids.insert(entry.id.clone());
             } else {
                 validate_member(&entry.author)?;
                 if entry.author.handle == USER_HANDLE {
@@ -2331,12 +2249,9 @@ fn validate_catalog(catalog: &Catalog) -> Result<()> {
                 }
             }
             validate_session_id(&entry.source_session_id)?;
-            if let Some(source_event_id) = &entry.source_event_id {
-                validate_message_id(source_event_id)?;
-            }
             validate_message(&entry.text)?;
             if mentioned_handles(&entry.text).contains(USER_HANDLE) {
-                user_attention_ids.insert(entry.id.clone());
+                swarm_attention_ids.insert(entry.id.clone());
             }
             if entry.reply_depth > MAX_TERMINAL_REPLY_DEPTH {
                 return Err(config(format!(
@@ -2447,7 +2362,16 @@ fn validate_catalog(catalog: &Catalog) -> Result<()> {
             }
         }
         let protected_message_ids =
-            protected_board_entries(&swarm.board, &catalog.pending_user_attention_message_ids);
+            protected_board_entries(&swarm.board, &catalog.pending_swarm_attention_message_ids);
+        if pending_attention_board_entries(
+            &swarm.board,
+            &catalog.pending_swarm_attention_message_ids,
+        )
+        .len()
+            > MAX_PAGE_ENTRIES
+        {
+            return Err(too_many_attention_entries(id));
+        }
         if swarm
             .board
             .iter()
@@ -2461,43 +2385,14 @@ fn validate_catalog(catalog: &Catalog) -> Result<()> {
             return Err(config(format!("swarm `{id}` board state is invalid")));
         }
     }
-    if !human_message_ids
-        .iter()
-        .all(|message_id| catalog.message_workspaces.contains_key(message_id))
-    {
-        return Err(config("human swarm message workspaces are inconsistent"));
-    }
     if !catalog
-        .message_workspaces
-        .keys()
-        .all(|message_id| message_ids.contains(message_id))
+        .pending_swarm_attention_message_ids
+        .iter()
+        .all(|message_id| swarm_attention_ids.contains(message_id))
     {
         return Err(config(
-            "swarm message workspace references an invalid message",
+            "pending Swarm attention references an invalid message",
         ));
-    }
-    for workspace in catalog.message_workspaces.values() {
-        if !workspace.is_absolute() {
-            return Err(config("human swarm message workspace must be absolute"));
-        }
-    }
-    if !catalog
-        .pending_user_attention_message_ids
-        .iter()
-        .all(|message_id| user_attention_ids.contains(message_id))
-    {
-        return Err(config(
-            "pending user attention references an invalid swarm message",
-        ));
-    }
-    for (message_id, session_id) in &catalog.assigned_user_attention_session_ids {
-        if !catalog
-            .pending_user_attention_message_ids
-            .contains(message_id)
-        {
-            return Err(config("user attention conversation is not pending"));
-        }
-        validate_delivery_session_id(session_id)?;
     }
     for run_id in &catalog.projected_routine_run_ids {
         validate_message_id(run_id)?;
@@ -2508,6 +2403,12 @@ fn validate_catalog(catalog: &Catalog) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+fn too_many_attention_entries(swarm_id: &str) -> Error {
+    config(format!(
+        "swarm `{swarm_id}` has more than {MAX_PAGE_ENTRIES} pending attention messages and ancestors"
+    ))
 }
 
 fn validate_recipient_ids(recipients: &[String]) -> Result<()> {
@@ -3670,16 +3571,11 @@ mod tests {
 
     #[tokio::test]
     async fn human_and_bot_messages_share_the_leaders_swarm_conversation() {
-        let (directory, checkpoints, store, _deliveries) = store();
+        let (_directory, checkpoints, store, _deliveries) = store();
         let swarm = create_swarm(&store).await;
-        let workspace = directory.path().to_path_buf();
 
         let posted = store
-            .post_user(
-                &swarm.id,
-                workspace.clone(),
-                "Please coordinate this".into(),
-            )
+            .post_user(&swarm.id, "Please coordinate this".into())
             .await
             .expect("human post");
 
@@ -3945,17 +3841,13 @@ mod tests {
 
         assert!(
             store
-                .project_routine_outcome(
-                    &run,
-                    Some("Dependencies are current".into()),
-                    Some(directory.path().into())
-                )
+                .project_routine_outcome(&run, Some("Dependencies are current".into()),)
                 .await
                 .expect("project routine")
         );
         assert!(
             !store
-                .project_routine_outcome(&run, None, Some(directory.path().into()))
+                .project_routine_outcome(&run, None)
                 .await
                 .expect("idempotent routine projection")
         );
@@ -4018,7 +3910,7 @@ mod tests {
 
         assert!(
             !store
-                .project_routine_outcome(&run, None, Some(directory.path().into()))
+                .project_routine_outcome(&run, None)
                 .await
                 .expect("record projection without swarm")
         );
@@ -4033,7 +3925,7 @@ mod tests {
             .expect("create later swarm");
         assert!(
             !reloaded
-                .project_routine_outcome(&run, None, Some(directory.path().into()))
+                .project_routine_outcome(&run, None)
                 .await
                 .expect("historical run remains projected")
         );
@@ -4048,50 +3940,138 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn user_attention_protects_its_exact_origin_and_can_share_that_chat() {
-        let (_directory, _checkpoints, store, _deliveries) = store();
-        create_swarm(&store).await;
+    async fn swarm_attention_is_durable_and_clears_with_human_reply_or_disband() {
+        let (_directory, checkpoints, store, _deliveries) = store();
+        let swarm = create_swarm(&store).await;
         let leader = bot_id(&store, "leader");
-        let first = store
+        let attention = store
             .post(
                 &leader,
-                "causal-visible-chat",
-                "Decision one @user".into(),
+                "hidden-work",
+                "Choose the release scope @user".into(),
                 None,
             )
             .await
-            .expect("first attention");
-        let second = store
+            .expect("post attention");
+        let (reloaded, _deliveries) = reload(checkpoints, &store);
+        assert_eq!(
+            reloaded.pending_attentions().await.expect("attention"),
+            vec![SwarmAttention {
+                swarm_id: swarm.id.clone(),
+                swarm_title: swarm.title.clone(),
+                message_id: attention.entry.id,
+                bot_id: leader.clone(),
+                text: "Choose the release scope".into(),
+            }]
+        );
+        reloaded
             .post(
                 &leader,
-                "causal-visible-chat",
-                "Decision two @user".into(),
+                "hidden-work",
+                "Choose the reviewer @user".into(),
                 None,
             )
             .await
             .expect("second attention");
-        let visible_session = Uuid::new_v4().to_string();
-
-        store
-            .assign_user_attention(&first.entry.id, &visible_session)
-            .await
-            .expect("first assignment");
-        store
-            .assign_user_attention(&second.entry.id, &visible_session)
-            .await
-            .expect("shared exact assignment");
-
-        assert!(
-            store
-                .has_pending_source_sessions(&["causal-visible-chat".into()])
+        assert_eq!(
+            reloaded
+                .pending_attentions()
                 .await
-                .expect("pending source")
+                .expect("all attention")
+                .len(),
+            2
         );
+
+        reloaded
+            .post_user(&swarm.id, "Ship the patch.".into())
+            .await
+            .expect("human reply");
         assert!(
-            store
-                .has_pending_source_sessions(&[visible_session])
+            reloaded
+                .pending_attentions()
                 .await
-                .expect("assigned attention chat")
+                .expect("cleared attention")
+                .is_empty()
+        );
+
+        reloaded
+            .post(
+                &leader,
+                "hidden-work",
+                "One more decision @user".into(),
+                None,
+            )
+            .await
+            .expect("second attention");
+        reloaded.disband(&swarm.id).await.expect("disband swarm");
+        assert!(
+            reloaded
+                .pending_attentions()
+                .await
+                .expect("disbanded attention")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn records_keep_old_pending_attention_context_within_the_fixed_page() {
+        let (_directory, _checkpoints, store, _deliveries) = store();
+        let swarm = create_swarm(&store).await;
+        let leader = bot_id(&store, "leader");
+        let reviewer = bot_id(&store, "reviewer");
+        let reviewer_handle = swarm
+            .members
+            .iter()
+            .find(|member| member.bot_id == reviewer)
+            .expect("reviewer")
+            .handle
+            .clone();
+        let parent = post(&store, "leader", format!("@{reviewer_handle} investigate"))
+            .await
+            .expect("parent post");
+        store
+            .acknowledge(&parent.entry.id, &reviewer)
+            .await
+            .expect("acknowledge parent");
+        let attention = store
+            .post(
+                &reviewer,
+                "reviewer-thread",
+                "Choose an approach @user".into(),
+                Some(parent.entry.id.clone()),
+            )
+            .await
+            .expect("attention reply");
+        store
+            .acknowledge(&attention.entry.id, &leader)
+            .await
+            .expect("acknowledge leader delivery");
+
+        let mut newest_id = String::new();
+        for sequence in 0..=MAX_PAGE_ENTRIES {
+            newest_id = post(&store, "leader", format!("newer update {sequence}"))
+                .await
+                .expect("newer post")
+                .entry
+                .id;
+        }
+
+        let record = store
+            .records()
+            .await
+            .expect("Swarm records")
+            .into_iter()
+            .find(|record| record.id == swarm.id)
+            .expect("Swarm record");
+        assert_eq!(record.messages.len(), MAX_PAGE_ENTRIES);
+        assert_eq!(record.messages[0].id, parent.entry.id);
+        assert_eq!(record.messages[1].id, attention.entry.id);
+        assert_eq!(record.messages.last().expect("newest").id, newest_id);
+        assert!(
+            record
+                .messages
+                .windows(2)
+                .all(|pair| pair[0].sequence < pair[1].sequence)
         );
     }
 
@@ -4100,7 +4080,7 @@ mod tests {
         let (_directory, _checkpoints, store, _deliveries) = store();
         create_swarm(&store).await;
         let first = post(&store, "leader", "first".into()).await.expect("first");
-        let removed = post(&store, "reviewer", "removed".into())
+        let removed = post(&store, "reviewer", "removed @user".into())
             .await
             .expect("removed");
         assert_eq!(removed.entry.sequence, first.entry.sequence + 1);
@@ -4109,6 +4089,13 @@ mod tests {
             .remove_bot(&bot_id(&store, "reviewer"))
             .await
             .expect("purge");
+        assert!(
+            store
+                .pending_attentions()
+                .await
+                .expect("removed Bot attention")
+                .is_empty()
+        );
         let next = post(&store, "leader", "next".into()).await.expect("next");
 
         assert_eq!(next.entry.sequence, removed.entry.sequence + 1);
@@ -4129,7 +4116,6 @@ mod tests {
                 created_at_ms: now,
                 author: author.clone(),
                 source_session_id: "leader-thread".into(),
-                source_event_id: None,
                 text: "\0".repeat(MAX_MESSAGE_BYTES),
                 mentioned_recipient_bot_ids: Vec::new(),
                 pending_recipient_bot_ids: Vec::new(),
@@ -4163,27 +4149,31 @@ mod tests {
     }
 
     #[test]
-    fn retention_protects_more_than_one_page_of_attention_chains() {
+    fn catalog_rejects_attention_chains_larger_than_the_wire_page() {
         let now = unix_ms();
-        let author = SwarmMember {
+        let leader = SwarmMember {
             bot_id: "leader".into(),
             handle: "leader".into(),
             joined_at_ms: now,
         };
+        let reviewer = SwarmMember {
+            bot_id: "reviewer".into(),
+            handle: "reviewer".into(),
+            joined_at_ms: now,
+        };
         let mut board = VecDeque::new();
-        let mut pending_attention = BTreeSet::new();
-        for sequence in 0..=MAX_ACKNOWLEDGED_ENTRIES {
-            let root_id = format!("root-{sequence}");
-            let attention_id = format!("attention-{sequence}");
+        let mut pending_attention_message_ids = BTreeSet::new();
+        for pair in 0..=MAX_PAGE_ENTRIES / 2 {
+            let root_id = Uuid::new_v4().to_string();
+            let attention_id = Uuid::new_v4().to_string();
             board.push_back(BoardEntry {
                 id: root_id.clone(),
-                sequence: u64::try_from(sequence * 2 + 1).expect("sequence"),
+                sequence: u64::try_from(pair * 2 + 1).expect("sequence"),
                 created_at_ms: now,
-                author: author.clone(),
-                source_session_id: "causal-chat".into(),
-                source_event_id: None,
+                author: leader.clone(),
+                source_session_id: "leader-thread".into(),
                 text: "Work".into(),
-                mentioned_recipient_bot_ids: Vec::new(),
+                mentioned_recipient_bot_ids: vec![reviewer.bot_id.clone()],
                 pending_recipient_bot_ids: Vec::new(),
                 assigned_recipient_session_ids: BTreeMap::new(),
                 in_reply_to_message_id: None,
@@ -4191,11 +4181,10 @@ mod tests {
             });
             board.push_back(BoardEntry {
                 id: attention_id.clone(),
-                sequence: u64::try_from(sequence * 2 + 2).expect("sequence"),
+                sequence: u64::try_from(pair * 2 + 2).expect("sequence"),
                 created_at_ms: now,
-                author: author.clone(),
-                source_session_id: "hidden-chat".into(),
-                source_event_id: Some(format!("approval-{sequence}")),
+                author: reviewer.clone(),
+                source_session_id: "reviewer-thread".into(),
                 text: "Needs input @user".into(),
                 mentioned_recipient_bot_ids: Vec::new(),
                 pending_recipient_bot_ids: Vec::new(),
@@ -4203,48 +4192,40 @@ mod tests {
                 in_reply_to_message_id: Some(root_id),
                 reply_depth: 1,
             });
-            pending_attention.insert(attention_id);
+            pending_attention_message_ids.insert(attention_id);
         }
-        for sequence in 0..=MAX_ACKNOWLEDGED_ENTRIES {
-            board.push_back(BoardEntry {
-                id: format!("status-{sequence}"),
-                sequence: u64::try_from((MAX_ACKNOWLEDGED_ENTRIES + 1) * 2 + sequence + 1)
-                    .expect("sequence"),
-                created_at_ms: now,
-                author: author.clone(),
-                source_session_id: "status-chat".into(),
-                source_event_id: None,
-                text: "Status".into(),
-                mentioned_recipient_bot_ids: Vec::new(),
-                pending_recipient_bot_ids: Vec::new(),
-                assigned_recipient_session_ids: BTreeMap::new(),
-                in_reply_to_message_id: None,
-                reply_depth: 0,
-            });
-        }
+        let message_count = board.len();
+        let swarm_id = Uuid::new_v4().to_string();
+        let catalog = Catalog {
+            swarms: BTreeMap::from([(
+                swarm_id,
+                StoredSwarm {
+                    title: "Review team".into(),
+                    leader_bot_id: leader.bot_id.clone(),
+                    members: BTreeMap::from([
+                        (leader.bot_id, StoredMember { joined_at_ms: now }),
+                        (reviewer.bot_id, StoredMember { joined_at_ms: now }),
+                    ]),
+                    latest_sequence: u64::try_from(message_count).expect("latest sequence"),
+                    board,
+                    created_at_ms: now,
+                    updated_at_ms: now,
+                },
+            )]),
+            pending_swarm_attention_message_ids: pending_attention_message_ids,
+            ..Catalog::default()
+        };
 
-        trim_acknowledged(&mut board, &pending_attention);
-
         assert_eq!(
-            board
-                .iter()
-                .filter(|entry| entry.id.starts_with("root-"))
-                .count(),
-            MAX_ACKNOWLEDGED_ENTRIES + 1
+            message_count,
+            MAX_PAGE_ENTRIES + 2,
+            "the limit must include each attention's parent"
         );
-        assert_eq!(
-            board
-                .iter()
-                .filter(|entry| entry.id.starts_with("attention-"))
-                .count(),
-            MAX_ACKNOWLEDGED_ENTRIES + 1
-        );
-        assert_eq!(
-            board
-                .iter()
-                .filter(|entry| entry.id.starts_with("status-"))
-                .count(),
-            MAX_ACKNOWLEDGED_ENTRIES
+        assert!(
+            validate_catalog(&catalog)
+                .expect_err("oversized attention context")
+                .to_string()
+                .contains("pending attention messages and ancestors")
         );
     }
 
@@ -4253,6 +4234,25 @@ mod tests {
         assert_eq!(
             mentioned_handles("@one-bot mail@two @one-bot; @three"),
             BTreeSet::from(["one-bot".into(), "three".into()])
+        );
+    }
+
+    #[test]
+    fn swarm_attention_text_removes_only_the_reserved_marker() {
+        assert_eq!(
+            swarm_attention_text("mail@user Choose a release @user"),
+            "mail@user Choose a release"
+        );
+        assert_eq!(swarm_attention_text("@user"), "Needs your attention.");
+        assert_eq!(swarm_attention_text("@user."), "Needs your attention.");
+
+        let preview = swarm_attention_text(&format!("@user {}", "🦀".repeat(200)));
+        assert!(preview.len() <= MAX_ATTENTION_TEXT_BYTES);
+        assert!(preview.ends_with('…'));
+        assert!(
+            preview[..preview.len() - '…'.len_utf8()]
+                .chars()
+                .all(|character| character == '🦀')
         );
     }
 }

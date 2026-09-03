@@ -143,16 +143,7 @@ impl HostState {
                     .iter()
                     .filter(|run| run.status != RoutineRunStatus::Running)
                 {
-                    let workspace = self
-                        .bots
-                        .routine(&run.routine_id)
-                        .ok()
-                        .map(|routine| routine.workspace);
-                    if let Err(error) = self
-                        .swarm
-                        .project_routine_outcome(run, None, workspace)
-                        .await
-                    {
+                    if let Err(error) = self.swarm.project_routine_outcome(run, None).await {
                         self.broadcast(ServerMessage::Error {
                             code: "routine_state_error".into(),
                             message: error.to_string(),
@@ -320,14 +311,12 @@ impl HostState {
                         RoutineRunStatus::Failed,
                         Some(rejection.message.clone()),
                     ) {
-                        Ok(completed) => match self
-                            .swarm
-                            .project_routine_outcome(&completed, None, None)
-                            .await
-                        {
-                            Ok(_) => Err(rejection),
-                            Err(error) => Err(internal(error)),
-                        },
+                        Ok(completed) => {
+                            match self.swarm.project_routine_outcome(&completed, None).await {
+                                Ok(_) => Err(rejection),
+                                Err(error) => Err(internal(error)),
+                            }
+                        }
                         Err(error) => Err(internal(error)),
                     },
                 };
@@ -507,7 +496,7 @@ impl HostState {
                 )
                 .map_err(internal)?;
             self.swarm
-                .project_routine_outcome(&completed, None, None)
+                .project_routine_outcome(&completed, None)
                 .await
                 .map_err(internal)?;
             return Err(rejection);
@@ -545,7 +534,7 @@ impl HostState {
                 )
                 .map_err(internal)?;
             self.swarm
-                .project_routine_outcome(&completed, None, None)
+                .project_routine_outcome(&completed, None)
                 .await
                 .map_err(internal)?;
             return Err(rejection);

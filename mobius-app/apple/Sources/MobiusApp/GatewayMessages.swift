@@ -551,6 +551,7 @@ enum GatewayEnvelope: Decodable, Sendable {
     )
     case sessions(requestID: String?, sessions: [SessionRecord])
     case backgroundApprovals([BackgroundApproval])
+    case swarmAttentions([SwarmAttention])
     case botSessions(requestID: String, botID: String, sessions: [SessionRecord])
     case bots(requestID: String?, bots: [BotRecord])
     case swarms(requestID: String?, swarms: [SwarmRecord])
@@ -700,6 +701,10 @@ enum GatewayEnvelope: Decodable, Sendable {
         case "background_approvals":
             self = .backgroundApprovals(
                 try container.decode([BackgroundApproval].self, forKey: "approvals")
+            )
+        case "swarm_attentions":
+            self = .swarmAttentions(
+                try container.decode([SwarmAttention].self, forKey: "attentions")
             )
         case "bot_sessions":
             self = .botSessions(
@@ -893,6 +898,7 @@ struct ReadyPayload: Decodable, Sendable {
     let bots: [BotRecord]
     let sessions: [SessionRecord]
     let backgroundApprovals: [BackgroundApproval]
+    let swarmAttentions: [SwarmAttention]
     let swarms: [SwarmRecord]
     let providers: [ProviderStatus]
     let providerInstances: [ProviderInstance]
@@ -1089,6 +1095,14 @@ struct BackgroundApproval: Codable, Equatable, Hashable, Sendable {
     let botId: String
     let turnId: String
     let requestId: String
+}
+
+struct SwarmAttention: Codable, Equatable, Hashable, Sendable {
+    let swarmId: String
+    let swarmTitle: String
+    let messageId: String
+    let botId: String
+    let text: String
 }
 
 struct ModelChanged: Codable, Hashable, Sendable {

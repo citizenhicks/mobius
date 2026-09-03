@@ -376,6 +376,34 @@ fn swarm_management_frames_keep_request_correlation_out_of_broadcasts() {
 }
 
 #[test]
+fn swarm_attention_frames_carry_the_pending_board_message() {
+    let frame = ServerFrame::new(ServerMessage::SwarmAttentions {
+        attentions: vec![SwarmAttention {
+            swarm_id: "swarm-a".into(),
+            swarm_title: "Review team".into(),
+            message_id: "message-a".into(),
+            bot_id: "bot-a".into(),
+            text: "Choose the release scope".into(),
+        }],
+    });
+
+    assert_eq!(
+        serde_json::to_value(frame).expect("encode Swarm attention"),
+        serde_json::json!({
+            "version": PROTOCOL_VERSION,
+            "type": "swarm_attentions",
+            "attentions": [{
+                "swarm_id": "swarm-a",
+                "swarm_title": "Review team",
+                "message_id": "message-a",
+                "bot_id": "bot-a",
+                "text": "Choose the release scope"
+            }]
+        })
+    );
+}
+
+#[test]
 fn swarm_chat_and_hidden_bot_session_frames_are_gateway_scoped() {
     let post = ClientFrame::new(ClientMessage::PostSwarmMessage {
         request_id: "request-post".into(),
@@ -962,6 +990,7 @@ fn gateway_ready_contains_no_selected_session() {
             bots: Vec::new(),
             sessions: Vec::new(),
             background_approvals: Vec::new(),
+            swarm_attentions: Vec::new(),
             swarms: Vec::new(),
             providers: Vec::new(),
             provider_instances: Vec::new(),

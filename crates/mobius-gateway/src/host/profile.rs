@@ -268,6 +268,7 @@ pub(super) async fn gateway_ready(
         background_approvals: background_approvals(&state.checkpoints, &state.activities)
             .await
             .map_err(internal)?,
+        swarm_attentions: state.swarm.pending_attentions().await.map_err(internal)?,
         swarms: state.swarm.records().await.map_err(internal)?,
         providers: provider_statuses(),
         provider_instances: provider_instances(&config, &state.store, &state.credentials)

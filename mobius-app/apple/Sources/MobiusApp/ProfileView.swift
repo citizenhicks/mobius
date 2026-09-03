@@ -722,7 +722,7 @@ private struct RemoteNotificationSettings: View {
             .disabled(model.isUpdatingNotifications)
             SettingsInfoButton(
                 title: "Notifications",
-                detail: "Alerts you when a Cloud chat needs approval or finishes. This setting stays on this device."
+                detail: "Alerts you on this device when a Cloud chat needs approval or finishes, or a Swarm needs attention."
             )
         }
         if model.isUpdatingNotifications {

@@ -188,13 +188,18 @@ struct AppToast: Identifiable {
     let id = UUID()
     let message: String
     let tone: ToastTone
-    let sessionID: String?
+    let target: AppNotificationTarget?
 
-    init(message: String, tone: ToastTone, sessionID: String? = nil) {
+    init(message: String, tone: ToastTone, target: AppNotificationTarget? = nil) {
         self.message = message
         self.tone = tone
-        self.sessionID = sessionID
+        self.target = target
     }
+}
+
+enum AppNotificationTarget: Equatable {
+    case session(String)
+    case swarm(swarmID: String, messageID: String)
 }
 
 enum ComposerAttachmentState: Equatable {

@@ -180,6 +180,7 @@ extension AppModel {
             pendingChatTitles.removeAll()
             sessions = []
             backgroundApprovals = []
+            swarmAttentions = []
             chatBotFilterIDs.removeAll()
             bots = []
             swarms = []

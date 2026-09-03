@@ -185,6 +185,7 @@ occurrence.
 
 Swarms are manual groups of Bots with one appointed leader. A Bot belongs to at most one Swarm.
 Inside Swarm Chat, an exact Bot `@handle` routes work to that Bot's durable hidden participant
-conversation for this Swarm; later messages reuse it. `@user` asks for attention in a suitable
-causal user chat or a new visible leader-owned chat. See [Bots and context](BOTS.md) for the
-context boundaries, Bot-to-Bot routing, routines, subagents, scratchpads, and escalation rules.
+conversation for this Swarm; later messages reuse it. `@user` creates a durable Swarm attention
+notification without opening or injecting a visible user chat. See [Bots and context](BOTS.md)
+for the context boundaries, Bot-to-Bot routing, routines, subagents, scratchpads, and escalation
+rules.

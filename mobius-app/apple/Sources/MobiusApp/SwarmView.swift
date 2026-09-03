@@ -207,8 +207,17 @@ struct SwarmView: View {
         Section {
             SettingsNavigationRow(
                 hint: "Opens the shared Swarm Chat",
-                open: { model.navigationPath.append(.swarmChat(swarm.id)) },
-                marks: EmptyView.init
+                open: { model.openSwarmChat(swarm.id) },
+                marks: {
+                    if model.hasSwarmAttention(forSwarmID: swarm.id) {
+                        MobiusIcon(
+                            .bellDot,
+                            size: MobiusStyle.glyphMark,
+                            foreground: palette.warning
+                        )
+                        .accessibilityLabel("Swarm Chat needs attention")
+                    }
+                }
             ) {
                 SettingsRowLabel(
                     title: "Swarm Chat",

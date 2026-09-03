@@ -324,6 +324,8 @@ final class AppModelTests: XCTestCase {
         bots: [BotRecord]? = nil,
         sessions: [SessionRecord]? = nil,
         backgroundApprovals: [BackgroundApproval] = [],
+        swarmAttentions: [SwarmAttention] = [],
+        swarms: [SwarmRecord] = [],
         extensions: [ExtensionRecord] = [],
         contributions: [FrontendContribution] = []
     ) -> ReadyPayload {
@@ -332,7 +334,8 @@ final class AppModelTests: XCTestCase {
             bots: bots ?? [bot(config: botDefaults)],
             sessions: sessions ?? [session(state: .idle)],
             backgroundApprovals: backgroundApprovals,
-            swarms: [],
+            swarmAttentions: swarmAttentions,
+            swarms: swarms,
             providers: [],
             providerInstances: [],
             botDefaults: botDefaults,

@@ -2458,6 +2458,7 @@ mod tests {
             bots,
             sessions: Vec::new(),
             background_approvals: Vec::new(),
+            swarm_attentions: Vec::new(),
             swarms: Vec::new(),
             providers: Vec::new(),
             provider_instances: Vec::new(),

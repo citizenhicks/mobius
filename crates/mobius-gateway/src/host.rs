@@ -27,9 +27,8 @@ use mobius::middleware::scratchpad::ScratchpadStore;
 use mobius::middleware::session_files::{SessionFileDeletion, SessionFileStore};
 use mobius::middleware::{FrontendExtensions, Middleware as _};
 use mobius::protocol::{
-    ActiveMessageDelivery, Event, EventMsg, FrontendContribution, FrontendEvent,
-    FrontendPreviewEvent, MessageAuthor, MessageEvent, MessageSubmission, ModelStepContentPhase,
-    Op, RenderedBlock, ReviewDecision, Submission,
+    Event, EventMsg, FrontendContribution, FrontendEvent, FrontendPreviewEvent, MessageAuthor,
+    MessageSubmission, ModelStepContentPhase, Op, RenderedBlock, ReviewDecision, Submission,
 };
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc, oneshot};
 use uuid::Uuid;
@@ -53,7 +52,7 @@ use crate::wire::{
     RecordedEvent, RenderedEvent, RenderedPreview, RoutineRunStatus, RunStats, RunSummary,
     ServerFrame, ServerMessage, SessionActivity, SessionActivityState, SessionOutcome,
     SessionReadyPayload, SessionRecord, SessionRunGroup, SessionWidget, SshIdentityRecord,
-    SwarmRecord, WorkspaceFileScope, validate_session_id,
+    SwarmAttention, SwarmRecord, WorkspaceFileScope, validate_session_id,
 };
 use crate::{Error, Result};
 
@@ -538,12 +537,9 @@ impl GatewayHost {
         text: String,
     ) -> std::result::Result<Vec<SwarmRecord>, Rejection> {
         let _mutation = self.begin_mutation().await?;
-        let (swarm, workspace) = {
-            let state = self.state.lock().await;
-            (Arc::clone(&state.swarm), state.background_workspace.clone())
-        };
+        let swarm = Arc::clone(&self.state.lock().await.swarm);
         swarm
-            .post_user(swarm_id, workspace, text)
+            .post_user(swarm_id, text)
             .await
             .map_err(invalid_swarm)?;
         let swarms = swarm.records().await.map_err(internal)?;
@@ -973,29 +969,14 @@ impl GatewayHost {
                 let gateway = gateway_state.lock().await;
                 (
                     Arc::clone(&gateway.swarm),
-                    gateway
-                        .bots
-                        .history(None)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|run| {
-                            let workspace = gateway
-                                .bots
-                                .routine(&run.routine_id)
-                                .ok()
-                                .map(|routine| routine.workspace);
-                            (run, workspace)
-                        })
-                        .collect::<Vec<_>>(),
+                    gateway.bots.history(None).unwrap_or_default(),
                 )
             };
-            for (run, workspace) in terminal_runs
+            for run in terminal_runs
                 .iter()
-                .filter(|(run, _)| run.status != RoutineRunStatus::Running)
+                .filter(|run| run.status != RoutineRunStatus::Running)
             {
-                let _ = swarm
-                    .project_routine_outcome(run, None, workspace.clone())
-                    .await;
+                let _ = swarm.project_routine_outcome(run, None).await;
             }
             let startup = match swarm.pending_recipient_bot_ids().await {
                 Ok(startup) => startup,
@@ -1011,12 +992,6 @@ impl GatewayHost {
             drop(gateway_state);
 
             let mut attempts = HashMap::new();
-            let mut attention_attempts = HashSet::new();
-            if let Ok(attention) = swarm.pending_user_attention().await {
-                for request in attention {
-                    swarm.notify_user_attention(&request.entry.id);
-                }
-            }
             for target_bot_id in startup {
                 let Some(gateway_state) = state.upgrade() else {
                     return;
@@ -1026,11 +1001,7 @@ impl GatewayHost {
                     events: events.clone(),
                 };
                 gateway
-                    .handle_swarm_delivery(
-                        SwarmDelivery::Pending { target_bot_id },
-                        &mut attempts,
-                        &mut attention_attempts,
-                    )
+                    .handle_swarm_delivery(SwarmDelivery::Pending { target_bot_id }, &mut attempts)
                     .await;
             }
 
@@ -1042,9 +1013,7 @@ impl GatewayHost {
                     state: gateway_state,
                     events: events.clone(),
                 };
-                gateway
-                    .handle_swarm_delivery(delivery, &mut attempts, &mut attention_attempts)
-                    .await;
+                gateway.handle_swarm_delivery(delivery, &mut attempts).await;
             }
         });
     }
@@ -1053,13 +1022,15 @@ impl GatewayHost {
         &self,
         delivery: SwarmDelivery,
         attempts: &mut HashMap<String, SwarmDeliveryAttempt>,
-        attention_attempts: &mut HashSet<String>,
     ) {
         if matches!(&delivery, SwarmDelivery::Changed) {
             let swarm = Arc::clone(&self.state.lock().await.swarm);
-            match swarm.records().await {
-                Ok(swarms) => self.broadcast_swarms(&swarms),
-                Err(error) => {
+            match (swarm.records().await, swarm.pending_attentions().await) {
+                (Ok(swarms), Ok(attentions)) => {
+                    self.broadcast_swarms(&swarms);
+                    self.broadcast_swarm_attentions(&attentions);
+                }
+                (Err(error), _) | (_, Err(error)) => {
                     let _ = self.events.send(ServerFrame::new(ServerMessage::Error {
                         code: "swarm_delivery".into(),
                         message: error.to_string(),
@@ -1089,11 +1060,6 @@ impl GatewayHost {
                     for target_bot_id in targets {
                         swarm.notify_pending(&target_bot_id);
                     }
-                    if let Ok(attention) = swarm.pending_user_attention().await {
-                        for request in attention {
-                            swarm.notify_user_attention(&request.entry.id);
-                        }
-                    }
                 }
                 Err(error) => {
                     let _ = self.events.send(ServerFrame::new(ServerMessage::Error {
@@ -1105,21 +1071,10 @@ impl GatewayHost {
             }
             return;
         }
-        if let SwarmDelivery::UserAttentionAcknowledged { message_id } = &delivery {
-            attention_attempts.remove(message_id);
-            return;
-        }
-        if let SwarmDelivery::UserAttention { message_id } = &delivery {
-            self.handle_user_attention_delivery(message_id, attention_attempts)
-                .await;
-            return;
-        }
         let target_bot_id = match delivery {
             SwarmDelivery::Changed
             | SwarmDelivery::CatalogChanged
-            | SwarmDelivery::RetryPending
-            | SwarmDelivery::UserAttention { .. }
-            | SwarmDelivery::UserAttentionAcknowledged { .. } => {
+            | SwarmDelivery::RetryPending => {
                 unreachable!("handled above")
             }
             SwarmDelivery::Acknowledged {
@@ -1175,30 +1130,6 @@ impl GatewayHost {
                 message: rejection.message,
                 fatal: false,
             }));
-        }
-    }
-
-    async fn handle_user_attention_delivery(
-        &self,
-        message_id: &str,
-        attempts: &mut HashSet<String>,
-    ) {
-        if !attempts.insert(message_id.to_owned()) {
-            return;
-        }
-        match self.deliver_user_attention(message_id).await {
-            Ok(true) => {}
-            Ok(false) => {
-                attempts.remove(message_id);
-            }
-            Err(rejection) => {
-                attempts.remove(message_id);
-                let _ = self.events.send(ServerFrame::new(ServerMessage::Error {
-                    code: "swarm_attention".into(),
-                    message: rejection.message,
-                    fatal: false,
-                }));
-            }
         }
     }
 
@@ -1304,118 +1235,6 @@ impl GatewayHost {
                     target_bot_id.to_owned(),
                 ));
                 Ok(())
-            }
-            Err(rejection) => Err(rejection),
-        }
-    }
-
-    async fn deliver_user_attention(
-        &self,
-        message_id: &str,
-    ) -> std::result::Result<bool, Rejection> {
-        let (swarm, checkpoints, bots, state_dir, tls, session_mutations) = {
-            let state = self.state.lock().await;
-            (
-                Arc::clone(&state.swarm),
-                Arc::clone(&state.checkpoints),
-                Arc::clone(&state.bots),
-                state.store.state_dir().to_path_buf(),
-                state
-                    .config
-                    .lock()
-                    .map_err(|_| internal("gateway configuration lock is poisoned"))?
-                    .tls
-                    .clone(),
-                Arc::clone(&state.session_mutations),
-            )
-        };
-        let _mutation = session_mutations.read_owned().await;
-        if bots.pending_bot_deletion().map_err(internal)?.is_some() {
-            return Ok(false);
-        }
-        let Some(request) = swarm
-            .pending_user_attention()
-            .await
-            .map_err(internal)?
-            .into_iter()
-            .find(|request| request.entry.id == message_id)
-        else {
-            return Ok(false);
-        };
-        let root_checkpoint = checkpoints
-            .load(&request.root_source_session_id)
-            .await
-            .map_err(internal)?;
-        let root_workspace = root_checkpoint
-            .as_ref()
-            .map(|checkpoint| {
-                ChatSpec::from_metadata(&checkpoint.metadata, &bots, &state_dir, tls.as_ref())
-                    .map(|spec| spec.workspace)
-            })
-            .transpose()
-            .map_err(invalid_config)?;
-        let proposed_session_id = request.assigned_session_id.clone().unwrap_or_else(|| {
-            root_checkpoint.as_ref().map_or_else(
-                || Uuid::new_v4().to_string(),
-                |checkpoint| {
-                    if checkpoint.catalog_visible {
-                        request.root_source_session_id.clone()
-                    } else {
-                        Uuid::new_v4().to_string()
-                    }
-                },
-            )
-        });
-        let request = swarm
-            .assign_user_attention(message_id, &proposed_session_id)
-            .await
-            .map_err(internal)?;
-        let session_id = request
-            .assigned_session_id
-            .as_deref()
-            .expect("assigned attention has a conversation");
-        let assigned_checkpoint = checkpoints.load(session_id).await.map_err(internal)?;
-        if assigned_checkpoint.is_some()
-            && journal_contains_submission(checkpoints.as_ref(), session_id, message_id)
-                .await
-                .map_err(internal)?
-        {
-            swarm
-                .acknowledge_user_attention(message_id)
-                .await
-                .map_err(internal)?;
-            return Ok(false);
-        }
-        let host = if assigned_checkpoint.is_some() {
-            self.open_session_with_cache(session_id, true).await?.0
-        } else {
-            let workspace = request
-                .workspace
-                .or(root_workspace)
-                .ok_or_else(|| Rejection {
-                    code: "swarm_attention_origin",
-                    message: "the causal chat and gateway background workspace are unavailable"
-                        .into(),
-                    fatal: false,
-                })?;
-            self.create_session_with_id(
-                &workspace,
-                &request.leader_bot_id,
-                session_id.to_owned(),
-                true,
-                "mobius-gateway",
-            )
-            .await?
-        };
-        match host.submit(user_attention_submission(request.entry)).await {
-            Ok(()) => Ok(true),
-            Err(rejection) if matches!(rejection.code, "agent_busy" | "agent_stopped") => {
-                let message_id = message_id.to_owned();
-                tokio::spawn(async move {
-                    host.wait_idle().await;
-                    swarm.notify_user_attention(&message_id);
-                });
-                Ok(false)
             }
             Err(rejection) => Err(rejection),
         }
@@ -1663,13 +1482,8 @@ impl GatewayHost {
         let _mutation = match self.begin_mutation().await {
             Ok(mutation) => mutation,
             Err(rejection) => {
-                let (swarm, completed, workspace) = {
+                let (swarm, completed) = {
                     let state = self.state.lock().await;
-                    let workspace = state
-                        .bots
-                        .routine(&routine_id)
-                        .ok()
-                        .map(|routine| routine.workspace);
                     let completed = state
                         .bots
                         .finish_run(
@@ -1678,10 +1492,10 @@ impl GatewayHost {
                             Some(rejection.message.clone()),
                         )
                         .map_err(internal)?;
-                    (Arc::clone(&state.swarm), completed, workspace)
+                    (Arc::clone(&state.swarm), completed)
                 };
                 swarm
-                    .project_routine_outcome(&completed, None, workspace)
+                    .project_routine_outcome(&completed, None)
                     .await
                     .map_err(internal)?;
                 return Err(rejection);
@@ -1787,11 +1601,6 @@ impl GatewayHost {
         routine_id: String,
         run: ActiveRoutineRun,
     ) -> std::result::Result<(), Rejection> {
-        let routine_workspace = state
-            .bots
-            .routine(&routine_id)
-            .ok()
-            .map(|routine| routine.workspace);
         let preflight: std::result::Result<_, Rejection> = (|| {
             let routine = state.bots.routine(&routine_id).map_err(invalid_routine)?;
             let (_, input) = state
@@ -1828,7 +1637,7 @@ impl GatewayHost {
                     .map_err(internal)?;
                 state
                     .swarm
-                    .project_routine_outcome(&completed, None, routine_workspace)
+                    .project_routine_outcome(&completed, None)
                     .await
                     .map_err(internal)?;
                 return Err(rejection);
@@ -1845,7 +1654,7 @@ impl GatewayHost {
                 .map_err(internal)?;
             state
                 .swarm
-                .project_routine_outcome(&completed, None, routine_workspace)
+                .project_routine_outcome(&completed, None)
                 .await
                 .map_err(internal)?;
             return Err(rejection);
@@ -1885,7 +1694,7 @@ impl GatewayHost {
                     .map_err(internal)?;
                 state
                     .swarm
-                    .project_routine_outcome(&completed, None, Some(routine.workspace.clone()))
+                    .project_routine_outcome(&completed, None)
                     .await
                     .map_err(internal)?;
                 return Err(internal(message));
@@ -1925,7 +1734,7 @@ impl GatewayHost {
                 };
                 let projection = match completed {
                     Ok(Some((swarm, run))) => swarm
-                        .project_routine_outcome(&run, None, Some(routine.workspace.clone()))
+                        .project_routine_outcome(&run, None)
                         .await
                         .map(|_| ())
                         .map_err(internal),
@@ -2002,6 +1811,14 @@ impl GatewayHost {
             request_id: None,
             swarms: swarms.to_vec(),
         }));
+    }
+
+    fn broadcast_swarm_attentions(&self, attentions: &[SwarmAttention]) {
+        let _ = self
+            .events
+            .send(ServerFrame::new(ServerMessage::SwarmAttentions {
+                attentions: attentions.to_vec(),
+            }));
     }
 }
 
@@ -2419,32 +2236,6 @@ fn swarm_message_submission(entry: BoardEntry) -> Submission {
                 text: entry.text,
                 attachments: Vec::new(),
                 requested_delivery: None,
-                target_turn_id: None,
-            },
-        },
-    }
-}
-
-fn user_attention_submission(entry: BoardEntry) -> Submission {
-    let message_id = entry.id;
-    let text = entry
-        .text
-        .split_whitespace()
-        .filter(|word| !word.starts_with('@'))
-        .collect::<Vec<_>>()
-        .join(" ");
-    Submission {
-        id: message_id.clone(),
-        op: Op::Message {
-            message: MessageSubmission {
-                author: MessageAuthor::Peer {
-                    message_id,
-                    session_id: entry.source_session_id,
-                    handle: entry.author.handle,
-                },
-                text: format!("Swarm escalation: {text}"),
-                attachments: Vec::new(),
-                requested_delivery: Some(ActiveMessageDelivery::Queue),
                 target_turn_id: None,
             },
         },

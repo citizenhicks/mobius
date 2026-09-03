@@ -44,6 +44,7 @@ final class AppModel {
     }
     var bots: [BotRecord] = []
     var backgroundApprovals: [BackgroundApproval] = []
+    var swarmAttentions: [SwarmAttention] = []
     var swarms: [SwarmRecord] = []
     var swarmMessageRequestID: String?
     var completedSwarmMessageRequestID: String?
@@ -411,11 +412,11 @@ final class AppModel {
     @ObservationIgnored var remoteNotificationDeviceToken: String?
     @ObservationIgnored var remoteNotificationRegistrationTask: Task<Void, Never>?
     @ObservationIgnored var pushTokenRemovalPending: Bool
-    @ObservationIgnored var pendingRemoteNotification: RemoteSessionNotification?
+    @ObservationIgnored var pendingRemoteNotification: RemoteNotification?
     @ObservationIgnored var remoteNotificationEventIDs: Set<String> = []
     @ObservationIgnored var remoteNotificationEventOrder: [String] = []
-    @ObservationIgnored var sessionNotificationKeys: Set<SessionNotificationKey> = []
-    @ObservationIgnored var sessionNotificationKeyOrder: [SessionNotificationKey] = []
+    @ObservationIgnored var notificationKeys: Set<AppNotificationKey> = []
+    @ObservationIgnored var notificationKeyOrder: [AppNotificationKey] = []
 
     init(
         client: GatewayClient? = nil,
@@ -775,9 +776,9 @@ final class AppModel {
     func showToast(
         _ message: LocalizedStringResource,
         tone: ToastTone = .info,
-        sessionID: String? = nil
+        target: AppNotificationTarget? = nil
     ) {
-        showToast(verbatim: localizedString(message), tone: tone, sessionID: sessionID)
+        showToast(verbatim: localizedString(message), tone: tone, target: target)
     }
 
     func localizedString(_ resource: LocalizedStringResource) -> String {
@@ -808,9 +809,9 @@ final class AppModel {
     func showToast(
         verbatim message: String,
         tone: ToastTone = .info,
-        sessionID: String? = nil
+        target: AppNotificationTarget? = nil
     ) {
-        let toast = AppToast(message: message, tone: tone, sessionID: sessionID)
+        let toast = AppToast(message: message, tone: tone, target: target)
         toastDismissTask?.cancel()
         self.toast = toast
         let duration: Duration = tone == .error || tone == .warning ? .seconds(7) : .seconds(4)
@@ -823,7 +824,7 @@ final class AppModel {
     }
 
     func accessibilityMessage(for toast: AppToast) -> String {
-        guard let bot = bot(forSessionID: toast.sessionID),
+        guard let bot = bot(for: toast.target),
               !toast.message.hasPrefix("\(bot.name):")
         else { return toast.message }
         return "\(bot.name): \(toast.message)"
@@ -1210,6 +1211,22 @@ final class AppModel {
 
     func hasBackgroundApproval(forBotID botID: String) -> Bool {
         backgroundApprovals.contains { $0.botId == botID }
+    }
+
+    func hasSwarmAttention(forSwarmID swarmID: String) -> Bool {
+        swarmAttentions.contains { $0.swarmId == swarmID }
+    }
+
+    func bot(for target: AppNotificationTarget?) -> BotRecord? {
+        switch target {
+        case .session(let sessionID):
+            bot(forSessionID: sessionID)
+        case .swarm(_, let messageID):
+            swarmAttentions.first { $0.messageId == messageID }
+                .flatMap { attention in bots.first { $0.id == attention.botId } }
+        case nil:
+            nil
+        }
     }
 
     var selectedBotSwarm: SwarmRecord? {

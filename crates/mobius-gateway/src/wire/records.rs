@@ -7,6 +7,7 @@ pub struct ReadyPayload {
     pub bots: Vec<BotRecord>,
     pub sessions: Vec<SessionRecord>,
     pub background_approvals: Vec<BackgroundApproval>,
+    pub swarm_attentions: Vec<SwarmAttention>,
     pub swarms: Vec<SwarmRecord>,
     pub providers: Vec<ProviderStatus>,
     pub provider_instances: Vec<ProviderInstance>,
@@ -27,6 +28,16 @@ pub struct BackgroundApproval {
     pub bot_id: String,
     pub turn_id: String,
     pub request_id: String,
+}
+
+/// One durable Swarm Chat message awaiting an authenticated human response.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SwarmAttention {
+    pub swarm_id: String,
+    pub swarm_title: String,
+    pub message_id: String,
+    pub bot_id: String,
+    pub text: String,
 }
 
 /// One gateway-managed group of durable Bots.

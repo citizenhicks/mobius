@@ -15342,18 +15342,18 @@
         }
       }
     },
-    "Alerts you when a Cloud chat needs approval or finishes. This setting stays on this device." : {
+    "Alerts you on this device when a Cloud chat needs approval or finishes, or a Swarm needs attention." : {
       "localizations" : {
         "fr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Vous avertit lorsqu’une discussion Cloud nécessite une approbation ou se termine. Ce réglage reste sur cet appareil."
+            "value" : "Vous avertit sur cet appareil lorsqu’une discussion Cloud nécessite une approbation ou se termine, ou lorsqu’un essaim nécessite votre attention."
           }
         },
         "de" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Benachrichtigt Sie, wenn ein Cloud-Chat eine Genehmigung benötigt oder abgeschlossen ist. Diese Einstellung bleibt auf diesem Gerät."
+            "value" : "Benachrichtigt Sie auf diesem Gerät, wenn ein Cloud-Chat eine Genehmigung benötigt oder abgeschlossen ist oder ein Schwarm Ihre Aufmerksamkeit erfordert."
           }
         }
       }

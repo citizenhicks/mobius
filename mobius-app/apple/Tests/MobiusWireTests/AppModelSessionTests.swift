@@ -292,6 +292,67 @@ extension AppModelTests {
         XCTAssertEqual(model.backgroundApprovals, [second])
     }
 
+    func testSwarmAttentionSnapshotAcceptsDepartedBotAndUsesSharedNotificationState() throws {
+        let model = try model()
+        let helper = bot()
+        let leader = bot(id: "bot-2", handle: "leader", name: "Leader")
+        let swarm = SwarmRecord(
+            id: "swarm-1",
+            title: "Quiet Foxes",
+            leaderBotId: leader.id,
+            members: [SwarmMemberRecord(botId: leader.id, handle: leader.handle)],
+            messages: [],
+            updatedAtMs: 1
+        )
+        let baseline = SwarmAttention(
+            swarmId: swarm.id,
+            swarmTitle: swarm.title,
+            messageId: "message-1",
+            botId: helper.id,
+            text: "Already pending"
+        )
+        let live = SwarmAttention(
+            swarmId: swarm.id,
+            swarmTitle: swarm.title,
+            messageId: "message-2",
+            botId: helper.id,
+            text: "  Please choose\nwhich path to take. "
+        )
+        model.bots = [helper, leader]
+        model.swarms = [swarm]
+        model.connectionState = .ready
+
+        XCTAssertTrue(model.applySwarmAttentions([baseline], notifyingNew: false))
+        XCTAssertNil(model.toast)
+        XCTAssertTrue(model.hasSwarmAttention(forSwarmID: swarm.id))
+
+        XCTAssertTrue(model.applySwarmAttentions([baseline, live], notifyingNew: true))
+        let toastID = try XCTUnwrap(model.toast?.id)
+        XCTAssertEqual(model.toast?.message, "Helper: Please choose which path to take.")
+        XCTAssertEqual(model.toast?.tone, .warning)
+        XCTAssertEqual(
+            model.toast?.target,
+            .swarm(swarmID: swarm.id, messageID: live.messageId)
+        )
+        XCTAssertEqual(model.bot(for: model.toast?.target)?.tint, helper.tint)
+
+        XCTAssertTrue(model.applySwarmAttentions([baseline, live], notifyingNew: true))
+        XCTAssertEqual(model.toast?.id, toastID)
+        XCTAssertFalse(model.applySwarmAttentions([
+            SwarmAttention(
+                swarmId: swarm.id,
+                swarmTitle: swarm.title,
+                messageId: "message-3",
+                botId: "missing-bot",
+                text: "Invalid"
+            )
+        ], notifyingNew: true))
+        XCTAssertEqual(model.swarmAttentions, [baseline, live])
+
+        XCTAssertTrue(model.applySwarmAttentions([], notifyingNew: false))
+        XCTAssertFalse(model.hasSwarmAttention(forSwarmID: swarm.id))
+    }
+
     func testStaleBackgroundApprovalToastCannotOpenHiddenWorkAsAChat() throws {
         let model = try model()
         model.connectionState = .ready
@@ -303,13 +364,13 @@ extension AppModelTests {
         )]
         model.applyBackgroundApprovals([], notifyingNew: false)
 
-        model.openNotifiedSession("work-1")
+        model.openNotificationTarget(.session("work-1"))
 
         XCTAssertNil(model.selectedSessionID)
         XCTAssertTrue(model.navigationPath.isEmpty)
     }
 
-    func testSwarmAttentionResumesOnlyTheValidatedHiddenBotSession() async throws {
+    func testBotSessionResumeOpensOnlyTheValidatedHiddenSession() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
         let helper = bot()
@@ -362,7 +423,7 @@ extension AppModelTests {
         )
     }
 
-    func testSwarmAttentionNeverOpensAStaleOrDifferentHiddenSession() async throws {
+    func testBotSessionResumeNeverOpensAStaleOrDifferentHiddenSession() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
         let helper = bot()
@@ -417,7 +478,7 @@ extension AppModelTests {
         XCTAssertEqual(model.toast?.message, "That Bot work is no longer available.")
     }
 
-    func testSwarmAttentionOpensAnExistingVisibleSourceWithoutHiddenDiscovery() async throws {
+    func testBotSessionResumeOpensAnExistingVisibleSourceWithoutHiddenDiscovery() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
         let helper = bot()

@@ -212,7 +212,7 @@ extension GatewayWireTests {
 
     func testBackgroundApprovalResponseCarriesHiddenSessionOwnership() throws {
         let envelope = try decodeEnvelope(
-            #"{"version":63,"type":"background_approvals","approvals":[{"session_id":"work-1","bot_id":"bot-1","turn_id":"turn-1","request_id":"approval-1"}]}"#
+            #"{"version":64,"type":"background_approvals","approvals":[{"session_id":"work-1","bot_id":"bot-1","turn_id":"turn-1","request_id":"approval-1"}]}"#
         )
         guard case .backgroundApprovals(let approvals) = envelope else {
             return XCTFail("Expected background approvals")
@@ -222,6 +222,22 @@ extension GatewayWireTests {
             botId: "bot-1",
             turnId: "turn-1",
             requestId: "approval-1"
+        )])
+    }
+
+    func testSwarmAttentionResponseCarriesSharedChatTarget() throws {
+        let envelope = try decodeEnvelope(
+            #"{"version":64,"type":"swarm_attentions","attentions":[{"swarm_id":"swarm-1","swarm_title":"Quiet Foxes","message_id":"message-1","bot_id":"bot-1","text":"Choose a migration path."}]}"#
+        )
+        guard case .swarmAttentions(let attentions) = envelope else {
+            return XCTFail("Expected Swarm attentions")
+        }
+        XCTAssertEqual(attentions, [SwarmAttention(
+            swarmId: "swarm-1",
+            swarmTitle: "Quiet Foxes",
+            messageId: "message-1",
+            botId: "bot-1",
+            text: "Choose a migration path."
         )])
     }
 

@@ -23,11 +23,6 @@ impl HostState {
         {
             return Ok(false);
         }
-        if let EventMsg::Message(message) = &event.msg
-            && let Some(message_id) = peer_message_id(message)
-        {
-            self.swarm.acknowledge_user_attention(message_id).await?;
-        }
         match &event.msg {
             EventMsg::TurnStarted(_) => self.last_assistant_text = None,
             EventMsg::AssistantMessage(message) => {
@@ -89,9 +84,7 @@ impl HostState {
                 .then(|| self.last_assistant_text.clone())
                 .flatten();
             let run = self.bots.finish_run(active.run, status, message)?;
-            self.swarm
-                .project_routine_outcome(&run, summary, None)
-                .await?;
+            self.swarm.project_routine_outcome(&run, summary).await?;
         }
         if let Some(activity) = next_activity {
             self.set_activity(activity)?;
@@ -122,11 +115,6 @@ impl HostState {
                 continue;
             };
             match &record.event.msg {
-                EventMsg::Message(message) => {
-                    if let Some(message_id) = peer_message_id(message) {
-                        self.swarm.acknowledge_user_attention(message_id).await?;
-                    }
-                }
                 EventMsg::TurnStarted(_) => {
                     error = None;
                     summary = None;
@@ -547,13 +535,6 @@ fn account_turn_event(
     }
 }
 
-fn peer_message_id(message: &MessageEvent) -> Option<&str> {
-    match &message.author {
-        MessageAuthor::Peer { message_id, .. } => Some(message_id),
-        MessageAuthor::User => None,
-    }
-}
-
 fn assistant_text(message: &mobius::protocol::AssistantMessageEvent) -> Option<String> {
     let text = message
         .content
@@ -582,7 +563,7 @@ fn opens_message_capacity(event: &EventMsg) -> bool {
 mod accounting_tests {
     use super::*;
     use mobius::protocol::{
-        MessageDelivery, SubmissionRejectedEvent, TurnCompleteEvent, TurnStartedEvent,
+        MessageDelivery, MessageEvent, SubmissionRejectedEvent, TurnCompleteEvent, TurnStartedEvent,
     };
 
     fn event(submission_id: &str, msg: EventMsg) -> Event {

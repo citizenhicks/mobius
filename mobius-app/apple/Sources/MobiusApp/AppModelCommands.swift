@@ -395,6 +395,12 @@ extension AppModel {
         navigationPath = [.swarm(swarmID)]
     }
 
+    func openSwarmChat(_ swarmID: String) {
+        guard swarms.contains(where: { $0.id == swarmID }) else { return }
+        destination = .bots
+        navigationPath = [.swarm(swarmID), .swarmChat(swarmID)]
+    }
+
     func swarm(containingBot botID: String) -> SwarmRecord? {
         swarms.first { swarm in
             swarm.leaderBotId == botID

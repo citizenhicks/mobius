@@ -59,8 +59,8 @@ the board. For each delivery, the gateway:
 Human and Bot messages addressed to the same member of the same Swarm therefore
 reuse one participant session. A board message ID identifies work to deliver; it
 must never be used as the participant session ID. The source session is retained
-only for causal routing and user escalation. Moving a Bot to a different Swarm
-changes the pair and gives it a different participant context.
+only as message provenance. Moving a Bot to a different Swarm changes the pair
+and gives it a different participant context.
 
 User-authored Swarm entries are authenticated user input. Bot-authored entries are
 peer advice: they cannot approve an action or expand another Bot's authority.
@@ -70,14 +70,15 @@ user chats.
 ## Human interaction and escalation
 
 Bots use `@user` only when a decision or action is required. The gateway routes
-the escalation back to the existing visible source conversation when that causal
-chat is suitable. If the source was hidden or came directly from Swarm Chat, the
-gateway creates a visible leader-owned conversation instead. Ordinary progress
-and Bot-to-Bot coordination remain in Swarm Chat, keeping the main Chats catalog
-focused on user-facing work.
+the request to a durable Swarm attention notification and leaves the original
+message in Swarm Chat. It never creates or injects a visible user conversation.
+An authenticated human reply in that Swarm Chat clears its current pending
+attention requests. Ordinary progress and Bot-to-Bot coordination remain in
+Swarm Chat, keeping the main Chats catalog focused on user-facing work.
 
-A hidden participant that pauses for approval also projects that need to Swarm
-Chat and into the same escalation path. Hidden work never grants its own approval.
+A hidden participant that pauses for approval emits a separate typed approval
+notification; it does not create a Swarm Chat message. Hidden work never grants
+its own approval.
 
 ## Routines and subagents
 
@@ -86,7 +87,7 @@ Every invocation gets a fresh hidden conversation, so unrelated runs do not inhe
 one another's transcript. The run uses the Bot's current profile and the routine's
 pinned workspace. When its Bot is in a Swarm, the terminal result is projected to
 Swarm Chat; a worker result wakes the leader, while work needing a user decision
-uses the escalation path.
+creates a Swarm attention notification.
 
 From a user-facing chat, a Bot can create a routine for itself. A Swarm leader may
 also create one for a current member. Routine creation requires approval.
@@ -121,4 +122,4 @@ the original note.
 - `crates/mobius-gateway/src/bots/` owns Bot profiles, routines, Swarms, routing,
   and durable board state.
 - `crates/mobius-gateway/src/host.rs` owns opening visible and hidden sessions and
-  delivering Swarm messages and user escalations.
+  delivering Swarm messages and broadcasting Swarm attention state.
