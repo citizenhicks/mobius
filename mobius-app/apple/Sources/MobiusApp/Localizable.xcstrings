@@ -467,6 +467,22 @@
         }
       }
     },
+    "%@ usage remaining" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Il reste %@ d’utilisation"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ Nutzung verbleibend"
+          }
+        }
+      }
+    },
     "%@ removed." : {
       "localizations" : {
         "fr" : {

@@ -109,6 +109,9 @@ struct ChatsView: View {
             let remaining = selection.intersection(sessionIDs)
             selectedSessionIDs = remaining.isEmpty ? nil : remaining
         }
+        .task(id: model.cloudSession?.credentialID) {
+            await model.refreshCloudAccount()
+        }
     }
 
     private var usesIPadLayout: Bool {
@@ -243,6 +246,12 @@ struct ChatsView: View {
                 selectedSessionIDs = []
             }
             .disabled(displayedSessions.isEmpty || !model.canRenameSession)
+            if model.hasCloudAccount, let limit = model.cloudAccount?.luna {
+                Divider()
+                Text(
+                    "\(limit.remainingFraction.formatted(.percent.precision(.fractionLength(0)))) usage remaining"
+                )
+            }
         }
         .accessibilityValue(
             model.chatBotFilterIDs.isEmpty
