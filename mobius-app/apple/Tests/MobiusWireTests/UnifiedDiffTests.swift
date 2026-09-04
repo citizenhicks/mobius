@@ -25,6 +25,26 @@ private struct TurnDiffTranscriptHost: View {
     }
 }
 
+final class ReplyQuoteLayoutTests: XCTestCase {
+    @MainActor
+    func testLongQuoteStaysCompactUnderTallProposal() {
+        let reply = Mobius.MessageReply(
+            target: Mobius.MessageTarget(checkpointSequence: 1, batchItemCount: 1),
+            text: String(repeating: "Long quoted line\n", count: 20)
+        )
+        let host = UIHostingController(rootView: Mobius.ReplyQuoteView(
+            reply: reply,
+            open: {},
+            dismiss: {}
+        ))
+
+        XCTAssertLessThan(
+            host.sizeThatFits(in: CGSize(width: 320, height: 1_000)).height,
+            160
+        )
+    }
+}
+
 final class UnifiedDiffTests: XCTestCase {
     @MainActor
     func testTurnDiffCardRendersInTranscript() async throws {

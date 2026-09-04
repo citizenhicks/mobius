@@ -239,7 +239,7 @@ struct ChatsView: View {
                 }
             }
             Divider()
-            Button("Select chats", glyph: .trash) {
+            Button("Select chats to delete", glyph: .trash) {
                 selectedSessionIDs = []
             }
             .disabled(displayedSessions.isEmpty || !model.canRenameSession)

@@ -18462,18 +18462,18 @@
         }
       }
     },
-    "Select chats" : {
+    "Select chats to delete" : {
       "localizations" : {
         "fr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Sélectionner des conversations"
+            "value" : "Sélectionner les conversations à supprimer"
           }
         },
         "de" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Chats auswählen"
+            "value" : "Chats zum Löschen auswählen"
           }
         }
       }

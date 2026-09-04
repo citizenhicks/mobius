@@ -646,12 +646,14 @@ private struct TranscriptRow: View {
                         if timestamp != nil {
                             Text(verbatim: "•")
                                 .accessibilityHidden(true)
+                                .padding(.horizontal, MobiusSpace.xs)
                         }
                     }
                     if let timestamp {
                         Text(verbatim: timestamp.time)
                         Text(verbatim: "•")
                             .accessibilityHidden(true)
+                            .padding(.horizontal, MobiusSpace.xs)
                         Text(verbatim: timestamp.date)
                     }
                 }

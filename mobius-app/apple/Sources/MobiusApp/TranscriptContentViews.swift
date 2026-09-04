@@ -542,6 +542,7 @@ struct ReplyQuoteView: View {
                 .help("Cancel reply")
             }
         }
+        .fixedSize(horizontal: false, vertical: true)
         .background(palette.panel.opacity(0.72), in: MobiusStyle.tileShape)
     }
 
