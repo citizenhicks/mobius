@@ -642,6 +642,7 @@ private struct TranscriptRow: View {
                             gutter: false
                         )
                         .accessibilityHidden(true)
+                        .padding(.trailing, MobiusSpace.xs)
                         Text(verbatim: bot.name)
                         if timestamp != nil {
                             Text(verbatim: "•")
