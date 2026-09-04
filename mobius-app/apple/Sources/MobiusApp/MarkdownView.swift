@@ -3,6 +3,7 @@ import Foundation
 import SwiftStreamingMarkdown
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 /// Equatable so an unchanged message is skipped entirely.
 ///
@@ -34,21 +35,27 @@ struct MobiusMarkdownText: View, Equatable {
     }
 }
 
-/// Carries the "Select text" tap out of the renderer's edit menu and into SwiftUI.
+/// Carries the renderer's selection and table actions into the app.
 ///
 /// The renderer ships its own selection sheet, but a sheet can only be sized and backed from
-/// inside its own content, so ours replaces it. Everything else the listener reports is
-/// somebody else's feature.
+/// inside its own content, so ours replaces it. Table actions are also owned here so they
+/// stay local instead of touching the gateway connection.
 @MainActor
 @Observable
 private final class MarkdownSelectionRequest: MarkdownListener {
     var isPresented = false
+    var isDownloadingTable = false
+    var tableDownloadContent: String?
 
     func onContextMenuTap(id: String, selectedContent: String) async { isPresented = true }
 
     func onRender(markdown: RenderableDocument) async {}
-    func onTableCopyTap(content: String) async {}
-    func onTableDownloadTap(content: String) async {}
+    func onTableCopyTap(content: String) async { copyToPasteboard(content) }
+
+    func onTableDownloadTap(content: String) async {
+        tableDownloadContent = content
+        isDownloadingTable = true
+    }
     func onContextMenuAppear(id: String, selectedContent: String) async {}
     func onImageTap(image: MarkdownImage) async {}
 }
@@ -112,6 +119,16 @@ private struct MobiusMarkdownDocument: View {
                     // Clears the drag indicator, which sits in the top of the sheet's own bounds.
                     .padding(.top, MobiusSpace.xl)
                     .mobiusSheet()
+            }
+            .fileExporter(
+                isPresented: $selection.isDownloadingTable,
+                item: selection.tableDownloadContent,
+                contentTypes: [.plainText],
+                defaultFilename: "table.md"
+            ) { result in
+                if case .failure(let error) = result {
+                    model.showToast(verbatim: model.localizedErrorDescription(error), tone: .error)
+                }
             }
     }
 

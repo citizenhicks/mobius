@@ -588,8 +588,7 @@ private struct TranscriptRow: View {
             MessageMetadata(
                 author: metadata.author,
                 delivery: metadata.delivery,
-                bot: isPeer ? displayedBot : nil,
-                timestamp: timestamp
+                bot: isPeer ? displayedBot : nil
             )
         }
     }
@@ -629,34 +628,20 @@ private struct TranscriptRow: View {
                     speaker.speak(entry.text)
                 }
             }
-            if !entry.pending, displayedBot != nil || timestamp != nil {
+            if !entry.pending, let bot = displayedBot {
                 Group {
                     Text(verbatim: "•")
                         .accessibilityHidden(true)
                         .padding(.horizontal, MobiusSpace.xs)
-                    if let bot = displayedBot {
-                        MobiusIcon(
-                            .aiScan,
-                            size: MobiusStyle.glyphMark,
-                            foreground: bot.tint.color,
-                            gutter: false
-                        )
-                        .accessibilityHidden(true)
-                        .padding(.trailing, MobiusSpace.xs)
-                        Text(verbatim: bot.name)
-                        if timestamp != nil {
-                            Text(verbatim: "•")
-                                .accessibilityHidden(true)
-                                .padding(.horizontal, MobiusSpace.xs)
-                        }
-                    }
-                    if let timestamp {
-                        Text(verbatim: timestamp.time)
-                        Text(verbatim: "•")
-                            .accessibilityHidden(true)
-                            .padding(.horizontal, MobiusSpace.xs)
-                        Text(verbatim: timestamp.date)
-                    }
+                    MobiusIcon(
+                        .aiScan,
+                        size: MobiusStyle.glyphMark,
+                        foreground: bot.tint.color,
+                        gutter: false
+                    )
+                    .accessibilityHidden(true)
+                    .padding(.trailing, MobiusSpace.xs)
+                    Text(verbatim: bot.name)
                 }
                 .font(MobiusStyle.metadataFont)
                 .foregroundStyle(palette.muted)
@@ -740,9 +725,7 @@ private struct TranscriptRow: View {
     }
 
     private var timestamp: MessageTimestamp? {
-        entry.recordedAtMs.flatMap {
-            MessageTimestamp(milliseconds: $0, locale: model.language.locale)
-        }
+        entry.recordedAtMs.flatMap { MessageTimestamp(milliseconds: $0) }
     }
 
     private func messageActionGlyph(_ widget: MountedWidget) -> MobiusGlyph {
@@ -755,18 +738,9 @@ private struct MessageMetadata: View {
     let author: MessageAuthor
     let delivery: MessageDelivery
     let bot: BotRecord?
-    let timestamp: MessageTimestamp?
 
     var body: some View {
         HStack(spacing: MobiusSpace.xs) {
-            if let timestamp {
-                Text(verbatim: timestamp.time)
-                Text(verbatim: "•")
-                    .accessibilityHidden(true)
-                Text(verbatim: timestamp.date)
-                Text(verbatim: "•")
-                    .accessibilityHidden(true)
-            }
             MobiusIcon(
                 glyph,
                 size: MobiusStyle.glyphMark,
@@ -811,18 +785,14 @@ private struct MessageMetadata: View {
     private var accessibilityLabel: Text {
         let author = bot?.name ?? author.peerFields?.handle ?? String(localized: "you")
         let delivery = deliveryLabel.map { String(localized: $0) }
-        return Text(verbatim: [timestamp?.spoken, delivery, author]
-            .compactMap { $0 }
-            .joined(separator: ", "))
+        return Text(verbatim: [delivery, author].compactMap { $0 }.joined(separator: ", "))
     }
 }
 
 private struct MessageTimestamp {
-    let time: String
-    let date: String
-    let spoken: String
+    let combined: String
 
-    init?(milliseconds: Int64, locale: Locale) {
+    init?(milliseconds: Int64) {
         guard milliseconds > 0 else { return nil }
         let value = Date(timeIntervalSince1970: TimeInterval(milliseconds) / 1_000)
         var calendar = Calendar(identifier: .gregorian)
@@ -837,12 +807,13 @@ private struct MessageTimestamp {
               let hour = components.hour,
               let minute = components.minute
         else { return nil }
-        time = String(format: "%02d:%02d", hour, minute)
-        date = String(format: "%02d/%02d/%02d", day, month, year % 100)
-        spoken = value.formatted(
-            Date.FormatStyle(date: .numeric, time: .shortened).locale(locale)
+        combined = String(
+            format: "%02d:%02d • %02d/%02d/%02d",
+            hour,
+            minute,
+            day,
+            month,
+            year % 100
         )
     }
-
-    var combined: String { "\(time) • \(date)" }
 }
