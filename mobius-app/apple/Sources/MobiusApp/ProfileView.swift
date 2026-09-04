@@ -204,7 +204,8 @@ private struct CloudAccountSettings: View {
     /// Signed out, this is an offer; signed in, it is an account. Account actions stay absent
     /// until there is a Cloud session to authenticate them.
     var body: some View {
-        if model.isLoadingCloudAccount {
+        let subscriptionExpired = model.cloudIssue == .subscriptionExpired
+        if model.isLoadingCloudAccount, !subscriptionExpired {
             SettingsLoadingRows(label: "Loading Cloud account") {
                 LabeledContent("Email") { Text("account@example.com") }
                 HStack(spacing: MobiusSpace.xs) {
@@ -231,7 +232,13 @@ private struct CloudAccountSettings: View {
                 .controlSize(.large)
             }
         } else if model.hasCloudAccount {
-            if let cloudError = model.cloudError {
+            if subscriptionExpired {
+                StatusBanner(
+                    tone: .warning,
+                    title: "Subscription expired",
+                    detail: "Renew or restore your subscription to reconnect to möbius Cloud."
+                )
+            } else if let cloudError = model.cloudError {
                 StatusBanner(
                     tone: .error,
                     title: .localized("Cloud account unavailable"),
@@ -239,39 +246,43 @@ private struct CloudAccountSettings: View {
                     action: (.localized("Retry"), { Task { await model.refreshCloudAccount() } })
                 )
             }
-            LabeledContent("Email") {
-                if let email = model.cloudAccount?.email {
-                    Text(verbatim: email)
-                } else {
-                    Text("Unavailable")
-                }
-            }
-            // The info button sits beside the toggle rather than inside its label,
-            // which would hand its taps to the switch.
-            HStack(spacing: MobiusSpace.xs) {
-                Toggle("Help improve möbius", isOn: Binding(
-                    get: { model.cloudAccount?.sharesDiagnostics ?? false },
-                    set: { sharesDiagnostics in
-                        Task { await model.setCloudSharesDiagnostics(sharesDiagnostics) }
+            if !subscriptionExpired || model.cloudAccount != nil {
+                LabeledContent("Email") {
+                    if let email = model.cloudAccount?.email {
+                        Text(verbatim: email)
+                    } else {
+                        Text("Unavailable")
                     }
-                ))
-                .toggleStyle(.switch)
-                .disabled(model.isUpdatingCloudDiagnostics || model.cloudAccount == nil)
-                SettingsInfoButton(
-                    title: "Help improve möbius",
-                    detail: "Off by default. Saved to your Cloud account."
-                )
-            }
-            LabeledContent("Subscriber since") {
-                if let startedAt = model.cloudAccount?.subscriptionStartedAt {
-                    Text(startedAt, format: .dateTime.month(.wide).day().year())
-                } else {
-                    Text("Unavailable")
+                }
+                // The info button sits beside the toggle rather than inside its label,
+                // which would hand its taps to the switch.
+                HStack(spacing: MobiusSpace.xs) {
+                    Toggle("Help improve möbius", isOn: Binding(
+                        get: { model.cloudAccount?.sharesDiagnostics ?? false },
+                        set: { sharesDiagnostics in
+                            Task { await model.setCloudSharesDiagnostics(sharesDiagnostics) }
+                        }
+                    ))
+                    .toggleStyle(.switch)
+                    .disabled(model.isUpdatingCloudDiagnostics || model.cloudAccount == nil)
+                    SettingsInfoButton(
+                        title: "Help improve möbius",
+                        detail: "Off by default. Saved to your Cloud account."
+                    )
                 }
             }
-            CloudAgentUsageLimit(limit: model.cloudAccount?.luna)
+            if !subscriptionExpired {
+                LabeledContent("Subscriber since") {
+                    if let startedAt = model.cloudAccount?.subscriptionStartedAt {
+                        Text(startedAt, format: .dateTime.month(.wide).day().year())
+                    } else {
+                        Text("Unavailable")
+                    }
+                }
+                CloudAgentUsageLimit(limit: model.cloudAccount?.luna)
+            }
             VStack(spacing: MobiusSpace.s) {
-                if model.cloudAccount != nil, model.mobiusCloudGateway == nil {
+                if subscriptionExpired || (model.cloudAccount != nil && model.mobiusCloudGateway == nil) {
                     MobiusCloudOfferButton()
                 }
                 Button("Manage subscription", glyph: .sealCheck) {

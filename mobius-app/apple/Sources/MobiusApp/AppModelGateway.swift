@@ -2,6 +2,17 @@ import Foundation
 
 extension AppModel {
     func connect(to account: GatewayAccount, retrying: Bool = false) {
+        if account.id == mobiusCloudGateway?.id,
+           cloudIssue == .subscriptionExpired {
+            handleCloudSubscriptionExpired()
+            showToast(
+                verbatim: localizedString(
+                    MobiusCloudError.subscriptionRequired.localizedDescriptionResource
+                ),
+                tone: .warning
+            )
+            return
+        }
         cancelReconnect()
         if !retrying {
             reconnectAttempt = 0

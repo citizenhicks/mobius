@@ -136,6 +136,7 @@ extension AppModel {
             return
         }
         guard reconnectsOnActivation, pendingPairingAccount == nil else { return }
+        if selectedGatewayIsMobiusCloud { return }
         reconnectsOnActivation = false
         reconnect()
     }

@@ -16,6 +16,7 @@ enum MobiusCloudAction: Equatable {
 
 enum MobiusCloudIssue: Equatable {
     case subscriptionAccountConflict
+    case subscriptionExpired
 }
 
 extension AppModel {
@@ -32,7 +33,12 @@ extension AppModel {
                     activeSession = repairedSession
                     try await acknowledge(purchase)
                     guard cloudSession == activeSession else { continue }
-                    _ = try await authoritativeCloudAccount(requestedSession: activeSession)
+                    let account = try await authoritativeCloudAccount(
+                        requestedSession: activeSession
+                    )
+                    if applyCloudSubscriptionState(account) {
+                        reconnectRecoveredCloudGateway()
+                    }
                     clearCloudError()
                 } catch is CancellationError {
                     continue
@@ -56,12 +62,52 @@ extension AppModel {
             let account = try await authoritativeCloudAccount()
             guard let repairedSession = cloudSession else { return }
             activeSession = repairedSession
-            _ = try await reconcileActivePurchases(from: account)
+            let reconciled = try await reconcileActivePurchases(from: account)
+            if applyCloudSubscriptionState(reconciled) {
+                reconnectRecoveredCloudGateway()
+            }
         } catch is CancellationError {
             return
         } catch {
             guard cloudSession == activeSession else { return }
+            guard cloudIssue != .subscriptionExpired else { return }
             reportCloud(error)
+        }
+    }
+
+    func handleCloudSubscriptionExpired() {
+        let wasAlreadyExpired = cloudIssue == .subscriptionExpired
+        if let account = cloudAccount, account.subscribed {
+            cloudAccount = MobiusCloudAccount(
+                userID: account.userID,
+                email: account.email,
+                subscribed: false,
+                sharesDiagnostics: account.sharesDiagnostics
+            )
+        }
+        let message = localizedString(MobiusCloudError.subscriptionRequired.localizedDescriptionResource)
+        cloudIssue = .subscriptionExpired
+        cloudError = message
+
+        if selectedGatewayIsMobiusCloud,
+           !wasAlreadyExpired
+                || !automaticReconnectBlocked
+                || connectionState != .failed(message) {
+            cancelReconnect()
+            reconnectsOnActivation = false
+            automaticReconnectBlocked = true
+            let generation = resetGatewayState(preservingDrafts: true, preservingSession: true)
+            connectionState = .failed(message)
+            Task { [weak self] in
+                guard let self,
+                      self.connectionGeneration == generation,
+                      self.selectedGatewayIsMobiusCloud
+                else { return }
+                await self.client.disconnect()
+            }
+        }
+        if !wasAlreadyExpired {
+            showToast(verbatim: message, tone: .warning)
         }
     }
 
@@ -163,6 +209,7 @@ extension AppModel {
         do {
             let account = try await authoritativeCloudAccount()
             guard account.subscribed else { throw MobiusCloudError.subscriptionRequired }
+            applyCloudSubscriptionState(account)
             return try await provisionCloudGateway()
         } catch is CancellationError {
             return false
@@ -191,6 +238,7 @@ extension AppModel {
             guard recoveredAccount.subscribed else {
                 throw MobiusCloudError.subscriptionRequired
             }
+            applyCloudSubscriptionState(recoveredAccount)
             return try await provisionCloudGateway()
         } catch is CancellationError {
             return false
@@ -223,6 +271,7 @@ extension AppModel {
         let account = try await authoritativeCloudAccount()
         let recoveredAccount = try await reconcileActivePurchases(from: account)
         if recoveredAccount.subscribed {
+            applyCloudSubscriptionState(recoveredAccount)
             return try await provisionCloudGateway()
         }
 
@@ -230,6 +279,7 @@ extension AppModel {
         try await acknowledge(purchase)
         let verifiedAccount = try await authoritativeCloudAccount()
         guard verifiedAccount.subscribed else { throw MobiusCloudError.subscriptionRequired }
+        applyCloudSubscriptionState(verifiedAccount)
         return try await provisionCloudGateway()
     }
 
@@ -306,6 +356,31 @@ extension AppModel {
         }
         cloudAccount = account
         return account
+    }
+
+    @discardableResult
+    private func applyCloudSubscriptionState(_ account: MobiusCloudAccount) -> Bool {
+        let recovered = account.subscribed && cloudIssue == .subscriptionExpired
+        if account.subscribed {
+            if recovered {
+                cloudIssue = nil
+                cloudError = nil
+                if selectedGatewayIsMobiusCloud { automaticReconnectBlocked = false }
+            }
+        } else if mobiusCloudGateway != nil || cloudIssue == .subscriptionExpired {
+            handleCloudSubscriptionExpired()
+        }
+        return recovered
+    }
+
+    private func reconnectRecoveredCloudGateway() {
+        guard selectedGatewayIsMobiusCloud, !connectionState.isReady else { return }
+        if appIsInBackground {
+            reconnectsOnActivation = true
+        } else {
+            reconnectsOnActivation = false
+            reconnect()
+        }
     }
 
     private func provisionCloudGateway() async throws -> Bool {
@@ -468,6 +543,7 @@ extension AppModel {
     }
 
     func reportCloud(_ error: Error) {
+        let preservesExpiredIssue = cloudIssue == .subscriptionExpired
         if let cloudError = error as? MobiusCloudError {
             switch cloudError {
             case .subscriptionAccountConflict:
@@ -476,9 +552,9 @@ extension AppModel {
                 cloudIssue = nil
                 clearCloudAccountState()
             default:
-                cloudIssue = nil
+                if !preservesExpiredIssue { cloudIssue = nil }
             }
-        } else {
+        } else if !preservesExpiredIssue {
             cloudIssue = nil
         }
         let message: String
@@ -490,7 +566,7 @@ extension AppModel {
         } else {
             message = localizedString("Couldn’t connect to möbius Cloud. Try again.")
         }
-        cloudError = message
+        if cloudIssue != .subscriptionExpired { cloudError = message }
         showToast(verbatim: message, tone: .error)
     }
 
@@ -506,6 +582,7 @@ extension AppModel {
     }
 
     private func clearCloudError() {
+        guard cloudIssue != .subscriptionExpired else { return }
         cloudError = nil
         cloudIssue = nil
     }

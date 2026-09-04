@@ -126,7 +126,7 @@ extension AppModelTests {
             reconnectDelay: { _ in .milliseconds(20) }
         )
         model.cloudSession = MobiusCloudSession(userID: userID, expiresAt: .distantFuture)
-        await model.appDidBecomeActive()
+        model.appIsInBackground = false
 
         await model.start()
 

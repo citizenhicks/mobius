@@ -2312,6 +2312,188 @@ final class MobiusCloudTests: XCTestCase {
         try await gatewayStore.remove(try XCTUnwrap(model.accounts.first))
     }
 
+    func testActivationChecksCloudExpiryBeforeReconnectingAndRecoversStoreKitEntitlement() async throws {
+        let userID = UUID()
+        let token = String(repeating: "t", count: 43)
+        let service = "app.mobius.cloud.tests.\(UUID())"
+        let sessionStore = MobiusCloudSessionStore(service: service)
+        defer { try? sessionStore.remove() }
+        var accountRequests = 0
+        var shouldRecover = false
+        var subscriptionSubmitted = false
+        var transactionFinished = false
+        let client = MobiusCloudClient(store: sessionStore) { request in
+            switch request.url?.path {
+            case "/api/mobile/auth/apple":
+                return try self.response(
+                    for: request,
+                    json: #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                )
+            case "/api/mobile/account":
+                accountRequests += 1
+                let subscribed = accountRequests > 2
+                let startedAt = subscribed
+                    ? #", "subscriptionStartedAt":"2026-08-24T00:00:00Z""#
+                    : ""
+                return try self.response(
+                    for: request,
+                    json: #"{"userId":"\#(userID.uuidString)","email":null,"subscribed":\#(subscribed),"sharesDiagnostics":false\#(startedAt)}"#
+                )
+            case "/api/mobile/subscription":
+                subscriptionSubmitted = true
+                return try self.response(for: request, json: "{}")
+            default:
+                return try self.response(for: request, status: 500, json: "{}")
+            }
+        }
+        _ = try await client.authenticate(
+            authorizationCode: "apple-code",
+            nonce: String(repeating: "n", count: 43)
+        )
+
+        let suiteName = "app.mobius.cloud.tests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let gatewayStore = GatewayStore(defaults: defaults)
+        let gateway = GatewayAccount(
+            endpoint: try GatewayEndpoint("wss://cloud.sprites.app"),
+            cloudUserID: userID
+        )
+        try gatewayStore.save(gateway, token: "gateway-token")
+        addTeardownBlock { try await gatewayStore.remove(gateway) }
+        var connectionAttempts = 0
+        let purchase = MobiusCloudPurchase(
+            jws: "header.payload.signature",
+            appTransactionJWS: "app.header.signature"
+        ) {
+            XCTAssertTrue(subscriptionSubmitted)
+            transactionFinished = true
+        }
+        let purchases = MobiusCloudPurchases(
+            displayPrice: { "$9.99" },
+            unfinishedPurchases: { MobiusCloudPurchaseScan() },
+            currentEntitlements: { _ in
+                MobiusCloudPurchaseScan(purchases: shouldRecover ? [purchase] : [])
+            },
+            purchase: { _ in throw MobiusCloudPurchaseError.unavailable }
+        )
+        let model = AppModel(
+            store: gatewayStore,
+            settingsDefaults: defaults,
+            requestSender: { _ in },
+            connectionOpener: { _ in
+                connectionAttempts += 1
+                return AsyncThrowingStream { _ in }
+            },
+            reconnectDelay: { _ in .zero },
+            cloudClient: client,
+            cloudPurchases: purchases
+        )
+        let cachedTranscript = TranscriptEntry(
+            id: "cached-answer",
+            text: "Keep me",
+            kind: .assistant,
+            format: "plain_text",
+            pending: false
+        )
+        model.transcript = [cachedTranscript]
+        model.connectionState = .ready
+        model.reconnectsOnActivation = true
+
+        model.setSceneActive(true)
+        XCTAssertEqual(connectionAttempts, 0)
+        await model.appDidBecomeActive()
+
+        XCTAssertEqual(connectionAttempts, 0)
+        XCTAssertEqual(model.cloudIssue, .subscriptionExpired)
+        XCTAssertEqual(
+            model.connectionState,
+            .failed(MobiusCloudError.subscriptionRequired.localizedDescription)
+        )
+        XCTAssertTrue(model.automaticReconnectBlocked)
+        XCTAssertFalse(model.reconnectsOnActivation)
+        XCTAssertEqual(model.transcript.map(\.id), [cachedTranscript.id])
+        XCTAssertEqual(model.selectedAccountID, gateway.id)
+        let expiredGeneration = model.connectionGeneration
+
+        model.handleCloudSubscriptionExpired()
+        model.reconnect()
+        model.reportCloud(MobiusCloudPurchaseError.unavailable)
+
+        XCTAssertEqual(model.connectionGeneration, expiredGeneration)
+        XCTAssertEqual(connectionAttempts, 0)
+        XCTAssertEqual(model.cloudIssue, .subscriptionExpired)
+        XCTAssertEqual(
+            model.cloudError,
+            MobiusCloudError.subscriptionRequired.localizedDescription
+        )
+
+        shouldRecover = true
+        model.reconnectsOnActivation = true
+        model.setSceneActive(true)
+        await model.appDidBecomeActive()
+
+        let reconnected = await eventually { connectionAttempts >= 1 }
+        XCTAssertTrue(reconnected)
+        XCTAssertTrue(subscriptionSubmitted)
+        XCTAssertTrue(transactionFinished)
+        XCTAssertEqual(model.cloudAccount?.subscribed, true)
+        XCTAssertNil(model.cloudIssue)
+        XCTAssertNil(model.cloudError)
+        XCTAssertFalse(model.automaticReconnectBlocked)
+    }
+
+    func testExpiredCloudAccountDoesNotInterruptSelectedSelfHostedGateway() async throws {
+        let userID = UUID()
+        let token = String(repeating: "t", count: 43)
+        let service = "app.mobius.cloud.tests.\(UUID())"
+        let sessionStore = MobiusCloudSessionStore(service: service)
+        defer { try? sessionStore.remove() }
+        var requests = 0
+        let client = MobiusCloudClient(store: sessionStore) { request in
+            requests += 1
+            let json = requests == 1
+                ? #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                : #"{"userId":"\#(userID.uuidString)","email":null,"subscribed":false,"sharesDiagnostics":false}"#
+            return try self.response(for: request, json: json)
+        }
+        _ = try await client.authenticate(
+            authorizationCode: "apple-code",
+            nonce: String(repeating: "n", count: 43)
+        )
+
+        let suiteName = "app.mobius.cloud.tests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let gatewayStore = GatewayStore(defaults: defaults)
+        let cloud = GatewayAccount(
+            endpoint: try GatewayEndpoint("wss://cloud.sprites.app"),
+            cloudUserID: userID
+        )
+        let selfHosted = GatewayAccount(endpoint: try GatewayEndpoint("wss://gateway.example"))
+        try gatewayStore.save(cloud, token: "cloud-token")
+        try gatewayStore.save(selfHosted, token: "self-hosted-token")
+        gatewayStore.select(selfHosted)
+        addTeardownBlock {
+            try await gatewayStore.remove(cloud)
+            try await gatewayStore.remove(selfHosted)
+        }
+        let model = AppModel(
+            store: gatewayStore,
+            settingsDefaults: defaults,
+            cloudClient: client,
+            cloudPurchases: emptyCloudPurchases()
+        )
+        model.connectionState = .ready
+
+        await model.refreshCloudAccount()
+
+        XCTAssertEqual(model.cloudIssue, .subscriptionExpired)
+        XCTAssertEqual(model.connectionState, .ready)
+        XCTAssertFalse(model.automaticReconnectBlocked)
+        XCTAssertEqual(model.selectedAccountID, selfHosted.id)
+    }
+
     func testCloudAccountRefreshCanRetryAfterTransientFailure() async throws {
         let token = String(repeating: "t", count: 43)
         let service = "app.mobius.cloud.tests.\(UUID())"

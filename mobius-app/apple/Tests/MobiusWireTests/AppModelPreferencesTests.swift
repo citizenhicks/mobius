@@ -828,6 +828,53 @@ extension AppModelTests {
         XCTAssertEqual(model.navigationPath, [.chat(.session(approval.sessionId))])
     }
 
+    func testSubscriptionExpiryNotificationStopsCloudReconnectWithoutDiscardingChat() throws {
+        let model = try model()
+        let userID = UUID()
+        let cloudGateway = GatewayAccount(
+            endpoint: try GatewayEndpoint("tcp://localhost:9191"),
+            cloudUserID: userID
+        )
+        let cachedSession = session(state: .idle)
+        let cachedTranscript = TranscriptEntry(
+            id: "cached-answer",
+            text: "Keep me",
+            kind: .assistant,
+            format: "plain_text",
+            pending: false
+        )
+        model.cloudSession = MobiusCloudSession(userID: userID, expiresAt: .distantFuture)
+        model.notificationsEnabled = true
+        model.accounts = [cloudGateway]
+        model.selectedAccountID = cloudGateway.id
+        model.sessions = [cachedSession]
+        model.transcript = [cachedTranscript]
+        model.connectionState = .connecting
+
+        model.openRemoteNotification(.subscriptionExpired(eventID: "subscription-expired-1"))
+
+        XCTAssertEqual(model.cloudIssue, .subscriptionExpired)
+        XCTAssertEqual(
+            model.connectionState,
+            .failed(MobiusCloudError.subscriptionRequired.localizedDescription)
+        )
+        XCTAssertTrue(model.automaticReconnectBlocked)
+        XCTAssertNil(model.pendingRemoteNotification)
+        XCTAssertEqual(model.sessions, [cachedSession])
+        XCTAssertEqual(model.transcript.map(\.id), [cachedTranscript.id])
+        XCTAssertEqual(model.transcript.map(\.text), [cachedTranscript.text])
+    }
+
+    func testSubscriptionExpiredRemoteNotificationPayload() {
+        XCTAssertEqual(
+            RemoteNotification(userInfo: [
+                "eventId": "subscription-expired-1",
+                "kind": "subscription.expired",
+            ]),
+            .subscriptionExpired(eventID: "subscription-expired-1")
+        )
+    }
+
     func testRemoteNotificationPayloadRequiresAStableCursorForItsKind() throws {
         XCTAssertEqual(
             RemoteNotification(userInfo: [

@@ -90,10 +90,14 @@ enum RemoteNotification: Equatable {
         approvalRequestID: String?
     )
     case swarmAttention(eventID: String, swarmID: String, messageID: String)
+    case subscriptionExpired(eventID: String)
 
     var eventID: String {
         switch self {
-        case .session(let eventID, _, _, _, _), .swarmAttention(let eventID, _, _): eventID
+        case .session(let eventID, _, _, _, _),
+             .swarmAttention(let eventID, _, _),
+             .subscriptionExpired(let eventID):
+            eventID
         }
     }
 
@@ -101,6 +105,10 @@ enum RemoteNotification: Equatable {
         guard let eventID = Self.identifier(userInfo["eventId"]),
               let rawKind = userInfo["kind"] as? String
         else { return nil }
+        if rawKind == "subscription.expired" {
+            self = .subscriptionExpired(eventID: eventID)
+            return
+        }
         if rawKind == "swarm.attention" {
             guard let swarmID = Self.identifier(userInfo["swarmId"]),
                   let messageID = Self.identifier(userInfo["messageId"])
@@ -356,6 +364,11 @@ extension AppModel {
                 agentName: agentName,
                 text: detail
             )
+        case .subscriptionExpired:
+            handleCloudSubscriptionExpired()
+            if cloudAccount != nil {
+                Task { [weak self] in await self?.refreshCloudAccount() }
+            }
         }
     }
 
@@ -368,15 +381,24 @@ extension AppModel {
 
     @discardableResult
     func openPendingRemoteNotification() -> Bool {
-        guard let notification = pendingRemoteNotification,
-              let cloudGateway = mobiusCloudGateway
-        else { return false }
+        guard let notification = pendingRemoteNotification else { return false }
+        if case .subscriptionExpired = notification {
+            pendingRemoteNotification = nil
+            handleCloudSubscriptionExpired()
+            if cloudAccount != nil {
+                Task { [weak self] in await self?.refreshCloudAccount() }
+            }
+            return true
+        }
+        guard let cloudGateway = mobiusCloudGateway else { return false }
         guard selectedAccountID == cloudGateway.id else {
             connect(to: cloudGateway)
             return false
         }
         guard connectionState.isReady else { return false }
         switch notification {
+        case .subscriptionExpired:
+            return false
         case .swarmAttention(_, let swarmID, _):
             guard swarms.contains(where: { $0.id == swarmID }) else { return false }
             pendingRemoteNotification = nil
@@ -602,6 +624,8 @@ extension AppModel {
 
     private func catalogAlreadyIncludes(_ notification: RemoteNotification) -> Bool {
         switch notification {
+        case .subscriptionExpired:
+            return false
         case .swarmAttention(_, _, let messageID):
             return swarmAttentions.contains { $0.messageId == messageID }
         case .session(_, .awaitingApproval, let sessionID, _, let requestID):

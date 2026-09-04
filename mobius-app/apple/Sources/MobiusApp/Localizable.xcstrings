@@ -11198,6 +11198,22 @@
         }
       }
     },
+    "Renew or restore your subscription to reconnect to möbius Cloud." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Renouvelez ou restaurez votre abonnement pour vous reconnecter à möbius Cloud."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Verlängern oder stellen Sie Ihr Abonnement wieder her, um sich erneut mit möbius Cloud zu verbinden."
+          }
+        }
+      }
+    },
     "Repair pairing" : {
       "localizations" : {
         "fr" : {
@@ -13162,6 +13178,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Abonnement"
+          }
+        }
+      }
+    },
+    "Subscription expired" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Abonnement expiré"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Abonnement abgelaufen"
           }
         }
       }

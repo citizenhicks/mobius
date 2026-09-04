@@ -801,6 +801,16 @@ extension AppModel {
     func appDidBecomeActive() async {
         appIsInBackground = false
         await unlockApp()
+        if selectedGatewayIsMobiusCloud {
+            await refreshCloudAccount()
+            if reconnectsOnActivation {
+                reconnectsOnActivation = false
+                if selectedGatewayIsMobiusCloud,
+                   cloudIssue != .subscriptionExpired {
+                    reconnect()
+                }
+            }
+        }
         await refreshRemoteNotificationRegistration()
     }
 
