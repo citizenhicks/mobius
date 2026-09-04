@@ -794,6 +794,7 @@ impl TuiState {
                 author: MessageAuthor::User,
                 text: line.into(),
                 attachments: std::mem::take(&mut self.attachments),
+                reply: None,
                 requested_delivery: self.active_turn.as_ref().and(delivery),
                 target_turn_id: self.active_turn.clone(),
             },

@@ -18,7 +18,19 @@ extension AppModelTests {
             draftDirectory: root.appendingPathComponent("Drafts", isDirectory: true)
         )
         let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
-        await store.saveComposerDraft("Draft two", accountID: account.id, sessionID: "chat-2")
+        let firstReply = MessageReply(
+            target: MessageTarget(checkpointSequence: 3, batchItemCount: 1),
+            text: "First original"
+        )
+        let secondReply = MessageReply(
+            target: MessageTarget(checkpointSequence: 5, batchItemCount: 2),
+            text: "Second original"
+        )
+        await store.saveComposerDraft(
+            ComposerDraft(text: "Draft two", reply: secondReply),
+            accountID: account.id,
+            sessionID: "chat-2"
+        )
         let recorder = GatewayRequestRecorder()
         let model = AppModel(
             client: GatewayClient(),
@@ -49,6 +61,7 @@ extension AppModelTests {
         XCTAssertTrue(firstSessionReady)
         XCTAssertEqual(model.composer, "Typed while opening")
         model.composer = "Draft one"
+        model.composerReply = firstReply
 
         requestCount = await recorder.requestCount()
         model.openSession("chat-2")
@@ -66,7 +79,9 @@ extension AppModelTests {
         ))
         model.handle(.sessionReplayComplete(requestID: secondID, sessionID: "chat-2"))
         let secondSessionReady = await eventually {
-            model.canCreateSession && model.composer == "Draft two"
+            model.canCreateSession
+                && model.composer == "Draft two"
+                && model.composerReply == secondReply
         }
         XCTAssertTrue(secondSessionReady)
 
@@ -74,15 +89,16 @@ extension AppModelTests {
             await store.loadComposerDraft(
                 accountID: account.id,
                 sessionID: "chat-1"
-            ) == "Draft one"
+            ) == ComposerDraft(text: "Draft one", reply: firstReply)
         }
         XCTAssertTrue(firstDraftSaved)
         let firstDraft = await store.loadComposerDraft(
             accountID: account.id,
             sessionID: "chat-1"
         )
-        XCTAssertEqual(firstDraft, "Draft one")
+        XCTAssertEqual(firstDraft, ComposerDraft(text: "Draft one", reply: firstReply))
         XCTAssertEqual(model.composer, "Draft two")
+        XCTAssertEqual(model.composerReply, secondReply)
 
         requestCount = await recorder.requestCount()
         model.sendMessage()
@@ -95,7 +111,7 @@ extension AppModelTests {
             accountID: account.id,
             sessionID: "chat-2"
         )
-        XCTAssertEqual(submittedDraft, "Draft two")
+        XCTAssertEqual(submittedDraft, ComposerDraft(text: "Draft two", reply: secondReply))
         guard case .submit(_, let submission) = try XCTUnwrap(submitRequest) else {
             return XCTFail("Expected submitted draft")
         }
@@ -104,22 +120,23 @@ extension AppModelTests {
             await store.loadComposerDraft(
                 accountID: account.id,
                 sessionID: "chat-2"
-            ) == "Next draft"
+            ) == ComposerDraft(text: "Next draft")
         }
         XCTAssertTrue(nextDraftSaved)
         let nextDraft = await store.loadComposerDraft(
             accountID: account.id,
             sessionID: "chat-2"
         )
-        XCTAssertEqual(nextDraft, "Next draft")
+        XCTAssertEqual(nextDraft, ComposerDraft(text: "Next draft"))
 
         requestCount = await recorder.requestCount()
         model.deleteSession(session(sessionID: "chat-2", state: .idle))
         let deleteRequest = await recorder.firstRequest(after: requestCount) { request in
-            guard case .deleteSession(_, "chat-2") = request else { return false }
-            return true
+            guard case .deleteSessions(_, let ids) = request else { return false }
+            return ids == ["chat-2"]
         }
-        guard case .deleteSession(let deleteID, "chat-2") = try XCTUnwrap(deleteRequest)
+        guard case .deleteSessions(let deleteID, let ids) = try XCTUnwrap(deleteRequest),
+              ids == ["chat-2"]
         else { return XCTFail("Expected session delete") }
         model.handle(.accepted(requestID: deleteID))
         model.handle(.sessions(requestID: deleteID, sessions: []))
@@ -161,12 +178,12 @@ extension AppModelTests {
             draftDirectory: draftDirectory
         )
         await store.saveComposerDraft(
-            "First account",
+            ComposerDraft(text: "First account"),
             accountID: firstAccount.id,
             sessionID: "chat-1"
         )
         await store.saveComposerDraft(
-            "Second account",
+            ComposerDraft(text: "Second account"),
             accountID: secondAccount.id,
             sessionID: "chat-1"
         )
@@ -184,21 +201,21 @@ extension AppModelTests {
             accountID: secondAccount.id,
             sessionID: "chat-1"
         )
-        XCTAssertEqual(restoredFirst, "First account")
-        XCTAssertEqual(restoredSecond, "Second account")
+        XCTAssertEqual(restoredFirst, ComposerDraft(text: "First account"))
+        XCTAssertEqual(restoredSecond, ComposerDraft(text: "Second account"))
 
         await store.saveComposerDraft(
-            "",
+            .empty,
             accountID: firstAccount.id,
             sessionID: "chat-1"
         )
         await store.saveComposerDraft(
-            "Existing",
+            ComposerDraft(text: "Existing"),
             accountID: firstAccount.id,
             sessionID: "oversized"
         )
         await store.saveComposerDraft(
-            String(repeating: "x", count: maximumComposerBytes + 1),
+            ComposerDraft(text: String(repeating: "x", count: maximumComposerBytes + 1)),
             accountID: firstAccount.id,
             sessionID: "oversized"
         )
@@ -210,11 +227,11 @@ extension AppModelTests {
             accountID: firstAccount.id,
             sessionID: "oversized"
         )
-        XCTAssertEqual(removedEmpty, "")
-        XCTAssertEqual(removedOversized, "")
+        XCTAssertEqual(removedEmpty, .empty)
+        XCTAssertEqual(removedOversized, .empty)
 
         await store.saveComposerDraft(
-            "Will corrupt",
+            ComposerDraft(text: "Will corrupt"),
             accountID: firstAccount.id,
             sessionID: "corrupt"
         )
@@ -228,11 +245,11 @@ extension AppModelTests {
             accountID: firstAccount.id,
             sessionID: "corrupt"
         )
-        XCTAssertEqual(corrupt, "")
+        XCTAssertEqual(corrupt, .empty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: corruptURL.path))
 
         await store.saveComposerDraft(
-            "Remove with account",
+            ComposerDraft(text: "Remove with account"),
             accountID: firstAccount.id,
             sessionID: "chat-2"
         )
@@ -245,8 +262,8 @@ extension AppModelTests {
             accountID: secondAccount.id,
             sessionID: "chat-1"
         )
-        XCTAssertEqual(removedAccountDraft, "")
-        XCTAssertEqual(preservedAccountDraft, "Second account")
+        XCTAssertEqual(removedAccountDraft, .empty)
+        XCTAssertEqual(preservedAccountDraft, ComposerDraft(text: "Second account"))
     }
 
     func testUnavailableCachedCursorRetriesTheOpenWithoutIt() async throws {

@@ -453,6 +453,7 @@ extension AppModel {
             )
             _ = transcriptWindow
             historyLoadCompletionRevision &+= 1
+            historyLoadSuccessRevision &+= 1
             return
         }
         guard let sessionID = selectedSessionID,
@@ -473,11 +474,17 @@ extension AppModel {
         }
     }
 
-    func finishHistoryLoad() {
+    func finishHistoryLoad(succeeded: Bool = false) {
         let wasLoading = historyRequestID != nil || isLoadingEarlierHistory
         historyRequestID = nil
         isLoadingEarlierHistory = false
-        if wasLoading { historyLoadCompletionRevision &+= 1 }
+        guard wasLoading else { return }
+        historyLoadCompletionRevision &+= 1
+        if succeeded {
+            historyLoadSuccessRevision &+= 1
+        } else {
+            historyLoadFailureRevision &+= 1
+        }
     }
 
     func restoreSession(_ sessionID: String) {
@@ -599,26 +606,37 @@ extension AppModel {
     }
 
     func deleteSession(_ session: SessionRecord) {
+        deleteSessions([session])
+    }
+
+    func deleteSessions(_ sessions: [SessionRecord]) {
         guard sessionMutationRequestID == nil else { return }
-        let deletesSelectedSession = session.sessionId == selectedSessionID
-        let deletesPresentedSession = presentedChatSessionID == session.sessionId
+        var seen = Set<String>()
+        let sessionIDs = sessions.map(\.sessionId).filter { seen.insert($0).inserted }
+        guard !sessionIDs.isEmpty else { return }
+        let deletesSelectedSession = selectedSessionID.map(sessionIDs.contains) == true
+        let deletedPresentedSessionID = presentedChatSessionID.flatMap { presented in
+            sessionIDs.contains(presented) ? presented : nil
+        }
         if let accountID = selectedAccountID {
             enqueueTranscriptIO { [store] in
-                await store.removeTranscript(accountID: accountID, sessionID: session.sessionId)
+                for sessionID in sessionIDs {
+                    await store.removeTranscript(accountID: accountID, sessionID: sessionID)
+                }
             }
         }
         let id = requestID("session-delete")
         sessionMutationRequestID = id
-        pendingDeletedSessionID = session.sessionId
-        pendingDeletedPresentedSessionID = deletesPresentedSession ? session.sessionId : nil
-        transmit(.deleteSession(
+        pendingDeletedSessionIDs = sessionIDs
+        pendingDeletedPresentedSessionID = deletedPresentedSessionID
+        transmit(.deleteSessions(
             requestID: id,
-            sessionID: session.sessionId
+            sessionIDs: sessionIDs
         )) { [weak self] _ in
             guard let self, self.sessionMutationRequestID == id else { return }
             let sessionID = self.pendingDeletedPresentedSessionID
             self.sessionMutationRequestID = nil
-            self.pendingDeletedSessionID = nil
+            self.pendingDeletedSessionIDs = []
             self.pendingDeletedPresentedSessionID = nil
             self.restoreDeletedPresentedSession(sessionID)
         }
@@ -1145,6 +1163,7 @@ extension AppModel {
         else { return false }
         let text = composer.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = uploadedComposerAttachments
+        let reply = composerReply
         guard composerAttachments.count <= attachmentReferenceLimit else { return false }
         guard !text.isEmpty || !composerAttachments.isEmpty else { return false }
         guard composerAttachments.isEmpty || canSubmitAttachments else {
@@ -1165,13 +1184,15 @@ extension AppModel {
             dismissComposerFocus()
             pendingDrafts[requestID] = PendingComposerDraft(
                 text: text,
-                attachments: attachments
+                attachments: attachments,
+                reply: reply
             )
             composerDraftSaveTask?.cancel()
             composerDraftSaveTask = nil
             suppressesComposerDraftSave = true
             composer = ""
             suppressesComposerDraftSave = false
+            composerReply = nil
             return true
         }
         guard !composerHasUnfinishedAttachments else {
@@ -1186,6 +1207,7 @@ extension AppModel {
             author: .user,
             text: text,
             attachments: attachments,
+            reply: reply,
             requestedDelivery: delivery,
             targetTurnId: targetTurnID
         ))
@@ -1206,16 +1228,27 @@ extension AppModel {
         if targetTurnID == nil {
             startChatTitle(prompt: text, submissionID: id, sessionID: sessionID)
         }
-        pendingDrafts[id] = PendingComposerDraft(text: text, attachments: attachments)
+        pendingDrafts[id] = PendingComposerDraft(
+            text: text,
+            attachments: attachments,
+            reply: reply
+        )
         composerDraftSaveTask?.cancel()
         composerDraftSaveTask = nil
         if let owner = composerDraftOwner {
-            enqueueComposerDraftSave(stashedText ?? text, owner: owner)
+            enqueueComposerDraftSave(
+                ComposerDraft(
+                    text: stashedText ?? text,
+                    reply: stashedText == nil ? reply : nil
+                ),
+                owner: owner
+            )
         }
         stashedComposerDraft = nil
         suppressesComposerDraftSave = true
         composer = ""
         suppressesComposerDraftSave = false
+        composerReply = nil
         composerAttachments = []
         transmit(.submit(
             sessionID: sessionID,
@@ -1258,6 +1291,10 @@ extension AppModel {
         else { return }
         guard composerAttachments.isEmpty else {
             showToast("Finish the attachment draft before editing a queued message.", tone: .warning)
+            return
+        }
+        guard composerReply == nil else {
+            showToast("Finish the reply draft before editing a queued message.", tone: .warning)
             return
         }
         guard pendingWidgetEdit == nil, stashedComposerDraft == nil else { return }

@@ -2,7 +2,7 @@ use std::future::Future;
 
 use crate::Error;
 use crate::Result;
-use crate::backend::checkpoint::QueuedMessage;
+use crate::backend::checkpoint::{EventPageRequest, QueuedMessage};
 use crate::middleware::ActiveCommandContext;
 use crate::middleware::MessageQueue;
 use crate::middleware::MessageRouteContext;
@@ -10,6 +10,7 @@ use crate::middleware::MiddlewareStack;
 use crate::middleware::SubmissionResult;
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
+use crate::protocol::MessageReply;
 use crate::protocol::MessageSubmission;
 use crate::protocol::Op;
 use crate::protocol::ReviewDecision;
@@ -21,6 +22,10 @@ use super::EventRecorder;
 use super::Runner;
 use super::SubmissionInbox;
 use super::send_event;
+
+const REPLY_EVENT_PAGE_SIZE: usize = 256;
+const INVALID_REPLY_TARGET: &str = "reply target is not a safe durable message in this chat";
+const CHANGED_REPLY_TEXT: &str = "quoted message does not match its durable original";
 
 pub(super) enum Wait<T> {
     Ready { value: T, input_changed: bool },
@@ -75,6 +80,16 @@ impl Runner {
         submission_id: String,
         message: MessageSubmission,
     ) -> Result<()> {
+        if let Some(message) = validate_message_reply(
+            self.config.checkpoints.as_ref(),
+            &self.config.session_id,
+            message.reply.as_ref(),
+        )
+        .await?
+        {
+            reject(&self.events, submission_id, message).await?;
+            return Ok(());
+        }
         let mut pending_messages = self.state.pending_messages.clone();
         let mut messages = Vec::new();
         let result = self
@@ -164,6 +179,19 @@ impl Runner {
         turn_id: &str,
         expected_approval: Option<&str>,
     ) -> Result<ActiveRoute> {
+        if let Op::Message { message } = &submission.op
+            && let Some(rejection) = validate_message_reply(
+                self.config.checkpoints.as_ref(),
+                &self.config.session_id,
+                message.reply.as_ref(),
+            )
+            .await?
+        {
+            reject(&self.events, submission.id, rejection).await?;
+            return Ok(ActiveRoute::Continue {
+                input_changed: false,
+            });
+        }
         let route = (ActiveTurnRouter {
             middleware: &self.config.middleware,
             session_id: &self.config.session_id,
@@ -195,6 +223,54 @@ impl Runner {
                 decision,
             }),
         }
+    }
+}
+
+async fn validate_message_reply(
+    checkpoints: &dyn crate::backend::checkpoint::CheckpointStore,
+    session_id: &str,
+    reply: Option<&MessageReply>,
+) -> Result<Option<&'static str>> {
+    let Some(reply) = reply else {
+        return Ok(None);
+    };
+    let mut before_sequence = None;
+    loop {
+        let page = checkpoints
+            .event_page(
+                session_id,
+                EventPageRequest {
+                    before_sequence,
+                    limit: REPLY_EVENT_PAGE_SIZE,
+                },
+            )
+            .await?;
+        for record in page.events {
+            let original = match &record.event.msg {
+                EventMsg::Message(message)
+                    if message.message_target.as_ref() == Some(&reply.target) =>
+                {
+                    Some(message.reply_text())
+                }
+                EventMsg::AssistantMessage(message)
+                    if message.message_target.as_ref() == Some(&reply.target) =>
+                {
+                    Some(message.reply_text())
+                }
+                _ => None,
+            };
+            if let Some(original) = original {
+                return Ok(match original {
+                    Some(original) if original == reply.text => None,
+                    Some(_) => Some(CHANGED_REPLY_TEXT),
+                    None => Some(INVALID_REPLY_TARGET),
+                });
+            }
+        }
+        let Some(next) = page.next_before_sequence else {
+            return Ok(Some(INVALID_REPLY_TARGET));
+        };
+        before_sequence = Some(next);
     }
 }
 
@@ -362,6 +438,19 @@ async fn warn(events: &EventRecorder, id: String, message: &str) -> Result<()> {
     .await
 }
 
+async fn reject(events: &EventRecorder, id: String, message: &str) -> Result<()> {
+    send_event(
+        events,
+        Event {
+            submission_id: Some(id),
+            msg: EventMsg::SubmissionRejected(SubmissionRejectedEvent {
+                message: message.into(),
+            }),
+        },
+    )
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -406,6 +495,154 @@ mod tests {
         (directory, recorder, events)
     }
 
+    #[tokio::test]
+    async fn reply_matches_a_durable_message_in_its_own_session() {
+        let directory = tempfile::tempdir().expect("checkpoint directory");
+        let store = SqliteCheckpoint::new(directory.path().join("checkpoints.sqlite3"))
+            .expect("checkpoint store");
+        for session_id in ["current", "other"] {
+            let mut checkpoint = Checkpoint::empty(session_id);
+            checkpoint.session_context.bot_id = "test-bot".into();
+            store
+                .save(&checkpoint, &[], None)
+                .await
+                .expect("save session");
+        }
+        let attachment_target = crate::protocol::MessageTarget {
+            checkpoint_sequence: 1,
+            batch_item_count: 1,
+        };
+        store
+            .append_event(
+                "current",
+                1,
+                &Event {
+                    submission_id: Some("attachment".into()),
+                    msg: EventMsg::Message(crate::protocol::MessageEvent {
+                        author: crate::protocol::MessageAuthor::User,
+                        delivery: crate::protocol::MessageDelivery::Turn,
+                        text: String::new(),
+                        attachments: vec![crate::protocol::SessionFileReference {
+                            id: "00000000-0000-0000-0000-000000000001".into(),
+                            name: "clip.mov".into(),
+                            size: 1,
+                            media_type: "video/quicktime".into(),
+                        }],
+                        reply: None,
+                        message_target: Some(attachment_target),
+                    }),
+                },
+            )
+            .await
+            .expect("append attachment message");
+        let assistant_target = crate::protocol::MessageTarget {
+            checkpoint_sequence: 1,
+            batch_item_count: 2,
+        };
+        store
+            .append_event(
+                "current",
+                2,
+                &Event {
+                    submission_id: Some("assistant".into()),
+                    msg: EventMsg::AssistantMessage(crate::protocol::AssistantMessageEvent {
+                        session_id: "current".into(),
+                        turn_id: "turn".into(),
+                        model_step_id: "step".into(),
+                        content: vec![
+                            crate::protocol::ModelStepContent {
+                                output_index: 0,
+                                part_index: 0,
+                                phase: crate::protocol::ModelStepContentPhase::FinalAnswer,
+                                text: "first part".into(),
+                                annotations: Vec::new(),
+                            },
+                            crate::protocol::ModelStepContent {
+                                output_index: 1,
+                                part_index: 0,
+                                phase: crate::protocol::ModelStepContentPhase::FinalAnswer,
+                                text: "last part".into(),
+                                annotations: Vec::new(),
+                            },
+                        ],
+                        message_target: Some(assistant_target),
+                    }),
+                },
+            )
+            .await
+            .expect("append assistant message");
+        let other_target = crate::protocol::MessageTarget {
+            checkpoint_sequence: 2,
+            batch_item_count: 1,
+        };
+        store
+            .append_event(
+                "other",
+                1,
+                &Event {
+                    submission_id: Some("other".into()),
+                    msg: EventMsg::Message(crate::protocol::MessageEvent {
+                        author: crate::protocol::MessageAuthor::User,
+                        delivery: crate::protocol::MessageDelivery::Turn,
+                        text: "other chat".into(),
+                        attachments: Vec::new(),
+                        reply: None,
+                        message_target: Some(other_target),
+                    }),
+                },
+            )
+            .await
+            .expect("append other message");
+
+        let exact = MessageReply {
+            target: attachment_target,
+            text: "clip.mov".into(),
+        };
+        let changed = MessageReply {
+            text: "forged quote".into(),
+            ..exact.clone()
+        };
+        let other = MessageReply {
+            target: other_target,
+            text: "other chat".into(),
+        };
+        let assistant = MessageReply {
+            target: assistant_target,
+            text: "last part".into(),
+        };
+        let combined_assistant = MessageReply {
+            target: assistant_target,
+            text: "first partlast part".into(),
+        };
+
+        assert_eq!(
+            (
+                validate_message_reply(&store, "current", Some(&exact))
+                    .await
+                    .expect("validate exact reply"),
+                validate_message_reply(&store, "current", Some(&changed))
+                    .await
+                    .expect("validate changed reply"),
+                validate_message_reply(&store, "current", Some(&other))
+                    .await
+                    .expect("validate cross-session reply"),
+                validate_message_reply(&store, "current", Some(&assistant))
+                    .await
+                    .expect("validate assistant reply"),
+                validate_message_reply(&store, "current", Some(&combined_assistant))
+                    .await
+                    .expect("validate combined assistant reply"),
+            ),
+            (
+                None,
+                Some(CHANGED_REPLY_TEXT),
+                Some(INVALID_REPLY_TARGET),
+                None,
+                Some(CHANGED_REPLY_TEXT),
+            )
+        );
+    }
+
     impl Middleware for EditableMiddleware {
         fn name(&self) -> &'static str {
             "editable"
@@ -425,6 +662,7 @@ mod tests {
                             delivery: crate::protocol::MessageDelivery::Queue,
                             text: "queued".into(),
                             attachments: Vec::new(),
+                            reply: None,
                             message_target: None,
                         },
                     )?;
@@ -491,6 +729,7 @@ mod tests {
                     delivery: crate::protocol::MessageDelivery::Turn,
                     text: context.message.text.clone(),
                     attachments: Vec::new(),
+                    reply: None,
                     message_target: None,
                 },
             )?;
@@ -678,6 +917,7 @@ mod tests {
                         author: crate::protocol::MessageAuthor::User,
                         text: "hello".into(),
                         attachments: Vec::new(),
+                        reply: None,
                         requested_delivery: None,
                         target_turn_id: None,
                     },

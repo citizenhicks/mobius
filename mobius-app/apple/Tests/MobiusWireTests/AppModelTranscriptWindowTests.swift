@@ -245,6 +245,11 @@ extension AppModelTests {
                 startsTurn: true,
                 turnTerminal: true,
                 turnElapsedMs: 1_250,
+                messageTarget: MessageTarget(checkpointSequence: 7, batchItemCount: 1),
+                reply: MessageReply(
+                    target: MessageTarget(checkpointSequence: 3, batchItemCount: 2),
+                    text: "Earlier message"
+                ),
                 annotations: [.object([
                     "type": .string("url_citation"),
                     "url": .string("https://example.com"),
@@ -285,6 +290,7 @@ extension AppModelTests {
         XCTAssertEqual(model.transcript.first?.startsTurn, true)
         XCTAssertEqual(model.transcript.first?.turnTerminal, true)
         XCTAssertEqual(model.transcript.first?.turnElapsedMs, 1_250)
+        XCTAssertEqual(model.transcript.first?.reply?.text, "Earlier message")
         XCTAssertEqual(
             model.transcript.first?.annotations.first?["content"]?.stringValue,
             "Relevant excerpt."

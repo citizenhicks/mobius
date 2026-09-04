@@ -263,6 +263,7 @@ fn client_frame_round_trip_preserves_a_unified_message() {
                     author: mobius::protocol::MessageAuthor::User,
                     text: "follow up".into(),
                     attachments: Vec::new(),
+                    reply: None,
                     requested_delivery: Some(mobius::protocol::ActiveMessageDelivery::Queue),
                     target_turn_id: Some("turn-a".into()),
                 },
@@ -682,9 +683,9 @@ fn session_actions_have_flat_authenticated_frames() {
         pinned: true,
     }))
     .expect("encode pin");
-    let delete = serde_json::to_value(ClientFrame::new(ClientMessage::DeleteSession {
+    let delete = serde_json::to_value(ClientFrame::new(ClientMessage::DeleteSessions {
         request_id: "request-d".into(),
-        session_id: "session-a".into(),
+        session_ids: vec!["session-a".into(), "session-b".into()],
     }))
     .expect("encode delete");
 
@@ -692,7 +693,11 @@ fn session_actions_have_flat_authenticated_frames() {
     assert_eq!(rename["title"], "Renamed chat");
     assert_eq!(pin["type"], "set_session_pinned");
     assert_eq!(pin["pinned"], true);
-    assert_eq!(delete["type"], "delete_session");
+    assert_eq!(delete["type"], "delete_sessions");
+    assert_eq!(
+        delete["session_ids"],
+        serde_json::json!(["session-a", "session-b"])
+    );
 }
 
 #[test]

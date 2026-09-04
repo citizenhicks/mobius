@@ -669,6 +669,8 @@ extension AppModelTests {
         model.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
 
         let initialRevision = model.historyLoadCompletionRevision
+        let initialSuccessRevision = model.historyLoadSuccessRevision
+        let initialFailureRevision = model.historyLoadFailureRevision
         var requestCount = await recorder.requestCount()
         model.loadEarlierHistory()
         let rejectedRequest = await recorder.firstRequest(after: requestCount) {
@@ -687,6 +689,8 @@ extension AppModelTests {
 
         XCTAssertFalse(model.isLoadingEarlierHistory)
         XCTAssertEqual(model.historyLoadCompletionRevision, initialRevision + 1)
+        XCTAssertEqual(model.historyLoadSuccessRevision, initialSuccessRevision)
+        XCTAssertEqual(model.historyLoadFailureRevision, initialFailureRevision + 1)
 
         requestCount = await recorder.requestCount()
         model.loadEarlierHistory()
@@ -706,6 +710,8 @@ extension AppModelTests {
 
         XCTAssertFalse(model.isLoadingEarlierHistory)
         XCTAssertEqual(model.historyLoadCompletionRevision, initialRevision + 2)
+        XCTAssertEqual(model.historyLoadSuccessRevision, initialSuccessRevision + 1)
+        XCTAssertEqual(model.historyLoadFailureRevision, initialFailureRevision + 1)
         XCTAssertFalse(model.hasEarlierHistory)
     }
 

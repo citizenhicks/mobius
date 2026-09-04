@@ -51,6 +51,7 @@ struct CachedTranscript: Codable, Sendable {
         let sourceSequence: UInt64?
         let recordedAtMs: Int64?
         let messageTarget: MessageTarget?
+        let reply: MessageReply?
         let files: [SessionFileReference]
         let annotations: [JSONValue]?
 
@@ -75,6 +76,7 @@ struct CachedTranscript: Codable, Sendable {
             sourceSequence = entry.sourceSequence
             recordedAtMs = entry.recordedAtMs
             messageTarget = entry.messageTarget
+            reply = entry.reply
             files = entry.files
             annotations = entry.annotations.isEmpty ? nil : entry.annotations
         }
@@ -101,6 +103,7 @@ struct CachedTranscript: Codable, Sendable {
                 sourceSequence: sourceSequence,
                 recordedAtMs: recordedAtMs,
                 messageTarget: messageTarget,
+                reply: reply,
                 files: files,
                 annotations: annotations ?? [],
                 messageMetadata: identity.messageMetadata
@@ -157,6 +160,7 @@ struct CachedTranscript: Codable, Sendable {
                   consume(entry.identity.messageMetadata?.author.peerFields?.messageID),
                   consume(entry.identity.messageMetadata?.author.peerFields?.sessionID),
                   consume(entry.identity.messageMetadata?.author.peerFields?.handle),
+                  consume(entry.reply?.text),
                   entry.files.allSatisfy({ file in
                       consume(file.id)
                           && consume(file.name)
@@ -433,30 +437,31 @@ private actor GatewayDiskStore {
         )
     }
 
-    func loadComposerDraft(accountID: UUID, sessionID: String) -> String {
+    func loadComposerDraft(accountID: UUID, sessionID: String) -> ComposerDraft {
         let url = draftURL(accountID: accountID, sessionID: sessionID)
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
               let size = (attributes[.size] as? NSNumber)?.intValue
-        else { return "" }
-        guard size <= maximumComposerBytes,
+        else { return .empty }
+        guard size <= maximumComposerBytes * 8 + 16_384,
               let data = try? Data(contentsOf: url),
-              let draft = String(data: data, encoding: .utf8),
-              !draft.isEmpty
+              let draft = try? JSONDecoder().decode(ComposerDraft.self, from: data),
+              isValid(draft)
         else {
             try? FileManager.default.removeItem(at: url)
-            return ""
+            return .empty
         }
         return draft
     }
 
-    func saveComposerDraft(_ draft: String, accountID: UUID, sessionID: String) {
+    func saveComposerDraft(_ draft: ComposerDraft, accountID: UUID, sessionID: String) {
         let url = draftURL(accountID: accountID, sessionID: sessionID)
-        guard !draft.isEmpty else {
+        guard !draft.isEmpty, isValid(draft) else {
             try? FileManager.default.removeItem(at: url)
             return
         }
-        let data = Data(draft.utf8)
-        guard data.count <= maximumComposerBytes else {
+        guard let data = try? JSONEncoder().encode(draft),
+              data.count <= maximumComposerBytes * 8 + 16_384
+        else {
             try? FileManager.default.removeItem(at: url)
             return
         }
@@ -465,6 +470,14 @@ private actor GatewayDiskStore {
             withIntermediateDirectories: true
         )
         try? data.write(to: url, options: protectedWriteOptions)
+    }
+
+    private func isValid(_ draft: ComposerDraft) -> Bool {
+        guard draft.text.utf8.count <= maximumComposerBytes else { return false }
+        guard let reply = draft.reply else { return true }
+        return !reply.text.isEmpty
+            && reply.text.utf8.count <= maximumComposerBytes
+            && reply.target.batchItemCount > 0
     }
 
     func loadComposerEditRecovery(
@@ -866,11 +879,15 @@ final class GatewayStore {
         )
     }
 
-    func loadComposerDraft(accountID: UUID, sessionID: String) async -> String {
+    func loadComposerDraft(accountID: UUID, sessionID: String) async -> ComposerDraft {
         await diskStore.loadComposerDraft(accountID: accountID, sessionID: sessionID)
     }
 
-    func saveComposerDraft(_ draft: String, accountID: UUID, sessionID: String) async {
+    func saveComposerDraft(
+        _ draft: ComposerDraft,
+        accountID: UUID,
+        sessionID: String
+    ) async {
         await diskStore.saveComposerDraft(
             draft,
             accountID: accountID,

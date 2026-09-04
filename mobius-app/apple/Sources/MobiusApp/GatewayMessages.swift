@@ -20,7 +20,7 @@ enum GatewayRequest: Encodable, Sendable {
     )
     case renameSession(requestID: String, sessionID: String, title: String)
     case setSessionPinned(requestID: String, sessionID: String, pinned: Bool)
-    case deleteSession(requestID: String, sessionID: String)
+    case deleteSessions(requestID: String, sessionIDs: [String])
     case createSwarm(
         requestID: String,
         title: String,
@@ -228,10 +228,10 @@ enum GatewayRequest: Encodable, Sendable {
             try container.encode(requestID, forKey: "requestId")
             try container.encode(sessionID, forKey: "sessionId")
             try container.encode(pinned, forKey: "pinned")
-        case .deleteSession(let requestID, let sessionID):
-            try container.encode("delete_session", forKey: "type")
+        case .deleteSessions(let requestID, let sessionIDs):
+            try container.encode("delete_sessions", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
-            try container.encode(sessionID, forKey: "sessionId")
+            try container.encode(sessionIDs, forKey: "sessionIds")
         case .createSwarm(let requestID, let title, let leaderBotID, let memberBotIDs):
             try container.encode("create_swarm", forKey: "type")
             try container.encode(requestID, forKey: "requestId")

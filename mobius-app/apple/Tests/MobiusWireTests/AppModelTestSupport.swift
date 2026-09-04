@@ -7,6 +7,7 @@ func testMessageEvent(
     delivery: MessageDelivery = .turn,
     text: String,
     attachments: [SessionFileReference] = [],
+    reply: MessageReply? = nil,
     messageTarget: MessageTarget? = nil
 ) -> JSONValue {
     let author: JSONValue = switch author {
@@ -34,12 +35,22 @@ func testMessageEvent(
             "batchItemCount": .number(Double(target.batchItemCount))
         ])
     } ?? .null
+    let reply: JSONValue = reply.map { reply in
+        .object([
+            "target": .object([
+                "checkpointSequence": .number(Double(reply.target.checkpointSequence)),
+                "batchItemCount": .number(Double(reply.target.batchItemCount))
+            ]),
+            "text": .string(reply.text)
+        ])
+    } ?? .null
     return .object([
         "type": .string("message"),
         "author": author,
         "delivery": .string(delivery.rawValue),
         "text": .string(text),
         "attachments": .array(attachments),
+        "reply": reply,
         "messageTarget": target
     ])
 }

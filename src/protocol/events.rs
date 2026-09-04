@@ -121,6 +121,14 @@ pub struct MessageTarget {
     pub batch_item_count: usize,
 }
 
+/// Durable message identity and immutable text shown when replying.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MessageReply {
+    pub target: MessageTarget,
+    pub text: String,
+}
+
 fn positive_usize<'de, D>(deserializer: D) -> std::result::Result<usize, D::Error>
 where
     D: Deserializer<'de>,
@@ -150,8 +158,25 @@ pub struct MessageEvent {
     pub delivery: MessageDelivery,
     pub text: String,
     pub attachments: Vec<SessionFileReference>,
+    #[serde(default)]
+    pub reply: Option<MessageReply>,
     #[serde(deserialize_with = "required_option")]
     pub message_target: Option<MessageTarget>,
+}
+
+impl MessageEvent {
+    pub(crate) fn reply_text(&self) -> Option<String> {
+        if !self.text.is_empty() {
+            return Some(self.text.clone());
+        }
+        (!self.attachments.is_empty()).then(|| {
+            self.attachments
+                .iter()
+                .map(|attachment| attachment.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -162,6 +187,16 @@ pub struct AssistantMessageEvent {
     pub content: Vec<ModelStepContent>,
     #[serde(deserialize_with = "required_option")]
     pub message_target: Option<MessageTarget>,
+}
+
+impl AssistantMessageEvent {
+    pub(crate) fn reply_text(&self) -> Option<String> {
+        self.content
+            .iter()
+            .rev()
+            .find(|item| item.phase != ModelStepContentPhase::Reasoning && !item.text.is_empty())
+            .map(|item| item.text.clone())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

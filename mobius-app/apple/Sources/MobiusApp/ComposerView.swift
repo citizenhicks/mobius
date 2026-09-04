@@ -53,6 +53,15 @@ private struct ComposerSurface: View {
         @Bindable var model = model
         VStack(spacing: 0) {
             if !showsExpandedComposer {
+                if let reply = model.composerReply {
+                    ReplyQuoteView(
+                        reply: reply,
+                        open: { model.openMessageReply(reply) },
+                        dismiss: { model.composerReply = nil }
+                    )
+                    .padding(.horizontal, MobiusSpace.m)
+                    .padding(.top, MobiusSpace.m)
+                }
                 if !model.composerAttachments.isEmpty {
                     ComposerAttachmentsView()
                         .padding(.horizontal, MobiusSpace.m)
@@ -251,6 +260,18 @@ private struct ExpandedComposerSheet: View {
     var body: some View {
         @Bindable var model = model
         VStack(spacing: 0) {
+            if let reply = model.composerReply {
+                ReplyQuoteView(
+                    reply: reply,
+                    open: {
+                        dismiss()
+                        model.openMessageReply(reply)
+                    },
+                    dismiss: { model.composerReply = nil }
+                )
+                .padding(.horizontal, MobiusSpace.m)
+                .padding(.top, MobiusSpace.m)
+            }
             if !model.composerAttachments.isEmpty {
                 ComposerAttachmentsView()
                     .padding(.horizontal, MobiusSpace.m)

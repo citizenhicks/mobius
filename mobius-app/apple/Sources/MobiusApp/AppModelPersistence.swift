@@ -1012,7 +1012,7 @@ extension AppModel {
             return
         }
         guard stashedComposerDraft == nil else { return }
-        let text = composer
+        let draft = ComposerDraft(text: composer, reply: composerReply)
         composerDraftSaveTask = Task { [weak self] in
             do {
                 try await Task.sleep(for: .milliseconds(400))
@@ -1021,7 +1021,7 @@ extension AppModel {
             }
             guard let self, owner == composerDraftOwner else { return }
             composerDraftSaveTask = nil
-            enqueueComposerDraftSave(text, owner: owner)
+            enqueueComposerDraftSave(draft, owner: owner)
         }
     }
 
@@ -1029,16 +1029,19 @@ extension AppModel {
         composerDraftSaveTask?.cancel()
         composerDraftSaveTask = nil
         guard stashedComposerDraft == nil, let owner = composerDraftOwner else { return }
-        enqueueComposerDraftSave(composer, owner: owner)
+        enqueueComposerDraftSave(
+            ComposerDraft(text: composer, reply: composerReply),
+            owner: owner
+        )
     }
 
-    func enqueueComposerDraftSave(_ text: String, owner: ComposerDraftOwner) {
+    func enqueueComposerDraftSave(_ draft: ComposerDraft, owner: ComposerDraftOwner) {
         let previous = composerDraftIOTask
         let store = store
         composerDraftIOTask = Task {
             await previous?.value
             await store.saveComposerDraft(
-                text,
+                draft,
                 accountID: owner.accountID,
                 sessionID: owner.sessionID
             )
@@ -1262,7 +1265,10 @@ extension AppModel {
             pendingWidgetEdit = pending
             enqueueComposerEditRecoverySave(pending.recovery, owner: pending.owner)
         }
-        let previousText = pendingWidgetEdit?.recovery.displacedDraft ?? composer
+        let previousDraft = ComposerDraft(
+            text: pendingWidgetEdit?.recovery.displacedDraft ?? composer,
+            reply: pendingWidgetEdit == nil ? composerReply : nil
+        )
         pendingWidgetEdit = nil
         stashedComposerDraft = nil
         composerEditRecoveryGeneration = UUID()
@@ -1273,14 +1279,15 @@ extension AppModel {
         composerDraftOwner = owner
         isLoadingComposerDraft = owner != nil
         suppressesComposerDraftSave = true
-        composer = previousOwner == nil ? previousText : ""
+        composer = previousOwner == nil ? previousDraft.text : ""
+        composerReply = previousOwner == nil ? previousDraft.reply : nil
         suppressesComposerDraftSave = false
         let store = store
         composerDraftIOTask = Task { [weak self] in
             await previousIO?.value
             if let previousOwner {
                 await store.saveComposerDraft(
-                    previousText,
+                    previousDraft,
                     accountID: previousOwner.accountID,
                     sessionID: previousOwner.sessionID
                 )
@@ -1294,12 +1301,11 @@ extension AppModel {
                   composerDraftGeneration == generation,
                   composerDraftOwner == owner
             else { return }
+            let current = ComposerDraft(text: composer, reply: composerReply)
+            let merged = restored.appending(current)
             suppressesComposerDraftSave = true
-            if composer.isEmpty {
-                composer = restored
-            } else if !restored.isEmpty {
-                composer = "\(restored)\n\n\(composer)"
-            }
+            composer = merged.text
+            composerReply = merged.reply
             suppressesComposerDraftSave = false
             isLoadingComposerDraft = false
             scheduleComposerDraftSave()
@@ -1316,6 +1322,7 @@ extension AppModel {
         suppressesComposerDraftSave = true
         composer = ""
         suppressesComposerDraftSave = false
+        composerReply = nil
     }
 
     func invalidateComposerEditRecovery(for owner: ComposerDraftOwner? = nil) {
@@ -1336,9 +1343,14 @@ extension AppModel {
     }
 
     func restoreDraft(_ draft: PendingComposerDraft) {
-        if !draft.text.isEmpty {
-            composer = composer.isEmpty ? draft.text : "\(draft.text)\n\n\(composer)"
-        }
+        let restored = ComposerDraft(text: draft.text, reply: draft.reply).appending(
+            ComposerDraft(text: composer, reply: composerReply)
+        )
+        suppressesComposerDraftSave = true
+        composer = restored.text
+        composerReply = restored.reply
+        suppressesComposerDraftSave = false
+        scheduleComposerDraftSave()
         let currentIDs = Set(composerAttachments.compactMap { item -> String? in
             guard case .uploaded(let attachment) = item.state else { return nil }
             return attachment.id

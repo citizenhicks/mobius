@@ -583,6 +583,7 @@ mod accounting_tests {
             delivery,
             text: "Review this".into(),
             attachments: Vec::new(),
+            reply: None,
             message_target: None,
         })
     }

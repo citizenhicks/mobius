@@ -828,6 +828,30 @@ extension AppModelTests {
         XCTAssertNil(model.selectedSessionID)
     }
 
+    func testDeletingMultipleChatsUsesOneAtomicRequest() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model { request in await recorder.record(request) }
+        let first = session(sessionID: "chat-1", state: .idle)
+        let second = session(sessionID: "chat-2", state: .idle)
+        model.connectionState = .ready
+        model.sessions = [first, second]
+
+        model.deleteSessions([first, second, first])
+
+        let request = await recorder.firstRequest(after: 0) { request in
+            guard case .deleteSessions(_, let ids) = request else { return false }
+            return ids == ["chat-1", "chat-2"]
+        }
+        guard case .deleteSessions(let requestID, _) = try XCTUnwrap(request) else {
+            return XCTFail("Expected one multi-chat deletion")
+        }
+        model.handle(.accepted(requestID: requestID))
+        model.handle(.sessions(requestID: requestID, sessions: []))
+
+        XCTAssertTrue(model.sessions.isEmpty)
+        XCTAssertNil(model.sessionMutationRequestID)
+    }
+
     func testDeletingPresentedChatReturnsToCatalogWithoutOpeningAnother() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
@@ -845,10 +869,10 @@ extension AppModelTests {
         XCTAssertNil(model.selectedSessionID)
         XCTAssertTrue(model.navigationPath.isEmpty)
         let request = await recorder.firstRequest(after: requestCount) { request in
-            guard case .deleteSession(_, "chat-1") = request else { return false }
-            return true
+            guard case .deleteSessions(_, let ids) = request else { return false }
+            return ids == ["chat-1"]
         }
-        guard case .deleteSession(let requestID, _) = try XCTUnwrap(request) else {
+        guard case .deleteSessions(let requestID, _) = try XCTUnwrap(request) else {
             return XCTFail("Expected a delete-session request")
         }
         model.handle(.accepted(requestID: requestID))
@@ -875,10 +899,10 @@ extension AppModelTests {
 
         model.deleteSession(selected)
         let deleteRequest = await recorder.firstRequest(after: 0) { request in
-            guard case .deleteSession(_, "chat-1") = request else { return false }
-            return true
+            guard case .deleteSessions(_, let ids) = request else { return false }
+            return ids == ["chat-1"]
         }
-        guard case .deleteSession(let requestID, _) = try XCTUnwrap(deleteRequest) else {
+        guard case .deleteSessions(let requestID, _) = try XCTUnwrap(deleteRequest) else {
             return XCTFail("Expected a delete-session request")
         }
         let requestCount = await recorder.requestCount()
@@ -903,7 +927,7 @@ extension AppModelTests {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in
             await recorder.record(request)
-            if case .deleteSession = request { throw URLError(.cannotConnectToHost) }
+            if case .deleteSessions = request { throw URLError(.cannotConnectToHost) }
         }
         let selected = session(sessionID: "chat-1", state: .running, turnID: "turn-1")
         model.connectionState = .ready

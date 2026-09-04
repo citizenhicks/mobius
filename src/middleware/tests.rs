@@ -318,6 +318,7 @@ fn queued(owner: &str, id: &str, text: &str) -> DurableQueuedMessage {
         delivery: crate::protocol::MessageDelivery::Turn,
         text: text.into(),
         attachments: Vec::new(),
+        reply: None,
         message_target: None,
     };
     DurableQueuedMessage::new(owner, id, QueuedMessageBoundary::Turn, event)
@@ -339,6 +340,7 @@ fn enqueue(queue: &mut MessageQueue<'_>, id: &str, text: &str) -> Result<bool> {
         delivery: crate::protocol::MessageDelivery::Turn,
         text: text.into(),
         attachments: Vec::new(),
+        reply: None,
         message_target: None,
     };
     queue.enqueue(id, QueuedMessageBoundary::Turn, event)

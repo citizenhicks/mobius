@@ -38,6 +38,7 @@ struct ChatsView: View {
     @State private var showsAttentionOnly = false
     @State private var organization = ChatOrganization.byProject
     @State private var searchText = ""
+    @State private var selectedSessionIDs: Set<String>?
 
     var body: some View {
         ScrollView {
@@ -60,26 +61,41 @@ struct ChatsView: View {
         .navigationTitle("Chats")
         .toolbarTitleDisplayMode(.inline)
         .toolbar {
-            if usesIPadLayout {
-                ToolbarItem(placement: .primaryAction) {
-                    organizationMenu
+            if selectedSessionIDs != nil {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { selectedSessionIDs = nil }
                 }
                 ToolbarItem(placement: .primaryAction) {
-                    newChatButton
+                    Button("Delete selected chats", glyph: .trash, role: .destructive) {
+                        deleteSelectedSessions()
+                    }
+                    .labelStyle(.iconOnly)
+                    .disabled(selectedSessions.isEmpty || !model.canRenameSession)
+                    .accessibilityValue(Text("\(selectedSessions.count) selected"))
+                    .help("Delete selected chats")
                 }
-                .sharedBackgroundVisibility(.hidden)
             } else {
-                ToolbarItem(placement: .primaryAction) {
-                    organizationMenu
+                if usesIPadLayout {
+                    ToolbarItem(placement: .primaryAction) {
+                        organizationMenu
+                    }
+                    ToolbarItem(placement: .primaryAction) {
+                        newChatButton
+                    }
+                    .sharedBackgroundVisibility(.hidden)
+                } else {
+                    ToolbarItem(placement: .primaryAction) {
+                        organizationMenu
+                    }
                 }
-            }
-            DefaultToolbarItem(kind: .search, placement: .bottomBar)
-            if !usesIPadLayout {
-                ToolbarSpacer(.fixed, placement: .bottomBar)
-                ToolbarItem(placement: .bottomBar) {
-                    newChatButton
+                DefaultToolbarItem(kind: .search, placement: .bottomBar)
+                if !usesIPadLayout {
+                    ToolbarSpacer(.fixed, placement: .bottomBar)
+                    ToolbarItem(placement: .bottomBar) {
+                        newChatButton
+                    }
+                    .sharedBackgroundVisibility(.hidden)
                 }
-                .sharedBackgroundVisibility(.hidden)
             }
         }
         .searchable(
@@ -88,6 +104,11 @@ struct ChatsView: View {
         )
         .searchToolbarBehavior(.automatic)
         .searchPresentationToolbarBehavior(.avoidHidingContent)
+        .onChange(of: model.sessions.map(\.sessionId)) { _, sessionIDs in
+            guard let selection = selectedSessionIDs, !selection.isEmpty else { return }
+            let remaining = selection.intersection(sessionIDs)
+            selectedSessionIDs = remaining.isEmpty ? nil : remaining
+        }
     }
 
     private var usesIPadLayout: Bool {
@@ -172,11 +193,16 @@ struct ChatsView: View {
                 sessions: displayedSessions,
                 collapsedWorkspaces: $collapsedWorkspaces,
                 visibleSessionCounts: $visibleSessionCounts,
-                pageSize: Self.sessionPageSize
+                pageSize: Self.sessionPageSize,
+                selectedSessionIDs: selectionBinding
             )
         case .chronological:
             ForEach(chronologicalSessions) { session in
-                SessionCatalogRow(session: session, showsWorkspace: true)
+                SessionCatalogRow(
+                    session: session,
+                    showsWorkspace: true,
+                    selectedSessionIDs: selectionBinding
+                )
             }
         }
     }
@@ -212,6 +238,11 @@ struct ChatsView: View {
                     }
                 }
             }
+            Divider()
+            Button("Select chats", glyph: .trash) {
+                selectedSessionIDs = []
+            }
+            .disabled(displayedSessions.isEmpty || !model.canRenameSession)
         }
         .accessibilityValue(
             model.chatBotFilterIDs.isEmpty
@@ -389,6 +420,25 @@ struct ChatsView: View {
         }
     }
 
+    private var selectionBinding: Binding<Set<String>>? {
+        guard selectedSessionIDs != nil else { return nil }
+        return Binding(
+            get: { selectedSessionIDs ?? [] },
+            set: { selectedSessionIDs = $0 }
+        )
+    }
+
+    private var selectedSessions: [SessionRecord] {
+        guard let selectedSessionIDs else { return [] }
+        return model.sessions.filter { selectedSessionIDs.contains($0.sessionId) }
+    }
+
+    private func deleteSelectedSessions() {
+        let sessions = selectedSessions
+        guard !sessions.isEmpty else { return }
+        model.beginDeletingSessions(sessions)
+    }
+
 }
 
 struct WorkspaceSessionCatalog: View {
@@ -399,6 +449,7 @@ struct WorkspaceSessionCatalog: View {
     @Binding var collapsedWorkspaces: Set<String>
     @Binding var visibleSessionCounts: [String: Int]
     var pageSize = 10
+    var selectedSessionIDs: Binding<Set<String>>? = nil
 
     var body: some View {
         ForEach(WorkspaceSessions.grouped(sessions, prioritizing: model.workspace?.id)) { group in
@@ -456,30 +507,35 @@ struct WorkspaceSessionCatalog: View {
                 .accessibilityValue(isExpanded ? Text("Expanded") : Text("Collapsed"))
                 .help(Text(verbatim: group.path))
 
-                Button {
-                    model.chooseWorkspace(group.path)
-                } label: {
-                    MobiusLabel(
-                        title: "New chat in \(group.name)",
-                        glyph: .notePencil,
-                        iconColor: palette.muted
-                    )
-                    .labelStyle(.iconOnly)
-                    .frame(
-                        width: MobiusStyle.iconButtonSize,
-                        height: MobiusStyle.iconButtonSize
-                    )
-                    .contentShape(Rectangle())
+                if selectedSessionIDs == nil {
+                    Button {
+                        model.chooseWorkspace(group.path)
+                    } label: {
+                        MobiusLabel(
+                            title: "New chat in \(group.name)",
+                            glyph: .notePencil,
+                            iconColor: palette.muted
+                        )
+                        .labelStyle(.iconOnly)
+                        .frame(
+                            width: MobiusStyle.iconButtonSize,
+                            height: MobiusStyle.iconButtonSize
+                        )
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.mobiusPlain)
+                    .disabled(!model.canCreateSession)
+                    .help("New chat in \(group.path)")
                 }
-                .buttonStyle(.mobiusPlain)
-                .disabled(!model.canCreateSession)
-                .help("New chat in \(group.path)")
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
             if isExpanded {
                 ForEach(group.sessions.prefix(visibleCount)) { session in
-                    SessionCatalogRow(session: session)
+                    SessionCatalogRow(
+                        session: session,
+                        selectedSessionIDs: selectedSessionIDs
+                    )
                 }
                 if visibleCount < group.sessions.count {
                     CatalogMoreButton(
@@ -529,14 +585,17 @@ struct SessionCatalogRow: View {
     var showsControls = true
     var detail: String?
     var open: ((SessionRecord) -> Void)? = nil
+    var selectedSessionIDs: Binding<Set<String>>? = nil
 
     @ViewBuilder
     var body: some View {
-        let isSelected = session.sessionId == model.selectedSessionID
+        let isSelecting = selectedSessionIDs != nil
+        let isSelected = selectedSessionIDs?.wrappedValue.contains(session.sessionId)
+            ?? (session.sessionId == model.selectedSessionID)
         let isUnread = model.unreadSessionIDs.contains(session.sessionId)
         let row = HStack(spacing: MobiusSpace.xs) {
             Button {
-                if let open { open(session) } else { model.openChat(session.sessionId) }
+                activate()
             } label: {
                 HStack(spacing: MobiusSpace.s) {
                     VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
@@ -560,10 +619,20 @@ struct SessionCatalogRow: View {
                         )
                         .accessibilityHidden(true)
                     }
-                    SessionActivityIndicator(
-                        state: session.activity.state,
-                        isUnread: isUnread
-                    )
+                    ZStack {
+                        if isSelecting {
+                            MobiusIcon(
+                                isSelected ? .checkCircle : .circle,
+                                foreground: isSelected ? palette.accent : palette.muted
+                            )
+                            .accessibilityHidden(true)
+                        } else {
+                            SessionActivityIndicator(
+                                state: session.activity.state,
+                                isUnread: isUnread
+                            )
+                        }
+                    }
                     .frame(
                         width: MobiusStyle.iconButtonSize,
                         height: MobiusStyle.iconButtonSize
@@ -573,14 +642,20 @@ struct SessionCatalogRow: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.mobiusPlain)
-            .disabled(!model.canOpenSession && session.sessionId != model.selectedSessionID)
-            .accessibilityValue(accessibilityValue(isUnread: isUnread))
+            .disabled(
+                !isSelecting
+                    && !model.canOpenSession
+                    && session.sessionId != model.selectedSessionID
+            )
+            .accessibilityValue(
+                accessibilityValue(isUnread: isUnread, selection: isSelecting ? isSelected : nil)
+            )
             .accessibilityAddTraits(isSelected ? .isSelected : [])
         }
         .padding(.leading, MobiusSpace.s)
         .frame(minHeight: MobiusStyle.iconButtonSize)
 
-        if showsControls {
+        if showsControls && !isSelecting {
             row.contextMenu { controls }
         } else {
             row
@@ -604,6 +679,18 @@ struct SessionCatalogRow: View {
             model.beginDeletingSession(session)
         }
         .disabled(!model.canRenameSession)
+    }
+
+    private func activate() {
+        guard let selectedSessionIDs else {
+            if let open { open(session) } else { model.openChat(session.sessionId) }
+            return
+        }
+        var selection = selectedSessionIDs.wrappedValue
+        if !selection.insert(session.sessionId).inserted {
+            selection.remove(session.sessionId)
+        }
+        selectedSessionIDs.wrappedValue = selection
     }
 
     private var ownershipLine: some View {
@@ -631,13 +718,16 @@ struct SessionCatalogRow: View {
         return "\(handle), swarm \(swarm.title)"
     }
 
-    private func accessibilityValue(isUnread: Bool) -> Text {
+    private func accessibilityValue(isUnread: Bool, selection: Bool?) -> Text {
         let state: String? = switch session.activity.state {
         case .running: "In progress"
         case .awaitingApproval: "Awaiting approval"
         case .idle: isUnread ? "Finished, unread" : nil
         }
-        return Text(verbatim: [ownershipDescription, supportingText, session.pinned ? "Pinned" : nil, state]
+        let selectionState = selection.map {
+            model.localizedString($0 ? "Selected" : "Not selected")
+        }
+        return Text(verbatim: [selectionState, ownershipDescription, supportingText, session.pinned ? "Pinned" : nil, state]
             .compactMap { $0 }
             .joined(separator: ", "))
     }

@@ -502,6 +502,72 @@ extension FileCard where Trailing == EmptyView {
     }
 }
 
+struct ReplyQuoteView: View {
+    @Environment(\.mobiusPalette) private var palette
+    let reply: MessageReply
+    let open: (() -> Void)?
+    var dismiss: (() -> Void)? = nil
+
+    var body: some View {
+        HStack(spacing: MobiusSpace.xs) {
+            if let open {
+                Button(action: open) { quote.accessibilityHidden(true) }
+                    .buttonStyle(.mobiusPlain)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Open original message")
+                    .accessibilityValue(accessibilityPreview)
+                    .accessibilityHint("Jumps to the quoted message")
+            } else {
+                quote
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Quoted message")
+                    .accessibilityValue(accessibilityPreview)
+            }
+            if let dismiss {
+                Button(action: dismiss) {
+                    MobiusIcon(
+                        .x,
+                        size: MobiusStyle.glyphInline,
+                        foreground: palette.muted,
+                        gutter: false
+                    )
+                    .frame(
+                        width: MobiusStyle.iconButtonSize,
+                        height: MobiusStyle.iconButtonSize
+                    )
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.mobiusPlain)
+                .accessibilityLabel("Cancel reply")
+                .help("Cancel reply")
+            }
+        }
+        .background(palette.panel.opacity(0.72), in: MobiusStyle.tileShape)
+    }
+
+    private var quote: some View {
+        HStack(alignment: .top, spacing: MobiusSpace.s) {
+            Capsule()
+                .fill(palette.accent)
+                .frame(width: 3)
+            Text(verbatim: reply.text)
+                .font(MobiusStyle.captionFont)
+                .foregroundStyle(.primary)
+                .lineLimit(4)
+                .truncationMode(.tail)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(MobiusSpace.s)
+        .contentShape(Rectangle())
+    }
+
+    private var accessibilityPreview: String {
+        let prefix = reply.text.prefix(160)
+        return prefix.count == reply.text.count ? String(prefix) : "\(prefix)…"
+    }
+}
+
 struct MessageActionButton: View {
     @Environment(\.mobiusPalette) private var palette
     @Environment(\.accessibilityReduceMotion) private var reduceMotion

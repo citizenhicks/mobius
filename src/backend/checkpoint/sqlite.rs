@@ -13,7 +13,7 @@ use rusqlite::OpenFlags;
 use rusqlite::OptionalExtension;
 use rusqlite::Transaction;
 use rusqlite::TransactionBehavior;
-use rusqlite::params;
+use rusqlite::{params, params_from_iter};
 use serde_json::Value;
 
 use super::CHECKPOINT_VERSION;
@@ -209,45 +209,53 @@ impl CheckpointStore for SqliteCheckpoint {
         }))
     }
 
-    fn delete_session<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<bool>> {
-        let session_id = session_id.to_string();
+    fn delete_sessions<'a>(&'a self, session_ids: &'a [String]) -> BoxFuture<'a, Result<bool>> {
+        let roots = session_ids.to_vec();
         Box::pin(self.run(move |connection| {
+            if roots.is_empty() {
+                return Ok(true);
+            }
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let placeholders = std::iter::repeat_n("?", roots.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let session_tree = format!(
+                "WITH RECURSIVE session_tree(session_id) AS (
+                     SELECT session_id FROM sessions WHERE session_id IN ({placeholders})
+                     UNION
+                     SELECT child.session_id
+                     FROM sessions AS child
+                     JOIN session_tree AS parent
+                       ON child.parent_session_id = parent.session_id
+                 )"
+            );
             let session_ids = {
-                let mut statement = transaction.prepare(
-                    "WITH RECURSIVE session_tree(session_id) AS (
-                         SELECT session_id FROM sessions WHERE session_id = ?1
-                         UNION ALL
-                         SELECT child.session_id
-                         FROM sessions AS child
-                         JOIN session_tree AS parent
-                           ON child.parent_session_id = parent.session_id
-                     )
-                     SELECT session_id FROM session_tree",
-                )?;
+                let mut statement = transaction.prepare(&format!(
+                    "{session_tree} SELECT session_id FROM session_tree"
+                ))?;
                 statement
-                    .query_map([&session_id], |row| row.get::<_, String>(0))?
+                    .query_map(params_from_iter(&roots), |row| row.get::<_, String>(0))?
                     .collect::<std::result::Result<Vec<_>, _>>()?
             };
-            if session_ids.is_empty() {
+            let requested = roots.iter().map(String::as_str).collect::<BTreeSet<_>>();
+            let found = session_ids
+                .iter()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>();
+            if !requested.is_subset(&found) {
                 return Ok(false);
             }
             for id in &session_ids {
                 transaction.execute("DELETE FROM middleware_state WHERE scope = ?1", [id])?;
             }
             let deleted = transaction.execute(
-                "WITH RECURSIVE session_tree(session_id) AS (
-                     SELECT session_id FROM sessions WHERE session_id = ?1
-                     UNION ALL
-                     SELECT child.session_id
-                     FROM sessions AS child
-                     JOIN session_tree AS parent
-                       ON child.parent_session_id = parent.session_id
-                 )
-                 DELETE FROM sessions
-                 WHERE session_id IN (SELECT session_id FROM session_tree)",
-                [&session_id],
+                &format!(
+                    "{session_tree}
+                     DELETE FROM sessions
+                     WHERE session_id IN (SELECT session_id FROM session_tree)"
+                ),
+                params_from_iter(&roots),
             )?;
             if deleted != session_ids.len() {
                 return Err(Error::Checkpoint(

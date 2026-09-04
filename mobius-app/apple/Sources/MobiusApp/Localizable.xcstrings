@@ -17950,6 +17950,22 @@
         }
       }
     },
+    "queued" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "en attente"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "in der Warteschlange"
+          }
+        }
+      }
+    },
     "you" : {
       "localizations" : {
         "fr" : {
@@ -18330,6 +18346,198 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Deutsch"
+          }
+        }
+      }
+    },
+    "Reply" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Répondre"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Antworten"
+          }
+        }
+      }
+    },
+    "Open original message" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ouvrir le message d’origine"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ursprüngliche Nachricht öffnen"
+          }
+        }
+      }
+    },
+    "Quoted message" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Message cité"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zitierte Nachricht"
+          }
+        }
+      }
+    },
+    "Cancel reply" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Annuler la réponse"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Antwort abbrechen"
+          }
+        }
+      }
+    },
+    "Jumps to the quoted message" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Accède au message cité"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Springt zur zitierten Nachricht"
+          }
+        }
+      }
+    },
+    "Original message is unavailable." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Le message d’origine n’est pas disponible."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die ursprüngliche Nachricht ist nicht verfügbar."
+          }
+        }
+      }
+    },
+    "Finish the reply draft before editing a queued message." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Terminez le brouillon de réponse avant de modifier un message en attente."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Beende den Antwortentwurf, bevor du eine Nachricht in der Warteschlange bearbeitest."
+          }
+        }
+      }
+    },
+    "Select chats" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sélectionner des conversations"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chats auswählen"
+          }
+        }
+      }
+    },
+    "Delete selected chats" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Supprimer les conversations sélectionnées"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ausgewählte Chats löschen"
+          }
+        }
+      }
+    },
+    "Delete chats" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Supprimer les conversations"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chats löschen"
+          }
+        }
+      }
+    },
+    "Delete %lld chats?" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Supprimer %lld conversations ?"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld Chats löschen?"
+          }
+        }
+      }
+    },
+    "This removes the selected chats from the gateway history." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cela supprime les conversations sélectionnées de l’historique de la passerelle."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dadurch werden die ausgewählten Chats aus dem Gateway-Verlauf entfernt."
           }
         }
       }

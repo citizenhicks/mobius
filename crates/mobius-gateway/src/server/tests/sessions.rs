@@ -83,9 +83,9 @@ async fn catalogue_mutations_do_not_require_selecting_the_target_chat() {
     expect_accepted(&mut events, "pin-inactive").await;
 
     sender
-        .send(ClientMessage::DeleteSession {
+        .send(ClientMessage::DeleteSessions {
             request_id: "delete-inactive".into(),
-            session_id: inactive_session_id,
+            session_ids: vec![inactive_session_id],
         })
         .await
         .expect("delete inactive chat");
@@ -172,9 +172,9 @@ async fn catalogue_mutations_do_not_require_selecting_the_target_chat() {
     open_chat(&sender, &mut events, child_session_id).await;
 
     sender
-        .send(ClientMessage::DeleteSession {
+        .send(ClientMessage::DeleteSessions {
             request_id: "delete-selected-child-parent".into(),
-            session_id: parent_session_id,
+            session_ids: vec![parent_session_id],
         })
         .await
         .expect("delete selected child's parent");

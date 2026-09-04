@@ -1941,7 +1941,7 @@ final class MobiusCloudTests: XCTestCase {
             fileID: "file-1"
         )
         await gatewayStore.saveComposerDraft(
-            "Delete this draft",
+            ComposerDraft(text: "Delete this draft"),
             accountID: secondGateway.id,
             sessionID: "chat-1"
         )
@@ -1999,7 +1999,7 @@ final class MobiusCloudTests: XCTestCase {
         XCTAssertNil(catalog)
         XCTAssertNil(transcript)
         XCTAssertNil(thumbnail)
-        XCTAssertEqual(draft, "")
+        XCTAssertEqual(draft, .empty)
         XCTAssertEqual(defaults.string(forKey: "theme"), ThemePreference.light.rawValue)
         XCTAssertEqual(model.connectionState, .disconnected)
         XCTAssertTrue(model.navigationPath.isEmpty)

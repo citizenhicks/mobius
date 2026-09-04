@@ -102,7 +102,7 @@ async fn session_catalog_rejects_a_blank_bot_id() {
 }
 
 #[tokio::test]
-async fn delete_session_removes_the_complete_session_tree() {
+async fn delete_sessions_remove_complete_trees_atomically() {
     let workspace = tempfile::tempdir().expect("create workspace");
     let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
         .expect("open checkpoint database");
@@ -124,6 +124,10 @@ async fn delete_session_removes_the_complete_session_tree() {
         .fork("child", 0, &checkpoint("grandchild"))
         .await
         .expect("fork grandchild");
+    store
+        .save(&checkpoint("other"), &[], None)
+        .await
+        .expect("save other root");
     for session_id in ["parent", "child", "grandchild"] {
         store
             .append_event(
@@ -148,7 +152,21 @@ async fn delete_session_removes_the_complete_session_tree() {
         .await
         .expect("save global state");
 
-    assert!(store.delete_session("parent").await.expect("delete tree"));
+    assert!(
+        !store
+            .delete_sessions(&["parent".into(), "missing".into(), "other".into()])
+            .await
+            .expect("reject incomplete selection")
+    );
+    assert!(store.load("parent").await.expect("load parent").is_some());
+    assert!(store.load("other").await.expect("load other").is_some());
+
+    assert!(
+        store
+            .delete_sessions(&["parent".into(), "other".into()])
+            .await
+            .expect("delete trees")
+    );
 
     let counts = store
         .run(|connection| {
@@ -179,7 +197,7 @@ async fn delete_session_removes_the_complete_session_tree() {
     );
     assert!(
         !store
-            .delete_session("parent")
+            .delete_sessions(&["parent".into()])
             .await
             .expect("delete absent tree")
     );

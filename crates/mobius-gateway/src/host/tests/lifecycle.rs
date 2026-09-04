@@ -27,11 +27,11 @@ impl CheckpointStore for BlockingStateStore {
         self.inner.load(session_id)
     }
 
-    fn delete_session<'a>(
+    fn delete_sessions<'a>(
         &'a self,
-        session_id: &'a str,
+        session_ids: &'a [String],
     ) -> mobius::BoxFuture<'a, mobius::Result<bool>> {
-        self.inner.delete_session(session_id)
+        self.inner.delete_sessions(session_ids)
     }
 
     fn save<'a>(
@@ -420,7 +420,7 @@ async fn initial_snapshot_restores_transient_widgets_without_replaying_them() {
 }
 
 #[tokio::test]
-async fn delete_session_stops_the_host_and_removes_its_durable_tree() {
+async fn delete_sessions_remove_distinct_roots_and_collapse_duplicate_descendants() {
     let root = tempfile::tempdir().expect("root");
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).expect("workspace");
@@ -436,10 +436,14 @@ async fn delete_session_stops_the_host_and_removes_its_durable_tree() {
     let deleted = create_test_session(&gateway, &workspace)
         .await
         .expect("create deleted session");
+    let also_deleted = create_test_session(&gateway, &workspace)
+        .await
+        .expect("create second deleted session");
     let retained = create_test_session(&gateway, &workspace)
         .await
         .expect("create retained session");
     let deleted_id = deleted.session_id().to_owned();
+    let also_deleted_id = also_deleted.session_id().to_owned();
     let retained_id = retained.session_id().to_owned();
     let (checkpoints, session_files) = {
         let state = gateway.state.lock().await;
@@ -476,9 +480,14 @@ async fn delete_session_stops_the_host_and_removes_its_durable_tree() {
         .await
         .expect("title retained session");
     gateway
-        .delete_session(&deleted_id)
+        .delete_sessions(&[
+            deleted_id.clone(),
+            "deleted-child".into(),
+            also_deleted_id.clone(),
+            deleted_id.clone(),
+        ])
         .await
-        .expect("delete session");
+        .expect("delete sessions");
 
     assert!(
         checkpoints
@@ -492,6 +501,13 @@ async fn delete_session_stops_the_host_and_removes_its_durable_tree() {
             .load("deleted-child")
             .await
             .expect("load deleted child")
+            .is_none()
+    );
+    assert!(
+        checkpoints
+            .load(&also_deleted_id)
+            .await
+            .expect("load second deleted")
             .is_none()
     );
     assert!(
@@ -520,7 +536,7 @@ async fn delete_session_stops_the_host_and_removes_its_durable_tree() {
 }
 
 #[tokio::test]
-async fn delete_session_keeps_all_resident_hosts_when_a_descendant_is_busy() {
+async fn delete_sessions_preflight_all_roots_before_durable_removal() {
     let root = tempfile::tempdir().expect("root");
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).expect("workspace");
@@ -536,7 +552,11 @@ async fn delete_session_keeps_all_resident_hosts_when_a_descendant_is_busy() {
     let root_host = create_test_session(&gateway, &workspace)
         .await
         .expect("create root session");
+    let other_host = create_test_session(&gateway, &workspace)
+        .await
+        .expect("create other root session");
     let root_id = root_host.session_id().to_owned();
+    let other_id = other_host.session_id().to_owned();
     let checkpoints = Arc::clone(&gateway.state.lock().await.checkpoints);
     let root_checkpoint = checkpoints
         .load(&root_id)
@@ -552,8 +572,8 @@ async fn delete_session_keeps_all_resident_hosts_when_a_descendant_is_busy() {
 
     let (commands, mut receiver) = mpsc::channel(1);
     tokio::spawn(async move {
-        if let Some(HostCommand::StopIfIdle { reply }) = receiver.recv().await {
-            let _ = reply.send(false);
+        if let Some(HostCommand::ProviderCutoverStatus { reply }) = receiver.recv().await {
+            let _ = reply.send(ProviderCutoverStatus { idle: false });
         }
     });
     let (events, _) = broadcast::channel(1);
@@ -575,14 +595,25 @@ async fn delete_session_keeps_all_resident_hosts_when_a_descendant_is_busy() {
     );
 
     let error = gateway
-        .delete_session(&root_id)
+        .delete_sessions(&[other_id.clone(), root_id.clone()])
         .await
         .expect_err("busy descendant must reject deletion");
 
     assert_eq!(error.code, "agent_busy");
+    assert!(other_host.is_alive());
+    assert!(root_host.is_alive());
     let state = gateway.state.lock().await;
     assert!(state.sessions.contains_key(&root_id));
+    assert!(state.sessions.contains_key(&other_id));
     assert!(state.sessions.contains_key("child"));
+    drop(state);
+    assert!(
+        checkpoints
+            .load(&other_id)
+            .await
+            .expect("load other root")
+            .is_some()
+    );
 }
 
 #[tokio::test]

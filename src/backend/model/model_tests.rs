@@ -35,6 +35,36 @@ impl Model for ObservedCapabilities {
 }
 
 #[test]
+fn reply_snapshot_decorates_model_text_without_replacing_message_metadata() {
+    let event = MessageEvent {
+        author: MessageAuthor::User,
+        delivery: crate::protocol::MessageDelivery::Turn,
+        text: "Current answer".into(),
+        attachments: Vec::new(),
+        reply: Some(crate::protocol::MessageReply {
+            target: crate::protocol::MessageTarget {
+                checkpoint_sequence: 9,
+                batch_item_count: 3,
+            },
+            text: "Earlier\nmessage".into(),
+        }),
+        message_target: None,
+    };
+
+    let input = message_input(&event).expect("reply model input");
+    let metadata: MessageEvent =
+        serde_json::from_value(input[MESSAGE_METADATA_FIELD].clone()).expect("message metadata");
+
+    assert_eq!(
+        (input["content"][0]["text"].as_str(), metadata,),
+        (
+            Some("Replying to this earlier message:\n\n> Earlier\n> message\n\nCurrent answer"),
+            event,
+        )
+    );
+}
+
+#[test]
 fn prompt_cache_identity_is_session_stable_and_keeps_one_latest_breakpoint() {
     let first = prompt_cache_key("session-1");
     assert_eq!(first, prompt_cache_key("session-1"));

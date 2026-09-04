@@ -266,14 +266,19 @@ impl CheckpointStore for MemoryCheckpoints {
         })
     }
 
-    fn delete_session<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<bool>> {
+    fn delete_sessions<'a>(&'a self, session_ids: &'a [String]) -> BoxFuture<'a, Result<bool>> {
         Box::pin(async move {
-            Ok(self
-                .sessions
-                .lock()
-                .expect("checkpoint store")
-                .remove(session_id)
-                .is_some())
+            let mut sessions = self.sessions.lock().expect("checkpoint store");
+            if session_ids
+                .iter()
+                .any(|session_id| !sessions.contains_key(session_id))
+            {
+                return Ok(false);
+            }
+            for session_id in session_ids {
+                sessions.remove(session_id);
+            }
+            Ok(true)
         })
     }
 
@@ -414,6 +419,7 @@ fn user_message_with_attachments(
             author: MessageAuthor::User,
             text: text.into(),
             attachments,
+            reply: None,
             requested_delivery: None,
             target_turn_id: None,
         },
@@ -426,6 +432,7 @@ fn steer_message(turn_id: impl Into<String>, text: impl Into<String>) -> Op {
             author: MessageAuthor::User,
             text: text.into(),
             attachments: Vec::new(),
+            reply: None,
             requested_delivery: Some(ActiveMessageDelivery::Steer),
             target_turn_id: Some(turn_id.into()),
         },

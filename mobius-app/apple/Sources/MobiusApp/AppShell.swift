@@ -78,21 +78,21 @@ struct AppShell: View {
             )
         }
         .confirmationDialog(
-            "Delete this chat?",
+            deleteChatsTitle,
             isPresented: Binding(
                 get: { model.sessionToDelete != nil },
                 set: { if !$0 { model.sessionToDelete = nil } }
             ),
             titleVisibility: .visible
         ) {
-            Button("Delete chat", role: .destructive) {
-                if let session = model.sessionToDelete { model.deleteSession(session) }
+            Button(deleteChatsActionTitle, role: .destructive) {
+                if let sessions = model.sessionToDelete { model.deleteSessions(sessions) }
                 model.sessionToDelete = nil
             }
             .disabled(!model.canRenameSession)
             Button("Cancel", role: .cancel) { model.sessionToDelete = nil }
         } message: {
-            Text("This removes the chat from the gateway history.")
+            Text(deleteChatsMessage)
         }
         .alert("Update möbius", isPresented: $model.showsAppUpdateAlert) {
             Button("Open TestFlight") {
@@ -157,6 +157,21 @@ struct AppShell: View {
 
     private var filePresentationsAreSuppressed: Bool {
         model.isAppLocked || model.appLockEnabled && scenePhase != .active
+    }
+
+    private var deleteChatsTitle: LocalizedStringResource {
+        let count = model.sessionToDelete?.count ?? 0
+        return count == 1 ? "Delete this chat?" : "Delete \(count) chats?"
+    }
+
+    private var deleteChatsActionTitle: LocalizedStringResource {
+        (model.sessionToDelete?.count ?? 0) == 1 ? "Delete chat" : "Delete chats"
+    }
+
+    private var deleteChatsMessage: LocalizedStringResource {
+        (model.sessionToDelete?.count ?? 0) == 1
+            ? "This removes the chat from the gateway history."
+            : "This removes the selected chats from the gateway history."
     }
 
     private func announce(_ toast: AppToast) {

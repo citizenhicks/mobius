@@ -179,7 +179,11 @@ extension AppModelTests {
             sessionID: "chat-1",
             fileID: "file-1"
         )
-        await store.saveComposerDraft("Keep this draft", accountID: account.id, sessionID: "chat-1")
+        await store.saveComposerDraft(
+            ComposerDraft(text: "Keep this draft"),
+            accountID: account.id,
+            sessionID: "chat-1"
+        )
         let model = AppModel(
             client: GatewayClient(),
             store: store,
@@ -207,7 +211,7 @@ extension AppModelTests {
         XCTAssertNil(catalog)
         XCTAssertNil(transcript)
         XCTAssertNil(thumbnail)
-        XCTAssertEqual(draft, "Keep this draft")
+        XCTAssertEqual(draft, ComposerDraft(text: "Keep this draft"))
         XCTAssertEqual(try store.token(for: account), "test-token")
         XCTAssertEqual(store.loadAccounts().map(\.id), [account.id])
         XCTAssertEqual(defaults.string(forKey: "theme"), ThemePreference.light.rawValue)

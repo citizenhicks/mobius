@@ -687,6 +687,7 @@ mod tests {
                 size: 1,
                 media_type: "image/png".into(),
             }],
+            reply: None,
             message_target: None,
         })
         .expect("message input");
@@ -717,6 +718,7 @@ mod tests {
             delivery: crate::protocol::MessageDelivery::Steer,
             text: "done".into(),
             attachments: Vec::new(),
+            reply: None,
             message_target: None,
         })
         .expect("peer message");
@@ -747,6 +749,7 @@ mod tests {
             delivery: crate::protocol::MessageDelivery::Steer,
             text: "done".into(),
             attachments: Vec::new(),
+            reply: None,
             message_target: None,
         })
         .expect("peer message");

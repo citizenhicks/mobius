@@ -160,6 +160,8 @@ pub struct MessageSubmission {
     pub text: String,
     pub attachments: Vec<SessionFileReference>,
     #[serde(deserialize_with = "required_option")]
+    pub reply: Option<MessageReply>,
+    #[serde(deserialize_with = "required_option")]
     pub requested_delivery: Option<ActiveMessageDelivery>,
     #[serde(deserialize_with = "required_option")]
     pub target_turn_id: Option<String>,
@@ -172,6 +174,18 @@ impl MessageSubmission {
 
         if let Some(turn_id) = &self.target_turn_id {
             validate_message_identifier("target turn ID", turn_id, MAX_IDENTIFIER_BYTES)?;
+        }
+        if let Some(reply) = &self.reply {
+            if reply.text.is_empty() {
+                return Err(crate::Error::Config(
+                    "quoted message cannot be empty".into(),
+                ));
+            }
+            if reply.text.len() > MAX_MESSAGE_BYTES {
+                return Err(crate::Error::Config(
+                    "quoted message exceeds size limit".into(),
+                ));
+            }
         }
         validate_message_content(&self.author, &self.text, &self.attachments)?;
         validate_message_attachments(&self.attachments, limits)
@@ -790,6 +804,13 @@ mod tests {
                     author: MessageAuthor::User,
                     text: "hello".into(),
                     attachments: Vec::new(),
+                    reply: Some(MessageReply {
+                        target: MessageTarget {
+                            checkpoint_sequence: 7,
+                            batch_item_count: 2,
+                        },
+                        text: "earlier".into(),
+                    }),
                     requested_delivery: Some(ActiveMessageDelivery::Queue),
                     target_turn_id: Some("turn-1".into()),
                 },
@@ -806,6 +827,13 @@ mod tests {
                         "author": {"type": "user"},
                         "text": "hello",
                         "attachments": [],
+                        "reply": {
+                            "target": {
+                                "checkpoint_sequence": 7,
+                                "batch_item_count": 2
+                            },
+                            "text": "earlier"
+                        },
                         "requested_delivery": "queue",
                         "target_turn_id": "turn-1"
                     }
@@ -826,6 +854,7 @@ mod tests {
                 delivery: MessageDelivery::Turn,
                 text: "hello".into(),
                 attachments: Vec::new(),
+                reply: None,
                 message_target: None,
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
@@ -847,6 +876,7 @@ mod tests {
                     "delivery": "turn",
                     "text": "hello",
                     "attachments": [],
+                    "reply": null,
                     "message_target": null
                 },
                 {
@@ -855,6 +885,20 @@ mod tests {
                 }
             ])
         );
+    }
+
+    #[test]
+    fn stored_message_event_without_reply_decodes_as_no_reply() {
+        let event: MessageEvent = serde_json::from_value(json!({
+            "author": {"type": "user"},
+            "delivery": "turn",
+            "text": "before replies existed",
+            "attachments": [],
+            "message_target": null
+        }))
+        .expect("decode old stored message event");
+
+        assert_eq!(event.reply, None);
     }
 
     #[test]

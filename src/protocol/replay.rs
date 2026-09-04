@@ -346,6 +346,7 @@ mod tests {
             delivery: MessageDelivery::Turn,
             text: text.into(),
             attachments,
+            reply: None,
             message_target: None,
         })
         .expect("typed user message")

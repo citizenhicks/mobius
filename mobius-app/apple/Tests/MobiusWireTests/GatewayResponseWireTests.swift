@@ -48,7 +48,7 @@ extension GatewayWireTests {
 
     func testMessageEventDecodesTypedAuthorAndActualDelivery() throws {
         let envelope = try decodeEnvelope(
-            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"submission_id":"swarm-message-1","msg":{"type":"message","author":{"type":"peer","message_id":"message-1","session_id":"chat-reviewer","handle":"@reviewer"},"delivery":"steer","text":"Check the parser boundary.","attachments":[],"message_target":{"checkpoint_sequence":12,"batch_item_count":2}}},"stream_metrics":[],"blocks":[],"preview":null}}"#
+            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"submission_id":"swarm-message-1","msg":{"type":"message","author":{"type":"peer","message_id":"message-1","session_id":"chat-reviewer","handle":"@reviewer"},"delivery":"steer","text":"Check the parser boundary.","attachments":[],"reply":{"target":{"checkpoint_sequence":9,"batch_item_count":1},"text":"Original decision"},"message_target":{"checkpoint_sequence":12,"batch_item_count":2}}},"stream_metrics":[],"blocks":[],"preview":null}}"#
         )
         guard case .agentEvent(_, let record) = envelope else {
             return XCTFail("Expected an agent event")
@@ -60,6 +60,13 @@ extension GatewayWireTests {
         )
         XCTAssertEqual(message.delivery, .steer)
         XCTAssertEqual(message.text, "Check the parser boundary.")
+        XCTAssertEqual(
+            message.reply,
+            MessageReply(
+                target: MessageTarget(checkpointSequence: 9, batchItemCount: 1),
+                text: "Original decision"
+            )
+        )
         XCTAssertEqual(
             message.messageTarget,
             MessageTarget(checkpointSequence: 12, batchItemCount: 2)

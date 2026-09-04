@@ -192,6 +192,7 @@ async fn active_command_emits_a_subagent_transcript_preview() {
                 delivery: MessageDelivery::Turn,
                 text: "review this".into(),
                 attachments: Vec::new(),
+                reply: None,
                 message_target: None,
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
@@ -313,6 +314,7 @@ async fn preview_continuation_loads_one_older_turn_through_registered_command() 
                 delivery: MessageDelivery::Turn,
                 text: "Older question".into(),
                 attachments: Vec::new(),
+                reply: None,
                 message_target: None,
             }),
             EventMsg::ContextCompacted,
@@ -341,6 +343,7 @@ async fn preview_continuation_loads_one_older_turn_through_registered_command() 
                 delivery: MessageDelivery::Turn,
                 text: "Latest question".into(),
                 attachments: Vec::new(),
+                reply: None,
                 message_target: None,
             }),
             EventMsg::Message(MessageEvent {
@@ -348,6 +351,7 @@ async fn preview_continuation_loads_one_older_turn_through_registered_command() 
                 delivery: MessageDelivery::Steer,
                 text: "Steer latest".into(),
                 attachments: Vec::new(),
+                reply: None,
                 message_target: None,
             }),
             EventMsg::AssistantMessage(crate::protocol::AssistantMessageEvent {

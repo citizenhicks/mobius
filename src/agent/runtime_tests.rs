@@ -171,6 +171,7 @@ fn user_submission(text: impl Into<String>) -> MessageSubmission {
         author: MessageAuthor::User,
         text: text.into(),
         attachments: Vec::new(),
+        reply: None,
         requested_delivery: None,
         target_turn_id: None,
     }
@@ -214,6 +215,7 @@ fn peer_op(
             },
             text: text.into(),
             attachments: Vec::new(),
+            reply: None,
             requested_delivery: None,
             target_turn_id: None,
         },
@@ -226,6 +228,7 @@ fn queued_user_message(id: &str, text: &str, boundary: QueuedMessageBoundary) ->
         delivery: boundary.delivery(),
         text: text.into(),
         attachments: Vec::new(),
+        reply: None,
         message_target: None,
     };
     QueuedMessage::new("messages", id, boundary, event).expect("queued message")

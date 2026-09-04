@@ -71,7 +71,7 @@ final class AppModel {
     var chatPresentationRevision = 0
     var sessionToRename: SessionRecord?
     var sessionRenameDraft = ""
-    var sessionToDelete: SessionRecord?
+    var sessionToDelete: [SessionRecord]?
     var unreadSessionIDs: Set<String> = []
     @ObservationIgnored var sessionReadCursors: [String: SessionReadCursor]?
     var transcript: [TranscriptEntry] = [] {
@@ -138,6 +138,8 @@ final class AppModel {
     }
     var isLoadingEarlierHistory = false
     var historyLoadCompletionRevision = 0
+    var historyLoadSuccessRevision = 0
+    var historyLoadFailureRevision = 0
     var hasEarlierHistory: Bool {
         transcriptWindow.hasEarlierEntries
             || nextHistoryBeforeSequence != nil
@@ -151,6 +153,10 @@ final class AppModel {
     var composer = "" {
         didSet { scheduleComposerDraftSave() }
     }
+    var composerReply: MessageReply? {
+        didSet { scheduleComposerDraftSave() }
+    }
+    var messageNavigationRequest: MessageNavigationRequest?
     @ObservationIgnored var transcriptProjectionCache:
         (key: TranscriptProjectionKey, projection: TranscriptProjection)?
     @ObservationIgnored var transcriptWindowCache: TranscriptWindowCache?
@@ -347,7 +353,7 @@ final class AppModel {
     var swarmMutationRequestID: String?
     var botMutationRequestID: String?
     var botMutationSuccessMessage: String?
-    @ObservationIgnored var pendingDeletedSessionID: String?
+    @ObservationIgnored var pendingDeletedSessionIDs: [String] = []
     @ObservationIgnored var pendingDeletedPresentedSessionID: String?
     @ObservationIgnored var sessionToRestoreID: String?
     @ObservationIgnored var botDefaultsRequestID: String?
@@ -582,6 +588,17 @@ final class AppModel {
             && !selectedSessionIsHidden
             && activeTurnID == nil
             && pendingApproval == nil
+    }
+
+    var canBeginReply: Bool {
+        connectionState.isReady
+            && selectedSessionID != nil
+            && sessionRequestID == nil
+            && sessionMutationRequestID == nil
+            && !selectedSessionIsHidden
+            && !isLoadingComposerDraft
+            && !isLoadingComposerEditRecovery
+            && pendingWidgetEdit == nil
     }
 
     func isCapabilityEnabled(_ capability: String) -> Bool {
@@ -1253,7 +1270,14 @@ final class AppModel {
     }
 
     func beginDeletingSession(_ session: SessionRecord) {
-        sessionToDelete = session
+        beginDeletingSessions([session])
+    }
+
+    func beginDeletingSessions(_ sessions: [SessionRecord]) {
+        var seen = Set<String>()
+        let sessions = sessions.filter { seen.insert($0.sessionId).inserted }
+        guard !sessions.isEmpty else { return }
+        sessionToDelete = sessions
     }
 
     func displayedTitle(for session: SessionRecord) -> String {

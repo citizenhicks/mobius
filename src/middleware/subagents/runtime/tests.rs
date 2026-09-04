@@ -120,6 +120,7 @@ async fn errored_subagent_preview_ends_with_its_terminal_message() {
             delivery: crate::protocol::MessageDelivery::Turn,
             text: "review this".into(),
             attachments: Vec::new(),
+            reply: None,
             message_target: None,
         }),
     ]
@@ -195,7 +196,7 @@ impl CheckpointStore for BlockingRetryStore {
         Box::pin(async { Ok(None) })
     }
 
-    fn delete_session<'a>(&'a self, _session_id: &'a str) -> BoxFuture<'a, Result<bool>> {
+    fn delete_sessions<'a>(&'a self, _session_ids: &'a [String]) -> BoxFuture<'a, Result<bool>> {
         Box::pin(async { Ok(false) })
     }
 
@@ -287,7 +288,7 @@ impl CheckpointStore for FailOnceStore {
         Box::pin(async { Ok(None) })
     }
 
-    fn delete_session<'a>(&'a self, _session_id: &'a str) -> BoxFuture<'a, Result<bool>> {
+    fn delete_sessions<'a>(&'a self, _session_ids: &'a [String]) -> BoxFuture<'a, Result<bool>> {
         Box::pin(async { Ok(false) })
     }
 
@@ -704,6 +705,7 @@ async fn terminal_update_does_not_repeat_a_delivered_parent_report() {
                     },
                     text: "done".into(),
                     attachments: Vec::new(),
+                    reply: None,
                     requested_delivery: None,
                     target_turn_id: None,
                 },
@@ -715,6 +717,7 @@ async fn terminal_update_does_not_repeat_a_delivered_parent_report() {
                     },
                     text: "still checking".into(),
                     attachments: Vec::new(),
+                    reply: None,
                     requested_delivery: None,
                     target_turn_id: None,
                 },

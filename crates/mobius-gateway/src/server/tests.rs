@@ -268,6 +268,7 @@ fn user_message(text: impl Into<String>, attachments: Vec<SessionFileReference>)
             author: MessageAuthor::User,
             text: text.into(),
             attachments,
+            reply: None,
             requested_delivery: None,
             target_turn_id: None,
         },

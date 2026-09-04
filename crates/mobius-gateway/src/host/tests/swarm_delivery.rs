@@ -467,6 +467,7 @@ async fn startup_ack_reuses_the_reserved_conversation_without_resubmitting() {
                     delivery: MessageDelivery::Turn,
                     text,
                     attachments: Vec::new(),
+                    reply: None,
                     message_target: None,
                 }),
             },

@@ -1,6 +1,23 @@
 import Foundation
 
 extension AppModel {
+    func beginReplying(to entry: TranscriptEntry) {
+        guard canBeginReply,
+              !entry.pending,
+              let target = entry.messageTarget
+        else { return }
+        let text = entry.text.isEmpty
+            ? entry.files.map(\.name).joined(separator: ", ")
+            : entry.text
+        guard !text.isEmpty else { return }
+        composerReply = MessageReply(target: target, text: text)
+        composerFocusRequest &+= 1
+    }
+
+    func openMessageReply(_ reply: MessageReply) {
+        messageNavigationRequest = MessageNavigationRequest(target: reply.target)
+    }
+
     func reduce(record: RecordedEvent) {
         pinTranscriptWindowIfNeeded()
         let event = record.event
@@ -616,6 +633,7 @@ extension AppModel {
             sourceSequence: record.sequence,
             recordedAtMs: record.recordedAtMs,
             messageTarget: message.messageTarget,
+            reply: message.reply,
             files: message.attachments,
             messageMetadata: TranscriptMessageMetadata(
                 author: message.author,

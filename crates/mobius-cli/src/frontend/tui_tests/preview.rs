@@ -48,6 +48,7 @@ fn snapshot_preview_scrolls_with_the_mouse_wheel() {
                             delivery: MessageDelivery::Turn,
                             text: format!("subagent row {index}"),
                             attachments: Vec::new(),
+                            reply: None,
                             message_target: None,
                         }),
                         blocks: Vec::new(),

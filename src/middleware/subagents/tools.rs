@@ -542,6 +542,7 @@ fn peer_submission(session_id: &str, agent_path: &str, text: String) -> MessageS
         },
         text,
         attachments: Vec::new(),
+        reply: None,
         requested_delivery: None,
         target_turn_id: None,
     }

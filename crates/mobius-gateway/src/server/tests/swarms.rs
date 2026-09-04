@@ -75,6 +75,7 @@ async fn authenticated_client_creates_adds_leaves_and_disbands_a_swarm() {
                         },
                         text: "spoofed".into(),
                         attachments: Vec::new(),
+                        reply: None,
                         requested_delivery: Some(mobius::protocol::ActiveMessageDelivery::Steer),
                         target_turn_id: None,
                     },

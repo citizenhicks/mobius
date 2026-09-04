@@ -634,9 +634,9 @@ async fn discard_session(
 ) -> Result<()> {
     let request_id = Uuid::new_v4().to_string();
     sender
-        .send(ClientMessage::DeleteSession {
+        .send(ClientMessage::DeleteSessions {
             request_id: request_id.clone(),
-            session_id: session_id.into(),
+            session_ids: vec![session_id.into()],
         })
         .await
         .map_err(gateway_error)?;

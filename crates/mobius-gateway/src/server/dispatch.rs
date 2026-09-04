@@ -133,11 +133,12 @@ pub(super) async fn handle_message(
         } => {
             return set_session_pinned(writer, gateway, request_id, session_id, pinned).await;
         }
-        ClientMessage::DeleteSession {
+        ClientMessage::DeleteSessions {
             request_id,
-            session_id,
+            session_ids,
         } => {
-            return delete_session(writer, &mut connection, request_id, session_id, gateway).await;
+            return delete_sessions(writer, &mut connection, request_id, session_ids, gateway)
+                .await;
         }
         ClientMessage::Submit {
             session_id,
@@ -916,14 +917,14 @@ async fn write_bot_catalog_result(
     }
 }
 
-async fn delete_session(
+async fn delete_sessions(
     writer: &mut (impl AsyncWrite + Unpin),
     connection: &mut ConnectionSessionState<'_>,
     request_id: String,
-    session_id: String,
+    session_ids: Vec<String>,
     gateway: &GatewayHost,
 ) -> Result<()> {
-    match gateway.delete_session(&session_id).await {
+    match gateway.delete_sessions(&session_ids).await {
         Ok(deleted) => {
             forget_deleted_sessions(connection, &deleted);
             write_result(writer, request_id, Ok(())).await

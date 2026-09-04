@@ -10,7 +10,10 @@ struct WorkedForGroupView: View {
     let entries: [TranscriptEntry]
     let fileSessionID: String?
     let elapsedMs: UInt64?
+    var allowsMessageActions = false
+    var revealMessageTarget: MessageTarget?
     var onExpand: () -> Void = {}
+    var onRevealMessage: (MessageTarget, TranscriptPresentationID) -> Void = { _, _ in }
 
     var body: some View {
         VStack(alignment: .leading, spacing: MobiusSpace.s) {
@@ -51,9 +54,27 @@ struct WorkedForGroupView: View {
                     projection: TranscriptProjection(entries: entries),
                     fileSessionID: fileSessionID,
                     rowSpacing: MobiusSpace.s,
+                    allowsMessageActions: allowsMessageActions,
                     onExpandActivityGroup: onExpand
                 )
             }
+        }
+        .task(id: revealMessageTarget) {
+            guard let target = revealMessageTarget,
+                  entries.contains(where: { $0.messageTarget == target }),
+                  let row = TranscriptProjection(entries: entries).rows.first(where: { row in
+                      row.records.contains { $0.messageTarget == target }
+                  })
+            else { return }
+            if !isExpanded {
+                onExpand()
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.16)) {
+                    isExpanded = true
+                }
+            }
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            onRevealMessage(target, row.id)
         }
     }
 

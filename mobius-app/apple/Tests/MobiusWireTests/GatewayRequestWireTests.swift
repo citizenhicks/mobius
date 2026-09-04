@@ -176,7 +176,6 @@ extension GatewayWireTests {
         let requests: [(GatewayRequest, String)] = [
             (.renameSession(requestID: "rename-1", sessionID: "chat-1", title: "Review"), "rename_session"),
             (.setSessionPinned(requestID: "pin-1", sessionID: "chat-1", pinned: true), "set_session_pinned"),
-            (.deleteSession(requestID: "delete-1", sessionID: "chat-1"), "delete_session"),
             (.submit(sessionID: "chat-1", submission: submission), "submit"),
             (.getGitDiff(
                 requestID: "diff-1",
@@ -197,6 +196,13 @@ extension GatewayWireTests {
             XCTAssertEqual(object["type"] as? String, type)
             XCTAssertEqual(object["session_id"] as? String, "chat-1")
         }
+
+        let delete = try requestObject(.deleteSessions(
+            requestID: "delete-1",
+            sessionIDs: ["chat-1", "chat-2"]
+        ))
+        XCTAssertEqual(delete["type"] as? String, "delete_sessions")
+        XCTAssertEqual(delete["session_ids"] as? [String], ["chat-1", "chat-2"])
 
         let configure = try requestObject(.updateBot(
             requestID: "bot-config-1",
@@ -388,6 +394,7 @@ extension GatewayWireTests {
         let message = try XCTUnwrap(operation["message"] as? [String: Any])
         XCTAssertEqual((message["author"] as? [String: Any])?["type"] as? String, "user")
         XCTAssertEqual(message["text"] as? String, "Use the smaller patch")
+        XCTAssertTrue(message["reply"] is NSNull)
         XCTAssertEqual(message["requested_delivery"] as? String, "queue")
         XCTAssertEqual(message["target_turn_id"] as? String, "turn-1")
 
@@ -397,6 +404,10 @@ extension GatewayWireTests {
                 author: .user,
                 text: "Use the smaller patch",
                 attachments: [],
+                reply: MessageReply(
+                    target: MessageTarget(checkpointSequence: 7, batchItemCount: 2),
+                    text: "The larger proposal"
+                ),
                 requestedDelivery: .queue,
                 targetTurnId: "turn-1"
             )))
@@ -405,15 +416,22 @@ extension GatewayWireTests {
             return XCTFail("Expected a message operation")
         }
         XCTAssertEqual(payload.author, .user)
+        XCTAssertEqual(
+            payload.reply,
+            MessageReply(
+                target: MessageTarget(checkpointSequence: 7, batchItemCount: 2),
+                text: "The larger proposal"
+            )
+        )
         XCTAssertEqual(payload.requestedDelivery, .queue)
         XCTAssertEqual(payload.targetTurnId, "turn-1")
 
         for fixture in [
-            #"{"type":"message","message":{"author":{"type":"peer","message_id":"peer-1","session_id":"chat-2"},"text":"Review","attachments":[],"requested_delivery":"steer","target_turn_id":"turn-1"}}"#,
-            #"{"type":"message","message":{"author":{"type":"user"},"text":"Review","attachments":[],"requested_delivery":"later","target_turn_id":"turn-1"}}"#,
-            #"{"type":"message","message":{"author":{"type":"user"},"text":"Review","attachments":[],"requested_delivery":"steer","target_turn_id":""}}"#,
-            #"{"type":"message","message":{"author":{"type":"user"},"text":"Review","attachments":[],"target_turn_id":null}}"#,
-            #"{"type":"message","message":{"author":{"type":"user"},"text":"Review","attachments":[],"requested_delivery":null}}"#,
+            #"{"type":"message","message":{"author":{"type":"peer","message_id":"peer-1","session_id":"chat-2"},"text":"Review","attachments":[],"reply":null,"requested_delivery":"steer","target_turn_id":"turn-1"}}"#,
+            #"{"type":"message","message":{"author":{"type":"user"},"text":"Review","attachments":[],"reply":null,"requested_delivery":"later","target_turn_id":"turn-1"}}"#,
+            #"{"type":"message","message":{"author":{"type":"user"},"text":"Review","attachments":[],"reply":null,"requested_delivery":"steer","target_turn_id":""}}"#,
+            #"{"type":"message","message":{"author":{"type":"user"},"text":"Review","attachments":[],"reply":null,"target_turn_id":null}}"#,
+            #"{"type":"message","message":{"author":{"type":"user"},"text":"Review","attachments":[],"reply":null,"requested_delivery":null}}"#,
         ] {
             XCTAssertThrowsError(
                 try decoder().decode(AgentOperation.self, from: Data(fixture.utf8))

@@ -81,6 +81,28 @@ struct MessageTarget: Codable, Hashable, Sendable {
     }
 }
 
+struct MessageReply: Codable, Hashable, Sendable {
+    let target: MessageTarget
+    let text: String
+
+    init(target: MessageTarget, text: String) {
+        self.target = target
+        self.text = text
+    }
+
+    init(json: JSONValue) throws {
+        guard let targetValue = json["target"],
+              let target = MessageTarget(json: targetValue),
+              let text = json["text"]?.stringValue,
+              !text.isEmpty,
+              text.utf8.count <= maximumComposerBytes
+        else {
+            throw GatewayWireError.invalidFrame("message reply is invalid")
+        }
+        self.init(target: target, text: text)
+    }
+}
+
 enum ActiveMessageDelivery: String, CaseIterable, Codable, Hashable, Sendable {
     case steer
     case queue
@@ -150,6 +172,7 @@ struct MessageSubmission: Codable, Hashable, Sendable {
     let author: MessageAuthor
     let text: String
     let attachments: [SessionFileReference]
+    let reply: MessageReply?
     let requestedDelivery: ActiveMessageDelivery?
     let targetTurnId: String?
 
@@ -157,12 +180,14 @@ struct MessageSubmission: Codable, Hashable, Sendable {
         author: MessageAuthor,
         text: String,
         attachments: [SessionFileReference],
+        reply: MessageReply? = nil,
         requestedDelivery: ActiveMessageDelivery?,
         targetTurnId: String?
     ) {
         self.author = author
         self.text = text
         self.attachments = attachments
+        self.reply = reply
         self.requestedDelivery = requestedDelivery
         self.targetTurnId = targetTurnId
     }
@@ -176,6 +201,7 @@ struct MessageSubmission: Codable, Hashable, Sendable {
               let text = json["text"]?.stringValue,
               let attachmentValues = json["attachments"]?.arrayValue,
               attachmentValues.count <= maximumWireSessionFileReferences,
+              let replyValue = json["reply"],
               let requestedDeliveryValue = json["requestedDelivery"],
               let targetTurnValue = json["targetTurnId"]
         else {
@@ -201,10 +227,16 @@ struct MessageSubmission: Codable, Hashable, Sendable {
         } else {
             targetTurnId = nil
         }
+        let reply: MessageReply? = if replyValue == .null {
+            nil
+        } else {
+            try MessageReply(json: replyValue)
+        }
         self.init(
             author: try MessageAuthor(json: author),
             text: text,
             attachments: try attachmentValues.map(SessionFileReference.init(json:)),
+            reply: reply,
             requestedDelivery: requestedDelivery,
             targetTurnId: targetTurnId
         )
@@ -218,6 +250,7 @@ struct MessageSubmission: Codable, Hashable, Sendable {
         try container.encode(author, forKey: "author")
         try container.encode(text, forKey: "text")
         try container.encode(attachments, forKey: "attachments")
+        try container.encode(reply, forKey: "reply")
         try container.encode(requestedDelivery, forKey: "requestedDelivery")
         try container.encode(targetTurnId, forKey: "targetTurnId")
     }
@@ -228,6 +261,7 @@ struct MessageEventPayload: Hashable, Sendable {
     let delivery: MessageDelivery
     let text: String
     let attachments: [SessionFileReference]
+    let reply: MessageReply?
     let messageTarget: MessageTarget?
 
     init(json: JSONValue) throws {
@@ -254,6 +288,11 @@ struct MessageEventPayload: Hashable, Sendable {
         self.delivery = delivery
         self.text = text
         self.attachments = try attachmentValues.map(SessionFileReference.init(json:))
+        if let replyValue = json["reply"], replyValue != .null {
+            reply = try MessageReply(json: replyValue)
+        } else {
+            reply = nil
+        }
         self.messageTarget = messageTarget
     }
 }

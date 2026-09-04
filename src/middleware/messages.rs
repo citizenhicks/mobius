@@ -200,6 +200,7 @@ impl Middleware for Messages {
             delivery: boundary.delivery(),
             text: context.message.text.clone(),
             attachments: context.message.attachments.clone(),
+            reply: context.message.reply.clone(),
             message_target: None,
         };
         if !context.queued_messages.enqueue(
@@ -285,12 +286,15 @@ impl Middleware for Messages {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::sync::Arc;
 
     use super::*;
     use crate::backend::checkpoint::QueuedMessage;
-    use crate::middleware::{MessageQueue, MessageRouteContext, MiddlewareStack};
-    use crate::protocol::{MessageSubmission, SessionFileReference};
+    use crate::middleware::{
+        ActiveCommandContext, MessageQueue, MessageRouteContext, MiddlewareStack,
+    };
+    use crate::protocol::{MessageReply, MessageSubmission, MessageTarget, SessionFileReference};
 
     #[test]
     fn manifest_advertises_delivery_symbols() {
@@ -321,6 +325,7 @@ mod tests {
                     delivery,
                     text: "hello".into(),
                     attachments: Vec::new(),
+                    reply: None,
                     message_target: None,
                 },
             ) else {
@@ -346,6 +351,7 @@ mod tests {
             author: MessageAuthor::User,
             text: "hello".into(),
             attachments: Vec::<SessionFileReference>::new(),
+            reply: None,
             requested_delivery: delivery,
             target_turn_id: None,
         }
@@ -401,6 +407,49 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn queued_message_edit_preserves_its_reply_snapshot() {
+        let stack = MiddlewareStack::new(vec![Arc::new(Messages::default())]).expect("stack");
+        let mut queued = Vec::new();
+        let mut message = user(Some(ActiveMessageDelivery::Queue));
+        message.reply = Some(MessageReply {
+            target: MessageTarget {
+                checkpoint_sequence: 5,
+                batch_item_count: 2,
+            },
+            text: "Earlier".into(),
+        });
+        route(&stack, &mut queued, &message, Some("turn-1"));
+        let mut events = Vec::new();
+        let metadata = BTreeMap::new();
+
+        stack
+            .active_command(
+                MANIFEST.id,
+                &mut ActiveCommandContext {
+                    submission_id: "message-2",
+                    session_id: "session-1",
+                    metadata: &metadata,
+                    active_turn_id: "turn-1",
+                    command: EDIT_COMMAND,
+                    arguments: "message-1",
+                    input: Some("Updated"),
+                    target: None,
+                    queued_messages: MessageQueue::new(&mut queued),
+                    events: &mut events,
+                },
+            )
+            .await
+            .expect("edit queued message")
+            .expect("message command");
+
+        let edited = queued[0].event();
+        assert_eq!(
+            (edited.text.as_str(), edited.reply),
+            ("Updated", message.reply)
+        );
+    }
+
     #[test]
     fn active_peer_always_steers_as_non_authoritative_input() {
         let stack = MiddlewareStack::new(vec![Arc::new(
@@ -415,6 +464,7 @@ mod tests {
             },
             text: "review this".into(),
             attachments: Vec::new(),
+            reply: None,
             requested_delivery: Some(ActiveMessageDelivery::Queue),
             target_turn_id: None,
         };

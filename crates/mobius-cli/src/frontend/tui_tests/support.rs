@@ -50,6 +50,7 @@ pub(super) fn preview_record(
                         delivery: MessageDelivery::Turn,
                         text: (*message).into(),
                         attachments: Vec::new(),
+                        reply: None,
                         message_target: None,
                     }),
                     blocks: Vec::new(),

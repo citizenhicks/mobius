@@ -24,6 +24,7 @@ pub async fn run(
                         author: MessageAuthor::User,
                         text: task,
                         attachments: Vec::new(),
+                        reply: None,
                         requested_delivery: None,
                         target_turn_id: None,
                     },

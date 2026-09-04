@@ -140,7 +140,7 @@ extension AppModel {
         completedSwarmMessageRequestID = nil
         botMutationRequestID = nil
         botMutationSuccessMessage = nil
-        pendingDeletedSessionID = nil
+        pendingDeletedSessionIDs = []
         pendingDeletedPresentedSessionID = nil
         if preservingSession {
             for sessionID in Array(pendingChatTitles.keys) {
@@ -256,6 +256,8 @@ extension AppModel {
     }
 
     func resetSessionState(preservingComposerAttachments: Bool = false) {
+        composerReply = nil
+        messageNavigationRequest = nil
         workspace = nil
         gitStatus = nil
         gitDiff = ""

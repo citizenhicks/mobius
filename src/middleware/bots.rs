@@ -1041,6 +1041,7 @@ mod tests {
             delivery: crate::protocol::MessageDelivery::Turn,
             text: "done".into(),
             attachments: Vec::new(),
+            reply: None,
             message_target: None,
         })
         .expect("peer message");

@@ -83,6 +83,7 @@ async fn idle_peer_messages_start_turns_and_replay_without_becoming_user_prompts
                 },
                 "text": "Review the parser boundary.",
                 "attachments": [],
+                "reply": null,
                 "requested_delivery": null,
                 "target_turn_id": null
             }

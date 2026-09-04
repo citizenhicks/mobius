@@ -478,6 +478,7 @@ async fn bot_update_blocks_submission_from_idle_probe_through_rollback() {
                     author: MessageAuthor::User,
                     text: "must not enter the old runtime".into(),
                     attachments: Vec::new(),
+                    reply: None,
                     requested_delivery: None,
                     target_turn_id: None,
                 },
@@ -603,7 +604,7 @@ async fn session_owners_wait_for_the_cascade_gate() {
     let mut deleting_session = tokio::spawn({
         let gateway = gateway.clone();
         let session_id = deletable_id.clone();
-        async move { gateway.delete_session(&session_id).await }
+        async move { gateway.delete_sessions(&[session_id]).await }
     });
     let mut running_routine = tokio::spawn({
         let gateway = gateway.clone();

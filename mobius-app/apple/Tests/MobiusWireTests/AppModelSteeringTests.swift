@@ -3,6 +3,87 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testReplySubmissionRestoresAndNavigatesToItsDurableTarget() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model(requestSender: { request in
+            await recorder.record(request)
+        })
+        let target = MessageTarget(checkpointSequence: 7, batchItemCount: 2)
+        model.connectionState = .ready
+        model.selectedSessionID = "chat-1"
+        model.reduce(
+            event: AgentEventRecord(
+                submissionId: "original",
+                msg: testMessageEvent(text: "Earlier message", messageTarget: target)
+            ),
+            blocks: [],
+            preview: nil
+        )
+
+        model.activeTurnID = "turn-active"
+        model.composerAttachments = [ComposerAttachment(
+            id: UUID(),
+            name: "context.txt",
+            size: 7,
+            mediaType: "text/plain",
+            state: .uploaded(SessionFileReference(
+                id: "file-1",
+                name: "context.txt",
+                size: 7,
+                mediaType: "text/plain"
+            ))
+        )]
+        model.beginReplying(to: try XCTUnwrap(model.transcript.first))
+        let reply = try XCTUnwrap(model.composerReply)
+        model.composerAttachments = []
+        model.composer = "Focused response"
+        XCTAssertTrue(model.sendMessage())
+
+        let request = await recorder.firstRequest(after: 0) { request in
+            if case .submit = request { return true }
+            return false
+        }
+        guard case .submit(_, let submission) = try XCTUnwrap(request),
+              case .message(let message) = submission.op
+        else { return XCTFail("Expected reply message submission") }
+        XCTAssertEqual(message.reply, reply)
+        XCTAssertNil(model.composerReply)
+
+        model.openMessageReply(reply)
+        let firstNavigationID = try XCTUnwrap(model.messageNavigationRequest?.id)
+        model.openMessageReply(reply)
+        XCTAssertNotEqual(model.messageNavigationRequest?.id, firstNavigationID)
+        XCTAssertEqual(model.messageNavigationRequest?.target, target)
+
+        model.composer = "New draft"
+        model.composerReply = MessageReply(
+            target: MessageTarget(checkpointSequence: 9, batchItemCount: 1),
+            text: "Different original"
+        )
+        model.handle(.rejected(GatewayRejection(
+            requestId: submission.id,
+            code: "submission_rejected",
+            message: "Try again",
+            fatal: false
+        )))
+        XCTAssertEqual(model.composer, "Focused response\n\nNew draft")
+        XCTAssertNil(model.composerReply)
+
+        model.reduce(
+            event: AgentEventRecord(
+                submissionId: "reply",
+                msg: testMessageEvent(
+                    text: "Focused response",
+                    reply: reply,
+                    messageTarget: MessageTarget(checkpointSequence: 8, batchItemCount: 1)
+                )
+            ),
+            blocks: [],
+            preview: nil
+        )
+        XCTAssertEqual(model.transcript.last?.reply, reply)
+    }
+
     func testSteeringDraftSettlesOnSuccessAndRestoresOnSubmissionRejection() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model(requestSender: { request in

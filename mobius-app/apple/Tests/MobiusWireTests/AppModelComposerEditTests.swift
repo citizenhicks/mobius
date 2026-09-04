@@ -151,7 +151,7 @@ extension AppModelTests {
         )
         let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
         await store.saveComposerDraft(
-            "Displaced draft",
+            ComposerDraft(text: "Displaced draft"),
             accountID: account.id,
             sessionID: "chat-1"
         )
@@ -226,7 +226,7 @@ extension AppModelTests {
         )
         let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
         await store.saveComposerDraft(
-            "Displaced draft",
+            ComposerDraft(text: "Displaced draft"),
             accountID: account.id,
             sessionID: "chat-1"
         )
@@ -419,9 +419,9 @@ extension AppModelTests {
         model.deleteSession(selected)
         try await Task.sleep(for: .milliseconds(30))
         let requests = await recorder.requests()
-        guard case .deleteSession(let deleteID, "chat-1") = try XCTUnwrap(
-            requests.last(where: { if case .deleteSession = $0 { true } else { false } })
-        ) else { return XCTFail("Expected session deletion") }
+        guard case .deleteSessions(let deleteID, let ids) = try XCTUnwrap(
+            requests.last(where: { if case .deleteSessions = $0 { true } else { false } })
+        ), ids == ["chat-1"] else { return XCTFail("Expected session deletion") }
         model.handle(.accepted(requestID: deleteID))
         model.handle(.sessions(requestID: deleteID, sessions: []))
 

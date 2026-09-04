@@ -182,6 +182,7 @@ final class TranscriptEntry: Identifiable {
     var sourceSequence: UInt64?
     var recordedAtMs: Int64?
     var messageTarget: MessageTarget?
+    var reply: MessageReply?
     var files: [SessionFileReference]
     var annotations: [JSONValue]
     let messageMetadata: TranscriptMessageMetadata?
@@ -208,6 +209,7 @@ final class TranscriptEntry: Identifiable {
         sourceSequence: UInt64? = nil,
         recordedAtMs: Int64? = nil,
         messageTarget: MessageTarget? = nil,
+        reply: MessageReply? = nil,
         files: [SessionFileReference] = [],
         annotations: [JSONValue] = [],
         messageMetadata: TranscriptMessageMetadata? = nil
@@ -233,6 +235,7 @@ final class TranscriptEntry: Identifiable {
         self.sourceSequence = sourceSequence
         self.recordedAtMs = recordedAtMs
         self.messageTarget = messageTarget
+        self.reply = reply
         self.files = files
         self.annotations = annotations
         self.messageMetadata = messageMetadata

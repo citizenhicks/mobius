@@ -218,9 +218,46 @@ struct ComposerAttachment: Identifiable, Equatable {
     var state: ComposerAttachmentState
 }
 
+struct ComposerDraft: Codable, Equatable, Sendable {
+    static let empty = Self(text: "")
+
+    let text: String
+    let reply: MessageReply?
+
+    init(text: String, reply: MessageReply? = nil) {
+        self.text = text
+        self.reply = reply
+    }
+
+    var isEmpty: Bool { text.isEmpty && reply == nil }
+
+    func appending(_ later: Self) -> Self {
+        if isEmpty { return later }
+        if later.isEmpty { return self }
+        let text = [text, later.text].filter { !$0.isEmpty }.joined(separator: "\n\n")
+        return Self(text: text, reply: reply == later.reply ? reply : nil)
+    }
+}
+
 struct PendingComposerDraft {
     let text: String
     let attachments: [SessionFileReference]
+    let reply: MessageReply?
+
+    init(
+        text: String,
+        attachments: [SessionFileReference],
+        reply: MessageReply? = nil
+    ) {
+        self.text = text
+        self.attachments = attachments
+        self.reply = reply
+    }
+}
+
+struct MessageNavigationRequest: Equatable {
+    let id = UUID()
+    let target: MessageTarget
 }
 
 struct PendingWidgetEdit {

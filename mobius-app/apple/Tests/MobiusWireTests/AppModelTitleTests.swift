@@ -529,7 +529,7 @@ extension AppModelTests {
         let model = try model(
             requestSender: { request in
                 await recorder.record(request)
-                if case .deleteSession = request { deleteSent.fulfill() }
+                if case .deleteSessions = request { deleteSent.fulfill() }
             },
             titleWriter: writer
         )
@@ -542,7 +542,9 @@ extension AppModelTests {
         model.deleteSession(chat)
         await fulfillment(of: [deleteSent], timeout: 1)
         let deleteIDs = await recorder.requests().compactMap { request -> String? in
-            guard case .deleteSession(let requestID, "chat-1") = request else { return nil }
+            guard case .deleteSessions(let requestID, let ids) = request,
+                  ids == ["chat-1"]
+            else { return nil }
             return requestID
         }
         let deleteID = try XCTUnwrap(deleteIDs.last)

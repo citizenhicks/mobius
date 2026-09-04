@@ -518,18 +518,6 @@ fn invalid_fork_target() -> Error {
     Error::Checkpoint("fork target is not a safe durable message boundary".into())
 }
 
-fn compact_message(message: &str) -> String {
-    message
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .take(42)
-        .collect::<String>()
-        .trim_end()
-        .into()
-}
-
 fn assistant_message_text(content: &[crate::protocol::ModelStepContent]) -> Option<String> {
     [
         crate::protocol::ModelStepContentPhase::FinalAnswer,
@@ -544,6 +532,18 @@ fn assistant_message_text(content: &[crate::protocol::ModelStepContent]) -> Opti
             .collect::<String>();
         (!text.is_empty()).then_some(text)
     })
+}
+
+fn compact_message(message: &str) -> String {
+    message
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(42)
+        .collect::<String>()
+        .trim_end()
+        .into()
 }
 
 fn manual_fork_checkpoint(parent: &Checkpoint, context: Vec<serde_json::Value>) -> Checkpoint {
@@ -848,6 +848,7 @@ mod tests {
                 delivery: crate::protocol::MessageDelivery::Turn,
                 text: "Start here".into(),
                 attachments: Vec::new(),
+                reply: None,
                 message_target: None,
             })
             .expect("message input"),

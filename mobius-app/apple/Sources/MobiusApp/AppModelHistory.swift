@@ -61,6 +61,7 @@ extension AppModel {
                 sourceSequence: entry.sourceSequence,
                 recordedAtMs: entry.recordedAtMs,
                 messageTarget: entry.messageTarget,
+                reply: entry.reply,
                 files: entry.files,
                 annotations: entry.annotations,
                 messageMetadata: entry.messageMetadata

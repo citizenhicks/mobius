@@ -45,8 +45,11 @@ struct TranscriptRowsView: View {
     let fileSessionID: String?
     var activeStepID: TranscriptPresentationID?
     var rowSpacing: CGFloat = 12
+    var allowsMessageActions = false
+    var revealMessageTarget: MessageTarget?
     var turnDiff: (TranscriptEntry) -> String = { _ in "" }
     var onExpandActivityGroup: () -> Void = {}
+    var onRevealMessage: (MessageTarget, TranscriptPresentationID) -> Void = { _, _ in }
 
     var body: some View {
         ForEach(projection.rows.enumerated(), id: \.element.id) { index, row in
@@ -87,7 +90,10 @@ struct TranscriptRowsView: View {
                 entries: row.records,
                 fileSessionID: fileSessionID,
                 elapsedMs: row.elapsedMs,
-                onExpand: onExpandActivityGroup
+                allowsMessageActions: allowsMessageActions,
+                revealMessageTarget: revealMessageTarget,
+                onExpand: onExpandActivityGroup,
+                onRevealMessage: onRevealMessage
             )
         case .user, .peer, .narrative:
             if let entry = row.records.first {
@@ -97,6 +103,7 @@ struct TranscriptRowsView: View {
                     isPeer: row.kind == .peer,
                     speaker: speaker,
                     fileSessionID: fileSessionID,
+                    allowsMessageActions: allowsMessageActions,
                     turnDiff: turnDiff(entry)
                 )
             }
@@ -274,6 +281,7 @@ extension View {
 
 struct TranscriptView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let bottomInset: CGFloat
     @Binding var isAtBottom: Bool
     let scrollToBottomRequest: Int
@@ -281,6 +289,9 @@ struct TranscriptView: View {
     // survives that late fill, while ChatView supplies a fresh identity for each presentation.
     @State private var scroll = TranscriptScrollState()
     @State private var waiting = TranscriptWaitingHold()
+    @State private var pendingMessageTarget: MessageTarget?
+    @State private var groupedMessageTarget: MessageTarget?
+    @State private var messageNavigationProgress: MessageNavigationProgress?
     private let rowSpacing = MobiusStyle.transcriptRowSpacing
     private let contentPadding = MobiusStyle.transcriptPadding
 
@@ -294,6 +305,12 @@ struct TranscriptView: View {
     }
 
     private var transcript: some View {
+        ScrollViewReader { proxy in
+            transcript(proxy: proxy)
+        }
+    }
+
+    private func transcript(proxy: ScrollViewProxy) -> some View {
         ScrollView {
             // ponytail: chat rows have wildly different heights, so exact layout avoids the
             // blank gaps produced by LazyVStack estimates. Paginate before making this lazy again.
@@ -311,8 +328,13 @@ struct TranscriptView: View {
                     fileSessionID: model.selectedSessionID,
                     activeStepID: model.activeTranscriptStepID,
                     rowSpacing: rowSpacing,
+                    allowsMessageActions: true,
+                    revealMessageTarget: groupedMessageTarget,
                     turnDiff: { model.turnDiff(for: $0) },
-                    onExpandActivityGroup: { scroll.stopFollowingTail() }
+                    onExpandActivityGroup: { scroll.stopFollowingTail() },
+                    onRevealMessage: { target, rowID in
+                        revealGroupedMessage(target, rowID: rowID, proxy: proxy)
+                    }
                 )
                 TranscriptTailView(slot: projection.waiting, topSpacing: rowSpacing)
                 ForEach(model.transcriptTailWidgets) { widget in
@@ -344,6 +366,25 @@ struct TranscriptView: View {
         .onChange(of: model.isWaitingForModel, initial: true) { _, isWaiting in
             rescheduleWaitingPhrase(isWaiting)
         }
+        .onChange(of: model.messageNavigationRequest) { _, request in
+            pendingMessageTarget = request?.target
+            groupedMessageTarget = nil
+            messageNavigationProgress = nil
+            seekMessageTarget(proxy: proxy)
+        }
+        .onChange(of: model.historyLoadSuccessRevision) { _, _ in
+            seekMessageTarget(proxy: proxy)
+        }
+        .onChange(of: model.historyLoadFailureRevision) { _, _ in
+            pendingMessageTarget = nil
+            groupedMessageTarget = nil
+            messageNavigationProgress = nil
+        }
+        .onChange(of: model.selectedSessionID) { _, _ in
+            pendingMessageTarget = nil
+            groupedMessageTarget = nil
+            messageNavigationProgress = nil
+        }
         .onDisappear { rescheduleWaitingPhrase(false) }
     }
 
@@ -369,6 +410,58 @@ struct TranscriptView: View {
         model.loadEarlierHistory()
     }
 
+    private func seekMessageTarget(proxy: ScrollViewProxy) {
+        guard let target = pendingMessageTarget else { return }
+        if let row = projection.rows.first(where: { row in
+            row.records.contains { $0.messageTarget == target }
+        }) {
+            if row.kind == .workedGroup {
+                groupedMessageTarget = target
+                scroll.stopFollowingTail()
+                return
+            }
+            scroll.stopFollowingTail()
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
+                proxy.scrollTo(row.id, anchor: .center)
+            }
+            pendingMessageTarget = nil
+            groupedMessageTarget = nil
+            messageNavigationProgress = nil
+            return
+        }
+        guard !model.isLoadingEarlierHistory else { return }
+        let progress = MessageNavigationProgress(
+            firstID: model.displayedTranscript.first?.id,
+            visibleCount: model.displayedTranscript.count,
+            beforeSequence: model.nextHistoryBeforeSequence
+        )
+        guard progress != messageNavigationProgress, model.canLoadEarlierHistory else {
+            pendingMessageTarget = nil
+            groupedMessageTarget = nil
+            messageNavigationProgress = nil
+            model.showToast("Original message is unavailable.", tone: .warning)
+            return
+        }
+        messageNavigationProgress = progress
+        scroll.stopFollowingTail()
+        model.loadEarlierHistory()
+    }
+
+    private func revealGroupedMessage(
+        _ target: MessageTarget,
+        rowID: TranscriptPresentationID,
+        proxy: ScrollViewProxy
+    ) {
+        guard pendingMessageTarget == target else { return }
+        scroll.stopFollowingTail()
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
+            proxy.scrollTo(rowID, anchor: .center)
+        }
+        pendingMessageTarget = nil
+        groupedMessageTarget = nil
+        messageNavigationProgress = nil
+    }
+
     private var emptyState: some View {
         MobiusComposingOrb()
             .frame(width: MobiusStyle.transcriptOrbSize, height: MobiusStyle.transcriptOrbSize)
@@ -376,6 +469,12 @@ struct TranscriptView: View {
             .padding(.bottom, bottomInset)
             .accessibilityHidden(true)
     }
+}
+
+private struct MessageNavigationProgress: Equatable {
+    let firstID: String?
+    let visibleCount: Int
+    let beforeSequence: UInt64?
 }
 
 private struct TranscriptLoadingView: View {
@@ -404,6 +503,7 @@ private struct TranscriptRow: View {
     let isPeer: Bool
     let speaker: MessageSpeaker
     let fileSessionID: String?
+    let allowsMessageActions: Bool
     let turnDiff: String
 
     var body: some View {
@@ -424,53 +524,51 @@ private struct TranscriptRow: View {
 
     @ViewBuilder
     private var content: some View {
-        if isUser {
+        if isInput {
             HStack {
                 Spacer(minLength: 42)
                 VStack(alignment: .trailing, spacing: MobiusSpace.s) {
-                    TranscriptFileCards(
-                        files: entry.files,
-                        sessionID: fileSessionID,
-                        alignsTrailing: true
-                    )
-                    if !entry.text.isEmpty {
-                        CollapsibleText(text: entry.text)
-                            .padding(.horizontal, MobiusSpace.l)
-                            .padding(.vertical, MobiusSpace.m)
-                            .background(palette.accentSoft, in: MobiusStyle.cardShape)
-                            .contentShape(MobiusStyle.cardShape)
-                            .contextMenu { transcriptActions }
+                    if let reply = entry.reply {
+                        ReplyQuoteView(
+                            reply: reply,
+                            open: allowsMessageActions
+                                ? { model.openMessageReply(reply) }
+                                : nil
+                        )
                     }
-                    messageMetadata
-                }
-            }
-        } else if isPeer {
-            HStack {
-                Spacer(minLength: 42)
-                VStack(alignment: .trailing, spacing: MobiusSpace.s) {
                     TranscriptFileCards(
                         files: entry.files,
                         sessionID: fileSessionID,
                         alignsTrailing: true
                     )
                     if !entry.text.isEmpty {
-                        MobiusMarkdownText(entry.text, streaming: false)
-                            .equatable()
-                            .multilineTextAlignment(.leading)
-                            .padding(MobiusSpace.l)
-                            .background(
-                                palette.accentSoft.opacity(0.45),
-                                in: MobiusStyle.cardShape
-                            )
-                            .overlay {
-                                MobiusStyle.cardShape.stroke(
-                                    palette.accent.opacity(0.3),
-                                    lineWidth: MobiusStyle.borderWidth
+                        if isUser {
+                            CollapsibleText(text: entry.text)
+                                .padding(.horizontal, MobiusSpace.l)
+                                .padding(.vertical, MobiusSpace.m)
+                                .background(palette.accentSoft, in: MobiusStyle.cardShape)
+                                .contentShape(MobiusStyle.cardShape)
+                        } else {
+                            MobiusMarkdownText(entry.text, streaming: false)
+                                .equatable()
+                                .multilineTextAlignment(.leading)
+                                .padding(MobiusSpace.l)
+                                .background(
+                                    palette.accentSoft.opacity(0.45),
+                                    in: MobiusStyle.cardShape
                                 )
-                            }
+                                .overlay {
+                                    MobiusStyle.cardShape.stroke(
+                                        palette.accent.opacity(0.3),
+                                        lineWidth: MobiusStyle.borderWidth
+                                    )
+                                }
+                        }
                     }
                     messageMetadata
                 }
+                .contentShape(Rectangle())
+                .contextMenu { inputActions }
             }
         } else {
             VStack(alignment: .leading, spacing: MobiusSpace.s) {
@@ -487,7 +585,12 @@ private struct TranscriptRow: View {
     @ViewBuilder
     private var messageMetadata: some View {
         if let metadata = entry.messageMetadata {
-            MessageMetadata(author: metadata.author, delivery: metadata.delivery)
+            MessageMetadata(
+                author: metadata.author,
+                delivery: metadata.delivery,
+                bot: isPeer ? displayedBot : nil,
+                timestamp: timestamp
+            )
         }
     }
 
@@ -506,7 +609,7 @@ private struct TranscriptRow: View {
                 guard !Task.isCancelled else { return }
                 showsCopyConfirmation = false
             }
-            if let target = entry.messageTarget {
+            if allowsMessageActions, let target = entry.messageTarget {
                 ForEach(model.messageActionWidgets) { widget in
                     MessageActionButton(
                         verbatim: widget.widget.text,
@@ -516,30 +619,47 @@ private struct TranscriptRow: View {
                     }
                     .disabled(!model.canModifySelectedSession)
                 }
+                MessageActionButton(title: "Reply", glyph: .re) {
+                    model.beginReplying(to: entry)
+                }
+                .disabled(!model.canBeginReply)
             }
             if !entry.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 MessageActionButton(title: "Speak", glyph: .volumeHigh) {
                     speaker.speak(entry.text)
                 }
             }
-            if !entry.pending, let bot = displayedBot {
-                HStack(spacing: MobiusSpace.xs) {
-                    Text(verbatim: "·")
+            if !entry.pending, displayedBot != nil || timestamp != nil {
+                Group {
+                    Text(verbatim: "•")
                         .accessibilityHidden(true)
-                    MobiusIcon(
-                        .aiScan,
-                        size: MobiusStyle.glyphMark,
-                        foreground: bot.tint.color,
-                        gutter: false
-                    )
-                    .accessibilityHidden(true)
-                    Text(verbatim: bot.name)
+                        .padding(.horizontal, MobiusSpace.xs)
+                    if let bot = displayedBot {
+                        MobiusIcon(
+                            .aiScan,
+                            size: MobiusStyle.glyphMark,
+                            foreground: bot.tint.color,
+                            gutter: false
+                        )
+                        .accessibilityHidden(true)
+                        Text(verbatim: bot.name)
+                        if timestamp != nil {
+                            Text(verbatim: "•")
+                                .accessibilityHidden(true)
+                        }
+                    }
+                    if let timestamp {
+                        Text(verbatim: timestamp.time)
+                        Text(verbatim: "•")
+                            .accessibilityHidden(true)
+                        Text(verbatim: timestamp.date)
+                    }
                 }
                 .font(MobiusStyle.metadataFont)
                 .foregroundStyle(palette.muted)
-                .padding(.horizontal, MobiusSpace.xs)
             }
         }
+        .contextMenu { assistantActions }
     }
 
     private var displayedBot: BotRecord? {
@@ -550,15 +670,75 @@ private struct TranscriptRow: View {
     }
 
     @ViewBuilder
-    private var transcriptActions: some View {
-        Button("Copy", glyph: .copy) { copyToPasteboard(entry.text) }
-        if let target = entry.messageTarget {
+    private var inputActions: some View {
+        if !entry.text.isEmpty {
+            Button("Copy", glyph: .copy) { copyToPasteboard(entry.text) }
+        }
+        if allowsMessageActions, let target = entry.messageTarget {
             ForEach(model.messageActionWidgets) { widget in
                 Button(verbatim: widget.widget.text, glyph: messageActionGlyph(widget)) {
                     model.submitMessageAction(widget, target: target)
                 }
                 .disabled(!model.canModifySelectedSession)
             }
+            Button("Reply", glyph: .re) { model.beginReplying(to: entry) }
+                .disabled(!model.canBeginReply)
+        }
+        informationMenuItems
+    }
+
+    @ViewBuilder
+    private var assistantActions: some View {
+        Button("Copy", glyph: .copy) { copyToPasteboard(entry.text) }
+        if allowsMessageActions, let target = entry.messageTarget {
+            ForEach(model.messageActionWidgets) { widget in
+                Button(verbatim: widget.widget.text, glyph: messageActionGlyph(widget)) {
+                    model.submitMessageAction(widget, target: target)
+                }
+                .disabled(!model.canModifySelectedSession)
+            }
+        }
+        if !entry.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            Button("Speak", glyph: .volumeHigh) { speaker.speak(entry.text) }
+        }
+        if allowsMessageActions, entry.messageTarget != nil {
+            Button("Reply", glyph: .re) { model.beginReplying(to: entry) }
+                .disabled(!model.canBeginReply)
+        }
+        informationMenuItems
+    }
+
+    @ViewBuilder
+    private var informationMenuItems: some View {
+        if timestamp != nil || isInput || displayedBot != nil {
+            Divider()
+        }
+        if let timestamp {
+            Button(verbatim: timestamp.combined, glyph: .clock) {}
+                .disabled(true)
+        }
+        if isUser {
+            Button("you", glyph: .userFocus) {}
+                .disabled(true)
+        } else if let bot = displayedBot {
+            if let image = MobiusGlyph.aiScan.menuImage(bot.tint.color) {
+                Button(action: {}) {
+                    Label { Text(verbatim: bot.name) } icon: { image }
+                }
+                .disabled(true)
+            } else {
+                Button(verbatim: bot.name, glyph: .aiScan) {}
+                    .disabled(true)
+            }
+        } else if isPeer, let handle = entry.messageMetadata?.author.peerFields?.handle {
+            Button(verbatim: handle, glyph: .aiScan) {}
+                .disabled(true)
+        }
+    }
+
+    private var timestamp: MessageTimestamp? {
+        entry.recordedAtMs.flatMap {
+            MessageTimestamp(milliseconds: $0, locale: model.language.locale)
         }
     }
 
@@ -571,19 +751,29 @@ private struct MessageMetadata: View {
     @Environment(\.mobiusPalette) private var palette
     let author: MessageAuthor
     let delivery: MessageDelivery
+    let bot: BotRecord?
+    let timestamp: MessageTimestamp?
 
     var body: some View {
         HStack(spacing: MobiusSpace.xs) {
+            if let timestamp {
+                Text(verbatim: timestamp.time)
+                Text(verbatim: "•")
+                    .accessibilityHidden(true)
+                Text(verbatim: timestamp.date)
+                Text(verbatim: "•")
+                    .accessibilityHidden(true)
+            }
             MobiusIcon(
                 glyph,
                 size: MobiusStyle.glyphMark,
-                foreground: palette.muted,
+                foreground: bot?.tint.color ?? palette.muted,
                 gutter: false
             )
-            Text(verbatim: "·")
             if let deliveryLabel {
                 Text(deliveryLabel)
-                Text(verbatim: "·")
+                Text(verbatim: "•")
+                    .accessibilityHidden(true)
             }
             authorLabel
         }
@@ -610,12 +800,46 @@ private struct MessageMetadata: View {
     }
 
     private var authorLabel: Text {
-        author.peerFields.map { Text(verbatim: $0.handle) } ?? Text("you")
+        bot.map { Text(verbatim: $0.name) }
+            ?? author.peerFields.map { Text(verbatim: $0.handle) }
+            ?? Text("you")
     }
 
     private var accessibilityLabel: Text {
-        let author = author.peerFields?.handle ?? String(localized: "you")
-        guard let deliveryLabel else { return Text(verbatim: author) }
-        return Text(verbatim: "\(String(localized: deliveryLabel)), \(author)")
+        let author = bot?.name ?? author.peerFields?.handle ?? String(localized: "you")
+        let delivery = deliveryLabel.map { String(localized: $0) }
+        return Text(verbatim: [timestamp?.spoken, delivery, author]
+            .compactMap { $0 }
+            .joined(separator: ", "))
     }
+}
+
+private struct MessageTimestamp {
+    let time: String
+    let date: String
+    let spoken: String
+
+    init?(milliseconds: Int64, locale: Locale) {
+        guard milliseconds > 0 else { return nil }
+        let value = Date(timeIntervalSince1970: TimeInterval(milliseconds) / 1_000)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .autoupdatingCurrent
+        let components = calendar.dateComponents(
+            [.year, .month, .day, .hour, .minute],
+            from: value
+        )
+        guard let year = components.year,
+              let month = components.month,
+              let day = components.day,
+              let hour = components.hour,
+              let minute = components.minute
+        else { return nil }
+        time = String(format: "%02d:%02d", hour, minute)
+        date = String(format: "%02d/%02d/%02d", day, month, year % 100)
+        spoken = value.formatted(
+            Date.FormatStyle(date: .numeric, time: .shortened).locale(locale)
+        )
+    }
+
+    var combined: String { "\(time) • \(date)" }
 }

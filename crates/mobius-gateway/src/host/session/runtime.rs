@@ -515,6 +515,7 @@ impl HostState {
                     author: MessageAuthor::User,
                     text: input,
                     attachments: Vec::new(),
+                    reply: None,
                     requested_delivery: None,
                     target_turn_id: None,
                 },

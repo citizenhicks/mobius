@@ -2,7 +2,10 @@
 
 use crate::agent::validate_submission;
 use crate::middleware::session_files::session_file_limits;
-use crate::protocol::{MessageAuthor, MessageSubmission, Op, SessionFileReference, Submission};
+use crate::protocol::{
+    MAX_MESSAGE_BYTES, MessageAuthor, MessageReply, MessageSubmission, MessageTarget, Op,
+    SessionFileReference, Submission,
+};
 
 fn attachment(index: usize, size: u64) -> SessionFileReference {
     SessionFileReference {
@@ -21,6 +24,7 @@ fn submission(attachments: Vec<SessionFileReference>) -> Submission {
                 author: MessageAuthor::User,
                 text: String::new(),
                 attachments,
+                reply: None,
                 requested_delivery: None,
                 target_turn_id: None,
             },
@@ -78,4 +82,51 @@ fn advertised_session_byte_limit_is_enforced() {
             .to_string()
             .contains(&limits.max_session_bytes.to_string())
     );
+}
+
+#[test]
+fn quoted_message_size_limit_is_enforced() {
+    let input = Submission {
+        id: "submission".into(),
+        op: Op::Message {
+            message: MessageSubmission {
+                author: MessageAuthor::User,
+                text: "reply".into(),
+                attachments: Vec::new(),
+                reply: Some(MessageReply {
+                    target: MessageTarget {
+                        checkpoint_sequence: 1,
+                        batch_item_count: 1,
+                    },
+                    text: "x".repeat(MAX_MESSAGE_BYTES + 1),
+                }),
+                requested_delivery: None,
+                target_turn_id: None,
+            },
+        },
+    };
+
+    let error = validate_submission(&input).expect_err("oversized quote");
+
+    assert!(error.to_string().contains("quoted message"));
+}
+
+#[test]
+fn empty_quoted_message_is_rejected() {
+    let mut input = submission(Vec::new());
+    let Op::Message { message } = &mut input.op else {
+        unreachable!("message submission")
+    };
+    message.text = "reply".into();
+    message.reply = Some(MessageReply {
+        target: MessageTarget {
+            checkpoint_sequence: 1,
+            batch_item_count: 1,
+        },
+        text: String::new(),
+    });
+
+    let error = validate_submission(&input).expect_err("empty quote");
+
+    assert!(error.to_string().contains("quoted message cannot be empty"));
 }

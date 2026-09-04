@@ -18,6 +18,7 @@ use crate::protocol::MAX_MESSAGE_BYTES;
 use crate::protocol::MessageAuthor;
 use crate::protocol::MessageDelivery;
 use crate::protocol::MessageEvent;
+use crate::protocol::MessageReply;
 use crate::protocol::MessageTarget;
 use crate::protocol::ModelStepContentPhase;
 use crate::protocol::SessionContext;
@@ -209,6 +210,8 @@ pub struct QueuedMessage {
     author: MessageAuthor,
     message: String,
     attachments: Vec<SessionFileReference>,
+    #[serde(default)]
+    reply: Option<MessageReply>,
 }
 
 impl QueuedMessage {
@@ -228,6 +231,7 @@ impl QueuedMessage {
             author: event.author,
             message: event.text,
             attachments: event.attachments,
+            reply: event.reply,
         };
         queued.validate()?;
         Ok(queued)
@@ -257,6 +261,7 @@ impl QueuedMessage {
             delivery: self.boundary.delivery(),
             text: self.message.clone(),
             attachments: self.attachments.clone(),
+            reply: self.reply.clone(),
             message_target: None,
         }
     }
@@ -633,10 +638,10 @@ pub trait CheckpointStore: Send + Sync {
     /// Loads the latest checkpoint for a session.
     fn load<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<Option<Checkpoint>>>;
 
-    /// Permanently deletes a session, its descendants, and their session-scoped state.
+    /// Atomically deletes the selected sessions, their descendants, and session-scoped state.
     ///
-    /// Returns whether the requested session existed.
-    fn delete_session<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<bool>>;
+    /// Returns `false` without deleting anything when any selected session is absent.
+    fn delete_sessions<'a>(&'a self, session_ids: &'a [String]) -> BoxFuture<'a, Result<bool>>;
 
     /// Atomically replaces the checkpoint, appends transcript items, and records a finished turn.
     fn save<'a>(

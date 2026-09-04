@@ -82,6 +82,7 @@ const REPLAY_CAPACITY: usize = 1024;
 const REPLAY_LOAD_PAGE_SIZE: usize = 8;
 const MAX_REPLAY_BYTES: usize = MAX_FRAME_BYTES;
 const SESSION_PAGE_SIZE: usize = 100;
+const MAX_SESSION_DELETE_ROOTS: usize = 1_024;
 const RECENT_RUN_LIMIT: usize = 30;
 pub(crate) const MAX_ACTIVE_SESSIONS: usize = 32;
 
@@ -272,12 +273,15 @@ impl GatewayHost {
             &intent.session_ids,
             &mut file_deletion,
             true,
-            true,
         )
         .await?;
         drop(state);
         if let Some(warning) = file_warning {
-            return Err(warning);
+            let _ = self.events.send(ServerFrame::new(ServerMessage::Error {
+                code: "session_cleanup".into(),
+                message: warning.message,
+                fatal: false,
+            }));
         }
         bot_store
             .cleanup_bot_deletion_files(&intent)
@@ -718,11 +722,10 @@ impl GatewayHost {
             &session_ids,
             &mut file_deletion,
             true,
-            true,
         )
         .await
         {
-            Ok(Some(warning)) => return Err(warning),
+            Ok(Some(warning)) => cleanup_errors.push(warning.message),
             Ok(None) => {}
             Err(rejection) => return Err(rejection),
         }
@@ -1325,21 +1328,84 @@ impl GatewayHost {
         self.broadcast_sessions().await
     }
 
-    pub(crate) async fn delete_session(
+    pub(crate) async fn delete_sessions(
         &self,
-        session_id: &str,
+        session_ids: &[String],
     ) -> std::result::Result<Vec<String>, Rejection> {
+        if session_ids.is_empty() || session_ids.len() > MAX_SESSION_DELETE_ROOTS {
+            return Err(Rejection {
+                code: "invalid_session_selection",
+                message: format!("select between 1 and {MAX_SESSION_DELETE_ROOTS} chats to delete"),
+                fatal: false,
+            });
+        }
+        let mut seen = HashSet::new();
+        let selected = session_ids
+            .iter()
+            .filter(|session_id| seen.insert(session_id.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        for session_id in &selected {
+            validate_session_id(session_id).map_err(|_| invalid_session_id())?;
+        }
         let _mutation = self.begin_exclusive_mutation().await?;
         let mut state = self.state.lock().await;
-        require_catalog_session(&state, session_id).await?;
         let summaries = gateway_session_summaries(&state.checkpoints)
             .await
             .map_err(internal)?;
-        let session_ids = session_tree_ids(session_id, &summaries).ok_or_else(unknown_session)?;
-        delete_session_trees(&mut state, &[session_id.into()], &session_ids, false).await?;
+        if selected.iter().any(|selected| {
+            !summaries
+                .iter()
+                .any(|session| session.catalog_visible && session.session_id == *selected)
+        }) {
+            return Err(unknown_session());
+        }
+        let selected_set = selected.iter().map(String::as_str).collect::<HashSet<_>>();
+        let parents = summaries
+            .iter()
+            .map(|session| {
+                (
+                    session.session_id.as_str(),
+                    session.parent_session_id.as_deref(),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let roots = selected
+            .iter()
+            .filter(|session_id| {
+                let mut ancestor = parents.get(session_id.as_str()).copied().flatten();
+                let mut visited = HashSet::new();
+                while let Some(parent) = ancestor {
+                    if !visited.insert(parent) {
+                        break;
+                    }
+                    if selected_set.contains(parent) {
+                        return false;
+                    }
+                    ancestor = parents.get(parent).copied().flatten();
+                }
+                true
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let (_, deleted) = session_trees(roots.clone(), &summaries);
+        let cleanup = delete_session_trees(&mut state, &roots, &deleted, false).await?;
         drop(state);
-        self.broadcast_sessions().await?;
-        Ok(session_ids)
+        if let Some(rejection) = cleanup {
+            let _ = self.events.send(ServerFrame::new(ServerMessage::Error {
+                code: "session_cleanup".into(),
+                message: rejection.message,
+                fatal: false,
+            }));
+        }
+        if let Err(rejection) = self.broadcast_sessions().await {
+            let _ = self.events.send(ServerFrame::new(ServerMessage::Error {
+                code: "session_catalog".into(),
+                message: rejection.message,
+                fatal: false,
+            }));
+        }
+        Ok(deleted)
     }
 
     pub(crate) async fn create_routine(
@@ -1434,7 +1500,6 @@ impl GatewayHost {
             &session_roots,
             &session_ids,
             &mut file_deletion,
-            true,
             true,
         )
         .await;
@@ -1571,7 +1636,6 @@ impl GatewayHost {
                 &[session_root],
                 &session_ids,
                 &mut file_deletion,
-                true,
                 true,
             )
             .await
@@ -2053,21 +2117,6 @@ async fn prepare_bot_session_tree_deletion(
     state: &mut GatewayState,
     bot_id: &str,
 ) -> std::result::Result<(Vec<String>, Vec<String>, SessionFileDeletion), Rejection> {
-    let residents = state
-        .sessions
-        .values()
-        .filter(|host| host.bot_id() == bot_id)
-        .cloned()
-        .collect::<Vec<_>>();
-    for host in residents {
-        if !host.stop_if_idle().await {
-            return Err(Rejection {
-                code: "agent_busy",
-                message: "finish or interrupt active Bot turns before deleting it".into(),
-                fatal: false,
-            });
-        }
-    }
     let summaries = gateway_session_summaries(&state.checkpoints)
         .await
         .map_err(internal)?;
@@ -2100,12 +2149,10 @@ async fn delete_session_trees(
     roots: &[String],
     session_ids: &[String],
     allow_pending_swarm: bool,
-) -> std::result::Result<(), Rejection> {
+) -> std::result::Result<Option<Rejection>, Rejection> {
     let mut file_deletion =
         prepare_session_tree_deletion(state, session_ids, allow_pending_swarm).await?;
-    remove_session_trees(state, roots, session_ids, &mut file_deletion, false, false)
-        .await
-        .map(|_| ())
+    remove_session_trees(state, roots, session_ids, &mut file_deletion, false).await
 }
 
 async fn prepare_session_tree_deletion(
@@ -2133,10 +2180,30 @@ async fn prepare_session_tree_deletion(
             fatal: false,
         });
     }
-    for id in session_ids {
-        let Some(host) = state.sessions.get(id).cloned() else {
-            continue;
-        };
+    let residents = session_ids
+        .iter()
+        .filter_map(|id| state.sessions.get(id).cloned())
+        .collect::<Vec<_>>();
+    for host in &residents {
+        match host.provider_cutover_status().await {
+            Ok(status) if status.idle => {}
+            Ok(_) => {
+                return Err(Rejection {
+                    code: "agent_busy",
+                    message: "finish or interrupt the active turn before deleting this chat".into(),
+                    fatal: false,
+                });
+            }
+            Err(rejection) if rejection.code == "gateway_stopped" => {}
+            Err(rejection) => return Err(rejection),
+        }
+    }
+    let file_deletion = state
+        .session_files
+        .prepare_delete_sessions(session_ids)
+        .await
+        .map_err(internal)?;
+    for host in residents {
         if !host.stop_if_idle().await {
             return Err(Rejection {
                 code: "agent_busy",
@@ -2145,11 +2212,7 @@ async fn prepare_session_tree_deletion(
             });
         }
     }
-    state
-        .session_files
-        .prepare_delete_sessions(session_ids)
-        .await
-        .map_err(internal)
+    Ok(file_deletion)
 }
 
 async fn remove_session_trees(
@@ -2157,48 +2220,64 @@ async fn remove_session_trees(
     roots: &[String],
     session_ids: &[String],
     file_deletion: &mut SessionFileDeletion,
-    continue_after_file_error: bool,
     missing_roots_are_deleted: bool,
 ) -> std::result::Result<Option<Rejection>, Rejection> {
     if session_ids.is_empty() {
         return Ok(None);
     }
+    let roots = if missing_roots_are_deleted {
+        let mut existing = Vec::new();
+        for root in roots {
+            if state
+                .checkpoints
+                .load(root)
+                .await
+                .map_err(internal)?
+                .is_some()
+            {
+                existing.push(root.clone());
+            }
+        }
+        existing
+    } else {
+        roots.to_vec()
+    };
+    if !state
+        .checkpoints
+        .delete_sessions(&roots)
+        .await
+        .map_err(internal)?
+    {
+        return Err(unknown_session());
+    }
+
     for id in session_ids {
         state.sessions.remove(id);
     }
-    let file_warning = match file_deletion.delete().await {
-        Ok(()) => None,
-        Err(error) if continue_after_file_error => Some(internal(error)),
-        Err(error) => return Err(internal(error)),
-    };
+    let mut cleanup_errors = Vec::new();
+    if let Err(error) = file_deletion.delete().await {
+        cleanup_errors.push(error.to_string());
+    }
     let catalog_lock = Arc::clone(&state.catalog_lock);
     let _catalog = catalog_lock.lock().await;
-    let mut metadata = load_session_metadata(&state.checkpoints)
-        .await
-        .map_err(internal)?;
-    for id in session_ids {
-        metadata.remove(id);
-    }
-    save_session_metadata(&state.checkpoints, &metadata)
-        .await
-        .map_err(internal)?;
-    for root in roots {
-        if !state
-            .checkpoints
-            .delete_session(root)
-            .await
-            .map_err(internal)?
-            && !missing_roots_are_deleted
-        {
-            return Err(unknown_session());
+    match load_session_metadata(&state.checkpoints).await {
+        Ok(mut metadata) => {
+            for id in session_ids {
+                metadata.remove(id);
+            }
+            if let Err(error) = save_session_metadata(&state.checkpoints, &metadata).await {
+                cleanup_errors.push(error.to_string());
+            }
         }
+        Err(error) => cleanup_errors.push(error.to_string()),
     }
-    state
-        .activities
-        .lock()
-        .map_err(|_| internal("session activity lock is poisoned"))?
-        .retain(|id, _| !session_ids.iter().any(|deleted| deleted == id));
-    Ok(file_warning)
+    match state.activities.lock() {
+        Ok(mut activities) => {
+            activities.retain(|id, _| !session_ids.iter().any(|deleted| deleted == id));
+        }
+        Err(_) => cleanup_errors.push("session activity lock is poisoned".into()),
+    }
+    Ok((!cleanup_errors.is_empty()).then(|| internal(cleanup_errors.join("; "))))
 }
 
 async fn disband_swarm_with_scratchpad(
@@ -2235,6 +2314,7 @@ fn swarm_message_submission(entry: BoardEntry) -> Submission {
                 author,
                 text: entry.text,
                 attachments: Vec::new(),
+                reply: None,
                 requested_delivery: None,
                 target_turn_id: None,
             },

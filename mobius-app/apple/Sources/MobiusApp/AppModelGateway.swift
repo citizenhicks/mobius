@@ -170,7 +170,7 @@ extension AppModel {
                 transcriptWindowAnchor = .visibleTurns(count + transcriptTurnsPerPage)
                 _ = transcriptWindow
             }
-            finishHistoryLoad()
+            finishHistoryLoad(succeeded: true)
         case .sessionChanged(let payload):
             guard payload.session.sessionId == selectedSessionID else { break }
             applySessionReady(payload, opened: false)
@@ -1205,17 +1205,17 @@ extension AppModel {
             approvalRequestID = nil
         }
         if requestID == sessionMutationRequestID {
-            if let sessionID = pendingDeletedSessionID {
+            for sessionID in pendingDeletedSessionIDs {
                 cancelChatTitle(sessionID)
                 if let accountID = selectedAccountID {
                     let owner = ComposerDraftOwner(accountID: accountID, sessionID: sessionID)
                     invalidateComposerEditRecovery(for: owner)
-                    enqueueComposerDraftSave("", owner: owner)
+                    enqueueComposerDraftSave(.empty, owner: owner)
                     enqueueComposerEditRecoveryRemoval(owner: owner)
                     if composerDraftOwner == owner { discardComposerDraft() }
                 }
             }
-            pendingDeletedSessionID = nil
+            pendingDeletedSessionIDs = []
             pendingDeletedPresentedSessionID = nil
             transmit(.listSessions(requestID: requestID)) { [weak self] _ in
                 if self?.sessionMutationRequestID == requestID {
@@ -1290,7 +1290,7 @@ extension AppModel {
             isLoadingPreviewPage = false
         }
         if rejection.requestId == sessionMutationRequestID {
-            pendingDeletedSessionID = nil
+            pendingDeletedSessionIDs = []
             pendingDeletedPresentedSessionID = nil
             if let sessionID = pendingChatTitles.first(where: {
                 $0.value.renameRequestID == rejection.requestId

@@ -88,9 +88,9 @@ pub enum ClientMessage {
         session_id: String,
         pinned: bool,
     },
-    DeleteSession {
+    DeleteSessions {
         request_id: String,
-        session_id: String,
+        session_ids: Vec<String>,
     },
     CreateSwarm {
         request_id: String,
