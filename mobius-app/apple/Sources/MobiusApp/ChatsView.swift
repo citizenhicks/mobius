@@ -224,7 +224,7 @@ struct ChatsView: View {
                     }
                 }
             }
-            Section {
+            Section("Filter") {
                 Button {
                     model.chatBotFilterIDs.removeAll()
                 } label: {
@@ -241,11 +241,12 @@ struct ChatsView: View {
                     }
                 }
             }
-            Divider()
-            Button("Select chats to delete", glyph: .trash) {
-                selectedSessionIDs = []
+            Section("Manage") {
+                Button("Select chats to delete", glyph: .trash) {
+                    selectedSessionIDs = []
+                }
+                .disabled(displayedSessions.isEmpty || !model.canRenameSession)
             }
-            .disabled(displayedSessions.isEmpty || !model.canRenameSession)
             if model.hasCloudAccount, let limit = model.cloudAccount?.luna {
                 Divider()
                 Text(

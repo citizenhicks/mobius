@@ -180,7 +180,7 @@ private struct ChatOptionsMenu: View {
 
     var body: some View {
         HeaderOptionsMenu(label: "Chat options") {
-            Section {
+            Section("Details") {
                 Button {} label: {
                     Text(verbatim: model.workspace?.path ?? "No chat selected")
                 }
@@ -199,7 +199,7 @@ private struct ChatOptionsMenu: View {
                     .disabled(true)
                 }
             }
-            Section {
+            Section("Workspace") {
                 if let git = model.gitStatus, !git.currentBranch.isEmpty {
                     Menu {
                         ForEach(git.branches, id: \.self) { branch in
@@ -237,7 +237,7 @@ private struct ChatOptionsMenu: View {
                     }
                 }
             }
-            Section {
+            Section("Actions") {
                 Button {
                     guard let bot = model.selectedBot else { return }
                     model.beginEditingBot(bot)
@@ -268,7 +268,7 @@ private struct ChatOptionsMenu: View {
                 .disabled(!model.canCreateSession)
             }
             if let session = model.selectedSession {
-                Section {
+                Section("Manage") {
                     Button {
                         model.setSessionPinned(session, pinned: !session.pinned)
                     } label: {
