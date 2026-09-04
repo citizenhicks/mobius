@@ -8,7 +8,7 @@ use super::ModelContext;
 use super::approximate_item_tokens;
 use super::attachments::is_attachment_materialization;
 use super::manifest::{MiddlewareManifest, MiddlewareSettingManifest};
-use super::scratchpad::is_projection_item;
+use super::tools::loaded_tools;
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -199,7 +199,7 @@ impl Middleware for Compaction {
                 .and_then(|active| active.item.get(MESSAGE_METADATA_FIELD))
                 .cloned();
             let mut compacted = retain_native_context(context.input(), output.output);
-            compacted.retain(|item| !is_projection_item(item));
+            context.hooks.retain_compacted_input(&mut compacted);
             restore_input_private_fields(&mut compacted, latest_turn_input);
             validate_active_message_metadata(&compacted, active_message_metadata.as_ref())?;
             reset_prompt_cache_breakpoint(&mut compacted);
@@ -227,22 +227,9 @@ fn retained_tool_load(
 ) -> Result<Option<Value>> {
     let deferred = deferred_tools
         .iter()
-        .map(|tool| tool.name.as_str())
+        .map(|tool| tool.name.clone())
         .collect::<BTreeSet<_>>();
-    let mut loaded = BTreeSet::new();
-    for item in input {
-        let Some(tool_load) = ToolLoad::from_input(item)? else {
-            continue;
-        };
-        if tool_load.catalog_revision == catalog_revision {
-            loaded.extend(
-                tool_load
-                    .tools
-                    .into_iter()
-                    .filter(|name| deferred.contains(name.as_str())),
-            );
-        }
-    }
+    let loaded = loaded_tools(input, catalog_revision, &deferred)?;
     Ok((!loaded.is_empty()).then(|| {
         ToolLoad {
             catalog_revision: catalog_revision.into(),

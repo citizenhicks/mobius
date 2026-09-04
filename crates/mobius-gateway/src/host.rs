@@ -19,8 +19,7 @@ use chrono::Utc;
 use mobius::agent::{AgentConfig, AgentSender};
 use mobius::backend::checkpoint::{
     ActiveExecution, CheckpointStore, EventPageRequest, ExecutionOutcome, ExecutionRecord,
-    ExecutionStats, JournalEvent, SessionPageRequest, SessionSummary, event_turn_page,
-    sqlite::SqliteCheckpoint,
+    JournalEvent, SessionPageRequest, SessionSummary, event_turn_page, sqlite::SqliteCheckpoint,
 };
 use mobius::backend::model::ModelRouter;
 use mobius::middleware::scratchpad::ScratchpadStore;
@@ -50,9 +49,9 @@ use crate::sandbox::GatewaySandbox;
 use crate::wire::{
     AgentComposition, GitDiffScope, MAX_FRAME_BYTES, ProfileSnapshot, ProviderConfig, ReadyPayload,
     RecordedEvent, RenderedEvent, RenderedPreview, RoutineRunStatus, RunStats, RunSummary,
-    ServerFrame, ServerMessage, SessionActivity, SessionActivityState, SessionOutcome,
-    SessionReadyPayload, SessionRecord, SessionRunGroup, SessionWidget, SshIdentityRecord,
-    SwarmAttention, SwarmRecord, WorkspaceFileScope, validate_session_id,
+    ServerFrame, ServerMessage, SessionActivity, SessionActivityState, SessionReadyPayload,
+    SessionRecord, SessionRunGroup, SessionWidget, SshIdentityRecord, SwarmAttention, SwarmRecord,
+    WorkspaceFileScope, validate_session_id,
 };
 use crate::{Error, Result};
 
@@ -341,37 +340,58 @@ impl GatewayHost {
         gateway_ready(&state).await
     }
 
-    pub(crate) async fn submit_scratchpad(
+    pub(crate) async fn contributions(
         &self,
-        scope: &crate::wire::ScratchpadScope,
-        operation: Op,
-    ) -> std::result::Result<FrontendContribution, Rejection> {
+        scope: &crate::wire::ContributionScope,
+    ) -> std::result::Result<Vec<FrontendContribution>, Rejection> {
         let _mutation = self.begin_mutation().await?;
-        let Op::CapabilityCommand {
-            capability,
-            command,
-            arguments,
-            input,
-            target,
-        } = operation
-        else {
-            return Err(invalid_scratchpad_operation());
+        let (scratchpad, mut contributions) = self.scoped_contribution_state(scope).await?;
+        let contribution = match scope {
+            crate::wire::ContributionScope::Global => scratchpad.global_contribution().await,
+            crate::wire::ContributionScope::Swarm { id } => scratchpad.swarm_contribution(id).await,
+        }
+        .map_err(scratchpad_error)?;
+        contributions.push(contribution);
+        Ok(contributions)
+    }
+
+    pub(crate) async fn submit_contribution(
+        &self,
+        scope: &crate::wire::ContributionScope,
+        operation: Op,
+    ) -> std::result::Result<Vec<FrontendContribution>, Rejection> {
+        let _mutation = self.begin_mutation().await?;
+        let (scratchpad, mut contributions) = self.scoped_contribution_state(scope).await?;
+        let swarm_id = match scope {
+            crate::wire::ContributionScope::Global => None,
+            crate::wire::ContributionScope::Swarm { id } => Some(id.as_str()),
         };
-        if capability != "scratchpad" || command != "scratchpad" || target.is_some() {
-            return Err(invalid_scratchpad_operation());
-        }
-        let mut arguments = arguments.split_whitespace();
-        let operation = arguments.next();
-        let argument_scope = arguments.next();
-        let id = arguments.next();
-        if arguments.next().is_some() {
-            return Err(invalid_scratchpad_operation());
-        }
-        let (scratchpad, swarm) = {
+        contributions.push(
+            scratchpad
+                .management_command(swarm_id, &operation)
+                .await
+                .map_err(scratchpad_error)?,
+        );
+        Ok(contributions)
+    }
+
+    async fn scoped_contribution_state(
+        &self,
+        scope: &crate::wire::ContributionScope,
+    ) -> std::result::Result<(ScratchpadStore, Vec<FrontendContribution>), Rejection> {
+        let (scratchpad, swarm, contributions) = {
             let state = self.state.lock().await;
-            (state.scratchpad.clone(), Arc::clone(&state.swarm))
+            let contributions = match scope {
+                crate::wire::ContributionScope::Global => state.contributions.clone(),
+                crate::wire::ContributionScope::Swarm { .. } => Vec::new(),
+            };
+            (
+                state.scratchpad.clone(),
+                Arc::clone(&state.swarm),
+                contributions,
+            )
         };
-        if let crate::wire::ScratchpadScope::Swarm { id } = scope
+        if let crate::wire::ContributionScope::Swarm { id } = scope
             && !swarm
                 .contains_swarm(id)
                 .await
@@ -383,50 +403,7 @@ impl GatewayHost {
                 fatal: false,
             });
         }
-        match (scope, operation, argument_scope, id, input.as_deref()) {
-            (crate::wire::ScratchpadScope::Global, Some("refresh"), None, None, None) => {
-                scratchpad.global_contribution().await
-            }
-            (crate::wire::ScratchpadScope::Global, Some("add"), None, None, Some(note)) => {
-                scratchpad.add_global(note).await
-            }
-            (
-                crate::wire::ScratchpadScope::Global,
-                Some("edit"),
-                Some("global"),
-                Some(id),
-                Some(note),
-            ) => scratchpad.edit_global(id, note).await,
-            (
-                crate::wire::ScratchpadScope::Global,
-                Some("forget"),
-                Some("global"),
-                Some(id),
-                None,
-            ) => scratchpad.forget_global(id).await,
-            (crate::wire::ScratchpadScope::Swarm { id }, Some("refresh"), None, None, None) => {
-                scratchpad.swarm_contribution(id).await
-            }
-            (crate::wire::ScratchpadScope::Swarm { id }, Some("add"), None, None, Some(note)) => {
-                scratchpad.add_swarm(id, note).await
-            }
-            (
-                crate::wire::ScratchpadScope::Swarm { id: swarm_id },
-                Some("edit"),
-                Some("swarm"),
-                Some(id),
-                Some(note),
-            ) => scratchpad.edit_swarm(swarm_id, id, note).await,
-            (
-                crate::wire::ScratchpadScope::Swarm { id: swarm_id },
-                Some("forget"),
-                Some("swarm"),
-                Some(id),
-                None,
-            ) => scratchpad.forget_swarm(swarm_id, id).await,
-            _ => return Err(invalid_scratchpad_operation()),
-        }
-        .map_err(scratchpad_error)
+        Ok((scratchpad, contributions))
     }
 
     pub(crate) async fn sessions(&self) -> std::result::Result<Vec<SessionRecord>, Rejection> {
@@ -836,7 +813,6 @@ impl GatewayHost {
             state.scratchpad.clone(),
             state.session_files.clone(),
             state.swarm.clone(),
-            Arc::clone(&state.catalog_lock),
             Arc::clone(&state.session_mutations),
             Arc::clone(&state.provider_epoch),
             Arc::clone(&state.activities),
@@ -945,7 +921,6 @@ impl GatewayHost {
             state.scratchpad.clone(),
             state.session_files.clone(),
             state.swarm.clone(),
-            Arc::clone(&state.catalog_lock),
             Arc::clone(&state.session_mutations),
             Arc::clone(&state.provider_epoch),
             Arc::clone(&state.activities),
@@ -1250,40 +1225,8 @@ impl GatewayHost {
     ) -> std::result::Result<(), Rejection> {
         let _mutation = self.begin_mutation().await?;
         let title = validate_session_title(title)?;
-        let (host, checkpoints, catalog_lock) = {
-            let state = self.state.lock().await;
-            require_catalog_session(&state, session_id).await?;
-            (
-                state
-                    .sessions
-                    .get(session_id)
-                    .filter(|host| host.is_alive())
-                    .cloned(),
-                Arc::clone(&state.checkpoints),
-                Arc::clone(&state.catalog_lock),
-            )
-        };
-        if let Some(host) = host {
-            return host.rename_session(session_id.into(), title.into()).await;
-        }
-        let _catalog = catalog_lock.lock().await;
-        if checkpoints
-            .load(session_id)
+        self.update_session_metadata(session_id, |metadata| metadata.title = Some(title.into()))
             .await
-            .map_err(internal)?
-            .is_none()
-        {
-            return Err(unknown_session());
-        }
-        let mut metadata = load_session_metadata(&checkpoints)
-            .await
-            .map_err(internal)?;
-        metadata.entry(session_id.into()).or_default().title = Some(title.into());
-        save_session_metadata(&checkpoints, &metadata)
-            .await
-            .map_err(internal)?;
-        drop(_catalog);
-        self.broadcast_sessions().await
     }
 
     pub(crate) async fn set_session_pinned(
@@ -1292,22 +1235,23 @@ impl GatewayHost {
         pinned: bool,
     ) -> std::result::Result<(), Rejection> {
         let _mutation = self.begin_mutation().await?;
-        let (host, checkpoints, catalog_lock) = {
+        self.update_session_metadata(session_id, |metadata| metadata.pinned = pinned)
+            .await
+    }
+
+    async fn update_session_metadata(
+        &self,
+        session_id: &str,
+        update: impl FnOnce(&mut catalog::SessionMetadata),
+    ) -> std::result::Result<(), Rejection> {
+        let (checkpoints, catalog_lock) = {
             let state = self.state.lock().await;
             require_catalog_session(&state, session_id).await?;
             (
-                state
-                    .sessions
-                    .get(session_id)
-                    .filter(|host| host.is_alive())
-                    .cloned(),
                 Arc::clone(&state.checkpoints),
                 Arc::clone(&state.catalog_lock),
             )
         };
-        if let Some(host) = host {
-            return host.set_session_pinned(session_id.into(), pinned).await;
-        }
         let _catalog = catalog_lock.lock().await;
         if checkpoints
             .load(session_id)
@@ -1320,7 +1264,7 @@ impl GatewayHost {
         let mut metadata = load_session_metadata(&checkpoints)
             .await
             .map_err(internal)?;
-        metadata.entry(session_id.into()).or_default().pinned = pinned;
+        update(metadata.entry(session_id.into()).or_default());
         save_session_metadata(&checkpoints, &metadata)
             .await
             .map_err(internal)?;
@@ -1735,7 +1679,6 @@ impl GatewayHost {
             state.scratchpad.clone(),
             state.session_files.clone(),
             state.swarm.clone(),
-            Arc::clone(&state.catalog_lock),
             Arc::clone(&state.session_mutations),
             Arc::clone(&state.provider_epoch),
             Arc::clone(&state.activities),
@@ -2442,14 +2385,6 @@ fn invalid_routine(error: impl std::fmt::Display) -> Rejection {
     Rejection {
         code: "invalid_routine",
         message: error.to_string(),
-        fatal: false,
-    }
-}
-
-fn invalid_scratchpad_operation() -> Rejection {
-    Rejection {
-        code: "invalid_scratchpad",
-        message: "scratchpad operation does not match its selected management scope".into(),
         fatal: false,
     }
 }

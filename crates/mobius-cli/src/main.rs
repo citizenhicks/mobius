@@ -74,22 +74,14 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn run_interactive() -> Result<()> {
-    let (
-        mut sender,
-        mut events,
-        mut gateway,
-        mut session,
-        mut disposable_session,
-        mut local_gateway,
-        mut endpoint,
-    ) = connect(None, None).await?;
+    let (mut sender, mut events, mut gateway, mut session, mut disposable_session, mut endpoint) =
+        connect(None, None).await?;
     loop {
         let (exit, next_sender, next_events) = frontend::run(
             sender,
             events,
             &mut gateway,
             &mut session,
-            local_gateway,
             endpoint.to_string(),
         )
         .await?;
@@ -133,7 +125,6 @@ async fn run_interactive() -> Result<()> {
                     gateway,
                     session,
                     disposable_session,
-                    local_gateway,
                     endpoint,
                 ) = connect(selected, None).await?;
             }
@@ -143,7 +134,7 @@ async fn run_interactive() -> Result<()> {
 
 async fn run_task(bot_handle: &str, task_file: &Path) -> Result<()> {
     let task = std::fs::read_to_string(task_file)?;
-    let (sender, mut events, mut gateway, session, disposable_session, _, _) =
+    let (sender, mut events, mut gateway, session, disposable_session, _) =
         connect(None, Some(bot_handle)).await?;
     if gateway.models.is_empty() {
         if let Some(session_id) = disposable_session.as_deref() {
@@ -199,7 +190,6 @@ async fn connect(
     ReadyPayload,
     SessionReadyPayload,
     Option<String>,
-    bool,
     Endpoint,
 )> {
     let (sender, mut events, mut gateway, local_gateway, endpoint) = connect_gateway().await?;
@@ -254,7 +244,6 @@ async fn connect(
         gateway,
         session,
         disposable_session,
-        local_gateway,
         endpoint,
     ))
 }

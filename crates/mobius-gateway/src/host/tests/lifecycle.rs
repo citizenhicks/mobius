@@ -1,5 +1,58 @@
 use super::*;
 
+#[tokio::test]
+async fn concurrent_catalog_updates_preserve_both_fields_for_resident_and_stopped_chats() {
+    let root = tempfile::tempdir().expect("root");
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).expect("workspace");
+    let (store, config) = ConfigStore::initialize(
+        root.path().join("state"),
+        "127.0.0.1:8741".parse().expect("listen"),
+        None,
+    )
+    .expect("config");
+    let credentials =
+        Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
+    let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
+    let gateway = GatewayHost::start(store, config, credentials, bots)
+        .await
+        .expect("gateway");
+    for stopped in [false, true] {
+        let host = create_test_session(&gateway, &workspace)
+            .await
+            .expect("chat");
+        let session_id = host.session_id();
+        if stopped {
+            assert!(host.stop_if_idle().await);
+        }
+        let mut events = gateway.subscribe();
+        let (rename, pin) = tokio::join!(
+            gateway.rename_session(session_id, "  Updated title  "),
+            gateway.set_session_pinned(session_id, true),
+        );
+        rename.expect("rename");
+        pin.expect("pin");
+        let sessions = gateway.sessions().await.expect("catalog");
+        let session = sessions
+            .iter()
+            .find(|session| session.session_id == session_id)
+            .expect("session");
+        assert_eq!(session.title.as_deref(), Some("Updated title"));
+        assert!(session.pinned);
+        let mut catalog_updates = 0;
+        let mut approval_updates = 0;
+        while let Ok(frame) = events.try_recv() {
+            match frame.message {
+                ServerMessage::Sessions { .. } => catalog_updates += 1,
+                ServerMessage::BackgroundApprovals { .. } => approval_updates += 1,
+                _ => {}
+            }
+        }
+        assert!(catalog_updates >= 2);
+        assert!(approval_updates >= 2);
+    }
+}
+
 struct BlockingStateStore {
     inner: Arc<dyn CheckpointStore>,
     block_next: AtomicBool,
@@ -191,7 +244,7 @@ async fn idle_stop_waits_for_an_accepted_capability_command_to_finish() {
 }
 
 #[tokio::test]
-async fn ready_exposes_the_global_scratchpad_without_a_session() {
+async fn global_contribution_reads_and_updates_preserve_extension_references_without_a_session() {
     let root = tempfile::tempdir().expect("root");
     let listen = "127.0.0.1:8741".parse().expect("listen address");
     let (store, config) =
@@ -219,10 +272,17 @@ async fn ready_exposes_the_global_scratchpad_without_a_session() {
         contributions.last().expect("scratchpad").capability,
         "scratchpad"
     );
+    assert_eq!(
+        gateway
+            .contributions(&crate::wire::ContributionScope::Global)
+            .await
+            .expect("global contributions"),
+        contributions
+    );
 
     let refreshed = gateway
-        .submit_scratchpad(
-            &crate::wire::ScratchpadScope::Global,
+        .submit_contribution(
+            &crate::wire::ContributionScope::Global,
             Op::CapabilityCommand {
                 capability: "scratchpad".into(),
                 command: "scratchpad".into(),
@@ -233,11 +293,38 @@ async fn ready_exposes_the_global_scratchpad_without_a_session() {
         )
         .await
         .expect("refresh global scratchpad");
-    assert_eq!(refreshed.capability, "scratchpad");
+    assert_eq!(refreshed, contributions);
+
+    let updated = gateway
+        .submit_contribution(
+            &crate::wire::ContributionScope::Global,
+            Op::CapabilityCommand {
+                capability: "scratchpad".into(),
+                command: "scratchpad".into(),
+                arguments: "add".into(),
+                input: Some("Shared context".into()),
+                target: None,
+            },
+        )
+        .await
+        .expect("add global note");
+    assert_eq!(&updated[..expected.len()], expected);
+    assert!(matches!(
+        &updated.last().expect("scratchpad").widgets[0].content,
+        Some(mobius::protocol::FrontendWidgetContent::ActionList { items, .. })
+            if items[0].text == "Shared context"
+    ));
+    assert_eq!(
+        gateway
+            .contributions(&crate::wire::ContributionScope::Global)
+            .await
+            .expect("updated global contributions"),
+        updated
+    );
 
     let rejection = gateway
-        .submit_scratchpad(
-            &crate::wire::ScratchpadScope::Global,
+        .submit_contribution(
+            &crate::wire::ContributionScope::Global,
             Op::CapabilityCommand {
                 capability: "scratchpad".into(),
                 command: "scratchpad".into(),
@@ -471,12 +558,12 @@ async fn delete_sessions_remove_distinct_roots_and_collapse_duplicate_descendant
             .await
             .expect("publish artifact");
     }
-    deleted
-        .rename_session(deleted_id.clone(), "Deleted".into())
+    gateway
+        .rename_session(&deleted_id, "Deleted")
         .await
         .expect("title deleted session");
-    retained
-        .rename_session(retained_id.clone(), "Retained".into())
+    gateway
+        .rename_session(&retained_id, "Retained")
         .await
         .expect("title retained session");
     gateway

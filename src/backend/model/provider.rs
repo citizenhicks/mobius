@@ -722,6 +722,45 @@ mod tests {
     }
 
     #[test]
+    fn astra_is_available_through_openai_codex_and_custom_responses_routes() {
+        for id in ["openai_socket", "openai_codex"] {
+            let definition = provider(id).expect("provider");
+            assert_eq!(definition.default_model(), Some("gpt-5.6-sol"));
+            let astra = definition.model("gpt-6-astra").expect("Astra preset");
+            assert_eq!(astra.context_window, 1_050_000);
+            assert_eq!(astra.default_reasoning, Some("medium"));
+            assert_eq!(
+                astra
+                    .reasoning
+                    .iter()
+                    .map(|effort| effort.id)
+                    .collect::<Vec<_>>(),
+                ["low", "medium", "high", "xhigh", "max"]
+            );
+            assert!(
+                definition
+                    .build_config_is_valid("gpt-6-astra", None, Some("none"), HostedWebSearch::Off)
+                    .is_err()
+            );
+        }
+        for (id, model) in [
+            ("openrouter", "openai/gpt-6-astra"),
+            ("responses", "gpt-6-astra"),
+        ] {
+            let definition = provider(id).expect("custom provider");
+            assert!(definition.models().is_empty());
+            definition
+                .build_config_is_valid(
+                    model,
+                    definition.default_base_url(),
+                    Some("medium"),
+                    HostedWebSearch::Off,
+                )
+                .expect("custom Astra route");
+        }
+    }
+
+    #[test]
     fn credentialless_providers_build_without_a_credential() {
         let credentialless = providers()
             .iter()

@@ -53,8 +53,8 @@ async fn gateway_manages_bot_swarms_and_broadcasts_the_catalog() {
     ));
 
     let scratchpad = gateway
-        .submit_scratchpad(
-            &crate::wire::ScratchpadScope::Swarm {
+        .submit_contribution(
+            &crate::wire::ContributionScope::Swarm {
                 id: swarm_id.clone(),
             },
             Op::CapabilityCommand {
@@ -68,7 +68,7 @@ async fn gateway_manages_bot_swarms_and_broadcasts_the_catalog() {
         .await
         .expect("add swarm scratchpad note");
     assert!(matches!(
-        &scratchpad.widgets[0].content,
+        &scratchpad[0].widgets[0].content,
         Some(mobius::protocol::FrontendWidgetContent::ActionList { items, .. })
             if items[0].text == "Release target is Friday"
     ));

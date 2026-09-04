@@ -132,7 +132,7 @@ struct FrontendWidgetContentView: View {
                 )
                 .disabled(!actionsEnabled)
             }
-        case .actionList(_, let items):
+        case .actionList(_, let items, _):
             if items.isEmpty {
                 Text("Nothing here yet.")
                     .foregroundStyle(palette.muted)
@@ -263,7 +263,7 @@ private struct FrontendActionListRow: View {
         )
     }
 
-    private func activate(_ action: FrontendActionListAction) {
+    private func activate(_ action: FrontendAction) {
         guard actionsEnabled else { return }
         if action.tone == "error" {
             pendingAction = PendingAction(kind: .destructive, itemText: item.text, action: action)
@@ -307,6 +307,49 @@ private struct FrontendActionListRow: View {
     }
 }
 
+struct FrontendActionEditorSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var text = ""
+    let action: FrontendAction
+    let editor: FrontendEditor
+    let isEnabled: Bool
+    let submit: (AgentOperation) -> Void
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField(frontendPresentationText(editor.label), text: $text, axis: .vertical)
+                        .lineLimit(4...10)
+                } footer: {
+                    Text(frontendPresentationText(editor.description))
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .navigationTitle(frontendPresentationText(editor.title))
+            .toolbarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel", action: dismiss.callAsFunction)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(frontendPresentationText(editor.submitLabel)) {
+                        submit(action.op.replacingCapabilityInput(with: trimmedText))
+                        dismiss()
+                    }
+                    .disabled(trimmedText.isEmpty || !isEnabled)
+                }
+            }
+        }
+        .onAppear { text = action.op.capabilityInput ?? "" }
+        .mobiusSheet()
+    }
+
+    private var trimmedText: String {
+        text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
 private struct PendingAction {
     enum Kind: Equatable {
         case edit
@@ -315,7 +358,7 @@ private struct PendingAction {
 
     let kind: Kind
     let itemText: String
-    let action: FrontendActionListAction
+    let action: FrontendAction
 }
 
 private struct FrontendPickerOptionLabel: View {

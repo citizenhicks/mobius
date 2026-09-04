@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 use std::path::{Component, Path};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use mobius::backend::sandbox::SandboxBackend as _;
 
@@ -13,6 +13,7 @@ pub(super) const MAX_WORKSPACE_READ_BYTES: usize = 256 * 1024;
 const MAX_WORKSPACE_WRITE_BYTES: usize = 1024 * 1024;
 const MAX_WORKSPACE_FILES: usize = 20_000;
 const MAX_WORKSPACE_PATH_BYTES: usize = 1024 * 1024;
+const MAX_WORKSPACE_DEPTH: usize = 64;
 const FILE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) struct WorkspaceRead {
@@ -147,9 +148,83 @@ async fn list_inner(
             truncated: false,
         });
     }
-    Err(invalid(
-        "all-files catalog requires a Git repository so ignore rules remain authoritative",
-    ))
+    let workspace = workspace.to_path_buf();
+    tokio::task::spawn_blocking(move || non_git_workspace_files(&workspace))
+        .await
+        .map_err(error_rejection)?
+}
+
+fn non_git_workspace_files(workspace: &Path) -> std::result::Result<WorkspaceFiles, Rejection> {
+    let started = Instant::now();
+    let workspace = std::fs::canonicalize(workspace).map_err(error_rejection)?;
+    let mut directories = vec![(workspace.clone(), 0)];
+    let mut catalog = WorkspaceFiles {
+        files: Vec::new(),
+        truncated: false,
+    };
+    let mut remaining_entries = MAX_WORKSPACE_FILES;
+    let mut path_bytes = 0;
+    'walk: while let Some((directory, depth)) = directories.pop() {
+        if std::fs::canonicalize(&directory).ok().as_ref() != Some(&directory) {
+            continue;
+        }
+        let entries = match std::fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if directory == workspace => return Err(error_rejection(error)),
+            Err(_) => continue,
+        };
+        let mut entries = entries
+            .take(remaining_entries + 1)
+            .filter_map(std::result::Result::ok)
+            .collect::<Vec<_>>();
+        entries.sort_unstable_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            if started.elapsed() >= FILE_TIMEOUT {
+                return Err(timeout());
+            }
+            if remaining_entries == 0 {
+                catalog.truncated = true;
+                break 'walk;
+            }
+            remaining_entries -= 1;
+            if matches!(entry.file_name().to_str(), Some(".git" | "target")) {
+                continue;
+            }
+            let path = entry.path();
+            let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if metadata.is_dir() {
+                if depth < MAX_WORKSPACE_DEPTH {
+                    directories.push((path, depth + 1));
+                } else {
+                    catalog.truncated = true;
+                }
+            } else if metadata.is_file() {
+                let Some(relative) = path.strip_prefix(&workspace).ok().and_then(Path::to_str)
+                else {
+                    continue;
+                };
+                let relative = relative.replace(std::path::MAIN_SEPARATOR, "/");
+                if validate_relative(&relative).is_err() {
+                    continue;
+                }
+                path_bytes += relative.len();
+                if path_bytes > MAX_WORKSPACE_PATH_BYTES {
+                    catalog.truncated = true;
+                    break 'walk;
+                }
+                catalog.files.push(WorkspaceFileRecord {
+                    path: relative,
+                    size: metadata.len(),
+                });
+            }
+        }
+    }
+    catalog
+        .files
+        .sort_unstable_by(|left, right| left.path.cmp(&right.path));
+    Ok(catalog)
 }
 
 fn git_workspace_files(
@@ -420,22 +495,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn non_git_all_catalog_does_not_bypass_ignore_rules() {
+    async fn non_git_catalog_lists_files_without_following_symlinks_or_build_directories() {
         let workspace = tempfile::tempdir().expect("workspace");
-        std::fs::write(workspace.path().join(".gitignore"), b"ignored.txt\n")
-            .expect("ignore rules");
-        std::fs::write(workspace.path().join("ignored.txt"), b"ignored").expect("ignored file");
+        std::fs::write(workspace.path().join("source.txt"), b"source").expect("source");
+        std::fs::create_dir(workspace.path().join("target")).expect("build directory");
+        std::fs::write(workspace.path().join("target/artifact"), b"artifact").expect("artifact");
+        let outside = tempfile::tempdir().expect("outside");
+        std::fs::write(outside.path().join("private.txt"), b"private").expect("private");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(outside.path(), workspace.path().join("linked-directory"))
+                .expect("directory symlink");
+            std::os::unix::fs::symlink(
+                outside.path().join("private.txt"),
+                workspace.path().join("linked-file"),
+            )
+            .expect("file symlink");
+        }
         let (_state, sandbox) = sandbox(workspace.path());
 
-        let result = list(&sandbox, workspace.path(), WorkspaceFileScope::All).await;
+        let catalog = list(&sandbox, workspace.path(), WorkspaceFileScope::All)
+            .await
+            .expect("catalog");
 
-        assert!(matches!(
-            result,
-            Err(Rejection {
-                code: "invalid_workspace_file",
-                ..
-            })
-        ));
+        assert!(!catalog.truncated);
+        assert_eq!(catalog.files.len(), 1);
+        assert_eq!(
+            (catalog.files[0].path.as_str(), catalog.files[0].size),
+            ("source.txt", 6)
+        );
+        std::fs::remove_file(workspace.path().join("source.txt")).expect("remove source");
+        std::fs::write(workspace.path().join("new.txt"), b"new").expect("new file");
+        let refreshed = list(&sandbox, workspace.path(), WorkspaceFileScope::All)
+            .await
+            .expect("refreshed catalog");
+        assert_eq!(refreshed.files[0].path, "new.txt");
+        assert!(
+            list(&sandbox, workspace.path(), WorkspaceFileScope::Modified)
+                .await
+                .expect("modified catalog")
+                .files
+                .is_empty()
+        );
     }
 
     #[test]

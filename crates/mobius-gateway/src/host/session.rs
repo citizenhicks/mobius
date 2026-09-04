@@ -48,7 +48,6 @@ struct HostState {
     alive: Arc<AtomicBool>,
     terminated: Arc<AtomicBool>,
     termination: Arc<tokio::sync::Notify>,
-    catalog_lock: Arc<Mutex<()>>,
     session_mutations: Arc<RwLock<()>>,
     provider_epoch: Arc<AtomicU64>,
     activities: SessionActivities,
@@ -117,16 +116,6 @@ pub(super) enum HostCommand {
     HistoryPage {
         before_sequence: Option<u64>,
         reply: oneshot::Sender<std::result::Result<SessionHistoryPage, Rejection>>,
-    },
-    RenameSession {
-        session_id: String,
-        title: String,
-        reply: oneshot::Sender<std::result::Result<(), Rejection>>,
-    },
-    SetSessionPinned {
-        session_id: String,
-        pinned: bool,
-        reply: oneshot::Sender<std::result::Result<(), Rejection>>,
     },
     Submit {
         submission: Submission,
@@ -221,7 +210,6 @@ impl HostHandle {
         scratchpad: ScratchpadStore,
         session_files: SessionFileStore,
         swarm: Arc<SwarmStore>,
-        catalog_lock: Arc<Mutex<()>>,
         session_mutations: Arc<RwLock<()>>,
         provider_epoch: Arc<AtomicU64>,
         activities: SessionActivities,
@@ -276,7 +264,6 @@ impl HostHandle {
             alive: Arc::clone(&alive),
             terminated: Arc::clone(&terminated),
             termination: Arc::clone(&termination),
-            catalog_lock,
             session_mutations: Arc::clone(&session_mutations),
             provider_epoch,
             activities,
@@ -366,36 +353,6 @@ impl HostHandle {
         let (reply, receiver) = oneshot::channel();
         self.send(HostCommand::HistoryPage {
             before_sequence,
-            reply,
-        })
-        .await?;
-        receive(receiver).await
-    }
-
-    pub(crate) async fn rename_session(
-        &self,
-        session_id: String,
-        title: String,
-    ) -> std::result::Result<(), Rejection> {
-        let (reply, receiver) = oneshot::channel();
-        self.send(HostCommand::RenameSession {
-            session_id,
-            title,
-            reply,
-        })
-        .await?;
-        receive(receiver).await
-    }
-
-    pub(crate) async fn set_session_pinned(
-        &self,
-        session_id: String,
-        pinned: bool,
-    ) -> std::result::Result<(), Rejection> {
-        let (reply, receiver) = oneshot::channel();
-        self.send(HostCommand::SetSessionPinned {
-            session_id,
-            pinned,
             reply,
         })
         .await?;
@@ -614,15 +571,8 @@ pub(super) fn provider_refresh_matches(
                 return Ok(false);
             }
             let definition = provider(&selection.provider)?;
-            let selected_base_url = definition
-                .configurable_base_url()
-                .then(|| {
-                    selection
-                        .base_url
-                        .as_deref()
-                        .or_else(|| definition.default_base_url())
-                })
-                .flatten();
+            let selected_base_url =
+                crate::provider_catalog::selected_base_url(definition, selection);
             Ok(selected_base_url == base_url.as_deref())
         }
         ProviderRefresh::Provider(provider) => Ok(selection.provider == *provider),

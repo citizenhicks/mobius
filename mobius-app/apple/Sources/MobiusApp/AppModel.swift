@@ -21,18 +21,7 @@ final class AppModel {
     var isLoadingSshIdentities = false
     var isGeneratingSshIdentity = false
     var generatedSshIdentity: GeneratedSshIdentity?
-    private(set) var gitDiffRevision = 0
-    var gitDiff = "" {
-        didSet { gitDiffRevision &+= 1 }
-    }
-    private(set) var stagedGitDiffRevision = 0
-    var stagedGitDiff = "" {
-        didSet { stagedGitDiffRevision &+= 1 }
-    }
-    private(set) var committedGitDiffRevision = 0
-    var committedGitDiff = "" {
-        didSet { committedGitDiffRevision &+= 1 }
-    }
+    var gitDiffs: [GitDiffScope: GitDiffState] = [:]
     var sessions: [SessionRecord] = []
     var botSessions: [SessionRecord] = []
     var botSessionsBotID: String?
@@ -193,7 +182,7 @@ final class AppModel {
     var extensionCatalogError: String?
     var isLoadingExtensionCatalog = false
     var gatewayContributions: [FrontendContribution] = []
-    var swarmScratchpadContributions: [String: FrontendContribution] = [:]
+    var swarmContributions: [String: [FrontendContribution]] = [:]
     var extensionInstallSource = ""
     var selectedModelRoute = ""
     private(set) var contributionsRevision = 0
@@ -227,9 +216,6 @@ final class AppModel {
         didSet { workspaceFilesRevision &+= 1 }
     }
     var workspaceFilesTruncated = false
-    var isLoadingGitDiff = false
-    var isLoadingStagedGitDiff = false
-    var isLoadingCommittedGitDiff = false
     var isLoadingWorkspaceFiles = false
     var profile: ProfileSnapshot?
     var runStats = RunStats()
@@ -360,9 +346,6 @@ final class AppModel {
     @ObservationIgnored var submittedBotDefaultsDraft: AgentComposition?
     @ObservationIgnored var approvalRequestID: String?
     @ObservationIgnored var directoryRequestID: String?
-    @ObservationIgnored var gitDiffRequestID: String?
-    @ObservationIgnored var stagedGitDiffRequestID: String?
-    @ObservationIgnored var committedGitDiffRequestID: String?
     @ObservationIgnored var gitCredentialRequestID: String?
     @ObservationIgnored var isApprovingGitCredential = false
     @ObservationIgnored var sshIdentityRequestID: String?
@@ -1175,6 +1158,33 @@ final class AppModel {
         }
     }
 
+    func commandSuggestions(in text: String, cursorOffset: Int) -> ReferenceSuggestions? {
+        guard text.hasPrefix("/"), pendingWidgetEdit == nil else { return nil }
+        let end = text.firstIndex(where: \.isWhitespace) ?? text.endIndex
+        guard cursorOffset >= 0, cursorOffset <= text.distance(from: text.startIndex, to: end) else {
+            return nil
+        }
+        let query = text[text.index(after: text.startIndex)..<end].lowercased()
+        let matches = contributions.flatMap { contribution in
+            contribution.commands.filter { $0.name.hasPrefix(query) }.map { command in
+                MountedReference(
+                    capability: contribution.capability,
+                    reference: FrontendReference(
+                        trigger: "/",
+                        value: command.name + (command.arguments.isEmpty ? "" : " \(command.arguments)"),
+                        description: command.description
+                    ),
+                    replacement: "/\(command.name) "
+                )
+            }
+        }
+        guard !matches.isEmpty else { return nil }
+        let exact = "/\(query) "
+        let ordered = matches.filter { $0.replacement == exact }
+            + matches.filter { $0.replacement != exact }
+        return ReferenceSuggestions(source: text, range: text.startIndex..<end, matches: ordered)
+    }
+
     var extensionSkillReferences: [FrontendReference] {
         let selected = agentSnapshot?.config.extensions
             ?? botDefaultsSnapshot?.config.extensions
@@ -1308,21 +1318,19 @@ final class AppModel {
     }
     var navigationWidgets: [MountedWidget] { widgets(in: .navigation) }
     var chatMenuWidgets: [MountedWidget] { widgets(in: .chatMenu) }
-    var globalScratchpadWidget: MountedWidget? {
-        scratchpadWidget(in: gatewayContributions.first(where: {
-            $0.capability == "scratchpad"
-        }))
+    func contributions(in scope: ContributionScope) -> [FrontendContribution] {
+        switch scope {
+        case .global: gatewayContributions
+        case .swarm(let id): swarmContributions[id] ?? []
+        }
     }
 
-    func swarmScratchpadWidget(swarmID: String) -> MountedWidget? {
-        scratchpadWidget(in: swarmScratchpadContributions[swarmID])
-    }
-
-    private func scratchpadWidget(in contribution: FrontendContribution?) -> MountedWidget? {
-        guard let contribution,
-              let widget = contribution.widgets.first(where: { $0.slot == .navigation })
-        else { return nil }
-        return MountedWidget(capability: contribution.capability, widget: widget)
+    func navigationWidgets(in scope: ContributionScope) -> [MountedWidget] {
+        contributions(in: scope).flatMap { contribution in
+            contribution.widgets.filter { $0.slot == .navigation }.map {
+                MountedWidget(capability: contribution.capability, widget: $0)
+            }
+        }
     }
 
     func referenceSuggestions(in text: String, cursor: String.Index) -> ReferenceSuggestions? {

@@ -70,21 +70,11 @@ pub async fn run(
     events: GatewayEvents,
     gateway: &mut ReadyPayload,
     session: &mut SessionReadyPayload,
-    local_gateway: bool,
     gateway_endpoint: String,
 ) -> Result<(FrontendExit, GatewaySender, GatewayEvents)> {
     let workspace = session.workspace.path.clone();
     let catalog = catalog::UiCatalog::build(&session.contributions, &workspace)?;
-    tui::runtime::run(
-        sender,
-        events,
-        gateway,
-        session,
-        catalog,
-        local_gateway,
-        gateway_endpoint,
-    )
-    .await
+    tui::runtime::run(sender, events, gateway, session, catalog, gateway_endpoint).await
 }
 
 /// Why a frontend returned control to its launcher.

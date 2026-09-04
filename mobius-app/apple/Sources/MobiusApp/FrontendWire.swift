@@ -4,6 +4,12 @@ func frontendPresentationText(_ value: String) -> LocalizedStringResource {
     LocalizedStringResource(String.LocalizationValue(value))
 }
 
+func appendingBlockText(_ text: String, to previous: String) -> String {
+    let separator = !previous.isEmpty && !text.isEmpty
+        && !previous.hasSuffix("\n") && !text.hasPrefix("\n") ? "\n" : ""
+    return previous + separator + text
+}
+
 struct FrontendContribution: Decodable, Sendable {
     let capability: String
     let acceptsFileAttachments: Bool
@@ -49,6 +55,7 @@ struct FrontendCommand: Codable, Hashable, Sendable {
     let name: String
     let arguments: String
     let description: String
+    let requiresIdle: Bool
 }
 
 struct FrontendProgress: Decodable, Sendable {
@@ -66,11 +73,11 @@ struct FrontendContentBlock: Identifiable, Sendable {
 enum FrontendWidgetContent: Sendable {
     case blocks(title: String, blocks: [FrontendContentBlock])
     case picker(title: String, options: [FrontendPickerOption])
-    case actionList(title: String, items: [FrontendActionListItem])
+    case actionList(title: String, items: [FrontendActionListItem], actions: [FrontendAction] = [])
 
     var title: String {
         switch self {
-        case .blocks(let title, _), .picker(let title, _), .actionList(let title, _): title
+        case .blocks(let title, _), .picker(let title, _), .actionList(let title, _, _): title
         }
     }
 }
@@ -79,7 +86,7 @@ struct FrontendActionListItem: Identifiable, Sendable {
     let id: String
     let text: String
     let state: FrontendListItemState
-    let actions: [FrontendActionListAction]
+    let actions: [FrontendAction]
 
     init(json: JSONValue) throws {
         guard let id = json["id"]?.stringValue,
@@ -91,7 +98,7 @@ struct FrontendActionListItem: Identifiable, Sendable {
         else {
             throw GatewayWireError.invalidFrame("frontend action list item is missing a required field")
         }
-        let actions = try values.map(FrontendActionListAction.init(json:))
+        let actions = try values.map(FrontendAction.init(json:))
         guard Set(actions.map(\.id)).count == actions.count else {
             throw GatewayWireError.invalidFrame("frontend action list item has duplicate action IDs")
         }
@@ -109,12 +116,20 @@ enum FrontendListItemState: String, Equatable, Sendable {
     case completed
 }
 
-struct FrontendActionListAction: Identifiable, Sendable {
+struct FrontendEditor: Decodable, Sendable {
+    let title: String
+    let label: String
+    let description: String
+    let submitLabel: String
+}
+
+struct FrontendAction: Identifiable, Sendable {
     let id: String
     let label: String
     let symbol: String
     let tone: String
     let op: AgentOperation
+    let editor: FrontendEditor?
 
     init(json: JSONValue) throws {
         guard let id = json["id"]?.stringValue,
@@ -134,6 +149,18 @@ struct FrontendActionListAction: Identifiable, Sendable {
         self.symbol = symbol
         self.tone = tone
         self.op = try AgentOperation(json: op)
+        if let value = json["editor"], value != .null {
+            guard let title = value["title"]?.stringValue,
+                  let label = value["label"]?.stringValue,
+                  let description = value["description"]?.stringValue,
+                  let submitLabel = value["submitLabel"]?.stringValue
+            else { throw GatewayWireError.invalidFrame("frontend action has an invalid editor") }
+            self.editor = FrontendEditor(
+                title: title, label: label, description: description, submitLabel: submitLabel
+            )
+        } else {
+            self.editor = nil
+        }
     }
 }
 
@@ -230,14 +257,19 @@ extension FrontendWidget {
                 }
                 content = .picker(title: title, options: try values.map(FrontendPickerOption.init(json:)))
             case "action_list":
-                guard let values = value["items"]?.arrayValue else {
-                    throw GatewayWireError.invalidFrame("frontend widget action list items are missing")
+                guard let itemValues = value["items"]?.arrayValue,
+                      let actionValues = value["actions"]?.arrayValue else {
+                    throw GatewayWireError.invalidFrame("frontend widget action list items or actions are missing")
                 }
-                let items = try values.map(FrontendActionListItem.init(json:))
+                let items = try itemValues.map(FrontendActionListItem.init(json:))
                 guard Set(items.map(\.id)).count == items.count else {
                     throw GatewayWireError.invalidFrame("frontend widget action list has duplicate item IDs")
                 }
-                content = .actionList(title: title, items: items)
+                let actions = try actionValues.map(FrontendAction.init(json:))
+                guard Set(actions.map(\.id)).count == actions.count else {
+                    throw GatewayWireError.invalidFrame("frontend action list has duplicate action IDs")
+                }
+                content = .actionList(title: title, items: items, actions: actions)
             default:
                 throw GatewayWireError.invalidFrame("frontend widget has unknown content")
             }

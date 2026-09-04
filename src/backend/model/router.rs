@@ -10,7 +10,7 @@ use super::ModelEventSink;
 use super::ModelOutput;
 use super::ModelPricing;
 use super::ModelRequest;
-use super::PromptCacheCapability;
+use super::PromptCacheMode;
 use super::ToolDefinition;
 use super::has_prompt_cache_breakpoint;
 use super::mark_prompt_cache_breakpoint;
@@ -178,7 +178,7 @@ impl ModelRouter {
     }
 
     /// Reports prompt-cache support for one route.
-    pub fn prompt_cache_capability(&self, provider: &str) -> Result<PromptCacheCapability> {
+    pub fn prompt_cache_capability(&self, provider: &str) -> Result<PromptCacheMode> {
         Ok(self.provider(provider)?.prompt_cache_capability())
     }
 
@@ -211,7 +211,7 @@ impl ModelRouter {
         Ok(ModelStepDiagnostics {
             provider: provider.into(),
             prompt_cache: PromptCacheDiagnostics {
-                capability: capability.mode(),
+                capability,
                 context_epoch,
                 outcome: capability.outcome(usage, !rewrite_reasons.is_empty()),
                 rewrite_reasons,

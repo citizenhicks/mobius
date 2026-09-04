@@ -126,9 +126,13 @@ pub enum ClientMessage {
         session_id: String,
         submission: Submission,
     },
-    SubmitScratchpad {
+    GetContributions {
         request_id: String,
-        scope: ScratchpadScope,
+        scope: ContributionScope,
+    },
+    SubmitContribution {
+        request_id: String,
+        scope: ContributionScope,
         operation: Op,
     },
     BeginSessionFileUpload {
@@ -411,10 +415,10 @@ pub enum ServerMessage {
         request_id: String,
         payload: ReadyPayload,
     },
-    ScratchpadChanged {
+    Contributions {
         request_id: String,
-        scope: ScratchpadScope,
-        contribution: FrontendContribution,
+        scope: ContributionScope,
+        contributions: Vec<FrontendContribution>,
     },
     Accepted {
         request_id: String,

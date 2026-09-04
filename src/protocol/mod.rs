@@ -9,7 +9,7 @@ pub use self::replay::events as replay_events;
 pub(crate) use self::replay::{
     ATTACHMENT_CONTEXT_MARKER, ATTACHMENTS_FIELD, CONTEXT_COMPACTED_MARKER, INTERNAL_MESSAGE_FIELD,
     MESSAGE_METADATA_FIELD, REPLAY_REASONING_FIELD, TOOL_ERROR_FIELD, internal_message_kind,
-    is_internal_message, message_metadata, strip_attachment_references, tool_complete_boundaries,
+    is_internal_message, message_metadata, tool_complete_boundaries,
 };
 
 mod events;

@@ -598,6 +598,7 @@ impl Middleware for Subagents {
                 )
             },
             |name, arguments| match name {
+                _ if matches!(event, EventMsg::ToolCallEnd(_)) => name.into(),
                 "spawn_agent" => labeled_tool_heading(text::RENDER_AGENT, "task_name", arguments),
                 "send_message" => labeled_tool_heading(text::RENDER_MESSAGE, "target", arguments),
                 "followup_task" => {

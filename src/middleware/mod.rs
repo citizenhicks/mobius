@@ -276,6 +276,12 @@ pub trait Middleware: Send + Sync {
         Box::pin(async { Ok(()) })
     }
 
+    /// Keeps one compacted context item before it is committed or observed by hooks.
+    /// Capability-owned projections may be discarded even when a later hook stops or fails.
+    fn retain_compacted_input(&self, _item: &Value) -> bool {
+        true
+    }
+
     /// Intercepts the committed compacted context and may stop the active turn.
     fn post_compact<'a>(
         &'a self,
@@ -734,6 +740,12 @@ impl MiddlewareStack {
         Ok(context.stop_reason)
     }
 
+    pub(crate) fn retain_compacted_input(&self, input: &mut Vec<Value>) {
+        for entry in &self.entries {
+            input.retain(|item| entry.retain_compacted_input(item));
+        }
+    }
+
     pub(crate) async fn post_compact(
         &self,
         mut context: CompactContext<'_>,
@@ -880,8 +892,14 @@ fn validate_frontend(contributions: &[FrontendContribution]) -> Result<()> {
                     contribution.capability, item.id
                 )));
             }
-            if let Some(FrontendWidgetContent::ActionList { title, items }) = &item.content {
+            if let Some(FrontendWidgetContent::ActionList {
+                title,
+                items,
+                actions,
+            }) = &item.content
+            {
                 validate_action_list(title, items)?;
+                validate_actions(actions)?;
             }
         }
         for reference in &contribution.references {
@@ -923,22 +941,32 @@ fn validate_action_list(title: &str, items: &[FrontendActionListItem]) -> Result
                 item.id
             )));
         }
-        let mut action_ids = BTreeSet::new();
-        for action in &item.actions {
-            if action.id.trim().is_empty()
-                || action.label.trim().is_empty()
-                || action.symbol.as_str().trim().is_empty()
-            {
-                return Err(Error::Config(
-                    "frontend list action requires an ID, label, and symbol".into(),
-                ));
-            }
-            if !action_ids.insert(&action.id) {
-                return Err(Error::Duplicate(format!(
-                    "frontend list action `{}`",
-                    action.id
-                )));
-            }
+        validate_actions(&item.actions)?;
+    }
+    Ok(())
+}
+
+fn validate_actions(actions: &[crate::protocol::FrontendAction]) -> Result<()> {
+    let mut action_ids = BTreeSet::new();
+    for action in actions {
+        if action.id.trim().is_empty()
+            || action.label.trim().is_empty()
+            || action.symbol.as_str().trim().is_empty()
+            || action.editor.as_ref().is_some_and(|editor| {
+                editor.title.trim().is_empty()
+                    || editor.label.trim().is_empty()
+                    || editor.submit_label.trim().is_empty()
+            })
+        {
+            return Err(Error::Config(
+                "frontend list action requires an ID, label, and symbol".into(),
+            ));
+        }
+        if !action_ids.insert(&action.id) {
+            return Err(Error::Duplicate(format!(
+                "frontend list action `{}`",
+                action.id
+            )));
         }
     }
     Ok(())

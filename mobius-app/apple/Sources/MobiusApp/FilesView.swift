@@ -87,43 +87,18 @@ private struct FilesNavigationTitle: View {
 private struct ModifiedFilesDiff: View {
     @Environment(AppModel.self) private var model
 
-    @ViewBuilder
     var body: some View {
-        switch model.modifiedFilesScope {
-        case .lastTurn:
-            WorkspaceDiffView(
-                source: model.lastTurnDiff,
-                revision: model.lastTurnDiffRevision,
-                isLoading: false,
-                title: "changes from the last turn"
-            )
-            .id(ModifiedFilesScope.lastTurn)
-        case .unstaged:
-            WorkspaceDiffView(
-                source: model.gitDiff,
-                revision: model.gitDiffRevision,
-                isLoading: model.isLoadingGitDiff,
-                title: "unstaged changes"
-            )
-            .id(ModifiedFilesScope.unstaged)
-        case .staged:
-            WorkspaceDiffView(
-                source: model.stagedGitDiff,
-                revision: model.stagedGitDiffRevision,
-                isLoading: model.isLoadingStagedGitDiff,
-                title: "staged changes"
-            )
-            .id(ModifiedFilesScope.staged)
-        case .committed:
-            WorkspaceDiffView(
-                source: model.committedGitDiff,
-                revision: model.committedGitDiffRevision,
-                isLoading: model.isLoadingCommittedGitDiff,
-                title: "last commit"
-            )
-            .id(ModifiedFilesScope.committed)
-        }
+        let scope = model.modifiedFilesScope
+        let diff = scope.gitScope.flatMap { model.gitDiffs[$0] } ?? GitDiffState()
+        WorkspaceDiffView(
+            source: scope == .lastTurn ? model.lastTurnDiff : diff.text,
+            revision: scope == .lastTurn ? model.lastTurnDiffRevision : diff.revision,
+            isLoading: diff.isLoading,
+            title: scope.diffTitle
+        )
+        .id(scope)
     }
+
 }
 
 private struct ModifiedFilesScopePicker: View {
@@ -191,6 +166,15 @@ private extension FilesInspectorTab {
 }
 
 private extension ModifiedFilesScope {
+    var diffTitle: LocalizedStringResource {
+        switch self {
+        case .lastTurn: "changes from the last turn"
+        case .unstaged: "unstaged changes"
+        case .staged: "staged changes"
+        case .committed: "last commit"
+        }
+    }
+
     var title: LocalizedStringResource {
         switch self {
         case .lastTurn: "Last turn"

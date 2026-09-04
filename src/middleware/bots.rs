@@ -218,6 +218,7 @@ impl Middleware for Bots {
             },
             |name, arguments| super::tools::ToolHeading {
                 title: match name {
+                    _ if arguments.is_null() => name,
                     "create_routine" => "Create routine",
                     "swarm_roster" => "Swarm roster",
                     "swarm_read" => "Read Swarm Chat",

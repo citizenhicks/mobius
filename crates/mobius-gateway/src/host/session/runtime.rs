@@ -183,22 +183,6 @@ impl HostState {
             } => {
                 let _ = reply.send(self.history_page_value(before_sequence).await);
             }
-            HostCommand::RenameSession {
-                session_id,
-                title,
-                reply,
-            } => {
-                let result = self.rename_session(&session_id, &title).await;
-                let _ = reply.send(result);
-            }
-            HostCommand::SetSessionPinned {
-                session_id,
-                pinned,
-                reply,
-            } => {
-                let result = self.set_session_pinned(&session_id, pinned).await;
-                let _ = reply.send(result);
-            }
             HostCommand::Submit { submission, reply } => {
                 let result = async {
                     let _mutation = self.begin_session_mutation()?;
@@ -424,61 +408,6 @@ impl HostState {
             .filter(|frame| event_sequence(frame).is_some_and(|sequence| sequence > last_sequence))
             .cloned()
             .collect())
-    }
-
-    pub(super) async fn rename_session(
-        &mut self,
-        session_id: &str,
-        title: &str,
-    ) -> std::result::Result<(), Rejection> {
-        self.require_session(session_id).await?;
-        let title = validate_session_title(title)?;
-        let _catalog = self.catalog_lock.lock().await;
-        let mut metadata = load_session_metadata(&self.checkpoints)
-            .await
-            .map_err(internal)?;
-        metadata.entry(session_id.into()).or_default().title = Some(title.into());
-        save_session_metadata(&self.checkpoints, &metadata)
-            .await
-            .map_err(internal)?;
-        self.broadcast_sessions().await
-    }
-
-    pub(super) async fn set_session_pinned(
-        &mut self,
-        session_id: &str,
-        pinned: bool,
-    ) -> std::result::Result<(), Rejection> {
-        self.require_session(session_id).await?;
-        let _catalog = self.catalog_lock.lock().await;
-        let mut metadata = load_session_metadata(&self.checkpoints)
-            .await
-            .map_err(internal)?;
-        metadata.entry(session_id.into()).or_default().pinned = pinned;
-        save_session_metadata(&self.checkpoints, &metadata)
-            .await
-            .map_err(internal)?;
-        self.broadcast_sessions().await
-    }
-
-    pub(super) async fn require_session(
-        &self,
-        session_id: &str,
-    ) -> std::result::Result<(), Rejection> {
-        if self
-            .checkpoints
-            .load(session_id)
-            .await
-            .map_err(internal)?
-            .is_none()
-        {
-            return Err(Rejection {
-                code: "unknown_session",
-                message: "the requested session does not exist".into(),
-                fatal: false,
-            });
-        }
-        Ok(())
     }
 
     pub(super) async fn run_routine(

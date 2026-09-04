@@ -177,23 +177,7 @@ pub struct PromptCacheIdentity<'a> {
     pub context_epoch: u64,
 }
 
-/// Prompt-cache behavior advertised by a model provider.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PromptCacheCapability {
-    Unsupported,
-    Implicit,
-    Explicit,
-}
-
-impl PromptCacheCapability {
-    fn mode(self) -> PromptCacheMode {
-        match self {
-            Self::Unsupported => PromptCacheMode::Unsupported,
-            Self::Implicit => PromptCacheMode::Implicit,
-            Self::Explicit => PromptCacheMode::Explicit,
-        }
-    }
-
+impl PromptCacheMode {
     fn outcome(self, usage: &TokenUsage, context_rewritten: bool) -> PromptCacheOutcome {
         if self == Self::Unsupported {
             PromptCacheOutcome::Unsupported
@@ -731,8 +715,8 @@ pub trait Model: Send + Sync {
     }
 
     /// Reports the provider's prompt-cache mode without exposing transport details.
-    fn prompt_cache_capability(&self) -> PromptCacheCapability {
-        PromptCacheCapability::Unsupported
+    fn prompt_cache_capability(&self) -> PromptCacheMode {
+        PromptCacheMode::Unsupported
     }
 
     /// Reports how this route makes deferred tool schemas callable.

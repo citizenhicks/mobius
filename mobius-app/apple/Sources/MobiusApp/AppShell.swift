@@ -302,7 +302,7 @@ struct AppShell: View {
         case .providers: ProvidersView()
         case .extensions: ExtensionsView()
         case .bots: BotsView()
-        case .scratchpad: ScratchpadView()
+        case .globalContributions: GlobalContributionsView()
         case .profile: ProfileView()
         case .contribution(let id):
             if let widget = model.navigationWidgets.first(where: { $0.id == id }) {
@@ -342,8 +342,8 @@ struct AppShell: View {
             MobiusTitleText(title: "Extensions")
         case .bots:
             MobiusTitleText(title: "Bots")
-        case .scratchpad:
-            if let widget = model.globalScratchpadWidget {
+        case .globalContributions:
+            if let widget = model.navigationWidgets(in: .global).first {
                 MobiusTitleText(title: frontendPresentationText(widget.title))
             } else {
                 MobiusTitleText(title: "Scratchpad")

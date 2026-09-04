@@ -256,11 +256,13 @@ impl HostState {
             .load(&self.running.session_id)
             .await?
             .ok_or_else(|| Error::Config("the running session has no checkpoint".into()))?;
-        let mut run_stats = completed_run_stats(&checkpoint.execution_stats);
-        run_stats.active = checkpoint
-            .active_execution
-            .as_ref()
-            .map(|active| active_run_summary(&checkpoint.session_id, active));
+        let run_stats = RunStats {
+            completed: checkpoint.execution_stats,
+            active: checkpoint
+                .active_execution
+                .as_ref()
+                .map(|active| active_run_summary(&checkpoint.session_id, active)),
+        };
         let context_limit_tokens = match self.running.session.model.model_context_window {
             Some(context_window) if self.spec.agent.config.middleware.enabled("compaction") => {
                 Some(
@@ -362,7 +364,7 @@ impl HostState {
             EventMsg::Error(error) if current.state == SessionActivityState::Idle => {
                 self.turn_error = None;
                 Some(SessionActivity {
-                    last_outcome: Some(SessionOutcome::Failed),
+                    last_outcome: Some(ExecutionOutcome::Failed),
                     message: Some(error.message.clone()),
                     ..SessionActivity::default()
                 })
@@ -379,9 +381,9 @@ impl HostState {
                 let error = self.turn_error.take();
                 Some(SessionActivity {
                     last_outcome: Some(if error.is_some() {
-                        SessionOutcome::Failed
+                        ExecutionOutcome::Failed
                     } else {
-                        SessionOutcome::Aborted
+                        ExecutionOutcome::Aborted
                     }),
                     message: Some(error.unwrap_or_else(|| turn.reason.clone())),
                     ..SessionActivity::default()
@@ -413,7 +415,7 @@ impl HostState {
             return Ok(());
         }
         self.set_activity(SessionActivity {
-            last_outcome: Some(SessionOutcome::Failed),
+            last_outcome: Some(ExecutionOutcome::Failed),
             message: Some(message.into()),
             ..SessionActivity::default()
         })?;
@@ -468,9 +470,9 @@ fn completed_activity(error: Option<String>, final_answer: Option<&str>) -> Sess
     let failed = error.is_some();
     SessionActivity {
         last_outcome: Some(if failed {
-            SessionOutcome::Failed
+            ExecutionOutcome::Failed
         } else {
-            SessionOutcome::Completed
+            ExecutionOutcome::Completed
         }),
         message: error.or_else(|| final_answer.map(bounded_activity_message)),
         ..SessionActivity::default()
@@ -495,11 +497,11 @@ mod tests {
     #[test]
     fn completed_activity_uses_the_bounded_final_answer_without_masking_failures() {
         let completed = completed_activity(None, Some(&"é".repeat(300)));
-        assert_eq!(completed.last_outcome, Some(SessionOutcome::Completed));
+        assert_eq!(completed.last_outcome, Some(ExecutionOutcome::Completed));
         assert!(completed.message.expect("final answer").len() <= MAX_ACTIVITY_MESSAGE_BYTES);
 
         let failed = completed_activity(Some("model failed".into()), Some("stale answer"));
-        assert_eq!(failed.last_outcome, Some(SessionOutcome::Failed));
+        assert_eq!(failed.last_outcome, Some(ExecutionOutcome::Failed));
         assert_eq!(failed.message.as_deref(), Some("model failed"));
     }
 }

@@ -6,7 +6,9 @@ use uuid::Uuid;
 
 use crate::Error;
 use crate::config::GatewayConfig;
-use crate::provider_catalog::{configured_model_choices, credential_is_configured};
+use crate::provider_catalog::{
+    configured_model_choices, credential_is_configured, selected_base_url,
+};
 use crate::wire::{
     AgentComposition, BotRecord, ProviderConfig, ProviderEndpointAuth, ProviderTint, ReadyPayload,
     ServerFrame, ServerMessage,
@@ -77,15 +79,7 @@ impl GatewayHost {
                 .configured_providers
                 .get(&instance)
                 .filter(|configured| {
-                    let configured_base_url = if definition.configurable_base_url() {
-                        configured
-                            .selection
-                            .base_url
-                            .as_deref()
-                            .or_else(|| definition.default_base_url())
-                    } else {
-                        None
-                    };
+                    let configured_base_url = selected_base_url(definition, &configured.selection);
                     configured.selection.provider == provider_id.as_str()
                         && configured.selection.endpoint_auth
                             == ProviderEndpointAuth::Credentialless

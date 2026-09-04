@@ -9,7 +9,7 @@ enum AppDestination: Hashable {
     case providers
     case extensions
     case bots
-    case scratchpad
+    case globalContributions
     case profile
     case contribution(String)
 
@@ -21,7 +21,7 @@ enum AppDestination: Hashable {
         case .providers: .plugsConnected
         case .extensions: .squaresFour
         case .bots: .aiScan
-        case .scratchpad: .brain
+        case .globalContributions: .brain
         case .profile: .gear
         case .contribution: .squaresFour
         }
@@ -458,13 +458,24 @@ enum FilesInspectorTab: String, CaseIterable, Identifiable {
     var id: Self { self }
 }
 
-enum ModifiedFilesScope: CaseIterable, Identifiable {
+struct GitDiffState {
+    var text = "" {
+        didSet { revision &+= 1 }
+    }
+    private(set) var revision = 0
+    var requestID: String?
+    var isLoading: Bool { requestID != nil }
+}
+
+enum ModifiedFilesScope: String, CaseIterable, Identifiable {
     case lastTurn
     case unstaged
     case staged
     case committed
 
     var id: Self { self }
+
+    var gitScope: GitDiffScope? { GitDiffScope(rawValue: rawValue) }
 }
 
 extension SessionRecord {

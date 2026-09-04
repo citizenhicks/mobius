@@ -770,7 +770,7 @@ extension AppModelTests {
         model.handle(.agentEvent(sessionID: "chat-1", record: toolEnd))
         model.handle(.agentEvent(sessionID: "chat-1", record: failed))
         model.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
-        XCTAssertEqual(model.transcript.map(\.text), ["Output"])
+        XCTAssertEqual(model.transcript.map(\.text), ["\nOutput"])
 
         var requestCount = await recorder.requestCount()
         model.loadEarlierHistory()
@@ -795,7 +795,7 @@ extension AppModelTests {
             records: [partial],
             nextBeforeSequence: 6
         ))
-        XCTAssertEqual(model.transcript.map(\.text), ["Partial reasoning", "Output"])
+        XCTAssertEqual(model.transcript.map(\.text), ["Partial reasoning", "\nOutput"])
         XCTAssertFalse(try XCTUnwrap(model.transcript.first).pending)
 
         requestCount = await recorder.requestCount()

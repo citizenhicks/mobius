@@ -653,7 +653,7 @@ fn hash_field(hasher: &mut Sha256, value: &[u8]) {
     hasher.update(value);
 }
 
-fn loaded_tools(
+pub(super) fn loaded_tools(
     input: &[Value],
     catalog_revision: &str,
     searchable: &BTreeSet<String>,
@@ -1032,6 +1032,14 @@ fn capped(output: &str, limit: usize) -> String {
     )
 }
 
+fn formatted_tool_text(text: &str) -> String {
+    serde_json::from_str::<Value>(text)
+        .ok()
+        .filter(|value| value.is_object() || value.is_array())
+        .and_then(|value| serde_json::to_string_pretty(&value).ok())
+        .unwrap_or_else(|| text.to_owned())
+}
+
 fn compact_output(output: &str) -> String {
     let total_lines = output.lines().count();
     if output.len() <= MAX_TOOL_UI_BYTES && total_lines <= MAX_TOOL_UI_LINES {
@@ -1190,7 +1198,7 @@ pub(crate) fn render_tool_event(
                 state: FrontendBlockState::Pending,
                 role: FrontendBlockRole::Tool,
                 title: heading.title,
-                text: heading.detail,
+                text: formatted_tool_text(&heading.detail),
                 symbol: None,
                 files: Vec::new(),
                 format: FrontendBlockFormat::PlainText,
@@ -1198,14 +1206,14 @@ pub(crate) fn render_tool_event(
             })
         }
         EventMsg::ToolCallEnd(result) if owns(&result.name) => {
-            let output = compact_output(&result.output);
+            let output = formatted_tool_text(&compact_output(&result.output));
             Some(FrontendBlock {
                 id: Some(format!("{}/{}", result.turn_id, result.call_id)),
                 group: None,
                 update: FrontendBlockUpdate::Append,
                 state: FrontendBlockState::Complete,
                 role: FrontendBlockRole::Tool,
-                title: tool_heading(&result.name, &Value::Null).title,
+                title: heading(&result.name, &Value::Null).title,
                 text: output,
                 symbol: None,
                 files: Vec::new(),

@@ -1,9 +1,6 @@
 use std::collections::BTreeSet;
-use std::io;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::OnceLock;
 
 use mobius::Error;
 use mobius::Result;
@@ -15,9 +12,6 @@ use super::setup::SetupMode;
 
 const COMMAND_PREFIX: char = '/';
 const WORKSPACE_REFERENCE_TRIGGER: char = '@';
-const MAX_FILES: usize = 20_000;
-const MAX_DEPTH: usize = 64;
-const MAX_PATH_BYTES: usize = 4_096;
 const MAX_MATCHES: usize = 8;
 
 pub(crate) struct UiCatalog {
@@ -27,7 +21,7 @@ pub(crate) struct UiCatalog {
     widgets: Vec<(String, FrontendWidget)>,
     accepts_file_attachments: bool,
     workspace: PathBuf,
-    workspace_references: Arc<OnceLock<Vec<UiReference>>>,
+    workspace_references: Vec<UiReference>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -150,33 +144,20 @@ impl UiCatalog {
                 .iter()
                 .any(|contribution| contribution.accepts_file_attachments),
             workspace: workspace.to_path_buf(),
-            workspace_references: Arc::new(OnceLock::new()),
+            workspace_references: Vec::new(),
         })
     }
 
-    pub(crate) fn start_workspace_inventory(
-        &self,
-        local_gateway: bool,
-    ) -> tokio::task::JoinHandle<()> {
-        let workspace = self.workspace.clone();
-        let references = Arc::clone(&self.workspace_references);
-        tokio::task::spawn_blocking(move || {
-            let paths = if local_gateway {
-                workspace_inventory(&workspace).unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-            let items = paths
-                .into_iter()
-                .map(|path| UiReference {
-                    trigger: WORKSPACE_REFERENCE_TRIGGER,
-                    replacement: workspace_replacement(&path),
-                    value: path,
-                    description: "file".into(),
-                })
-                .collect();
-            let _ = references.set(items);
-        })
+    pub(crate) fn set_workspace_paths(&mut self, paths: impl IntoIterator<Item = String>) {
+        self.workspace_references = paths
+            .into_iter()
+            .map(|path| UiReference {
+                trigger: WORKSPACE_REFERENCE_TRIGGER,
+                replacement: workspace_replacement(&path),
+                value: path,
+                description: "file".into(),
+            })
+            .collect();
     }
 
     pub(crate) fn widgets(&self) -> impl Iterator<Item = (&str, &FrontendWidget)> {
@@ -221,7 +202,7 @@ impl UiCatalog {
 
     pub(crate) fn reference_suggestions(&self, trigger: char, query: &str) -> Vec<MenuItem> {
         let workspace: &[UiReference] = if trigger == WORKSPACE_REFERENCE_TRIGGER {
-            self.workspace_references.get().map_or(&[], Vec::as_slice)
+            &self.workspace_references
         } else {
             &[]
         };
@@ -514,56 +495,6 @@ fn workspace_replacement(path: &str) -> String {
     }
 }
 
-fn workspace_inventory(root: &Path) -> io::Result<Vec<String>> {
-    let root = std::fs::canonicalize(root)?;
-    let mut files = Vec::new();
-    walk(&root, &root, 0, &mut files)?;
-    files.sort_unstable();
-    Ok(files)
-}
-
-fn walk(root: &Path, directory: &Path, depth: usize, files: &mut Vec<String>) -> io::Result<()> {
-    let mut entries = std::fs::read_dir(directory)?
-        .filter_map(std::result::Result::ok)
-        .collect::<Vec<_>>();
-    entries.sort_unstable_by_key(std::fs::DirEntry::file_name);
-
-    for entry in entries {
-        if files.len() >= MAX_FILES {
-            break;
-        }
-        if matches!(entry.file_name().to_str(), Some(".git" | "target")) {
-            continue;
-        }
-        let Ok(kind) = entry.file_type() else {
-            continue;
-        };
-        let path = entry.path();
-        if kind.is_symlink() {
-            continue;
-        }
-        if kind.is_dir() {
-            if depth < MAX_DEPTH {
-                let _ = walk(root, &path, depth + 1, files);
-            }
-        } else if kind.is_file()
-            && let Ok(relative) = path.strip_prefix(root)
-            && let Some(path) = slash_path(relative)
-            && path.len() <= MAX_PATH_BYTES
-        {
-            files.push(path);
-        }
-    }
-    Ok(())
-}
-
-fn slash_path(path: &Path) -> Option<String> {
-    path.components()
-        .map(|component| component.as_os_str().to_str())
-        .collect::<Option<Vec<_>>>()
-        .map(|parts| parts.join("/"))
-}
-
 fn score(value: &str, query: &str) -> Option<(u8, usize, usize)> {
     let value = value.to_lowercase();
     let name = value.rsplit('/').next().unwrap_or(&value);
@@ -746,14 +677,9 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn merges_middleware_provider_and_workspace_contributions() {
+    #[test]
+    fn merges_middleware_provider_and_workspace_contributions() {
         let workspace = tempfile::tempdir().expect("workspace");
-        std::fs::write(workspace.path().join("source file.rs"), "").expect("workspace file");
-        std::fs::create_dir(workspace.path().join(".git")).expect("git directory");
-        std::fs::create_dir(workspace.path().join("target")).expect("target directory");
-        std::fs::write(workspace.path().join(".git/config"), "").expect("git file");
-        std::fs::write(workspace.path().join("target/artifact"), "").expect("artifact");
         let mut inspect = contribution("inspect");
         inspect.references.push(FrontendReference {
             trigger: '@',
@@ -761,12 +687,9 @@ mod tests {
             description: "middleware reference".into(),
         });
 
-        let catalog =
+        let mut catalog =
             UiCatalog::build(&[inspect, contribution("audit")], workspace.path()).expect("catalog");
-        catalog
-            .start_workspace_inventory(true)
-            .await
-            .expect("workspace inventory");
+        catalog.set_workspace_paths(["source file.rs".into()]);
         let commands = catalog.menu();
         let references = catalog.reference_suggestions('@', "");
 
@@ -785,5 +708,8 @@ mod tests {
                     .any(|item| item.value.contains("artifact") || item.value.contains(".git"))
         );
         assert_eq!(catalog.reference_triggers().collect::<Vec<_>>(), ['@']);
+        catalog.set_workspace_paths(["new.rs".into()]);
+        assert!(catalog.reference_suggestions('@', "source").is_empty());
+        assert_eq!(catalog.reference_suggestions('@', "new")[0].value, "new.rs");
     }
 }

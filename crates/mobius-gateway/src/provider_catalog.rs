@@ -19,6 +19,21 @@ pub(crate) fn provider_statuses() -> Vec<ProviderStatus> {
     providers().iter().map(provider_status).collect()
 }
 
+pub(crate) fn selected_base_url<'a>(
+    definition: &ProviderDefinition,
+    selection: &'a ProviderConfig,
+) -> Option<&'a str> {
+    definition
+        .configurable_base_url()
+        .then(|| {
+            selection
+                .base_url
+                .as_deref()
+                .or_else(|| definition.default_base_url())
+        })
+        .flatten()
+}
+
 pub(crate) fn provider_instances(
     gateway: &GatewayConfig,
     store: &ConfigStore,
@@ -29,15 +44,7 @@ pub(crate) fn provider_instances(
         .values()
         .map(|configured| {
             let definition = provider(&configured.selection.provider)?;
-            let base_url = if definition.configurable_base_url() {
-                configured
-                    .selection
-                    .base_url
-                    .as_deref()
-                    .or_else(|| definition.default_base_url())
-            } else {
-                None
-            };
+            let base_url = selected_base_url(definition, &configured.selection);
             Ok(ProviderInstance {
                 label: configured.label.clone(),
                 tint: configured.tint,
@@ -201,14 +208,7 @@ pub(crate) fn credential_is_configured(
         definition.validate_credentialless_endpoint(selection.base_url.as_deref())?;
         return Ok(true);
     }
-    let base_url = if definition.configurable_base_url() {
-        selection
-            .base_url
-            .as_deref()
-            .or_else(|| definition.default_base_url())
-    } else {
-        None
-    };
+    let base_url = selected_base_url(definition, selection);
     match definition.auth() {
         ProviderAuth::ApiKey(default_env) => {
             if credentials
@@ -290,6 +290,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn selected_endpoint_uses_explicit_then_default_urls_only_for_configurable_providers() {
+        for (provider_id, explicit, expected) in [
+            ("openrouter", None, Some("https://openrouter.ai/api/v1")),
+            (
+                "openrouter",
+                Some("https://custom.example/v1"),
+                Some("https://custom.example/v1"),
+            ),
+            ("openai_codex", None, None),
+            ("openai_codex", Some("https://custom.example/v1"), None),
+        ] {
+            let mut selection = crate::wire::AgentComposition::default().provider;
+            selection.provider = provider_id.into();
+            selection.base_url = explicit.map(str::to_owned);
+            assert_eq!(
+                selected_base_url(provider(provider_id).expect("provider"), &selection),
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn provider_status_uses_manifest_defaults() {
         let status = provider_status(provider("openai_socket").expect("provider"));
 
@@ -365,6 +387,44 @@ mod tests {
             openrouter.tool_discovery("openai/gpt-5.6-luna", Some("https://proxy.example/v1")),
             ToolDiscoveryMode::Rebuild
         );
+    }
+
+    #[test]
+    fn custom_astra_model_ids_remain_available_in_configured_catalogs() {
+        for (id, model) in [
+            ("openrouter", "openai/gpt-6-astra"),
+            ("responses", "gpt-6-astra"),
+        ] {
+            let definition = provider(id).expect("provider");
+            let mut selection = crate::wire::AgentComposition::default().provider;
+            selection.instance = id.into();
+            selection.provider = id.into();
+            selection.model = model.into();
+            selection.base_url = definition.default_base_url().map(str::to_owned);
+            selection.reasoning_effort = Some("medium".into());
+            let config = GatewayConfig::new("127.0.0.1:8741".parse().expect("listen"), None)
+                .expect("config")
+                .registering_provider(
+                    selection,
+                    id.into(),
+                    Default::default(),
+                    vec![model.into(), "custom-model".into()],
+                    vec!["medium".into(), "max".into()],
+                )
+                .expect("register custom catalog");
+            let configured = &config.configured_providers[id];
+            let routes = catalog_routes(definition, configured, &configured.selection);
+            assert!(
+                routes
+                    .iter()
+                    .any(|route| route.choice.route == format!("{id}::{model}::max"))
+            );
+            assert!(
+                routes
+                    .iter()
+                    .any(|route| route.choice.model == "custom-model")
+            );
+        }
     }
 
     #[test]

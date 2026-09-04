@@ -17,8 +17,8 @@ impl Model for DefaultCapabilities {
 }
 
 impl Model for ObservedCapabilities {
-    fn prompt_cache_capability(&self) -> PromptCacheCapability {
-        PromptCacheCapability::Explicit
+    fn prompt_cache_capability(&self) -> PromptCacheMode {
+        PromptCacheMode::Explicit
     }
 
     fn pricing(&self) -> Option<ModelPricing> {

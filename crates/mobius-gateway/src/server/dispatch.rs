@@ -144,11 +144,20 @@ pub(super) async fn handle_message(
             session_id,
             submission,
         } => return submit(writer, &connection, session_id, submission).await,
-        ClientMessage::SubmitScratchpad {
+        ClientMessage::GetContributions { request_id, scope } => {
+            return contribution_response(
+                writer,
+                request_id,
+                scope.clone(),
+                gateway.contributions(&scope).await,
+            )
+            .await;
+        }
+        ClientMessage::SubmitContribution {
             request_id,
             scope,
             operation,
-        } => return submit_scratchpad(writer, request_id, scope, operation, gateway).await,
+        } => return submit_contribution(writer, request_id, scope, operation, gateway).await,
         ClientMessage::BeginSessionFileUpload {
             request_id,
             session_id,
@@ -1006,21 +1015,31 @@ async fn submit(
     write_result(writer, request_id, host.submit(submission).await).await
 }
 
-async fn submit_scratchpad(
+async fn submit_contribution(
     writer: &mut (impl AsyncWrite + Unpin),
     request_id: String,
-    scope: crate::wire::ScratchpadScope,
+    scope: crate::wire::ContributionScope,
     operation: Op,
     gateway: &GatewayHost,
 ) -> Result<()> {
-    match gateway.submit_scratchpad(&scope, operation).await {
-        Ok(contribution) => {
+    let result = gateway.submit_contribution(&scope, operation).await;
+    contribution_response(writer, request_id, scope, result).await
+}
+
+async fn contribution_response(
+    writer: &mut (impl AsyncWrite + Unpin),
+    request_id: String,
+    scope: crate::wire::ContributionScope,
+    result: std::result::Result<Vec<mobius::protocol::FrontendContribution>, Rejection>,
+) -> Result<()> {
+    match result {
+        Ok(contributions) => {
             write_frame(
                 writer,
-                &ServerFrame::new(ServerMessage::ScratchpadChanged {
+                &ServerFrame::new(ServerMessage::Contributions {
                     request_id,
                     scope,
-                    contribution,
+                    contributions,
                 }),
             )
             .await

@@ -29,12 +29,7 @@ extension AppModel {
         activeSessionFileUpload = nil
         sessionFilesRequestID = nil
         isLoadingSessionFiles = false
-        gitDiffRequestID = nil
-        isLoadingGitDiff = false
-        stagedGitDiffRequestID = nil
-        isLoadingStagedGitDiff = false
-        committedGitDiffRequestID = nil
-        isLoadingCommittedGitDiff = false
+        for scope in GitDiffScope.allCases { gitDiffs[scope]?.requestID = nil }
         cancelExtensionAndCredentialRequests()
         workspaceFilesRequestID = nil
         workspaceFileWriteRequestID = nil
@@ -162,12 +157,7 @@ extension AppModel {
         directoryRequestID = nil
         isLoadingDirectories = false
         if preservingSession {
-            gitDiffRequestID = nil
-            isLoadingGitDiff = false
-            stagedGitDiffRequestID = nil
-            isLoadingStagedGitDiff = false
-            committedGitDiffRequestID = nil
-            isLoadingCommittedGitDiff = false
+            for scope in GitDiffScope.allCases { gitDiffs[scope]?.requestID = nil }
             workspaceFilesRequestID = nil
             isLoadingWorkspaceFiles = false
             sessionFilesRequestID = nil
@@ -201,7 +191,7 @@ extension AppModel {
             middlewareFeatures = []
             extensions = []
             gatewayContributions = []
-            swarmScratchpadContributions = [:]
+            swarmContributions = [:]
             providerStatuses = []
             providerInstances = []
             sessionFileLimits = nil
@@ -260,15 +250,10 @@ extension AppModel {
         messageNavigationRequest = nil
         workspace = nil
         gitStatus = nil
-        gitDiff = ""
-        gitDiffRequestID = nil
-        isLoadingGitDiff = false
-        stagedGitDiff = ""
-        stagedGitDiffRequestID = nil
-        isLoadingStagedGitDiff = false
-        committedGitDiff = ""
-        committedGitDiffRequestID = nil
-        isLoadingCommittedGitDiff = false
+        for scope in GitDiffScope.allCases {
+            gitDiffs[scope, default: GitDiffState()].text = ""
+            gitDiffs[scope]?.requestID = nil
+        }
         workspaceFiles = []
         workspaceFilesTruncated = false
         workspaceFilesRequestID = nil

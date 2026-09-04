@@ -752,49 +752,20 @@ extension AppModel {
     func refreshWorkspaceChanges() {
         refreshGitDiff()
         if showsInspector, filesInspectorTab == .modified {
-            switch modifiedFilesScope {
-            case .lastTurn: break
-            case .unstaged: break
-            case .staged: refreshStagedGitDiff()
-            case .committed: refreshCommittedGitDiff()
+            if let scope = modifiedFilesScope.gitScope, scope != .unstaged {
+                refreshGitDiff(scope)
             }
         }
         refreshWorkspaceFiles()
     }
 
-    func refreshGitDiff() {
+    func refreshGitDiff(_ scope: GitDiffScope = .unstaged) {
         guard connectionState.isReady, let sessionID = selectedSessionID else { return }
         let id = requestID("git-diff")
-        gitDiffRequestID = id
-        isLoadingGitDiff = true
-        transmit(.getGitDiff(requestID: id, sessionID: sessionID, scope: .unstaged)) { [weak self] _ in
-            guard self?.gitDiffRequestID == id else { return }
-            self?.gitDiffRequestID = nil
-            self?.isLoadingGitDiff = false
-        }
-    }
-
-    func refreshStagedGitDiff() {
-        guard connectionState.isReady, let sessionID = selectedSessionID else { return }
-        let id = requestID("staged-git-diff")
-        stagedGitDiffRequestID = id
-        isLoadingStagedGitDiff = true
-        transmit(.getGitDiff(requestID: id, sessionID: sessionID, scope: .staged)) { [weak self] _ in
-            guard self?.stagedGitDiffRequestID == id else { return }
-            self?.stagedGitDiffRequestID = nil
-            self?.isLoadingStagedGitDiff = false
-        }
-    }
-
-    func refreshCommittedGitDiff() {
-        guard connectionState.isReady, let sessionID = selectedSessionID else { return }
-        let id = requestID("committed-git-diff")
-        committedGitDiffRequestID = id
-        isLoadingCommittedGitDiff = true
-        transmit(.getGitDiff(requestID: id, sessionID: sessionID, scope: .committed)) { [weak self] _ in
-            guard self?.committedGitDiffRequestID == id else { return }
-            self?.committedGitDiffRequestID = nil
-            self?.isLoadingCommittedGitDiff = false
+        gitDiffs[scope, default: GitDiffState()].requestID = id
+        transmit(.getGitDiff(requestID: id, sessionID: sessionID, scope: scope)) { [weak self] _ in
+            guard self?.gitDiffs[scope]?.requestID == id else { return }
+            self?.gitDiffs[scope]?.requestID = nil
         }
     }
 
@@ -1176,6 +1147,9 @@ extension AppModel {
             showToast("Messages are limited to 1 MiB.", tone: .error)
             return false
         }
+        if pendingWidgetEdit == nil, text.hasPrefix("/") {
+            return sendComposerCommand(text)
+        }
         if activeTurnID != nil, !attachments.isEmpty {
             showToast("Attachments can be sent with a new turn.", tone: .warning)
             return false
@@ -1261,6 +1235,44 @@ extension AppModel {
         }
         if let stashedText, !stashedText.isEmpty {
             composer = stashedText
+        }
+        return true
+    }
+
+    private func sendComposerCommand(_ text: String) -> Bool {
+        let parts = text.dropFirst().split(maxSplits: 1, whereSeparator: \.isWhitespace)
+        guard let name = parts.first, !name.isEmpty else { return false }
+        guard let contribution = contributions.first(where: {
+            $0.commands.contains { $0.name == name }
+        }), let command = contribution.commands.first(where: { $0.name == name }) else {
+            showToast("Unknown command /\(name).", tone: .warning)
+            return false
+        }
+        guard !command.requiresIdle || activeTurnID == nil else {
+            showToast("/\(name) is available when the agent is idle.", tone: .warning)
+            return false
+        }
+        guard composerAttachments.isEmpty, composerReply == nil else {
+            showToast("Send attachments and replies as a message before using a command.", tone: .warning)
+            return false
+        }
+        guard let sessionID = selectedSessionID else { return false }
+        let id = requestID("command")
+        pendingDrafts[id] = PendingComposerDraft(text: composer, attachments: [])
+        composer = ""
+        dismissComposerFocus()
+        transmit(.submit(sessionID: sessionID, submission: Submission(
+            id: id,
+            op: .capabilityCommand(
+                capability: contribution.capability,
+                command: command.name,
+                arguments: parts.count == 2
+                    ? parts[1].trimmingCharacters(in: .whitespacesAndNewlines) : "",
+                input: nil,
+                target: nil
+            )
+        ))) { [weak self] _ in
+            self?.restoreDraft(id: id)
         }
         return true
     }
@@ -1428,27 +1440,23 @@ extension AppModel {
         ))
     }
 
-    func submitScratchpadOperation(_ operation: AgentOperation, scope: ScratchpadScope) {
+    func submitContributionOperation(_ operation: AgentOperation, scope: ContributionScope) {
         guard connectionState.isReady else { return }
         if case .swarm(let id) = scope,
            !swarms.contains(where: { $0.id == id }) {
             return
         }
-        transmit(.submitScratchpad(
-            requestID: requestID("scratchpad"),
+        transmit(.submitContribution(
+            requestID: requestID("contribution"),
             scope: scope,
             operation: operation
         ))
     }
 
-    func refreshScratchpad(scope: ScratchpadScope) {
-        submitScratchpadOperation(.capabilityCommand(
-            capability: "scratchpad",
-            command: "scratchpad",
-            arguments: "refresh",
-            input: nil,
-            target: nil
-        ), scope: scope)
+    func refreshContributions(scope: ContributionScope) {
+        guard connectionState.isReady else { return }
+        if case .swarm(let id) = scope, !swarms.contains(where: { $0.id == id }) { return }
+        transmit(.getContributions(requestID: requestID("contributions"), scope: scope))
     }
 
     func loadPreviewPage(_ operation: AgentOperation) {

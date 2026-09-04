@@ -105,29 +105,12 @@ extension AppModelTests {
         XCTAssertEqual(entry.turnID, "turn-1")
     }
 
-    func testToolEventDetailPrettyPrintsAdjacentJSONWithoutChangingStrings() {
-        let detail = #"{"query":"show }{ safely"}{"loaded_tools":["swarm_post","swarm_read"]}"#
-
-        XCTAssertEqual(formattedToolEventDetail(detail), """
-        {
-          "query" : "show }{ safely"
-        }
-
-        {
-          "loaded_tools" : [
-            "swarm_post",
-            "swarm_read"
-          ]
-        }
-        """)
-        XCTAssertEqual(
-            formattedToolEventDetail(#"{"query":"show"}plain result"#),
-            #"{"query":"show"}plain result"#
-        )
-        XCTAssertEqual(
-            formattedToolEventDetail(#"{"query":"show"}true"#),
-            #"{"query":"show"}true"#
-        )
+    func testBlockAppendsSeparateChunksWithoutRemovingWhitespace() {
+        XCTAssertEqual(appendingBlockText("contents", to: "note.txt"), "note.txt\ncontents")
+        XCTAssertEqual(appendingBlockText("\n\ncontents", to: "note.txt"), "note.txt\n\ncontents")
+        XCTAssertEqual(appendingBlockText("contents", to: "note.txt\n"), "note.txt\ncontents")
+        XCTAssertEqual(appendingBlockText("\ncontents", to: ""), "\ncontents")
+        XCTAssertEqual(appendingBlockText("", to: "note.txt"), "note.txt")
     }
 
     func testFrontendPresentationMetadataUsesTheAppLanguageCatalog() {
@@ -206,7 +189,7 @@ extension AppModelTests {
         XCTAssertEqual(app.transcript.count, 1)
         XCTAssertEqual(entry.id, "block:5:toolsresult")
         XCTAssertEqual(entry.group, "turn")
-        XCTAssertEqual(entry.text, "Started and finished")
+        XCTAssertEqual(entry.text, "Started\n and finished")
         XCTAssertEqual(entry.tone, "success")
         XCTAssertFalse(entry.pending)
 
@@ -717,7 +700,7 @@ extension AppModelTests {
             )
         )
 
-        XCTAssertEqual(model.previews.first?.entries.map(\.text), ["old newer"])
+        XCTAssertEqual(model.previews.first?.entries.map(\.text), ["old \nnew\ner"])
 
         let requestCount = await recorder.requestCount()
         model.loadPreviewPage(next)
@@ -745,7 +728,7 @@ extension AppModelTests {
         )
 
         XCTAssertFalse(model.isLoadingPreviewPage)
-        XCTAssertEqual(model.previews.first?.entries.map(\.text), ["old newer"])
+        XCTAssertEqual(model.previews.first?.entries.map(\.text), ["old \nnew\ner"])
         XCTAssertNil(model.previews.first?.next)
     }
 

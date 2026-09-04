@@ -5,7 +5,7 @@ use crate::backend::model::internal_user_message;
 use crate::protocol::internal_message_kind;
 use crate::{Error, Result};
 
-pub(crate) fn is_projection_item(item: &Value) -> bool {
+pub(super) fn is_projection_item(item: &Value) -> bool {
     matches!(
         internal_message_kind(item),
         Some(BASELINE_KIND) | Some(DELTA_KIND)

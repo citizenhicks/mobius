@@ -391,7 +391,7 @@ extension AppModel {
             if entries[index].kind != kind || entries[index].role != block.role {
                 invalidateTranscriptProjection()
             }
-            entries[index].text = appending ? entries[index].text + block.text : block.text
+            entries[index].text = appending ? appendingBlockText(block.text, to: entries[index].text) : block.text
             entries[index].kind = kind
             entries[index].capability = rendered.capability
             entries[index].role = block.role
@@ -418,9 +418,7 @@ extension AppModel {
         } else {
             entries.append(TranscriptEntry(
                 id: id,
-                text: appending && recordID == nil
-                    ? String(block.text.drop(while: { $0 == "\n" }))
-                    : block.text,
+                text: block.text,
                 kind: kind,
                 capability: rendered.capability,
                 role: block.role,
@@ -536,7 +534,7 @@ extension AppModel {
             if let index = indices[entry.id] {
                 let previous = merged[index]
                 if entry.update == .append {
-                    entry.text = previous.text + entry.text
+                    entry.text = appendingBlockText(entry.text, to: previous.text)
                     entry.files = mergedFiles(previous.files, with: entry.files, appending: true)
                     if entry.group == nil { entry.group = previous.group }
                     entry.update = previous.update == .append ? .append : .replace

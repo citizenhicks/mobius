@@ -11,10 +11,9 @@ use super::{
     AgentScope, DEFAULT_WAIT_MS, ForkTurns, MAX_TASK_NAME_BYTES, MAX_WAIT_MS, MIN_WAIT_MS, text,
 };
 use crate::backend::model::ToolDefinition;
+use crate::middleware::attachments::strip_attachment_references;
 use crate::middleware::tools::{HookIdentity, Tool, ToolContext};
-use crate::protocol::{
-    MessageAuthor, MessageSubmission, Op, is_internal_message, strip_attachment_references,
-};
+use crate::protocol::{MessageAuthor, MessageSubmission, Op, is_internal_message};
 use crate::{BoxFuture, Error, Result};
 
 pub(super) struct SpawnAgent {

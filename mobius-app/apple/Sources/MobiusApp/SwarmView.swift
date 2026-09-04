@@ -9,8 +9,8 @@ struct SwarmView: View {
     @State private var renameDraft = ""
     @State private var showsActivity = true
     @State private var showsRoster = true
-    @State private var showsScratchpad = true
-    @State private var showsAddScratchpadNote = false
+    @State private var collapsedContributionIDs: Set<String> = []
+    @State private var pendingContributionAction: FrontendAction?
     let swarmID: String
 
     var body: some View {
@@ -23,7 +23,14 @@ struct SwarmView: View {
                     )
                     chat(swarm)
                     roster(swarm)
-                    scratchpad(swarm)
+                    let widgets = model.navigationWidgets(in: .swarm(id: swarm.id))
+                    if widgets.isEmpty {
+                        contributionSection(nil, swarm: swarm)
+                    } else {
+                        ForEach(widgets) { widget in
+                            contributionSection(widget, swarm: swarm)
+                        }
+                    }
                 }
                 .formStyle(.grouped)
                 .listSectionSpacing(MobiusSpace.l)
@@ -67,12 +74,20 @@ struct SwarmView: View {
             }
             .disabled(renameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
-        .sheet(isPresented: $showsAddScratchpadNote) {
-            AddSwarmScratchpadNoteSheet(swarmID: swarmID)
+        .sheet(item: $pendingContributionAction) { action in
+            if let editor = action.editor {
+                FrontendActionEditorSheet(
+                    action: action,
+                    editor: editor,
+                    isEnabled: model.connectionState.isReady
+                ) { operation in
+                    model.submitContributionOperation(operation, scope: .swarm(id: swarmID))
+                }
+            }
         }
         .task(id: "\(swarmID):\(model.connectionState.isReady)") {
             if model.connectionState.isReady {
-                model.refreshScratchpad(scope: .swarm(id: swarmID))
+                model.refreshContributions(scope: .swarm(id: swarmID))
             }
         }
         .background { palette.canvas.ignoresSafeArea() }
@@ -128,13 +143,36 @@ struct SwarmView: View {
         }
 
         return HeaderOptionsMenu(label: "Swarm options") {
-            Section("Scratchpad") {
-                Button {
-                    showsAddScratchpadNote = true
-                } label: {
-                    MobiusLabel(title: "Add Collective Note", glyph: .plus)
+            let widgets = model.navigationWidgets(in: .swarm(id: swarm.id))
+            if widgets.isEmpty {
+                Section("Scratchpad") {
+                    Button {} label: {
+                        MobiusLabel(title: "Add Collective Note", glyph: .plus)
+                    }
+                    .disabled(true)
                 }
-                .disabled(!model.connectionState.isReady)
+            }
+            ForEach(widgets) { widget in
+                if case .actionList(_, _, let actions) = widget.widget.content, !actions.isEmpty {
+                    Section {
+                        ForEach(actions) { action in
+                            Button {
+                                if action.editor != nil { pendingContributionAction = action }
+                                else {
+                                    model.submitContributionOperation(action.op, scope: .swarm(id: swarm.id))
+                                }
+                            } label: {
+                                MobiusLabel(
+                                    title: frontendPresentationText(action.label),
+                                    glyph: MobiusSymbol.glyph(for: action.symbol)
+                                )
+                            }
+                            .disabled(!model.connectionState.isReady)
+                        }
+                    } header: {
+                        Text(frontendPresentationText(widget.widget.text))
+                    }
+                }
             }
             if !removals.isEmpty {
                 Section("Members") {
@@ -244,24 +282,23 @@ struct SwarmView: View {
         }
     }
 
-    private func scratchpad(_ swarm: SwarmRecord) -> some View {
-        let widget = model.swarmScratchpadWidget(swarmID: swarm.id)
-        let count = model.swarmScratchpadContributions[swarm.id]?.count
-
+    private func contributionSection(_ widget: MountedWidget?, swarm: SwarmRecord) -> some View {
+        let scope = ContributionScope.swarm(id: swarm.id)
+        let id = widget?.id ?? "loading"
+        let count = model.contributions(in: scope).first { $0.capability == widget?.capability }?.count
+        let isExpanded = Binding(
+            get: { !collapsedContributionIDs.contains(id) },
+            set: { if $0 { collapsedContributionIDs.remove(id) } else { collapsedContributionIDs.insert(id) } }
+        )
         return Section {
-            if showsScratchpad {
-                if let widget, let content = widget.widget.content {
+            if isExpanded.wrappedValue {
+                if let content = widget?.widget.content {
                     FrontendWidgetContentView(
                         content: content,
                         actionsEnabled: model.connectionState.isReady,
                         usesSwipeActions: true,
-                        submitOperation: { operation in
-                            model.submitScratchpadOperation(
-                                operation,
-                                scope: .swarm(id: swarm.id)
-                            )
-                        }
-                    ) { _ in }
+                        submitOperation: { model.submitContributionOperation($0, scope: scope) }
+                    ) { model.submitContributionOperation($0.op, scope: scope) }
                 } else {
                     HStack(spacing: MobiusSpace.s) {
                         MobiusSpinner(size: MobiusStyle.glyphInline, foreground: palette.muted)
@@ -274,9 +311,9 @@ struct SwarmView: View {
             }
         } header: {
             SwarmSectionHeading(
-                title: "Collective scratchpad",
+                title: widget.map { frontendPresentationText($0.title) } ?? "Collective scratchpad",
                 trailing: noteCount(count),
-                isExpanded: $showsScratchpad
+                isExpanded: isExpanded
             )
             .textCase(nil)
         }
@@ -538,58 +575,6 @@ private func swarmTranscriptEntry(_ message: SwarmMessageRecord) -> TranscriptEn
         recordedAtMs: message.createdAtMs,
         messageMetadata: TranscriptMessageMetadata(author: author, delivery: .turn)
     )
-}
-
-private struct AddSwarmScratchpadNoteSheet: View {
-    @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
-    @State private var note = ""
-    let swarmID: String
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    TextField("Note", text: $note, axis: .vertical)
-                        .lineLimit(4...10)
-                } footer: {
-                    Text("This note becomes durable context for every Bot in the Swarm.")
-                }
-            }
-            .scrollContentBackground(.hidden)
-            .navigationTitle("Add collective note")
-            .toolbarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel", action: dismiss.callAsFunction)
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Add", action: add)
-                        .disabled(trimmedNote.isEmpty || !model.connectionState.isReady)
-                }
-            }
-        }
-        .mobiusSheet()
-    }
-
-    private var trimmedNote: String {
-        note.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private func add() {
-        guard !trimmedNote.isEmpty else { return }
-        model.submitScratchpadOperation(
-            .capabilityCommand(
-                capability: "scratchpad",
-                command: "scratchpad",
-                arguments: "add",
-                input: trimmedNote,
-                target: nil
-            ),
-            scope: .swarm(id: swarmID)
-        )
-        dismiss()
-    }
 }
 
 private struct SwarmBotRow: View {

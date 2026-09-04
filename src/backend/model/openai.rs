@@ -17,7 +17,7 @@ use super::ModelOutput;
 use super::ModelPricing;
 use super::ModelRequest;
 use super::PROMPT_CACHE_BREAKPOINT_FIELD;
-use super::PromptCacheCapability;
+use super::PromptCacheMode;
 use super::TOOLS_SEARCH_NAME;
 use super::ToolDefinition;
 use super::ToolLoad;
@@ -80,6 +80,7 @@ impl ToolDiscoveryWire {
 
 fn openai_model_pricing(model: &str) -> Option<ModelPricing> {
     let pricing = match model {
+        "gpt-6-astra" => ModelPricing::new(10_000_000, 1_000_000, 12_500_000, 50_000_000),
         "gpt-5.6-sol" => ModelPricing::new(5_000_000, 500_000, 6_250_000, 30_000_000),
         "gpt-5.6-terra" => ModelPricing::new(2_000_000, 200_000, 2_500_000, 12_000_000),
         "gpt-5.6-luna" => ModelPricing::new(200_000, 20_000, 250_000, 1_200_000),
@@ -580,11 +581,11 @@ impl Model for OpenAi {
         self.image_input
     }
 
-    fn prompt_cache_capability(&self) -> PromptCacheCapability {
+    fn prompt_cache_capability(&self) -> PromptCacheMode {
         if self.explicit_prompt_cache {
-            PromptCacheCapability::Explicit
+            PromptCacheMode::Explicit
         } else {
-            PromptCacheCapability::Implicit
+            PromptCacheMode::Implicit
         }
     }
 

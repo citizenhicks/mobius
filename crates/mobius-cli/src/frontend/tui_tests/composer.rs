@@ -236,12 +236,14 @@ fn bare_capability_command_opens_all_of_its_popup_surfaces() {
             icon_only: false,
             progress: None,
             content: Some(FrontendWidgetContent::ActionList {
+                actions: Vec::new(),
                 title: title.into(),
                 items: vec![FrontendActionListItem {
                     id: id.into(),
                     text: note.into(),
                     state: FrontendListItemState::Plain,
                     actions: vec![FrontendAction {
+                        editor: None,
                         id: format!("action:{id}"),
                         label: "Run".into(),
                         symbol: FrontendSymbol::Edit,
@@ -337,16 +339,11 @@ fn bare_capability_command_opens_all_of_its_popup_surfaces() {
     );
 }
 
-#[tokio::test]
-async fn workspace_reference_menu_inserts_a_file() {
+#[test]
+fn workspace_reference_menu_inserts_a_file() {
     let workspace = tempfile::tempdir().expect("workspace");
-    std::fs::create_dir(workspace.path().join("src")).expect("source directory");
-    std::fs::write(workspace.path().join("src/lib.rs"), "").expect("source file");
-    let catalog = catalog(workspace.path());
-    catalog
-        .start_workspace_inventory(true)
-        .await
-        .expect("workspace inventory");
+    let mut catalog = catalog(workspace.path());
+    catalog.set_workspace_paths(["src/lib.rs".into()]);
     let mut state = state();
     state.input = "review @lib".into();
     state.cursor = state.input.len();
@@ -356,17 +353,18 @@ async fn workspace_reference_menu_inserts_a_file() {
     assert_eq!(state.input, "review src/lib.rs");
 }
 
-#[tokio::test]
-async fn remote_workspace_inventory_does_not_read_the_client_filesystem() {
+#[test]
+fn remote_workspace_inventory_does_not_read_the_client_filesystem() {
     let workspace = tempfile::tempdir().expect("workspace");
     std::fs::write(workspace.path().join("client-only.rs"), "").expect("client file");
-    let catalog = catalog(workspace.path());
-    catalog
-        .start_workspace_inventory(false)
-        .await
-        .expect("disabled workspace inventory");
+    let mut catalog = catalog(workspace.path());
+    catalog.set_workspace_paths(["server-only.rs".into()]);
 
     assert!(catalog.reference_suggestions('@', "client").is_empty());
+    assert_eq!(
+        catalog.reference_suggestions('@', "server")[0].value,
+        "server-only.rs"
+    );
 }
 
 #[test]

@@ -180,25 +180,31 @@ struct FrontendContributionPage: View {
     }
 }
 
-struct ScratchpadView: View {
+struct GlobalContributionsView: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        let widget = model.globalScratchpadWidget
-        let title: MobiusText = widget.map {
+        let widgets = model.navigationWidgets(in: .global)
+        let title: MobiusText = widgets.first.map {
             .localized(frontendPresentationText($0.title))
         } ?? .localized("Scratchpad")
         PageScaffold(title: title, detail: .verbatim("")) {
-            if let widget, let content = widget.widget.content {
-                Section {
-                    FrontendWidgetContentView(
-                        content: content,
-                        actionsEnabled: model.connectionState.isReady,
-                        usesSwipeActions: true,
-                        submitOperation: { operation in
-                            model.submitScratchpadOperation(operation, scope: .global)
+            if !widgets.isEmpty {
+                ForEach(widgets) { widget in
+                    if let content = widget.widget.content {
+                        Section {
+                            FrontendWidgetContentView(
+                                content: content,
+                                actionsEnabled: model.connectionState.isReady,
+                                usesSwipeActions: true,
+                                submitOperation: { operation in
+                                    model.submitContributionOperation(operation, scope: .global)
+                                }
+                            ) { option in
+                                model.submitContributionOperation(option.op, scope: .global)
+                            }
                         }
-                    ) { _ in }
+                    }
                 }
             } else {
                 MobiusUnavailable(
@@ -209,7 +215,7 @@ struct ScratchpadView: View {
             }
         }
         .task(id: model.connectionState.isReady) {
-            if model.connectionState.isReady { model.refreshScratchpad(scope: .global) }
+            if model.connectionState.isReady { model.refreshContributions(scope: .global) }
         }
     }
 }

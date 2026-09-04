@@ -96,7 +96,10 @@ impl Middleware for Tasks {
         render_tool_event(
             event,
             |name| name == "write_todos",
-            |_, arguments| {
+            |name, arguments| {
+                if matches!(event, EventMsg::ToolCallEnd(_)) {
+                    return name.into();
+                }
                 let count = arguments
                     .get("todos")
                     .and_then(Value::as_array)
@@ -257,6 +260,7 @@ fn widget_event(todos: &[Todo]) -> FrontendEvent {
                 total: todos.len(),
             }),
             content: Some(FrontendWidgetContent::ActionList {
+                actions: Vec::new(),
                 title: text::RENDER_HEADING.into(),
                 items: todos
                     .iter()
@@ -309,6 +313,28 @@ mod tests {
     use crate::protocol::SessionContext;
 
     use super::*;
+
+    #[test]
+    fn tool_headings_preserve_begin_and_completion_labels_with_null_arguments() {
+        let begin = EventMsg::ToolCallBegin(crate::protocol::ToolCallBeginEvent {
+            turn_id: "turn".into(),
+            call_id: "call".into(),
+            name: "write_todos".into(),
+            arguments: Value::Null,
+        });
+        let end = EventMsg::ToolCallEnd(crate::protocol::ToolCallEndEvent {
+            turn_id: "turn".into(),
+            call_id: "call".into(),
+            name: "write_todos".into(),
+            output: String::new(),
+            is_error: true,
+        });
+        assert_eq!(
+            Tasks.render(&begin, "session").unwrap().title,
+            text::RENDER_HEADING
+        );
+        assert_eq!(Tasks.render(&end, "session").unwrap().title, "write_todos");
+    }
 
     #[tokio::test]
     async fn write_todos_persists_session_state_and_updates_the_widget() {
@@ -392,7 +418,7 @@ mod tests {
                     && item.action.is_none()
                     && matches!(
                         &item.content,
-                        Some(FrontendWidgetContent::ActionList { title, items })
+                        Some(FrontendWidgetContent::ActionList { title, items, .. })
                             if title == "Tasks"
                                 && items.len() == 2
                                 && items[0].text == "inspect seams"

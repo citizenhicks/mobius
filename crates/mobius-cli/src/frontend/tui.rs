@@ -534,11 +534,7 @@ impl TuiState {
                 .find(|entry| entry.id.as_ref() == Some(id))
         {
             if block.update == FrontendBlockUpdate::Append {
-                text = text.trim_start_matches('\n').to_string();
-                if !entry.text.is_empty() && !text.is_empty() {
-                    entry.text.push('\n');
-                }
-                entry.text.push_str(&text);
+                block.update.apply(&mut entry.text, &text);
                 entry.text = bounded_terminal_text(&entry.text, MAX_ENTRY_BYTES);
                 if detail.is_some() {
                     entry.detail = detail;
@@ -559,9 +555,6 @@ impl TuiState {
             entry.pending = block.state == FrontendBlockState::Pending;
             entry.rendered = None;
             return;
-        }
-        if block.update == FrontendBlockUpdate::Append {
-            text = text.trim_start_matches('\n').to_string();
         }
         self.transcript.push_back(TranscriptEntry {
             id,

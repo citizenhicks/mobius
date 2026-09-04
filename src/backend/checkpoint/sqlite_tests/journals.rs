@@ -1,4 +1,41 @@
 use super::*;
+use crate::protocol::TokenUsage;
+
+#[test]
+fn execution_totals_add_without_partial_changes_on_overflow() {
+    let mut totals = ExecutionStats::default();
+    let added = ExecutionStats {
+        run_count: 2,
+        failed_run_count: 1,
+        aborted_run_count: 1,
+        model_calls: 3,
+        tool_calls: 4,
+        failed_tool_calls: 2,
+        elapsed_ms: 500,
+        usage: TokenUsage {
+            total_tokens: 12,
+            ..TokenUsage::default()
+        },
+    };
+    assert_eq!(totals.checked_add(&added), Some(()));
+    assert_eq!(totals, added);
+    for overflow in [
+        ExecutionStats {
+            elapsed_ms: u64::MAX,
+            ..ExecutionStats::default()
+        },
+        ExecutionStats {
+            usage: TokenUsage {
+                total_tokens: i64::MAX,
+                ..TokenUsage::default()
+            },
+            ..ExecutionStats::default()
+        },
+    ] {
+        assert_eq!(totals.checked_add(&overflow), None);
+        assert_eq!(totals, added);
+    }
+}
 
 #[tokio::test]
 async fn transcript_page_bounds_batches_and_continues_backward() {

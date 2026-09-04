@@ -134,29 +134,34 @@ pub struct ContextRewrite {
 
 impl ExecutionStats {
     pub(crate) fn checked_record(&mut self, record: &ExecutionRecord) -> Option<()> {
-        let run_count = self.run_count.checked_add(1)?;
-        let failed_run_count = self
-            .failed_run_count
-            .checked_add(u64::from(record.outcome == ExecutionOutcome::Failed))?;
-        let aborted_run_count = self
-            .aborted_run_count
-            .checked_add(u64::from(record.outcome == ExecutionOutcome::Aborted))?;
-        let model_calls = self.model_calls.checked_add(record.model_calls)?;
-        let tool_calls = self.tool_calls.checked_add(record.tool_calls)?;
-        let failed_tool_calls = self
-            .failed_tool_calls
-            .checked_add(record.failed_tool_calls)?;
-        let elapsed_ms = self.elapsed_ms.checked_add(record.elapsed_ms)?;
+        self.checked_add(&Self {
+            run_count: 1,
+            failed_run_count: u64::from(record.outcome == ExecutionOutcome::Failed),
+            aborted_run_count: u64::from(record.outcome == ExecutionOutcome::Aborted),
+            model_calls: record.model_calls,
+            tool_calls: record.tool_calls,
+            failed_tool_calls: record.failed_tool_calls,
+            elapsed_ms: record.elapsed_ms,
+            usage: record.usage.clone(),
+        })
+    }
+
+    /// Adds completed execution totals, leaving this value unchanged on overflow.
+    pub fn checked_add(&mut self, other: &Self) -> Option<()> {
         let mut usage = self.usage.clone();
-        usage.checked_add(&record.usage)?;
+        usage.checked_add(&other.usage)?;
         *self = Self {
-            run_count,
-            failed_run_count,
-            aborted_run_count,
-            model_calls,
-            tool_calls,
-            failed_tool_calls,
-            elapsed_ms,
+            run_count: self.run_count.checked_add(other.run_count)?,
+            failed_run_count: self.failed_run_count.checked_add(other.failed_run_count)?,
+            aborted_run_count: self
+                .aborted_run_count
+                .checked_add(other.aborted_run_count)?,
+            model_calls: self.model_calls.checked_add(other.model_calls)?,
+            tool_calls: self.tool_calls.checked_add(other.tool_calls)?,
+            failed_tool_calls: self
+                .failed_tool_calls
+                .checked_add(other.failed_tool_calls)?,
+            elapsed_ms: self.elapsed_ms.checked_add(other.elapsed_ms)?,
             usage,
         };
         Some(())

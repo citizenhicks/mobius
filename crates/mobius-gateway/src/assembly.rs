@@ -36,7 +36,7 @@ use crate::extensions::{ExtensionStore, ResolvedExtensions};
 use crate::middleware_manifest::{BuiltinMiddleware, MIDDLEWARE};
 use crate::provider_catalog::{
     CatalogRoute, catalog_routes, configured_model_providers, configured_model_routes,
-    credential_is_configured,
+    credential_is_configured, selected_base_url,
 };
 use crate::sandbox::GatewaySandbox;
 use crate::wire::{MiddlewareConfig, ProviderConfig, ProviderEndpointAuth, validate_session_id};
@@ -313,16 +313,7 @@ fn instantiate_routes(
     let mut routes = Vec::with_capacity(catalog.len());
     for route in catalog {
         let definition = provider(&route.provider.provider)?;
-        let base_url = definition
-            .configurable_base_url()
-            .then(|| {
-                route
-                    .provider
-                    .base_url
-                    .clone()
-                    .or_else(|| definition.default_base_url().map(str::to_string))
-            })
-            .flatten();
+        let base_url = selected_base_url(definition, &route.provider).map(str::to_owned);
         let credential = if route.provider.endpoint_auth == ProviderEndpointAuth::Credentialless {
             ProviderCredential::Credentialless
         } else {

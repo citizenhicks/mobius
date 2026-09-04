@@ -16,7 +16,7 @@ use super::ModelOutput;
 use super::ModelPricing;
 use super::ModelRequest;
 use super::PROMPT_CACHE_BREAKPOINT_FIELD;
-use super::PromptCacheCapability;
+use super::PromptCacheMode;
 use super::REPLAY_REASONING_FIELD;
 use super::TOOL_ERROR_FIELD;
 use super::TOOLS_SEARCH_NAME;
@@ -258,8 +258,8 @@ impl Model for Anthropic {
         true
     }
 
-    fn prompt_cache_capability(&self) -> PromptCacheCapability {
-        PromptCacheCapability::Explicit
+    fn prompt_cache_capability(&self) -> PromptCacheMode {
+        PromptCacheMode::Explicit
     }
 
     fn tool_discovery(&self) -> ToolDiscoveryMode {

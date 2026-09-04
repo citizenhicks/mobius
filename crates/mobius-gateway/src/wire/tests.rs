@@ -1257,26 +1257,26 @@ fn scratchpad_messages_carry_their_management_scope() {
         input: None,
         target: None,
     };
-    let request = serde_json::to_value(ClientFrame::new(ClientMessage::SubmitScratchpad {
+    let request = serde_json::to_value(ClientFrame::new(ClientMessage::SubmitContribution {
         request_id: "scratchpad-1".into(),
-        scope: ScratchpadScope::Swarm {
+        scope: ContributionScope::Swarm {
             id: "f517e178-38e3-4f2c-89ec-f787860964ea".into(),
         },
         operation,
     }))
     .expect("encode scratchpad request");
 
-    assert_eq!(request["type"], "submit_scratchpad");
+    assert_eq!(request["type"], "submit_contribution");
     assert_eq!(request["scope"]["type"], "swarm");
     assert!(request.get("session_id").is_none());
 
-    let response = ServerFrame::new(ServerMessage::ScratchpadChanged {
+    let response = ServerFrame::new(ServerMessage::Contributions {
         request_id: "scratchpad-1".into(),
-        scope: ScratchpadScope::Global,
-        contribution: FrontendContribution {
+        scope: ContributionScope::Global,
+        contributions: vec![FrontendContribution {
             capability: "scratchpad".into(),
             ..FrontendContribution::default()
-        },
+        }],
     });
     let decoded: ServerFrame = serde_json::from_value(
         serde_json::to_value(&response).expect("encode global scratchpad response"),

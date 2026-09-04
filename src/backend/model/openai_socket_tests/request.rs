@@ -28,7 +28,7 @@ fn implicit_prompt_cache_omits_options() {
             provider.prompt_cache_capability(),
             body.get("prompt_cache_options")
         ),
-        (PromptCacheCapability::Implicit, None)
+        (PromptCacheMode::Implicit, None)
     );
 }
 

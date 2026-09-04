@@ -191,7 +191,7 @@ fn action_list_renders_one_row_with_declared_actions_and_runs_the_selected_one()
         action_index: 1,
         input: None,
     };
-    let FrontendWidgetContent::ActionList { title, items } = content else {
+    let FrontendWidgetContent::ActionList { title, items, .. } = content else {
         unreachable!();
     };
     let mut terminal = Terminal::new(TestBackend::new(72, 5)).expect("terminal");
@@ -297,6 +297,7 @@ fn blocks(text: &str) -> FrontendWidgetContent {
 
 fn action_list(edit: Op, delete: Op) -> FrontendWidgetContent {
     FrontendWidgetContent::ActionList {
+        actions: Vec::new(),
         title: "Notes".into(),
         items: vec![FrontendActionListItem {
             id: "note-1".into(),
@@ -304,6 +305,7 @@ fn action_list(edit: Op, delete: Op) -> FrontendWidgetContent {
             state: FrontendListItemState::Plain,
             actions: vec![
                 FrontendAction {
+                    editor: None,
                     id: "edit".into(),
                     label: "Edit".into(),
                     symbol: FrontendSymbol::Edit,
@@ -311,6 +313,7 @@ fn action_list(edit: Op, delete: Op) -> FrontendWidgetContent {
                     op: edit,
                 },
                 FrontendAction {
+                    editor: None,
                     id: "delete".into(),
                     label: "Delete".into(),
                     symbol: FrontendSymbol::Delete,

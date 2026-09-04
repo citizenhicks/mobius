@@ -40,7 +40,7 @@ use super::ModelEventSink;
 use super::ModelOutput;
 use super::ModelPricing;
 use super::ModelRequest;
-use super::PromptCacheCapability;
+use super::PromptCacheMode;
 use super::openai::OpenAi;
 use super::openai::decode_response;
 use super::openai::wire_input_with_cache;
@@ -497,11 +497,11 @@ impl Model for OpenAiSocket {
         true
     }
 
-    fn prompt_cache_capability(&self) -> PromptCacheCapability {
+    fn prompt_cache_capability(&self) -> PromptCacheMode {
         if self.explicit_prompt_cache {
-            PromptCacheCapability::Explicit
+            PromptCacheMode::Explicit
         } else {
-            PromptCacheCapability::Implicit
+            PromptCacheMode::Implicit
         }
     }
 

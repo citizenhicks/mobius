@@ -1200,7 +1200,8 @@ async fn deleting_a_bot_removes_all_owned_state_and_its_led_swarm() {
             .await
             .expect("publish owned artifact");
     }
-    chat.rename_session(chat_id.clone(), "Delete with Bot".into())
+    gateway
+        .rename_session(&chat_id, "Delete with Bot")
         .await
         .expect("rename chat");
     gateway

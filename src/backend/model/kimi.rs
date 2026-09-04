@@ -11,7 +11,7 @@ use super::Model;
 use super::ModelEventSink;
 use super::ModelOutput;
 use super::ModelRequest;
-use super::PromptCacheCapability;
+use super::PromptCacheMode;
 use super::REPLAY_REASONING_FIELD;
 use super::ToolDefinition;
 use super::image_data_url;
@@ -176,8 +176,8 @@ impl Model for Kimi {
         true
     }
 
-    fn prompt_cache_capability(&self) -> PromptCacheCapability {
-        PromptCacheCapability::Implicit
+    fn prompt_cache_capability(&self) -> PromptCacheMode {
+        PromptCacheMode::Implicit
     }
 
     fn respond<'a>(

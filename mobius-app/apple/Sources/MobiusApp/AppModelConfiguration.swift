@@ -182,12 +182,7 @@ extension AppModel {
     }
 
     func refreshModifiedFiles(_ scope: ModifiedFilesScope) {
-        switch scope {
-        case .lastTurn: break
-        case .unstaged: refreshGitDiff()
-        case .staged: refreshStagedGitDiff()
-        case .committed: refreshCommittedGitDiff()
-        }
+        if let scope = scope.gitScope { refreshGitDiff(scope) }
     }
 
     func saveBotDefaults() {

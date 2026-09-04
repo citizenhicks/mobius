@@ -58,3 +58,11 @@ description = "Efficient, high-volume workloads"
 context_window = 1050000
 reasoning = ["none", "low", "medium", "high", "xhigh", "max"]
 default_reasoning = "medium"
+
+[[models]]
+id = "gpt-6-astra"
+label = "Astra"
+description = "Advanced reasoning and complex end-to-end work"
+context_window = 1050000
+reasoning = ["low", "medium", "high", "xhigh", "max"]
+default_reasoning = "medium"

@@ -4,6 +4,28 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testGitDiffScopesRejectStaleResponsesAndKeepRevisionsAcrossReset() throws {
+        let model = try model { _ in }
+        model.connectionState = .ready
+        model.selectedSessionID = "chat-1"
+        model.refreshGitDiff(.staged)
+        let oldID = try XCTUnwrap(model.gitDiffs[.staged]?.requestID)
+        model.refreshGitDiff(.staged)
+        let currentID = try XCTUnwrap(model.gitDiffs[.staged]?.requestID)
+        model.handle(.gitDiff(requestID: oldID, sessionID: "chat-1", scope: .staged, diff: "stale"))
+        model.handle(.gitDiff(requestID: currentID, sessionID: "other-chat", scope: .staged, diff: "other"))
+        model.handle(.gitDiff(requestID: currentID, sessionID: "chat-1", scope: .unstaged, diff: "wrong scope"))
+        XCTAssertEqual(model.gitDiffs[.staged]?.text, "")
+        XCTAssertEqual(model.gitDiffs[.staged]?.requestID, currentID)
+        model.handle(.gitDiff(requestID: currentID, sessionID: "chat-1", scope: .staged, diff: "current"))
+        XCTAssertEqual(model.gitDiffs[.staged]?.text, "current")
+        XCTAssertEqual(model.gitDiffs[.staged]?.revision, 1)
+        XCTAssertNil(model.gitDiffs[.staged]?.requestID)
+        model.resetSessionState()
+        XCTAssertEqual(model.gitDiffs[.staged]?.text, "")
+        XCTAssertEqual(model.gitDiffs[.staged]?.revision, 2)
+    }
+
     func testLastTurnDiffUsesOnlyCompletedTurnToolPatches() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model(requestSender: { request in
@@ -96,7 +118,7 @@ extension AppModelTests {
             scope: .unstaged,
             diff: "unstaged diff"
         ))
-        XCTAssertFalse(model.isLoadingGitDiff)
+        XCTAssertFalse(model.gitDiffs[.unstaged]?.isLoading == true)
 
         requestCount = await recorder.requestCount()
         model.selectModifiedFilesScope(.staged)
@@ -112,9 +134,9 @@ extension AppModelTests {
             scope: .staged,
             diff: "staged diff"
         ))
-        XCTAssertEqual(model.stagedGitDiff, "staged diff")
-        XCTAssertEqual(model.gitDiff, "unstaged diff")
-        XCTAssertFalse(model.isLoadingStagedGitDiff)
+        XCTAssertEqual(model.gitDiffs[.staged]?.text, "staged diff")
+        XCTAssertEqual(model.gitDiffs[.unstaged]?.text, "unstaged diff")
+        XCTAssertFalse(model.gitDiffs[.staged]?.isLoading == true)
 
         requestCount = await recorder.requestCount()
         model.selectModifiedFilesScope(.committed)
@@ -131,9 +153,9 @@ extension AppModelTests {
             scope: .committed,
             diff: "committed diff"
         ))
-        XCTAssertEqual(model.committedGitDiff, "committed diff")
-        XCTAssertEqual(model.gitDiff, "unstaged diff")
-        XCTAssertFalse(model.isLoadingCommittedGitDiff)
+        XCTAssertEqual(model.gitDiffs[.committed]?.text, "committed diff")
+        XCTAssertEqual(model.gitDiffs[.unstaged]?.text, "unstaged diff")
+        XCTAssertFalse(model.gitDiffs[.committed]?.isLoading == true)
 
         requestCount = await recorder.requestCount()
         model.selectFilesInspectorTab(.allFiles)

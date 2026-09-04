@@ -201,6 +201,7 @@ extension GatewayWireTests {
             "progress": .null,
             "content": .object([
                 "type": .string("action_list"),
+                "actions": .array([]),
                 "title": .string("Notes"),
                 "items": .array([.object([
                     "id": .string("note-1"),
@@ -225,7 +226,7 @@ extension GatewayWireTests {
             "action": .null
         ]))
 
-        guard case .actionList(let title, let items) = widget.content,
+        guard case .actionList(let title, let items, _) = widget.content,
               let item = items.first,
               let action = item.actions.first,
               case .capabilityCommand(_, _, _, let input, _) = action.op
@@ -242,6 +243,45 @@ extension GatewayWireTests {
             action.op.replacingCapabilityInput(with: "Use one row.")
         else { return XCTFail("Expected edited capability command") }
         XCTAssertEqual(edited, "Use one row.")
+    }
+
+    func testContributionEditorCarriesExistingCollectiveNoteLabelsAndOperation() throws {
+        let fixture = #"""
+        {
+          "id":"notes", "slot":"navigation", "text":"Scratchpad", "tone":"neutral",
+          "symbol":"brain", "icon_only":false, "progress":null, "action":null,
+          "content":{
+            "type":"action_list", "title":"Collective scratchpad", "items":[],
+            "actions":[{
+              "id":"add", "label":"Add Collective Note", "symbol":"plus", "tone":"neutral",
+              "editor":{
+                "title":"Add collective note", "label":"Note",
+                "description":"This note becomes durable context for every Bot in the Swarm.",
+                "submit_label":"Add"
+              },
+              "op":{
+                "type":"capability_command", "capability":"notes", "command":"append",
+                "arguments":"shared", "input":"", "target":null
+              }
+            }]
+          }
+        }
+        """#
+        let widget = try decoder().decode(FrontendWidget.self, from: Data(fixture.utf8))
+        guard case .actionList("Collective scratchpad", _, let actions) = widget.content else {
+            return XCTFail("Expected list actions")
+        }
+        let action = try XCTUnwrap(actions.first)
+        let editor = try XCTUnwrap(action.editor)
+        XCTAssertEqual(action.label, "Add Collective Note")
+        XCTAssertEqual(editor.title, "Add collective note")
+        XCTAssertEqual(editor.label, "Note")
+        XCTAssertEqual(editor.description, "This note becomes durable context for every Bot in the Swarm.")
+        XCTAssertEqual(editor.submitLabel, "Add")
+        guard case .capabilityCommand("notes", "append", "shared", let input, nil) =
+            action.op.replacingCapabilityInput(with: "Shared context")
+        else { return XCTFail("Expected the contributed operation to survive editing") }
+        XCTAssertEqual(input, "Shared context")
     }
 
 }

@@ -113,7 +113,7 @@ extension AppModel {
             handleConnectionEnvelope(envelope)
         case .sessionOpened, .sessionReplayComplete, .sessionHistory, .sessionChanged:
             handleSessionEnvelope(envelope)
-        case .gatewayConfigured, .scratchpadChanged, .accepted, .rejected,
+        case .gatewayConfigured, .contributionsChanged, .accepted, .rejected,
              .agentEvent, .sessions, .backgroundApprovals, .swarmAttentions, .botSessions,
              .bots, .swarms, .clients:
             handleGatewayUpdateEnvelope(envelope)
@@ -194,8 +194,8 @@ extension AppModel {
         switch envelope {
         case .gatewayConfigured(let requestID, let payload):
             applyGatewayConfigurationResponse(requestID: requestID, payload: payload)
-        case .scratchpadChanged(_, let scope, let contribution):
-            applyScratchpadContribution(contribution, scope: scope)
+        case .contributionsChanged(_, let scope, let contributions):
+            applyScopedContributions(contributions, scope: scope)
         case .accepted(let requestID):
             handleAccepted(requestID)
         case .rejected(let rejection):
@@ -226,23 +226,16 @@ extension AppModel {
         }
     }
 
-    private func applyScratchpadContribution(
-        _ contribution: FrontendContribution,
-        scope: ScratchpadScope
+    private func applyScopedContributions(
+        _ contributions: [FrontendContribution],
+        scope: ContributionScope
     ) {
-        guard contribution.capability == "scratchpad" else { return }
         switch scope {
         case .global:
-            if let index = gatewayContributions.firstIndex(where: {
-                $0.capability == contribution.capability
-            }) {
-                gatewayContributions[index] = contribution
-            } else {
-                gatewayContributions.append(contribution)
-            }
+            gatewayContributions = contributions
         case .swarm(let id):
             guard swarms.contains(where: { $0.id == id }) else { return }
-            swarmScratchpadContributions[id] = contribution
+            swarmContributions[id] = contributions
         }
     }
 
@@ -384,20 +377,9 @@ extension AppModel {
     private func handleFileEnvelope(_ envelope: GatewayEnvelope) {
         switch envelope {
         case .gitDiff(let requestID, let sessionID, let scope, let diff):
-            guard sessionID == selectedSessionID else { break }
-            if scope == .unstaged, requestID == gitDiffRequestID {
-                gitDiffRequestID = nil
-                isLoadingGitDiff = false
-                gitDiff = diff
-            } else if scope == .staged, requestID == stagedGitDiffRequestID {
-                stagedGitDiffRequestID = nil
-                isLoadingStagedGitDiff = false
-                stagedGitDiff = diff
-            } else if scope == .committed, requestID == committedGitDiffRequestID {
-                committedGitDiffRequestID = nil
-                isLoadingCommittedGitDiff = false
-                committedGitDiff = diff
-            }
+            guard sessionID == selectedSessionID, requestID == gitDiffs[scope]?.requestID else { break }
+            gitDiffs[scope]?.requestID = nil
+            gitDiffs[scope]?.text = diff
         case .workspaceFiles(let requestID, let sessionID, let files, let truncated):
             guard requestID == workspaceFilesRequestID,
                   sessionID == selectedSessionID
@@ -1046,7 +1028,7 @@ extension AppModel {
         swarms = records
         let swarmIDs = Set(records.map(\.id))
         swarmAttentions.removeAll { !swarmIDs.contains($0.swarmId) }
-        swarmScratchpadContributions = swarmScratchpadContributions.filter {
+        swarmContributions = swarmContributions.filter {
             swarmIDs.contains($0.key)
         }
         cacheChatCatalog()
@@ -1406,17 +1388,8 @@ extension AppModel {
             directoryRequestID = nil
             isLoadingDirectories = false
         }
-        if rejection.requestId == gitDiffRequestID {
-            gitDiffRequestID = nil
-            isLoadingGitDiff = false
-        }
-        if rejection.requestId == stagedGitDiffRequestID {
-            stagedGitDiffRequestID = nil
-            isLoadingStagedGitDiff = false
-        }
-        if rejection.requestId == committedGitDiffRequestID {
-            committedGitDiffRequestID = nil
-            isLoadingCommittedGitDiff = false
+        for scope in GitDiffScope.allCases where gitDiffs[scope]?.requestID == rejection.requestId {
+            gitDiffs[scope]?.requestID = nil
         }
         if rejection.requestId == workspaceFilesRequestID {
             workspaceFilesRequestID = nil

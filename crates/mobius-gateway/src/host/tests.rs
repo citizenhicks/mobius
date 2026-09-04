@@ -2,6 +2,7 @@ use mobius::backend::checkpoint::Checkpoint;
 use mobius::protocol::{SessionContext, TokenUsage};
 
 use super::*;
+use mobius::backend::checkpoint::ExecutionStats;
 
 mod bots;
 mod lifecycle;

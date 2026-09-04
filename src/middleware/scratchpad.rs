@@ -40,7 +40,7 @@ use presentation::{
     command_confirmation, format_snapshot, global_widget, parse_scope, publish_widgets,
     surface_widgets, swarm_widget, usage, widget_events,
 };
-pub(crate) use projection::is_projection_item;
+use projection::is_projection_item;
 use projection::{next_projection, scratchpad_message, without_projection_items};
 use tools::{PromoteScratchpad, WriteScratchpad};
 
@@ -142,6 +142,41 @@ impl SwarmScope {
     }
 }
 
+enum ScratchpadCommand<'a> {
+    Read,
+    Refresh,
+    Add(&'a str),
+    Promote(PromotionTarget, &'a str),
+    Edit(Scope, &'a str, &'a str),
+    Forget(Scope, &'a str),
+}
+
+fn parse_command<'a>(arguments: &'a str, input: Option<&'a str>) -> Option<ScratchpadCommand<'a>> {
+    let mut arguments = arguments.split_whitespace();
+    let operation = arguments.next().unwrap_or("read");
+    let scope = arguments.next();
+    let id = arguments.next();
+    if arguments.next().is_some() {
+        return None;
+    }
+    match (operation, scope, id, input) {
+        ("read", None, None, None) => Some(ScratchpadCommand::Read),
+        ("refresh", None, None, None) => Some(ScratchpadCommand::Refresh),
+        ("add", None, None, Some(note)) => Some(ScratchpadCommand::Add(note)),
+        ("promote", Some(scope), Some(id), None) => Some(ScratchpadCommand::Promote(
+            parse_promotion_target(scope)?,
+            id,
+        )),
+        ("edit", Some(scope), Some(id), Some(note)) => {
+            Some(ScratchpadCommand::Edit(parse_scope(scope)?, id, note))
+        }
+        ("forget", Some(scope), Some(id), None) => {
+            Some(ScratchpadCommand::Forget(parse_scope(scope)?, id))
+        }
+        _ => None,
+    }
+}
+
 /// Cloneable scratchpad persistence shared by agent runtimes and management commands.
 #[derive(Clone)]
 pub struct ScratchpadStore {
@@ -188,6 +223,50 @@ impl ScratchpadStore {
             },
             global: self.load(Scope::Global, GLOBAL_SCOPE).await?,
         })
+    }
+
+    /// Executes a human management action using the capability's command grammar.
+    /// `swarm_id` selects a Swarm; `None` selects gateway-wide notes.
+    pub async fn management_command(
+        &self,
+        swarm_id: Option<&str>,
+        operation: &crate::protocol::Op,
+    ) -> Result<FrontendContribution> {
+        let invalid = || {
+            Error::Tool("scratchpad operation does not match its selected management scope".into())
+        };
+        let crate::protocol::Op::CapabilityCommand {
+            capability,
+            command,
+            arguments,
+            input,
+            target: None,
+        } = operation
+        else {
+            return Err(invalid());
+        };
+        if capability != MANIFEST.id || command != "scratchpad" {
+            return Err(invalid());
+        }
+        match (swarm_id, parse_command(arguments, input.as_deref())) {
+            (None, Some(ScratchpadCommand::Refresh)) => self.global_contribution().await,
+            (None, Some(ScratchpadCommand::Add(note))) => self.add_global(note).await,
+            (None, Some(ScratchpadCommand::Edit(Scope::Global, id, note))) => {
+                self.edit_global(id, note).await
+            }
+            (None, Some(ScratchpadCommand::Forget(Scope::Global, id))) => {
+                self.forget_global(id).await
+            }
+            (Some(swarm), Some(ScratchpadCommand::Refresh)) => self.swarm_contribution(swarm).await,
+            (Some(swarm), Some(ScratchpadCommand::Add(note))) => self.add_swarm(swarm, note).await,
+            (Some(swarm), Some(ScratchpadCommand::Edit(Scope::Swarm, id, note))) => {
+                self.edit_swarm(swarm, id, note).await
+            }
+            (Some(swarm), Some(ScratchpadCommand::Forget(Scope::Swarm, id))) => {
+                self.forget_swarm(swarm, id).await
+            }
+            _ => Err(invalid()),
+        }
     }
 
     /// Returns the persisted gateway-wide scratchpad management surface.
@@ -535,13 +614,20 @@ impl Scratchpad {
         if command != "scratchpad" {
             return Err(Error::Unknown(format!("scratchpad command `{command}`")));
         }
-        let mut arguments = arguments.split_whitespace();
-        let operation = arguments.next().unwrap_or("read");
-        if !self.agent_enabled && !matches!(operation, "read" | "refresh") {
+        let parsed = parse_command(arguments, input);
+        if !self.agent_enabled
+            && !matches!(
+                arguments.split_whitespace().next().unwrap_or("read"),
+                "read" | "refresh"
+            )
+        {
             return Err(Error::Tool("scratchpad is disabled for this chat".into()));
         }
-        match operation {
-            "read" if arguments.next().is_none() && input.is_none() => {
+        let Some(parsed) = parsed else {
+            return Ok(usage());
+        };
+        match parsed {
+            ScratchpadCommand::Read => {
                 let snapshot = self
                     .store
                     .snapshot_locked(session_id, swarm_id, &_access)
@@ -552,86 +638,58 @@ impl Scratchpad {
                     FrontendTone::Neutral,
                 ))
             }
-            "refresh" if arguments.next().is_none() && input.is_none() => {
+            ScratchpadCommand::Refresh => {
                 let snapshot = self
                     .store
                     .snapshot_locked(session_id, swarm_id, &_access)
                     .await?;
                 Ok(MiddlewareCommandOutput::events(widget_events(&snapshot)))
             }
-            "promote" if input.is_none() => {
-                match (arguments.next(), arguments.next(), arguments.next()) {
-                    (Some(target), Some(id), None) => {
-                        let Some(target) = parse_promotion_target(target) else {
-                            return Ok(usage());
-                        };
-                        let outcome = self
-                            .store
-                            .promote_id_locked(session_id, swarm_id, id, target, &_access)
-                            .await?;
-                        let snapshot = self
-                            .store
-                            .snapshot_locked(session_id, swarm_id, &_access)
-                            .await?;
-                        Ok(command_confirmation(target, outcome, &snapshot))
-                    }
-                    _ => Ok(usage()),
-                }
+            ScratchpadCommand::Promote(target, id) => {
+                let outcome = self
+                    .store
+                    .promote_id_locked(session_id, swarm_id, id, target, &_access)
+                    .await?;
+                let snapshot = self
+                    .store
+                    .snapshot_locked(session_id, swarm_id, &_access)
+                    .await?;
+                Ok(command_confirmation(target, outcome, &snapshot))
             }
-            "edit" => match (arguments.next(), arguments.next(), arguments.next(), input) {
-                (Some(scope), Some(id), None, Some(note)) => {
-                    let Some(scope) = parse_scope(scope) else {
-                        return Ok(usage());
-                    };
-                    self.store
-                        .edit_locked(session_id, swarm_id, scope, id, note, &_access)
-                        .await?;
-                    let snapshot = self
-                        .store
-                        .snapshot_locked(session_id, swarm_id, &_access)
-                        .await?;
-                    let mut events = widget_events(&snapshot);
-                    events.extend(
-                        MiddlewareCommandOutput::render(
-                            self.name(),
-                            text::MESSAGE_UPDATED,
-                            FrontendTone::Success,
-                        )
-                        .events,
-                    );
-                    Ok(MiddlewareCommandOutput::events(events))
-                }
-                _ => Ok(usage()),
-            },
-            "forget" if input.is_none() => {
-                match (arguments.next(), arguments.next(), arguments.next()) {
-                    (Some(scope), Some(id), None) => {
-                        let Some(scope) = parse_scope(scope) else {
-                            return Ok(usage());
-                        };
-                        self.store
-                            .forget_locked(session_id, swarm_id, scope, id, &_access)
-                            .await?;
-                        let snapshot = self
-                            .store
-                            .snapshot_locked(session_id, swarm_id, &_access)
-                            .await?;
-                        let mut events = widget_events(&snapshot);
-                        events.extend(
-                            MiddlewareCommandOutput::render(
-                                self.name(),
-                                text::MESSAGE_FORGOT,
-                                FrontendTone::Success,
-                            )
-                            .events,
-                        );
-                        Ok(MiddlewareCommandOutput::events(events))
-                    }
-                    _ => Ok(usage()),
-                }
+            ScratchpadCommand::Edit(scope, id, note) => {
+                self.store
+                    .edit_locked(session_id, swarm_id, scope, id, note, &_access)
+                    .await?;
+                self.command_updated(session_id, swarm_id, text::MESSAGE_UPDATED, &_access)
+                    .await
             }
-            _ => Ok(usage()),
+            ScratchpadCommand::Forget(scope, id) => {
+                self.store
+                    .forget_locked(session_id, swarm_id, scope, id, &_access)
+                    .await?;
+                self.command_updated(session_id, swarm_id, text::MESSAGE_FORGOT, &_access)
+                    .await
+            }
+            ScratchpadCommand::Add(_) => Ok(usage()),
         }
+    }
+
+    async fn command_updated(
+        &self,
+        session_id: &str,
+        swarm_id: Option<&str>,
+        message: &str,
+        access: &tokio::sync::MutexGuard<'_, ()>,
+    ) -> Result<MiddlewareCommandOutput> {
+        let snapshot = self
+            .store
+            .snapshot_locked(session_id, swarm_id, access)
+            .await?;
+        let mut events = widget_events(&snapshot);
+        events.extend(
+            MiddlewareCommandOutput::render(self.name(), message, FrontendTone::Success).events,
+        );
+        Ok(MiddlewareCommandOutput::events(events))
     }
 }
 
@@ -685,6 +743,7 @@ impl Middleware for Scratchpad {
             event,
             |name| matches!(name, "write_scratchpad" | "promote_scratchpad"),
             |name, arguments| match name {
+                _ if matches!(event, EventMsg::ToolCallEnd(_)) => name.into(),
                 "write_scratchpad" => {
                     labeled_tool_heading(text::RENDER_REMEMBER, "note", arguments)
                 }
@@ -694,6 +753,10 @@ impl Middleware for Scratchpad {
                 _ => unreachable!("renderer is guarded by the owned tool names"),
             },
         )
+    }
+
+    fn retain_compacted_input(&self, item: &serde_json::Value) -> bool {
+        !is_projection_item(item)
     }
 
     fn session_start<'a>(

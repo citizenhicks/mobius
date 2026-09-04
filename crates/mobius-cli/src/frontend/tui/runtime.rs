@@ -27,6 +27,7 @@ use crate::frontend::gateway;
 use crate::frontend::gateway_actions::{prepare, render_response};
 use crate::frontend::setup;
 use crate::frontend::terminal::{INPUT_POLL, MAX_INPUT_BATCH, TerminalGuard, poll_event};
+use mobius::backend::checkpoint::ExecutionOutcome;
 use mobius::protocol::{
     ActiveMessageDelivery, EventMsg, FrontendEvent, FrontendSettingKind, FrontendSettingValue,
     MiddlewareFeature, ModelInfo, Op, Submission,
@@ -35,7 +36,7 @@ use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayEvents, GatewaySender};
 use mobius_gateway::wire::{
     BotRecord, ClientMessage, MiddlewareConfig, ReadyPayload, ServerMessage, SessionActivityState,
-    SessionOutcome, SessionReadyPayload, SessionRecord, SwarmRecord,
+    SessionReadyPayload, SessionRecord, SwarmRecord, WorkspaceFileScope,
 };
 use uuid::Uuid;
 
@@ -85,15 +86,12 @@ pub(in crate::frontend) async fn run(
     mut events: GatewayEvents,
     gateway: &mut ReadyPayload,
     session: &mut SessionReadyPayload,
-    catalog: UiCatalog,
-    local_gateway: bool,
+    mut catalog: UiCatalog,
     gateway_endpoint: String,
 ) -> Result<(FrontendExit, GatewaySender, GatewayEvents)> {
     let mut guard = TerminalGuard::alternate()?;
     let mut terminal = TuiTerminal::new(CrosstermBackend::new(io::stdout()))?;
     terminal.clear()?;
-    let mut workspace_inventory = catalog.start_workspace_inventory(local_gateway);
-    let mut workspace_inventory_pending = true;
     let model = ModelInfo {
         model: session.session.model.model.clone(),
         reasoning_effort: session.session.model.reasoning_effort.clone(),
@@ -124,6 +122,8 @@ pub(in crate::frontend) async fn run(
     let exit;
     let mut clear_on_exit = false;
     let mut pending_session_creation = None;
+    let mut workspace_reference_open = false;
+    request_workspace_inventory(&sender, &session_id, &mut state).await;
 
     'ui: loop {
         draw_if_dirty(
@@ -138,8 +138,23 @@ pub(in crate::frontend) async fn run(
                 match event {
                     Ok(Some(frame)) => {
                         replay_hydration.observe(&frame.message, &session_id);
+                        let message = match frame.message {
+                            ServerMessage::WorkspaceFiles { session_id: actual, files, .. }
+                                if actual == session_id => {
+                                catalog.set_workspace_paths(files.into_iter().map(|file| file.path));
+                                state.reference_cache = None;
+                                dirty = true;
+                                continue 'ui;
+                            }
+                            message => message,
+                        };
+                        if replay_hydration.allows_draw()
+                            && refresh_workspace_inventory(&message, &session_id, workspace_reference_open)
+                        {
+                            request_workspace_inventory(&sender, &session_id, &mut state).await;
+                        }
                         if let Some((next_exit, should_clear)) = handle_incoming_message(
-                            frame.message,
+                            message,
                             &sender,
                             gateway,
                             session,
@@ -193,14 +208,14 @@ pub(in crate::frontend) async fn run(
                     exit = next_exit;
                     break 'ui;
                 }
+                let reference_open = !state.reference_menu_dismissed
+                    && super::references::active_reference_token(&state.input, state.cursor, '@').is_some();
+                if events_open && reference_open && !workspace_reference_open {
+                    request_workspace_inventory(&sender, &session_id, &mut state).await;
+                }
+                workspace_reference_open = reference_open;
             }
             _ = elapsed.tick(), if state.active_turn.is_some() => {
-                dirty = true;
-            }
-            result = &mut workspace_inventory, if workspace_inventory_pending => {
-                let _ = result;
-                workspace_inventory_pending = false;
-                state.reference_cache = None;
                 dirty = true;
             }
         }
@@ -212,6 +227,33 @@ pub(in crate::frontend) async fn run(
         execute!(io::stdout(), Print(CLEAR_SCREEN_AND_SCROLLBACK))?;
     }
     Ok((exit, sender, events))
+}
+
+async fn request_workspace_inventory(
+    sender: &GatewaySender,
+    session_id: &str,
+    state: &mut TuiState,
+) {
+    if let Err(error) = sender
+        .send(ClientMessage::ListWorkspaceFiles {
+            request_id: Uuid::new_v4().to_string(),
+            session_id: session_id.into(),
+            scope: WorkspaceFileScope::All,
+        })
+        .await
+    {
+        state.push(error.to_string(), TranscriptTone::Error);
+    }
+}
+
+fn refresh_workspace_inventory(
+    message: &ServerMessage,
+    session_id: &str,
+    reference_open: bool,
+) -> bool {
+    matches!(message, ServerMessage::AgentEvent { session_id: actual, record }
+        if actual == session_id && (matches!(record.event.msg, EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_))
+            || reference_open && matches!(record.event.msg, EventMsg::ToolCallEnd(_))))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -849,9 +891,9 @@ fn session_status(session: &SessionRecord) -> &'static str {
         SessionActivityState::Running => "running",
         SessionActivityState::AwaitingApproval => "awaiting approval",
         SessionActivityState::Idle => match session.activity.last_outcome {
-            Some(SessionOutcome::Completed) => "done",
-            Some(SessionOutcome::Aborted) => "aborted",
-            Some(SessionOutcome::Failed) => "failed",
+            Some(ExecutionOutcome::Completed) => "done",
+            Some(ExecutionOutcome::Aborted) => "aborted",
+            Some(ExecutionOutcome::Failed) => "failed",
             None if session.execution_stats.run_count == 0 => "new",
             None => "idle",
         },
@@ -1015,6 +1057,42 @@ mod tests {
                 blocks: Vec::new(),
                 preview: None,
             },
+        }
+    }
+
+    #[test]
+    fn workspace_inventory_refreshes_current_session_changes() {
+        use mobius::protocol::{ToolCallEndEvent, TurnAbortedEvent, TurnCompleteEvent};
+
+        let mut message = replay_event(1);
+        assert!(!refresh_workspace_inventory(&message, "session-a", true));
+        for event in [
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-1".into(),
+            }),
+            EventMsg::TurnAborted(TurnAbortedEvent {
+                turn_id: "turn-1".into(),
+                reason: "cancelled".into(),
+            }),
+            EventMsg::ToolCallEnd(ToolCallEndEvent {
+                turn_id: "turn-1".into(),
+                call_id: "call-1".into(),
+                name: "write".into(),
+                output: String::new(),
+                is_error: false,
+            }),
+        ] {
+            let ServerMessage::AgentEvent { record, .. } = &mut message else {
+                unreachable!()
+            };
+            let terminal = !matches!(event, EventMsg::ToolCallEnd(_));
+            record.event.msg = event;
+            assert!(refresh_workspace_inventory(&message, "session-a", true));
+            assert_eq!(
+                refresh_workspace_inventory(&message, "session-a", false),
+                terminal
+            );
+            assert!(!refresh_workspace_inventory(&message, "session-b", true));
         }
     }
 

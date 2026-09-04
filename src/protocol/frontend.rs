@@ -134,6 +134,8 @@ pub enum FrontendWidgetContent {
     ActionList {
         title: String,
         items: Vec<FrontendActionListItem>,
+        /// Actions on the whole list, such as adding an item.
+        actions: Vec<FrontendAction>,
     },
 }
 
@@ -184,7 +186,24 @@ pub struct RenderedBlock {
 #[serde(rename_all = "snake_case")]
 pub enum FrontendBlockUpdate {
     Replace,
+    /// Append a block, separating nonempty text with a newline unless a boundary already has one.
     Append,
+}
+
+impl FrontendBlockUpdate {
+    /// Applies a rendered text block without removing meaningful whitespace.
+    pub fn apply(self, current: &mut String, text: &str) {
+        if self == Self::Replace {
+            current.clear();
+        } else if !current.is_empty()
+            && !text.is_empty()
+            && !current.ends_with('\n')
+            && !text.starts_with('\n')
+        {
+            current.push('\n');
+        }
+        current.push_str(text);
+    }
 }
 
 /// Lifecycle state of one rendered transcript block.
@@ -253,6 +272,17 @@ pub struct FrontendAction {
     pub symbol: FrontendSymbol,
     pub tone: FrontendTone,
     pub op: Op,
+    /// Optional capability-owned copy for editing input before submitting the action.
+    pub editor: Option<FrontendEditor>,
+}
+
+/// Labels for a frontend-native single-text-input editor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FrontendEditor {
+    pub title: String,
+    pub label: String,
+    pub description: String,
+    pub submit_label: String,
 }
 
 /// One timestamped semantic event shown inside a capability preview.

@@ -32,10 +32,17 @@ description = "Promotion destination: `swarm` for this Bot's current Swarm, or `
 [widget]
 text = "Scratchpad"
 global_title = "Global Scratchpad"
-swarm_title = "Swarm Scratchpad"
+swarm_title = "Collective scratchpad"
 session_title = "Chat Scratchpad"
 
+[editor]
+swarm_title = "Add collective note"
+label = "Note"
+swarm_description = "This note becomes durable context for every Bot in the Swarm."
+submit = "Add"
+
 [action]
+add_swarm = "Add Collective Note"
 promote_global = "Promote Globally"
 promote_swarm = "Promote to Swarm"
 edit = "Edit"

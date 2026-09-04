@@ -40,24 +40,25 @@ fn base_url_rejects_serializable_secret_locations() {
 }
 
 #[test]
-fn only_the_first_party_endpoint_reports_known_gpt_56_pricing() {
+fn only_the_first_party_endpoint_reports_known_openai_pricing() {
     let usage = TokenUsage {
         input_tokens: 100_000,
         total_tokens: 100_000,
         ..TokenUsage::default()
     };
-    let official = OpenAi::new("test-key", "https://api.openai.com/v1", "gpt-5.6-luna")
-        .expect("official provider");
-    let compatible = OpenAi::new("test-key", "https://example.com/v1", "gpt-5.6-luna")
-        .expect("compatible provider");
-
-    assert_eq!(
-        official
-            .pricing()
-            .and_then(|pricing| pricing.estimate_microusd(&usage)),
-        Some(20_000)
-    );
-    assert_eq!(compatible.pricing(), None);
+    for (model, cost) in [("gpt-5.6-luna", 20_000), ("gpt-6-astra", 1_000_000)] {
+        let official =
+            OpenAi::new("test-key", "https://api.openai.com/v1", model).expect("official provider");
+        let compatible =
+            OpenAi::new("test-key", "https://example.com/v1", model).expect("compatible provider");
+        assert_eq!(
+            official
+                .pricing()
+                .and_then(|pricing| pricing.estimate_microusd(&usage)),
+            Some(cost)
+        );
+        assert_eq!(compatible.pricing(), None);
+    }
 }
 
 #[test]

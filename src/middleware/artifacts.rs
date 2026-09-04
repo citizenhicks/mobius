@@ -73,7 +73,13 @@ impl Middleware for Artifacts {
         let mut block = render_tool_event(
             event,
             |name| name == "send_artifact",
-            |_, arguments| labeled_tool_heading(text::RENDER_SEND, "path", arguments),
+            |name, arguments| {
+                if matches!(event, EventMsg::ToolCallEnd(_)) {
+                    name.into()
+                } else {
+                    labeled_tool_heading(text::RENDER_SEND, "path", arguments)
+                }
+            },
         )?;
         let EventMsg::ToolCallEnd(result) = event else {
             return Some(block);

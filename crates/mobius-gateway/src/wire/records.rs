@@ -72,10 +72,10 @@ pub struct SwarmMessageRecord {
     pub reply_depth: u8,
 }
 
-/// Gateway-managed scratchpad selected by a human-facing management request.
+/// Gateway-managed scope selected by a human-facing capability request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum ScratchpadScope {
+pub enum ContributionScope {
     Global,
     Swarm { id: String },
 }
@@ -128,7 +128,7 @@ pub struct SessionActivity {
     pub turn_id: Option<String>,
     pub approval_request_id: Option<String>,
     pub started_at: Option<i64>,
-    pub last_outcome: Option<SessionOutcome>,
+    pub last_outcome: Option<mobius::backend::checkpoint::ExecutionOutcome>,
     pub message: Option<String>,
 }
 
@@ -152,15 +152,6 @@ pub enum SessionActivityState {
     Idle,
     Running,
     AwaitingApproval,
-}
-
-/// Most recent terminal outcome advertised in the session catalog.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionOutcome {
-    Completed,
-    Aborted,
-    Failed,
 }
 
 /// Canonical workspace identity and path for one chat.
@@ -520,14 +511,8 @@ pub struct SessionRunGroup {
 /// Completed execution totals plus the active run, when one exists.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunStats {
-    pub run_count: u64,
-    pub failed_run_count: u64,
-    pub aborted_run_count: u64,
-    pub model_calls: u64,
-    pub tool_calls: u64,
-    pub failed_tool_calls: u64,
-    pub elapsed_ms: u64,
-    pub usage: TokenUsage,
+    #[serde(flatten)]
+    pub completed: mobius::backend::checkpoint::ExecutionStats,
     pub active: Option<RunSummary>,
 }
 
@@ -540,7 +525,7 @@ pub struct RunSummary {
     pub started_at_ms: i64,
     pub finished_at_ms: Option<i64>,
     pub elapsed_ms: u64,
-    pub outcome: Option<SessionOutcome>,
+    pub outcome: Option<mobius::backend::checkpoint::ExecutionOutcome>,
     pub model_calls: u64,
     pub tool_calls: u64,
     pub failed_tool_calls: u64,

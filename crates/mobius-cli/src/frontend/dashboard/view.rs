@@ -99,7 +99,7 @@ pub(in crate::frontend) fn render_capability_overlay(
                 render_overlay_picker(frame, body, &title, &options, &mut overlay.option_list);
                 " ↑↓ select · enter run · esc back "
             }
-            Some(FrontendWidgetContent::ActionList { title, items }) => {
+            Some(FrontendWidgetContent::ActionList { title, items, .. }) => {
                 render_action_list(
                     frame,
                     body,
@@ -630,7 +630,7 @@ pub(super) fn render_usage(
             let total = profile.daily_usage.iter().fold(0_i64, |total, entry| {
                 total.saturating_add(entry.usage.total_tokens)
             });
-            let stats = &profile.run_stats;
+            let stats = &profile.run_stats.completed;
             vec![
                 Line::from(format!(" Today      {} tokens", number(today))),
                 Line::from(format!(

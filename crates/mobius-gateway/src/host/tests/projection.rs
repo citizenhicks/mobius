@@ -174,7 +174,7 @@ fn widget_snapshot_is_namespaced_updated_and_removed() {
 }
 
 #[test]
-fn completed_execution_stats_project_without_an_active_run() {
+fn completed_execution_stats_keep_the_flat_wire_shape() {
     let stats = ExecutionStats {
         run_count: 3,
         failed_run_count: 1,
@@ -189,21 +189,19 @@ fn completed_execution_stats_project_without_an_active_run() {
         },
     };
 
-    let projected = completed_run_stats(&stats);
-
+    let mut expected = serde_json::to_value(&stats).expect("execution totals");
+    expected["active"] = serde_json::Value::Null;
+    let projected = RunStats {
+        completed: stats,
+        active: None,
+    };
     assert_eq!(
-        (
-            projected.run_count,
-            projected.failed_run_count,
-            projected.aborted_run_count,
-            projected.model_calls,
-            projected.tool_calls,
-            projected.failed_tool_calls,
-            projected.elapsed_ms,
-            projected.usage.total_tokens,
-            projected.active,
-        ),
-        (3, 1, 1, 5, 8, 2, 900, 42, None)
+        serde_json::to_value(&projected).expect("run totals"),
+        expected
+    );
+    assert_eq!(
+        serde_json::from_value::<RunStats>(expected).expect("decode flat totals"),
+        projected
     );
 }
 

@@ -3,7 +3,7 @@ import XCTest
 
 extension GatewayWireTests {
     func testScratchpadRequestAndResponseCarryTheirManagementScope() throws {
-        let request = try requestObject(.submitScratchpad(
+        let request = try requestObject(.submitContribution(
             requestID: "scratchpad-1",
             scope: .swarm(id: "swarm-1"),
             operation: .capabilityCommand(
@@ -14,7 +14,7 @@ extension GatewayWireTests {
                 target: nil
             )
         ))
-        XCTAssertEqual(request["type"] as? String, "submit_scratchpad")
+        XCTAssertEqual(request["type"] as? String, "submit_contribution")
         XCTAssertNil(request["session_id"])
         XCTAssertEqual(
             request["scope"] as? [String: String],
@@ -26,14 +26,14 @@ extension GatewayWireTests {
         )
 
         let response = try decodeEnvelope(
-            #"{"version":58,"type":"scratchpad_changed","request_id":"scratchpad-1","scope":{"type":"global"},"contribution":{"capability":"scratchpad","accepts_file_attachments":false,"count":0,"commands":[],"widgets":[],"references":[]}}"#
+            #"{"version":58,"type":"contributions","request_id":"scratchpad-1","scope":{"type":"global"},"contributions":[{"capability":"scratchpad","accepts_file_attachments":false,"count":0,"commands":[],"widgets":[],"references":[]}] }"#
         )
-        guard case .scratchpadChanged(let requestID, let scope, let contribution) = response else {
+        guard case .contributionsChanged(let requestID, let scope, let contribution) = response else {
             return XCTFail("Expected a scoped scratchpad response")
         }
         XCTAssertEqual(requestID, "scratchpad-1")
         XCTAssertEqual(scope, .global)
-        XCTAssertEqual(contribution.capability, "scratchpad")
+        XCTAssertEqual(contribution.first?.capability, "scratchpad")
     }
 
     func testSessionCatalogRequestsMatchBotOwnedContract() throws {

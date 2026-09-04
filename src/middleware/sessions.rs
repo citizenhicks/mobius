@@ -10,6 +10,7 @@ use super::Middleware;
 use super::MiddlewareCommandContext;
 use super::MiddlewareCommandOutput;
 use super::RuntimeContext;
+use super::attachments::strip_attachment_references;
 use super::manifest::{MiddlewareManifest, MiddlewareSettingManifest};
 use super::tools::{Catalog, Tool, ToolContext, rank_bm25, render_tool_event};
 use crate::BoxFuture;
@@ -35,7 +36,6 @@ use crate::protocol::FrontendWidget;
 use crate::protocol::MessageTarget;
 use crate::protocol::Op;
 use crate::protocol::replay_events;
-use crate::protocol::strip_attachment_references;
 
 mod text {
     include!(concat!(env!("OUT_DIR"), "/src_middleware_sessions_text.rs"));
@@ -156,8 +156,13 @@ impl Middleware for Sessions {
         render_tool_event(
             event,
             |name| name == "search_threads",
-            |_, arguments| super::tools::ToolHeading {
-                title: text::RENDER_SEARCH_THREADS.into(),
+            |name, arguments| super::tools::ToolHeading {
+                title: if matches!(event, EventMsg::ToolCallEnd(_)) {
+                    name
+                } else {
+                    text::RENDER_SEARCH_THREADS
+                }
+                .into(),
                 detail: arguments
                     .get("query")
                     .and_then(Value::as_str)

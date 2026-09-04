@@ -3,6 +3,60 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testContributedSlashCommandsUseTheirOwnerAndIdlePolicy() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model { await recorder.record($0) }
+        model.connectionState = .ready
+        model.selectedSessionID = "chat-1"
+        model.contributions = [FrontendContribution(
+            capability: "notes",
+            acceptsFileAttachments: false,
+            count: nil,
+            commands: [
+                FrontendCommand(name: "inspect_all", arguments: "", description: "Inspect all notes", requiresIdle: true),
+                FrontendCommand(name: "inspect", arguments: "<id>", description: "Inspect a note", requiresIdle: true),
+                FrontendCommand(name: "status", arguments: "", description: "Show status", requiresIdle: false)
+            ],
+            widgets: [],
+            references: []
+        )]
+
+        let suggestions = try XCTUnwrap(model.commandSuggestions(in: "/inspect", cursorOffset: 8))
+        XCTAssertEqual(suggestions.matches.first?.replacement, "/inspect ")
+        XCTAssertEqual(suggestions.matches.first?.reference.value, "inspect <id>")
+        XCTAssertNil(model.commandSuggestions(in: "hello /ins", cursorOffset: 10))
+        XCTAssertNil(model.commandSuggestions(in: "/inspect arg", cursorOffset: 12))
+
+        model.activeTurnID = "turn-1"
+        model.composer = "/inspect note-1"
+        XCTAssertFalse(model.sendMessage())
+        XCTAssertEqual(model.composer, "/inspect note-1")
+
+        model.activeTurnID = nil
+        XCTAssertTrue(model.sendMessage())
+        let request = await recorder.firstRequest(after: 0) {
+            if case .submit = $0 { true } else { false }
+        }
+        guard case .submit("chat-1", let submission) = try XCTUnwrap(request),
+              case .capabilityCommand(let capability, let command, let arguments, let input, let target) = submission.op
+        else { return XCTFail("Expected a capability command, not a model message") }
+        XCTAssertEqual(capability, "notes")
+        XCTAssertEqual(command, "inspect")
+        XCTAssertEqual(arguments, "note-1")
+        XCTAssertNil(input)
+        XCTAssertNil(target)
+        XCTAssertTrue(model.composer.isEmpty)
+
+        model.activeTurnID = "turn-1"
+        model.composer = "/status"
+        XCTAssertTrue(model.sendMessage())
+        model.composer = "/unknown"
+        XCTAssertFalse(model.sendMessage())
+        XCTAssertEqual(model.composer, "/unknown")
+        model.composer = "/status " + String(repeating: "x", count: maximumComposerBytes)
+        XCTAssertFalse(model.sendMessage())
+    }
+
     func testSimpleRoutineScheduleRecognizesEditorModes() {
         XCTAssertEqual(
             simpleRoutineSchedule("30 14 * * *"),
@@ -217,25 +271,16 @@ extension AppModelTests {
         model.connectionState = .ready
 
         XCTAssertNil(model.selectedSessionID)
-        XCTAssertEqual(model.globalScratchpadWidget?.title, "Global Scratchpad")
+        XCTAssertEqual(model.navigationWidgets(in: .global).first?.title, "Global Scratchpad")
 
-        model.refreshScratchpad(scope: .global)
+        model.refreshContributions(scope: .global)
         let request = await recorder.firstRequest(after: 0) {
-            if case .submitScratchpad = $0 { return true }
+            if case .getContributions = $0 { return true }
             return false
         }
-        guard case .submitScratchpad(_, let scope, let operation) = try XCTUnwrap(request),
-              case .capabilityCommand(
-                let capability,
-                let command,
-                let arguments,
-                _,
-                let target
-              ) = operation
-        else { return XCTFail("Expected a gateway-scoped scratchpad refresh") }
+        guard case .getContributions(_, let scope) = try XCTUnwrap(request)
+        else { return XCTFail("Expected a gateway-scoped contribution refresh") }
         XCTAssertEqual(scope, .global)
-        XCTAssertEqual([capability, command, arguments], ["scratchpad", "scratchpad", "refresh"])
-        XCTAssertNil(target)
     }
 
     func testSwarmScratchpadRefreshAndContributionStayWithSelectedSwarm() async throws {
@@ -254,12 +299,12 @@ extension AppModelTests {
         model.swarms = [swarm]
         model.connectionState = .ready
 
-        model.refreshScratchpad(scope: .swarm(id: swarm.id))
+        model.refreshContributions(scope: .swarm(id: swarm.id))
         let request = await recorder.firstRequest(after: 0) {
-            if case .submitScratchpad = $0 { return true }
+            if case .getContributions = $0 { return true }
             return false
         }
-        guard case .submitScratchpad(_, let scope, _) = try XCTUnwrap(request) else {
+        guard case .getContributions(_, let scope) = try XCTUnwrap(request) else {
             return XCTFail("Expected a scoped scratchpad refresh")
         }
         XCTAssertEqual(scope, .swarm(id: swarm.id))
@@ -282,23 +327,23 @@ extension AppModelTests {
             )],
             references: []
         )
-        model.handle(.scratchpadChanged(
+        model.handle(.contributionsChanged(
             requestID: "scratchpad-1",
             scope: .swarm(id: swarm.id),
-            contribution: contribution
+            contributions: [contribution]
         ))
 
-        XCTAssertEqual(model.swarmScratchpadContributions[swarm.id]?.count, 1)
-        XCTAssertEqual(model.swarmScratchpadWidget(swarmID: swarm.id)?.title, "Swarm Scratchpad")
-        XCTAssertNil(model.globalScratchpadWidget)
+        XCTAssertEqual(model.swarmContributions[swarm.id]?.first?.count, 1)
+        XCTAssertEqual(model.navigationWidgets(in: .swarm(id: swarm.id)).first?.title, "Swarm Scratchpad")
+        XCTAssertNil(model.navigationWidgets(in: .global).first)
     }
 
-    func testStaleSwarmScratchpadScopeDoesNotReachGateway() async throws {
+    func testStaleSwarmContributionScopeDoesNotReachGateway() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
         model.connectionState = .ready
 
-        model.refreshScratchpad(scope: .swarm(id: "removed-swarm"))
+        model.refreshContributions(scope: .swarm(id: "removed-swarm"))
 
         let requestCount = await recorder.requestCount()
         XCTAssertEqual(requestCount, 0)

@@ -6,8 +6,8 @@ use super::{
 use crate::Result;
 use crate::middleware::{FrontendEventSink, MiddlewareCommandOutput};
 use crate::protocol::{
-    FrontendAction, FrontendActionListItem, FrontendEvent, FrontendListItemState, FrontendSlot,
-    FrontendSymbol, FrontendTone, FrontendWidget, FrontendWidgetContent, Op,
+    FrontendAction, FrontendActionListItem, FrontendEditor, FrontendEvent, FrontendListItemState,
+    FrontendSlot, FrontendSymbol, FrontendTone, FrontendWidget, FrontendWidgetContent, Op,
 };
 
 pub(super) fn surface_widgets(snapshot: &Snapshot) -> Vec<FrontendWidget> {
@@ -97,6 +97,29 @@ fn action_list_content(
 ) -> FrontendWidgetContent {
     FrontendWidgetContent::ActionList {
         title: title.into(),
+        actions: if scope == Scope::Swarm {
+            vec![FrontendAction {
+                id: "add".into(),
+                label: text::ACTION_ADD_SWARM.into(),
+                symbol: FrontendSymbol::Custom("plus".into()),
+                tone: FrontendTone::Neutral,
+                op: Op::CapabilityCommand {
+                    capability: MANIFEST.id.into(),
+                    command: "scratchpad".into(),
+                    arguments: "add".into(),
+                    input: Some(String::new()),
+                    target: None,
+                },
+                editor: Some(FrontendEditor {
+                    title: text::EDITOR_SWARM_TITLE.into(),
+                    label: text::EDITOR_LABEL.into(),
+                    description: text::EDITOR_SWARM_DESCRIPTION.into(),
+                    submit_label: text::EDITOR_SUBMIT.into(),
+                }),
+            }]
+        } else {
+            Vec::new()
+        },
         items: entries
             .iter()
             .rev()
@@ -178,6 +201,7 @@ fn list_action(
     input: Option<&str>,
 ) -> FrontendAction {
     FrontendAction {
+        editor: None,
         id: format!("{id}:{}", entry.id),
         label: label.into(),
         symbol,

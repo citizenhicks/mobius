@@ -37,9 +37,10 @@ enum GatewayRequest: Encodable, Sendable {
         text: String
     )
     case submit(sessionID: String, submission: Submission)
-    case submitScratchpad(
+    case getContributions(requestID: String, scope: ContributionScope)
+    case submitContribution(
         requestID: String,
-        scope: ScratchpadScope,
+        scope: ContributionScope,
         operation: AgentOperation
     )
     case createBot(
@@ -266,8 +267,12 @@ enum GatewayRequest: Encodable, Sendable {
             try container.encode("submit", forKey: "type")
             try container.encode(sessionID, forKey: "sessionId")
             try container.encode(submission, forKey: "submission")
-        case .submitScratchpad(let requestID, let scope, let operation):
-            try container.encode("submit_scratchpad", forKey: "type")
+        case .getContributions(let requestID, let scope):
+            try container.encode("get_contributions", forKey: "type")
+            try container.encode(requestID, forKey: "requestId")
+            try container.encode(scope, forKey: "scope")
+        case .submitContribution(let requestID, let scope, let operation):
+            try container.encode("submit_contribution", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
             try container.encode(scope, forKey: "scope")
             try container.encode(operation, forKey: "operation")
@@ -544,10 +549,10 @@ enum GatewayEnvelope: Decodable, Sendable {
     )
     case sessionChanged(SessionReadyPayload)
     case gatewayConfigured(requestID: String, payload: ReadyPayload)
-    case scratchpadChanged(
+    case contributionsChanged(
         requestID: String,
-        scope: ScratchpadScope,
-        contribution: FrontendContribution
+        scope: ContributionScope,
+        contributions: [FrontendContribution]
     )
     case accepted(requestID: String)
     case rejected(GatewayRejection)
@@ -681,13 +686,13 @@ enum GatewayEnvelope: Decodable, Sendable {
                     forKey: "payload"
                 ).validated()
             )
-        case "scratchpad_changed":
-            self = .scratchpadChanged(
+        case "contributions":
+            self = .contributionsChanged(
                 requestID: try container.decode(String.self, forKey: "requestId"),
-                scope: try container.decode(ScratchpadScope.self, forKey: "scope"),
-                contribution: try container.decode(
-                    FrontendContribution.self,
-                    forKey: "contribution"
+                scope: try container.decode(ContributionScope.self, forKey: "scope"),
+                contributions: try container.decode(
+                    [FrontendContribution].self,
+                    forKey: "contributions"
                 )
             )
         case "accepted":
@@ -975,7 +980,7 @@ struct SessionWidget: Decodable, Sendable {
     let item: FrontendWidget
 }
 
-enum ScratchpadScope: Codable, Hashable, Sendable {
+enum ContributionScope: Codable, Hashable, Sendable {
     case global
     case swarm(id: String)
 
@@ -987,11 +992,11 @@ enum ScratchpadScope: Codable, Hashable, Sendable {
         case "swarm":
             let id = try container.decode(String.self, forKey: "id")
             guard !id.isEmpty else {
-                throw GatewayWireError.invalidFrame("scratchpad swarm scope has an empty ID")
+                throw GatewayWireError.invalidFrame("contribution swarm scope has an empty ID")
             }
             self = .swarm(id: id)
         case let type:
-            throw GatewayWireError.invalidFrame("unknown scratchpad scope \(type)")
+            throw GatewayWireError.invalidFrame("unknown contribution scope \(type)")
         }
     }
 
@@ -1002,7 +1007,7 @@ enum ScratchpadScope: Codable, Hashable, Sendable {
             try container.encode("global", forKey: "type")
         case .swarm(let id):
             guard !id.isEmpty else {
-                throw GatewayWireError.invalidFrame("scratchpad swarm scope has an empty ID")
+                throw GatewayWireError.invalidFrame("contribution swarm scope has an empty ID")
             }
             try container.encode("swarm", forKey: "type")
             try container.encode(id, forKey: "id")

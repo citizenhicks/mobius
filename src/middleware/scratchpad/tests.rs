@@ -382,15 +382,33 @@ async fn swarm_scope_is_resolved_for_each_projection() {
 async fn human_management_returns_scoped_action_lists() {
     let (_temporary, store) = store().await;
     let swarm_id = Uuid::new_v4().to_string();
+    let initial = store
+        .swarm_contribution(&swarm_id)
+        .await
+        .expect("initial surface");
+    let Some(FrontendWidgetContent::ActionList { actions, .. }) = &initial.widgets[0].content
+    else {
+        panic!("management action list");
+    };
+    let mut operation = actions[0].op.clone();
+    let Op::CapabilityCommand { input, .. } = &mut operation else {
+        panic!("add command");
+    };
+    *input = Some("  initial note  ".into());
+    assert_eq!(
+        actions[0].editor.as_ref().expect("editor").title,
+        "Add collective note"
+    );
     let contribution = store
-        .add_swarm(&swarm_id, "  initial note  ")
+        .management_command(Some(&swarm_id), &operation)
         .await
         .expect("add swarm note");
-    let Some(FrontendWidgetContent::ActionList { title, items }) = &contribution.widgets[0].content
+    let Some(FrontendWidgetContent::ActionList { title, items, .. }) =
+        &contribution.widgets[0].content
     else {
         panic!("swarm contribution should be an action list");
     };
-    assert_eq!(title, "Swarm Scratchpad");
+    assert_eq!(title, "Collective scratchpad");
     assert_eq!(items[0].text, "initial note");
     let note_id = items[0].id.clone();
     let Op::CapabilityCommand { arguments, .. } = &items[0].actions[0].op else {
@@ -398,8 +416,14 @@ async fn human_management_returns_scoped_action_lists() {
     };
     assert_eq!(arguments, &format!("edit swarm {note_id}"));
 
+    let mut edit = items[0].actions[0].op.clone();
+    let Op::CapabilityCommand { input, .. } = &mut edit else {
+        panic!("edit command");
+    };
+    *input = Some("revised note".into());
+    assert!(store.management_command(None, &edit).await.is_err());
     let contribution = store
-        .edit_swarm(&swarm_id, &note_id, "revised note")
+        .management_command(Some(&swarm_id), &edit)
         .await
         .expect("edit swarm note");
     let Some(FrontendWidgetContent::ActionList { items, .. }) = &contribution.widgets[0].content
@@ -408,7 +432,7 @@ async fn human_management_returns_scoped_action_lists() {
     };
     assert_eq!(items[0].text, "revised note");
     let contribution = store
-        .forget_swarm(&swarm_id, &note_id)
+        .management_command(Some(&swarm_id), &items[0].actions[1].op)
         .await
         .expect("forget swarm note");
     assert!(matches!(
@@ -422,7 +446,7 @@ async fn human_management_returns_scoped_action_lists() {
         .expect("add global note");
     assert!(matches!(
         &global.widgets[0].content,
-        Some(FrontendWidgetContent::ActionList { title, items })
+        Some(FrontendWidgetContent::ActionList { title, items, .. })
             if title == "Global Scratchpad" && items[0].text == "global note"
     ));
     assert!(store.swarm_contribution("not-a-uuid").await.is_err());
@@ -928,6 +952,131 @@ fn unchanged_projection_is_a_no_op() {
     );
 }
 
+#[tokio::test]
+async fn compaction_discards_projections_before_a_post_hook_stops_or_fails() {
+    use crate::agent::{AgentConfig, create_agent};
+    use crate::backend::model::{
+        CompactOutput, CompactRequest, Model, ModelEventSink, ModelOutput, ModelRequest,
+        ModelRouter,
+    };
+    use crate::backend::sandbox::{ApprovalPolicy, Sandbox, local::LocalSandbox};
+    use crate::middleware::{
+        CompactContext, MiddlewareStack, compaction::Compaction, messages::Messages, tools::Tools,
+    };
+    use crate::protocol::MessageSubmission;
+
+    struct RetainingCompactor;
+    impl Model for RetainingCompactor {
+        fn respond<'a>(
+            &'a self,
+            _request: ModelRequest<'a>,
+            _events: ModelEventSink,
+        ) -> BoxFuture<'a, Result<ModelOutput>> {
+            Box::pin(async { Err(Error::Config("unexpected model request".into())) })
+        }
+
+        fn compaction_endpoint(&self) -> bool {
+            true
+        }
+
+        fn compact<'a>(
+            &'a self,
+            request: CompactRequest<'a>,
+        ) -> BoxFuture<'a, Result<CompactOutput>> {
+            Box::pin(async move {
+                assert!(request.input.iter().any(is_projection_item));
+                CompactOutput::from_output(request.input.to_vec(), Default::default())
+            })
+        }
+    }
+
+    struct StopAfterCompact(bool);
+    impl Middleware for StopAfterCompact {
+        fn name(&self) -> &'static str {
+            "stop_after_compact"
+        }
+
+        fn post_compact<'a>(
+            &'a self,
+            context: &'a mut CompactContext<'_>,
+        ) -> BoxFuture<'a, Result<()>> {
+            Box::pin(async move {
+                assert!(!context.input.iter().any(is_projection_item));
+                if self.0 {
+                    Err(Error::Config("post-compact failure".into()))
+                } else {
+                    context.stop("post-compact stop")
+                }
+            })
+        }
+    }
+
+    for fail in [false, true] {
+        let (temporary, store) = store().await;
+        store
+            .write_session("session", "remember this")
+            .await
+            .expect("note");
+        let middleware = MiddlewareStack::new(vec![
+            Arc::new(Messages::default()),
+            Arc::new(Tools::new(Vec::new())),
+            Arc::new(StopAfterCompact(fail)),
+            Arc::new(scratchpad(&store)),
+            Arc::new(Compaction::new(1).expect("compaction")),
+        ])
+        .expect("middleware");
+        let mut agent = create_agent(
+            AgentConfig::new(
+                Arc::new(ModelRouter::new("model", Arc::new(RetainingCompactor))),
+                Arc::new(Sandbox::new(
+                    Arc::new(LocalSandbox::new(temporary.path()).expect("sandbox")),
+                    ApprovalPolicy::Ask,
+                )),
+                Arc::clone(&store.checkpoints),
+                middleware,
+                "test",
+            )
+            .session_id("session")
+            .session_context(session_context()),
+        )
+        .await
+        .expect("agent");
+        agent
+            .sender()
+            .submit(Op::Message {
+                message: MessageSubmission {
+                    author: crate::protocol::MessageAuthor::User,
+                    text: "hello".into(),
+                    attachments: Vec::new(),
+                    reply: None,
+                    requested_delivery: None,
+                    target_turn_id: None,
+                },
+            })
+            .expect("submit");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if matches!(
+                    agent.next_event().await.expect("event").msg,
+                    EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)
+                ) {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("terminal event");
+        let checkpoint = store
+            .checkpoints
+            .load("session")
+            .await
+            .expect("load")
+            .expect("checkpoint");
+        assert_eq!(checkpoint.compaction_count, 1);
+        assert!(!checkpoint.context.iter().any(is_projection_item));
+    }
+}
+
 #[test]
 fn disabled_scratchpad_removes_durable_projection_items() {
     let snapshot = Snapshot {
@@ -1033,7 +1182,7 @@ fn surfaces_are_scope_specific_action_lists_without_subtext() {
     };
     let widgets = surface_widgets(&snapshot);
 
-    let Some(FrontendWidgetContent::ActionList { title, items }) = &widgets[0].content else {
+    let Some(FrontendWidgetContent::ActionList { title, items, .. }) = &widgets[0].content else {
         panic!("navigation should render an action list");
     };
     assert_eq!(title, "Global Scratchpad");
@@ -1048,7 +1197,7 @@ fn surfaces_are_scope_specific_action_lists_without_subtext() {
         ["Edit", "Delete"]
     );
 
-    let Some(FrontendWidgetContent::ActionList { title, items }) = &widgets[1].content else {
+    let Some(FrontendWidgetContent::ActionList { title, items, .. }) = &widgets[1].content else {
         panic!("chat menu should render an action list");
     };
     assert_eq!(title, "Chat Scratchpad");

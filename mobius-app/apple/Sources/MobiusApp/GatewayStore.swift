@@ -741,16 +741,6 @@ final class GatewayStore {
         defaults.set(try encoder.encode(accounts), forKey: accountsKey)
     }
 
-    func recordCloudUserID(_ userID: UUID, for account: GatewayAccount) throws {
-        var accounts = loadAccounts()
-        guard let index = accounts.firstIndex(where: { $0.id == account.id }) else {
-            throw StoreError.missingAccount
-        }
-        guard accounts[index].cloudUserID != userID else { return }
-        accounts[index].cloudUserID = userID
-        defaults.set(try encoder.encode(accounts), forKey: accountsKey)
-    }
-
     func rename(_ account: GatewayAccount, to rawName: String) throws -> GatewayAccount {
         let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty,

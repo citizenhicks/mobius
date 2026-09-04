@@ -465,7 +465,7 @@ private struct EventLine: View {
     }
 
     private var detail: String {
-        entry.role == .tool ? formattedToolEventDetail(entry.eventDetail) : entry.eventDetail
+        entry.eventDetail
     }
 
     private var glyph: MobiusGlyph {

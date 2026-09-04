@@ -138,6 +138,13 @@ private struct ComposerSurface: View {
             let request = referenceSuggestionRequest
             referenceSuggestions = nil
             guard !request.isDisabled else { return }
+            if let commands = model.commandSuggestions(
+                in: request.text,
+                cursorOffset: request.cursorOffset
+            ) {
+                referenceSuggestions = commands
+                return
+            }
             try? await Task.sleep(for: .milliseconds(80))
             guard !Task.isCancelled else { return }
             let references = model.capabilityReferences
@@ -465,8 +472,8 @@ private struct ComposerActivityView: View {
         }
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .contain)
-        .task(id: model.gitDiff) {
-            let diff = model.gitDiff
+        .task(id: model.gitDiffs[.unstaged]?.text) {
+            let diff = model.gitDiffs[.unstaged]?.text ?? ""
             let countTask = Task.detached(priority: .utility) {
                 diffTotals(diff)
             }

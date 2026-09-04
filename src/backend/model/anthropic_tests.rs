@@ -78,7 +78,7 @@ fn anthropic_reports_provider_owned_cache_pricing() {
     );
     assert_eq!(
         provider.prompt_cache_capability(),
-        PromptCacheCapability::Explicit
+        PromptCacheMode::Explicit
     );
 }
 

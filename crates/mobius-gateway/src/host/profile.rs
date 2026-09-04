@@ -56,66 +56,14 @@ pub(super) fn session_tree_ids(
 pub(super) fn gateway_run_stats(sessions: &[SessionSummary]) -> Result<RunStats> {
     let mut totals = RunStats::default();
     for session in sessions {
-        add_execution_stats(&mut totals, &session.execution_stats)?;
+        totals
+            .completed
+            .checked_add(&session.execution_stats)
+            .ok_or_else(|| {
+                Error::Config("gateway execution statistics exceed the supported range".into())
+            })?;
     }
     Ok(totals)
-}
-
-pub(super) fn add_execution_stats(total: &mut RunStats, stats: &ExecutionStats) -> Result<()> {
-    let (
-        Some(run_count),
-        Some(failed_run_count),
-        Some(aborted_run_count),
-        Some(model_calls),
-        Some(tool_calls),
-        Some(failed_tool_calls),
-        Some(elapsed_ms),
-    ) = (
-        total.run_count.checked_add(stats.run_count),
-        total.failed_run_count.checked_add(stats.failed_run_count),
-        total.aborted_run_count.checked_add(stats.aborted_run_count),
-        total.model_calls.checked_add(stats.model_calls),
-        total.tool_calls.checked_add(stats.tool_calls),
-        total.failed_tool_calls.checked_add(stats.failed_tool_calls),
-        total.elapsed_ms.checked_add(stats.elapsed_ms),
-    )
-    else {
-        return Err(Error::Config(
-            "gateway execution statistics exceed the supported range".into(),
-        ));
-    };
-    let mut usage = total.usage.clone();
-    if usage.checked_add(&stats.usage).is_none() {
-        return Err(Error::Config(
-            "gateway execution statistics exceed the supported range".into(),
-        ));
-    }
-    *total = RunStats {
-        run_count,
-        failed_run_count,
-        aborted_run_count,
-        model_calls,
-        tool_calls,
-        failed_tool_calls,
-        elapsed_ms,
-        usage,
-        active: None,
-    };
-    Ok(())
-}
-
-pub(super) fn completed_run_stats(stats: &ExecutionStats) -> RunStats {
-    RunStats {
-        run_count: stats.run_count,
-        failed_run_count: stats.failed_run_count,
-        aborted_run_count: stats.aborted_run_count,
-        model_calls: stats.model_calls,
-        tool_calls: stats.tool_calls,
-        failed_tool_calls: stats.failed_tool_calls,
-        elapsed_ms: stats.elapsed_ms,
-        usage: stats.usage.clone(),
-        active: None,
-    }
 }
 
 pub(super) fn run_summary(record: ExecutionRecord) -> RunSummary {
@@ -126,7 +74,7 @@ pub(super) fn run_summary(record: ExecutionRecord) -> RunSummary {
         started_at_ms: record.started_at_ms,
         finished_at_ms: Some(record.finished_at_ms),
         elapsed_ms: record.elapsed_ms,
-        outcome: Some(session_outcome(record.outcome)),
+        outcome: Some(record.outcome),
         model_calls: record.model_calls,
         tool_calls: record.tool_calls,
         failed_tool_calls: record.failed_tool_calls,
@@ -223,14 +171,6 @@ pub(super) fn active_run_summary(session_id: &str, active: &ActiveExecution) -> 
         tool_calls: active.tool_calls,
         failed_tool_calls: active.failed_tool_calls,
         usage: active.usage.clone(),
-    }
-}
-
-const fn session_outcome(outcome: ExecutionOutcome) -> SessionOutcome {
-    match outcome {
-        ExecutionOutcome::Completed => SessionOutcome::Completed,
-        ExecutionOutcome::Aborted => SessionOutcome::Aborted,
-        ExecutionOutcome::Failed => SessionOutcome::Failed,
     }
 }
 

@@ -35,7 +35,6 @@ use crate::backend::model::ModelEventSink;
 use crate::backend::model::ModelOutput;
 use crate::backend::model::ModelRequest;
 use crate::backend::model::ModelRouter;
-use crate::backend::model::PromptCacheCapability;
 use crate::backend::model::STREAM_RETRY_LIMIT;
 use crate::backend::model::TOOL_ERROR_FIELD;
 use crate::backend::model::ToolCall;
@@ -75,6 +74,7 @@ use crate::protocol::ModelStepContent;
 use crate::protocol::ModelStepContentPhase;
 use crate::protocol::ModelStepOutcome;
 use crate::protocol::Op;
+use crate::protocol::PromptCacheMode;
 use crate::protocol::SessionContext;
 use crate::protocol::SessionFileReference;
 use crate::protocol::TokenUsage;
@@ -512,8 +512,8 @@ impl Model for InterruptedStreamModel {
 }
 
 impl Model for NativeCompactionModel {
-    fn prompt_cache_capability(&self) -> PromptCacheCapability {
-        PromptCacheCapability::Explicit
+    fn prompt_cache_capability(&self) -> PromptCacheMode {
+        PromptCacheMode::Explicit
     }
 
     fn respond<'a>(

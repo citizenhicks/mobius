@@ -220,8 +220,17 @@ struct SidebarView: View {
                 VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
                     navigationButton("Chats", destination: .chats)
                     navigationButton("Bots", destination: .bots)
-                    navigationButton("Scratchpad", destination: .scratchpad)
-                    ForEach(model.navigationWidgets.filter { $0.capability != "scratchpad" }) { widget in
+                    let globalWidgets = model.navigationWidgets(in: .global)
+                    if globalWidgets.isEmpty {
+                        navigationButton("Scratchpad", destination: .globalContributions)
+                    } else {
+                        ForEach(globalWidgets) { widget in
+                            contributionNavigationButton(widget, scope: .global)
+                        }
+                    }
+                    ForEach(model.navigationWidgets.filter { widget in
+                        !globalWidgets.contains { $0.id == widget.id }
+                    }) { widget in
                         contributionNavigationButton(widget)
                     }
 
@@ -330,16 +339,21 @@ struct SidebarView: View {
         .frame(minHeight: MobiusStyle.iconButtonSize)
     }
 
-    private func contributionNavigationButton(_ widget: MountedWidget) -> some View {
-        let destination = AppDestination.contribution(widget.id)
+    private func contributionNavigationButton(
+        _ widget: MountedWidget,
+        scope: ContributionScope? = nil
+    ) -> some View {
+        let destination = scope == .global
+            ? AppDestination.globalContributions : .contribution(widget.id)
         return Button {
-            if widget.widget.action != nil {
-                model.submitWidget(widget)
+            if let operation = widget.widget.action {
+                if let scope { model.submitContributionOperation(operation, scope: scope) }
+                else { model.submitWidget(widget) }
             }
             showDetail(destination)
         } label: {
             MobiusLabel(
-                verbatim: widget.widget.text,
+                title: frontendPresentationText(widget.widget.text),
                 glyph: widget.glyph,
                 iconColor: model.destination == destination ? palette.accent : Color.primary
             )
