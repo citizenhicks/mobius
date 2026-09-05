@@ -35,6 +35,7 @@ final class RealtimeVoiceMeterTests: XCTestCase {
         XCTAssertEqual(voice.audioLevels, levels)
         voice.close()
         XCTAssertEqual(voice.audioLevels, Mobius.RealtimeAudioLevels())
+        XCTAssertEqual(voice.levelFlare, 0)
         XCTAssertFalse(voice.isMuted)
         XCTAssertNotNil(Mobius.MobiusGlyph.micOff01.menuImage(.primary))
         XCTAssertEqual(Mobius.MobiusSymbol.knownGlyph(for: "voice"), .audioWave01)
@@ -120,19 +121,28 @@ extension AppModelTests {
             action: .capabilityCommand(capability: "test-preview", command: "show", arguments: "", input: nil, target: nil)
         ))]
         model.realtimeVoiceCall = Mobius.RealtimeVoiceCall(requestID: "pending", sessionID: "chat-1")
-        model.realtimeVoice.updateAudioLevels(Mobius.RealtimeAudioLevels(microphone: 0.36, playback: 0))
+        // The wave answers change, so a fixture needs a settled level rather than a first sample.
+        func settle(_ levels: Mobius.RealtimeAudioLevels) {
+            for _ in 0..<40 { model.realtimeVoice.updateAudioLevels(levels) }
+        }
+        settle(Mobius.RealtimeAudioLevels(microphone: 0.36, playback: 0))
         let microphone = await show(.light)
         XCTAssertTrue(inputs(in: microphone).isEmpty)
         capture(microphone, name: "voice-light-microphone")
         try await Task.sleep(for: .milliseconds(250))
         capture(microphone, name: "voice-light-microphone-moving")
+        // One loud sample against the settled baseline is what lifts the tails.
+        model.realtimeVoice.updateAudioLevels(Mobius.RealtimeAudioLevels(microphone: 0.92, playback: 0))
+        XCTAssertEqual(model.realtimeVoice.levelFlare, 1)
+        capture(await show(.light), name: "voice-light-microphone-flare")
         model.realtimeVoice.updateAudioLevels(Mobius.RealtimeAudioLevels())
+        XCTAssertEqual(model.realtimeVoice.levelFlare, 0)
         capture(await show(.light), name: "voice-silent")
-        model.realtimeVoice.updateAudioLevels(Mobius.RealtimeAudioLevels(microphone: 0, playback: 0.81))
+        settle(Mobius.RealtimeAudioLevels(microphone: 0, playback: 0.81))
         capture(await show(.light), name: "voice-light-bot")
-        model.realtimeVoice.updateAudioLevels(Mobius.RealtimeAudioLevels(microphone: 0.36, playback: 0))
+        settle(Mobius.RealtimeAudioLevels(microphone: 0.36, playback: 0))
         capture(await show(.dark), name: "voice-dark-microphone")
-        model.realtimeVoice.updateAudioLevels(Mobius.RealtimeAudioLevels(microphone: 0.36, playback: 0.81))
+        settle(Mobius.RealtimeAudioLevels(microphone: 0.36, playback: 0.81))
         capture(await show(.dark), name: "voice-dark-both")
         window.frame.size.height = 500
         model.transcript = [Mobius.TranscriptEntry(

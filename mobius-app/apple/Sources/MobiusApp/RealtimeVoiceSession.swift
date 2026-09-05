@@ -31,6 +31,9 @@ struct RealtimeAudioLevels: Equatable, Sendable {
 final class RealtimeVoiceSession: NSObject {
     private(set) var isConnected = false
     private(set) var audioLevels = RealtimeAudioLevels()
+    /// How far the current level sits from its own recent average, so the wave reacts to
+    /// changes in the voice rather than to loudness alone.
+    private(set) var levelFlare = 0.0
     var isMuted = false {
         didSet {
             audioTrack?.isEnabled = !isMuted
@@ -48,6 +51,7 @@ final class RealtimeVoiceSession: NSObject {
     @ObservationIgnored private var generation = UUID()
     @ObservationIgnored private var audioIsActive = false
     @ObservationIgnored private var meteringTask: Task<Void, Never>?
+    @ObservationIgnored private var levelBaseline = 0.0
 
     init(onFailure: ((String) -> Void)? = nil) {
         failure = onFailure
@@ -108,6 +112,8 @@ final class RealtimeVoiceSession: NSObject {
         meteringTask?.cancel()
         meteringTask = nil
         audioLevels = RealtimeAudioLevels()
+        levelFlare = 0
+        levelBaseline = 0
         dataChannel?.close()
         dataChannel = nil
         audioTrack?.isEnabled = false
@@ -138,7 +144,9 @@ final class RealtimeVoiceSession: NSObject {
                     levels.include(type: statistic.type, values: statistic.values)
                 }
                 self.updateAudioLevels(levels)
-                try? await Task.sleep(for: .milliseconds(100))
+                // libwebrtc caches each report for 50ms, so this is the fastest poll that
+                // returns fresh numbers instead of the previous report again.
+                try? await Task.sleep(for: .milliseconds(50))
             }
         }
     }
@@ -146,6 +154,10 @@ final class RealtimeVoiceSession: NSObject {
     func updateAudioLevels(_ levels: RealtimeAudioLevels) {
         audioLevels = levels
         if isMuted { audioLevels.microphone = 0 }
+        let level = audioLevels.displayLevel
+        levelBaseline += (level - levelBaseline) * 0.12
+        // Fast attack, slow release: a flare should read as a swell, not as 20Hz jitter.
+        levelFlare = level == 0 ? 0 : max(min(1, abs(level - levelBaseline) * 3), levelFlare * 0.82)
     }
 
     private func activateAudio() throws {

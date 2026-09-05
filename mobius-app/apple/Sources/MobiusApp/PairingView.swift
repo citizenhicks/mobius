@@ -32,28 +32,11 @@ struct PairingView: View {
                             VStack(alignment: .leading, spacing: MobiusSpace.s) {
                                 Text("Gateway address")
                                     .font(MobiusStyle.controlFont)
-                                HStack {
-                                    TextField("wss://gateway.example", text: $model.pairingEndpoint)
-                                        .textFieldStyle(.roundedBorder)
-                                        .textContentType(.URL)
-                                        .autocorrectionDisabled()
-                                        .controlSize(.large)
-                                    PasteButton(payloadType: String.self) { values in
-                                        if let value = values.first {
-                                            model.applyPairingSetup(value)
-                                        }
-                                    }
-                                    .labelStyle(.iconOnly)
-                                    .buttonStyle(.mobiusPlain)
-                                    .tint(.primary)
-                                    .frame(
-                                        width: MobiusStyle.iconButtonSize,
-                                        height: MobiusStyle.iconButtonSize
-                                    )
-                                    .mobiusGlass(in: Circle(), interactive: true, clear: true)
-                                    .accessibilityLabel("Paste pairing setup")
-                                    .help("Paste pairing setup")
-                                }
+                                TextField("wss://gateway.example", text: $model.pairingEndpoint)
+                                    .textFieldStyle(.roundedBorder)
+                                    .textContentType(.URL)
+                                    .autocorrectionDisabled()
+                                    .controlSize(.large)
                             }
                             VStack(alignment: .leading, spacing: MobiusSpace.s) {
                                 Text("One-time code")
@@ -64,6 +47,23 @@ struct PairingView: View {
                                     .autocorrectionDisabled()
                                     .controlSize(.large)
                             }
+                            // One paste fills both fields, so it sits under them rather than beside one.
+                            PasteButton(payloadType: String.self) { values in
+                                if let value = values.first {
+                                    model.applyPairingSetup(value)
+                                }
+                            }
+                            .labelStyle(.iconOnly)
+                            .buttonStyle(.mobiusPlain)
+                            .tint(.primary)
+                            .frame(
+                                width: MobiusStyle.iconButtonSize,
+                                height: MobiusStyle.iconButtonSize
+                            )
+                            .mobiusGlass(in: Circle(), interactive: true, clear: true)
+                            .frame(maxWidth: .infinity)
+                            .accessibilityLabel("Paste pairing setup")
+                            .help("Paste pairing setup")
                         }
                     }
 

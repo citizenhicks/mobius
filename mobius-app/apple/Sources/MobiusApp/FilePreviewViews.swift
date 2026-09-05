@@ -479,7 +479,15 @@ struct PreviewTranscriptSheet: View {
         )
     }
 
-    private var header: some View {
+    // A bare name carries nothing the sheet's own context doesn't, so the row only earns
+    // its place once there is status, model, or spawn context to show.
+    @ViewBuilder private var header: some View {
+        if currentPreview.status != nil || modelChoice != nil || !currentPreview.context.isEmpty {
+            headerRow
+        }
+    }
+
+    private var headerRow: some View {
         HStack(spacing: MobiusSpace.s) {
             Text(verbatim: agentName)
                 .font(MobiusStyle.controlFont.weight(.semibold))
