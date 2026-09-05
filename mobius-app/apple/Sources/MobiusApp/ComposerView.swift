@@ -121,12 +121,14 @@ private struct AudioLevelEqualizer: View {
                     let x = Double(column) / 64
                     let centered = x * 2 - 1
                     let envelope = pow(max(0, 1 - centered * centered), 0.7)
+                    let peak = pow(abs(cos(centered * .pi * 2.5 + 0.2 * sin(centered * 9))), 3)
+                    let volume = amplitude * envelope * (0.08 + 0.92 * peak)
                     // Stable phases and speeds let each dot drift without frame-to-frame randomness.
                     let phase = Double(column) * 2.39996 + Double(lane) * 3.88322
                     let drift = sin(time * (1.8 + 0.6 * sin(phase)) + phase)
-                    let spread = 3 + amplitude * size.height * 0.34 * envelope
-                    let ripple = drift * amplitude * envelope * size.height * 0.12
-                    let sway = cos(time * 1.3 + phase) * amplitude * envelope * 1.5
+                    let spread = 3 + volume * size.height * 0.34
+                    let ripple = drift * volume * size.height * 0.12
+                    let sway = cos(time * 1.3 + phase) * volume * 1.5
                     let radius = (0.75 + 0.7 * depth) * (0.55 + 0.45 * envelope)
                     let rect = CGRect(
                         x: x * (size.width - 4) + 2 + sway - radius,
