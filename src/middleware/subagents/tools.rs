@@ -300,7 +300,10 @@ fn message_definition(name: &str, description: &str) -> ToolDefinition {
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
-                "target": {"type": "string"},
+                "target": {
+                    "type": "string",
+                    "description": text::TOOL_PARAMETER_TARGET_DESCRIPTION
+                },
                 "text": {"type": "string"}
             },
             "required": ["target", "text"],
@@ -370,7 +373,12 @@ impl Tool for InterruptAgent {
             description: text::TOOL_INTERRUPT_AGENT_DESCRIPTION.into(),
             parameters: serde_json::json!({
                 "type": "object",
-                "properties": {"target": {"type": "string"}},
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": text::TOOL_PARAMETER_TARGET_DESCRIPTION
+                    }
+                },
                 "required": ["target"],
                 "additionalProperties": false
             }),
@@ -604,6 +612,10 @@ mod tests {
         assert_eq!(
             definition.parameters["required"],
             serde_json::json!(["target", "text"])
+        );
+        assert_eq!(
+            definition.parameters["properties"]["target"]["description"],
+            "Exact canonical task path from spawn_agent or list_agents, such as /root/reviewer; not a Bot handle or Bot ID."
         );
     }
 }

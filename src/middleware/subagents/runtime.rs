@@ -302,7 +302,7 @@ impl Shared {
                 .tree
                 .agents
                 .get(target)
-                .ok_or_else(|| Error::Unknown(format!("agent `{target}`")))?;
+                .ok_or_else(|| unknown_target(target))?;
             (
                 root.senders.get(target).cloned(),
                 entry.active_turn_id.clone(),
@@ -373,7 +373,7 @@ impl Shared {
                 .tree
                 .agents
                 .get(path)
-                .ok_or_else(|| Error::Unknown(format!("agent `{path}`")))?;
+                .ok_or_else(|| unknown_target(path))?;
             (
                 Arc::clone(&root.checkpoints),
                 entry.session_id.clone(),
@@ -519,6 +519,12 @@ impl Shared {
             }
         }
     }
+}
+
+fn unknown_target(target: &str) -> Error {
+    Error::Unknown(format!(
+        "subagent `{target}` in this chat's task tree; use `list_agents` for canonical task paths"
+    ))
 }
 
 fn subagent_error_notice(message: String) -> FrontendEvent {

@@ -46,7 +46,7 @@ open = "Open subagent"
 empty = "no subagents"
 
 [tool.spawn_agent]
-description = "Start an async child for independent work; return its canonical task name."
+description = "Start an async child for independent work in this chat's subagent task tree; return its canonical task path."
 
 [tool.spawn_agent.parameter.task_name]
 description = "1-64 lowercase letters, digits, or underscores."
@@ -61,16 +61,19 @@ description = "Registered route; defaults to the child route, then parent."
 description = "Reasoning effort for the selected model; defaults to middleware configuration."
 
 [tool.send_message]
-description = "Send collaboration context to a running agent."
+description = "Send collaboration context to a running agent in this chat's subagent task tree. A child may message its parent at the parent's canonical path, including /root."
 
 [tool.followup_task]
-description = "Send follow-up work, starting a turn if idle."
+description = "Send follow-up work to a subagent in this chat's task tree, starting a turn if idle. Cannot target /root."
+
+[tool.parameter.target]
+description = "Exact canonical task path from spawn_agent or list_agents, such as /root/reviewer; not a Bot handle or Bot ID."
 
 [tool.list_agents]
-description = "List agents in this task tree."
+description = "List this chat's subagents and their canonical task paths; does not list peer Bots."
 
 [tool.interrupt_agent]
-description = "Interrupt an agent and return its prior status."
+description = "Interrupt a subagent in this chat's task tree and return its prior status. Cannot target /root."
 
 [tool.wait_agent]
-description = "Wait for an agent update."
+description = "Wait for an update from this chat's subagent task tree."

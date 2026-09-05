@@ -7,6 +7,7 @@ use super::OnPersistFailure;
 use super::Shared;
 use super::Stage;
 use super::ensure_concurrency_available;
+use super::unknown_target;
 use crate::Error;
 use crate::Result;
 use crate::agent::AgentSender;
@@ -104,7 +105,7 @@ impl Shared {
         let root = self.root(root_id).await?;
         let mut root = root.state.lock().await;
         if target != "/root" && !root.tree.agents.contains_key(target) {
-            return Err(Error::Unknown(format!("agent `{target}`")));
+            return Err(unknown_target(target));
         }
         let reports_to_parent = root
             .tree
@@ -159,7 +160,7 @@ impl Shared {
                     .tree
                     .agents
                     .get(target)
-                    .ok_or_else(|| Error::Unknown(format!("agent `{target}`")))?
+                    .ok_or_else(|| unknown_target(target))?
                     .status
                     .clone();
                 if matches!(status, AgentStatus::PendingInit) {
@@ -170,7 +171,7 @@ impl Shared {
                         .tree
                         .agents
                         .get(target)
-                        .ok_or_else(|| Error::Unknown(format!("agent `{target}`")))?
+                        .ok_or_else(|| unknown_target(target))?
                         .clone();
                     let sender = root
                         .senders
@@ -194,7 +195,7 @@ impl Shared {
                     .tree
                     .agents
                     .get_mut(target)
-                    .ok_or_else(|| Error::Unknown(format!("agent `{target}`")))?;
+                    .ok_or_else(|| unknown_target(target))?;
                 let record = entry.clone();
                 entry.status = AgentStatus::PendingInit;
                 entry.last_message = None;

@@ -470,6 +470,97 @@ async fn empty_initial_tree_is_silent_and_empty_transition_removes_widget() {
 }
 
 #[tokio::test]
+async fn coordination_targets_require_canonical_paths_in_the_current_task_tree() {
+    let shared = test_shared();
+    let checkpoints = Arc::new(FailOnceStore {
+        fail_next_save: AtomicBool::new(false),
+        saved_state: StdMutex::new(None),
+    });
+    shared
+        .session_start(test_context(checkpoints.clone(), Arc::new(|_| Ok(()))))
+        .await
+        .expect("initialize runtime");
+    shared
+        .reserve(
+            "root",
+            "/root/analyst",
+            "/root",
+            "analyst-session".into(),
+            1,
+            test_presentation(),
+        )
+        .await
+        .expect("reserve child");
+    shared
+        .rollback("root", "/root/analyst", AgentStatus::Completed)
+        .await
+        .expect("complete child");
+    let before = shared.list("root", None).await.expect("list subagents");
+    let saved_before = checkpoints.saved_state.lock().expect("saved state").clone();
+    let message = MessageSubmission {
+        author: crate::protocol::MessageAuthor::User,
+        text: "Review the parser".into(),
+        attachments: Vec::new(),
+        reply: None,
+        requested_delivery: None,
+        target_turn_id: None,
+    };
+
+    for target in [
+        "analyst",
+        "@analyst",
+        "778d6339-979e-4af4-933e-a2c43a884729",
+    ] {
+        let errors = [
+            shared
+                .submit_message("root", "/root", target, message.clone())
+                .await
+                .expect_err("reject noncanonical message target"),
+            shared
+                .prepare_followup("root", "/root", target)
+                .await
+                .err()
+                .expect("reject noncanonical followup target"),
+            shared
+                .interrupt("root", target)
+                .await
+                .expect_err("reject noncanonical interrupt target"),
+        ];
+        for error in errors {
+            assert!(matches!(error, Error::Unknown(ref text)
+                if text.contains(target) && text.contains("this chat's task tree")
+                    && text.contains("list_agents")));
+        }
+    }
+    assert_eq!(
+        shared.list("root", None).await.expect("list subagents"),
+        before
+    );
+    assert_eq!(
+        *checkpoints.saved_state.lock().expect("saved state"),
+        saved_before
+    );
+    assert!(matches!(
+        shared
+            .submit_message("root", "/root", "/root/analyst", message)
+            .await,
+        Err(Error::Stopped(_))
+    ));
+    assert_eq!(
+        shared
+            .interrupt("root", "/root/analyst")
+            .await
+            .expect("canonical target"),
+        "completed"
+    );
+    let followup = shared
+        .prepare_followup("root", "/root", "/root/analyst")
+        .await
+        .expect("follow up with canonical target");
+    assert!(matches!(followup.previous, AgentStatus::Completed));
+}
+
+#[tokio::test]
 async fn wait_returns_immediately_without_an_active_peer() {
     let shared = test_shared();
     let checkpoints: Arc<dyn CheckpointStore> = Arc::new(FailOnceStore {
