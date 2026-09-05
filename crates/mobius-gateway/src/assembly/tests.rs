@@ -8,6 +8,30 @@ use crate::provider_catalog::*;
 use super::*;
 
 #[test]
+fn configured_compaction_reports_the_selected_policy_threshold() {
+    let mut settings = crate::middleware_manifest::default_config();
+    assert_eq!(
+        configured_compaction(&settings)
+            .expect("automatic policy")
+            .trigger_tokens(272_000),
+        250_000
+    );
+    settings.set_setting(
+        "compaction",
+        "mode",
+        Some(mobius::protocol::FrontendSettingValue::String(
+            "handoff".into(),
+        )),
+    );
+    assert_eq!(
+        configured_compaction(&settings)
+            .expect("handoff policy")
+            .trigger_tokens(272_000),
+        222_848
+    );
+}
+
+#[test]
 fn configured_provider_status_requires_the_selected_credential_endpoint() {
     let root = tempfile::tempdir().expect("root");
     let (store, config) = ConfigStore::initialize(
@@ -408,11 +432,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
     let updated = ChatSpec::for_bot(&workspace, &updated_bot, store.state_dir(), None)
         .expect("updated chat spec");
     let gateway = Arc::new(Mutex::new(gateway));
-    let (swarm, _deliveries) = SwarmStore::new(
-        Arc::clone(&checkpoints),
-        Arc::clone(&bots),
-        Arc::clone(&gateway),
-    );
+    let (swarm, _deliveries) = SwarmStore::new(Arc::clone(&checkpoints), Arc::clone(&bots));
     let swarm: Arc<dyn BotsBackend> = Arc::new(swarm);
 
     let built = assemble(
@@ -450,7 +470,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
         .expect("disabled scratchpad management surface");
     assert_eq!(scratchpad.commands.len(), 1);
     assert_eq!(scratchpad.commands[0].name, "scratchpad");
-    assert_eq!(scratchpad.widgets.len(), 2);
+    assert_eq!(scratchpad.widgets.len(), 1);
     let (sender, mut events) = built.agent.into_parts();
     drop(sender);
     while events.recv().await.is_some() {}
@@ -554,8 +574,7 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
     let scratchpad = ScratchpadStore::new(Arc::clone(&checkpoints));
     let session_files = SessionFileStore::new(store.state_dir());
     let bots = Arc::new(crate::bots::BotStore::open(store.state_dir()).expect("Bots"));
-    let (swarm, _deliveries) =
-        SwarmStore::new(Arc::clone(&checkpoints), bots, Arc::clone(&gateway));
+    let (swarm, _deliveries) = SwarmStore::new(Arc::clone(&checkpoints), bots);
     let swarm: Arc<dyn BotsBackend> = Arc::new(swarm);
     let backend: Arc<dyn SandboxBackend> =
         Arc::new(LocalSandbox::new(&workspace).expect("sandbox"));

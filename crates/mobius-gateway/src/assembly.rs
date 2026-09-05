@@ -14,7 +14,7 @@ use mobius::backend::sandbox::{ApprovalPolicy, Sandbox, SandboxBackend};
 use mobius::middleware::artifacts::Artifacts;
 use mobius::middleware::attachments::Attachments;
 use mobius::middleware::bots::{Bots, BotsBackend};
-use mobius::middleware::compaction::Compaction;
+use mobius::middleware::compaction::{Compaction, CompactionMode};
 use mobius::middleware::context_offloading::ContextOffloading;
 use mobius::middleware::extensions::{Extensions, MANIFEST as EXTENSIONS_MANIFEST};
 use mobius::middleware::instructions::Instructions;
@@ -466,6 +466,21 @@ fn unavailable_models(
     Ok((Arc::new(router), context_window))
 }
 
+pub(crate) fn configured_compaction(settings: &MiddlewareConfig) -> Result<Compaction> {
+    Ok(Compaction::new(crate::middleware_manifest::integer_setting(
+        settings,
+        "compaction",
+        "at_tokens",
+    )?)?
+    .mode(
+        match crate::middleware_manifest::string_setting(settings, "compaction", "mode")? {
+            Some("automatic") => CompactionMode::Automatic,
+            Some("handoff") => CompactionMode::Handoff,
+            _ => return Err(Error::Config("unsupported compaction mode".into())),
+        },
+    ))
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "the headless composition root keeps middleware dependencies explicit"
@@ -576,14 +591,16 @@ fn build_middleware(
                     "stale_after_tokens",
                 )?,
             )?),
-            BuiltinMiddleware::Compaction => Arc::new(Compaction::new(
-                crate::middleware_manifest::integer_setting(settings, "compaction", "at_tokens")?,
-            )?),
+            BuiltinMiddleware::Compaction => Arc::new(configured_compaction(settings)?),
             BuiltinMiddleware::Sessions => Arc::new(Sessions::new(
                 crate::middleware_manifest::usize_setting(settings, "sessions", "page_size")?,
             )?),
             BuiltinMiddleware::Bots => {
-                let bots = Bots::new(Arc::clone(&swarm), bot_id.to_owned());
+                let bots = Bots::new(Arc::clone(&swarm), bot_id.to_owned()).with_collaboration(
+                    mobius::middleware::bots::collaboration_enabled(
+                        settings.setting("bots", "collaboration"),
+                    ),
+                );
                 Arc::new(if catalog_visible {
                     bots.with_routine_creation(workspace)
                 } else {

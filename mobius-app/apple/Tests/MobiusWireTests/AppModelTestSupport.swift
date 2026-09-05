@@ -376,7 +376,8 @@ final class AppModelTests: XCTestCase {
         name: String = "Helper",
         description: String = "You are möbius, a concise coding agent. Inspect the real code path before editing, make the smallest focused change, and preserve unrelated work.",
         tint: AccentTint = .blue,
-        config: VersionedAgentConfig? = nil
+        config: VersionedAgentConfig? = nil,
+        collaborationEnabled: Bool = false
     ) -> BotRecord {
         BotRecord(
             id: id,
@@ -384,7 +385,8 @@ final class AppModelTests: XCTestCase {
             name: name,
             description: description,
             tint: tint,
-            config: config ?? VersionedAgentConfig(revision: 1, config: composition())
+            config: config ?? VersionedAgentConfig(revision: 1, config: composition()),
+            collaborationEnabled: collaborationEnabled
         )
     }
 

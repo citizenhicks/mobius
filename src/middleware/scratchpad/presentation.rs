@@ -1,8 +1,4 @@
-use std::collections::BTreeSet;
-
-use super::{
-    Basis, Entry, MANIFEST, PromotionTarget, Scope, ScratchpadStore, Snapshot, WriteOutcome, text,
-};
+use super::{Basis, Entry, MANIFEST, Scope, Snapshot, text};
 use crate::Result;
 use crate::middleware::{FrontendEventSink, MiddlewareCommandOutput};
 use crate::protocol::{
@@ -11,32 +7,7 @@ use crate::protocol::{
 };
 
 pub(super) fn surface_widgets(snapshot: &Snapshot) -> Vec<FrontendWidget> {
-    let global_notes = snapshot
-        .global
-        .iter()
-        .map(|entry| entry.note.as_str())
-        .collect::<BTreeSet<_>>();
-    let swarm_notes = snapshot.swarm.as_ref().map(|entries| {
-        entries
-            .iter()
-            .map(|entry| entry.note.as_str())
-            .collect::<BTreeSet<_>>()
-    });
-    vec![
-        global_widget(&snapshot.global),
-        frontend_widget(
-            "chat_menu",
-            FrontendSlot::ChatMenu,
-            text::WIDGET_TEXT,
-            action_list_content(
-                text::WIDGET_SESSION_TITLE,
-                Scope::Session,
-                &snapshot.session,
-                Some(&global_notes),
-                swarm_notes.as_ref(),
-            ),
-        ),
-    ]
+    vec![global_widget(&snapshot.global)]
 }
 
 pub(super) fn global_widget(entries: &[Entry]) -> FrontendWidget {
@@ -44,13 +15,7 @@ pub(super) fn global_widget(entries: &[Entry]) -> FrontendWidget {
         "navigation",
         FrontendSlot::Navigation,
         text::WIDGET_TEXT,
-        action_list_content(
-            text::WIDGET_GLOBAL_TITLE,
-            Scope::Global,
-            entries,
-            None,
-            None,
-        ),
+        action_list_content(text::WIDGET_GLOBAL_TITLE, Scope::Global, entries),
     )
 }
 
@@ -59,7 +24,7 @@ pub(super) fn swarm_widget(entries: &[Entry]) -> FrontendWidget {
         "swarm",
         FrontendSlot::Navigation,
         text::WIDGET_TEXT,
-        action_list_content(text::WIDGET_SWARM_TITLE, Scope::Swarm, entries, None, None),
+        action_list_content(text::WIDGET_SWARM_TITLE, Scope::Swarm, entries),
     )
 }
 
@@ -88,101 +53,70 @@ fn frontend_widget(
     }
 }
 
-fn action_list_content(
-    title: &str,
-    scope: Scope,
-    entries: &[Entry],
-    global_notes: Option<&BTreeSet<&str>>,
-    swarm_notes: Option<&BTreeSet<&str>>,
-) -> FrontendWidgetContent {
+fn action_list_content(title: &str, scope: Scope, entries: &[Entry]) -> FrontendWidgetContent {
     FrontendWidgetContent::ActionList {
         title: title.into(),
-        actions: if scope == Scope::Swarm {
-            vec![FrontendAction {
-                id: "add".into(),
-                label: text::ACTION_ADD_SWARM.into(),
-                symbol: FrontendSymbol::Custom("plus".into()),
-                tone: FrontendTone::Neutral,
-                op: Op::CapabilityCommand {
-                    capability: MANIFEST.id.into(),
-                    command: "scratchpad".into(),
-                    arguments: "add".into(),
-                    input: Some(String::new()),
-                    target: None,
-                },
-                editor: Some(FrontendEditor {
-                    title: text::EDITOR_SWARM_TITLE.into(),
-                    label: text::EDITOR_LABEL.into(),
-                    description: text::EDITOR_SWARM_DESCRIPTION.into(),
-                    submit_label: text::EDITOR_SUBMIT.into(),
-                }),
-            }]
-        } else {
-            Vec::new()
-        },
+        actions: vec![FrontendAction {
+            id: "add".into(),
+            label: match scope {
+                Scope::Swarm => text::ACTION_ADD_SWARM,
+                Scope::Global => text::ACTION_ADD_GLOBAL,
+            }
+            .into(),
+            symbol: FrontendSymbol::Custom("plus".into()),
+            tone: FrontendTone::Neutral,
+            op: Op::CapabilityCommand {
+                capability: MANIFEST.id.into(),
+                command: "scratchpad".into(),
+                arguments: "add".into(),
+                input: Some(String::new()),
+                target: None,
+            },
+            editor: Some(FrontendEditor {
+                title: match scope {
+                    Scope::Swarm => text::EDITOR_SWARM_TITLE,
+                    Scope::Global => text::EDITOR_GLOBAL_TITLE,
+                }
+                .into(),
+                label: text::EDITOR_LABEL.into(),
+                description: match scope {
+                    Scope::Swarm => text::EDITOR_SWARM_DESCRIPTION,
+                    Scope::Global => text::EDITOR_GLOBAL_DESCRIPTION,
+                }
+                .into(),
+                submit_label: text::EDITOR_SUBMIT.into(),
+            }),
+        }],
         items: entries
             .iter()
             .rev()
-            .map(|entry| {
-                action_list_item(
-                    scope,
-                    entry,
-                    global_notes.is_some_and(|notes| notes.contains(entry.note.as_str())),
-                    swarm_notes.map(|notes| notes.contains(entry.note.as_str())),
-                )
-            })
+            .map(|entry| action_list_item(scope, entry))
             .collect(),
     }
 }
 
-pub(super) fn action_list_item(
-    scope: Scope,
-    entry: &Entry,
-    already_global: bool,
-    already_swarm: Option<bool>,
-) -> FrontendActionListItem {
+pub(super) fn action_list_item(scope: Scope, entry: &Entry) -> FrontendActionListItem {
     let scope_name = scope_name(scope);
-    let mut actions = Vec::with_capacity(if scope == Scope::Session { 4 } else { 2 });
-    if scope == Scope::Session && !already_global {
-        actions.push(list_action(
+    let actions = vec![
+        list_action(
             entry,
-            "promote-global",
-            FrontendSymbol::Promote,
-            text::ACTION_PROMOTE_GLOBAL,
+            "edit",
+            FrontendSymbol::Edit,
+            text::ACTION_EDIT,
             FrontendTone::Neutral,
-            format!("promote global {}", entry.id),
-            None,
-        ));
-    }
-    if scope == Scope::Session && matches!(already_swarm, Some(false)) {
-        actions.push(list_action(
+            format!("edit {scope_name} {}", entry.id),
+            Some(&entry.note),
+        ),
+        list_action(
             entry,
-            "promote-swarm",
-            FrontendSymbol::Promote,
-            text::ACTION_PROMOTE_SWARM,
-            FrontendTone::Neutral,
-            format!("promote swarm {}", entry.id),
+            "delete",
+            FrontendSymbol::Delete,
+            text::ACTION_DELETE,
+            FrontendTone::Error,
+            format!("forget {scope_name} {}", entry.id),
             None,
-        ));
-    }
-    actions.push(list_action(
-        entry,
-        "edit",
-        FrontendSymbol::Edit,
-        text::ACTION_EDIT,
-        FrontendTone::Neutral,
-        format!("edit {scope_name} {}", entry.id),
-        Some(&entry.note),
-    ));
-    actions.push(list_action(
-        entry,
-        "delete",
-        FrontendSymbol::Delete,
-        text::ACTION_DELETE,
-        FrontendTone::Error,
-        format!("forget {scope_name} {}", entry.id),
-        None,
-    ));
+        ),
+    ];
     FrontendActionListItem {
         id: entry.id.clone(),
         text: entry.note.clone(),
@@ -233,19 +167,8 @@ pub(super) fn publish_widgets(frontend: &FrontendEventSink, snapshot: &Snapshot)
     Ok(())
 }
 
-pub(super) async fn publish_current_widgets(
-    store: &ScratchpadStore,
-    session_id: &str,
-    swarm_id: Option<&str>,
-    frontend: &FrontendEventSink,
-) -> Result<()> {
-    let snapshot = store.snapshot(session_id, swarm_id).await?;
-    publish_widgets(frontend, &snapshot)
-}
-
 pub(super) fn parse_scope(scope: &str) -> Option<Scope> {
     match scope {
-        "session" => Some(Scope::Session),
         "swarm" => Some(Scope::Swarm),
         "global" => Some(Scope::Global),
         _ => None,
@@ -254,7 +177,6 @@ pub(super) fn parse_scope(scope: &str) -> Option<Scope> {
 
 const fn scope_name(scope: Scope) -> &'static str {
     match scope {
-        Scope::Session => "session",
         Scope::Swarm => "swarm",
         Scope::Global => "global",
     }
@@ -264,35 +186,8 @@ pub(super) fn usage() -> MiddlewareCommandOutput {
     MiddlewareCommandOutput::render(MANIFEST.id, text::COMMAND_USAGE, FrontendTone::Warning)
 }
 
-pub(super) fn command_confirmation(
-    target: PromotionTarget,
-    outcome: WriteOutcome,
-    snapshot: &Snapshot,
-) -> MiddlewareCommandOutput {
-    let text: String = match outcome {
-        WriteOutcome::Added => match target {
-            PromotionTarget::Global => text::MESSAGE_PROMOTED_GLOBAL,
-            PromotionTarget::Swarm => text::MESSAGE_PROMOTED_SWARM,
-        }
-        .into(),
-        WriteOutcome::Updated => text::MESSAGE_UPDATED_PROVENANCE.into(),
-        WriteOutcome::Existing => match target {
-            PromotionTarget::Global => text::MESSAGE_GLOBAL_EXISTING,
-            PromotionTarget::Swarm => text::MESSAGE_SWARM_EXISTING,
-        }
-        .into(),
-    };
-    let mut events = widget_events(snapshot);
-    events.extend(MiddlewareCommandOutput::render(MANIFEST.id, text, FrontendTone::Success).events);
-    MiddlewareCommandOutput::events(events)
-}
-
 pub(super) fn format_snapshot(snapshot: &Snapshot) -> String {
-    let mut sections = vec![format!(
-        "{}\n{}",
-        text::MESSAGE_SESSION_HEADING,
-        format_entries(&snapshot.session)
-    )];
+    let mut sections = Vec::new();
     if let Some(swarm) = &snapshot.swarm {
         sections.push(format!(
             "{}\n{}",

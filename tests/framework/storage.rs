@@ -136,6 +136,7 @@ async fn sqlite_persists_latest_checkpoint_transcript_and_fork_lineage() {
     let store = SqliteCheckpoint::new(&path).expect("reopen checkpoint database");
     let sessions = store
         .list_sessions_page(SessionPageRequest {
+            bot_id: None,
             cursor: None,
             limit: 100,
         })

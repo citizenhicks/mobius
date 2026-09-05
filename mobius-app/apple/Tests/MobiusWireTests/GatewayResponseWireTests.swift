@@ -264,6 +264,21 @@ extension GatewayWireTests {
         )])
     }
 
+    func testBotCollaborationAvailabilityUsesRequiredGatewayValue() throws {
+        let enabled = botJSON.replacingOccurrences(
+            of: "\"collaboration_enabled\":false",
+            with: "\"collaboration_enabled\":true"
+        )
+        let bot = try decoder().decode(BotRecord.self, from: Data(enabled.utf8))
+        XCTAssertTrue(bot.collaborationEnabled)
+
+        let missing = botJSON.replacingOccurrences(
+            of: ",\"collaboration_enabled\":false",
+            with: ""
+        )
+        XCTAssertThrowsError(try decoder().decode(BotRecord.self, from: Data(missing.utf8)))
+    }
+
     func testBotAndRoutineResponsesDecodeProtocolFields() throws {
         let bots = try decodeEnvelope(
             #"{"version":56,"type":"bots","request_id":"bots-1","bots":[\#(botJSON)]}"#
@@ -274,6 +289,7 @@ extension GatewayWireTests {
         XCTAssertEqual(botsRequestID, "bots-1")
         XCTAssertEqual(records.first?.handle, "helper")
         XCTAssertEqual(records.first?.config.revision, 4)
+        XCTAssertEqual(records.first?.collaborationEnabled, false)
 
         let gitDiff = try decodeEnvelope(#"{"version":27,"type":"git_diff","request_id":"diff-1","session_id":"chat-1","scope":"unstaged","diff":"diff --git a/a b/a"}"#)
         guard case .gitDiff(let diffRequestID, let diffSessionID, let scope, let diff) = gitDiff else {

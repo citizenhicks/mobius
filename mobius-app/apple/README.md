@@ -1,6 +1,6 @@
 # möbius for iPhone and iPad
 
-One SwiftUI client target builds for iOS and iPadOS 26+. Both device families use the same `AppModel`, `GatewayClient`, pairing flow, and versioned möbius gateway protocol. The next TestFlight release is version 0.10.0.
+One SwiftUI client target builds for iOS and iPadOS 26+. Both device families use the same `AppModel`, `GatewayClient`, pairing flow, and versioned möbius gateway protocol. The marketing version and build number live in the Xcode project settings.
 
 Open `MobiusApp.xcodeproj` and run the shared `MobiusApp` scheme on an iPhone or iPad destination. Command-line builds use:
 
@@ -8,6 +8,15 @@ Open `MobiusApp.xcodeproj` and run the shared `MobiusApp` scheme on an iPhone or
 xcodebuild -project MobiusApp.xcodeproj -scheme MobiusApp \
   -destination 'generic/platform=iOS Simulator' -skipMacroValidation \
   CODE_SIGNING_ALLOWED=NO build
+```
+
+Run the complete test suite on an installed simulator with signing enabled so
+Keychain-backed account and persistence tests have their required entitlements:
+
+```sh
+xcodebuild -project MobiusApp.xcodeproj -scheme MobiusApp \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' -skipMacroValidation \
+  -parallel-testing-enabled NO test
 ```
 
 On an iPhone or iPad, select **Quick Connect** during first-time setup, or request

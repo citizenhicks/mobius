@@ -138,10 +138,7 @@ async fn gateway_busy_delivery_waits_for_mutation_completion_before_retrying() {
         SqliteCheckpoint::new(root.path().join("checkpoints.sqlite3")).expect("checkpoints"),
     );
     let bots = Arc::new(BotStore::open(root.path()).expect("Bots"));
-    let gateway = Arc::new(StdMutex::new(
-        GatewayConfig::new(crate::config::DEFAULT_LISTEN, None).expect("gateway config"),
-    ));
-    let (swarm, mut deliveries) = SwarmStore::new(checkpoints, bots, gateway);
+    let (swarm, mut deliveries) = SwarmStore::new(checkpoints, bots);
     let swarm = Arc::new(swarm);
     let session_mutations = Arc::new(RwLock::new(()));
     let mutation = Arc::clone(&session_mutations).write_owned().await;
@@ -204,7 +201,11 @@ async fn gateway_with_swarm(
     let gateway = GatewayHost::start(store, config, credentials, bots)
         .await
         .expect("gateway");
-    let source_bot = ensure_test_bot(&gateway).await.expect("source Bot");
+    let source_bot = enable_test_collaboration(
+        &gateway,
+        ensure_test_bot(&gateway).await.expect("source Bot"),
+    )
+    .await;
     let source = gateway
         .create_session(&workspace, &source_bot.id)
         .await
@@ -402,8 +403,7 @@ async fn startup_ack_reuses_the_reserved_conversation_without_resubmitting() {
     let checkpoints: Arc<dyn CheckpointStore> =
         Arc::new(SqliteCheckpoint::new(store.checkpoints_path()).expect("checkpoints"));
     let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
-    let gateway_config = Arc::new(StdMutex::new(config.clone()));
-    let (swarm, _deliveries) = SwarmStore::new(Arc::clone(&checkpoints), bots, gateway_config);
+    let (swarm, _deliveries) = SwarmStore::new(Arc::clone(&checkpoints), bots);
     let text = format!("@{} verify restart delivery", target_bot.handle);
     let post = swarm
         .post(&source_bot.id, &source_session_id, text.clone(), None)

@@ -7,8 +7,15 @@ use super::Middleware;
 use super::ModelContext;
 use super::approximate_item_tokens;
 use super::attachments::is_attachment_materialization;
-use super::manifest::{MiddlewareManifest, MiddlewareSettingManifest};
+use super::manifest::{
+    MiddlewareManifest, MiddlewareSettingChoice, MiddlewareSettingChoices,
+    MiddlewareSettingManifest,
+};
+use super::tools::Catalog;
 use super::tools::loaded_tools;
+use super::{
+    ModelRequestContext, PostToolUseContext, PromptSection, RuntimeContext, SessionStartContext,
+};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -42,6 +49,8 @@ mod text {
     ));
 }
 
+mod handoff;
+
 const KEEP_RECENT_TOKENS: usize = 20_000;
 const NATIVE_RETAINED_TOKENS: usize = 64_000;
 const MAX_SUMMARY_TOOL_RESULT_CHARS: usize = 2_000;
@@ -52,15 +61,56 @@ const _: () = {
 };
 /// Default compaction trigger for middleware instances without an override.
 pub const DEFAULT_COMPACTION_TOKENS: i64 = text::DEFAULTS_COMPACTION_TOKENS;
-const SETTINGS: &[MiddlewareSettingManifest] = &[MiddlewareSettingManifest::Integer {
-    id: "at_tokens",
-    label: text::SETTING_AT_TOKENS_LABEL,
-    description: text::SETTING_AT_TOKENS_DESCRIPTION,
-    min: 1,
-    max: None,
-    step: text::SETTING_AT_TOKENS_STEP,
-    default: DEFAULT_COMPACTION_TOKENS,
-}];
+const HANDOFF_EXCLUDES: &[&str] = &["context_offloading"];
+const MODES: &[MiddlewareSettingChoice] = &[
+    MiddlewareSettingChoice {
+        disables: &[],
+        value: "automatic",
+        label: text::MODE_AUTOMATIC_LABEL,
+        description: text::MODE_AUTOMATIC_DESCRIPTION,
+        symbol: None,
+        tone: FrontendTone::Neutral,
+    },
+    MiddlewareSettingChoice {
+        disables: HANDOFF_EXCLUDES,
+        value: "handoff",
+        label: text::MODE_HANDOFF_LABEL,
+        description: text::MODE_HANDOFF_DESCRIPTION,
+        symbol: None,
+        tone: FrontendTone::Neutral,
+    },
+];
+const SETTINGS: &[MiddlewareSettingManifest] = &[
+    MiddlewareSettingManifest::Select {
+        id: "mode",
+        label: text::SETTING_MODE_LABEL,
+        description: text::SETTING_MODE_DESCRIPTION,
+        choices: MiddlewareSettingChoices::Static(MODES),
+        unset_label: None,
+        default: Some("automatic"),
+        max_bytes: 9,
+        composer: false,
+    },
+    MiddlewareSettingManifest::Integer {
+        id: "at_tokens",
+        label: text::SETTING_AT_TOKENS_LABEL,
+        description: text::SETTING_AT_TOKENS_DESCRIPTION,
+        min: 1,
+        max: None,
+        step: text::SETTING_AT_TOKENS_STEP,
+        default: DEFAULT_COMPACTION_TOKENS,
+    },
+];
+
+/// Policy used when a conversation reaches its context threshold.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CompactionMode {
+    /// Use the provider's native compaction capability, or a model summary.
+    #[default]
+    Automatic,
+    /// Let the model save working notes and request a new context window.
+    Handoff,
+}
 
 /// Configuration and presentation metadata for compaction.
 pub const MANIFEST: MiddlewareManifest = MiddlewareManifest {
@@ -75,12 +125,14 @@ pub const MANIFEST: MiddlewareManifest = MiddlewareManifest {
 /// Compacts visible context after a configurable token threshold.
 pub struct Compaction {
     at_tokens: i64,
+    mode: CompactionMode,
 }
 
 impl Default for Compaction {
     fn default() -> Self {
         Self {
             at_tokens: DEFAULT_COMPACTION_TOKENS,
+            mode: CompactionMode::Automatic,
         }
     }
 }
@@ -93,15 +145,29 @@ impl Compaction {
                 "compaction threshold must be positive".into(),
             ));
         }
-        Ok(Self { at_tokens })
+        Ok(Self {
+            at_tokens,
+            mode: CompactionMode::Automatic,
+        })
+    }
+
+    /// Selects the context continuation policy for every model using this middleware.
+    #[must_use]
+    pub fn mode(mut self, mode: CompactionMode) -> Self {
+        self.mode = mode;
+        self
     }
 
     /// Returns the effective trigger after reserving response space.
     #[must_use]
     pub fn trigger_tokens(&self, context_window: i64) -> i64 {
-        self.at_tokens
-            .min(context_window.saturating_sub(COMPACTION_RESERVE_TOKENS))
-            .max(1)
+        match self.mode {
+            CompactionMode::Automatic => self
+                .at_tokens
+                .min(context_window.saturating_sub(COMPACTION_RESERVE_TOKENS))
+                .max(1),
+            CompactionMode::Handoff => handoff::warning_tokens(self.at_tokens, context_window),
+        }
     }
 }
 
@@ -110,7 +176,75 @@ impl Middleware for Compaction {
         MANIFEST.id
     }
 
+    fn incompatible_middleware(&self) -> &'static [&'static str] {
+        match self.mode {
+            CompactionMode::Automatic => &[],
+            CompactionMode::Handoff => HANDOFF_EXCLUDES,
+        }
+    }
+
+    fn register(&self, catalog: &mut Catalog, runtime: &RuntimeContext) -> Result<()> {
+        if self.mode == CompactionMode::Handoff {
+            handoff::register(catalog, runtime)?;
+        }
+        Ok(())
+    }
+
+    fn prompt_section(&self, _runtime: &RuntimeContext) -> Result<Option<PromptSection>> {
+        Ok(
+            (self.mode == CompactionMode::Handoff)
+                .then(|| PromptSection::new(text::PROMPT_HANDOFF)),
+        )
+    }
+
+    fn post_tool_use<'a>(
+        &'a self,
+        context: &'a mut PostToolUseContext<'_>,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            if self.mode == CompactionMode::Handoff {
+                handoff::post_tool(context)?;
+            }
+            Ok(())
+        })
+    }
+
+    fn model_request<'a>(
+        &'a self,
+        context: &'a mut ModelRequestContext<'_>,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            if self.mode == CompactionMode::Handoff {
+                handoff::decorate(context);
+            }
+            Ok(())
+        })
+    }
+
+    fn retain_compacted_input(&self, item: &Value) -> bool {
+        !handoff::is_control(item)
+    }
+
+    fn session_start<'a>(
+        &'a self,
+        context: &'a mut SessionStartContext<'_>,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            if self.mode == CompactionMode::Handoff {
+                handoff::restore_notes(context).await?;
+            }
+            Ok(())
+        })
+    }
+
     fn render(&self, event: &EventMsg, _session_id: &str) -> Option<FrontendBlock> {
+        if let Some(block) = super::tools::render_tool_event(
+            event,
+            |name| matches!(name, "write_handoff" | "new_context"),
+            |name, _| name.into(),
+        ) {
+            return Some(block);
+        }
         matches!(event, EventMsg::ContextCompacted).then(|| FrontendBlock {
             id: None,
             group: None,
@@ -128,15 +262,14 @@ impl Middleware for Compaction {
 
     fn pre_model<'a>(&'a self, context: &'a mut ModelContext<'_>) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
+            if self.mode == CompactionMode::Handoff {
+                return handoff::prepare(context, self.at_tokens).await;
+            }
             let estimated = context.estimated_input_tokens();
-            let observed = if contains_compaction(context.input()) {
-                estimated
-            } else {
-                context
-                    .last_usage
-                    .map_or(0, |usage| usage.input_tokens)
-                    .max(estimated)
-            };
+            let observed = context
+                .last_usage
+                .map_or(0, |usage| usage.input_tokens)
+                .max(estimated);
             if observed < self.trigger_tokens(context.context_window) || context.input().is_empty()
             {
                 return Ok(());
@@ -146,11 +279,6 @@ impl Middleware for Compaction {
                 return Ok(());
             }
             let catalog_revision = context.tools.revision()?;
-            let tool_load = retained_tool_load(
-                context.input(),
-                catalog_revision,
-                &context.tools.deferred_definitions(),
-            )?;
             let output = if context.model.compaction_endpoint(context.provider)? {
                 let tools = context
                     .tools
@@ -193,31 +321,47 @@ impl Middleware for Compaction {
                     "compaction returned an empty context".into(),
                 ));
             }
-            let latest_turn_input = latest_turn_input(context.input());
-            let active_message_metadata = latest_turn_input
-                .as_ref()
-                .and_then(|active| active.item.get(MESSAGE_METADATA_FIELD))
-                .cloned();
-            let mut compacted = retain_native_context(context.input(), output.output);
-            context.hooks.retain_compacted_input(&mut compacted);
-            restore_input_private_fields(&mut compacted, latest_turn_input);
-            validate_active_message_metadata(&compacted, active_message_metadata.as_ref())?;
-            reset_prompt_cache_breakpoint(&mut compacted);
-            if let Some(tool_load) = tool_load {
-                compacted.push(tool_load);
-            }
-            context.rewrite_input(ContextRewriteReason::Compaction, compacted)?;
-            *context.compaction_count = context
-                .compaction_count
-                .checked_add(1)
-                .ok_or_else(|| Error::Checkpoint("compaction count overflow".into()))?;
-            context.record_transcript_item(internal_user_message(CONTEXT_COMPACTED_MARKER, ""));
-            context.usage.push(output.usage);
-            context.events.push(EventMsg::ContextCompacted);
-            context.post_compact().await?;
+            apply_compaction(context, output.output, Some(output.usage)).await?;
             Ok(())
         })
     }
+}
+
+async fn apply_compaction(
+    context: &mut ModelContext<'_>,
+    output: Vec<Value>,
+    usage: Option<crate::protocol::TokenUsage>,
+) -> Result<()> {
+    let tool_load = retained_tool_load(
+        context.input(),
+        context.tools.revision()?,
+        &context.tools.deferred_definitions(),
+    )?;
+    let latest_turn_input = latest_turn_input(context.input());
+    let active_message_metadata = latest_turn_input
+        .as_ref()
+        .and_then(|active| active.item.get(MESSAGE_METADATA_FIELD))
+        .cloned();
+    let mut compacted = retain_native_context(context.input(), output);
+    context.hooks.retain_compacted_input(&mut compacted);
+    restore_input_private_fields(&mut compacted, latest_turn_input);
+    validate_active_message_metadata(&compacted, active_message_metadata.as_ref())?;
+    reset_prompt_cache_breakpoint(&mut compacted);
+    if let Some(tool_load) = tool_load {
+        compacted.push(tool_load);
+    }
+    context.rewrite_input(ContextRewriteReason::Compaction, compacted)?;
+    *context.compaction_count = context
+        .compaction_count
+        .checked_add(1)
+        .ok_or_else(|| Error::Checkpoint("compaction count overflow".into()))?;
+    context.record_transcript_item(internal_user_message(CONTEXT_COMPACTED_MARKER, ""));
+    if let Some(usage) = usage {
+        context.usage.push(usage);
+    }
+    context.events.push(EventMsg::ContextCompacted);
+    context.post_compact().await?;
+    Ok(())
 }
 
 fn retained_tool_load(
@@ -515,13 +659,6 @@ fn compacted_summary(item: &Value) -> Option<String> {
         .map(|summary| summary.trim().to_string())
 }
 
-fn contains_compaction(input: &[Value]) -> bool {
-    input.iter().any(|item| {
-        item.get("type").and_then(Value::as_str) == Some("compaction")
-            || compacted_summary(item).is_some()
-    })
-}
-
 fn content_text(value: Option<&Value>) -> String {
     match value {
         Some(Value::String(text)) => text.clone(),
@@ -559,6 +696,21 @@ mod tests {
     use crate::backend::model::tool_output;
 
     #[test]
+    fn handoff_and_offloading_cannot_share_a_stack_in_either_order() {
+        use crate::middleware::{MiddlewareStack, context_offloading::ContextOffloading};
+        for reverse in [false, true] {
+            let mut entries: Vec<Arc<dyn Middleware>> = vec![
+                Arc::new(Compaction::default().mode(CompactionMode::Handoff)),
+                Arc::new(ContextOffloading::new(50_000).expect("offloading")),
+            ];
+            if reverse {
+                entries.reverse();
+            }
+            assert!(MiddlewareStack::new(entries).is_err());
+        }
+    }
+
+    #[test]
     fn recent_cut_keeps_parallel_calls_with_their_outputs() {
         let input = vec![
             user_message("old"),
@@ -590,6 +742,17 @@ mod tests {
         assert_eq!(
             Compaction::new(4_000)
                 .expect("custom threshold")
+                .trigger_tokens(128_000),
+            4_000
+        );
+        let handoff = compaction.mode(CompactionMode::Handoff);
+        assert_eq!(handoff.trigger_tokens(272_000), 222_848);
+        assert_eq!(handoff.trigger_tokens(8_000), 5_000);
+        assert_eq!(handoff.trigger_tokens(1), 1);
+        assert_eq!(
+            Compaction::new(4_000)
+                .expect("custom threshold")
+                .mode(CompactionMode::Handoff)
                 .trigger_tokens(128_000),
             4_000
         );
@@ -749,15 +912,5 @@ mod tests {
             .expect_err("message metadata must remain active");
 
         assert!(error.to_string().contains("active message metadata"));
-    }
-
-    #[test]
-    fn compaction_marker_may_follow_retained_messages() {
-        let input = vec![
-            user_message("inspect"),
-            serde_json::json!({"type": "compaction", "encrypted_content": "opaque"}),
-        ];
-
-        assert!(contains_compaction(&input));
     }
 }

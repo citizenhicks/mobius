@@ -657,6 +657,37 @@ extension AppModelTests {
         XCTAssertNil(middleware.settings["example"])
     }
 
+    func testMiddlewareExclusionsFollowEnabledOwnersAndSelectedOptions() {
+        let features = [MiddlewareFeature(
+            id: "owner", label: "Owner", description: "An optional owner", required: false,
+            settings: [FrontendSetting(
+                id: "policy", label: "Policy", description: "Choose a policy",
+                kind: .select(options: [FrontendSettingOption(
+                    value: "choice-a", label: "Choice A", description: "Excludes another feature",
+                    disables: ["excluded"]
+                )], unsetLabel: "Inherit")
+            )]
+        )]
+        var middleware = MiddlewareConfig(enabled: ["owner", "excluded", "unrelated"], settings: [:])
+        middleware.setSetting(.string("choice-a"), middleware: "owner", setting: "policy")
+        XCTAssertEqual(middleware.disabledBy(features: features, middleware: "excluded"), "Choice A")
+        middleware.reconcile(features: features)
+        XCTAssertEqual(middleware.enabled, ["owner", "unrelated"])
+
+        middleware.enabled.remove("owner")
+        XCTAssertNil(middleware.disabledBy(features: features, middleware: "excluded"))
+        middleware.enabled.insert("excluded")
+        middleware.reconcile(features: features)
+        XCTAssertTrue(middleware.enabled.contains("excluded"))
+
+        middleware.enabled.insert("owner")
+        middleware.reconcile(features: features)
+        XCTAssertFalse(middleware.enabled.contains("excluded"))
+        middleware.setSetting(nil, middleware: "owner", setting: "policy")
+        XCTAssertNil(middleware.disabledBy(features: features, middleware: "excluded"))
+        XCTAssertFalse(middleware.enabled.contains("excluded"))
+    }
+
     func testBotDefaultsRefreshDoesNotOverwriteActiveAgentDraft() throws {
         let model = try model()
         let active = AgentComposition(
@@ -857,16 +888,28 @@ extension AppModelTests {
     func testComposerSettingUpdatesTheSelectedBotProfile() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
-        let helper = bot(config: VersionedAgentConfig(revision: 7, config: composition()))
+        var initial = composition()
+        initial.middleware.enabled.insert("excluded")
+        let helper = bot(config: VersionedAgentConfig(revision: 7, config: initial))
         model.connectionState = .ready
         model.bots = [helper]
         model.sessions = [session(state: .idle)]
         model.selectedSessionID = "chat-1"
+        model.middlewareFeatures = [MiddlewareFeature(
+            id: "owner", label: "Owner", description: "Required capability", required: true,
+            settings: [FrontendSetting(
+                id: "policy", label: "Policy", description: "Choose a policy", composer: true,
+                kind: .select(options: [FrontendSettingOption(
+                    value: "choice-a", label: "Choice A", description: "Excludes another feature",
+                    disables: ["excluded"]
+                )], unsetLabel: nil)
+            )]
+        )]
 
         model.setSelectedBotSetting(
-            .string("full_access"),
-            middleware: "sandbox",
-            setting: "approval_policy"
+            .string("choice-a"),
+            middleware: "owner",
+            setting: "policy"
         )
 
         let request = await recorder.firstRequest(after: 0) {
@@ -890,9 +933,10 @@ extension AppModelTests {
         XCTAssertEqual(description, helper.description)
         XCTAssertEqual(tint, helper.tint)
         XCTAssertEqual(
-            config.middleware.settings["sandbox"]?["approval_policy"],
-            .string("full_access")
+            config.middleware.settings["owner"]?["policy"],
+            .string("choice-a")
         )
+        XCTAssertFalse(config.middleware.enabled.contains("excluded"))
     }
 
     func testBotCatalogResponseCompletesSaveAndRefreshesDraft() throws {

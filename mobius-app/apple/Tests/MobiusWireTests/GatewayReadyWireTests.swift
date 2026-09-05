@@ -26,6 +26,7 @@ extension GatewayWireTests {
         }
 
         XCTAssertEqual(payload.sessions.first?.sessionId, "chat-1")
+        XCTAssertEqual(payload.bots.first?.collaborationEnabled, false)
         XCTAssertEqual(payload.sessions.first?.title, "Review")
         XCTAssertEqual(payload.sessions.first?.activity.state, .running)
         XCTAssertEqual(payload.sessions.first?.activity.turnId, "turn-1")
@@ -411,7 +412,7 @@ extension GatewayWireTests {
     }
 
     func testFrontendSelectSettingsRejectDuplicateOptionValues() {
-        let fixture = #"{"id":"route","label":"Route","description":"Default route","composer":false,"type":"select","options":[{"value":"route-a","label":"Route A","description":"First route","symbol":null,"tone":"neutral"},{"value":"route-a","label":"Route A again","description":"Duplicate route","symbol":null,"tone":"neutral"}]}"#
+        let fixture = #"{"id":"route","label":"Route","description":"Default route","composer":false,"type":"select","options":[{"value":"route-a","label":"Route A","description":"First route","symbol":null,"tone":"neutral","disables":[]},{"value":"route-a","label":"Route A again","description":"Duplicate route","symbol":null,"tone":"neutral","disables":[]}]}"#
 
         XCTAssertThrowsError(
             try decoder().decode(FrontendSetting.self, from: Data(fixture.utf8))
@@ -424,7 +425,7 @@ extension GatewayWireTests {
     }
 
     func testFrontendComposerSettingDecodesSemanticOptions() throws {
-        let fixture = #"{"id":"policy","label":"Access","description":"Execution access","composer":true,"type":"select","options":[{"value":"safe","label":"Safe","description":"Use bounded access","symbol":"shield_check","tone":"neutral"},{"value":"full","label":"Full access","description":"Use host access","symbol":"shield_off","tone":"error"}]}"#
+        let fixture = #"{"id":"policy","label":"Access","description":"Execution access","composer":true,"type":"select","options":[{"value":"safe","label":"Safe","description":"Use bounded access","symbol":"shield_check","tone":"neutral","disables":[]},{"value":"full","label":"Full access","description":"Use host access","symbol":"shield_off","tone":"error","disables":["example"]}]}"#
 
         let setting = try decoder().decode(FrontendSetting.self, from: Data(fixture.utf8))
 
@@ -434,10 +435,11 @@ extension GatewayWireTests {
         }
         XCTAssertEqual(options.map(\.symbol), ["shield_check", "shield_off"])
         XCTAssertEqual(options.map(\.tone), ["neutral", "error"])
+        XCTAssertEqual(options.map(\.disables), [[], ["example"]])
     }
 
     func testFrontendSettingOptionRejectsUnknownTone() {
-        let fixture = #"{"id":"policy","label":"Access","description":"Execution access","composer":true,"type":"select","options":[{"value":"safe","label":"Safe","description":"Use bounded access","symbol":"shield_check","tone":"loud"}]}"#
+        let fixture = #"{"id":"policy","label":"Access","description":"Execution access","composer":true,"type":"select","options":[{"value":"safe","label":"Safe","description":"Use bounded access","symbol":"shield_check","tone":"loud","disables":[]}]}"#
 
         XCTAssertThrowsError(
             try decoder().decode(FrontendSetting.self, from: Data(fixture.utf8))

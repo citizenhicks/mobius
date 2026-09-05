@@ -585,31 +585,6 @@ impl BotStore {
         Ok(bot)
     }
 
-    /// Compensates a failed create-and-attach transaction before the Bot is exposed.
-    pub(crate) fn rollback_created_bot(
-        &self,
-        id: &str,
-        expected_revision: u64,
-    ) -> Result<BotRecord> {
-        self.update(|state| {
-            let index = state
-                .bots
-                .iter()
-                .position(|bot| bot.id == id)
-                .ok_or_else(|| Error::Config(format!("unknown Bot `{id}`")))?;
-            let bot = &state.bots[index];
-            if bot.config.revision != expected_revision
-                || state.routines.iter().any(|routine| routine.bot_id == id)
-                || state.runs.iter().any(|run| run.bot_id == id)
-            {
-                return Err(Error::Config(
-                    "new Bot changed before its failed Swarm join could be rolled back".into(),
-                ));
-            }
-            Ok(state.bots.remove(index))
-        })
-    }
-
     pub(crate) fn restore_bot(&self, bot: BotRecord) -> Result<()> {
         self.update(|state| {
             let id = bot.id.clone();

@@ -434,6 +434,8 @@ pub struct SessionCursor {
 /// Bounds one newest-first session catalog query.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionPageRequest {
+    /// Restricts sessions and cursor keys to this Bot; `None` lists every Bot.
+    pub bot_id: Option<String>,
     pub cursor: Option<SessionCursor>,
     pub limit: usize,
 }

@@ -13,8 +13,15 @@ async fn gateway_with_bot() -> (tempfile::TempDir, GatewayHost, crate::wire::Bot
         None,
     )
     .expect("config");
-    let composition = AgentComposition::default();
-    let config = config
+    let mut composition = AgentComposition::default();
+    composition.middleware.set_setting(
+        "bots",
+        "collaboration",
+        Some(mobius::protocol::FrontendSettingValue::String(
+            "swarm".into(),
+        )),
+    );
+    let mut config = config
         .registering_provider(
             composition.provider.clone(),
             "Test".into(),
@@ -23,6 +30,7 @@ async fn gateway_with_bot() -> (tempfile::TempDir, GatewayHost, crate::wire::Bot
             Vec::new(),
         )
         .expect("provider");
+    config.bot_defaults.as_mut().expect("defaults").config = composition.clone();
     store.save(&config).expect("save config");
     let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
     bots.seed_default(config.bot_defaults.as_ref().expect("Bot defaults"))
@@ -668,10 +676,20 @@ async fn session_owners_wait_for_the_cascade_gate() {
 }
 
 #[tokio::test]
-async fn routine_sessions_are_hidden_from_bot_conversations() {
+async fn routine_sessions_stay_hidden_and_swarm_membership_does_not_dispatch_results() {
     let (root, gateway, bot) = gateway_with_bot().await;
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).expect("workspace");
+    let swarm = Arc::clone(&gateway.state.lock().await.swarm);
+    let leader = gateway.state.lock().await.bots.mobius().expect("leader");
+    swarm
+        .create(
+            "Routine team".into(),
+            leader.id.clone(),
+            vec![leader.id, bot.id.clone()],
+        )
+        .await
+        .expect("swarm");
     let routine = {
         let state = gateway.state.lock().await;
         state
@@ -720,6 +738,40 @@ async fn routine_sessions_are_hidden_from_bot_conversations() {
             .expect("Bot conversations")
             .iter()
             .all(|session| session.session_id != session_id)
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if gateway
+                .state
+                .lock()
+                .await
+                .bots
+                .history(Some(&routine.id))
+                .expect("history")[0]
+                .status
+                != RoutineRunStatus::Running
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("routine completion");
+    assert!(swarm.records().await.expect("board")[0].messages.is_empty());
+    assert!(
+        swarm
+            .pending_recipient_bot_ids()
+            .await
+            .expect("deliveries")
+            .is_empty()
+    );
+    assert!(
+        swarm
+            .pending_attentions()
+            .await
+            .expect("attention")
+            .is_empty()
     );
 }
 
@@ -1189,7 +1241,7 @@ async fn deleting_a_bot_removes_all_owned_state_and_its_led_swarm() {
         .await
         .expect("fork Bot chat");
     checkpoints
-        .save_state(&chat_id, "scratchpad.v1", &serde_json::json!([]))
+        .save_state(&chat_id, "tasks.v1", &serde_json::json!([]))
         .await
         .expect("save chat scratchpad");
     for session_id in [&chat_id, &child_id] {
@@ -1301,7 +1353,7 @@ async fn deleting_a_bot_removes_all_owned_state_and_its_led_swarm() {
     }
     assert!(
         checkpoints
-            .load_state(&chat_id, "scratchpad.v1")
+            .load_state(&chat_id, "tasks.v1")
             .await
             .expect("load deleted scratchpad")
             .is_none()
@@ -1595,12 +1647,7 @@ async fn routine_command_gate_rejection_terminalizes_the_run() {
         .records()
         .await
         .expect("swarms");
-    assert!(
-        swarms[0]
-            .messages
-            .iter()
-            .any(|message| message.author_bot_id == bot.id && message.text.contains("failed"))
-    );
+    assert!(swarms[0].messages.is_empty());
 }
 
 #[tokio::test]

@@ -1163,6 +1163,7 @@ mod tests {
                 kind: FrontendSettingKind::Select {
                     options: vec![
                         FrontendSettingOption {
+                            disables: Vec::new(),
                             value: "steer".into(),
                             label: "Steer".into(),
                             description: String::new(),
@@ -1170,6 +1171,7 @@ mod tests {
                             tone: FrontendTone::Neutral,
                         },
                         FrontendSettingOption {
+                            disables: Vec::new(),
                             value: "queue".into(),
                             label: "Queue".into(),
                             description: String::new(),

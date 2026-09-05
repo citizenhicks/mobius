@@ -491,7 +491,7 @@ impl BotsState {
             KeyCode::Char('s') => {
                 let bot_ids = available_bot_ids(gateway);
                 if bot_ids.len() < 2 {
-                    self.fail("A Swarm needs at least two Bots that are not already in a Swarm.");
+                    self.fail("Enable Swarm collaboration in at least two Bots’ capabilities before creating a Swarm.");
                 } else {
                     self.form = Some(Form::CreateSwarm(CreateSwarmForm {
                         title: TextForm::new("", MAX_SWARM_TITLE_BYTES),
@@ -775,7 +775,9 @@ impl BotsState {
             KeyCode::Char('a') => {
                 let bot_ids = available_bot_ids(gateway);
                 if bot_ids.is_empty() {
-                    self.fail("Every Bot already belongs to a Swarm.");
+                    self.fail(
+                        "Enable Swarm collaboration in another ungrouped Bot’s capabilities first.",
+                    );
                 } else {
                     self.form = Some(Form::AddSwarmMember(AddMemberForm {
                         swarm_id: swarm.id.clone(),
@@ -1653,7 +1655,7 @@ fn available_bot_ids(gateway: &ReadyPayload) -> Vec<String> {
     gateway
         .bots
         .iter()
-        .filter(|bot| swarm_for_bot(gateway, &bot.id).is_none())
+        .filter(|bot| bot.collaboration_enabled() && swarm_for_bot(gateway, &bot.id).is_none())
         .map(|bot| bot.id.clone())
         .collect()
 }
@@ -2057,7 +2059,14 @@ fn bot_details(bot: &BotRecord, state: &BotsState, gateway: &ReadyPayload) -> Ve
             theme.style(Role::Muted),
         ),
         Line::styled(
-            format!("{chats} conversations · {routines} routines · swarm {swarm}"),
+            format!(
+                "{chats} conversations · {routines} routines · swarm {swarm} · collaboration {}",
+                if bot.collaboration_enabled() {
+                    "enabled"
+                } else {
+                    "off"
+                }
+            ),
             theme.style(Role::Muted),
         ),
     ]
@@ -2307,8 +2316,18 @@ fn render_swarm(
     };
     let rows = swarm.members.iter().map(|member| {
         Line::from(format!(
-            " @{}{}",
+            " @{}{}{}",
             terminal_text(&member.handle),
+            if gateway
+                .bots
+                .iter()
+                .find(|bot| bot.id == member.bot_id)
+                .is_some_and(|bot| bot.collaboration_enabled())
+            {
+                ""
+            } else {
+                " · collaboration off"
+            },
             if member.bot_id == swarm.leader_bot_id {
                 " · leader"
             } else {
@@ -2518,6 +2537,21 @@ mod tests {
             panic!("expected gateway request");
         };
         *message
+    }
+
+    #[test]
+    fn swarm_picker_offers_only_bots_that_enabled_collaboration() {
+        let independent = bot("independent");
+        let mut peer = bot("peer");
+        peer.config.config.middleware.set_setting(
+            "bots",
+            "collaboration",
+            Some(mobius::protocol::FrontendSettingValue::String(
+                "swarm".into(),
+            )),
+        );
+        let gateway = gateway(vec![independent, peer]);
+        assert_eq!(available_bot_ids(&gateway), ["peer"]);
     }
 
     #[test]

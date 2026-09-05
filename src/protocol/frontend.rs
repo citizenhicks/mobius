@@ -79,6 +79,8 @@ pub struct FrontendSettingOption {
     pub description: String,
     pub symbol: Option<FrontendSymbol>,
     pub tone: FrontendTone,
+    /// Optional capabilities excluded while this choice is active.
+    pub disables: Vec<String>,
 }
 
 /// Scalar value accepted by the generic setting controls.

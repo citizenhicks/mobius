@@ -7,23 +7,25 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::Mutex;
 
-use super::manifest::MiddlewareManifest;
+use super::manifest::{
+    MiddlewareManifest, MiddlewareSettingChoice, MiddlewareSettingChoices,
+    MiddlewareSettingManifest,
+};
 use super::tools::{
     ApprovalRequirement, Catalog, ExecutionMode, Tool, ToolContext, render_tool_event,
 };
 use super::{Middleware, ModelRequestContext, PromptSection, RuntimeContext, ToolExposureContext};
 use crate::agent::AgentRole;
 use crate::backend::model::{ToolDefinition, internal_user_message};
-use crate::protocol::{EventMsg, FrontendBlock, MessageAuthor};
+use crate::protocol::{EventMsg, FrontendBlock, FrontendSettingValue, FrontendTone, MessageAuthor};
 use crate::{BoxFuture, Result};
 
 mod text {
     include!(concat!(env!("OUT_DIR"), "/src_middleware_bots_text.rs"));
 }
 
-const MAX_BOT_NAME_BYTES: usize = 128;
-const MAX_BOT_DESCRIPTION_BYTES: usize = 2 * 1024;
 const SWARM_CHAT_CONTEXT_KIND: &str = "swarm_chat";
+const SWARM_GUIDANCE_KIND: &str = "swarm_guidance";
 
 /// Configuration and presentation metadata for durable Bots and their collaboration.
 pub const MANIFEST: MiddlewareManifest = MiddlewareManifest {
@@ -32,8 +34,40 @@ pub const MANIFEST: MiddlewareManifest = MiddlewareManifest {
     description: text::MANIFEST_DESCRIPTION,
     required: true,
     default_enabled: true,
-    settings: &[],
+    settings: &[MiddlewareSettingManifest::Select {
+        id: "collaboration",
+        label: text::SETTING_COLLABORATION_LABEL,
+        description: text::SETTING_COLLABORATION_DESCRIPTION,
+        choices: MiddlewareSettingChoices::Static(&[
+            MiddlewareSettingChoice {
+                value: "off",
+                label: "Off",
+                description: "Keep this Bot independent",
+                symbol: None,
+                tone: FrontendTone::Neutral,
+                disables: &[],
+            },
+            MiddlewareSettingChoice {
+                value: "swarm",
+                label: "Swarm",
+                description: "Allow this Bot to join a Swarm and exchange messages",
+                symbol: None,
+                tone: FrontendTone::Neutral,
+                disables: &[],
+            },
+        ]),
+        unset_label: None,
+        default: Some("off"),
+        max_bytes: 5,
+        composer: false,
+    }],
 };
+
+/// Resolves the owning manifest's collaboration setting.
+#[must_use]
+pub fn collaboration_enabled(value: Option<&FrontendSettingValue>) -> bool {
+    matches!(value, Some(FrontendSettingValue::String(value)) if value == "swarm")
+}
 
 /// Gateway operations needed by the framework-owned Bot tools.
 pub trait BotsBackend: Send + Sync {
@@ -42,14 +76,6 @@ pub trait BotsBackend: Send + Sync {
 
     /// Resolves the stable scratchpad scope for the Bot's current swarm.
     fn scratchpad_scope<'a>(&'a self, bot_id: &'a str) -> BoxFuture<'a, Result<Option<String>>>;
-
-    /// Creates one Bot and joins it to the leader's current Swarm.
-    fn spawn_bot<'a>(
-        &'a self,
-        bot_id: &'a str,
-        name: String,
-        description: String,
-    ) -> BoxFuture<'a, Result<String>>;
 
     /// Creates an enabled routine in the caller's workspace for itself or an allowed peer.
     fn create_routine<'a>(
@@ -94,6 +120,7 @@ pub struct Bots {
     backend: Arc<dyn BotsBackend>,
     bot_id: String,
     routine_workspace: Option<PathBuf>,
+    collaboration_enabled: bool,
     reply_to_message_id: Arc<Mutex<Option<String>>>,
 }
 
@@ -105,8 +132,16 @@ impl Bots {
             backend,
             bot_id: bot_id.into(),
             routine_workspace: None,
+            collaboration_enabled: false,
             reply_to_message_id: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Enables this Bot's optional Swarm tools and request guidance.
+    #[must_use]
+    pub fn with_collaboration(mut self, enabled: bool) -> Self {
+        self.collaboration_enabled = enabled;
+        self
     }
 
     /// Allows this human-facing session to create routines in its current workspace.
@@ -132,10 +167,11 @@ impl Middleware for Bots {
             session_id: runtime.session_id.clone(),
             reply_to_message_id: Arc::clone(&self.reply_to_message_id),
         };
-        catalog.register(Arc::new(SwarmRoster(scope.clone())))?;
-        catalog.register(Arc::new(SwarmRead(scope.clone())))?;
-        catalog.register(Arc::new(SwarmSpawnBot(scope.clone())))?;
-        catalog.register(Arc::new(SwarmPost(scope)))?;
+        if self.collaboration_enabled {
+            catalog.register(Arc::new(SwarmRoster(scope.clone())))?;
+            catalog.register(Arc::new(SwarmRead(scope.clone())))?;
+            catalog.register(Arc::new(SwarmPost(scope)))?;
+        }
         if let Some(workspace) = &self.routine_workspace {
             catalog.register(Arc::new(CreateRoutine(RoutineScope {
                 backend: Arc::clone(&self.backend),
@@ -147,7 +183,10 @@ impl Middleware for Bots {
     }
 
     fn prompt_section(&self, runtime: &RuntimeContext) -> Result<Option<PromptSection>> {
-        Ok(matches!(runtime.role, AgentRole::Main).then(|| PromptSection::new(text::PROMPT_MAIN)))
+        Ok(
+            (matches!(runtime.role, AgentRole::Main) && self.routine_workspace.is_some())
+                .then(|| PromptSection::new(text::PROMPT_ROUTINE)),
+        )
     }
 
     fn tool_exposure<'a>(
@@ -163,13 +202,8 @@ impl Middleware for Bots {
                         MessageAuthor::User => None,
                     });
             *self.reply_to_message_id.lock().await = peer_message_id.clone();
-            if !self.backend.active(&self.bot_id).await? {
-                context.hide(&[
-                    "swarm_roster",
-                    "swarm_read",
-                    "swarm_spawn_bot",
-                    "swarm_post",
-                ]);
+            if !self.collaboration_enabled || !self.backend.active(&self.bot_id).await? {
+                context.hide(&["swarm_roster", "swarm_read", "swarm_post"]);
             } else if let Some(message_id) = peer_message_id
                 && !self.backend.can_reply(&self.bot_id, &message_id).await?
             {
@@ -184,18 +218,27 @@ impl Middleware for Bots {
         context: &'a mut ModelRequestContext<'_>,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            let Some(chat) = self
+            if !self.collaboration_enabled
+                || !matches!(context.role, AgentRole::Main)
+                || !self.backend.active(&self.bot_id).await?
+            {
+                return Ok(());
+            }
+            let mut input = context.input().to_vec();
+            input.push(internal_user_message(
+                SWARM_GUIDANCE_KIND,
+                text::PROMPT_SWARM,
+            ));
+            if let Some(chat) = self
                 .backend
                 .swarm_chat_context(&self.bot_id, context.session_id)
                 .await?
-            else {
-                return Ok(());
-            };
-            let mut input = context.input().to_vec();
-            input.push(internal_user_message(
-                SWARM_CHAT_CONTEXT_KIND,
-                &format!("{}\n\n{chat}", text::PROMPT_SWARM_CHAT),
-            ));
+            {
+                input.push(internal_user_message(
+                    SWARM_CHAT_CONTEXT_KIND,
+                    &format!("{}\n\n{chat}", text::PROMPT_SWARM_CHAT),
+                ));
+            }
             context.replace_input(input);
             Ok(())
         })
@@ -207,11 +250,7 @@ impl Middleware for Bots {
             |name| {
                 matches!(
                     name,
-                    "create_routine"
-                        | "swarm_roster"
-                        | "swarm_read"
-                        | "swarm_spawn_bot"
-                        | "swarm_post"
+                    "create_routine" | "swarm_roster" | "swarm_read" | "swarm_post"
                 )
             },
             |name, arguments| super::tools::ToolHeading {
@@ -220,7 +259,6 @@ impl Middleware for Bots {
                     "create_routine" => "Create routine",
                     "swarm_roster" => "Swarm roster",
                     "swarm_read" => "Read Swarm Chat",
-                    "swarm_spawn_bot" => "Spawn Swarm Bot",
                     "swarm_post" => "Post to Swarm Chat",
                     _ => unreachable!("tool predicate excludes other names"),
                 }
@@ -291,8 +329,6 @@ impl Tool for SwarmRead {
 }
 
 struct SwarmPost(ToolScope);
-
-struct SwarmSpawnBot(ToolScope);
 
 struct CreateRoutine(RoutineScope);
 
@@ -400,63 +436,6 @@ impl Tool for CreateRoutine {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SpawnBotArgs {
-    name: String,
-    description: String,
-}
-
-impl Tool for SwarmSpawnBot {
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "swarm_spawn_bot".into(),
-            description: text::TOOL_SPAWN_BOT_DESCRIPTION.into(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": text::TOOL_SPAWN_BOT_PARAMETER_NAME_DESCRIPTION,
-                        "maxLength": MAX_BOT_NAME_BYTES
-                    },
-                    "description": {
-                        "type": "string",
-                        "description": text::TOOL_SPAWN_BOT_PARAMETER_DESCRIPTION_DESCRIPTION,
-                        "maxLength": MAX_BOT_DESCRIPTION_BYTES
-                    }
-                },
-                "required": ["name", "description"],
-                "additionalProperties": false
-            }),
-        }
-    }
-
-    fn approval(&self) -> ApprovalRequirement {
-        ApprovalRequirement::Always
-    }
-
-    fn call<'a>(
-        &'a self,
-        _context: ToolContext,
-        arguments: Value,
-    ) -> BoxFuture<'a, Result<String>> {
-        Box::pin(async move {
-            let arguments: SpawnBotArgs = serde_json::from_value(arguments)?;
-            let name = bounded_field(arguments.name, "Bot name", MAX_BOT_NAME_BYTES)?;
-            let description = bounded_field(
-                arguments.description,
-                "Bot description",
-                MAX_BOT_DESCRIPTION_BYTES,
-            )?;
-            self.0
-                .backend
-                .spawn_bot(&self.0.bot_id, name, description)
-                .await
-        })
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct PostArgs {
     text: String,
 }
@@ -522,16 +501,6 @@ fn require_no_arguments(arguments: Value) -> Result<()> {
 #[serde(deny_unknown_fields)]
 struct NoArguments {}
 
-fn bounded_field(value: String, label: &str, max_bytes: usize) -> Result<String> {
-    let value = value.trim();
-    if value.is_empty() || value.len() > max_bytes {
-        return Err(crate::Error::Tool(format!(
-            "{label} must be 1–{max_bytes} UTF-8 bytes"
-        )));
-    }
-    Ok(value.into())
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -567,15 +536,6 @@ mod tests {
             _bot_id: &'a str,
         ) -> BoxFuture<'a, Result<Option<String>>> {
             Box::pin(async move { Ok(self.active.then(|| "swarm".into())) })
-        }
-
-        fn spawn_bot<'a>(
-            &'a self,
-            _bot_id: &'a str,
-            _name: String,
-            _description: String,
-        ) -> BoxFuture<'a, Result<String>> {
-            Box::pin(async { unreachable!() })
         }
 
         fn create_routine<'a>(
@@ -633,9 +593,7 @@ mod tests {
     type RoutineCall = (String, Option<String>, PathBuf, String, Value, Option<i64>);
 
     struct RecordingBackend {
-        spawn_calls: StdMutex<Vec<(String, String, String)>>,
         routine_calls: StdMutex<Vec<RoutineCall>>,
-        spawn_error: bool,
     }
 
     impl BotsBackend for RecordingBackend {
@@ -648,26 +606,6 @@ mod tests {
             _bot_id: &'a str,
         ) -> BoxFuture<'a, Result<Option<String>>> {
             Box::pin(async { unreachable!() })
-        }
-
-        fn spawn_bot<'a>(
-            &'a self,
-            bot_id: &'a str,
-            name: String,
-            description: String,
-        ) -> BoxFuture<'a, Result<String>> {
-            self.spawn_calls
-                .lock()
-                .expect("spawn calls")
-                .push((bot_id.into(), name, description));
-            let error = self.spawn_error;
-            Box::pin(async move {
-                if error {
-                    Err(crate::Error::Tool("spawn rejected".into()))
-                } else {
-                    Ok("spawned-bot".into())
-                }
-            })
         }
 
         fn create_routine<'a>(
@@ -725,20 +663,9 @@ mod tests {
         }
     }
 
-    fn spawn_tool(backend: Arc<dyn BotsBackend>) -> SwarmSpawnBot {
-        SwarmSpawnBot(ToolScope {
-            backend,
-            bot_id: "leader-bot".into(),
-            session_id: "chat".into(),
-            reply_to_message_id: Arc::new(Mutex::new(None)),
-        })
-    }
-
-    fn recording_backend(spawn_error: bool) -> Arc<RecordingBackend> {
+    fn recording_backend() -> Arc<RecordingBackend> {
         Arc::new(RecordingBackend {
-            spawn_calls: StdMutex::new(Vec::new()),
             routine_calls: StdMutex::new(Vec::new()),
-            spawn_error,
         })
     }
 
@@ -786,7 +713,7 @@ mod tests {
         });
 
         let definition = tool.definition();
-        assert!(text::PROMPT_MAIN.contains("`@user`"));
+        assert!(text::PROMPT_SWARM.contains("`@user`"));
         assert!(definition.description.contains("@user"));
         assert!(definition.description.contains("reply to"));
         assert!(definition.description.contains("swarm_roster"));
@@ -807,83 +734,8 @@ mod tests {
     }
 
     #[test]
-    fn spawn_tool_has_a_bounded_approval_required_schema() {
-        let tool = spawn_tool(recording_backend(false));
-        let definition = tool.definition();
-
-        assert_eq!(tool.approval(), ApprovalRequirement::Always);
-        assert_eq!(definition.name, "swarm_spawn_bot");
-        assert_eq!(
-            definition.parameters["required"],
-            serde_json::json!(["name", "description"])
-        );
-        assert_eq!(
-            definition.parameters["properties"]["name"]["maxLength"],
-            MAX_BOT_NAME_BYTES
-        );
-        assert_eq!(
-            definition.parameters["properties"]["description"]["maxLength"],
-            MAX_BOT_DESCRIPTION_BYTES
-        );
-        assert_eq!(definition.parameters["additionalProperties"], false);
-        assert!(definition.parameters["properties"].get("handle").is_none());
-        assert!(definition.parameters["properties"].get("config").is_none());
-        assert!(definition.parameters["properties"].get("tint").is_none());
-    }
-
-    #[tokio::test]
-    async fn spawn_tool_forwards_canonical_fields_and_backend_errors() {
-        let backend = recording_backend(false);
-        let tool = spawn_tool(backend.clone());
-
-        assert_eq!(
-            tool.call(
-                tool_context(),
-                serde_json::json!({
-                    "name": "  Release specialist  ",
-                    "description": "  Coordinates release validation.  "
-                }),
-            )
-            .await
-            .expect("spawn Bot"),
-            "spawned-bot"
-        );
-        assert_eq!(
-            *backend.spawn_calls.lock().expect("spawn calls"),
-            [(
-                "leader-bot".into(),
-                "Release specialist".into(),
-                "Coordinates release validation.".into(),
-            )]
-        );
-
-        let failing = spawn_tool(recording_backend(true));
-        assert_eq!(
-            failing
-                .call(
-                    tool_context(),
-                    serde_json::json!({"name": "Worker", "description": "Review changes"}),
-                )
-                .await
-                .expect_err("backend failure")
-                .to_string(),
-            "tool error: spawn rejected"
-        );
-        assert!(
-            tool.call(
-                tool_context(),
-                serde_json::json!({"name": " ", "description": "Review changes"}),
-            )
-            .await
-            .expect_err("blank name")
-            .to_string()
-            .contains("Bot name must be")
-        );
-    }
-
-    #[test]
     fn routine_tool_requires_approval_and_keeps_target_optional() {
-        let tool = routine_tool(recording_backend(false));
+        let tool = routine_tool(recording_backend());
         let definition = tool.definition();
 
         assert_eq!(tool.approval(), ApprovalRequirement::Always);
@@ -916,7 +768,7 @@ mod tests {
 
     #[tokio::test]
     async fn routine_tool_inherits_workspace_and_forwards_structured_schedule() {
-        let backend = recording_backend(false);
+        let backend = recording_backend();
         let tool = routine_tool(backend.clone());
         let schedule = serde_json::json!({
             "kind": "cron",
@@ -972,7 +824,7 @@ mod tests {
             role: AgentRole::Main,
             frontend: Arc::new(|_| Ok(())),
         };
-        let backend: Arc<dyn BotsBackend> = recording_backend(false);
+        let backend: Arc<dyn BotsBackend> = recording_backend();
         let mut hidden = Catalog::default();
         Bots::new(Arc::clone(&backend), "bot")
             .register(&mut hidden, &runtime)
@@ -1004,7 +856,6 @@ mod tests {
                 "swarm_post".to_string(),
                 "swarm_read".to_string(),
                 "swarm_roster".to_string(),
-                "swarm_spawn_bot".to_string(),
             ])
         };
         let hidden = Bots::new(
@@ -1013,7 +864,8 @@ mod tests {
                 can_reply: false,
             }),
             "reviewer",
-        );
+        )
+        .with_collaboration(true);
         let mut unavailable = names();
         hidden
             .tool_exposure(&mut ToolExposureContext {
@@ -1031,7 +883,8 @@ mod tests {
                 can_reply: true,
             }),
             "reviewer",
-        );
+        )
+        .with_collaboration(true);
         let mut available = names();
         active
             .tool_exposure(&mut ToolExposureContext {
@@ -1074,7 +927,8 @@ mod tests {
                 can_reply: false,
             }),
             "reviewer",
-        );
+        )
+        .with_collaboration(true);
         let mut bounded_available = names();
         bounded
             .tool_exposure(&mut ToolExposureContext {
@@ -1086,62 +940,96 @@ mod tests {
             .expect("bounded peer turn");
         assert_eq!(
             bounded_available,
-            BTreeSet::from([
-                "swarm_read".to_string(),
-                "swarm_roster".to_string(),
-                "swarm_spawn_bot".to_string(),
-            ])
+            BTreeSet::from(["swarm_read".to_string(), "swarm_roster".to_string()])
         );
     }
 
     #[tokio::test]
-    async fn active_bot_receives_fresh_shared_swarm_context() {
+    async fn swarm_guidance_follows_membership_and_stays_out_of_subagents() {
         let router = ModelRouter::new("test", Arc::new(NoModel));
-        let middleware = Bots::new(
-            Arc::new(Membership {
-                active: true,
-                can_reply: true,
-            }),
-            "reviewer",
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let checkpoints = Arc::new(
+            crate::backend::checkpoint::sqlite::SqliteCheckpoint::new(
+                temporary.path().join("checkpoints.sqlite3"),
+            )
+            .expect("checkpoints"),
         );
-        let original = crate::backend::model::user_message("review this");
-        let mut input = vec![original.clone()];
-        middleware
-            .model_request(&mut ModelRequestContext {
-                model: &router,
-                provider: "test",
-                session_id: "swarm-participant",
-                turn_id: "turn",
-                model_step: 0,
-                input: &mut input,
-            })
-            .await
-            .expect("inject Swarm Chat");
-
-        assert_eq!(input[0], original);
-        assert_eq!(
-            crate::protocol::internal_message_kind(&input[1]),
-            Some(SWARM_CHAT_CONTEXT_KIND)
-        );
-        assert!(input[1].to_string().contains("shared room"));
-        let guidance = input[1].to_string();
-        assert!(guidance.contains("`swarm_post` with its exact @handle"));
-        assert!(guidance.contains("subagent tools address a separate task tree"));
-        assert!(guidance.contains("If `swarm_post` is unavailable"));
-        assert!(guidance.contains("final answer is shared in Swarm Chat automatically"));
-
-        let mut visible_input = vec![original];
-        middleware
-            .model_request(&mut ModelRequestContext {
-                model: &router,
-                provider: "test",
-                session_id: "visible-chat",
-                turn_id: "turn",
-                model_step: 0,
-                input: &mut visible_input,
-            })
-            .await
-            .expect("skip shared context outside participant session");
-        assert_eq!(visible_input.len(), 1);
+        for (enabled, active, session_id, expected_kinds) in [
+            (false, true, "visible-chat", vec![]),
+            (true, false, "visible-chat", vec![]),
+            (true, true, "visible-chat", vec![SWARM_GUIDANCE_KIND]),
+            (true, true, "child", vec![]),
+            (
+                true,
+                true,
+                "swarm-participant",
+                vec![SWARM_GUIDANCE_KIND, SWARM_CHAT_CONTEXT_KIND],
+            ),
+        ] {
+            let middleware = Bots::new(
+                Arc::new(Membership {
+                    active,
+                    can_reply: true,
+                }),
+                "reviewer",
+            )
+            .with_collaboration(enabled);
+            let runtime = RuntimeContext {
+                sender: crate::agent::test_sender(),
+                checkpoints: checkpoints.clone(),
+                session_id: session_id.into(),
+                model_route: "test".into(),
+                model: "test".into(),
+                approval_policy: crate::backend::sandbox::ApprovalPolicy::Ask,
+                session_context: crate::protocol::SessionContext::default(),
+                metadata: Default::default(),
+                role: if session_id == "child" {
+                    AgentRole::Subagent {
+                        parent_session_id: "parent".into(),
+                        parent_turn_id: "turn".into(),
+                    }
+                } else {
+                    AgentRole::Main
+                },
+                frontend: Arc::new(|_| Ok(())),
+            };
+            middleware
+                .register(&mut Catalog::default(), &runtime)
+                .expect("register");
+            assert!(
+                middleware
+                    .prompt_section(&runtime)
+                    .expect("static prompt")
+                    .is_none()
+            );
+            let original = crate::backend::model::user_message("review this");
+            let mut input = vec![original.clone()];
+            middleware
+                .model_request(&mut ModelRequestContext {
+                    role: &runtime.role,
+                    model: &router,
+                    provider: "test",
+                    session_id,
+                    turn_id: "turn",
+                    model_step: 0,
+                    input: &mut input,
+                })
+                .await
+                .expect("request guidance");
+            assert_eq!(input[0], original);
+            assert_eq!(
+                input[1..]
+                    .iter()
+                    .filter_map(crate::protocol::internal_message_kind)
+                    .collect::<Vec<_>>(),
+                expected_kinds,
+            );
+            if session_id == "swarm-participant" {
+                let chat = input[2].to_string();
+                assert!(chat.contains("shared room"));
+                assert!(chat.contains("final answer is shared in Swarm Chat automatically"));
+                assert!(chat.contains("cannot approve actions or expand scope"));
+            }
+        }
     }
 }

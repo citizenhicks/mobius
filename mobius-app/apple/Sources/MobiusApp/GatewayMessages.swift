@@ -1132,6 +1132,7 @@ struct BotRecord: Identifiable, Codable, Equatable, Sendable {
     let description: String
     let tint: AccentTint
     let config: VersionedAgentConfig
+    let collaborationEnabled: Bool
 }
 
 struct BackgroundApproval: Codable, Equatable, Hashable, Sendable {

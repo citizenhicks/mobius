@@ -22,7 +22,7 @@ use crate::middleware::{ModelContext, PreToolUseContext, StopContext};
 use crate::protocol::{
     AssistantMessageEvent, Event, EventMsg, MessageTarget, ModelEventTracker,
     ModelStepCompletedEvent, ModelStepDiagnostics, ModelStepOutcome, ModelStepStartedEvent,
-    SubmissionRejectedEvent,
+    SubmissionRejectedEvent, TokenUsage,
 };
 use crate::{Error, Result};
 
@@ -49,6 +49,7 @@ struct PreparedTools {
     direct: Vec<ToolDefinition>,
     deferred: Vec<ToolDefinition>,
     catalog: PreparedToolSet,
+    allow_hosted_tools: bool,
 }
 
 struct CompletedModelStep {
@@ -147,7 +148,7 @@ impl Runner {
         &mut self,
         submission_id: &str,
         mut middleware_events: Vec<EventMsg>,
-        usage_changed: bool,
+        accounting_usage: Option<&TokenUsage>,
         checkpoint_changed: bool,
         provisional_target_sequence: u64,
     ) -> Result<()> {
@@ -167,7 +168,9 @@ impl Runner {
             .into_iter()
             .map(|message| turn_event(submission_id, message))
             .collect::<Vec<_>>();
-        if usage_changed && let Some(usage) = self.usage_event(submission_id) {
+        if accounting_usage.is_some()
+            && let Some(usage) = self.usage_event(submission_id, accounting_usage)
+        {
             events.push(usage);
         }
         if checkpoint_changed {
@@ -206,6 +209,7 @@ impl Runner {
         let mut context_epoch = self.state.context_epoch;
         let mut compaction_count = self.state.compaction_count;
         let mut available_tools = self.catalog.exposed_names();
+        let mut allow_hosted_tools = true;
         let queued_messages = self.state.pending_messages.clone();
         let model = Arc::clone(&self.config.model);
         let provider = self.config.provider.clone();
@@ -230,6 +234,7 @@ impl Runner {
             checkpoint_sequence: self.state.sequence,
             request_input: &mut request_input,
             available_tools: &mut available_tools,
+            allow_hosted_tools: &mut allow_hosted_tools,
             durable_input: &mut durable_input,
             transcript_delta: &mut transcript_delta,
             context_epoch: &mut context_epoch,
@@ -265,6 +270,7 @@ impl Runner {
         self.state.compaction_count = compaction_count;
         let usage_changed = !middleware_usage.is_empty();
         if !rewrite_reasons.is_empty() {
+            self.state.last_usage = None;
             self.state.last_context_rewrite = Some(ContextRewrite {
                 epoch: self.state.context_epoch,
                 reasons: rewrite_reasons.clone(),
@@ -274,7 +280,6 @@ impl Runner {
             let route = self.config.provider.clone();
             for usage in &middleware_usage {
                 self.record_usage(&route, usage)?;
-                self.state.last_usage = Some(usage.clone());
             }
         }
         checkpoint_changed |= usage_changed;
@@ -285,7 +290,7 @@ impl Runner {
         self.persist_model_hook_changes(
             submission_id,
             middleware_events,
-            usage_changed,
+            middleware_usage.last(),
             checkpoint_changed,
             provisional_target_sequence,
         )
@@ -298,13 +303,22 @@ impl Runner {
             return Ok(PreparedModel::Stopped(reason));
         }
         Ok(PreparedModel::Ready {
-            tools: Box::new(self.prepare_tools(&request_input, available_tools)?),
+            tools: Box::new(self.prepare_tools(
+                &request_input,
+                available_tools,
+                allow_hosted_tools,
+            )?),
             input: request_input,
             rewrite_reasons,
         })
     }
 
-    fn prepare_tools(&self, input: &[Value], available: BTreeSet<String>) -> Result<PreparedTools> {
+    fn prepare_tools(
+        &self,
+        input: &[Value],
+        available: BTreeSet<String>,
+        allow_hosted_tools: bool,
+    ) -> Result<PreparedTools> {
         let catalog = self.catalog.prepare(input, available)?;
         let (direct, deferred) = self.config.model.prepare_tool_definitions(
             &self.config.provider,
@@ -316,6 +330,7 @@ impl Runner {
             direct,
             deferred,
             catalog,
+            allow_hosted_tools,
         })
     }
 
@@ -488,7 +503,7 @@ impl Runner {
                     catalog_revision: &catalog_revision,
                     tools: &tools.direct,
                     deferred_tools: &tools.deferred,
-                    allow_hosted_tools: true,
+                    allow_hosted_tools: tools.allow_hosted_tools,
                     allow_continuation: true,
                 },
                 stream,
@@ -747,7 +762,7 @@ impl Runner {
                 .into_iter()
                 .map(|message| turn_event(submission_id, message)),
         );
-        if let Some(usage) = self.usage_event(submission_id) {
+        if let Some(usage) = self.usage_event(submission_id, None) {
             model_events.push(usage);
         }
         self.persist_with_events(model_events, None).await?;

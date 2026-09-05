@@ -177,11 +177,7 @@ impl GatewayHost {
         let background_workspace =
             prepare_background_workspace(store.state_dir(), config.tls.as_ref())?;
         let config = Arc::new(StdMutex::new(config));
-        let (swarm, deliveries) = SwarmStore::new(
-            Arc::clone(&checkpoints),
-            Arc::clone(&bots),
-            Arc::clone(&config),
-        );
+        let (swarm, deliveries) = SwarmStore::new(Arc::clone(&checkpoints), Arc::clone(&bots));
         let swarm = Arc::new(swarm);
         let (events, _) = broadcast::channel(BROADCAST_CAPACITY);
         let activities = Arc::new(StdMutex::new(HashMap::new()));
@@ -636,6 +632,7 @@ impl GatewayHost {
             }
         }
         let bots = state.bots.bots().map_err(internal)?;
+        state.swarm.retry_pending();
         drop(state);
         self.broadcast_bots(&bots);
         Ok(bot)
@@ -943,19 +940,7 @@ impl GatewayHost {
             let Some(gateway_state) = state.upgrade() else {
                 return;
             };
-            let (swarm, terminal_runs) = {
-                let gateway = gateway_state.lock().await;
-                (
-                    Arc::clone(&gateway.swarm),
-                    gateway.bots.history(None).unwrap_or_default(),
-                )
-            };
-            for run in terminal_runs
-                .iter()
-                .filter(|run| run.status != RoutineRunStatus::Running)
-            {
-                let _ = swarm.project_routine_outcome(run, None).await;
-            }
+            let swarm = Arc::clone(&gateway_state.lock().await.swarm);
             let startup = match swarm.pending_recipient_bot_ids().await {
                 Ok(startup) => startup,
                 Err(error) => {
@@ -1018,19 +1003,6 @@ impl GatewayHost {
             }
             return;
         }
-        if matches!(&delivery, SwarmDelivery::CatalogChanged) {
-            match self.bots().await {
-                Ok(bots) => self.broadcast_bots(&bots),
-                Err(error) => {
-                    let _ = self.events.send(ServerFrame::new(ServerMessage::Error {
-                        code: "bot_catalog".into(),
-                        message: error.message,
-                        fatal: false,
-                    }));
-                }
-            }
-            return;
-        }
         if matches!(&delivery, SwarmDelivery::RetryPending) {
             let swarm = Arc::clone(&self.state.lock().await.swarm);
             match swarm.pending_recipient_bot_ids().await {
@@ -1050,9 +1022,7 @@ impl GatewayHost {
             return;
         }
         let target_bot_id = match delivery {
-            SwarmDelivery::Changed
-            | SwarmDelivery::CatalogChanged
-            | SwarmDelivery::RetryPending => {
+            SwarmDelivery::Changed | SwarmDelivery::RetryPending => {
                 unreachable!("handled above")
             }
             SwarmDelivery::Acknowledged {
@@ -1491,21 +1461,15 @@ impl GatewayHost {
         let _mutation = match self.begin_mutation().await {
             Ok(mutation) => mutation,
             Err(rejection) => {
-                let (swarm, completed) = {
-                    let state = self.state.lock().await;
-                    let completed = state
-                        .bots
-                        .finish_run(
-                            run,
-                            RoutineRunStatus::Skipped,
-                            Some(rejection.message.clone()),
-                        )
-                        .map_err(internal)?;
-                    (Arc::clone(&state.swarm), completed)
-                };
-                swarm
-                    .project_routine_outcome(&completed, None)
+                self.state
+                    .lock()
                     .await
+                    .bots
+                    .finish_run(
+                        run,
+                        RoutineRunStatus::Skipped,
+                        Some(rejection.message.clone()),
+                    )
                     .map_err(internal)?;
                 return Err(rejection);
             }
@@ -1635,7 +1599,7 @@ impl GatewayHost {
         let (routine, input, spec) = match preflight {
             Ok(preflight) => preflight,
             Err(rejection) => {
-                let completed = state
+                state
                     .bots
                     .finish_run(
                         run,
@@ -1643,27 +1607,17 @@ impl GatewayHost {
                         Some(rejection.message.clone()),
                     )
                     .map_err(internal)?;
-                state
-                    .swarm
-                    .project_routine_outcome(&completed, None)
-                    .await
-                    .map_err(internal)?;
                 return Err(rejection);
             }
         };
         if let Err(rejection) = state.ensure_capacity().await {
-            let completed = state
+            state
                 .bots
                 .finish_run(
                     run,
                     crate::wire::RoutineRunStatus::Skipped,
                     Some("the gateway active-chat limit was reached".into()),
                 )
-                .map_err(internal)?;
-            state
-                .swarm
-                .project_routine_outcome(&completed, None)
-                .await
                 .map_err(internal)?;
             return Err(rejection);
         }
@@ -1691,18 +1645,13 @@ impl GatewayHost {
             Ok(host) => host,
             Err(error) => {
                 let message = error.to_string();
-                let completed = state
+                state
                     .bots
                     .finish_run(
                         run,
                         crate::wire::RoutineRunStatus::Failed,
                         Some(message.clone()),
                     )
-                    .map_err(internal)?;
-                state
-                    .swarm
-                    .project_routine_outcome(&completed, None)
-                    .await
                     .map_err(internal)?;
                 return Err(internal(message));
             }
@@ -1724,33 +1673,8 @@ impl GatewayHost {
                 broadcast
             }
             Err(rejection) => {
-                let completed = {
-                    let state = self.state.lock().await;
-                    state
-                        .bots
-                        .history(None)
-                        .map(|runs| {
-                            runs.into_iter()
-                                .find(|run| {
-                                    run.status != RoutineRunStatus::Running
-                                        && run.session_id.as_deref() == Some(session_id.as_str())
-                                })
-                                .map(|run| (Arc::clone(&state.swarm), run))
-                        })
-                        .map_err(internal)
-                };
-                let projection = match completed {
-                    Ok(Some((swarm, run))) => swarm
-                        .project_routine_outcome(&run, None)
-                        .await
-                        .map(|_| ())
-                        .map_err(internal),
-                    Ok(None) => Ok(()),
-                    Err(error) => Err(error),
-                };
                 let _ = host.stop_if_idle().await;
                 self.state.lock().await.sessions.remove(&session_id);
-                projection?;
                 Err(rejection)
             }
         }

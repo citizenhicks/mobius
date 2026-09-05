@@ -3,7 +3,7 @@ import XCTest
 
 extension GatewayWireTests {
     func testMessageDeltaRequiresItsStableSubmissionIdentity() throws {
-        let fixture = #"{"version":69,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1234,"event":{"submission_id":"spoken-1","msg":{"type":"message_delta","text":"Hello"}},"stream_metrics":[],"blocks":[],"preview":null}}"#
+        let fixture = #"{"version":70,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1234,"event":{"submission_id":"spoken-1","msg":{"type":"message_delta","text":"Hello"}},"stream_metrics":[],"blocks":[],"preview":null}}"#
         guard case .agentEvent(_, let record) = try decodeEnvelope(fixture) else {
             return XCTFail("Expected spoken input delta")
         }

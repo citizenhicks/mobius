@@ -229,6 +229,7 @@ async fn async_subagent_uses_configured_model_reasoning_and_durable_fork() {
     let message = final_message(&mut agent).await;
     let sessions = checkpoint_store
         .list_sessions_page(SessionPageRequest {
+            bot_id: None,
             cursor: None,
             limit: 10,
         })

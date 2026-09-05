@@ -141,6 +141,11 @@ pub trait Middleware: Send + Sync {
     /// Stable ID used to reject duplicate registrations.
     fn name(&self) -> &'static str;
 
+    /// Middleware IDs that cannot share a stack with this configured capability.
+    fn incompatible_middleware(&self) -> &'static [&'static str] {
+        &[]
+    }
+
     /// Adds tools to the catalog while the agent is created.
     fn register(&self, _catalog: &mut Catalog, _runtime: &RuntimeContext) -> Result<()> {
         Ok(())
@@ -346,7 +351,7 @@ pub(crate) struct SessionStartResult {
 }
 
 impl MiddlewareStack {
-    /// Creates a stack and rejects duplicate middleware IDs.
+    /// Creates a stack and rejects duplicate or incompatible middleware.
     pub fn new(entries: Vec<Arc<dyn Middleware>>) -> Result<Self> {
         let mut names = BTreeSet::new();
         let mut message_handler = None;
@@ -359,6 +364,18 @@ impl MiddlewareStack {
             {
                 return Err(Error::Config(format!(
                     "conversation messages are owned by both `{owner}` and `{}`",
+                    entry.name()
+                )));
+            }
+        }
+        for entry in &entries {
+            if let Some(other) = entry
+                .incompatible_middleware()
+                .iter()
+                .find(|name| names.contains(**name))
+            {
+                return Err(Error::Config(format!(
+                    "middleware `{}` is incompatible with `{other}`",
                     entry.name()
                 )));
             }
@@ -676,6 +693,7 @@ impl MiddlewareStack {
         }
         for entry in &self.entries {
             let mut request = ModelRequestContext {
+                role: &context.runtime.role,
                 model: context.model,
                 provider: context.provider,
                 session_id: context.session_id,
@@ -977,7 +995,11 @@ pub(crate) const fn approximate_tokens(bytes: usize) -> usize {
 }
 
 pub(crate) fn approximate_item_tokens(item: &Value) -> usize {
-    serde_json::to_vec(item)
+    let mut item = item.clone();
+    if let Some(fields) = item.as_object_mut() {
+        fields.retain(|name, _| !name.starts_with('_'));
+    }
+    serde_json::to_vec(&item)
         .map_or(0, |bytes| approximate_tokens(bytes.len()))
         .max(1)
 }

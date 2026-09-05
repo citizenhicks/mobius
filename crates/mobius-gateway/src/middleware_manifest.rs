@@ -115,6 +115,14 @@ pub(crate) fn default_config() -> MiddlewareConfig {
 }
 
 pub(crate) fn validate(config: &MiddlewareConfig) -> Result<()> {
+    let features = features(&[]);
+    for id in config.entries() {
+        if let Some(policy) = config.disabled_by(&features, id) {
+            return Err(Error::Config(format!(
+                "middleware `{id}` is incompatible with the selected `{policy}` policy"
+            )));
+        }
+    }
     for id in config.entries() {
         let manifest = definition(id)?.manifest;
         if manifest.required {
@@ -260,6 +268,10 @@ mod tests {
 
         assert!(validate(&config).is_ok());
         assert_eq!(
+            config.setting("bots", "collaboration"),
+            Some(&FrontendSettingValue::String("off".into()))
+        );
+        assert_eq!(
             config.entries().collect::<BTreeSet<_>>(),
             BTreeSet::from([
                 "artifacts",
@@ -291,6 +303,30 @@ mod tests {
         let mut invalid = config;
         invalid.set_enabled("tools", true);
         assert!(validate(&invalid).is_err());
+    }
+
+    #[test]
+    fn handoff_excludes_offloading_but_keeps_tasks_independent() {
+        let mut config = default_config();
+        config.set_setting(
+            "compaction",
+            "mode",
+            Some(FrontendSettingValue::String("handoff".into())),
+        );
+        config.set_enabled("tasks", true);
+        assert!(
+            validate(&config)
+                .expect_err("conflicting policies")
+                .to_string()
+                .contains("incompatible")
+        );
+        config.reconcile(&features(&[]));
+        assert!(!config.enabled("context_offloading"));
+        assert!(config.enabled("tasks"));
+        assert!(validate(&config).is_ok());
+        config.set_enabled("compaction", false);
+        config.set_enabled("context_offloading", true);
+        assert!(validate(&config).is_ok());
     }
 
     #[test]

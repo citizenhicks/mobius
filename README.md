@@ -109,12 +109,14 @@ gateway state and credentials; file tools remain workspace-scoped.
 [`mobius-gateway`](https://crates.io/crates/mobius-gateway) is the only shipped
 owner of an `Agent`. It explicitly assembles one agent per active conversation
 from its owning Bot and owns authentication, paired clients, workspaces,
-artifacts, Git, usage, Bot profiles and routines, manual Bot swarms, and the
+artifacts, Git, usage, Bot profiles and routines, optional Bot swarms, and the
 extension catalog. Its versioned wire protocol translates authenticated client
 requests into core operations and publishes core events plus capability
 contributions. [Bots and context](https://github.com/citizenhicks/mobius/blob/main/crates/mobius-gateway/BOTS.md)
-defines the conversation, Swarm, routine, subagent, scratchpad, and escalation
-boundaries.
+defines the conversation, history-recovery, handoff, shared-knowledge, and
+collaboration boundaries. Swarms require each Bot to opt in through its native
+`bots.collaboration` capability setting; profiles, chats, and self-routines work
+independently.
 
 ### CLI
 

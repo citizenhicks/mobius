@@ -43,6 +43,7 @@ mod text {
 
 const APPROVAL_POLICIES: &[MiddlewareSettingChoice] = &[
     MiddlewareSettingChoice {
+        disables: &[],
         value: "ask",
         label: text::APPROVAL_POLICY_ASK_LABEL,
         description: text::APPROVAL_POLICY_ASK_DESCRIPTION,
@@ -50,6 +51,7 @@ const APPROVAL_POLICIES: &[MiddlewareSettingChoice] = &[
         tone: FrontendTone::Neutral,
     },
     MiddlewareSettingChoice {
+        disables: &[],
         value: "allow",
         label: text::APPROVAL_POLICY_ALLOW_LABEL,
         description: text::APPROVAL_POLICY_ALLOW_DESCRIPTION,
@@ -57,6 +59,7 @@ const APPROVAL_POLICIES: &[MiddlewareSettingChoice] = &[
         tone: FrontendTone::Warning,
     },
     MiddlewareSettingChoice {
+        disables: &[],
         value: "allow_network",
         label: text::APPROVAL_POLICY_ALLOW_NETWORK_LABEL,
         description: text::APPROVAL_POLICY_ALLOW_NETWORK_DESCRIPTION,
@@ -64,6 +67,7 @@ const APPROVAL_POLICIES: &[MiddlewareSettingChoice] = &[
         tone: FrontendTone::Warning,
     },
     MiddlewareSettingChoice {
+        disables: &[],
         value: "full_access",
         label: text::APPROVAL_POLICY_FULL_ACCESS_LABEL,
         description: text::APPROVAL_POLICY_FULL_ACCESS_DESCRIPTION,

@@ -149,7 +149,7 @@ struct BotsView: View {
             .disabled(model.availableBotsForSwarm().count < 2 || !model.canMutateSwarm)
             .groupedHeaderAction()
             .accessibilityLabel("New Swarm")
-            .help("New Swarm")
+            .help("Create a Swarm with Bots that have collaboration enabled in Bot capabilities.")
         }
     }
 
@@ -408,7 +408,7 @@ private struct NewSwarmSheet: View {
                 } header: {
                     Text("Coworkers")
                 } footer: {
-                    Text("Each Bot can belong to one swarm.")
+                    Text("Enable Swarm collaboration in Bot capabilities to make a Bot available here. Each Bot can belong to one swarm.")
                 }
             }
             .scrollContentBackground(.hidden)
@@ -435,9 +435,11 @@ private struct NewSwarmSheet: View {
     }
 
     private var canCreate: Bool {
-        !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !leaderBotID.isEmpty
+        let allowed = Set(availableBots.map(\.id))
+        return !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && allowed.contains(leaderBotID)
             && !memberBotIDs.isEmpty
+            && memberBotIDs.isSubset(of: allowed)
             && model.canMutateSwarm
     }
 

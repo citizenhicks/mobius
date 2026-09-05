@@ -48,6 +48,31 @@ pub(crate) async fn ensure_test_bot(
         .map_err(invalid_bot)
 }
 
+async fn enable_test_collaboration(
+    gateway: &GatewayHost,
+    bot: crate::wire::BotRecord,
+) -> crate::wire::BotRecord {
+    let mut config = bot.config.config.clone();
+    config.middleware.set_setting(
+        "bots",
+        "collaboration",
+        Some(mobius::protocol::FrontendSettingValue::String(
+            "swarm".into(),
+        )),
+    );
+    gateway
+        .update_bot(
+            &bot.id,
+            bot.config.revision,
+            &bot.name,
+            &bot.description,
+            bot.tint,
+            config,
+        )
+        .await
+        .expect("enable collaboration")
+}
+
 pub(crate) async fn create_test_session(
     gateway: &GatewayHost,
     workspace: &Path,

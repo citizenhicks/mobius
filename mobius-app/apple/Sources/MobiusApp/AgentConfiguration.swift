@@ -114,6 +114,27 @@ struct MiddlewareConfig: Codable, Equatable, Sendable {
 }
 
 extension MiddlewareConfig {
+    func disabledBy(features: [MiddlewareFeature], middleware: String) -> String? {
+        for feature in features where feature.required || enabled.contains(feature.id) {
+            for setting in feature.settings {
+                guard case .select(let options, _) = setting.kind,
+                      case .string(let value) = settings[feature.id]?[setting.id]
+                else { continue }
+                if let option = options.first(where: {
+                    $0.value == value && $0.disables.contains(middleware)
+                }) {
+                    return option.label
+                }
+            }
+        }
+        return nil
+    }
+
+    mutating func reconcile(features: [MiddlewareFeature]) {
+        let excluded = enabled.filter { disabledBy(features: features, middleware: $0) != nil }
+        enabled.subtract(excluded)
+    }
+
     mutating func setSetting(
         _ value: FrontendSettingValue?,
         middleware: String,
@@ -242,9 +263,10 @@ struct FrontendSettingOption: Identifiable, Decodable, Equatable, Sendable {
     let description: String
     let symbol: String?
     let tone: String
+    let disables: [String]
 
     private enum CodingKeys: String, CodingKey {
-        case value, label, description, symbol, tone
+        case value, label, description, symbol, tone, disables
     }
 
     init(
@@ -252,13 +274,15 @@ struct FrontendSettingOption: Identifiable, Decodable, Equatable, Sendable {
         label: String,
         description: String,
         symbol: String? = nil,
-        tone: String = "neutral"
+        tone: String = "neutral",
+        disables: [String] = []
     ) {
         self.value = value
         self.label = label
         self.description = description
         self.symbol = symbol
         self.tone = tone
+        self.disables = disables
     }
 
     init(from decoder: Decoder) throws {
@@ -268,6 +292,7 @@ struct FrontendSettingOption: Identifiable, Decodable, Equatable, Sendable {
         description = try container.decode(String.self, forKey: .description)
         symbol = try container.decodeIfPresent(String.self, forKey: .symbol)
         tone = try container.decode(String.self, forKey: .tone)
+        disables = try container.decode([String].self, forKey: .disables)
         guard ["neutral", "success", "warning", "error"].contains(tone) else {
             throw GatewayWireError.invalidFrame("frontend setting option has an unknown tone")
         }

@@ -232,6 +232,7 @@ impl MiddlewareSettingChoices {
                     description: choice.description.into(),
                     symbol: choice.symbol.map(FrontendSymbol::from_wire),
                     tone: choice.tone,
+                    disables: choice.disables.iter().map(|id| (*id).into()).collect(),
                 })
                 .collect(),
             Self::ModelRoutes => models
@@ -245,6 +246,7 @@ impl MiddlewareSettingChoices {
                     description: format!("{} · {}", choice.model, choice.route),
                     symbol: None,
                     tone: FrontendTone::Neutral,
+                    disables: Vec::new(),
                 })
                 .collect(),
         }
@@ -266,6 +268,8 @@ pub struct MiddlewareSettingChoice {
     pub description: &'static str,
     pub symbol: Option<&'static str>,
     pub tone: FrontendTone,
+    /// Optional middleware excluded by this policy choice.
+    pub disables: &'static [&'static str],
 }
 
 fn setting_type(middleware: &str, setting: &str, expected: &str) -> Error {
@@ -279,6 +283,7 @@ mod tests {
     use super::*;
 
     const CHOICES: &[MiddlewareSettingChoice] = &[MiddlewareSettingChoice {
+        disables: &[],
         value: "safe",
         label: "Safe",
         description: "Use the safe policy",

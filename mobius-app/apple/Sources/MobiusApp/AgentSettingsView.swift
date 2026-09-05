@@ -218,6 +218,7 @@ struct AgentSettingsView: View {
     @ViewBuilder
     private func capabilityRow(_ feature: MiddlewareFeature) -> some View {
         let summary = capabilitySummary(feature)
+        let unavailable = middlewareUnavailable(feature)
         if capabilityHasDetails(feature) {
             HStack(spacing: MobiusSpace.s) {
                 Button {
@@ -247,16 +248,19 @@ struct AgentSettingsView: View {
                     Text(verbatim: feature.label)
                 }
                     .labelsHidden()
-                    .disabled(feature.required)
-                    .accessibilityHint(Text(verbatim: feature.description))
+                    .disabled(feature.required || unavailable != nil)
+                    .accessibilityHint(Text(verbatim: unavailable ?? feature.description))
             }
         } else {
             Toggle(isOn: middleware(feature)) {
-                Text(verbatim: feature.label)
+                SettingsRowLabel(
+                    title: .verbatim(feature.label),
+                    detail: .verbatim(unavailable ?? "")
+                )
             }
-                .disabled(feature.required)
-                .accessibilityHint(Text(verbatim: feature.description))
-                .help(Text(verbatim: feature.description))
+                .disabled(feature.required || unavailable != nil)
+                .accessibilityHint(Text(verbatim: unavailable ?? feature.description))
+                .help(Text(verbatim: unavailable ?? feature.description))
         }
     }
 
@@ -265,9 +269,12 @@ struct AgentSettingsView: View {
             Form {
                 Section {
                     Toggle("Enabled", isOn: middleware(feature))
-                        .disabled(feature.required)
+                        .disabled(feature.required || middlewareUnavailable(feature) != nil)
                 } footer: {
                     Text(verbatim: feature.description)
+                    if let unavailable = middlewareUnavailable(feature) {
+                        Text(verbatim: unavailable)
+                    }
                 }
 
                 if !feature.settings.isEmpty {
@@ -303,6 +310,7 @@ struct AgentSettingsView: View {
     }
 
     private func capabilitySummary(_ feature: MiddlewareFeature) -> MobiusText {
+        if let unavailable = middlewareUnavailable(feature) { return .verbatim(unavailable) }
         let settings = feature.settings.map { settingSummary(feature, $0) }
         let availableExtensions = extensions(for: feature)
         guard !availableExtensions.isEmpty else { return joined(settings) }
@@ -563,7 +571,9 @@ struct AgentSettingsView: View {
         Binding(
             get: { middlewareEnabled(feature) },
             set: { isEnabled in
-                guard !feature.required, var enabled = draft?.middleware.enabled else { return }
+                guard !feature.required, var enabled = draft?.middleware.enabled,
+                      !isEnabled || middlewareUnavailable(feature) == nil
+                else { return }
                 if isEnabled { enabled.insert(feature.id) }
                 else { enabled.remove(feature.id) }
                 updateDraft { $0.middleware.enabled = enabled }
@@ -573,6 +583,14 @@ struct AgentSettingsView: View {
 
     private func middlewareEnabled(_ feature: MiddlewareFeature) -> Bool {
         feature.required || (draft?.middleware.enabled.contains(feature.id) ?? false)
+    }
+
+    private func middlewareUnavailable(_ feature: MiddlewareFeature) -> String? {
+        guard let label = draft?.middleware.disabledBy(
+            features: model.middlewareFeatures,
+            middleware: feature.id
+        ) else { return nil }
+        return String(localized: "Unavailable while \(label) is selected.")
     }
 
     private func integerSetting(
@@ -672,6 +690,7 @@ struct AgentSettingsView: View {
     private func updateDraft(_ update: (inout AgentComposition) -> Void) {
         guard var draft else { return }
         update(&draft)
+        draft.middleware.reconcile(features: model.middlewareFeatures)
         switch scope {
         case .botDefaults: model.botDefaultsDraft = draft
         case .bot: model.botDraft = draft

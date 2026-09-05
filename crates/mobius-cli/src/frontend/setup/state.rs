@@ -578,8 +578,10 @@ impl SetupState {
                 let feature = &self.features[index];
                 if !feature.required {
                     let enabled = !self.middleware.enabled(&feature.id);
-                    self.middleware.set_enabled(&feature.id, enabled);
-                    self.error = None;
+                    self.error = self
+                        .set_middleware_enabled(index, enabled)
+                        .err()
+                        .map(|error| error.to_string());
                 }
             }
             KeyCode::Enter | KeyCode::Right
@@ -620,12 +622,15 @@ impl SetupState {
                 };
                 let extension = &self.available_extensions[extension];
                 let id = extension.id.clone();
-                if !self.selected_extensions.remove(&id) {
-                    self.selected_extensions.insert(id);
-                    self.middleware
-                        .set_enabled(&self.features[feature].id, true);
-                }
                 self.error = None;
+                if !self.selected_extensions.remove(&id) {
+                    match self.set_middleware_enabled(feature, true) {
+                        Ok(()) => {
+                            self.selected_extensions.insert(id);
+                        }
+                        Err(error) => self.error = Some(error.to_string()),
+                    }
+                }
             }
             KeyCode::Enter | KeyCode::Char(' ') if self.apply_target_for_row().is_some() => {
                 self.target = self
@@ -636,6 +641,18 @@ impl SetupState {
             _ => {}
         }
         Flow::Continue
+    }
+
+    fn set_middleware_enabled(&mut self, feature: usize, enabled: bool) -> Result<()> {
+        let id = &self.features[feature].id;
+        if enabled && let Some(label) = self.middleware.disabled_by(&self.features, id) {
+            return Err(Error::Config(format!(
+                "Unavailable while {label} is selected."
+            )));
+        }
+        self.middleware.set_enabled(id, enabled);
+        self.middleware.reconcile(&self.features);
+        Ok(())
     }
 
     pub(super) fn select_model_row(&mut self) {
@@ -728,6 +745,7 @@ impl SetupState {
                 let next = (current as isize + delta).rem_euclid(count as isize) as usize;
                 if next < offset {
                     self.middleware.set_setting(&feature.id, &setting.id, None);
+                    self.middleware.reconcile(&self.features);
                     return Ok(());
                 }
                 FrontendSettingValue::String(options[next - offset].value.clone())
@@ -735,6 +753,7 @@ impl SetupState {
         };
         self.middleware
             .set_setting(&feature.id, &setting.id, Some(value));
+        self.middleware.reconcile(&self.features);
         Ok(())
     }
 

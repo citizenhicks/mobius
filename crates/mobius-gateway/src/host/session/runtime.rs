@@ -137,27 +137,6 @@ impl HostState {
                 fatal: false,
             });
         }
-        match self.bots.history(None) {
-            Ok(runs) => {
-                for run in runs
-                    .iter()
-                    .filter(|run| run.status != RoutineRunStatus::Running)
-                {
-                    if let Err(error) = self.swarm.project_routine_outcome(run, None).await {
-                        self.broadcast(ServerMessage::Error {
-                            code: "routine_state_error".into(),
-                            message: error.to_string(),
-                            fatal: false,
-                        });
-                    }
-                }
-            }
-            Err(error) => self.broadcast(ServerMessage::Error {
-                code: "routine_state_error".into(),
-                message: error.to_string(),
-                fatal: false,
-            }),
-        }
         for waiter in self.idle_waiters.drain(..) {
             let _ = waiter.send(());
         }
@@ -338,18 +317,13 @@ impl HostState {
             }
             HostCommand::RunRoutine { run, input, reply } => {
                 let result = match self.begin_session_mutation() {
-                    Ok(_mutation) => self.run_routine(run, input).await,
+                    Ok(_mutation) => self.run_routine(run, input),
                     Err(rejection) => match self.bots.finish_run(
                         run,
                         RoutineRunStatus::Failed,
                         Some(rejection.message.clone()),
                     ) {
-                        Ok(completed) => {
-                            match self.swarm.project_routine_outcome(&completed, None).await {
-                                Ok(_) => Err(rejection),
-                                Err(error) => Err(internal(error)),
-                            }
-                        }
+                        Ok(_) => Err(rejection),
                         Err(error) => Err(internal(error)),
                     },
                 };
@@ -459,23 +433,18 @@ impl HostState {
             .collect())
     }
 
-    pub(super) async fn run_routine(
+    pub(super) fn run_routine(
         &mut self,
         run: ActiveRoutineRun,
         input: String,
     ) -> std::result::Result<(), Rejection> {
         if let Err(rejection) = self.require_idle() {
-            let completed = self
-                .bots
+            self.bots
                 .finish_run(
                     run,
                     RoutineRunStatus::Failed,
                     Some("the agent was busy when this invocation became due".into()),
                 )
-                .map_err(internal)?;
-            self.swarm
-                .project_routine_outcome(&completed, None)
-                .await
                 .map_err(internal)?;
             return Err(rejection);
         }
@@ -504,17 +473,12 @@ impl HostState {
                 .active_routine
                 .take()
                 .expect("active routine was just set");
-            let completed = self
-                .bots
+            self.bots
                 .finish_run(
                     active.run,
                     RoutineRunStatus::Failed,
                     Some(rejection.message.clone()),
                 )
-                .map_err(internal)?;
-            self.swarm
-                .project_routine_outcome(&completed, None)
-                .await
                 .map_err(internal)?;
             return Err(rejection);
         }

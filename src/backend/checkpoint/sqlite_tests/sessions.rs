@@ -24,6 +24,7 @@ async fn session_context_round_trips_through_save_catalog_and_fork() {
         .expect("fork session");
     let page = store
         .list_sessions_page(SessionPageRequest {
+            bot_id: None,
             cursor: None,
             limit: 10,
         })
@@ -89,6 +90,7 @@ async fn session_catalog_rejects_a_blank_bot_id() {
 
     let error = store
         .list_sessions_page(SessionPageRequest {
+            bot_id: None,
             cursor: None,
             limit: 1,
         })
@@ -327,6 +329,7 @@ async fn session_catalog_reads_context_without_decoding_the_checkpoint() {
 
     let page = store
         .list_sessions_page(SessionPageRequest {
+            bot_id: None,
             cursor: None,
             limit: 1,
         })
@@ -334,6 +337,56 @@ async fn session_catalog_reads_context_without_decoding_the_checkpoint() {
         .expect("list sessions");
 
     assert_eq!(page.sessions[0].session_context, context);
+}
+
+#[tokio::test]
+async fn session_catalog_filters_bot_membership_before_pagination() {
+    let workspace = tempfile::tempdir().expect("create workspace");
+    let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
+        .expect("open checkpoint database");
+    for (session_id, bot_id) in [
+        ("a", "owner"),
+        ("b", "foreign"),
+        ("c", "owner"),
+        ("d", "foreign"),
+    ] {
+        let mut session = checkpoint(session_id);
+        session.session_context.bot_id = bot_id.into();
+        store.save(&session, &[], None).await.expect("save session");
+    }
+    let first = store
+        .list_sessions_page(SessionPageRequest {
+            bot_id: Some("owner".into()),
+            cursor: None,
+            limit: 1,
+        })
+        .await
+        .expect("first owned page");
+    assert_eq!(first.sessions[0].session_id, "c");
+    assert_eq!(
+        first.next_cursor.as_ref().expect("owned cursor").session_id,
+        "c"
+    );
+    let second = store
+        .list_sessions_page(SessionPageRequest {
+            bot_id: Some("owner".into()),
+            cursor: first.next_cursor,
+            limit: 1,
+        })
+        .await
+        .expect("second owned page");
+    assert_eq!(second.sessions[0].session_id, "a");
+    assert!(second.next_cursor.is_none());
+    assert!(
+        store
+            .list_sessions_page(SessionPageRequest {
+                bot_id: Some(" ".into()),
+                cursor: None,
+                limit: 1,
+            })
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -350,6 +403,7 @@ async fn session_catalog_continues_from_a_stable_cursor() {
 
     let first = store
         .list_sessions_page(SessionPageRequest {
+            bot_id: None,
             cursor: None,
             limit: 2,
         })
@@ -357,6 +411,7 @@ async fn session_catalog_continues_from_a_stable_cursor() {
         .expect("load first page");
     let second = store
         .list_sessions_page(SessionPageRequest {
+            bot_id: None,
             cursor: first.next_cursor.clone(),
             limit: 2,
         })

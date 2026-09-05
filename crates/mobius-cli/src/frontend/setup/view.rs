@@ -377,6 +377,11 @@ fn render_agent_page(lines: &mut Vec<Line<'static>>, state: &SetupState, width: 
         {
             MiddlewareRow::Feature(feature_index) => {
                 let feature = &state.features[feature_index];
+                let disabled_by = state.middleware.disabled_by(&state.features, &feature.id);
+                let description = disabled_by.map_or_else(
+                    || feature.description.clone(),
+                    |label| format!("Unavailable while {label} is selected."),
+                );
                 let disclosure = if !state.feature_has_children(feature_index) {
                     ""
                 } else if state.expanded_features.contains(&feature.id) {
@@ -387,10 +392,12 @@ fn render_agent_page(lines: &mut Vec<Line<'static>>, state: &SetupState, width: 
                 agent_choice(
                     lines,
                     &format!("{}{disclosure}", feature.label),
-                    &feature.description,
+                    &description,
                     state.row == row,
                     if feature.required || state.middleware.enabled(&feature.id) {
                         "[x]"
+                    } else if disabled_by.is_some() {
+                        "[-]"
                     } else {
                         "[ ]"
                     },

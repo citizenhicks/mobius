@@ -418,7 +418,7 @@ extension AppModel {
 
     func availableBotsForSwarm(excluding botID: String? = nil) -> [BotRecord] {
         bots.filter { bot in
-            bot.id != botID && swarm(containingBot: bot.id) == nil
+            bot.collaborationEnabled && bot.id != botID && swarm(containingBot: bot.id) == nil
         }.sorted {
             $0.name.localizedStandardCompare($1.name) == .orderedAscending
         }
@@ -666,14 +666,14 @@ extension AppModel {
 
     func createSwarm(title rawTitle: String, leaderBotID: String, memberBotIDs: Set<String>) {
         let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard canMutateSwarm,
-              !title.isEmpty,
-              bots.contains(where: { $0.id == leaderBotID }),
-              swarm(containingBot: leaderBotID) == nil
-        else { return }
-        let allowed = Set(availableBotsForSwarm(excluding: leaderBotID).map(\.id))
-        guard !memberBotIDs.isEmpty, memberBotIDs.isSubset(of: allowed) else {
-            showToast("Those Bots can no longer form a swarm.", tone: .warning)
+        guard canMutateSwarm, !title.isEmpty else { return }
+        let allowed = Set(availableBotsForSwarm().map(\.id))
+        guard allowed.contains(leaderBotID),
+              !memberBotIDs.isEmpty,
+              !memberBotIDs.contains(leaderBotID),
+              memberBotIDs.isSubset(of: allowed)
+        else {
+            showToast("Choose available Bots with Swarm collaboration enabled.", tone: .warning)
             return
         }
         let selectedCoworkers = bots.compactMap { bot in
@@ -690,8 +690,8 @@ extension AppModel {
     }
 
     func addSwarmMember(_ bot: BotRecord, to swarm: SwarmRecord) {
-        guard self.swarm(containingBot: bot.id) == nil else {
-            showToast("That Bot already belongs to a swarm.", tone: .warning)
+        guard availableBotsForSwarm().contains(where: { $0.id == bot.id }) else {
+            showToast("Choose an available Bot with Swarm collaboration enabled.", tone: .warning)
             return
         }
         sendSwarmMutation("swarm-add") { requestID in

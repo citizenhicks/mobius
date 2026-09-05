@@ -9,8 +9,8 @@ use super::unix_timestamp_ms;
 use crate::backend::checkpoint::{ActiveExecution, ExecutionOutcome, ExecutionPhase};
 use crate::middleware::{PreparedMessage, TurnEndContext};
 use crate::protocol::{
-    ErrorEvent, Event, EventMsg, MessageTarget, TokenCountEvent, TokenUsageInfo, TurnAbortedEvent,
-    TurnCompleteEvent, TurnStartedEvent,
+    ErrorEvent, Event, EventMsg, MessageTarget, TokenCountEvent, TokenUsage, TokenUsageInfo,
+    TurnAbortedEvent, TurnCompleteEvent, TurnStartedEvent,
 };
 use crate::{Error, Result};
 
@@ -244,8 +244,12 @@ impl Runner {
         Ok(None)
     }
 
-    pub(super) fn usage_event(&self, submission_id: &str) -> Option<Event> {
-        let last = self.state.last_usage.clone()?;
+    pub(super) fn usage_event(
+        &self,
+        submission_id: &str,
+        accounting_usage: Option<&TokenUsage>,
+    ) -> Option<Event> {
+        let last = accounting_usage.or(self.state.last_usage.as_ref())?.clone();
         Some(turn_event(
             submission_id,
             EventMsg::TokenCount(TokenCountEvent {

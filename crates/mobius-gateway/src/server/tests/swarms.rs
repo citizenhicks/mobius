@@ -57,9 +57,20 @@ async fn authenticated_client_creates_adds_leaves_and_disbands_a_swarm() {
         .expect("pair frontend");
     let (sender, mut events) = connection.into_parts();
     wait_gateway_ready(&mut events).await;
-    let (leader, leader_bot) = create_bot_chat(&sender, &mut events, &workspace).await;
-    let (_, reviewer_bot) = create_bot_chat(&sender, &mut events, &workspace).await;
-    let (tester, tester_bot) = create_bot_chat(&sender, &mut events, &workspace).await;
+    let mut composition = crate::wire::AgentComposition::default();
+    composition.middleware.set_setting(
+        "bots",
+        "collaboration",
+        Some(mobius::protocol::FrontendSettingValue::String(
+            "swarm".into(),
+        )),
+    );
+    let (leader, leader_bot) =
+        create_bot_chat_with_config(&sender, &mut events, &workspace, composition.clone()).await;
+    let (_, reviewer_bot) =
+        create_bot_chat_with_config(&sender, &mut events, &workspace, composition.clone()).await;
+    let (tester, tester_bot) =
+        create_bot_chat_with_config(&sender, &mut events, &workspace, composition.clone()).await;
 
     sender
         .send(ClientMessage::Submit {

@@ -9,6 +9,7 @@ pub(super) async fn gateway_session_summaries(
     loop {
         let page = checkpoints
             .list_sessions_page(SessionPageRequest {
+                bot_id: None,
                 cursor,
                 limit: SESSION_PAGE_SIZE,
             })

@@ -425,6 +425,52 @@ pub struct MiddlewareConfig {
 }
 
 impl MiddlewareConfig {
+    /// Returns the selected policy that excludes an optional capability.
+    #[must_use]
+    pub fn disabled_by<'a>(
+        &self,
+        features: &'a [mobius::protocol::MiddlewareFeature],
+        id: &str,
+    ) -> Option<&'a str> {
+        features
+            .iter()
+            .filter(|feature| feature.required || self.enabled(&feature.id))
+            .find_map(|feature| {
+                feature.settings.iter().find_map(|setting| {
+                    let mobius::protocol::FrontendSettingKind::Select { options, .. } =
+                        &setting.kind
+                    else {
+                        return None;
+                    };
+                    let Some(FrontendSettingValue::String(value)) =
+                        self.setting(&feature.id, &setting.id)
+                    else {
+                        return None;
+                    };
+                    options
+                        .iter()
+                        .find(|option| {
+                            option.value == *value
+                                && option.disables.iter().any(|disabled| disabled == id)
+                        })
+                        .map(|option| option.label.as_str())
+                })
+            })
+    }
+
+    /// Applies exclusions advertised by the currently selected policies.
+    pub fn reconcile(&mut self, features: &[mobius::protocol::MiddlewareFeature]) {
+        let excluded = self
+            .enabled
+            .iter()
+            .filter(|id| self.disabled_by(features, id).is_some())
+            .cloned()
+            .collect::<Vec<_>>();
+        for id in excluded {
+            self.enabled.remove(&id);
+        }
+    }
+
     /// Returns whether one advertised optional middleware is enabled.
     #[must_use]
     pub fn enabled(&self, id: &str) -> bool {
@@ -556,7 +602,7 @@ pub struct DailyUsage {
 }
 
 /// One durable Bot profile.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct BotRecord {
     pub id: String,
     pub handle: String,
@@ -564,6 +610,39 @@ pub struct BotRecord {
     pub description: String,
     pub tint: ProviderTint,
     pub config: VersionedAgentConfig,
+}
+
+// Wire eligibility is derived from the current config, never stored as a second source of truth.
+impl Serialize for BotRecord {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct as _;
+
+        let mut record = serializer.serialize_struct("BotRecord", 7)?;
+        record.serialize_field("id", &self.id)?;
+        record.serialize_field("handle", &self.handle)?;
+        record.serialize_field("name", &self.name)?;
+        record.serialize_field("description", &self.description)?;
+        record.serialize_field("tint", &self.tint)?;
+        record.serialize_field("config", &self.config)?;
+        record.serialize_field("collaboration_enabled", &self.collaboration_enabled())?;
+        record.end()
+    }
+}
+
+impl BotRecord {
+    /// Whether this Bot permits gateway-managed peer collaboration.
+    #[must_use]
+    pub fn collaboration_enabled(&self) -> bool {
+        mobius::middleware::bots::collaboration_enabled(
+            self.config
+                .config
+                .middleware
+                .setting("bots", "collaboration"),
+        )
+    }
 }
 
 /// One Bot-owned routine.

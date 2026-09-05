@@ -171,13 +171,12 @@ async fn idle_stop_waits_for_an_accepted_capability_command_to_finish() {
     let host = create_test_session(&gateway, &workspace)
         .await
         .expect("create session");
-    let session_id = host.session_id().to_owned();
     let note_id = Uuid::new_v4().to_string();
     blocking
         .inner
         .save_state(
-            &session_id,
-            "scratchpad.v1",
+            "scratchpad.global",
+            "entries.v1",
             &serde_json::json!([{
                 "id": note_id,
                 "note": "before",
@@ -193,7 +192,7 @@ async fn idle_stop_waits_for_an_accepted_capability_command_to_finish() {
         op: Op::CapabilityCommand {
             capability: "scratchpad".into(),
             command: "scratchpad".into(),
-            arguments: format!("edit session {note_id}"),
+            arguments: format!("edit global {note_id}"),
             input: Some("after".into()),
             target: None,
         },
@@ -236,7 +235,7 @@ async fn idle_stop_waits_for_an_accepted_capability_command_to_finish() {
     }
     let saved = blocking
         .inner
-        .load_state(&session_id, "scratchpad.v1")
+        .load_state("scratchpad.global", "entries.v1")
         .await
         .expect("load scratchpad")
         .expect("saved scratchpad");

@@ -2,6 +2,39 @@ use tokio::io::duplex;
 
 use super::*;
 
+#[test]
+fn bot_wire_collaboration_availability_tracks_config_after_reload() {
+    let mut bot = BotRecord {
+        id: "bot-a".into(),
+        handle: "helper".into(),
+        name: "Helper".into(),
+        description: "Help with the project".into(),
+        tint: ProviderTint::Blue,
+        config: VersionedAgentConfig {
+            revision: 1,
+            config: AgentComposition::default(),
+        },
+    };
+
+    for (setting, enabled) in [("off", false), ("swarm", true), ("off", false)] {
+        bot.config.config.middleware.set_setting(
+            "bots",
+            "collaboration",
+            Some(FrontendSettingValue::String(setting.into())),
+        );
+        let encoded = serde_json::to_value(&bot).expect("encode Bot");
+        assert_eq!(encoded["collaboration_enabled"], enabled);
+        assert_eq!(
+            encoded["config"]["config"]["middleware"]["settings"]["bots"]["collaboration"],
+            setting,
+        );
+        let reloaded: BotRecord = serde_json::from_value(encoded).expect("reload Bot");
+        assert_eq!(reloaded, bot);
+        assert_eq!(reloaded.collaboration_enabled(), enabled);
+        bot = reloaded;
+    }
+}
+
 #[tokio::test]
 async fn framed_json_round_trip_preserves_the_versioned_message() {
     let expected = ClientFrame::new(ClientMessage::Authenticate {

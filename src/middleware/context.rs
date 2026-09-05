@@ -5,9 +5,9 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use super::MiddlewareStack;
-use super::approximate_tokens;
 use super::tools::Catalog;
 use super::tools::ToolResult;
+use super::{approximate_item_tokens, approximate_tokens};
 use crate::agent::{AgentRole, WeakAgentSender};
 use crate::backend::checkpoint::{
     Checkpoint, CheckpointStore, ContextRewriteReason, ExecutionOutcome, MAX_QUEUED_MESSAGES,
@@ -384,6 +384,7 @@ pub struct ModelContext<'a> {
     pub(crate) checkpoint_sequence: u64,
     pub(crate) request_input: &'a mut Vec<Value>,
     pub(crate) available_tools: &'a mut BTreeSet<String>,
+    pub(crate) allow_hosted_tools: &'a mut bool,
     pub(crate) durable_input: &'a mut Vec<Value>,
     pub(crate) transcript_delta: &'a mut Vec<Value>,
     pub(crate) context_epoch: &'a mut u64,
@@ -424,6 +425,11 @@ impl ToolExposureContext<'_> {
 }
 
 impl ModelContext<'_> {
+    /// Prevents provider-hosted tools for this model step.
+    pub fn disable_hosted_tools(&mut self) {
+        *self.allow_hosted_tools = false;
+    }
+
     /// Returns durable provider-neutral model context.
     #[must_use]
     pub fn input(&self) -> &[Value] {
@@ -452,6 +458,7 @@ impl ModelContext<'_> {
         }
         self.durable_input.clone_from(&input);
         *self.request_input = input;
+        self.last_usage = None;
         *self.checkpoint_changed = true;
         Ok(())
     }
@@ -478,14 +485,38 @@ impl ModelContext<'_> {
         provisional_message_target(self.checkpoint_sequence, self.transcript_delta.len())
     }
 
-    /// Estimates serialized model input at four bytes per token.
+    /// Estimates visible history, instructions, and tool schemas at four bytes per token.
     #[must_use]
     pub fn estimated_input_tokens(&self) -> i64 {
         let mut bytes = ByteCounter::default();
-        if serde_json::to_writer(&mut bytes, self.durable_input).is_err() {
+        let Ok(tools) = self
+            .tools
+            .prepare(self.input(), self.available_tools.clone())
+        else {
+            return i64::MAX;
+        };
+        let visible = tools
+            .direct()
+            .iter()
+            .chain(
+                tools
+                    .deferred()
+                    .iter()
+                    .filter(|tool| tools.materialized().contains(&tool.name)),
+            )
+            .collect::<Vec<_>>();
+        if serde_json::to_writer(&mut bytes, &visible).is_err() {
             return i64::MAX;
         }
-        i64::try_from(approximate_tokens(bytes.0)).unwrap_or(i64::MAX)
+        let history = self
+            .durable_input
+            .iter()
+            .map(approximate_item_tokens)
+            .fold(0usize, usize::saturating_add);
+        i64::try_from(history.saturating_add(approximate_tokens(
+            bytes.0.saturating_add(self.instructions.len()),
+        )))
+        .unwrap_or(i64::MAX)
     }
 
     pub(crate) async fn pre_compact(&mut self) -> Result<()> {
@@ -541,6 +572,7 @@ impl ModelContext<'_> {
 
 /// Request-only model input exposed after every durable `PreModel` hook.
 pub struct ModelRequestContext<'a> {
+    pub role: &'a AgentRole,
     pub model: &'a ModelRouter,
     pub provider: &'a str,
     pub session_id: &'a str,

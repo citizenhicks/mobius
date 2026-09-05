@@ -273,6 +273,7 @@ fn provider_status(definition: &ProviderDefinition) -> ProviderStatus {
             .web_search()
             .iter()
             .map(|search| FrontendSettingOption {
+                disables: Vec::new(),
                 value: search.id().into(),
                 label: search.label().into(),
                 description: search.description().into(),

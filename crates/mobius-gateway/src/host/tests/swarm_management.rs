@@ -16,7 +16,11 @@ async fn gateway(root: &tempfile::TempDir) -> GatewayHost {
 async fn gateway_manages_bot_swarms_and_broadcasts_the_catalog() {
     let root = tempfile::tempdir().expect("root");
     let gateway = gateway(&root).await;
-    let leader = ensure_test_bot(&gateway).await.expect("leader Bot");
+    let leader = enable_test_collaboration(
+        &gateway,
+        ensure_test_bot(&gateway).await.expect("leader Bot"),
+    )
+    .await;
     let (reviewer, tester) = {
         let state = gateway.state.lock().await;
         let config = leader.config.config.clone();
@@ -113,7 +117,11 @@ async fn gateway_manages_bot_swarms_and_broadcasts_the_catalog() {
 async fn gateway_rejects_unknown_or_already_grouped_bots() {
     let root = tempfile::tempdir().expect("root");
     let gateway = gateway(&root).await;
-    let leader = ensure_test_bot(&gateway).await.expect("leader Bot");
+    let leader = enable_test_collaboration(
+        &gateway,
+        ensure_test_bot(&gateway).await.expect("leader Bot"),
+    )
+    .await;
     let reviewer = {
         let state = gateway.state.lock().await;
         state
@@ -147,7 +155,11 @@ async fn gateway_rejects_unknown_or_already_grouped_bots() {
 async fn gateway_leave_releases_host_state_while_waiting_for_delivery_acceptance() {
     let root = tempfile::tempdir().expect("root");
     let gateway = gateway(&root).await;
-    let leader = ensure_test_bot(&gateway).await.expect("leader Bot");
+    let leader = enable_test_collaboration(
+        &gateway,
+        ensure_test_bot(&gateway).await.expect("leader Bot"),
+    )
+    .await;
     let reviewer = {
         let state = gateway.state.lock().await;
         state

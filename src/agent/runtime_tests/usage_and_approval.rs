@@ -300,11 +300,13 @@ async fn assert_compaction_stop(
         .submit(user_op("hello"))
         .expect("submit input");
     let mut reason = None;
+    let mut accounting = None;
     loop {
         match agent.next_event().await.expect("agent event").msg {
             EventMsg::Warning(warning) if warning.message == expected_reason => {
                 reason = Some(warning.message)
             }
+            EventMsg::TokenCount(event) => accounting = event.info,
             EventMsg::TurnComplete(_) => break,
             _ => {}
         }
@@ -329,6 +331,14 @@ async fn assert_compaction_stop(
             Some(expected_reason)
         )
     );
+    assert!(checkpoint.last_usage.is_none());
+    if expected_compactions > 0 {
+        let accounting = accounting.expect("compaction usage remains visible when the turn stops");
+        assert_eq!(accounting.last_token_usage, scripted_usage());
+        assert_eq!(accounting.total_token_usage, checkpoint.total_usage);
+    } else {
+        assert!(accounting.is_none());
+    }
 }
 
 #[tokio::test]

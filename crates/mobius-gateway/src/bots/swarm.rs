@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::future::Future;
 use std::path::Path;
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use mobius::backend::checkpoint::CheckpointStore;
@@ -15,10 +15,8 @@ use tokio::sync::{Mutex, MutexGuard, OwnedMutexGuard, mpsc};
 use uuid::Uuid;
 
 use crate::bots::BotStore;
-use crate::config::GatewayConfig;
 use crate::wire::{
-    RoutineRun, RoutineRunStatus, RoutineSchedule, SwarmAttention, SwarmMemberRecord,
-    SwarmMessageRecord, SwarmRecord,
+    RoutineSchedule, SwarmAttention, SwarmMemberRecord, SwarmMessageRecord, SwarmRecord,
 };
 use crate::{Error, Result};
 
@@ -168,8 +166,6 @@ struct Settlement {
 pub(crate) enum SwarmDelivery {
     /// Durable board contents changed and connected clients need a fresh catalog.
     Changed,
-    /// Bot creation changed both authoritative catalogs.
-    CatalogChanged,
     /// Gateway capacity changed and durable pending recipients should be retried.
     RetryPending,
     /// A target Bot has at least one durable board message awaiting delivery.
@@ -201,7 +197,6 @@ pub(crate) enum AcknowledgeOutcome {
 pub struct SwarmStore {
     checkpoints: Arc<dyn CheckpointStore>,
     bots: Arc<BotStore>,
-    gateway: Arc<StdMutex<GatewayConfig>>,
     state: Arc<Mutex<Option<Catalog>>>,
     delivery_gate: Arc<Mutex<()>>,
     deliveries: mpsc::UnboundedSender<SwarmDelivery>,
@@ -249,7 +244,6 @@ impl SwarmDeliveryClaim {
 struct Catalog {
     swarms: BTreeMap<String, StoredSwarm>,
     pending_swarm_attention_message_ids: BTreeSet<String>,
-    projected_routine_run_ids: BTreeSet<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -276,14 +270,12 @@ impl SwarmStore {
     pub(crate) fn new(
         checkpoints: Arc<dyn CheckpointStore>,
         bots: Arc<BotStore>,
-        gateway: Arc<StdMutex<GatewayConfig>>,
     ) -> (Self, mpsc::UnboundedReceiver<SwarmDelivery>) {
         let (deliveries, receiver) = mpsc::unbounded_channel();
         (
             Self {
                 checkpoints,
                 bots,
-                gateway,
                 state: Arc::new(Mutex::new(None)),
                 delivery_gate: Arc::new(Mutex::new(())),
                 deliveries,
@@ -401,7 +393,7 @@ impl SwarmStore {
         validate_swarm_members(&leader_bot_id, &member_bot_ids)?;
         validate_title(&title)?;
         for bot_id in &member_bot_ids {
-            self.bots.bot(bot_id)?;
+            require_collaboration(&self.bots, bot_id)?;
         }
 
         let bots = Arc::clone(&self.bots);
@@ -436,7 +428,7 @@ impl SwarmStore {
     pub(crate) async fn join(&self, swarm_id: &str, bot_id: String) -> Result<SwarmSummary> {
         validate_swarm_id(swarm_id)?;
         validate_bot_id(&bot_id)?;
-        self.bots.bot(&bot_id)?;
+        require_collaboration(&self.bots, &bot_id)?;
         let swarm_id = swarm_id.to_owned();
         let bots = Arc::clone(&self.bots);
         self.mutate(move |catalog| {
@@ -591,6 +583,9 @@ impl SwarmStore {
     /// Resolves the swarm and handle for one participating Bot.
     pub async fn snapshot_for_bot(&self, bot_id: &str) -> Result<Option<SwarmSnapshot>> {
         validate_bot_id(bot_id)?;
+        if !self.bots.bot(bot_id)?.collaboration_enabled() {
+            return Ok(None);
+        }
         let state = self.lock_loaded().await?;
         let catalog = state.as_ref().expect("swarm catalog loaded");
         let Some((id, swarm)) = catalog
@@ -625,45 +620,6 @@ impl SwarmStore {
             .contains_key(swarm_id))
     }
 
-    async fn spawn_bot_inner(
-        &self,
-        bot_id: &str,
-        name: String,
-        description: String,
-    ) -> Result<String> {
-        let snapshot = self
-            .snapshot_for_bot(bot_id)
-            .await?
-            .ok_or_else(|| config("only a Swarm leader can create a Bot"))?;
-        if snapshot.swarm.leader_bot_id != bot_id {
-            return Err(config("only a Swarm leader can create a Bot"));
-        }
-        let defaults = self
-            .gateway
-            .lock()
-            .map_err(|_| config("gateway configuration lock is poisoned"))?
-            .bot_defaults
-            .clone()
-            .ok_or_else(|| config("configure Bot defaults before creating a Bot"))?;
-        let bot = self.bots.create_bot(&name, &description, defaults.config)?;
-        if let Err(error) = self.join(&snapshot.swarm.id, bot.id.clone()).await {
-            return match self.bots.rollback_created_bot(&bot.id, bot.config.revision) {
-                Ok(_) => Err(error),
-                Err(rollback) => Err(config(format!(
-                    "{error}; rolling back the new Bot failed: {rollback}"
-                ))),
-            };
-        }
-        let _ = self.deliveries.send(SwarmDelivery::Changed);
-        let _ = self.deliveries.send(SwarmDelivery::CatalogChanged);
-        Ok(serde_json::to_string(&serde_json::json!({
-            "bot_id": bot.id,
-            "handle": bot.handle,
-            "name": bot.name,
-            "swarm_id": snapshot.swarm.id,
-        }))?)
-    }
-
     async fn create_routine_inner(
         &self,
         bot_id: &str,
@@ -683,6 +639,7 @@ impl SwarmStore {
         let target_bot_id = if target_handle == caller.handle {
             caller.id
         } else {
+            require_collaboration(&self.bots, bot_id)?;
             {
                 let state = self.lock_loaded().await?;
                 let catalog = state.as_ref().expect("swarm catalog loaded");
@@ -708,6 +665,9 @@ impl SwarmStore {
             }
         };
         let target = self.bots.bot(&target_bot_id)?;
+        if target_bot_id != bot_id {
+            require_collaboration(&self.bots, &target_bot_id)?;
+        }
         let routine =
             self.bots
                 .create_routine(&target.id, workspace, &instructions, schedule, ends_at)?;
@@ -725,12 +685,29 @@ impl SwarmStore {
             .snapshot_for_bot(bot_id)
             .await?
             .ok_or_else(|| config("this Bot is not in a swarm"))?;
-        Ok(serde_json::to_string(&snapshot)?)
+        let available_bot_ids = self
+            .bots
+            .bots()?
+            .into_iter()
+            .filter(|bot| {
+                bot.collaboration_enabled()
+                    && snapshot
+                        .swarm
+                        .members
+                        .iter()
+                        .any(|member| member.bot_id == bot.id)
+            })
+            .map(|bot| bot.id)
+            .collect::<Vec<_>>();
+        Ok(serde_json::to_string(
+            &serde_json::json!({"swarm": snapshot.swarm, "handle": snapshot.handle, "available_bot_ids": available_bot_ids}),
+        )?)
     }
 
     /// Returns this Bot's recent board in the bounded model-tool format.
     pub(crate) async fn tool_read(&self, bot_id: &str) -> Result<String> {
         validate_bot_id(bot_id)?;
+        require_collaboration(&self.bots, bot_id)?;
         let state = self.lock_loaded().await?;
         let catalog = state.as_ref().expect("swarm catalog loaded");
         let swarm = catalog
@@ -748,6 +725,9 @@ impl SwarmStore {
     ) -> Result<Option<String>> {
         validate_bot_id(bot_id)?;
         validate_delivery_session_id(session_id)?;
+        if !self.bots.bot(bot_id)?.collaboration_enabled() {
+            return Ok(None);
+        }
         let state = self.lock_loaded().await?;
         let catalog = state.as_ref().expect("swarm catalog loaded");
         let Some(swarm) = catalog
@@ -802,6 +782,7 @@ impl SwarmStore {
         in_reply_to_message_id: Option<String>,
     ) -> Result<SwarmPost> {
         validate_bot_id(sender_bot_id)?;
+        require_collaboration(&self.bots, sender_bot_id)?;
         validate_session_id(source_session_id)?;
         validate_message(&text)?;
         if let Some(message_id) = in_reply_to_message_id.as_deref() {
@@ -895,6 +876,7 @@ impl SwarmStore {
                 if needs_swarm_attention
                     && sender_bot_id != swarm.leader_bot_id
                     && !recipients.contains(&swarm.leader_bot_id)
+                    && bots.bot(&swarm.leader_bot_id)?.collaboration_enabled()
                 {
                     recipients.push(swarm.leader_bot_id.clone());
                     recipients.sort();
@@ -904,6 +886,9 @@ impl SwarmStore {
                     .any(|bot| bot == &sender_bot_id)
                 {
                     return Err(config("a swarm message cannot mention its author"));
+                }
+                for recipient in &recipients {
+                    require_collaboration(&bots, recipient)?;
                 }
                 if let Some(recipient) = recipients.iter().find(|recipient| {
                     swarm
@@ -1012,6 +997,9 @@ impl SwarmStore {
                         .into_iter()
                         .collect::<Vec<_>>()
                 };
+                for recipient in &recipients {
+                    require_collaboration(&bots, recipient)?;
+                }
                 if let Some(recipient) = recipients.iter().find(|recipient| {
                     swarm
                         .board
@@ -1146,6 +1134,9 @@ impl SwarmStore {
         target_bot_id: &str,
     ) -> Result<Option<SwarmDeliveryClaim>> {
         validate_bot_id(target_bot_id)?;
+        if !self.bots.bot(target_bot_id)?.collaboration_enabled() {
+            return Ok(None);
+        }
         let gate = Arc::clone(&self.delivery_gate).lock_owned().await;
         let target_bot_id = target_bot_id.to_owned();
         let claimed_target_bot_id = target_bot_id.clone();
@@ -1364,8 +1355,9 @@ impl SwarmStore {
                         .expect("pending delivery target remains a member"),
                 )?;
                 let leader_bot_id = swarm.leader_bot_id.clone();
-                let wake_leader =
-                    target_bot_id != leader_bot_id && source.reply_depth < MAX_REPLY_DEPTH;
+                let wake_leader = target_bot_id != leader_bot_id
+                    && source.reply_depth < MAX_REPLY_DEPTH
+                    && bots.bot(&leader_bot_id)?.collaboration_enabled();
                 let text = outcome_text(&outcome);
                 let recipients = if wake_leader {
                     vec![leader_bot_id]
@@ -1420,103 +1412,6 @@ impl SwarmStore {
         Ok(true)
     }
 
-    /// Idempotently appends one terminal routine outcome to the owning Swarm Chat.
-    pub(crate) async fn project_routine_outcome(
-        &self,
-        run: &RoutineRun,
-        summary: Option<String>,
-    ) -> Result<bool> {
-        validate_message_id(&run.id)?;
-        let run = run.clone();
-        let bots = Arc::clone(&self.bots);
-        let projection = self
-            .mutate(move |catalog| {
-                if !catalog.projected_routine_run_ids.insert(run.id.clone()) {
-                    return Ok(None);
-                }
-                let Some(swarm_id) = swarm_id_for_bot(catalog, &run.bot_id) else {
-                    return Ok(None);
-                };
-                let swarm = catalog
-                    .swarms
-                    .get_mut(&swarm_id)
-                    .expect("resolved swarm exists");
-                let author = current_member(
-                    &bots,
-                    &run.bot_id,
-                    swarm
-                        .members
-                        .get(&run.bot_id)
-                        .expect("resolved swarm contains routine Bot"),
-                )?;
-                let leader = current_member(
-                    &bots,
-                    &swarm.leader_bot_id,
-                    swarm
-                        .members
-                        .get(&swarm.leader_bot_id)
-                        .expect("swarm leader remains a member"),
-                )?;
-                let wake_leader = run.bot_id != leader.bot_id;
-                let needs_swarm_attention = run.status == RoutineRunStatus::Failed && !wake_leader;
-                let detail = summary.or_else(|| run.message.clone());
-                let text = routine_outcome_text(
-                    &run,
-                    detail.as_deref(),
-                    wake_leader.then_some(leader.handle.as_str()),
-                    needs_swarm_attention,
-                );
-                let recipients = if wake_leader {
-                    vec![leader.bot_id.clone()]
-                } else {
-                    Vec::new()
-                };
-                let sequence = swarm
-                    .latest_sequence
-                    .checked_add(1)
-                    .ok_or_else(|| config("swarm board sequence exhausted"))?;
-                let now = unix_ms();
-                let entry = BoardEntry {
-                    id: Uuid::new_v4().to_string(),
-                    sequence,
-                    created_at_ms: now,
-                    author,
-                    source_session_id: run
-                        .session_id
-                        .clone()
-                        .unwrap_or_else(|| format!("routine-run-{}", run.id)),
-                    text,
-                    mentioned_recipient_bot_ids: recipients.clone(),
-                    pending_recipient_bot_ids: recipients.clone(),
-                    assigned_recipient_session_ids: BTreeMap::new(),
-                    in_reply_to_message_id: None,
-                    reply_depth: 0,
-                };
-                swarm.latest_sequence = sequence;
-                swarm.updated_at_ms = now;
-                swarm.board.push_back(entry.clone());
-                if needs_swarm_attention {
-                    catalog
-                        .pending_swarm_attention_message_ids
-                        .insert(entry.id.clone());
-                }
-                Ok(Some(Settlement {
-                    message_id: entry.id,
-                    target_bot_id: run.bot_id,
-                    pending_bot_id: recipients.into_iter().next(),
-                }))
-            })
-            .await?;
-        let Some(projection) = projection else {
-            return Ok(false);
-        };
-        let _ = self.deliveries.send(SwarmDelivery::Changed);
-        if let Some(bot_id) = projection.pending_bot_id {
-            self.notify_pending(&bot_id);
-        }
-        Ok(true)
-    }
-
     fn finish_settlement(&self, settlement: Settlement) {
         let _ = self.deliveries.send(SwarmDelivery::Changed);
         self.notify_acknowledged(&settlement.message_id, &settlement.target_bot_id);
@@ -1560,13 +1455,7 @@ impl SwarmStore {
             validate_bot_references(&self.bots, &candidate)?;
             return Ok(None);
         };
-        let live_routine_run_ids = self
-            .bots
-            .history(None)?
-            .into_iter()
-            .map(|run| run.id)
-            .collect::<BTreeSet<_>>();
-        prune_catalog(&mut candidate, &live_routine_run_ids);
+        prune_catalog(&mut candidate);
         validate_catalog(&candidate)?;
         validate_bot_references(&self.bots, &candidate)?;
         self.checkpoints
@@ -1592,13 +1481,7 @@ impl SwarmStore {
         let Some(output) = mutation(&mut candidate)? else {
             return Ok(None);
         };
-        let live_routine_run_ids = self
-            .bots
-            .history(None)?
-            .into_iter()
-            .map(|run| run.id)
-            .collect::<BTreeSet<_>>();
-        prune_catalog(&mut candidate, &live_routine_run_ids);
+        prune_catalog(&mut candidate);
         validate_catalog(&candidate)?;
         self.checkpoints
             .save_state(STATE_SCOPE, STATE_KEY, &serde_json::to_value(&candidate)?)
@@ -1783,19 +1666,6 @@ impl BotsBackend for SwarmStore {
         })
     }
 
-    fn spawn_bot<'a>(
-        &'a self,
-        bot_id: &'a str,
-        name: String,
-        description: String,
-    ) -> mobius::BoxFuture<'a, mobius::Result<String>> {
-        Box::pin(async move {
-            self.spawn_bot_inner(bot_id, name, description)
-                .await
-                .map_err(mobius_error)
-        })
-    }
-
     fn create_routine<'a>(
         &'a self,
         bot_id: &'a str,
@@ -1933,6 +1803,17 @@ fn ensure_bot_available(catalog: &Catalog, bot_id: &str) -> Result<()> {
     Ok(())
 }
 
+fn require_collaboration(bots: &BotStore, bot_id: &str) -> Result<()> {
+    let bot = bots.bot(bot_id)?;
+    if !bot.collaboration_enabled() {
+        return Err(config(format!(
+            "Enable Swarm collaboration in @{}'s Bot capabilities first",
+            bot.handle
+        )));
+    }
+    Ok(())
+}
+
 fn swarm_id_for_bot(catalog: &Catalog, bot_id: &str) -> Option<String> {
     catalog
         .swarms
@@ -2024,30 +1905,6 @@ fn outcome_text(outcome: &SwarmRunOutcome) -> String {
     }
 }
 
-fn routine_outcome_text(
-    run: &RoutineRun,
-    detail: Option<&str>,
-    leader_handle: Option<&str>,
-    needs_swarm_attention: bool,
-) -> String {
-    let prefix = leader_handle.map_or_else(String::new, |handle| format!("@{handle} "));
-    let status = match run.status {
-        RoutineRunStatus::Succeeded => "succeeded",
-        RoutineRunStatus::Failed => "failed",
-        RoutineRunStatus::Skipped => "was skipped",
-        RoutineRunStatus::Running => "is still running",
-    };
-    let routine = run.routine_id.get(..8).unwrap_or(&run.routine_id);
-    let attention = if needs_swarm_attention { " @user" } else { "" };
-    bounded_message(&format!(
-        "{prefix}Routine {routine} {status}{}{attention}",
-        detail.map_or_else(String::new, |detail| format!(
-            ": {}",
-            neutralize_mentions(detail)
-        ))
-    ))
-}
-
 fn neutralize_mentions(text: &str) -> String {
     text.replace('@', "＠")
 }
@@ -2115,16 +1972,13 @@ fn bounded_message(text: &str) -> String {
     text[..end].into()
 }
 
-fn prune_catalog(catalog: &mut Catalog, live_routine_run_ids: &BTreeSet<String>) {
+fn prune_catalog(catalog: &mut Catalog) {
     for swarm in catalog.swarms.values_mut() {
         trim_acknowledged(
             &mut swarm.board,
             &catalog.pending_swarm_attention_message_ids,
         );
     }
-    catalog
-        .projected_routine_run_ids
-        .retain(|run_id| live_routine_run_ids.contains(run_id));
     let live_message_ids = catalog
         .swarms
         .values()
@@ -2394,9 +2248,6 @@ fn validate_catalog(catalog: &Catalog) -> Result<()> {
             "pending Swarm attention references an invalid message",
         ));
     }
-    for run_id in &catalog.projected_routine_run_ids {
-        validate_message_id(run_id)?;
-    }
     if serde_json::to_vec(catalog)?.len() > MAX_CATALOG_BYTES {
         return Err(config(format!(
             "swarm catalog exceeds {MAX_CATALOG_BYTES} encoded bytes"
@@ -2518,7 +2369,6 @@ fn unix_ms() -> i64 {
 mod tests {
     use mobius::backend::checkpoint::sqlite::SqliteCheckpoint;
 
-    use crate::bots::BeginRun;
     use crate::wire::AgentComposition;
 
     use super::*;
@@ -2540,32 +2390,22 @@ mod tests {
         for handle in ["leader", "reviewer", "observer", "third", "overflow"] {
             add_bot(&bots, handle);
         }
-        let gateway = GatewayConfig::new(crate::config::DEFAULT_LISTEN, None)
-            .expect("gateway config")
-            .registering_provider(
-                AgentComposition::default().provider,
-                "Test".into(),
-                Default::default(),
-                Vec::new(),
-                Vec::new(),
-            )
-            .expect("Bot defaults");
-        let (store, deliveries) = SwarmStore::new(
-            Arc::clone(&checkpoints),
-            bots,
-            Arc::new(StdMutex::new(gateway)),
-        );
+        let (store, deliveries) = SwarmStore::new(Arc::clone(&checkpoints), bots);
         (directory, checkpoints, store, deliveries)
     }
 
     fn add_bot(bots: &BotStore, handle: &str) -> String {
-        bots.create_bot(
-            handle,
-            &format!("Test Bot {handle}"),
-            AgentComposition::default(),
-        )
-        .expect("create Bot")
-        .id
+        let mut composition = AgentComposition::default();
+        composition.middleware.set_setting(
+            "bots",
+            "collaboration",
+            Some(mobius::protocol::FrontendSettingValue::String(
+                "swarm".into(),
+            )),
+        );
+        bots.create_bot(handle, &format!("Test Bot {handle}"), composition)
+            .expect("create Bot")
+            .id
     }
 
     fn bot_id(store: &SwarmStore, handle: &str) -> String {
@@ -2583,11 +2423,7 @@ mod tests {
         checkpoints: Arc<dyn CheckpointStore>,
         store: &SwarmStore,
     ) -> (SwarmStore, mpsc::UnboundedReceiver<SwarmDelivery>) {
-        SwarmStore::new(
-            checkpoints,
-            Arc::clone(&store.bots),
-            Arc::clone(&store.gateway),
-        )
+        SwarmStore::new(checkpoints, Arc::clone(&store.bots))
     }
 
     async fn create_swarm(store: &SwarmStore) -> SwarmSummary {
@@ -2674,6 +2510,142 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn disabled_collaboration_preserves_membership_and_pauses_pending_delivery() {
+        let (directory, _checkpoints, store, _deliveries) = store();
+        let swarm = create_swarm(&store).await;
+        let reviewer = store
+            .bots
+            .bot(&bot_id(&store, "reviewer"))
+            .expect("reviewer");
+        post(&store, "leader", "@reviewer review later".into())
+            .await
+            .expect("post");
+        let mut disabled = reviewer.config.config.clone();
+        disabled.middleware.set_setting(
+            "bots",
+            "collaboration",
+            Some(mobius::protocol::FrontendSettingValue::String("off".into())),
+        );
+        let reviewer = store
+            .bots
+            .update_bot(
+                &reviewer.id,
+                reviewer.config.revision,
+                &reviewer.name,
+                &reviewer.description,
+                reviewer.tint,
+                disabled,
+            )
+            .expect("disable");
+        assert!(
+            store
+                .snapshot_for_bot(&reviewer.id)
+                .await
+                .expect("active membership")
+                .is_none()
+        );
+        assert!(
+            store
+                .claim_next_delivery(&reviewer.id)
+                .await
+                .expect("claim")
+                .is_none()
+        );
+        assert_eq!(
+            store
+                .pending_deliveries(&reviewer.id)
+                .await
+                .expect("pending")
+                .len(),
+            1
+        );
+        assert_eq!(
+            store.records().await.expect("stored membership")[0]
+                .members
+                .len(),
+            2
+        );
+        assert!(
+            store
+                .post_user(&swarm.id, "@reviewer new work".into())
+                .await
+                .expect_err("disabled recipient")
+                .to_string()
+                .contains("Enable Swarm collaboration")
+        );
+        assert!(
+            store
+                .post(&reviewer.id, "chat", "@leader reply".into(), None)
+                .await
+                .is_err()
+        );
+        assert!(store.tool_read(&reviewer.id).await.is_err());
+        BotsBackend::create_routine(
+            &store,
+            &reviewer.id,
+            None,
+            directory.path(),
+            "Independent work".into(),
+            serde_json::json!({"kind": "interval", "every_seconds": 3600}),
+            None,
+        )
+        .await
+        .expect("self routine remains available");
+        let mut enabled = reviewer.config.config.clone();
+        enabled.middleware.set_setting(
+            "bots",
+            "collaboration",
+            Some(mobius::protocol::FrontendSettingValue::String(
+                "swarm".into(),
+            )),
+        );
+        store
+            .bots
+            .update_bot(
+                &reviewer.id,
+                reviewer.config.revision,
+                &reviewer.name,
+                &reviewer.description,
+                reviewer.tint,
+                enabled,
+            )
+            .expect("reenable");
+        assert!(
+            store
+                .claim_next_delivery(&reviewer.id)
+                .await
+                .expect("resumed claim")
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn default_bots_cannot_join_a_swarm_until_they_opt_in() {
+        let (_directory, _checkpoints, store, _deliveries) = store();
+        let disabled = store
+            .bots
+            .create_bot(
+                "Independent",
+                "No collaboration",
+                AgentComposition::default(),
+            )
+            .expect("default Bot");
+        assert!(!disabled.collaboration_enabled());
+        assert!(
+            store
+                .create(
+                    "Disabled team".into(),
+                    disabled.id.clone(),
+                    vec![disabled.id.clone(), bot_id(&store, "leader")]
+                )
+                .await
+                .is_err()
+        );
+        let swarm = create_swarm(&store).await;
+        assert!(store.join(&swarm.id, disabled.id).await.is_err());
+    }
+
+    #[tokio::test]
     async fn membership_queries_resolve_current_swarm_scope() {
         let (_directory, _checkpoints, store, _deliveries) = store();
         let swarm = create_swarm(&store).await;
@@ -2700,85 +2672,6 @@ mod tests {
             ),
             (true, true, false, Some(swarm.id))
         );
-    }
-
-    #[tokio::test]
-    async fn leader_can_create_and_join_a_bot_from_gateway_defaults() {
-        let (_directory, _checkpoints, store, mut deliveries) = store();
-        let swarm = create_swarm(&store).await;
-        let leader = bot_id(&store, "leader");
-
-        let output = BotsBackend::spawn_bot(
-            &store,
-            &leader,
-            "Researcher".into(),
-            "Find reliable sources".into(),
-        )
-        .await
-        .expect("spawn Bot");
-        let output: serde_json::Value = serde_json::from_str(&output).expect("spawn output");
-        let spawned = store
-            .bots
-            .bot(output["bot_id"].as_str().expect("Bot ID"))
-            .expect("spawned Bot");
-        let defaults = store
-            .gateway
-            .lock()
-            .expect("gateway config")
-            .bot_defaults
-            .as_ref()
-            .expect("Bot defaults")
-            .config
-            .clone();
-
-        assert_eq!(
-            (
-                output["handle"].as_str(),
-                output["name"].as_str(),
-                output["swarm_id"].as_str(),
-                spawned.config.config,
-                store
-                    .snapshot_for_bot(&spawned.id)
-                    .await
-                    .expect("membership")
-                    .is_some(),
-                deliveries.recv().await,
-                deliveries.recv().await,
-            ),
-            (
-                Some("researcher"),
-                Some("Researcher"),
-                Some(swarm.id.as_str()),
-                defaults,
-                true,
-                Some(SwarmDelivery::Changed),
-                Some(SwarmDelivery::CatalogChanged),
-            )
-        );
-    }
-
-    #[tokio::test]
-    async fn nonleader_cannot_create_a_bot() {
-        let (_directory, _checkpoints, store, mut deliveries) = store();
-        create_swarm(&store).await;
-        let reviewer = bot_id(&store, "reviewer");
-        let before = store.bots.bots().expect("Bots").len();
-
-        let error = BotsBackend::spawn_bot(
-            &store,
-            &reviewer,
-            "Unauthorized".into(),
-            "Must not persist".into(),
-        )
-        .await
-        .expect_err("nonleader spawn");
-
-        assert!(error.to_string().contains("only a Swarm leader"));
-        assert_eq!(store.bots.bots().expect("Bots").len(), before);
-        assert!(matches!(
-            deliveries.try_recv(),
-            Err(mpsc::error::TryRecvError::Empty)
-        ));
     }
 
     #[tokio::test]
@@ -2896,38 +2789,6 @@ mod tests {
                 .expect("routines")
                 .is_empty()
         );
-    }
-
-    #[tokio::test]
-    async fn failed_join_rolls_back_the_new_bot() {
-        let (_directory, _checkpoints, store, mut deliveries) = store();
-        let leader = bot_id(&store, "leader");
-        let mut members = vec![leader.clone(), bot_id(&store, "reviewer")];
-        members.extend(
-            (0..MAX_SWARM_MEMBERS - members.len())
-                .map(|index| add_bot(&store.bots, &format!("member-{index}"))),
-        );
-        store
-            .create("Full team".into(), leader.clone(), members)
-            .await
-            .expect("full swarm");
-        let before = store.bots.bots().expect("Bots").len();
-
-        let error = BotsBackend::spawn_bot(
-            &store,
-            &leader,
-            "Should rollback".into(),
-            "The full roster rejects this Bot".into(),
-        )
-        .await
-        .expect_err("full roster");
-
-        assert!(error.to_string().contains("at most 100"));
-        assert_eq!(store.bots.bots().expect("Bots").len(), before);
-        assert!(matches!(
-            deliveries.try_recv(),
-            Err(mpsc::error::TryRecvError::Empty)
-        ));
     }
 
     #[tokio::test]
@@ -3809,137 +3670,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn routine_terminal_projection_is_idempotent_and_wakes_the_leader() {
-        let (directory, _checkpoints, store, _deliveries) = store();
-        let swarm = create_swarm(&store).await;
-        let leader = bot_id(&store, "leader");
-        let reviewer = bot_id(&store, "reviewer");
-        let routine = store
-            .bots
-            .create_routine(
-                &reviewer,
-                directory.path(),
-                "Check dependencies.",
-                RoutineSchedule {
-                    kind: crate::wire::RoutineScheduleKind::Once,
-                    at: Some(unix_ms() / 1_000 + 3_600),
-                    every_seconds: None,
-                    expression: None,
-                    time_zone: None,
-                },
-                None,
-            )
-            .expect("create routine");
-        let BeginRun::Started(active) = store.bots.begin_run(&routine.id).expect("begin run")
-        else {
-            panic!("routine should start");
-        };
-        let run = store
-            .bots
-            .finish_run(active, RoutineRunStatus::Succeeded, None)
-            .expect("finish run");
-
-        assert!(
-            store
-                .project_routine_outcome(&run, Some("Dependencies are current".into()),)
-                .await
-                .expect("project routine")
-        );
-        assert!(
-            !store
-                .project_routine_outcome(&run, None)
-                .await
-                .expect("idempotent routine projection")
-        );
-        let entry = store
-            .board_page(&swarm.id, None, 1)
-            .await
-            .expect("board")
-            .entries
-            .into_iter()
-            .next()
-            .expect("routine projection");
-        assert_eq!(entry.author.bot_id, reviewer);
-        assert_eq!(entry.pending_recipient_bot_ids, vec![leader]);
-        assert!(entry.text.contains("Dependencies are current"));
-
-        store.bots.delete_run(&run.id).expect("delete run");
-        post(&store, "leader", "Prune projection markers".into())
-            .await
-            .expect("mutate board");
-        assert!(
-            !store
-                .lock_loaded()
-                .await
-                .expect("catalog")
-                .as_ref()
-                .expect("loaded catalog")
-                .projected_routine_run_ids
-                .contains(&run.id)
-        );
-    }
-
-    #[tokio::test]
-    async fn routine_projection_marker_persists_when_the_bot_has_no_swarm() {
-        let (directory, checkpoints, store, _deliveries) = store();
-        let observer = bot_id(&store, "observer");
-        let routine = store
-            .bots
-            .create_routine(
-                &observer,
-                directory.path(),
-                "Check later.",
-                RoutineSchedule {
-                    kind: crate::wire::RoutineScheduleKind::Once,
-                    at: Some(unix_ms() / 1_000 + 3_600),
-                    every_seconds: None,
-                    expression: None,
-                    time_zone: None,
-                },
-                None,
-            )
-            .expect("create routine");
-        let BeginRun::Started(active) = store.bots.begin_run(&routine.id).expect("begin run")
-        else {
-            panic!("routine should start");
-        };
-        let run = store
-            .bots
-            .finish_run(active, RoutineRunStatus::Succeeded, None)
-            .expect("finish run");
-
-        assert!(
-            !store
-                .project_routine_outcome(&run, None)
-                .await
-                .expect("record projection without swarm")
-        );
-        let (reloaded, _deliveries) = reload(checkpoints, &store);
-        let swarm = reloaded
-            .create(
-                "Later team".into(),
-                observer.clone(),
-                vec![observer, bot_id(&store, "third")],
-            )
-            .await
-            .expect("create later swarm");
-        assert!(
-            !reloaded
-                .project_routine_outcome(&run, None)
-                .await
-                .expect("historical run remains projected")
-        );
-        assert!(
-            reloaded
-                .board_page(&swarm.id, None, 1)
-                .await
-                .expect("board")
-                .entries
-                .is_empty()
-        );
-    }
-
-    #[tokio::test]
     async fn swarm_attention_is_durable_and_clears_with_human_reply_or_disband() {
         let (_directory, checkpoints, store, _deliveries) = store();
         let swarm = create_swarm(&store).await;
@@ -4213,7 +3943,6 @@ mod tests {
                 },
             )]),
             pending_swarm_attention_message_ids: pending_attention_message_ids,
-            ..Catalog::default()
         };
 
         assert_eq!(

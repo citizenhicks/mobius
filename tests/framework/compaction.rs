@@ -271,7 +271,7 @@ async fn compaction_uses_the_context_window_of_a_new_model_route() {
 }
 
 #[tokio::test]
-async fn native_compaction_ignores_stale_usage_after_a_retained_user() {
+async fn native_compaction_uses_fresh_usage_after_a_retained_user() {
     let workspace = TempDir::new().expect("create workspace");
     let model = Arc::new(ScriptedModel::with_compaction(
         vec![
@@ -296,6 +296,11 @@ async fn native_compaction_ignores_stale_usage_after_a_retained_user() {
                 usage(10),
             )
             .expect("compaction output"),
+            CompactOutput::from_output(
+                vec![serde_json::json!({"type":"compaction", "encrypted_content":"opaque-again"})],
+                usage(10),
+            )
+            .expect("second compaction"),
         ],
     ));
     let mut agent = create_agent(test_config(
@@ -324,7 +329,7 @@ async fn native_compaction_ignores_stale_usage_after_a_retained_user() {
             .lock()
             .expect("compact requests")
             .len(),
-        1
+        2
     );
     let requests = model.requests.lock().expect("requests");
     let second_users = requests[2]
@@ -361,7 +366,7 @@ async fn compaction_falls_back_to_a_model_summary_and_keeps_recent_context() {
 
     agent
         .sender()
-        .submit(user_message("x".repeat(40_000)))
+        .submit(user_message("x".repeat(80_000)))
         .expect("submit first turn");
     assert_eq!(final_message(&mut agent).await, "draft");
     agent
@@ -399,4 +404,325 @@ async fn compaction_falls_back_to_a_model_summary_and_keeps_recent_context() {
             .expect("compact requests")
             .is_empty()
     );
+}
+
+struct PauseHandoff;
+
+impl Middleware for PauseHandoff {
+    fn name(&self) -> &'static str {
+        "pause_handoff"
+    }
+
+    fn pre_compact<'a>(
+        &'a self,
+        context: &'a mut mobius::middleware::CompactContext<'_>,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move { context.stop("pause at the durable handoff boundary") })
+    }
+}
+
+#[tokio::test]
+async fn handoff_resumes_one_durable_reset_in_the_same_chat() {
+    use mobius::middleware::compaction::CompactionMode;
+    let workspace = TempDir::new().expect("workspace");
+    let old = format!("old-result {}", "x".repeat(6_000));
+    let model = Arc::new(ScriptedModel::with_compaction(
+        vec![
+            text_response(&old),
+            tool_response(
+                "save",
+                "write_handoff",
+                serde_json::json!({"notes":"Goal: finish the active task. Done: inspected old-result. Next: verify."}),
+            ),
+            tool_response("reset", "new_context", serde_json::json!({})),
+            text_response("continued"),
+            text_response("finished"),
+        ],
+        vec![
+            CompactOutput::from_output(
+                vec![
+                    serde_json::json!({"type":"compaction","encrypted_content":"must-not-be-used"}),
+                ],
+                usage(10),
+            )
+            .expect("unused native result"),
+        ],
+    ));
+    let store: Arc<dyn CheckpointStore> =
+        Arc::new(SqliteCheckpoint::new(workspace.path().join("history.sqlite")).expect("store"));
+    let config = |pause| {
+        let route: Arc<dyn Model> = model.clone();
+        let mut middleware: Vec<Arc<dyn Middleware>> = vec![
+            Arc::new(Messages::default()),
+            Arc::new(
+                Compaction::new(1_000)
+                    .expect("policy")
+                    .mode(CompactionMode::Handoff),
+            ),
+        ];
+        if pause {
+            middleware.push(Arc::new(PauseHandoff));
+        }
+        AgentConfig::new(
+            Arc::new(ModelRouter::new("test", route)),
+            Arc::new(Sandbox::new(
+                Arc::new(LocalSandbox::new(workspace.path()).expect("sandbox")),
+                ApprovalPolicy::Ask,
+            )),
+            Arc::clone(&store),
+            MiddlewareStack::new(middleware).expect("middleware"),
+            "current instructions",
+        )
+        .session_id("handoff-chat")
+        .session_context(test_session_context())
+        .context_window(16_000)
+    };
+    let mut agent = create_agent(config(true)).await.expect("agent");
+    agent
+        .sender()
+        .submit(user_message("old request"))
+        .expect("first");
+    assert_eq!(final_message(&mut agent).await, old);
+    agent
+        .sender()
+        .submit(user_message("finish the active task"))
+        .expect("handoff turn");
+    assert_eq!(final_message(&mut agent).await, "");
+    let paused = store
+        .load("handoff-chat")
+        .await
+        .expect("load")
+        .expect("checkpoint");
+    assert_eq!(paused.compaction_count, 0);
+    assert!(paused.context.iter().any(
+        |item| item.get("_mobius_internal").and_then(Value::as_str) == Some("handoff_request")
+    ));
+    let (sender, mut events) = agent.into_parts();
+    drop(sender);
+    while events.recv().await.is_some() {}
+
+    let mut resumed = create_agent(config(false)).await.expect("resume");
+    resumed
+        .sender()
+        .submit(user_message("continue with this correction: verify twice"))
+        .expect("correction");
+    assert_eq!(final_message(&mut resumed).await, "continued");
+    resumed
+        .sender()
+        .submit(user_message("finish"))
+        .expect("next turn");
+    assert_eq!(final_message(&mut resumed).await, "finished");
+    let checkpoint = store
+        .load("handoff-chat")
+        .await
+        .expect("load")
+        .expect("checkpoint");
+    assert_eq!(checkpoint.compaction_count, 1);
+    assert_eq!(checkpoint.context_epoch, 1);
+    assert!(!checkpoint.context.iter().any(|item| {
+        item.get("_mobius_internal").and_then(Value::as_str) == Some("handoff_request")
+    }));
+    {
+        let requests = model.requests.lock().expect("requests");
+        assert_eq!(requests.len(), 5);
+        let reset_input = serde_json::to_string(&requests[3].input).expect("reset input");
+        assert!(!reset_input.contains("old-result xxxx"));
+        assert!(reset_input.contains("Goal: finish the active task"));
+        assert!(reset_input.contains("verify twice"));
+        assert!(reset_input.contains("finish the active task"));
+        assert!(reset_input.contains("new_context"));
+        assert!(
+            requests[1]
+                .input
+                .iter()
+                .any(|item| item.get("_mobius_internal").and_then(Value::as_str)
+                    == Some("handoff_warning"))
+        );
+        assert_eq!(requests[3].tools, requests[0].tools);
+    }
+    assert!(
+        model
+            .compact_requests
+            .lock()
+            .expect("compact requests")
+            .is_empty()
+    );
+    let history = store
+        .transcript_page(
+            "handoff-chat",
+            TranscriptPageRequest {
+                before_sequence: None,
+                max_batches: 100,
+            },
+        )
+        .await
+        .expect("history");
+    let original = serde_json::to_string(&history).expect("serialized journal");
+    assert!(original.contains("old-result xxxx"));
+}
+
+#[tokio::test]
+async fn handoff_small_window_bounds_a_model_that_ignores_the_warning() {
+    use mobius::middleware::compaction::CompactionMode;
+    let workspace = TempDir::new().expect("workspace");
+    let model = Arc::new(ScriptedModel::new(vec![
+        text_response_with_usage("first", usage(6_100)),
+        tool_response(
+            "save",
+            "write_handoff",
+            serde_json::json!({"notes":"Goal: finish. Next: reset."}),
+        ),
+        tool_response(
+            "wrong",
+            "write_handoff",
+            serde_json::json!({"notes":"ignored reset"}),
+        ),
+        tool_response("retry", "new_context", serde_json::json!({})),
+        text_response("recovered"),
+    ]));
+    let mut agent = create_agent(
+        test_config(
+            workspace.path(),
+            Arc::clone(&model),
+            vec![Arc::new(
+                Compaction::default().mode(CompactionMode::Handoff),
+            )],
+        )
+        .context_window(8_000),
+    )
+    .await
+    .expect("agent");
+    agent.sender().submit(user_message("start")).expect("first");
+    assert_eq!(final_message(&mut agent).await, "first");
+    agent
+        .sender()
+        .submit(user_message("continue"))
+        .expect("recovery turn");
+    let error = loop {
+        if let EventMsg::Error(error) = agent.next_event().await.expect("event").msg {
+            break error.message;
+        }
+    };
+    assert!(error.contains("handoff could not finish"));
+    while !matches!(
+        agent.next_event().await.expect("terminal event").msg,
+        EventMsg::TurnAborted(_)
+    ) {}
+    agent
+        .sender()
+        .submit(user_message("retry the handoff"))
+        .expect("retry");
+    assert_eq!(final_message(&mut agent).await, "recovered");
+    let requests = model.requests.lock().expect("requests");
+    assert_eq!(requests.len(), 5);
+    assert_eq!(
+        requests[2]
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>(),
+        ["new_context"]
+    );
+    assert!(!requests[1].allow_hosted_tools);
+    assert!(!requests[2].allow_hosted_tools);
+    assert!(requests[4].allow_hosted_tools);
+    assert!(
+        requests[1]
+            .input
+            .iter()
+            .any(|item| item.get("_mobius_internal").and_then(Value::as_str)
+                == Some("handoff_urgent"))
+    );
+}
+
+struct GateHandoffPreparation {
+    kind: &'static str,
+    first: AtomicBool,
+    entered: Notify,
+    release: Notify,
+}
+
+impl Middleware for GateHandoffPreparation {
+    fn name(&self) -> &'static str {
+        "gate_handoff_preparation"
+    }
+
+    fn pre_model<'a>(
+        &'a self,
+        context: &'a mut mobius::middleware::ModelContext<'_>,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            if context
+                .input()
+                .iter()
+                .any(|item| item.get("_mobius_internal").and_then(Value::as_str) == Some(self.kind))
+                && self.first.swap(false, Ordering::SeqCst)
+            {
+                self.entered.notify_one();
+                self.release.notified().await;
+            }
+            Ok(())
+        })
+    }
+}
+
+#[tokio::test]
+async fn handoff_preparation_steers_do_not_consume_recovery_model_attempts() {
+    use mobius::middleware::compaction::CompactionMode;
+    for kind in ["handoff_urgent", "handoff_reset_only"] {
+        let workspace = TempDir::new().expect("workspace");
+        let model = Arc::new(ScriptedModel::new(vec![
+            text_response_with_usage("first", usage(6_100)),
+            tool_response(
+                "save",
+                "write_handoff",
+                serde_json::json!({"notes":"Goal: finish. Next: reset."}),
+            ),
+            tool_response("reset", "new_context", serde_json::json!({})),
+            text_response("recovered"),
+        ]));
+        let gate = Arc::new(GateHandoffPreparation {
+            kind,
+            first: AtomicBool::new(true),
+            entered: Notify::new(),
+            release: Notify::new(),
+        });
+        let mut agent = create_agent(
+            test_config(
+                workspace.path(),
+                Arc::clone(&model),
+                vec![
+                    Arc::new(Compaction::default().mode(CompactionMode::Handoff)),
+                    gate.clone(),
+                ],
+            )
+            .context_window(8_000),
+        )
+        .await
+        .expect("agent");
+        let sender = agent.sender();
+        sender.submit(user_message("start")).expect("first");
+        assert_eq!(final_message(&mut agent).await, "first");
+        sender.submit(user_message("continue")).expect("recovery");
+        let turn_id = loop {
+            if let EventMsg::TurnStarted(turn) = agent.next_event().await.expect("event").msg {
+                break turn.turn_id;
+            }
+        };
+        gate.entered.notified().await;
+        sender
+            .submit(steer_message(turn_id, "also verify the correction"))
+            .expect("steer during preparation");
+        gate.release.notify_one();
+        assert_eq!(final_message(&mut agent).await, "recovered", "{kind}");
+        let requests = model.requests.lock().expect("requests");
+        assert_eq!(requests.len(), 4, "{kind}");
+        assert!(
+            serde_json::to_string(&requests[3].input)
+                .expect("fresh context")
+                .contains("also verify the correction")
+        );
+        assert!(!requests[1].allow_hosted_tools);
+        assert!(!requests[2].allow_hosted_tools);
+    }
 }

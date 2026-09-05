@@ -105,13 +105,14 @@ extension AppModelTests {
         XCTAssertEqual(model.pendingNewChatBotID, helper.id)
     }
 
-    func testCreatingSwarmUsesUnclaimedBotsAndWaitsForCatalog() async throws {
+    func testCreatingSwarmUsesOptedInUnclaimedBotsAndWaitsForCatalog() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
-        let leader = bot(id: "bot-1", handle: "leader", name: "Leader")
-        let coworker = bot(id: "bot-2", handle: "builder", name: "Builder")
-        let reviewer = bot(id: "bot-3", handle: "reviewer", name: "Reviewer")
-        model.bots = [leader, coworker, reviewer]
+        let leader = bot(id: "bot-1", handle: "leader", name: "Leader", collaborationEnabled: true)
+        let coworker = bot(id: "bot-2", handle: "builder", name: "Builder", collaborationEnabled: true)
+        let reviewer = bot(id: "bot-3", handle: "reviewer", name: "Reviewer", collaborationEnabled: true)
+        let independent = bot(id: "bot-4", handle: "independent", name: "Independent")
+        model.bots = [leader, coworker, reviewer, independent]
         model.connectionState = .ready
 
         XCTAssertEqual(
@@ -159,6 +160,39 @@ extension AppModelTests {
         XCTAssertTrue(model.canMutateSwarm)
         XCTAssertEqual(model.swarm(containingBot: "bot-2")?.title, "Quiet Foxes")
         XCTAssertEqual(model.availableBotsForSwarm().map(\.id), ["bot-3"])
+    }
+
+    func testSwarmCreationAndJoiningUseLatestBotAvailability() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model { request in await recorder.record(request) }
+        let leader = bot(id: "bot-1", handle: "leader", collaborationEnabled: true)
+        let coworker = bot(id: "bot-2", handle: "builder", collaborationEnabled: true)
+        model.bots = [leader, coworker]
+        model.connectionState = .ready
+
+        model.handle(.bots(requestID: nil, bots: [bot(id: leader.id, handle: leader.handle), coworker]))
+        XCTAssertEqual(model.availableBotsForSwarm().map(\.id), [coworker.id])
+        model.createSwarm(title: "Team", leaderBotID: leader.id, memberBotIDs: [coworker.id])
+        XCTAssertNil(model.swarmMutationRequestID)
+        XCTAssertEqual(model.toast?.tone, .warning)
+
+        model.handle(.bots(requestID: nil, bots: [leader, bot(id: coworker.id, handle: coworker.handle)]))
+        model.createSwarm(title: "Team", leaderBotID: leader.id, memberBotIDs: [coworker.id])
+        XCTAssertNil(model.swarmMutationRequestID)
+        let swarm = SwarmRecord(
+            id: "swarm-1",
+            title: "Team",
+            leaderBotId: leader.id,
+            members: [SwarmMemberRecord(botId: leader.id, handle: leader.handle)],
+            messages: [],
+            updatedAtMs: 1
+        )
+        model.swarms = [swarm]
+        model.addSwarmMember(coworker, to: swarm)
+        XCTAssertNil(model.swarmMutationRequestID)
+        XCTAssertTrue(model.availableBotsForSwarm().isEmpty)
+        let requestCount = await recorder.requestCount()
+        XCTAssertEqual(requestCount, 0)
     }
 
     func testSwarmPostClearsOnlyOnItsCorrelatedCatalog() async throws {

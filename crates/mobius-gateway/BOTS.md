@@ -14,22 +14,26 @@ Every conversation belongs to exactly one Bot. The gateway creates the default
 | Surface | Durable context | Workspace | Visibility |
 | --- | --- | --- | --- |
 | User chat | One transcript owned by one Bot | User-selected | Chats catalog |
-| Swarm Chat | One shared, ordered board for the Swarm | No Agent session; deliveries use the gateway background workspace | Swarm dashboard |
+| Swarm Chat | One shared, ordered recent-message board for the Swarm | No Agent session; deliveries use the gateway background workspace | Swarm dashboard |
 | Swarm participant | One private transcript per `(Swarm, Bot)` | Gateway background workspace | Bot background work |
 | Routine run | One fresh transcript per invocation | Routine's pinned workspace | Routine history |
 | Subagent | One child transcript rooted in its parent chat | Parent workspace | Parent's task tree |
 
 These boundaries prevent a Bot with several jobs from accumulating one monolithic
 context. Bot profile changes affect all of the Bot's conversations, but transcripts
-do not merge. A Bot may explicitly search its other threads with `search_threads`;
-the search is Bot-scoped and BM25-ranked, and its results are retrieved rather than
-silently inserted into the current context.
+do not merge. `search_history` defaults to the current chat and recovers earlier
+user messages, assistant responses, tool arguments, and tool results, including
+items removed from active model context. The explicit `other_chats` scope searches
+other chats owned by the same Bot. Search pages are bounded and ranked; follow
+`next_cursor` to search older material. `read_history` expands an exact returned
+session/item reference with character paging. Historical text is evidence, not
+new instructions, and hidden reasoning is not exposed.
 
 The context presented to a model can contain:
 
 - the Bot description and profile system prompt;
 - the current conversation's durable transcript;
-- a bounded projection of session, Swarm, and global scratchpad notes; and
+- a bounded projection of approved Swarm and global scratchpad knowledge; and
 - for a pending Swarm delivery only, a request-only snapshot of recent Swarm Chat.
 
 The request-only Swarm snapshot is not appended to the participant transcript.
@@ -41,10 +45,23 @@ explicitly with `swarm_read`.
 
 ## Swarm Chat and Bot-to-Bot routing
 
-Swarm Chat is the shared durable transcript for a manually assembled group of
-Bots with one appointed leader. A Bot belongs to at most one Swarm. It is a board,
-not an Agent session, so messages can be read by the whole Swarm without making
-every Bot share one model context.
+Swarms are optional. Each Bot's native capability settings declare
+`bots.collaboration` as `off` (the default) or `swarm`. Enable collaboration in each
+intended member before assembling a group. Bot profiles, chats, self-routines, and
+subagents remain available independently. Humans create durable Bot profiles;
+models use subagents for temporary specialists.
+
+Swarm Chat is the shared recent-message board for a manually assembled group of
+Bots with one appointed leader. A Bot belongs to at most one Swarm. The board has
+no Agent session, so the group does not share one model context. Older settled
+entries can be pruned; exact history recovery uses conversation transcripts.
+
+Disabling collaboration hides that Bot's Swarm tools, guidance, and shared-note
+projection. The gateway rejects new membership and addressed work for disabled
+Bots. Existing membership and pending deliveries remain stored; deliveries pause
+until collaboration is enabled again. Management shows disabled members and offers
+only enabled, ungrouped Bots when adding members. The model roster identifies
+which retained members currently accept work.
 
 An exact `@handle` creates a pending delivery for that member. A human message
 without a handle addresses the leader; a Bot message without a handle stays on
@@ -54,7 +71,7 @@ the board. For each delivery, the gateway:
 2. opens that hidden session, creating it only when the pair has no checkpoint;
 3. submits the addressed message and adds recent Swarm Chat to that model request;
 4. appends the terminal response to Swarm Chat; and
-5. wakes the leader after a worker response, subject to the bounded reply chain.
+5. wakes the enabled leader after a worker response, subject to the bounded reply chain.
 
 Human and Bot messages addressed to the same member of the same Swarm therefore
 reuse one participant session. A board message ID identifies work to deliver; it
@@ -85,12 +102,14 @@ its own approval.
 A routine belongs to one Bot and may be one-time, interval-based, or cron-based.
 Every invocation gets a fresh hidden conversation, so unrelated runs do not inherit
 one another's transcript. The run uses the Bot's current profile and the routine's
-pinned workspace. When its Bot is in a Swarm, the terminal result is projected to
-Swarm Chat; a worker result wakes the leader, while work needing a user decision
-creates a Swarm attention notification.
+pinned workspace. Results and failures remain in routine history. Swarm membership
+does not automatically publish results or wake another Bot. A collaborating Bot
+can explicitly use `swarm_post` during a run when shared work or a user decision
+is needed.
 
 From a user-facing chat, a Bot can create a routine for itself. A Swarm leader may
-also create one for a current member. Routine creation requires approval.
+also create one for a current member while both Bots enable collaboration.
+Routine creation requires approval.
 
 A subagent is not a Bot and does not join a Swarm. It is a child checkpoint inside
 one conversation's task tree, used for bounded parallel work. It shares the parent
@@ -98,26 +117,34 @@ workspace and starts with no parent turns by default; the caller may explicitly
 fork recent turns or the full transcript. Parent and child exchange targeted
 messages, and any result reaches Swarm Chat only if the owning Bot posts it there.
 
-## Scratchpads
+## Working state and shared knowledge
 
-Scratchpad notes are concise durable conclusions, not model reasoning or raw
-output. Their scopes are:
+These records serve separate purposes:
 
-- **session**: available only to the exact conversation;
-- **Swarm**: shared by the current Swarm's members; and
-- **global**: available to every gateway conversation.
+- **Compaction handoff** is one replaceable checkpoint for the active chat: goal,
+  constraints, progress, unresolved work, next steps, and exact history references.
+  Handoff mode warns near the configured compaction threshold. The model saves
+  `write_handoff` notes and requests `new_context`; the same chat and running turn
+  continue with a fresh model window. The transcript remains recoverable.
+- **Tasks** is an optional durable task list for work in the chat. A context-window
+  transition does not turn that list into shared memory or delete it.
+- **Scratchpad** is concise reusable knowledge. `swarm` shares with the current
+  enabled Swarm; `global` shares across gateway conversations. Agent writes go
+  directly to the chosen shared scope with approval. Humans may add, edit, or
+  delete shared notes through the management UI.
 
-An agent writes to its session scratchpad and may copy an exact note to the Swarm
-or global scope with approval. A human may add, edit, or delete shared notes from
-the management UI. Promotion copies a note; it does not merge transcripts or move
-the original note.
+There is no chat scratchpad, staging area, or promotion step. Shared notes do not
+store transient progress, private reasoning, raw outputs, or secrets. Handoff
+notes do not become global or Swarm knowledge automatically.
 
 ## Ownership in code
 
 - `src/middleware/bots.rs` owns Bot-facing Swarm and routine tools plus request-only
   Swarm Chat decoration.
-- `src/middleware/sessions.rs` owns Bot-scoped thread search.
-- `src/middleware/scratchpad.rs` owns all three scratchpad scopes and projection.
+- `src/middleware/sessions.rs` owns current-chat and Bot-scoped history recovery.
+- `src/middleware/scratchpad.rs` owns shared Swarm/global knowledge and projection.
+- `src/middleware/compaction.rs` and its `handoff` module own window transitions
+  and the working checkpoint; `src/middleware/tasks.rs` owns the durable task list.
 - `src/middleware/subagents/` owns child-agent context and communication.
 - `crates/mobius-gateway/src/bots/` owns Bot profiles, routines, Swarms, routing,
   and durable board state.

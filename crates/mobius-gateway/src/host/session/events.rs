@@ -80,11 +80,7 @@ impl HostState {
         }
         let routine_completion = self.observe_routine_event(&event)?;
         if let Some((active, status, message)) = routine_completion {
-            let summary = (status == RoutineRunStatus::Succeeded)
-                .then(|| self.last_assistant_text.clone())
-                .flatten();
-            let run = self.bots.finish_run(active.run, status, message)?;
-            self.swarm.project_routine_outcome(&run, summary).await?;
+            self.bots.finish_run(active.run, status, message)?;
         }
         if let Some(activity) = next_activity {
             self.set_activity(activity)?;
@@ -266,14 +262,8 @@ impl HostState {
         let context_limit_tokens = match self.running.session.model.model_context_window {
             Some(context_window) if self.spec.agent.config.middleware.enabled("compaction") => {
                 Some(
-                    mobius::middleware::compaction::Compaction::new(
-                        crate::middleware_manifest::integer_setting(
-                            &self.spec.agent.config.middleware,
-                            "compaction",
-                            "at_tokens",
-                        )?,
-                    )?
-                    .trigger_tokens(context_window),
+                    crate::assembly::configured_compaction(&self.spec.agent.config.middleware)?
+                        .trigger_tokens(context_window),
                 )
             }
             context_window => context_window,

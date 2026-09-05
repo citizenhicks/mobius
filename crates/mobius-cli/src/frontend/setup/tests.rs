@@ -75,6 +75,7 @@ fn status(provider: &str) -> ProviderStatus {
 
 fn search(mode: HostedWebSearch) -> FrontendSettingOption {
     FrontendSettingOption {
+        disables: Vec::new(),
         value: mode.id().into(),
         label: mode.label().into(),
         description: mode.description().into(),
@@ -179,6 +180,7 @@ fn features() -> Vec<MiddlewareFeature> {
                     composer: false,
                     kind: FrontendSettingKind::Select {
                         options: vec![FrontendSettingOption {
+                            disables: Vec::new(),
                             value: "route-a".into(),
                             label: "Route A".into(),
                             description: "First route".into(),
@@ -569,6 +571,73 @@ fn agent_capability_children_are_collapsed_until_opened() {
     );
     state.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
     assert_eq!(state.middleware_row_count(), state.features.len());
+}
+
+#[test]
+fn advertised_choice_exclusions_apply_to_settings_capabilities_and_extensions() {
+    let mut state = state(SetupMode::Bot, "openai_socket", true);
+    let FrontendSettingKind::Select { options, .. } = &mut state.features[1].settings[1].kind
+    else {
+        panic!("select fixture");
+    };
+    options[0].disables = vec!["plain".into()];
+    state.available_extensions.push(extension("plain"));
+    state.row = setting_row(&mut state, "configured", "route");
+    state.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    assert!(!state.middleware.enabled("plain"));
+
+    let mut lines = Vec::new();
+    render_page(&mut lines, &state, 120);
+    assert!(lines.iter().any(|line| {
+        let text = line.to_string();
+        text.contains("[-]") && text.contains("Unavailable while Route A is selected.")
+    }));
+
+    state.row = feature_row(&state, "plain");
+    state.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    assert!(!state.middleware.enabled("plain"));
+    assert!(
+        state
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("Route A"))
+    );
+
+    expand_feature(&mut state, "plain");
+    state.row = (0..state.middleware_row_count())
+        .find(|row| {
+            matches!(
+                state.middleware_row(*row),
+                Some(MiddlewareRow::Extension { .. })
+            )
+        })
+        .expect("extension row");
+    state.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    assert!(!state.selected_extensions.contains("plugin-a"));
+    assert!(!state.middleware.enabled("plain"));
+
+    // Disabling the owner releases the exclusion; enabling it reapplies the saved choice.
+    state.row = feature_row(&state, "configured");
+    state.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    state.row = feature_row(&state, "plain");
+    state.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    assert!(state.middleware.enabled("plain"));
+    state.row = feature_row(&state, "configured");
+    state.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    assert!(!state.middleware.enabled("plain"));
+
+    // Clearing the choice makes the capability available without silently enabling it.
+    state.row = setting_row(&mut state, "configured", "route");
+    state.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+    assert!(
+        state
+            .middleware
+            .disabled_by(&state.features, "plain")
+            .is_none()
+    );
+    state.row = feature_row(&state, "plain");
+    state.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    assert!(state.middleware.enabled("plain"));
 }
 
 #[test]

@@ -48,6 +48,7 @@ pub(super) async fn restore_pending_approval_activities(
     loop {
         let page = checkpoints
             .list_sessions_page(SessionPageRequest {
+                bot_id: None,
                 cursor,
                 limit: SESSION_PAGE_SIZE,
             })
@@ -116,6 +117,7 @@ pub(super) async fn background_approvals(
     while !pending.is_empty() {
         let page = checkpoints
             .list_sessions_page(SessionPageRequest {
+                bot_id: None,
                 cursor,
                 limit: SESSION_PAGE_SIZE,
             })
@@ -159,6 +161,7 @@ async fn filtered_session_catalog(
     while sessions.len() < SESSION_PAGE_SIZE {
         let page = checkpoints
             .list_sessions_page(SessionPageRequest {
+                bot_id: None,
                 cursor,
                 limit: SESSION_PAGE_SIZE,
             })

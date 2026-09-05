@@ -36,6 +36,7 @@ pub const DEFAULT_DELIVERY: ActiveMessageDelivery = ActiveMessageDelivery::Steer
 
 const DELIVERIES: &[MiddlewareSettingChoice] = &[
     MiddlewareSettingChoice {
+        disables: &[],
         value: "steer",
         label: text::SETTING_DELIVERY_STEER_LABEL,
         description: text::SETTING_DELIVERY_STEER_DESCRIPTION,
@@ -43,6 +44,7 @@ const DELIVERIES: &[MiddlewareSettingChoice] = &[
         tone: FrontendTone::Neutral,
     },
     MiddlewareSettingChoice {
+        disables: &[],
         value: "queue",
         label: text::SETTING_DELIVERY_QUEUE_LABEL,
         description: text::SETTING_DELIVERY_QUEUE_DESCRIPTION,

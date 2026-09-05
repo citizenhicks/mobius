@@ -1,4 +1,4 @@
-//! Chat catalog, durable forking, and Bot-scoped thread search middleware.
+//! Chat catalog, durable forking, and bounded Bot-scoped history retrieval.
 
 use std::sync::Arc;
 
@@ -12,7 +12,9 @@ use super::MiddlewareCommandOutput;
 use super::RuntimeContext;
 use super::attachments::strip_attachment_references;
 use super::manifest::{MiddlewareManifest, MiddlewareSettingManifest};
-use super::tools::{Catalog, Tool, ToolContext, rank_bm25, render_tool_event};
+use super::tools::{
+    Catalog, ExecutionMode, Tool, ToolContext, ToolExposure, rank_bm25, render_tool_event,
+};
 use crate::BoxFuture;
 use crate::Error;
 use crate::Result;
@@ -42,11 +44,15 @@ mod text {
 }
 
 const MAX_PAGE_SIZE: usize = 1_000;
-const MAX_THREAD_SEARCH_QUERY_BYTES: usize = 512;
-const MAX_THREAD_SEARCH_RESULTS: usize = 8;
-const MAX_THREAD_SEARCH_BATCHES: usize = 64;
-const MAX_THREAD_SEARCH_DOCUMENT_CHARS: usize = 12_000;
-const MAX_THREAD_SEARCH_EXCERPT_CHARS: usize = 800;
+const MAX_HISTORY_QUERY_BYTES: usize = 512;
+const MAX_HISTORY_CURSOR_BYTES: usize = 8_192;
+const MAX_HISTORY_RESULTS: usize = 6;
+const MAX_HISTORY_PAGES: usize = 32;
+const MAX_HISTORY_ITEMS: usize = 128;
+const MAX_HISTORY_SCAN_CHARS: usize = 64_000;
+const HISTORY_CHUNK_CHARS: usize = 8_000;
+const HISTORY_EXCERPT_CHARS: usize = 600;
+const MAX_HISTORY_READ_CHARS: usize = 4_000;
 const _: () = {
     assert!(text::DEFAULTS_PAGE_SIZE >= 1);
     assert!(text::DEFAULTS_PAGE_SIZE <= MAX_PAGE_SIZE as i64);
@@ -105,11 +111,13 @@ impl Middleware for Sessions {
     }
 
     fn register(&self, catalog: &mut Catalog, runtime: &RuntimeContext) -> Result<()> {
-        catalog.register(Arc::new(SearchThreads {
+        let history = Arc::new(History {
             checkpoints: Arc::clone(&runtime.checkpoints),
             session_id: runtime.session_id.clone(),
             bot_id: runtime.session_context.bot_id.clone(),
-        }))
+        });
+        catalog.register(Arc::new(SearchHistory(Arc::clone(&history))))?;
+        catalog.register(Arc::new(ReadHistory(history)))
     }
 
     fn frontend(&self) -> FrontendContribution {
@@ -155,12 +163,15 @@ impl Middleware for Sessions {
     fn render(&self, event: &EventMsg, _session_id: &str) -> Option<FrontendBlock> {
         render_tool_event(
             event,
-            |name| name == "search_threads",
+            |name| matches!(name, "search_history" | "read_history"),
             |name, arguments| super::tools::ToolHeading {
                 title: if matches!(event, EventMsg::ToolCallEnd(_)) {
                     name
                 } else {
-                    text::RENDER_SEARCH_THREADS
+                    match name {
+                        "search_history" => text::RENDER_SEARCH_HISTORY,
+                        _ => text::RENDER_READ_HISTORY,
+                    }
                 }
                 .into(),
                 detail: arguments
@@ -186,45 +197,90 @@ impl Middleware for Sessions {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum HistoryScope {
+    #[default]
+    Current,
+    OtherChats,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SearchThreadsArgs {
+struct SearchHistoryArgs {
     query: String,
+    #[serde(default)]
+    scope: HistoryScope,
+    cursor: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadHistoryArgs {
+    session_id: Option<String>,
+    target: MessageTarget,
+    #[serde(default)]
+    offset: usize,
+    #[serde(default = "default_read_chars")]
+    max_chars: usize,
+}
+
+const fn default_read_chars() -> usize {
+    4_000
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct HistoryCursor {
+    scope: HistoryScope,
+    query: String,
+    catalog: Option<SessionCursor>,
+    session_id: Option<String>,
+    before_sequence: Option<u64>,
+    remaining_items: Option<usize>,
+    offset: usize,
 }
 
 #[derive(Serialize)]
-struct ThreadSearchHit {
+struct HistoryHit {
     session_id: String,
-    workspace: Option<String>,
-    started_with: Option<String>,
+    target: MessageTarget,
+    kind: &'static str,
+    offset: usize,
     excerpt: String,
-    updated_at: i64,
 }
 
-struct ThreadSearchDocument {
-    summary: SessionSummary,
-    messages: Vec<String>,
+struct HistoryDocument {
+    session_id: String,
+    target: MessageTarget,
+    kind: &'static str,
+    offset: usize,
     text: String,
 }
 
-struct SearchThreads {
+struct History {
     checkpoints: Arc<dyn crate::backend::checkpoint::CheckpointStore>,
     session_id: String,
     bot_id: String,
 }
 
-impl Tool for SearchThreads {
+struct SearchHistory(Arc<History>);
+struct ReadHistory(Arc<History>);
+
+impl Tool for SearchHistory {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "search_threads".into(),
-            description: text::TOOL_SEARCH_THREADS_DESCRIPTION.into(),
+            name: "search_history".into(),
+            description: text::TOOL_SEARCH_HISTORY_DESCRIPTION.into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": text::TOOL_SEARCH_THREADS_PARAMETER_QUERY_DESCRIPTION
-                    }
+                    "query": {"type": "string", "maxLength": MAX_HISTORY_QUERY_BYTES,
+                        "description": text::TOOL_SEARCH_HISTORY_PARAMETER_QUERY_DESCRIPTION},
+                    "scope": {"type": "string", "enum": ["current", "other_chats"],
+                        "description": "Defaults to this chat. other_chats explicitly searches this Bot's other chats."},
+                    "cursor": {"type": "string", "maxLength": MAX_HISTORY_CURSOR_BYTES,
+                        "description": "Unmodified next_cursor from the same query and scope; continue even when hits is empty."}
                 },
                 "required": ["query"],
                 "additionalProperties": false
@@ -232,146 +288,437 @@ impl Tool for SearchThreads {
         }
     }
 
+    fn exposure(&self) -> ToolExposure {
+        ToolExposure::Direct
+    }
+
+    fn execution_mode(&self) -> ExecutionMode {
+        ExecutionMode::Parallel
+    }
+
     fn call<'a>(
         &'a self,
         _context: ToolContext,
         arguments: Value,
     ) -> BoxFuture<'a, Result<String>> {
-        Box::pin(async move {
-            let arguments: SearchThreadsArgs = serde_json::from_value(arguments)?;
-            let query = arguments.query.trim();
-            if query.is_empty() {
-                return Err(Error::Tool("search_threads query cannot be empty".into()));
-            }
-            if query.len() > MAX_THREAD_SEARCH_QUERY_BYTES {
-                return Err(Error::Tool(format!(
-                    "search_threads query exceeds {MAX_THREAD_SEARCH_QUERY_BYTES} bytes"
-                )));
-            }
-
-            let documents = self.documents().await?;
-            let searchable = documents
-                .iter()
-                .map(|document| document.text.clone())
-                .collect::<Vec<_>>();
-            let hits = rank_bm25(&searchable, query, MAX_THREAD_SEARCH_RESULTS)
-                .into_iter()
-                .filter_map(|index| documents.get(index))
-                .map(|document| ThreadSearchHit {
-                    session_id: document.summary.session_id.clone(),
-                    workspace: document.summary.session_context.workspace_label.clone(),
-                    started_with: document.summary.first_user_message.clone(),
-                    excerpt: search_excerpt(&document.messages, query),
-                    updated_at: document.summary.updated_at,
-                })
-                .collect::<Vec<_>>();
-            Ok(serde_json::to_string(&hits)?)
-        })
+        Box::pin(async move { self.0.search(serde_json::from_value(arguments)?).await })
     }
 }
 
-impl SearchThreads {
-    async fn documents(&self) -> Result<Vec<ThreadSearchDocument>> {
-        // ponytail: index the newest 1,000 matching threads; page deeper if one Bot exceeds that.
-        let mut cursor = None;
-        let mut summaries = Vec::new();
-        while summaries.len() < MAX_PAGE_SIZE {
-            let page = self
-                .checkpoints
-                .list_sessions_page(SessionPageRequest {
-                    cursor,
-                    limit: MAX_PAGE_SIZE,
-                })
-                .await?;
-            let remaining = MAX_PAGE_SIZE - summaries.len();
-            summaries.extend(
-                page.sessions
-                    .into_iter()
-                    .filter(|summary| {
-                        is_searchable_bot_thread(summary, &self.session_id, &self.bot_id)
-                    })
-                    .take(remaining),
-            );
-            let Some(next) = page.next_cursor else { break };
-            cursor = Some(next);
+impl Tool for ReadHistory {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "read_history".into(),
+            description: text::TOOL_READ_HISTORY_DESCRIPTION.into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "session_id": {"type": "string", "maxLength": 512,
+                        "description": "Defaults to this chat; an explicit other chat must belong to this Bot."},
+                    "target": {"type": "object", "properties": {
+                        "checkpoint_sequence": {"type": "integer", "minimum": 0},
+                        "batch_item_count": {"type": "integer", "minimum": 1}
+                    }, "required": ["checkpoint_sequence", "batch_item_count"], "additionalProperties": false},
+                    "offset": {"type": "integer", "minimum": 0,
+                        "description": "Character offset, initially zero or the search hit's offset."},
+                    "max_chars": {"type": "integer", "minimum": 1, "maximum": MAX_HISTORY_READ_CHARS,
+                        "description": "Maximum characters to return; defaults to 4000. Continue at next_offset."}
+                },
+                "required": ["target"],
+                "additionalProperties": false
+            }),
         }
+    }
 
+    fn exposure(&self) -> ToolExposure {
+        ToolExposure::Direct
+    }
+
+    fn execution_mode(&self) -> ExecutionMode {
+        ExecutionMode::Parallel
+    }
+
+    fn call<'a>(
+        &'a self,
+        _context: ToolContext,
+        arguments: Value,
+    ) -> BoxFuture<'a, Result<String>> {
+        Box::pin(async move { self.0.read(serde_json::from_value(arguments)?).await })
+    }
+}
+
+impl History {
+    async fn authorize(&self, session_id: &str) -> Result<()> {
+        validate_history_session_id(session_id)?;
+        let checkpoint = self.checkpoints.load(session_id).await?;
+        if !checkpoint.is_some_and(|checkpoint| checkpoint.session_context.bot_id == self.bot_id) {
+            return Err(Error::Tool(
+                "history chat is unavailable to this Bot".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn cursor(&self, arguments: SearchHistoryArgs) -> Result<HistoryCursor> {
+        let query = arguments.query.trim();
+        if query.is_empty() || query.len() > MAX_HISTORY_QUERY_BYTES {
+            return Err(Error::Tool(format!(
+                "history query must be 1–{MAX_HISTORY_QUERY_BYTES} bytes"
+            )));
+        }
+        let Some(value) = arguments.cursor else {
+            return Ok(HistoryCursor {
+                scope: arguments.scope,
+                query: query.into(),
+                catalog: None,
+                session_id: (arguments.scope == HistoryScope::Current)
+                    .then(|| self.session_id.clone()),
+                before_sequence: None,
+                remaining_items: None,
+                offset: 0,
+            });
+        };
+        if value.len() > MAX_HISTORY_CURSOR_BYTES {
+            return Err(Error::Tool("history cursor is too large".into()));
+        }
+        let cursor: HistoryCursor = serde_json::from_str(&value)?;
+        if cursor.scope != arguments.scope
+            || cursor.query != query
+            || cursor.remaining_items == Some(0)
+            || (cursor.remaining_items.is_some() && cursor.before_sequence.is_none())
+            || (cursor.remaining_items.is_none() && cursor.offset != 0)
+            || (cursor.scope == HistoryScope::Current
+                && (cursor.session_id.as_deref() != Some(&self.session_id)
+                    || cursor.catalog.is_some()))
+            || (cursor.scope == HistoryScope::OtherChats
+                && cursor.session_id.as_deref() == Some(&self.session_id))
+        {
+            return Err(Error::Tool(
+                "history cursor does not match this query and scope".into(),
+            ));
+        }
+        if let Some(catalog) = &cursor.catalog {
+            validate_history_session_id(&catalog.session_id)?;
+            validate_history_sequence(catalog.sequence)?;
+        }
+        if let Some(sequence) = cursor.before_sequence {
+            validate_history_sequence(sequence)?;
+        }
+        Ok(cursor)
+    }
+
+    async fn search(&self, arguments: SearchHistoryArgs) -> Result<String> {
+        let mut cursor = self.cursor(arguments)?;
+        if let Some(session_id) = &cursor.session_id {
+            self.authorize(session_id).await?;
+        }
+        if let Some(catalog) = &cursor.catalog {
+            self.authorize(&catalog.session_id).await?;
+        }
         let mut documents = Vec::new();
-        for summary in summaries {
+        let mut scanned_chars = 0;
+        let mut scanned_items = 0;
+        let mut complete = false;
+        // ponytail: scan bounded transcript batches on demand; add an index only if measured latency warrants it.
+        for _ in 0..MAX_HISTORY_PAGES {
+            let Some(session_id) = cursor.session_id.clone() else {
+                if !self.advance_session(&mut cursor).await? {
+                    complete = true;
+                    break;
+                }
+                continue;
+            };
             let page = self
                 .checkpoints
                 .transcript_page(
-                    &summary.session_id,
+                    &session_id,
                     TranscriptPageRequest {
-                        before_sequence: None,
-                        max_batches: MAX_THREAD_SEARCH_BATCHES,
+                        before_sequence: cursor.before_sequence,
+                        max_batches: 1,
                     },
                 )
                 .await?;
-            let mut messages = replay_events(
-                &page.into_positioned_items_chronological(),
-                &summary.session_id,
-            )
-            .into_iter()
-            .filter_map(searchable_event_text)
-            .collect::<Vec<_>>();
-            if let Some(message) = summary.first_user_message.clone()
-                && messages.first() != Some(&message)
+            let Some(batch) = page.batches.into_iter().next() else {
+                if cursor.scope == HistoryScope::Current {
+                    complete = true;
+                    break;
+                }
+                cursor.session_id = None;
+                cursor.before_sequence = None;
+                cursor.remaining_items = None;
+                cursor.offset = 0;
+                continue;
+            };
+            scan_history_batch(
+                &batch,
+                &mut cursor,
+                &mut documents,
+                &mut scanned_items,
+                &mut scanned_chars,
+            )?;
+            if scanned_items >= MAX_HISTORY_ITEMS
+                || MAX_HISTORY_SCAN_CHARS - scanned_chars <= MAX_HISTORY_QUERY_BYTES
             {
-                messages.insert(0, message);
+                break;
             }
-            let text = messages
-                .iter()
-                .flat_map(|message| message.chars().chain(std::iter::once('\n')))
-                .take(MAX_THREAD_SEARCH_DOCUMENT_CHARS)
-                .collect();
-            documents.push(ThreadSearchDocument {
-                summary,
-                messages,
-                text,
-            });
         }
-        Ok(documents)
-    }
-}
-
-fn is_searchable_bot_thread(
-    summary: &SessionSummary,
-    current_session_id: &str,
-    bot_id: &str,
-) -> bool {
-    summary.session_id != current_session_id && summary.session_context.bot_id == bot_id
-}
-
-fn searchable_event_text(event: EventMsg) -> Option<String> {
-    match event {
-        EventMsg::Message(message) => Some(message.text),
-        EventMsg::AssistantMessage(message) => assistant_message_text(&message.content),
-        _ => None,
-    }
-}
-
-fn search_excerpt(messages: &[String], query: &str) -> String {
-    let query = query.to_lowercase();
-    let terms = query.split_whitespace().collect::<Vec<_>>();
-    let message = messages
-        .iter()
-        .find(|message| message.to_lowercase().contains(&query))
-        .or_else(|| {
-            messages.iter().find(|message| {
-                let message = message.to_lowercase();
-                terms.iter().any(|term| message.contains(term))
+        let searchable = documents
+            .iter()
+            .map(|document| document.text.clone())
+            .collect::<Vec<_>>();
+        let hits = rank_bm25(&searchable, &cursor.query, MAX_HISTORY_RESULTS)
+            .into_iter()
+            .map(|index| {
+                let document = &documents[index];
+                let (offset, excerpt) = history_excerpt(&document.text, &cursor.query);
+                HistoryHit {
+                    session_id: document.session_id.clone(),
+                    target: document.target,
+                    kind: document.kind,
+                    offset: document.offset + offset,
+                    excerpt,
+                }
             })
-        })
-        .or_else(|| messages.first())
-        .map_or("", String::as_str);
-    message
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .take(MAX_THREAD_SEARCH_EXCERPT_CHARS)
-        .collect()
+            .collect::<Vec<_>>();
+        let next_cursor = (!complete)
+            .then(|| serde_json::to_string(&cursor))
+            .transpose()?;
+        Ok(serde_json::to_string(&serde_json::json!({
+            "hits": hits, "next_cursor": next_cursor,
+            "scanned_items": scanned_items, "scanned_chars": scanned_chars,
+        }))?)
+    }
+
+    async fn advance_session(&self, cursor: &mut HistoryCursor) -> Result<bool> {
+        let page = self
+            .checkpoints
+            .list_sessions_page(SessionPageRequest {
+                bot_id: Some(self.bot_id.clone()),
+                cursor: cursor.catalog.clone(),
+                limit: 1,
+            })
+            .await?;
+        let Some(summary) = page.sessions.into_iter().next() else {
+            return Ok(false);
+        };
+        if summary.session_context.bot_id != self.bot_id {
+            return Err(Error::Checkpoint(
+                "session catalog returned another Bot's chat".into(),
+            ));
+        }
+        cursor.catalog = Some(SessionCursor {
+            updated_at: summary.updated_at,
+            sequence: summary.sequence,
+            session_id: summary.session_id.clone(),
+        });
+        if summary.session_id != self.session_id {
+            self.authorize(&summary.session_id).await?;
+            cursor.session_id = Some(summary.session_id);
+        }
+        Ok(true)
+    }
+
+    async fn read(&self, arguments: ReadHistoryArgs) -> Result<String> {
+        if arguments.max_chars == 0 || arguments.max_chars > MAX_HISTORY_READ_CHARS {
+            return Err(Error::Tool(format!(
+                "max_chars must be 1–{MAX_HISTORY_READ_CHARS}"
+            )));
+        }
+        let session_id = arguments.session_id.as_deref().unwrap_or(&self.session_id);
+        self.authorize(session_id).await?;
+        let before_sequence = arguments
+            .target
+            .checkpoint_sequence
+            .checked_add(1)
+            .ok_or_else(|| Error::Tool("history target sequence is too large".into()))?;
+        validate_history_sequence(before_sequence)?;
+        let page = self
+            .checkpoints
+            .transcript_page(
+                session_id,
+                TranscriptPageRequest {
+                    before_sequence: Some(before_sequence),
+                    max_batches: 1,
+                },
+            )
+            .await?;
+        let item = page
+            .batches
+            .first()
+            .filter(|batch| batch.sequence == arguments.target.checkpoint_sequence)
+            .and_then(|batch| {
+                arguments
+                    .target
+                    .batch_item_count
+                    .checked_sub(1)
+                    .and_then(|index| batch.items.get(index))
+            })
+            .and_then(history_text)
+            .ok_or_else(|| {
+                Error::Tool("history target is not a readable transcript item".into())
+            })?;
+        let (content, next_offset) = history_chunk(&item.1, arguments.offset, arguments.max_chars)?;
+        Ok(serde_json::to_string(&serde_json::json!({
+            "session_id": session_id, "target": arguments.target, "kind": item.0,
+            "offset": arguments.offset, "text": content, "next_offset": next_offset,
+        }))?)
+    }
+}
+
+fn validate_history_session_id(session_id: &str) -> Result<()> {
+    if session_id.trim().is_empty()
+        || session_id.len() > 512
+        || session_id.chars().any(char::is_control)
+    {
+        return Err(Error::Tool("history session_id must be 1–512 bytes".into()));
+    }
+    Ok(())
+}
+
+fn validate_history_sequence(sequence: u64) -> Result<()> {
+    if i64::try_from(sequence).is_err() {
+        return Err(Error::Tool(
+            "history sequence exceeds the supported range".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn scan_history_batch(
+    batch: &crate::backend::checkpoint::TranscriptBatch,
+    cursor: &mut HistoryCursor,
+    documents: &mut Vec<HistoryDocument>,
+    scanned_items: &mut usize,
+    scanned_chars: &mut usize,
+) -> Result<()> {
+    let mut remaining = cursor.remaining_items.unwrap_or(batch.items.len());
+    if remaining > batch.items.len()
+        || (cursor.remaining_items.is_some()
+            && cursor.before_sequence != batch.sequence.checked_add(1))
+    {
+        return Err(Error::Tool(
+            "history cursor no longer identifies a transcript item".into(),
+        ));
+    }
+    while remaining > 0
+        && *scanned_items < MAX_HISTORY_ITEMS
+        && MAX_HISTORY_SCAN_CHARS - *scanned_chars > MAX_HISTORY_QUERY_BYTES
+    {
+        *scanned_items += 1;
+        let mut next_offset = None;
+        if let Some((kind, text)) = history_text(&batch.items[remaining - 1]) {
+            let limit = HISTORY_CHUNK_CHARS.min(MAX_HISTORY_SCAN_CHARS - *scanned_chars);
+            let (chunk, next) = history_chunk(&text, cursor.offset, limit)?;
+            *scanned_chars += chunk.chars().count();
+            documents.push(HistoryDocument {
+                session_id: cursor
+                    .session_id
+                    .clone()
+                    .ok_or_else(|| Error::Tool("history cursor has no chat".into()))?,
+                target: MessageTarget {
+                    checkpoint_sequence: batch.sequence,
+                    batch_item_count: remaining,
+                },
+                kind,
+                offset: cursor.offset,
+                text: chunk,
+            });
+            // Overlap the query length so chunk boundaries cannot hide a literal search phrase.
+            next_offset = next.map(|offset| offset - cursor.query.chars().count());
+        }
+        if let Some(offset) = next_offset {
+            cursor.offset = offset;
+        } else {
+            remaining -= 1;
+            cursor.offset = 0;
+        }
+    }
+    cursor.before_sequence = Some(if remaining == 0 {
+        batch.sequence
+    } else {
+        batch
+            .sequence
+            .checked_add(1)
+            .ok_or_else(|| Error::Tool("history sequence is too large".into()))?
+    });
+    cursor.remaining_items = (remaining > 0).then_some(remaining);
+    Ok(())
+}
+
+fn history_text(item: &Value) -> Option<(&'static str, String)> {
+    if let Some(message) = crate::protocol::message_metadata(item) {
+        return Some(("user", message.text));
+    }
+    if crate::protocol::is_internal_message(item) {
+        return None;
+    }
+    match item.get("type").and_then(Value::as_str) {
+        Some("function_call") => Some((
+            "tool_call",
+            format!(
+                "{}\n{}",
+                item.get("name")?.as_str()?,
+                history_value_text(item.get("arguments")?)
+            ),
+        )),
+        Some("function_call_output") => {
+            Some(("tool_result", history_value_text(item.get("output")?)))
+        }
+        Some("reasoning" | "compaction") => None,
+        _ => {
+            let kind = match item.get("role")?.as_str()? {
+                "user" => "user",
+                "assistant" => "assistant",
+                _ => return None,
+            };
+            let content = item.get("content")?;
+            let text = match content {
+                Value::String(text) => text.clone(),
+                Value::Array(parts) => parts
+                    .iter()
+                    .filter_map(|part| part.get("text")?.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                _ => return None,
+            };
+            Some((kind, text))
+        }
+    }
+}
+
+fn history_value_text(value: &Value) -> String {
+    value
+        .as_str()
+        .map_or_else(|| value.to_string(), str::to_owned)
+}
+
+fn history_chunk(text: &str, offset: usize, max_chars: usize) -> Result<(String, Option<usize>)> {
+    let start = text
+        .char_indices()
+        .map(|(index, _)| index)
+        .nth(offset)
+        .or_else(|| (text.chars().count() == offset).then_some(text.len()))
+        .ok_or_else(|| Error::Tool("history offset exceeds the item length".into()))?;
+    let mut chars = text[start..].chars();
+    let content = chars.by_ref().take(max_chars).collect::<String>();
+    let next = chars.next().is_some().then(|| offset + max_chars);
+    Ok((content, next))
+}
+
+fn history_excerpt(text: &str, query: &str) -> (usize, String) {
+    let lower = text.to_ascii_lowercase();
+    let query = query.to_ascii_lowercase();
+    let found = lower
+        .find(&query)
+        .or_else(|| query.split_whitespace().find_map(|term| lower.find(term)));
+    let offset = found.map_or(0, |index| text[..index].chars().count().saturating_sub(100));
+    (
+        offset,
+        text.chars()
+            .skip(offset)
+            .take(HISTORY_EXCERPT_CHARS)
+            .collect(),
+    )
 }
 
 async fn fork(context: MiddlewareCommandContext<'_>) -> Result<MiddlewareCommandOutput> {
@@ -614,6 +961,7 @@ async fn resume_options(
     let page = context
         .checkpoints
         .list_sessions_page(SessionPageRequest {
+            bot_id: None,
             cursor,
             limit: page_size,
         })
@@ -701,54 +1049,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn thread_search_is_bot_scoped_and_bm25_ranked() {
-        let summary = |session_id: &str, bot_id: &str| SessionSummary {
-            session_id: session_id.into(),
-            session_context: crate::protocol::SessionContext {
-                bot_id: bot_id.into(),
-                ..crate::protocol::SessionContext::default()
-            },
-            parent_session_id: None,
-            parent_sequence: None,
-            sequence: 1,
-            catalog_visible: true,
-            first_user_message: None,
-            execution_stats: Default::default(),
-            created_at: 0,
-            updated_at: 0,
-        };
-
-        assert!(is_searchable_bot_thread(
-            &summary("prior", "researcher"),
-            "current",
-            "researcher"
-        ));
-        assert!(!is_searchable_bot_thread(
-            &summary("other-bot", "writer"),
-            "current",
-            "researcher"
-        ));
-        assert!(!is_searchable_bot_thread(
-            &summary("current", "researcher"),
-            "current",
-            "researcher"
-        ));
-        let mut hidden = summary("routine", "researcher");
-        hidden.catalog_visible = false;
-        assert!(is_searchable_bot_thread(&hidden, "current", "researcher"));
-        let documents = vec![
-            "Release checklist and changelog".into(),
-            "Hermes durable Bot memory design".into(),
-        ];
-        assert_eq!(rank_bm25(&documents, "durable Bot", 1), [1]);
-        assert_eq!(
-            search_excerpt(&documents, "durable Bot"),
-            "Hermes durable Bot memory design"
-        );
-    }
-
-    #[test]
-    fn thread_search_registers_for_the_required_bot() {
+    fn history_tools_are_directly_available_for_the_required_bot() {
         let state = tempfile::tempdir().expect("state");
         let checkpoints: Arc<dyn crate::backend::checkpoint::CheckpointStore> = Arc::new(
             crate::backend::checkpoint::sqlite::SqliteCheckpoint::new(
@@ -776,47 +1077,357 @@ mod tests {
             .register(&mut catalog, &runtime)
             .expect("register session tools");
 
-        assert_eq!(catalog.registered_definitions()[0].name, "search_threads");
+        catalog.finalize().expect("finalize tools");
+        let names = catalog
+            .direct_definitions()
+            .iter()
+            .map(|tool| tool.name.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["read_history", "search_history"]);
     }
 
-    #[tokio::test]
-    async fn thread_search_reads_only_the_owning_bots_other_transcripts() {
-        let state = tempfile::tempdir().expect("state");
-        let checkpoints: Arc<dyn crate::backend::checkpoint::CheckpointStore> = Arc::new(
-            crate::backend::checkpoint::sqlite::SqliteCheckpoint::new(
-                state.path().join("checkpoints.sqlite3"),
-            )
-            .expect("checkpoint store"),
-        );
-        for (session_id, bot_id, message) in [
-            ("prior", "researcher", "Hermes durable memory"),
-            ("current", "researcher", "Current conversation"),
-            ("other", "writer", "Hermes private draft"),
-        ] {
-            let mut checkpoint = Checkpoint::empty(session_id);
-            checkpoint.sequence = 1;
-            checkpoint.session_context.bot_id = bot_id.into();
-            checkpoint.first_user_message = Some(message.into());
-            let input = serde_json::json!({"role": "user", "content": message});
-            checkpoint.context.push(input.clone());
-            checkpoints
-                .save(&checkpoint, &[input], None)
-                .await
-                .expect("save thread");
-        }
+    async fn save_history(
+        checkpoints: &dyn crate::backend::checkpoint::CheckpointStore,
+        session_id: &str,
+        bot_id: &str,
+        items: Vec<Value>,
+    ) -> Checkpoint {
+        let mut checkpoint = Checkpoint::empty(session_id);
+        checkpoint.sequence = 1;
+        checkpoint.session_context.bot_id = bot_id.into();
+        checkpoint.context.clone_from(&items);
+        checkpoints
+            .save(&checkpoint, &items, None)
+            .await
+            .expect("save history");
+        checkpoint
+    }
 
-        let documents = SearchThreads {
-            checkpoints,
+    fn history_store(path: &std::path::Path) -> History {
+        History {
+            checkpoints: Arc::new(
+                crate::backend::checkpoint::sqlite::SqliteCheckpoint::new(path).expect("store"),
+            ),
             session_id: "current".into(),
             bot_id: "researcher".into(),
         }
-        .documents()
-        .await
-        .expect("search documents");
+    }
 
-        assert_eq!(documents.len(), 1);
-        assert_eq!(documents[0].summary.session_id, "prior");
-        assert!(documents[0].text.contains("Hermes durable memory"));
+    fn search_args(query: &str, scope: HistoryScope, cursor: Option<String>) -> SearchHistoryArgs {
+        SearchHistoryArgs {
+            query: query.into(),
+            scope,
+            cursor,
+        }
+    }
+
+    #[tokio::test]
+    async fn history_recovers_offloaded_tool_output_beyond_the_first_page() {
+        let state = tempfile::tempdir().expect("state");
+        let history = history_store(&state.path().join("history.sqlite3"));
+        let output = format!("{}\nneedle exact result\n", "🦀".repeat(9_000));
+        let mut checkpoint = save_history(history.checkpoints.as_ref(), "current", "researcher", vec![
+            crate::backend::model::user_message("Investigate"),
+            serde_json::json!({"type":"function_call", "call_id":"call-1", "name":"read_file", "arguments":"{\"path\":\"earlier.rs\"}"}),
+            crate::backend::model::tool_output("call-1", &output, false),
+        ]).await;
+        checkpoint.context[2]["output"] = Value::String("[offloaded]".into());
+        for sequence in 2..=70 {
+            checkpoint.sequence = sequence;
+            history
+                .checkpoints
+                .save(
+                    &checkpoint,
+                    &[serde_json::json!({"role":"assistant", "content":"newer unrelated work"})],
+                    None,
+                )
+                .await
+                .expect("save later batch");
+        }
+        let mut cursor = None;
+        let mut pages = 0;
+        let hit = loop {
+            let page: Value = serde_json::from_str(
+                &history
+                    .search(search_args("needle", HistoryScope::Current, cursor))
+                    .await
+                    .expect("search"),
+            )
+            .expect("search page");
+            pages += 1;
+            if let Some(hit) = page["hits"].as_array().expect("hits").first() {
+                break hit.clone();
+            }
+            assert!(pages < 10, "history scan must make progress");
+            cursor = Some(
+                page["next_cursor"]
+                    .as_str()
+                    .expect("older history cursor")
+                    .into(),
+            );
+        };
+        assert!(pages > 1);
+        assert_eq!(hit["session_id"], "current");
+        assert_eq!(hit["kind"], "tool_result");
+        assert!(
+            hit["excerpt"]
+                .as_str()
+                .expect("excerpt")
+                .contains("needle exact result")
+        );
+        let target: MessageTarget = serde_json::from_value(hit["target"].clone()).expect("target");
+        assert_eq!(
+            target,
+            MessageTarget {
+                checkpoint_sequence: 1,
+                batch_item_count: 3
+            }
+        );
+        let mut restored = String::new();
+        let mut offset = 0;
+        loop {
+            let page: Value = serde_json::from_str(
+                &history
+                    .read(ReadHistoryArgs {
+                        session_id: None,
+                        target,
+                        offset,
+                        max_chars: 4_000,
+                    })
+                    .await
+                    .expect("read history"),
+            )
+            .expect("read page");
+            restored.push_str(page["text"].as_str().expect("text"));
+            let Some(next) = page["next_offset"].as_u64() else {
+                break;
+            };
+            offset = usize::try_from(next).expect("offset");
+        }
+        assert_eq!(restored, output);
+        let calls: Value = serde_json::from_str(
+            &history
+                .read(ReadHistoryArgs {
+                    session_id: None,
+                    target: MessageTarget {
+                        checkpoint_sequence: 1,
+                        batch_item_count: 2,
+                    },
+                    offset: 0,
+                    max_chars: 4_000,
+                })
+                .await
+                .expect("read call"),
+        )
+        .expect("call");
+        assert_eq!(calls["text"], "read_file\n{\"path\":\"earlier.rs\"}");
+    }
+
+    #[tokio::test]
+    async fn history_cursor_continues_inside_a_large_message() {
+        let state = tempfile::tempdir().expect("state");
+        let history = history_store(&state.path().join("history.sqlite3"));
+        save_history(
+            history.checkpoints.as_ref(),
+            "current",
+            "researcher",
+            vec![crate::backend::model::user_message(&format!(
+                "{}needle after the scan limit",
+                "padding ".repeat(10_000)
+            ))],
+        )
+        .await;
+        let first: Value = serde_json::from_str(
+            &history
+                .search(search_args("needle", HistoryScope::Current, None))
+                .await
+                .expect("first page"),
+        )
+        .expect("first page json");
+        assert!(first["hits"].as_array().expect("hits").is_empty());
+        assert!(first["scanned_chars"].as_u64().expect("scan bound") <= 64_000);
+        let second: Value = serde_json::from_str(
+            &history
+                .search(search_args(
+                    "needle",
+                    HistoryScope::Current,
+                    Some(first["next_cursor"].as_str().expect("cursor").into()),
+                ))
+                .await
+                .expect("second page"),
+        )
+        .expect("second page json");
+        assert!(
+            second["hits"][0]["excerpt"]
+                .as_str()
+                .expect("late match")
+                .contains("needle after the scan limit")
+        );
+    }
+
+    #[tokio::test]
+    async fn history_requires_explicit_other_chat_scope_and_rejects_foreign_bot_reads() {
+        let state = tempfile::tempdir().expect("state");
+        let history = history_store(&state.path().join("history.sqlite3"));
+        for (session, bot) in [
+            ("current", "researcher"),
+            ("prior", "researcher"),
+            ("private", "writer"),
+        ] {
+            save_history(
+                history.checkpoints.as_ref(),
+                session,
+                bot,
+                vec![crate::backend::model::user_message(&format!(
+                    "needle in {session}"
+                ))],
+            )
+            .await;
+        }
+        for (scope, expected) in [
+            (HistoryScope::Current, "current"),
+            (HistoryScope::OtherChats, "prior"),
+        ] {
+            let result: Value = serde_json::from_str(
+                &history
+                    .search(search_args("needle", scope, None))
+                    .await
+                    .expect("search"),
+            )
+            .expect("result");
+            let hits = result["hits"].as_array().expect("hits");
+            assert_eq!(hits.len(), 1);
+            assert_eq!(hits[0]["session_id"], expected);
+        }
+        let target = MessageTarget {
+            checkpoint_sequence: 1,
+            batch_item_count: 1,
+        };
+        assert!(
+            history
+                .read(ReadHistoryArgs {
+                    session_id: Some("prior".into()),
+                    target,
+                    offset: 0,
+                    max_chars: 100
+                })
+                .await
+                .is_ok()
+        );
+        assert!(
+            history
+                .read(ReadHistoryArgs {
+                    session_id: Some("private".into()),
+                    target,
+                    offset: 0,
+                    max_chars: 100
+                })
+                .await
+                .is_err()
+        );
+        let mut forged = history
+            .cursor(search_args("needle", HistoryScope::OtherChats, None))
+            .expect("cursor");
+        forged.session_id = Some("private".into());
+        assert!(
+            history
+                .search(search_args(
+                    "needle",
+                    HistoryScope::OtherChats,
+                    Some(serde_json::to_string(&forged).expect("cursor json"))
+                ))
+                .await
+                .is_err()
+        );
+        forged.session_id = Some("prior".into());
+        assert!(
+            history
+                .search(search_args(
+                    "needle",
+                    HistoryScope::Current,
+                    Some(serde_json::to_string(&forged).expect("cursor json"))
+                ))
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn history_validates_limits_targets_and_hides_private_context() {
+        let state = tempfile::tempdir().expect("state");
+        let history = history_store(&state.path().join("history.sqlite3"));
+        save_history(history.checkpoints.as_ref(), "current", "researcher", vec![
+            serde_json::json!({"role":"assistant", "content":"visible", "encrypted_content":"hidden", "_mobius_reasoning":"hidden"}),
+            serde_json::json!({"type":"reasoning", "encrypted_content":"secret"}),
+            crate::backend::model::internal_user_message("private", "hidden"),
+        ]).await;
+        let target = MessageTarget {
+            checkpoint_sequence: 1,
+            batch_item_count: 1,
+        };
+        for (offset, max_chars) in [(0, 0), (0, MAX_HISTORY_READ_CHARS + 1), (usize::MAX, 10)] {
+            assert!(
+                history
+                    .read(ReadHistoryArgs {
+                        session_id: None,
+                        target,
+                        offset,
+                        max_chars
+                    })
+                    .await
+                    .is_err()
+            );
+        }
+        for batch_item_count in [0, 2, 3, 4] {
+            assert!(
+                history
+                    .read(ReadHistoryArgs {
+                        session_id: None,
+                        target: MessageTarget {
+                            batch_item_count,
+                            ..target
+                        },
+                        offset: 0,
+                        max_chars: 100,
+                    })
+                    .await
+                    .is_err()
+            );
+        }
+        assert!(
+            history
+                .cursor(search_args("", HistoryScope::Current, None))
+                .is_err()
+        );
+        assert!(
+            history
+                .cursor(search_args(
+                    &"a".repeat(MAX_HISTORY_QUERY_BYTES + 1),
+                    HistoryScope::Current,
+                    None
+                ))
+                .is_err()
+        );
+        assert!(
+            history
+                .cursor(search_args(
+                    "needle",
+                    HistoryScope::Current,
+                    Some("x".repeat(MAX_HISTORY_CURSOR_BYTES + 1))
+                ))
+                .is_err()
+        );
+        let result = history
+            .read(ReadHistoryArgs {
+                session_id: None,
+                target,
+                offset: 0,
+                max_chars: 100,
+            })
+            .await
+            .expect("visible text");
+        assert!(result.contains("visible"));
+        assert!(!result.contains("hidden"));
     }
 
     #[test]

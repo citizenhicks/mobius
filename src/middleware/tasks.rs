@@ -12,11 +12,11 @@ use super::{
     SessionStartContext, SessionStartSource,
 };
 use crate::backend::checkpoint::CheckpointStore;
-use crate::backend::model::ToolDefinition;
+use crate::backend::model::{ToolDefinition, internal_user_message};
 use crate::protocol::{
     EventMsg, FrontendActionListItem, FrontendBlock, FrontendCommand, FrontendContribution,
     FrontendEvent, FrontendListItemState, FrontendProgress, FrontendSlot, FrontendSymbol,
-    FrontendTone, FrontendWidget, FrontendWidgetContent,
+    FrontendTone, FrontendWidget, FrontendWidgetContent, internal_message_kind,
 };
 use crate::{BoxFuture, Error, Result};
 
@@ -25,6 +25,7 @@ mod text {
 }
 
 const STATE_KEY: &str = "tasks.v1";
+const PROJECTION_KIND: &str = "tasks_state";
 const MAX_TODOS: usize = 50;
 const MAX_TODO_BYTES: usize = 500;
 /// Configuration and presentation metadata for durable tasks.
@@ -112,17 +113,34 @@ impl Middleware for Tasks {
         )
     }
 
+    fn retain_compacted_input(&self, item: &Value) -> bool {
+        internal_message_kind(item) != Some(PROJECTION_KIND)
+    }
+
     fn session_start<'a>(
         &'a self,
         context: &'a mut SessionStartContext<'_>,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            if context.source() == SessionStartSource::Compact {
-                return Ok(());
-            }
             let todos =
                 load_todos(&context.runtime.checkpoints, &context.runtime.session_id).await?;
-            (context.runtime.frontend)(widget_event(&todos))
+            let text = format!(
+                "<tasks>\nCurrent saved todo list replaces all prior task-list state:\n{}\n</tasks>",
+                serde_json::to_string(&todos)?,
+            );
+            let previous = context
+                .input
+                .iter()
+                .rev()
+                .find(|item| internal_message_kind(item) == Some(PROJECTION_KIND))
+                .and_then(|item| item["content"][0]["text"].as_str());
+            if previous != Some(text.as_str()) {
+                context.push_input(internal_user_message(PROJECTION_KIND, &text));
+            }
+            if context.source() != SessionStartSource::Compact {
+                (context.runtime.frontend)(widget_event(&todos))?;
+            }
+            Ok(())
         })
     }
 
@@ -390,10 +408,16 @@ mod tests {
                 &searchable,
             )
             .expect("bind call");
-        let result = execute_batch(&catalog, &[bound], sandbox, &permissions, "turn-a")
-            .await
-            .pop()
-            .expect("tool result");
+        let result = execute_batch(
+            &catalog,
+            &[bound],
+            Arc::clone(&sandbox),
+            &permissions,
+            "turn-a",
+        )
+        .await
+        .pop()
+        .expect("tool result");
 
         assert!(!result.is_error, "{}", result.output);
         assert_eq!(
@@ -427,5 +451,91 @@ mod tests {
                                 && items.iter().all(|item| item.actions.is_empty())
                     )
         ));
+
+        let user = crate::backend::model::user_message("continue the work");
+        let mut input = vec![user.clone()];
+        for source in [SessionStartSource::Startup, SessionStartSource::Resume] {
+            tasks
+                .session_start(&mut SessionStartContext {
+                    runtime: &runtime,
+                    source,
+                    queued_messages: Default::default(),
+                    input: &mut input,
+                    input_changed: false,
+                    stop_reason: None,
+                })
+                .await
+                .expect("restore saved task state");
+            assert_eq!(input.len(), 2, "unchanged task state must not be repeated");
+            assert!(
+                input[1]["content"][0]["text"]
+                    .as_str()
+                    .expect("task text")
+                    .contains("Implement tasks")
+            );
+            crate::backend::model::mark_prompt_cache_breakpoint(&mut input[1]);
+        }
+        input.retain(|item| tasks.retain_compacted_input(item));
+        assert_eq!(input.as_slice(), std::slice::from_ref(&user));
+        let previous_events = frontend_events.lock().expect("events").len();
+        tasks
+            .session_start(&mut SessionStartContext {
+                runtime: &runtime,
+                source: SessionStartSource::Compact,
+                queued_messages: Default::default(),
+                input: &mut input,
+                input_changed: false,
+                stop_reason: None,
+            })
+            .await
+            .expect("restore after compaction");
+        assert_eq!(input.len(), 2);
+        assert_eq!(
+            frontend_events.lock().expect("events").len(),
+            previous_events,
+            "compaction does not repeat widgets"
+        );
+
+        let clear = catalog
+            .bind_call(
+                ToolCall {
+                    call_id: "clear".into(),
+                    name: "write_todos".into(),
+                    arguments: serde_json::json!({"todos": []}),
+                },
+                &searchable,
+                &searchable,
+            )
+            .expect("bind clear");
+        let result = execute_batch(&catalog, &[clear], sandbox, &permissions, "turn-a")
+            .await
+            .pop()
+            .expect("clear result");
+        assert!(!result.is_error, "{}", result.output);
+        assert!(matches!(
+            frontend_events.lock().expect("events").last(),
+            Some(FrontendEvent::RemoveWidget { .. })
+        ));
+        for source in [SessionStartSource::Resume, SessionStartSource::Compact] {
+            if source == SessionStartSource::Compact {
+                input.retain(|item| tasks.retain_compacted_input(item));
+            }
+            tasks
+                .session_start(&mut SessionStartContext {
+                    runtime: &runtime,
+                    source,
+                    queued_messages: Default::default(),
+                    input: &mut input,
+                    input_changed: false,
+                    stop_reason: None,
+                })
+                .await
+                .expect("restore cleared list");
+            let latest = input.last().expect("authoritative empty state")["content"][0]["text"]
+                .as_str()
+                .expect("text");
+            assert!(latest.contains("\n[]\n"));
+            assert!(!latest.contains("Implement tasks"));
+        }
     }
 }

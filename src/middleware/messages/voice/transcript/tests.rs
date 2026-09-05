@@ -153,6 +153,7 @@ async fn voice_transcript_is_linked_read_only_and_resumes_without_reusing_messag
     assert!(!child.catalog_visible);
     let catalog = checkpoints
         .list_sessions_page(SessionPageRequest {
+            bot_id: None,
             cursor: None,
             limit: 10,
         })

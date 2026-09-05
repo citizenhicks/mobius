@@ -142,6 +142,7 @@ async fn execution_journal_pages_records_and_updates_catalog_stats() {
         .expect("second execution page");
     let catalog = store
         .list_sessions_page(SessionPageRequest {
+            bot_id: None,
             cursor: None,
             limit: 1,
         })

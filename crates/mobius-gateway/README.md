@@ -7,13 +7,26 @@ to exactly one Bot and owns only its canonical workspace and transcript; the
 Bot owns its model, reasoning, capabilities, approval policy, extensions, and
 prompt. The terminal, iPhone, and iPad clients can independently open different
 conversations or subscribe to the same one.
-Chats store enabled optional middleware IDs and generic scalar settings. The gateway advertises
+Bots store enabled optional middleware IDs and generic scalar settings. The gateway advertises
 the ordered middleware catalog plus integer and select control schemas, so terminal and iOS
-clients render new middleware and settings without capability-specific code. New chats enable
+clients render new middleware and settings without capability-specific code. New Bots enable
 attachments, artifacts, context offloading, compaction, scratchpad, and subagents by default;
 tasks, workspace instructions, and extensions start disabled. Context offloading masks successful
 tool output after a 50,000-token trailing window. The gateway always installs sandboxing,
 workspace tools, turn steering, and durable sessions.
+
+Compaction exposes an Automatic or Handoff policy in the same settings UI. Automatic uses the
+provider compaction endpoint when available and otherwise summarizes. Handoff exposes
+`write_handoff` and `new_context`: the model saves a working checkpoint and continues in the
+same chat with a fresh context. The existing 250,000-token threshold requests that handoff,
+clamped to leave room on smaller models. Bounded recovery restricts tools near the limit and
+stops safely if the model cannot complete the transition; an explicit later turn can retry.
+Original messages and tool results remain available through `search_history` and `read_history`.
+
+Policy choices advertise incompatible capabilities in their schemas. Selecting Handoff turns
+off context offloading, and the UI and gateway prevent enabling both. Tasks remain independently
+optional and restore their durable list across every compaction style. Shared scratchpad notes
+remain separate from the chat-local handoff checkpoint.
 
 Install `mobius-cli` to get both the client and gateway commands:
 
@@ -183,9 +196,15 @@ and no active routines, the gateway exits after 72 hours. Stopping it manually a
 work; cron occurrences are not replayed after restart, and intervals catch up at most one overdue
 occurrence.
 
-Swarms are manual groups of Bots with one appointed leader. A Bot belongs to at most one Swarm.
-Inside Swarm Chat, an exact Bot `@handle` routes work to that Bot's durable hidden participant
-conversation for this Swarm; later messages reuse it. `@user` creates a durable Swarm attention
-notification without opening or injecting a visible user chat. See [Bots and context](BOTS.md)
-for the context boundaries, Bot-to-Bot routing, routines, subagents, scratchpads, and escalation
-rules.
+Swarms are optional manual groups of Bots with one appointed leader. In each Bot's
+capability settings, choose `bots.collaboration = swarm` to opt in; the default is
+`off`. The generic settings UI renders this choice from the Bots manifest. Disabled
+Bots retain their saved membership and pending messages, but do not receive Swarm
+work. Bot profiles, ordinary chats, and self-routines remain independent.
+
+Inside Swarm Chat, an exact enabled Bot `@handle` routes work to its durable hidden
+participant conversation; later messages reuse it. `@user` creates a durable
+attention notification without opening or injecting a visible user chat. Routine
+results stay in routine history unless the running Bot explicitly posts to the
+Swarm. See [Bots and context](BOTS.md) for history recovery, compaction handoffs,
+shared scratchpad knowledge, task lists, subagents, and escalation rules.

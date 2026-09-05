@@ -87,6 +87,7 @@ struct ScriptedModel {
 }
 
 struct RecordedRequest {
+    allow_hosted_tools: bool,
     instructions: String,
     input: Vec<Value>,
     tools: Vec<ToolDefinition>,
@@ -172,6 +173,7 @@ impl Model for ScriptedModel {
                 .lock()
                 .expect("requests")
                 .push(RecordedRequest {
+                    allow_hosted_tools: request.allow_hosted_tools,
                     instructions: request.instructions.into(),
                     input: request.input.to_vec(),
                     tools: request.tools.to_vec(),

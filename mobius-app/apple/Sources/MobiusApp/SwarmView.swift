@@ -599,6 +599,11 @@ private struct SwarmBotRow: View {
                 }
                 .font(MobiusStyle.captionFont)
                 .foregroundStyle(palette.muted)
+                if !bot.collaborationEnabled {
+                    Text("Collaboration off")
+                        .font(MobiusStyle.captionFont)
+                        .foregroundStyle(palette.muted)
+                }
             }
             Spacer(minLength: 0)
             if isActive {
