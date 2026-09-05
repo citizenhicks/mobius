@@ -4,8 +4,10 @@
 <dict>
 	<key>MobiusAPNsEnvironment</key>
 	<string>$(APS_ENVIRONMENT)</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Voice chat uses only your microphone; möbius does not request camera access.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Use the microphone to dictate messages into the möbius composer.</string>
+	<string>Use the microphone for voice chats or to dictate messages into the möbius composer.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Use speech recognition to transcribe dictated messages in möbius.</string>
 	<key>NSFaceIDUsageDescription</key>

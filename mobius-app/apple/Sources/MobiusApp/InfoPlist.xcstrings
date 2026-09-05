@@ -47,6 +47,29 @@
         }
       }
     },
+    "NSCameraUsageDescription" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Voice chat uses only your microphone; möbius does not request camera access."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Les conversations vocales utilisent uniquement votre microphone ; möbius ne demande pas l’accès à la caméra."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprachchats verwenden nur Ihr Mikrofon; möbius fordert keinen Kamerazugriff an."
+          }
+        }
+      }
+    },
     "NSFaceIDUsageDescription" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -99,19 +122,19 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Use the microphone to dictate messages into the möbius composer."
+            "value" : "Use the microphone for voice chats or to dictate messages into the möbius composer."
           }
         },
         "fr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Utilisez le microphone pour dicter des messages dans le champ de rédaction de möbius."
+            "value" : "Utilisez le microphone pour les conversations vocales ou pour dicter des messages dans le champ de rédaction de möbius."
           }
         },
         "de" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Verwenden Sie das Mikrofon, um Nachrichten in das möbius-Eingabefeld zu diktieren."
+            "value" : "Verwenden Sie das Mikrofon für Sprachchats oder um Nachrichten in das möbius-Eingabefeld zu diktieren."
           }
         }
       }
