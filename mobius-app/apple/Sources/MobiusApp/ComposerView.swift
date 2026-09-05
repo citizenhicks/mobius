@@ -71,7 +71,10 @@ private struct RealtimeVoiceComposer: View {
                 Button {
                     voice.isMuted.toggle()
                 } label: {
-                    MobiusLabel(title: voice.isMuted ? "Unmute" : "Mute", glyph: .micOff01)
+                    MobiusLabel(
+                        title: voice.isMuted ? "Unmute" : "Mute",
+                        glyph: voice.isMuted ? .micOff01 : .mic01
+                    )
                 }
                 .buttonStyle(MobiusIconButtonStyle(prominent: voice.isMuted, bare: true))
                 .accessibilityValue(voice.isMuted ? "Microphone muted" : "Microphone on")

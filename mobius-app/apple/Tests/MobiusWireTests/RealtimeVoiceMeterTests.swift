@@ -138,6 +138,10 @@ extension AppModelTests {
         model.realtimeVoice.updateAudioLevels(Mobius.RealtimeAudioLevels())
         XCTAssertEqual(model.realtimeVoice.levelFlare, 0)
         capture(await show(.light), name: "voice-silent")
+        model.realtimeVoice.isMuted = true
+        capture(await show(.light), name: "voice-muted")
+        model.realtimeVoice.isMuted = false
+        capture(await show(.light), name: "voice-unmuted")
         settle(Mobius.RealtimeAudioLevels(microphone: 0, playback: 0.81))
         capture(await show(.light), name: "voice-light-bot")
         settle(Mobius.RealtimeAudioLevels(microphone: 0.36, playback: 0))
