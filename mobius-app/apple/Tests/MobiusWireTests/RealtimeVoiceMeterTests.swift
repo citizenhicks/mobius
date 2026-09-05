@@ -86,6 +86,7 @@ extension AppModelTests {
                 .modifier(Mobius.MobiusTheme())
                 .environment(model)
                 .environment(\.colorScheme, scheme)
+                .environment(\.scenePhase, .active)
             let host = UIHostingController(rootView: content)
             host.overrideUserInterfaceStyle = scheme == .dark ? .dark : .light
             host.view.backgroundColor = UIColor(Mobius.MobiusPalette(scheme).canvas)
@@ -123,6 +124,10 @@ extension AppModelTests {
         let microphone = await show(.light)
         XCTAssertTrue(inputs(in: microphone).isEmpty)
         capture(microphone, name: "voice-light-microphone")
+        try await Task.sleep(for: .milliseconds(250))
+        capture(microphone, name: "voice-light-microphone-moving")
+        model.realtimeVoice.updateAudioLevels(Mobius.RealtimeAudioLevels())
+        capture(await show(.light), name: "voice-silent")
         model.realtimeVoice.updateAudioLevels(Mobius.RealtimeAudioLevels(microphone: 0, playback: 0.81))
         capture(await show(.light), name: "voice-light-bot")
         model.realtimeVoice.updateAudioLevels(Mobius.RealtimeAudioLevels(microphone: 0.36, playback: 0))

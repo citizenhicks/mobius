@@ -1,0 +1,1 @@
+Fixes client-version rejections for Astra models through signed-in Codex. The provider now uses the audited upstream client version 0.153.4 for its HTTP and WebSocket requests, restoring direct model responses and private voice task resolution.

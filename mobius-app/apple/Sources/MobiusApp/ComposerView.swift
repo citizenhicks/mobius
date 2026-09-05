@@ -60,7 +60,7 @@ private struct RealtimeVoiceComposer: View {
             .frame(maxWidth: .infinity)
             .padding(.horizontal, MobiusSpace.l)
             .padding(.top, MobiusSpace.m)
-            .animation(reduceMotion ? nil : .linear(duration: 0.1), value: voice.audioLevels.displayLevel)
+            .animation(reduceMotion ? nil : .smooth(duration: 0.18), value: voice.audioLevels.displayLevel)
             .accessibilityHidden(true)
 
             HStack {
@@ -95,10 +95,22 @@ private struct RealtimeVoiceComposer: View {
 @Animatable
 private struct AudioLevelEqualizer: View {
     @AnimatableIgnored @Environment(\.colorScheme) private var colorScheme
+    @AnimatableIgnored @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AnimatableIgnored @Environment(\.scenePhase) private var scenePhase
     var amplitude: Double
     @AnimatableIgnored var playbackColor: Color?
 
     var body: some View {
+        TimelineView(.animation(
+            minimumInterval: 1.0 / 60.0,
+            paused: reduceMotion || scenePhase != .active || amplitude == 0
+        )) { _ in
+            let time = reduceMotion || scenePhase != .active ? 0 : ProcessInfo.processInfo.systemUptime
+            particles(at: time)
+        }
+    }
+
+    private func particles(at time: Double) -> some View {
         Canvas(rendersAsynchronously: true) { context, size in
             for lane in 0..<13 {
                 let offset = Double(lane - 6) / 6
@@ -109,12 +121,15 @@ private struct AudioLevelEqualizer: View {
                     let x = Double(column) / 64
                     let centered = x * 2 - 1
                     let envelope = pow(max(0, 1 - centered * centered), 0.7)
-                    let wave = 0.45 + 0.55 * pow(cos(centered * .pi * 2.5), 2)
-                    let spread = 3 + amplitude * size.height * 0.44 * envelope * wave
-                    let ripple = sin(centered * .pi * 3 + offset * 0.7) * amplitude * envelope * 5
+                    // Stable phases and speeds let each dot drift without frame-to-frame randomness.
+                    let phase = Double(column) * 2.39996 + Double(lane) * 3.88322
+                    let drift = sin(time * (1.8 + 0.6 * sin(phase)) + phase)
+                    let spread = 3 + amplitude * size.height * 0.34 * envelope
+                    let ripple = drift * amplitude * envelope * size.height * 0.12
+                    let sway = cos(time * 1.3 + phase) * amplitude * envelope * 1.5
                     let radius = (0.75 + 0.7 * depth) * (0.55 + 0.45 * envelope)
                     let rect = CGRect(
-                        x: x * (size.width - 4) + 2 - radius,
+                        x: x * (size.width - 4) + 2 + sway - radius,
                         y: size.height / 2 + offset * spread + ripple - radius,
                         width: radius * 2, height: radius * 2
                     )

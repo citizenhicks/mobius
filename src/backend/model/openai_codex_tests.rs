@@ -73,7 +73,8 @@ async fn codex_requests_include_session_and_thread_identity() {
         .authorize_http(false, Some("session-123"))
         .await
         .expect("compaction authorization");
-    assert_eq!(header(&compact, "version"), Some(CODEX_COMPAT_VERSION));
+    assert_eq!(header(&compact, "version"), Some("0.153.4"));
+    assert_eq!(header(&compact, "originator"), Some("mobius"));
     assert_eq!(header(&compact, "session-id"), Some("session-123"));
     assert_eq!(header(&compact, "thread-id"), Some("session-123"));
     assert_eq!(header(&compact, "x-client-request-id"), None);
@@ -83,6 +84,7 @@ async fn codex_requests_include_session_and_thread_identity() {
         .authorize_http(true, Some("session-123"))
         .await
         .expect("Responses authorization");
+    assert_eq!(header(&responses, "version"), Some("0.153.4"));
     assert_eq!(
         header(&responses, "x-client-request-id"),
         Some("session-123")
@@ -93,7 +95,8 @@ async fn codex_requests_include_session_and_thread_identity() {
         .authorize_websocket("session-123")
         .await
         .expect("WebSocket authorization");
-    assert_eq!(header(&websocket, "version"), Some(CODEX_COMPAT_VERSION));
+    assert_eq!(header(&websocket, "version"), Some("0.153.4"));
+    assert_eq!(header(&websocket, "originator"), Some("mobius"));
     assert_eq!(header(&websocket, "session-id"), Some("session-123"));
     assert_eq!(header(&websocket, "thread-id"), Some("session-123"));
     assert_eq!(

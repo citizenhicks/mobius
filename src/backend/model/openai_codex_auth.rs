@@ -48,8 +48,8 @@ use crate::Error;
 use crate::Result;
 
 // ChatGPT feature-gates Codex models and transports by this wire-client version.
-// Keep it aligned with the audited upstream Codex release.
-const CODEX_COMPAT_VERSION: &str = "0.149.1";
+// Audited against openai/codex rust-v0.153.4 (Astra requires at least 0.153.0).
+const CODEX_COMPAT_VERSION: &str = "0.153.4";
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const AUTHORIZE_URL: &str = "https://auth.openai.com/oauth/authorize";
 const TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
