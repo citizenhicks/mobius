@@ -240,6 +240,7 @@ async fn mention_delivery_uses_the_bots_private_swarm_conversation() {
     let source_session_id = source.session_id().to_owned();
     let original_target_session_id = target.session_id().to_owned();
     let swarm = Arc::clone(&gateway.state.lock().await.swarm);
+    let checkpoints = Arc::clone(&gateway.state.lock().await.checkpoints);
     let text = format!("@{} please review the parser", target_bot.handle);
     let post = swarm
         .post(&source_bot.id, &source_session_id, text.clone(), None)
@@ -261,12 +262,15 @@ async fn mention_delivery_uses_the_bots_private_swarm_conversation() {
                 .into_iter()
                 .find(|entry| entry.id == post.entry.id)
                 .expect("posted entry");
-            if let Some(session_id) = entry.assigned_recipient_session_ids.get(&target_bot.id) {
-                let page = gateway
-                    .state
-                    .lock()
+            // Delivery reserves the session ID before creating its checkpoint.
+            if let Some(session_id) = entry.assigned_recipient_session_ids.get(&target_bot.id)
+                && checkpoints
+                    .load(session_id)
                     .await
-                    .checkpoints
+                    .expect("load target")
+                    .is_some()
+            {
+                let page = checkpoints
                     .event_page(
                         session_id,
                         EventPageRequest {
