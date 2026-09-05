@@ -1038,6 +1038,7 @@ mod tests {
                 message_id: "message".into(),
                 session_id: "peer".into(),
                 handle: "worker".into(),
+                symbol: None,
             },
             delivery: crate::protocol::MessageDelivery::Turn,
             text: "done".into(),

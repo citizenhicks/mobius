@@ -347,3 +347,83 @@ async fn completed_pre_model_effects_are_settled_when_a_later_hook_fails() {
             .any(|item| internal_message_kind(item) == Some("settled"))
     );
 }
+
+#[tokio::test]
+async fn capability_frontend_sink_does_not_keep_a_stopped_agent_alive() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
+        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3")).expect("checkpoints"),
+    );
+    let agent = create_agent(config(workspace.path(), checkpoints, "weak-frontend"))
+        .await
+        .expect("agent");
+    let frontend = agent.frontend_sink();
+    let (sender, mut events) = agent.into_recorded_parts();
+    drop(sender);
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while events.recv().await.is_some() {}
+    })
+    .await
+    .expect("external frontend sink must not retain the event recorder");
+    assert!(
+        frontend(crate::protocol::FrontendEvent::RemoveWidget {
+            capability: "test".into(),
+            id: "test".into(),
+        })
+        .is_err()
+    );
+}
+
+#[tokio::test]
+async fn retained_agent_closes_its_event_stream_after_a_fatal_routing_error() {
+    struct FailingMessages;
+    impl Middleware for FailingMessages {
+        fn name(&self) -> &'static str {
+            "failing_messages"
+        }
+        fn handles_messages(&self) -> bool {
+            true
+        }
+        fn route_message(
+            &self,
+            _context: &mut crate::middleware::MessageRouteContext<'_>,
+        ) -> Result<crate::middleware::SubmissionResult> {
+            Err(Error::Stopped("message routing failed".into()))
+        }
+    }
+    let workspace = tempfile::tempdir().expect("workspace");
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
+        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3")).expect("checkpoints"),
+    );
+    let mut config = config(workspace.path(), checkpoints, "retained-agent");
+    config.middleware = MiddlewareStack::new(vec![Arc::new(FailingMessages)]).expect("middleware");
+    let mut agent = create_agent(config).await.expect("agent");
+    let frontend = agent.frontend_sink();
+    agent
+        .sender()
+        .submit(user_op("trigger error"))
+        .expect("submit");
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while let Some(event) = agent.next_event().await {
+            if matches!(event.msg, EventMsg::Error(_)) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("runner reports failure");
+    assert!(agent.sender().submit(user_op("runner is gone")).is_err());
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), agent.next_event())
+            .await
+            .expect("retaining Agent must not retain the recorder")
+            .is_none()
+    );
+    assert!(
+        frontend(FrontendEvent::RemoveWidget {
+            capability: "test".into(),
+            id: "test".into()
+        })
+        .is_err()
+    );
+}

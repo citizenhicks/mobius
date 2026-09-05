@@ -154,6 +154,7 @@ impl Default for AgentComposition {
                     .first()
                     .expect("default provider web-search manifest"),
             },
+            realtime_voice: None,
             middleware: crate::middleware_manifest::default_config(),
             extensions: BTreeSet::new(),
             system_prompt: DEFAULT_SYSTEM_PROMPT.into(),

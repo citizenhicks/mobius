@@ -1,10 +1,17 @@
 //! Ephemeral voice calls belong to the authenticated connection that opened them.
 
-use mobius::backend::model::{RealtimeVoiceCall, RealtimeVoiceEvent, RealtimeVoiceRequest};
-use mobius::middleware::messages::voice::{INSTRUCTIONS, VoiceConversation, handoff_tool};
-use mobius::protocol::EventMsg;
-use tokio::sync::{broadcast, mpsc};
-use tokio::task::JoinHandle;
+use std::collections::VecDeque;
+
+use mobius::backend::model::{
+    RealtimeVoiceCall, RealtimeVoiceCommand, RealtimeVoiceEvent, RealtimeVoiceRequest,
+};
+use mobius::middleware::messages::voice::transcript::VoiceTranscript;
+use mobius::middleware::messages::voice::{
+    VoiceConversation, handoff_tool, instructions, progress, reject_handoff, resolve_task,
+};
+use mobius::protocol::{EventMsg, TokenUsage};
+use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::task::{JoinHandle, JoinSet};
 
 use super::*;
 
@@ -13,6 +20,7 @@ pub(super) struct ConnectionVoice {
     pub(super) voice_id: String,
     updates: mpsc::Receiver<ServerMessage>,
     task: JoinHandle<()>,
+    stop: Option<oneshot::Sender<()>>,
 }
 
 impl ConnectionVoice {
@@ -21,28 +29,41 @@ impl ConnectionVoice {
         let (updates, receiver) = mpsc::channel(2);
         let id = request_id.clone();
         let session = session_id.clone();
+        let (stop, stopped) = oneshot::channel();
         let task = tokio::spawn(async move {
             let mut events = host.subscribe();
             let started = async {
                 let lease = host.claim_realtime_voice().map_err(rejected)?;
                 let model = host.realtime_model().await.map_err(rejected)?;
+                let transcript = VoiceTranscript::open(
+                    Arc::clone(&model.checkpoints),
+                    &session,
+                    Arc::clone(&model.frontend),
+                )
+                .await?;
+                let parent =
+                    model.checkpoints.load(&session).await?.ok_or_else(|| {
+                        Error::Protocol("voice parent session disappeared".into())
+                    })?;
+                let voice_context = transcript.task_context().await?;
                 let call = model
                     .router
                     .start_realtime_voice(
                         &model.route,
                         RealtimeVoiceRequest {
                             session_id: session.clone(),
+                            voice: model.voice.clone(),
                             offer_sdp,
-                            instructions: INSTRUCTIONS.into(),
+                            instructions: instructions(&parent, &voice_context),
                             handoff_tool: handoff_tool(),
                         },
                     )
                     .await?;
-                Ok::<_, Error>((lease, model, call))
+                Ok::<_, Error>((lease, model, call, transcript))
             }
             .await;
             match started {
-                Ok((_lease, model, mut call)) => {
+                Ok((_lease, model, mut call, mut transcript)) => {
                     if updates
                         .send(ServerMessage::RealtimeVoiceStarted {
                             request_id: id.clone(),
@@ -55,7 +76,15 @@ impl ConnectionVoice {
                     {
                         return;
                     }
-                    let result = drive(&host, &model, &mut call, &mut events).await;
+                    let result = drive(
+                        &host,
+                        &model,
+                        &mut call,
+                        &mut transcript,
+                        &mut events,
+                        stopped,
+                    )
+                    .await;
                     let _ = updates
                         .send(ServerMessage::RealtimeVoiceEnded {
                             session_id: session,
@@ -80,18 +109,29 @@ impl ConnectionVoice {
             voice_id: request_id,
             updates: receiver,
             task,
+            stop: Some(stop),
         }
     }
 
     pub(super) async fn stop(&mut self) {
-        self.task.abort();
-        let _ = (&mut self.task).await;
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        if tokio::time::timeout(Duration::from_secs(5), &mut self.task)
+            .await
+            .is_err()
+        {
+            self.task.abort();
+            let _ = (&mut self.task).await;
+        }
     }
 }
 
 impl Drop for ConnectionVoice {
     fn drop(&mut self) {
-        self.task.abort();
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
     }
 }
 
@@ -207,19 +247,54 @@ async fn drive(
     host: &HostHandle,
     model: &crate::host::RealtimeModel,
     call: &mut RealtimeVoiceCall,
+    transcript: &mut VoiceTranscript,
     events: &mut broadcast::Receiver<ServerFrame>,
+    stopped: oneshot::Receiver<()>,
 ) -> Result<()> {
-    let mut conversation = VoiceConversation::new(model.active_turn_id.clone());
+    let mut conversation =
+        VoiceConversation::new(transcript.session_id().into(), model.active_turn_id.clone());
+    let result = drive_conversation(
+        host,
+        model,
+        call,
+        transcript,
+        events,
+        &mut conversation,
+        stopped,
+    )
+    .await;
+    let finalized = tokio::time::timeout(Duration::from_secs(4), async {
+        transcript.finish().await?;
+        Ok::<_, Error>(())
+    })
+    .await
+    .map_err(|_| Error::Protocol("voice transcript finalization timed out".into()))?;
+    result.and(finalized)
+}
+
+async fn drive_conversation(
+    host: &HostHandle,
+    model: &crate::host::RealtimeModel,
+    call: &mut RealtimeVoiceCall,
+    transcript: &mut VoiceTranscript,
+    events: &mut broadcast::Receiver<ServerFrame>,
+    conversation: &mut VoiceConversation,
+    mut stopped: oneshot::Receiver<()>,
+) -> Result<()> {
+    let mut pending = VecDeque::new();
+    let mut resolving = JoinSet::new();
     loop {
+        start_next_task(&mut resolving, &mut pending, model, host.session_id());
         let replies = tokio::select! {
             biased;
             () = host.wait_terminated() => return Ok(()),
+            _ = &mut stopped => return Ok(()),
             event = events.recv() => {
                 let frame = event.map_err(|_| Error::Protocol("voice lost its conversation event stream".into()))?;
                 match frame.message {
                     ServerMessage::SessionChanged { .. } => {
                         let current = host.realtime_model().await.map_err(rejected)?;
-                        if !Arc::ptr_eq(&model.router, &current.router) || model.route != current.route {
+                        if !Arc::ptr_eq(&model.router, &current.router) || model.route != current.route || model.voice != current.voice {
                             return Ok(());
                         }
                         Vec::new()
@@ -228,21 +303,44 @@ async fn drive(
                         if matches!(&record.event.msg, EventMsg::ModelChanged(current) if current.route != model.route) {
                             return Ok(());
                         }
-                        conversation.observe(&record.event)
+                        let mut commands = conversation.observe(&record.event);
+                        if let Some(update) = progress(&record.event.msg) { commands.insert(0, update); }
+                        commands
                     }
                     ServerMessage::Error { fatal: true, message, .. } => return Err(Error::Protocol(message)),
                     _ => Vec::new(),
                 }
             }
+            resolved = resolving.join_next(), if !resolving.is_empty() => {
+                let (id, result) = resolved
+                    .ok_or_else(|| Error::Protocol("voice task extraction disappeared".into()))?
+                    .map_err(|error| Error::Protocol(format!("voice task extraction stopped: {error}")))?;
+                match result {
+                    Ok((text, usage)) => {
+                        host.observe_voice_usage(model.provider_instance.clone(), usage).await.map_err(rejected)?;
+                        submit_handoff(host, conversation, id, text).await?
+                    }
+                    Err(error) => vec![reject_handoff(id, &error.to_string())],
+                }
+            }
             event = call.events.recv() => {
                 let Some(event) = event else { return Ok(()) };
                 match event? {
-                    RealtimeVoiceEvent::Handoff { id, text } => {
-                        let Some(submission) = conversation.handoff(id, text)? else { continue };
-                        let submission_id = submission.id.clone();
-                        match host.submit(submission).await {
-                            Ok(()) => Vec::new(),
-                            Err(rejection) => conversation.reject(&submission_id, &rejection.message).into_iter().collect(),
+                    RealtimeVoiceEvent::Transcript { id, role, text, complete } => {
+                        transcript.record(&id, role, &text, complete).await?;
+                        Vec::new()
+                    }
+                    RealtimeVoiceEvent::Handoff { id, text, needs_context } => {
+                        if !needs_context {
+                            submit_handoff(host, conversation, id, text).await?
+                        } else if pending.len() + resolving.len() >= 32 {
+                            vec![reject_handoff(id, "Too many pending voice requests. Please wait for the Bot's results.")]
+                        } else {
+                            // Final speech prunes old deltas, so a journal cursor cannot freeze context.
+                            pending.push_back(PendingVoiceTask {
+                                id, text, context: transcript.task_context().await?,
+                            });
+                            Vec::new()
                         }
                     }
                     RealtimeVoiceEvent::Usage(usage) => {
@@ -262,3 +360,58 @@ async fn drive(
         }
     }
 }
+
+struct PendingVoiceTask {
+    id: String,
+    text: String,
+    context: String,
+}
+
+fn start_next_task(
+    resolving: &mut JoinSet<(String, Result<(String, TokenUsage)>)>,
+    pending: &mut VecDeque<PendingVoiceTask>,
+    model: &crate::host::RealtimeModel,
+    parent_id: &str,
+) {
+    if !resolving.is_empty() {
+        return;
+    }
+    let Some(task) = pending.pop_front() else {
+        return;
+    };
+    let checkpoints = Arc::clone(&model.checkpoints);
+    let router = Arc::clone(&model.router);
+    let route = model.route.clone();
+    let parent_id = parent_id.to_owned();
+    resolving.spawn(async move {
+        let result = async {
+            let parent = checkpoints
+                .load(&parent_id)
+                .await?
+                .ok_or_else(|| Error::Protocol("voice parent session disappeared".into()))?;
+            Ok(resolve_task(&router, &route, &parent, &task.context, &task.text).await?)
+        }
+        .await;
+        (task.id, result)
+    });
+}
+
+async fn submit_handoff(
+    host: &HostHandle,
+    conversation: &mut VoiceConversation,
+    id: String,
+    text: String,
+) -> Result<Vec<RealtimeVoiceCommand>> {
+    let Some(submission) = conversation.handoff(id, text)? else {
+        return Ok(Vec::new());
+    };
+    let submission_id = submission.id.clone();
+    Ok(match host.submit(submission).await {
+        Ok(()) => Vec::new(),
+        Err(rejection) => conversation.reject(&submission_id, &rejection.message),
+    })
+}
+
+#[cfg(test)]
+#[path = "voice_tests.rs"]
+mod tests;

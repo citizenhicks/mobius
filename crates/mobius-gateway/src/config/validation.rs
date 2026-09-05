@@ -14,6 +14,15 @@ pub fn validate_agent_composition(config: &AgentComposition) -> Result<()> {
     }
     crate::extensions::validate_ids(&config.extensions)?;
     validate_provider_config(&config.provider)?;
+    if let Some(voice) = config.realtime_voice.as_deref()
+        && !provider(&config.provider.provider)?
+            .realtime_voices(config.provider.base_url.as_deref())
+            .contains(&voice)
+    {
+        return Err(Error::Config(
+            "the selected voice is not supported by this provider".into(),
+        ));
+    }
     crate::middleware_manifest::validate(&config.middleware)
 }
 

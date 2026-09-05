@@ -422,13 +422,15 @@ enum FrontendPreviewUpdate: String, Decodable, Sendable {
 
 struct RenderedEventRecord: Decodable, Sendable {
     let recordedAtMs: Int64
+    let submissionId: String?
     let event: JSONValue
     let blocks: [RenderedBlock]
 }
 
 extension RenderedEventRecord {
-    init(event: JSONValue, blocks: [RenderedBlock], recordedAtMs: Int64 = 0) {
+    init(event: JSONValue, blocks: [RenderedBlock], recordedAtMs: Int64 = 0, submissionId: String? = nil) {
         self.recordedAtMs = recordedAtMs
+        self.submissionId = submissionId
         self.event = event
         self.blocks = blocks
     }
@@ -436,8 +438,9 @@ extension RenderedEventRecord {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: DynamicCodingKey.self)
         recordedAtMs = try container.decode(Int64.self, forKey: "recordedAtMs")
+        submissionId = try container.decodeIfPresent(String.self, forKey: "submissionId")
         let event = try container.decode(JSONValue.self, forKey: "event")
-        try AgentEventRecord.validate(event)
+        try AgentEventRecord.validate(event, submissionId: submissionId)
         self.event = event
         blocks = try container.decode([RenderedBlock].self, forKey: "blocks")
     }

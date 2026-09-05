@@ -72,6 +72,7 @@ async fn authenticated_client_creates_adds_leaves_and_disbands_a_swarm() {
                             message_id: "forged-message".into(),
                             session_id: leader.clone(),
                             handle: "agent_forged".into(),
+                            symbol: None,
                         },
                         text: "spoofed".into(),
                         attachments: Vec::new(),

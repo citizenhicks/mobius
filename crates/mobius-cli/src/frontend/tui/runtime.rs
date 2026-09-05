@@ -669,8 +669,14 @@ async fn interrupt_active_turn(sender: &GatewaySender, session_id: &str, state: 
 }
 
 async fn send_and_report(sender: &GatewaySender, session_id: &str, op: Op, state: &mut TuiState) {
-    if let Err(error) = send_op(sender, session_id, op).await {
-        state.push(error.to_string(), TranscriptTone::Error);
+    let requests_preview = matches!(op, Op::CapabilityCommand { .. });
+    if requests_preview {
+        state.preview_request_id = None;
+    }
+    match send_op(sender, session_id, op).await {
+        Ok(id) if requests_preview => state.preview_request_id = Some(id),
+        Ok(_) => {}
+        Err(error) => state.push(error.to_string(), TranscriptTone::Error),
     }
 }
 
@@ -1019,16 +1025,15 @@ async fn send_op(
     sender: &mobius_gateway::client::GatewaySender,
     session_id: &str,
     op: Op,
-) -> Result<()> {
+) -> Result<String> {
+    let id = Uuid::new_v4().to_string();
     sender
         .send(ClientMessage::Submit {
             session_id: session_id.into(),
-            submission: Submission {
-                id: Uuid::new_v4().to_string(),
-                op,
-            },
+            submission: Submission { id: id.clone(), op },
         })
         .await
+        .map(|()| id)
         .map_err(|error| Error::Stopped(error.to_string()))
 }
 

@@ -9,7 +9,7 @@ extension AppModelTests {
         let model = try model { await recorder.record($0) }
         let config = composition()
         var status = providerStatus(for: config.provider)
-        status.supportsRealtimeVoice = true
+        status.realtimeVoices = ["marin", "cedar"]
         model.providerStatuses = [status]
         model.providerInstances = [ProviderInstance(
             label: "Work", tint: .blue, configured: true, selection: config.provider,
@@ -35,14 +35,104 @@ extension AppModelTests {
         model.providerInstances[0].configured = false
         XCTAssertFalse(model.selectedRouteSupportsRealtimeVoice)
         model.providerInstances[0].configured = true
-        model.providerStatuses[0].supportsRealtimeVoice = false
+        model.providerStatuses[0].realtimeVoices = []
         XCTAssertFalse(model.selectedRouteSupportsRealtimeVoice)
-        model.providerStatuses[0].supportsRealtimeVoice = true
+        model.providerStatuses[0].realtimeVoices = ["marin", "cedar"]
         model.selectedModelRoute = "unknown"
         XCTAssertFalse(model.selectedRouteSupportsRealtimeVoice)
         model.selectedModelRoute = "voice-route"
         model.modelProviders["voice-route"] = "other-instance"
         XCTAssertFalse(model.selectedRouteSupportsRealtimeVoice)
+    }
+
+    func testBotVoiceSelectionUsesEligibleCatalogAndSurvivesConfigurationCoding() throws {
+        let model = try voiceModel()
+        var config = composition()
+        config.realtimeVoice = "cedar"
+        XCTAssertEqual(model.realtimeVoices(for: config), ["marin", "cedar"])
+        XCTAssertEqual(model.draft(config, selectingModelRoute: "voice-route")?.realtimeVoice, "cedar")
+
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let data = try encoder.encode(config)
+        XCTAssertEqual(try decoder.decode(AgentComposition.self, from: data), config)
+
+        model.providerStatuses[0].realtimeVoices = ["marin"]
+        XCTAssertNil(model.draft(config, selectingModelRoute: "voice-route")?.realtimeVoice)
+        model.modelChoices = [ModelChoice(
+            route: "voice-route", group: "Work", model: config.provider.model,
+            reasoningEffort: config.provider.reasoningEffort, contextWindow: nil,
+            supportsImageInput: true, toolDiscovery: .native
+        )]
+        XCTAssertTrue(model.realtimeVoices(for: config).isEmpty)
+    }
+
+    func testVoicePillOpensLiveIsolatedTranscriptWithoutEndingCall() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model { await recorder.record($0) }
+        model.selectedSessionID = "chat-1"
+        let call = RealtimeVoiceCall(requestID: "call", sessionID: "chat-1")
+        model.realtimeVoiceCall = call
+        let widget = MountedWidget(capability: "messages", widget: FrontendWidget(
+            id: "voice", slot: .composerFooter, text: "Voice", tone: "neutral", symbol: "voice",
+            iconOnly: true, progress: nil, content: nil,
+            action: .capabilityCommand(
+                capability: "messages", command: "voice", arguments: "", input: nil, target: nil
+            )
+        ))
+        model.submitWidget(widget)
+        let request = await recorder.firstRequest(after: 0) {
+            if case .submit = $0 { true } else { false }
+        }
+        guard case .submit("chat-1", let submission) = try XCTUnwrap(request) else {
+            return XCTFail("Expected the existing capability command flow")
+        }
+        func preview(_ events: [RenderedEventRecord]) -> RenderedPreview {
+            RenderedPreview(
+                id: "voice-chat", title: "voice agent", subtitle: "", pageId: "latest",
+                update: .replace, events: events, next: nil
+            )
+        }
+        let draft = RenderedEventRecord(
+            event: .object(["type": .string("message_delta"), "text": .string("Hello")]),
+            blocks: [], submissionId: "spoken-1"
+        )
+        model.reduce(
+            event: AgentEventRecord(submissionId: submission.id, msg: .object(["type": .string("frontend")])),
+            blocks: [], preview: preview([draft])
+        )
+        let draftID = try XCTUnwrap(model.presentedPreview?.entries.first?.id)
+        XCTAssertEqual(model.presentedPreview?.entries.first?.pending, true)
+        XCTAssertEqual(model.presentedPreview?.entries.first?.text, "Hello")
+        XCTAssertNil(model.previewWidgetRequestID)
+        model.apply(RenderedPreview(
+            id: "voice-chat", title: "voice agent", subtitle: "", pageId: "earlier",
+            update: .prepend, events: [RenderedEventRecord(
+                event: testMessageEvent(text: "Earlier discussion"), blocks: [], submissionId: "spoken-0"
+            )], next: nil
+        ), selection: nil)
+
+        let finals = [
+            RenderedEventRecord(event: testMessageEvent(text: "Hello!"), blocks: [], submissionId: "spoken-1"),
+            RenderedEventRecord(event: testAssistantMessage(
+                turnID: "spoken-reply", modelStepID: "spoken-reply", text: "Hi there!"
+            ), blocks: [])
+        ]
+        model.reduce(
+            event: AgentEventRecord(submissionId: nil, msg: .object(["type": .string("frontend")])),
+            blocks: [], preview: preview(finals)
+        )
+        XCTAssertEqual(model.presentedPreview?.entries.map(\.text), ["Earlier discussion", "Hello!", "Hi there!"])
+        XCTAssertEqual(model.presentedPreview?.entries[1].id, draftID)
+        XCTAssertNil(model.presentedPreview?.next)
+        XCTAssertTrue(try XCTUnwrap(model.presentedPreview).entries.allSatisfy { !$0.pending })
+        XCTAssertTrue(model.transcript.isEmpty)
+        XCTAssertEqual(model.sessionRunCount, 0)
+        XCTAssertEqual(model.realtimeVoiceCall, call)
+        model.stopRealtimeVoice(notifyGateway: false)
+        XCTAssertEqual(model.presentedPreview?.entries.map(\.text), ["Earlier discussion", "Hello!", "Hi there!"])
     }
 
     func testNewVoiceChatWaitsForWorkspaceBotAndSessionReplay() async throws {

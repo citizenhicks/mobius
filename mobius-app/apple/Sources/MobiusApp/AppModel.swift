@@ -415,6 +415,7 @@ final class AppModel {
     @ObservationIgnored var historyRequestID: String?
     @ObservationIgnored var nextHistoryBeforeSequence: UInt64?
     @ObservationIgnored var previewSelections: [String: FrontendPickerOption] = [:]
+    @ObservationIgnored var previewWidgetRequestID: String?
     @ObservationIgnored var previewPageRequestID: String?
     @ObservationIgnored var appIsInBackground = true
     @ObservationIgnored var remoteNotificationDeviceToken: String?
@@ -887,10 +888,21 @@ final class AppModel {
 
     func markSessionRead(_ sessionID: String) {
         unreadSessionIDs.remove(sessionID)
+        saveSessionReadCursor(sessionID, unread: false)
+    }
+
+    func markSessionUnread(_ sessionID: String) {
+        unreadSessionIDs.insert(sessionID)
+        saveSessionReadCursor(sessionID, unread: true)
+    }
+
+    private func saveSessionReadCursor(_ sessionID: String, unread: Bool) {
         guard let accountID = selectedAccountID,
               let session = sessions.first(where: { $0.sessionId == sessionID })
         else { return }
-        let cursor = sessionReadCursor(for: session)
+        let cursor = unread
+            ? SessionReadCursor(sequence: nil, wasActive: session.activity.state != .idle)
+            : sessionReadCursor(for: session)
         guard sessionReadCursors?[sessionID] != cursor else { return }
         var cursors = sessionReadCursors ?? [:]
         cursors[sessionID] = cursor

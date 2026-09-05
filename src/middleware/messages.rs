@@ -7,13 +7,14 @@ use super::manifest::{
     MiddlewareSettingManifest,
 };
 use super::{
-    ActiveCommandContext, MessageRouteContext, Middleware, SessionStartContext, SessionStartSource,
-    SubmissionResult,
+    ActiveCommandContext, MessageRouteContext, Middleware, MiddlewareCommandContext,
+    MiddlewareCommandOutput, SessionStartContext, SessionStartSource, SubmissionResult,
 };
 use crate::backend::checkpoint::QueuedMessageBoundary;
 use crate::protocol::{
-    ActiveMessageDelivery, EventMsg, FrontendEvent, FrontendSlot, FrontendSymbol, FrontendTone,
-    FrontendWidget, MAX_CAPABILITY_INPUT_BYTES, MessageAuthor, MessageDelivery, MessageEvent, Op,
+    ActiveMessageDelivery, EventMsg, FrontendCommand, FrontendContribution, FrontendEvent,
+    FrontendSlot, FrontendSymbol, FrontendTone, FrontendWidget, MAX_CAPABILITY_INPUT_BYTES,
+    MessageAuthor, MessageDelivery, MessageEvent, Op,
 };
 use crate::{BoxFuture, Error, Result};
 
@@ -185,6 +186,41 @@ impl Middleware for Messages {
         MANIFEST.id
     }
 
+    fn frontend(&self) -> FrontendContribution {
+        FrontendContribution {
+            capability: self.name().into(),
+            commands: vec![FrontendCommand {
+                name: voice::transcript::COMMAND.into(),
+                arguments: String::new(),
+                description: "Open the voice transcript".into(),
+                requires_idle: false,
+            }],
+            ..FrontendContribution::default()
+        }
+    }
+
+    fn command<'a>(
+        &'a self,
+        context: MiddlewareCommandContext<'a>,
+    ) -> BoxFuture<'a, Result<MiddlewareCommandOutput>> {
+        Box::pin(async move {
+            if context.command != voice::transcript::COMMAND {
+                return Err(Error::Unknown(format!(
+                    "messages command `{}`",
+                    context.command
+                )));
+            }
+            Ok(MiddlewareCommandOutput::events(vec![
+                voice::transcript::read_preview(
+                    context.checkpoints.as_ref(),
+                    context.session_id,
+                    context.arguments,
+                )
+                .await?,
+            ]))
+        })
+    }
+
     fn handles_messages(&self) -> bool {
         true
     }
@@ -231,6 +267,21 @@ impl Middleware for Messages {
         context: &'a mut ActiveCommandContext<'_>,
     ) -> BoxFuture<'a, Result<Option<SubmissionResult>>> {
         Box::pin(async move {
+            if context.command == voice::transcript::COMMAND {
+                let result = voice::transcript::read_preview(
+                    context.checkpoints,
+                    context.session_id,
+                    context.arguments,
+                )
+                .await;
+                return Ok(Some(match result {
+                    Ok(event) => {
+                        context.events.push(EventMsg::Frontend(event));
+                        SubmissionResult::Handled
+                    }
+                    Err(error) => SubmissionResult::Rejected(error.to_string()),
+                }));
+            }
             if context.command != EDIT_COMMAND {
                 return Ok(None);
             }
@@ -280,6 +331,14 @@ impl Middleware for Messages {
             }
             for queued in context.queued_messages().views() {
                 (context.runtime.frontend)(self.queued_widget(queued.id(), &queued.event()))?;
+            }
+            if let Some(widget) = voice::transcript::restore_widget(
+                context.runtime.checkpoints.as_ref(),
+                &context.runtime.session_id,
+            )
+            .await?
+            {
+                (context.runtime.frontend)(widget)?;
             }
             Ok(())
         })
@@ -424,11 +483,17 @@ mod tests {
         route(&stack, &mut queued, &message, Some("turn-1"));
         let mut events = Vec::new();
         let metadata = BTreeMap::new();
+        let directory = tempfile::tempdir().expect("checkpoint directory");
+        let checkpoints = crate::backend::checkpoint::sqlite::SqliteCheckpoint::new(
+            directory.path().join("checkpoints.sqlite3"),
+        )
+        .expect("checkpoint store");
 
         stack
             .active_command(
                 MANIFEST.id,
                 &mut ActiveCommandContext {
+                    checkpoints: &checkpoints,
                     submission_id: "message-2",
                     session_id: "session-1",
                     metadata: &metadata,
@@ -463,6 +528,7 @@ mod tests {
                 message_id: "board-1".into(),
                 session_id: "peer-1".into(),
                 handle: "worker".into(),
+                symbol: None,
             },
             text: "review this".into(),
             attachments: Vec::new(),

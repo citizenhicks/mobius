@@ -151,6 +151,12 @@ pub enum MessageDelivery {
     Queue,
 }
 
+/// Incremental user text; the enclosing submission ID identifies the eventual message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageDeltaEvent {
+    pub text: String,
+}
+
 /// One accepted conversation message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MessageEvent {

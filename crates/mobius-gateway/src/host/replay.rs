@@ -103,6 +103,7 @@ pub(super) fn render_preview(
         events: flatten_preview(events)
             .into_iter()
             .map(|event| RenderedEvent {
+                submission_id: event.submission_id,
                 blocks: frontend.render(&event.event),
                 recorded_at_ms: event.recorded_at_ms,
                 event: event.event,
@@ -184,11 +185,13 @@ pub(super) fn flatten_preview_event(
     flattened: &mut Vec<FrontendPreviewEvent>,
 ) {
     let recorded_at_ms = event.recorded_at_ms;
+    let submission_id = event.submission_id;
     match event.event {
         EventMsg::SessionHistory(history) => {
             for nested in history.events {
                 flatten_preview_event(
                     FrontendPreviewEvent {
+                        submission_id: submission_id.clone(),
                         recorded_at_ms,
                         event: nested,
                     },
@@ -203,6 +206,7 @@ pub(super) fn flatten_preview_event(
             | FrontendEvent::Preview { .. },
         ) => {}
         event => flattened.push(FrontendPreviewEvent {
+            submission_id,
             recorded_at_ms,
             event,
         }),

@@ -155,6 +155,7 @@
 		F20000000000000000000005 /* SwiftStreamingMarkdown in Frameworks */ = {isa = PBXBuildFile; productRef = 800000000000000000000001 /* SwiftStreamingMarkdown */; };
 		F20000000000000000000006 /* WebRTC-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000006 /* WebRTC-LICENSE.txt */; };
 		F20000000000000000000104 /* AppModelRealtimeVoiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000104 /* AppModelRealtimeVoiceTests.swift */; };
+		F20000000000000000000105 /* RealtimeVoiceMeterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000105 /* RealtimeVoiceMeterTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -278,6 +279,7 @@
 		F10000000000000000000103 /* MessageSpeaker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageSpeaker.swift; sourceTree = "<group>"; };
 		F10000000000000000000006 /* WebRTC-LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "WebRTC-LICENSE.txt"; sourceTree = "<group>"; };
 		F10000000000000000000104 /* AppModelRealtimeVoiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelRealtimeVoiceTests.swift; sourceTree = "<group>"; };
+		F10000000000000000000105 /* RealtimeVoiceMeterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealtimeVoiceMeterTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -424,6 +426,7 @@
 				A10000000000000000000001 /* AppModelAttachmentTests.swift */,
 				A10000000000000000000002 /* AppModelCapabilitiesTests.swift */,
 				F10000000000000000000104 /* AppModelRealtimeVoiceTests.swift */,
+				F10000000000000000000105 /* RealtimeVoiceMeterTests.swift */,
 				A10000000000000000000003 /* AppModelComposerEditTests.swift */,
 				A10000000000000000000004 /* AppModelConfigurationTests.swift */,
 				A10000000000000000000005 /* AppModelDraftTests.swift */,
@@ -659,6 +662,7 @@
 				A20000000000000000000001 /* AppModelAttachmentTests.swift in Sources */,
 				A20000000000000000000002 /* AppModelCapabilitiesTests.swift in Sources */,
 				F20000000000000000000104 /* AppModelRealtimeVoiceTests.swift in Sources */,
+				F20000000000000000000105 /* RealtimeVoiceMeterTests.swift in Sources */,
 				A20000000000000000000003 /* AppModelComposerEditTests.swift in Sources */,
 				A20000000000000000000004 /* AppModelConfigurationTests.swift in Sources */,
 				A20000000000000000000005 /* AppModelDraftTests.swift in Sources */,
@@ -840,7 +844,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				CODE_SIGN_ENTITLEMENTS = Sources/MobiusApp/MobiusApp.entitlements;
-				CURRENT_PROJECT_VERSION = 296;
+				CURRENT_PROJECT_VERSION = 297;
 				DEVELOPMENT_TEAM = 3T68GZFAR6;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -878,7 +882,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				CODE_SIGN_ENTITLEMENTS = Sources/MobiusApp/MobiusApp.entitlements;
-				CURRENT_PROJECT_VERSION = 296;
+				CURRENT_PROJECT_VERSION = 297;
 				DEVELOPMENT_TEAM = 3T68GZFAR6;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Sources/MobiusApp/Info.plist;

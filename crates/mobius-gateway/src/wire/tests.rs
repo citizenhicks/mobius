@@ -291,6 +291,7 @@ fn rendered_preview_round_trip_preserves_page_metadata_and_continuation() {
         page_id: "/root/reviewer:before-51".into(),
         update: FrontendPreviewUpdate::Prepend,
         events: vec![RenderedEvent {
+            submission_id: Some("message-1".into()),
             recorded_at_ms: 42,
             event: EventMsg::ContextCompacted,
             blocks: Vec::new(),
@@ -311,6 +312,7 @@ fn rendered_preview_round_trip_preserves_page_metadata_and_continuation() {
     assert_eq!(encoded["update"], "prepend");
     assert_eq!(encoded["page_id"], "/root/reviewer:before-51");
     assert_eq!(encoded["events"][0]["recorded_at_ms"], 42);
+    assert_eq!(encoded["events"][0]["submission_id"], "message-1");
     assert_eq!(actual, expected);
 }
 

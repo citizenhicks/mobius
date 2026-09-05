@@ -183,7 +183,8 @@ final class TranscriptProjectionTests: XCTestCase {
                 author: .peer(
                     messageID: "bot-message",
                     sessionID: "session-1",
-                    handle: "researcher"
+                    handle: "researcher",
+                    symbol: nil
                 ),
                 delivery: .turn
             )

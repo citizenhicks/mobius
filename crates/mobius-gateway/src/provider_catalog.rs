@@ -184,8 +184,9 @@ pub(crate) fn catalog_routes(
                         preset.map_or(DEFAULT_CONTEXT_WINDOW, |preset| preset.context_window),
                     ),
                     supports_image_input: definition.supports_image_input(),
-                    supports_realtime_voice: definition
-                        .supports_realtime_voice(selection.base_url.as_deref()),
+                    supports_realtime_voice: !definition
+                        .realtime_voices(selection.base_url.as_deref())
+                        .is_empty(),
                     tool_discovery: definition.tool_discovery(model, selection.base_url.as_deref()),
                 },
                 provider,
@@ -281,7 +282,11 @@ fn provider_status(definition: &ProviderDefinition) -> ProviderStatus {
             .collect(),
         tool_discovery: definition.default_tool_discovery(),
         custom_endpoint_tool_discovery: definition.custom_endpoint_tool_discovery(),
-        supports_realtime_voice: definition.supports_realtime_voice(None),
+        realtime_voices: definition
+            .realtime_voices(None)
+            .iter()
+            .map(|voice| (*voice).into())
+            .collect(),
     }
 }
 
@@ -312,6 +317,22 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn provider_status_advertises_the_transport_voice_catalog() {
+        let status = provider_status(provider("openai_socket").expect("provider"));
+        assert_eq!(
+            status.realtime_voices.first().map(String::as_str),
+            Some("marin")
+        );
+        assert!(status.realtime_voices.iter().any(|voice| voice == "cedar"));
+        let codex = provider_status(provider("openai_codex").expect("provider"));
+        assert_eq!(
+            codex.realtime_voices.first().map(String::as_str),
+            Some("cove")
+        );
+        assert!(!codex.realtime_voices.iter().any(|voice| voice == "cedar"));
     }
 
     #[test]
@@ -352,6 +373,7 @@ mod tests {
         assert_eq!(custom.tool_discovery, ToolDiscoveryMode::Rebuild);
 
         let openrouter = provider_status(provider("openrouter").expect("provider"));
+        assert!(openrouter.realtime_voices.is_empty());
         assert!(openrouter.models.is_empty());
         assert!(openrouter.model_ids_configurable);
         assert_eq!(

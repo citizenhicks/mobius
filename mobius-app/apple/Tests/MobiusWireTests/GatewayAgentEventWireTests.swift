@@ -2,6 +2,27 @@ import Foundation
 import XCTest
 
 extension GatewayWireTests {
+    func testMessageDeltaRequiresItsStableSubmissionIdentity() throws {
+        let fixture = #"{"version":69,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1234,"event":{"submission_id":"spoken-1","msg":{"type":"message_delta","text":"Hello"}},"stream_metrics":[],"blocks":[],"preview":null}}"#
+        guard case .agentEvent(_, let record) = try decodeEnvelope(fixture) else {
+            return XCTFail("Expected spoken input delta")
+        }
+        XCTAssertEqual(record.event.submissionId, "spoken-1")
+        XCTAssertEqual(record.event.msg["text"]?.stringValue, "Hello")
+        XCTAssertThrowsError(try decodeEnvelope(fixture.replacingOccurrences(
+            of: #""submission_id":"spoken-1","#, with: ""
+        )))
+        let previewEvent = #"{"recorded_at_ms":1234,"submission_id":"spoken-1","event":{"type":"message_delta","text":"Hello"},"blocks":[]}"#
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        XCTAssertEqual(try decoder.decode(
+            RenderedEventRecord.self, from: Data(previewEvent.utf8)
+        ).submissionId, "spoken-1")
+        XCTAssertThrowsError(try decoder.decode(RenderedEventRecord.self, from: Data(
+            previewEvent.replacingOccurrences(of: #""submission_id":"spoken-1","#, with: "").utf8
+        )))
+    }
+
     func testSubmissionRejectedRequiresMessage() throws {
         let fixture = #"{"version":55,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1234,"event":{"submission_id":"input-1","msg":{"type":"submission_rejected","message":"Message queue is full"}},"stream_metrics":[],"blocks":[],"preview":null}}"#
         guard case .agentEvent(_, let record) = try decodeEnvelope(fixture) else {

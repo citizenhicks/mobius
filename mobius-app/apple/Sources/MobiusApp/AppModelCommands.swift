@@ -427,7 +427,9 @@ extension AppModel {
     func openSession(_ sessionID: String) {
         cancelVoiceChatIntent()
         if selectedSessionID != sessionID { stopRealtimeVoice() }
-        guard canOpenSession, sessionID != selectedSessionID else { return }
+        guard canOpenSession || sessionID == selectedSessionID else { return }
+        markSessionRead(sessionID)
+        guard sessionID != selectedSessionID else { return }
         let generation = UUID()
         transcriptLoadGeneration = generation
         let accountID = selectedAccountID
@@ -1413,7 +1415,10 @@ extension AppModel {
     func submitWidget(_ mounted: MountedWidget) {
         guard let sessionID = selectedSessionID, let action = mounted.widget.action else { return }
         let id = requestID("widget")
-        transmit(.submit(sessionID: sessionID, submission: Submission(id: id, op: action)))
+        previewWidgetRequestID = id
+        transmit(.submit(sessionID: sessionID, submission: Submission(id: id, op: action))) { [weak self] _ in
+            if self?.previewWidgetRequestID == id { self?.previewWidgetRequestID = nil }
+        }
     }
 
     func submitMessageAction(_ mounted: MountedWidget, target: MessageTarget) {

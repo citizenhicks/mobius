@@ -68,7 +68,9 @@ struct MobiusBadge: View {
         }
         .font(MobiusStyle.badgeFont)
         .foregroundStyle(foreground)
-        .padding(.horizontal, MobiusSpace.m)
+        .padding(.horizontal, text.isEmpty && progress == nil && glyph != nil
+            ? (MobiusStyle.badgeHeight - MobiusStyle.glyphInline) / 2
+            : MobiusSpace.m)
         .frame(height: MobiusStyle.badgeHeight)
         .mobiusGlass(in: Capsule(), interactive: interactive, prominent: selected)
     }

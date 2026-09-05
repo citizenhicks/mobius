@@ -58,7 +58,11 @@ fn status(provider: &str) -> ProviderStatus {
         symbol: FrontendSymbol::Storage,
         description: format!("{provider} provider"),
         model_ids_configurable,
-        supports_realtime_voice: false,
+        realtime_voices: if matches!(provider, "openai_socket" | "responses") {
+            vec!["marin".into(), "cedar".into()]
+        } else {
+            Vec::new()
+        },
         auth,
         default_base_url,
         default_api_key_env,
@@ -445,6 +449,51 @@ fn hosted_search_is_selected_only_from_the_gateway_manifest() {
             .provider
             .web_search,
         HostedWebSearch::Off
+    );
+}
+
+#[test]
+fn provider_setup_preserves_only_a_voice_advertised_for_the_selected_endpoint() {
+    let selectable = state(SetupMode::Login, "openai_socket", true);
+    let mut current = selectable.original.clone();
+    current.provider.provider = "responses".into();
+    current.realtime_voice = Some("cedar".into());
+    assert_eq!(
+        selectable
+            .agent_composition(&current)
+            .expect("shared voice")
+            .realtime_voice
+            .as_deref(),
+        Some("cedar")
+    );
+
+    current.provider.provider = "openai_codex".into();
+    current.realtime_voice = Some("cove".into());
+    assert!(
+        selectable
+            .agent_composition(&current)
+            .expect("different voice catalog")
+            .realtime_voice
+            .is_none()
+    );
+
+    let unsupported = state(SetupMode::Login, "kimi", true);
+    assert!(
+        unsupported
+            .agent_composition(&current)
+            .expect("different provider")
+            .realtime_voice
+            .is_none()
+    );
+
+    let mut custom = state(SetupMode::Login, "responses", true);
+    custom.endpoint = "http://localhost:11434/v1".into();
+    assert!(
+        custom
+            .agent_composition(&current)
+            .expect("custom endpoint")
+            .realtime_voice
+            .is_none()
     );
 }
 

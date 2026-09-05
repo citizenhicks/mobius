@@ -23,7 +23,7 @@ extension AppModel {
               let instance = providerInstances.first(where: { $0.instance == instanceID }),
               instance.configured
         else { return false }
-        return providerStatus(forInstance: instanceID)?.supportsRealtimeVoice == true
+        return providerStatus(forInstance: instanceID)?.realtimeVoices.isEmpty == false
     }
 
     var canStartRealtimeVoice: Bool {

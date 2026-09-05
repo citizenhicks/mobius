@@ -16,7 +16,7 @@ pub(super) fn recorded(
         sequence: 1,
         recorded_at_ms: 0,
         event: Event {
-            submission_id: None,
+            submission_id: preview.as_ref().map(|_| "preview-request".into()),
             msg: event,
         },
         stream_metrics: Vec::new(),
@@ -44,6 +44,7 @@ pub(super) fn preview_record(
             events: messages
                 .iter()
                 .map(|message| RenderedEvent {
+                    submission_id: None,
                     recorded_at_ms: 0,
                     event: EventMsg::Message(MessageEvent {
                         author: MessageAuthor::User,

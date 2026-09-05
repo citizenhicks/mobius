@@ -538,6 +538,7 @@ fn peer_submission(session_id: &str, agent_path: &str, text: String) -> MessageS
             message_id: Uuid::new_v4().to_string(),
             session_id: session_id.into(),
             handle: agent_path.rsplit('/').next().unwrap_or(agent_path).into(),
+            symbol: None,
         },
         text,
         attachments: Vec::new(),

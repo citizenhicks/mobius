@@ -28,12 +28,24 @@ const START_TIMEOUT: Duration = Duration::from_secs(30);
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const CALL_TIMEOUT: Duration = Duration::from_secs(3_600);
 
+pub(super) const VOICES: &[&str] = &[
+    "marin", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "cedar",
+];
+
+// AVAS/FramelessBidi uses upstream's V3 transport with the ChatGPT (v1) voice family.
+// Its quicksilver=v2 header is not the separate public Realtime V2 protocol.
+pub(super) const CODEX_VOICES: &[&str] = &[
+    "cove", "juniper", "maple", "spruce", "ember", "vale", "breeze", "arbor", "sol",
+];
+
 type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// Frontend SDP and gateway-owned instructions for one voice call.
 pub struct RealtimeVoiceRequest {
     pub session_id: String,
+    /// A provider-advertised voice, or `None` for its default.
+    pub voice: Option<String>,
     pub offer_sdp: String,
     pub instructions: String,
     pub handoff_tool: ToolDefinition,
@@ -70,15 +82,31 @@ impl RealtimeVoiceCall {
 
 /// The coding agent's response to one normalized voice handoff.
 pub enum RealtimeVoiceCommand {
-    Reply { handoff_id: String, text: String },
+    Reply {
+        handoff_id: String,
+        text: String,
+    },
+    /// Background Bot context or progress; it must not initiate a voice response.
+    Context {
+        text: String,
+    },
 }
 
 /// Provider-normalized handoffs and usage for one voice call.
 #[derive(Debug, PartialEq, Eq)]
 pub enum RealtimeVoiceEvent {
+    /// Incremental speech text, followed by its authoritative complete transcript.
+    Transcript {
+        id: String,
+        role: crate::protocol::ConversationRole,
+        text: String,
+        complete: bool,
+    },
     Handoff {
         id: String,
         text: String,
+        /// The provider supplied an utterance that needs its private conversation context.
+        needs_context: bool,
     },
     /// Provider-reported tokens, without a local estimate of audio pricing.
     Usage(TokenUsage),
@@ -136,6 +164,13 @@ impl RealtimeTransport {
         validate_sdp(&request.offer_sdp)?;
         validate_text(&request.instructions, MAX_TEXT_BYTES, "voice instructions")?;
         validate_text(&request.handoff_tool.name, 128, "voice tool name")?;
+        if let Some(voice) = request.voice.as_deref()
+            && !self.voices().contains(&voice)
+        {
+            return Err(invalid(
+                "the selected voice is not supported by this provider",
+            ));
+        }
         let session = self.session(&request);
         let (body, content_type) = match self.api {
             VoiceApi::Codex => (
@@ -193,16 +228,24 @@ impl RealtimeTransport {
         RealtimeVoiceCall::new(answer_sdp, commands, events, cancel)
     }
 
+    fn voices(&self) -> &'static [&'static str] {
+        match self.api {
+            VoiceApi::OpenAi => VOICES,
+            VoiceApi::Codex => CODEX_VOICES,
+        }
+    }
+
     fn session(&self, request: &RealtimeVoiceRequest) -> Value {
+        let voice = request.voice.as_deref().unwrap_or(self.voices()[0]);
         if self.api == VoiceApi::Codex {
             // AVAS owns native delegation; public Realtime tool/session fields do not apply.
             return json!({"model":"gpt-live-1-codex","instructions":request.instructions,
-                "audio":{"output":{"voice":"cove"}},"delegation":{"type":"client"}});
+                "audio":{"output":{"voice":voice}},"delegation":{"type":"client"}});
         }
-        json!({"type":"realtime","model":"gpt-realtime-2.1","instructions":request.instructions,
+        json!({"type":"realtime","model":"gpt-realtime-2.1-mini","instructions":request.instructions,
             "audio":{"input":{"transcription":{"model":"gpt-live-transcribe"},
                 "turn_detection":{"type":"server_vad","create_response":true,"interrupt_response":true}},
-                "output":{"voice":"marin"}},
+                "output":{"voice":voice}},
             "tools":[{"type":"function","name":request.handoff_tool.name,"description":request.handoff_tool.description,"parameters":request.handoff_tool.parameters}],
             "tool_choice":"auto"
         })
@@ -431,20 +474,30 @@ async fn drive(
                 let mut next = Some(command);
                 // Several handoffs may share one coding reply; append every output before speaking.
                 for index in 0..COMMAND_CAPACITY {
-                    let Some(RealtimeVoiceCommand::Reply { handoff_id, text }) = next else { break; };
-                    validate_text(&text, MAX_TEXT_BYTES, "voice reply")?;
-                    if !turns.reply_pending.remove(&handoff_id) { return Err(invalid("voice reply has no pending handoff")); }
-                    if api == VoiceApi::Codex {
-                        let mut remaining = text.as_str();
-                        while !remaining.is_empty() {
-                            let mut end = remaining.len().min(500);
-                            while !remaining.is_char_boundary(end) { end -= 1; }
-                            send(socket, json!({"type":"delegation.context.append","delegation_item_id":handoff_id,"channel":"speakable","content":[{"type":"input_text","text":&remaining[..end]}]})).await?;
-                            remaining = &remaining[end..];
+                    let Some(command) = next else { break; };
+                    match command {
+                        RealtimeVoiceCommand::Context { text } => {
+                            validate_text(&text, MAX_TEXT_BYTES, "voice context")?;
+                            if api == VoiceApi::Codex {
+                                for chunk in context_chunks(&text) {
+                                    send(socket, json!({"type":"session.context.append","channel":"commentary","content":[{"type":"input_text","text":chunk}]})).await?;
+                                }
+                            } else {
+                                send(socket, json!({"type":"conversation.item.create","item":{"type":"message","role":"system","content":[{"type":"input_text","text":text}]}})).await?;
+                            }
                         }
-                    } else {
-                        send(socket, json!({"type":"conversation.item.create","item":{"type":"function_call_output","call_id":handoff_id,"output":text}})).await?;
-                        turns.reply_ready = true;
+                        RealtimeVoiceCommand::Reply { handoff_id, text } => {
+                            validate_text(&text, MAX_TEXT_BYTES, "voice reply")?;
+                            if !turns.reply_pending.remove(&handoff_id) { return Err(invalid("voice reply has no pending handoff")); }
+                            if api == VoiceApi::Codex {
+                                for chunk in context_chunks(&text) {
+                                    send(socket, json!({"type":"delegation.context.append","delegation_item_id":handoff_id,"channel":"speakable","content":[{"type":"input_text","text":chunk}]})).await?;
+                                }
+                            } else {
+                                send(socket, json!({"type":"conversation.item.create","item":{"type":"function_call_output","call_id":handoff_id,"output":text}})).await?;
+                                turns.reply_ready = true;
+                            }
+                        }
                     }
                     next = if index + 1 < COMMAND_CAPACITY { commands.try_recv().ok() } else { None };
                 }
@@ -475,6 +528,19 @@ async fn drive(
     }
 }
 
+fn context_chunks(mut text: &str) -> Vec<&str> {
+    let mut chunks = Vec::new();
+    while !text.is_empty() {
+        let mut end = text.len().min(500);
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        chunks.push(&text[..end]);
+        text = &text[end..];
+    }
+    chunks
+}
+
 #[derive(Default)]
 enum ResponseState {
     #[default]
@@ -484,16 +550,24 @@ enum ResponseState {
 }
 
 #[derive(Default)]
+struct TranscriptState {
+    text: String,
+    complete: bool,
+}
+
+#[derive(Default)]
 struct VoiceTurns {
-    latest_input: Option<String>,
     response: ResponseState,
     reply_ready: bool,
-    transcripts: BTreeMap<String, String>,
-    response_inputs: BTreeMap<String, String>,
-    handoffs: BTreeMap<String, String>,
     emitted: BTreeSet<String>,
     reply_pending: BTreeSet<String>,
     usage_recorded: BTreeSet<(&'static str, String, u64)>,
+    streams: BTreeMap<String, TranscriptState>,
+    seen_events: BTreeSet<String>,
+    codex_input: Option<String>,
+    codex_output: Option<String>,
+    codex_counter: u64,
+    codex_completed_turns: BTreeSet<String>,
 }
 
 impl VoiceTurns {
@@ -504,111 +578,303 @@ impl VoiceTurns {
         event: &Value,
     ) -> Result<Vec<RealtimeVoiceEvent>> {
         let mut events = Vec::new();
-        match event.get("type").and_then(Value::as_str) {
-            Some("error" | "conversation.item.input_audio_transcription.failed") => {
-                return Err(invalid(&super::openai::response_error(event)));
+        if let Some(id) = event.get("event_id").and_then(Value::as_str) {
+            validate_text(id, 256, "voice event identity")?;
+            if !self.seen_events.insert(id.into()) {
+                return Ok(events);
             }
-            Some("delegation.created") if api == VoiceApi::Codex => {
+            if self.seen_events.len() > MAX_TURNS * 64 {
+                return Err(invalid("voice call exceeded its event limit"));
+            }
+        }
+        if matches!(
+            event["type"].as_str(),
+            Some("error" | "conversation.item.input_audio_transcription.failed")
+        ) {
+            return Err(invalid(&super::openai::response_error(event)));
+        }
+        match api {
+            VoiceApi::OpenAi => self.observe_public(tool, event, &mut events)?,
+            VoiceApi::Codex => self.observe_codex(event, &mut events)?,
+        }
+        if self.streams.len() > MAX_TURNS * 2 || self.codex_completed_turns.len() > MAX_TURNS * 2 {
+            return Err(invalid("voice call exceeded its turn limit"));
+        }
+        Ok(events)
+    }
+
+    fn observe_public(
+        &mut self,
+        tool: &str,
+        event: &Value,
+        events: &mut Vec<RealtimeVoiceEvent>,
+    ) -> Result<()> {
+        use crate::protocol::ConversationRole;
+        match event["type"].as_str() {
+            Some("response.created") => {
+                let id = field(&event["response"], "id")?;
+                self.response = ResponseState::Active(id.into());
+            }
+            Some("conversation.item.input_audio_transcription.delta") => {
+                let id = field(event, "item_id")?;
+                self.transcript(
+                    id,
+                    ConversationRole::User,
+                    transcript_field(event, "delta")?,
+                    false,
+                    events,
+                )?;
+            }
+            Some("conversation.item.input_audio_transcription.completed") => {
+                let id = field(event, "item_id")?;
+                let text = transcript_field(event, "transcript")?;
+                self.transcript(id, ConversationRole::User, text, true, events)?;
+                if event["usage"]["type"] == "tokens" {
+                    let index = event["content_index"]
+                        .as_u64()
+                        .ok_or_else(|| invalid("voice transcription omitted its content index"))?;
+                    self.record_usage(("transcript", id.into(), index), &event["usage"], events)?;
+                }
+            }
+            Some("response.output_audio_transcript.delta" | "response.output_text.delta") => {
+                self.public_output(event, false, events)?;
+            }
+            Some("response.output_audio_transcript.done" | "response.output_text.done") => {
+                self.public_output(event, true, events)?;
+            }
+            Some("response.done") => self.public_response_done(tool, event, events)?,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn public_output(
+        &mut self,
+        event: &Value,
+        complete: bool,
+        events: &mut Vec<RealtimeVoiceEvent>,
+    ) -> Result<()> {
+        let item = field(event, "item_id")?;
+        let index = event["content_index"]
+            .as_u64()
+            .ok_or_else(|| invalid("voice output omitted content index"))?;
+        let id = format!("{item}:{index}");
+        let key = if !complete {
+            "delta"
+        } else if event["type"] == "response.output_text.done" {
+            "text"
+        } else {
+            "transcript"
+        };
+        self.transcript(
+            &id,
+            crate::protocol::ConversationRole::Assistant,
+            transcript_field(event, key)?,
+            complete,
+            events,
+        )
+    }
+
+    fn public_response_done(
+        &mut self,
+        tool: &str,
+        event: &Value,
+        events: &mut Vec<RealtimeVoiceEvent>,
+    ) -> Result<()> {
+        let response = &event["response"];
+        let id = field(response, "id")?;
+        if matches!(&self.response, ResponseState::Active(active) if active == id) {
+            self.response = ResponseState::Idle;
+        }
+        if let Some(usage) = response.get("usage").filter(|usage| !usage.is_null()) {
+            self.record_usage(("response", id.into(), 0), usage, events)?;
+        }
+        for output in response["output"].as_array().into_iter().flatten() {
+            if output["type"] == "function_call"
+                && output["name"] == tool
+                && response["status"] == "completed"
+            {
+                #[derive(serde::Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Task {
+                    text: String,
+                }
+                let arguments = output["arguments"]
+                    .as_str()
+                    .ok_or_else(|| invalid("voice handoff omitted its task arguments"))?;
+                let task: Task = serde_json::from_str(arguments)
+                    .map_err(|_| invalid("voice handoff omitted its complete task text"))?;
+                if let Some(event) = self.emit(field(output, "call_id")?, &task.text, false)? {
+                    events.push(event);
+                }
+            } else if output["type"] == "message" && output["role"] == "assistant" {
+                let item = field(output, "id")?;
+                for (index, part) in output["content"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .enumerate()
+                {
+                    let key = match part["type"].as_str() {
+                        Some("output_audio" | "audio") => "transcript",
+                        Some("output_text" | "text") => "text",
+                        _ => continue,
+                    };
+                    if let Some(text) = part.get(key).and_then(Value::as_str) {
+                        self.transcript(
+                            &format!("{item}:{index}"),
+                            crate::protocol::ConversationRole::Assistant,
+                            text,
+                            true,
+                            events,
+                        )?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn codex_id(&mut self, user: bool) -> String {
+        self.codex_counter += 1;
+        format!(
+            "codex-{}-{}",
+            if user { "user" } else { "assistant" },
+            self.codex_counter
+        )
+    }
+
+    fn observe_codex(&mut self, event: &Value, events: &mut Vec<RealtimeVoiceEvent>) -> Result<()> {
+        use crate::protocol::ConversationRole;
+        match event["type"].as_str() {
+            Some("input_transcript.added") => {
+                let id = self
+                    .codex_input
+                    .clone()
+                    .unwrap_or_else(|| self.codex_id(true));
+                self.codex_input = Some(id.clone());
+                self.transcript(
+                    &id,
+                    ConversationRole::User,
+                    transcript_field(&event["item"], "text")?,
+                    false,
+                    events,
+                )?;
+            }
+            Some("output_transcript.added") => {
+                let id = self
+                    .codex_output
+                    .clone()
+                    .unwrap_or_else(|| self.codex_id(false));
+                self.codex_output = Some(id.clone());
+                self.transcript(
+                    &id,
+                    ConversationRole::Assistant,
+                    transcript_field(&event["item"], "text")?,
+                    false,
+                    events,
+                )?;
+            }
+            Some("turn.done") => self.codex_turn_done(event, events)?,
+            Some("delegation.created") => {
                 let item = &event["item"];
                 if item["type"] != "delegation" || item["target"] != "client" {
-                    return Ok(events);
+                    return Ok(());
                 }
                 let id = field(item, "id")?;
-                let content = item["content"]
+                if self.emitted.contains(id) {
+                    return Ok(());
+                }
+                let parts = item["content"]
                     .as_array()
                     .ok_or_else(|| invalid("voice delegation omitted its transcript"))?;
-                let text = content
+                let text = parts
                     .iter()
                     .filter(|part| part["type"] == "input_text")
                     .map(|part| transcript_field(part, "text"))
                     .collect::<Result<Vec<_>>>()?
                     .concat();
-                return Ok(self.emit(id, &text)?.into_iter().collect());
-            }
-            Some("input_audio_buffer.committed") if api == VoiceApi::OpenAi => {
-                self.latest_input = Some(field(event, "item_id")?.into());
-            }
-            Some("response.created") if api == VoiceApi::OpenAi => {
-                let id = field(&event["response"], "id")?;
-                if self.response_inputs.contains_key(id) {
-                    return Ok(events);
-                }
-                self.response = ResponseState::Active(id.into());
-                if let Some(input) = &self.latest_input {
-                    self.response_inputs
-                        .entry(id.into())
-                        .or_insert_with(|| input.clone());
-                }
-            }
-            Some("conversation.item.input_audio_transcription.completed")
-                if api == VoiceApi::OpenAi =>
-            {
-                let id = field(event, "item_id")?;
-                let transcript = transcript_field(event, "transcript")?;
-                // VAD can commit background noise. Empty ASR alone must not end a call.
-                self.transcripts.insert(id.into(), transcript.into());
-                if event["usage"]["type"] == "tokens" {
-                    let index = event["content_index"]
-                        .as_u64()
-                        .ok_or_else(|| invalid("voice transcription omitted its content index"))?;
-                    self.record_usage(
-                        ("transcript", id.into(), index),
-                        &event["usage"],
-                        &mut events,
-                    )?;
-                }
-            }
-            Some("response.done") if api == VoiceApi::OpenAi => {
-                let response = &event["response"];
-                let id = field(response, "id")?;
-                let input = self.response_inputs.get(id).cloned();
-                if matches!(&self.response, ResponseState::Active(active) if active == id) {
-                    self.response = ResponseState::Idle;
-                }
-                if let Some(usage) = response.get("usage").filter(|usage| !usage.is_null()) {
-                    self.record_usage(("response", id.into(), 0), usage, &mut events)?;
-                }
-                if response["status"] == "completed" {
-                    for output in response["output"].as_array().into_iter().flatten() {
-                        if output["type"] == "function_call" && output["name"] == tool {
-                            let input = input
-                                .as_ref()
-                                .ok_or_else(|| invalid("voice handoff has no committed input"))?;
-                            self.handoffs
-                                .insert(field(output, "call_id")?.into(), input.clone());
-                        }
-                    }
+                if let Some(event) = self.emit(id, &text, true)? {
+                    events.push(event);
                 }
             }
             _ => {}
         }
-        if [
-            self.transcripts.len(),
-            self.response_inputs.len(),
-            self.handoffs.len(),
-            self.emitted.len(),
-        ]
-        .into_iter()
-        .any(|size| size > MAX_TURNS)
-        {
-            return Err(invalid("voice call exceeded its turn limit"));
-        }
-        let ready = self
-            .handoffs
-            .iter()
-            .filter_map(|(id, input)| {
-                self.transcripts
-                    .get(input)
-                    .map(|text| (id.clone(), text.clone()))
-            })
-            .collect::<Vec<_>>();
-        for (id, text) in ready {
-            self.handoffs.remove(&id);
-            if let Some(event) = self.emit(&id, &text)? {
-                events.push(event);
+        Ok(())
+    }
+
+    fn codex_turn_done(
+        &mut self,
+        event: &Value,
+        events: &mut Vec<RealtimeVoiceEvent>,
+    ) -> Result<()> {
+        use crate::protocol::ConversationRole;
+        let turn = &event["turn"];
+        let role = match turn["role"].as_str() {
+            Some("user") => ConversationRole::User,
+            Some("assistant") => ConversationRole::Assistant,
+            _ => return Ok(()),
+        };
+        let text = transcript_field(turn, "transcript")?;
+        if let Some(id) = turn.get("id").and_then(Value::as_str) {
+            validate_text(id, 256, "voice turn identity")?;
+            if !self.codex_completed_turns.insert(id.into()) {
+                return Ok(());
             }
         }
-        Ok(events)
+        let id = if role == ConversationRole::User {
+            self.codex_input
+                .take()
+                .unwrap_or_else(|| self.codex_id(true))
+        } else {
+            self.codex_output
+                .take()
+                .unwrap_or_else(|| self.codex_id(false))
+        };
+        self.transcript(&id, role, text, true, events)
+    }
+
+    fn transcript(
+        &mut self,
+        id: &str,
+        role: crate::protocol::ConversationRole,
+        text: &str,
+        complete: bool,
+        events: &mut Vec<RealtimeVoiceEvent>,
+    ) -> Result<()> {
+        validate_text(id, 256, "voice transcript identity")?;
+        if text.len() > MAX_TEXT_BYTES || text.contains('\0') {
+            return Err(invalid("voice transcript exceeded its size limit"));
+        }
+        let stream = self.streams.entry(id.into()).or_default();
+        if stream.complete {
+            return Ok(());
+        }
+        if complete {
+            if !text.trim().is_empty() {
+                stream.text = text.into();
+            }
+            stream.complete = true;
+        } else {
+            if stream.text.len() + text.len() > MAX_TEXT_BYTES {
+                return Err(invalid("voice transcript exceeded its size limit"));
+            }
+            stream.text.push_str(text);
+        }
+        let text = if complete {
+            std::mem::take(&mut stream.text)
+        } else {
+            text.into()
+        };
+        if !text.is_empty() {
+            events.push(RealtimeVoiceEvent::Transcript {
+                id: id.into(),
+                role,
+                text,
+                complete,
+            });
+        }
+        Ok(())
     }
 
     fn take_reply_response(&mut self) -> bool {
@@ -620,7 +886,6 @@ impl VoiceTurns {
             false
         }
     }
-
     fn record_usage(
         &mut self,
         key: (&'static str, String, u64),
@@ -654,7 +919,12 @@ impl VoiceTurns {
         Ok(())
     }
 
-    fn emit(&mut self, id: &str, text: &str) -> Result<Option<RealtimeVoiceEvent>> {
+    fn emit(
+        &mut self,
+        id: &str,
+        text: &str,
+        needs_context: bool,
+    ) -> Result<Option<RealtimeVoiceEvent>> {
         validate_text(id, 256, "voice handoff identity")?;
         validate_text(text, MAX_TEXT_BYTES, "voice transcript")?;
         if self.emitted.contains(id) {
@@ -668,6 +938,7 @@ impl VoiceTurns {
         Ok(Some(RealtimeVoiceEvent::Handoff {
             id: id.into(),
             text: text.into(),
+            needs_context,
         }))
     }
 }

@@ -166,18 +166,15 @@ struct ComposerOptionsView: View {
                     stop: toggleDictation
                 )
             } else {
-                VStack(spacing: MobiusSpace.xs) {
-                    if model.realtimeVoiceCall != nil { realtimeVoiceControls }
-                    // ponytail: overlap 44pt targets by 4pt; split groups if boundary taps misfire.
-                    HStack(spacing: -MobiusSpace.xs) {
-                        if model.attachmentsEnabled { addAttachmentControl }
-                        ForEach(composerSettings) { item in
-                            ComposerSettingMenu(item: item)
-                        }
-                        Spacer(minLength: MobiusSpace.s)
-                        modelMenu
-                        actionButtons
+                // ponytail: overlap 44pt targets by 4pt; split groups if boundary taps misfire.
+                HStack(spacing: -MobiusSpace.xs) {
+                    if model.attachmentsEnabled { addAttachmentControl }
+                    ForEach(composerSettings) { item in
+                        ComposerSettingMenu(item: item)
                     }
+                    Spacer(minLength: MobiusSpace.s)
+                    modelMenu
+                    actionButtons
                 }
             }
         }
@@ -303,16 +300,13 @@ struct ComposerOptionsView: View {
     @ViewBuilder
     private var actionButtons: some View {
         if model.selectedRouteSupportsRealtimeVoice {
-            Button {
-                if model.realtimeVoiceCall == nil { model.startRealtimeVoice() }
-                else { model.stopRealtimeVoice() }
-            } label: {
-                MobiusLabel(title: realtimeVoiceLabel, glyph: .audioWave01)
+            Button { model.startRealtimeVoice() } label: {
+                MobiusLabel(title: "Start voice chat", glyph: .audioWave01)
             }
-            .buttonStyle(MobiusIconButtonStyle(prominent: model.realtimeVoiceCall != nil, bare: true))
+            .buttonStyle(MobiusIconButtonStyle(bare: true))
             .labelStyle(.iconOnly)
-            .disabled(model.realtimeVoiceCall == nil && !model.canStartRealtimeVoice)
-            .help(Text(realtimeVoiceLabel))
+            .disabled(!model.canStartRealtimeVoice)
+            .help("Start voice chat")
         } else {
             Button(action: toggleDictation) {
                 if dictation.isTransitioning {
@@ -518,31 +512,6 @@ struct ComposerOptionsView: View {
         case .connecting, .authenticating, .loading: true
         case .disconnected, .ready, .failed: false
         }
-    }
-
-    private var realtimeVoiceControls: some View {
-        HStack(spacing: MobiusSpace.s) {
-            MobiusLabel(
-                title: model.realtimeVoice.isConnected ? "Voice chat" : "Connecting voice",
-                glyph: .audioWave01
-            )
-            .font(MobiusStyle.badgeFont)
-            .foregroundStyle(palette.muted)
-            Spacer(minLength: MobiusSpace.s)
-            Button {
-                model.realtimeVoice.isMuted.toggle()
-            } label: {
-                Text(model.realtimeVoice.isMuted ? "Unmute" : "Mute")
-            }
-            .buttonStyle(.plain)
-            .frame(minWidth: MobiusStyle.iconButtonSize, minHeight: MobiusStyle.iconButtonSize)
-            .disabled(!model.realtimeVoice.isConnected)
-            .accessibilityValue(model.realtimeVoice.isMuted ? "Microphone muted" : "Microphone on")
-        }
-    }
-
-    private var realtimeVoiceLabel: LocalizedStringResource {
-        model.realtimeVoiceCall == nil ? "Start voice chat" : "End voice chat"
     }
 
     private var canToggleDictation: Bool {

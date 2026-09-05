@@ -687,8 +687,8 @@ private struct TranscriptRow: View {
                 Button(verbatim: bot.name, glyph: .aiScan) {}
                     .disabled(true)
             }
-        } else if isPeer, let handle = entry.messageMetadata?.author.peerFields?.handle {
-            Button(verbatim: handle, glyph: .aiScan) {}
+        } else if isPeer, let peer = entry.messageMetadata?.author.peerFields {
+            Button(verbatim: peer.handle, glyph: peer.symbol.map(MobiusSymbol.glyph(for:)) ?? .aiScan) {}
                 .disabled(true)
         }
     }
@@ -730,7 +730,8 @@ private struct MessageMetadata: View {
     }
 
     private var glyph: MobiusGlyph {
-        switch delivery {
+        if let symbol = author.peerFields?.symbol { return MobiusSymbol.glyph(for: symbol) }
+        return switch delivery {
         case .steer: .workflowSquare03
         case .queue: .queue01
         case .turn: author == .user ? .userFocus : .aiScan

@@ -28,12 +28,102 @@ struct ComposerView: View {
 }
 
 private struct ComposerStack: View {
+    @Environment(AppModel.self) private var model
     let showBotSettings: () -> Void
 
     var body: some View {
         VStack(spacing: MobiusSpace.xs) {
             ComposerActivityView(showBotSettings: showBotSettings)
-            ComposerSurface()
+            if model.realtimeVoiceCall != nil {
+                RealtimeVoiceComposer()
+            } else {
+                ComposerSurface()
+            }
+        }
+    }
+}
+
+private struct RealtimeVoiceComposer: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.mobiusPalette) private var palette
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let voice = model.realtimeVoice
+        VStack(spacing: MobiusSpace.s) {
+            AudioLevelEqualizer(
+                amplitude: sqrt(voice.audioLevels.displayLevel),
+                playbackColor: voice.audioLevels.isPlaybackActive
+                    ? model.selectedBot?.tint.color ?? palette.accent : nil
+            )
+            .frame(height: 104)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, MobiusSpace.l)
+            .padding(.top, MobiusSpace.m)
+            .animation(reduceMotion ? nil : .linear(duration: 0.1), value: voice.audioLevels.displayLevel)
+            .accessibilityHidden(true)
+
+            HStack {
+                Button {
+                    voice.isMuted.toggle()
+                } label: {
+                    MobiusLabel(title: voice.isMuted ? "Unmute" : "Mute", glyph: .micOff01)
+                }
+                .buttonStyle(MobiusIconButtonStyle(prominent: voice.isMuted, bare: true))
+                .accessibilityValue(voice.isMuted ? "Microphone muted" : "Microphone on")
+                Spacer(minLength: MobiusSpace.s)
+                if !voice.isConnected {
+                    Text("Connecting voice")
+                        .font(MobiusStyle.badgeFont)
+                        .foregroundStyle(palette.muted)
+                }
+                Spacer(minLength: MobiusSpace.s)
+                Button("End voice chat", glyph: .stopFill) { model.stopRealtimeVoice() }
+                    .buttonStyle(MobiusIconButtonStyle(bare: true))
+            }
+            .labelStyle(.iconOnly)
+            .padding(.horizontal, MobiusStyle.iconRowPadding)
+            .padding(.bottom, MobiusStyle.iconRowPadding)
+        }
+        .mobiusGlass(in: MobiusStyle.cardShape, interactive: true)
+        .shadow(color: palette.shadow.opacity(0.18), radius: 12, y: 6)
+    }
+
+}
+
+/// The composing orb's shaded particle lanes, opened into a horizontal live-volume field.
+@Animatable
+private struct AudioLevelEqualizer: View {
+    @AnimatableIgnored @Environment(\.colorScheme) private var colorScheme
+    var amplitude: Double
+    @AnimatableIgnored var playbackColor: Color?
+
+    var body: some View {
+        Canvas(rendersAsynchronously: true) { context, size in
+            for lane in 0..<13 {
+                let offset = Double(lane - 6) / 6
+                let depth = 1 - abs(offset)
+                let white = 0.52 - 0.44 * depth
+                let ink = playbackColor ?? MobiusPalette.composingOrbInk(white: white, scheme: colorScheme)
+                for column in 0..<65 {
+                    let x = Double(column) / 64
+                    let centered = x * 2 - 1
+                    let envelope = pow(max(0, 1 - centered * centered), 0.7)
+                    let wave = 0.45 + 0.55 * pow(cos(centered * .pi * 2.5), 2)
+                    let spread = 3 + amplitude * size.height * 0.44 * envelope * wave
+                    let ripple = sin(centered * .pi * 3 + offset * 0.7) * amplitude * envelope * 5
+                    let radius = (0.75 + 0.7 * depth) * (0.55 + 0.45 * envelope)
+                    let rect = CGRect(
+                        x: x * (size.width - 4) + 2 - radius,
+                        y: size.height / 2 + offset * spread + ripple - radius,
+                        width: radius * 2, height: radius * 2
+                    )
+                    context.fill(
+                        Path(ellipseIn: rect),
+                        with: .color(ink.opacity((0.4 + 0.6 * depth) * (0.2 + 0.8 * envelope)))
+                    )
+                }
+            }
         }
     }
 }

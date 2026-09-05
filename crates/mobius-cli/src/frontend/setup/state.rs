@@ -1006,6 +1006,13 @@ impl SetupState {
             reasoning_effort,
             web_search,
         };
+        if config.realtime_voice.as_ref().is_some_and(|voice| {
+            !definition
+                .realtime_voices(config.provider.base_url.as_deref())
+                .contains(voice)
+        }) {
+            config.realtime_voice = None;
+        }
         if self.mode == SetupMode::BotModel {
             config.middleware = current.middleware.clone();
             config.extensions = current.extensions.clone();

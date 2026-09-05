@@ -394,12 +394,14 @@ impl Shared {
             .into_chronological()
             .into_iter()
             .map(|record| FrontendPreviewEvent {
+                submission_id: record.event.submission_id,
                 recorded_at_ms: record.recorded_at_ms,
                 event: record.event.msg,
             })
             .collect::<Vec<_>>();
         if let Some(message) = terminal_error {
             events.push(FrontendPreviewEvent {
+                submission_id: None,
                 recorded_at_ms: events.last().map_or(0, |event| event.recorded_at_ms),
                 event: EventMsg::Frontend(subagent_error_notice(message)),
             });

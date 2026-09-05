@@ -40,7 +40,17 @@ extension AppModel {
         provider.model = choice.model
         provider.reasoningEffort = choice.reasoningEffort
         draft.provider = provider
+        if let voice = draft.realtimeVoice, !realtimeVoices(for: draft).contains(voice) {
+            draft.realtimeVoice = nil
+        }
         return draft
+    }
+
+    func realtimeVoices(for draft: AgentComposition?) -> [String] {
+        guard let draft, let route = modelRoute(for: draft),
+              modelChoices.first(where: { $0.route == route })?.supportsRealtimeVoice == true
+        else { return [] }
+        return providerStatus(forInstance: draft.provider.instance)?.realtimeVoices ?? []
     }
 
     func modelLabel(for choice: ModelChoice) -> String {

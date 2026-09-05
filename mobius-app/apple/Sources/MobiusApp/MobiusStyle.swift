@@ -221,6 +221,7 @@ struct MobiusGlyph: Hashable {
     static let markdown = Self("hi.markdown")
     static let menu = Self("hi.menu")
     static let mic01 = Self("hi.mic01")
+    static let micOff01 = Self("hi.micOff01")
     static let moon = Self("hi.moon")
     static let neuralNetwork = Self("hi.neuralNetwork")
     static let note01 = Self("hi.note01")

@@ -687,6 +687,15 @@ struct SessionCatalogRow: View {
 
     @ViewBuilder
     private var controls: some View {
+        if model.unreadSessionIDs.contains(session.sessionId) {
+            Button("Mark as read", glyph: .checkCircle) {
+                model.markSessionRead(session.sessionId)
+            }
+        } else {
+            Button("Mark as unread", glyph: .circle) {
+                model.markSessionUnread(session.sessionId)
+            }
+        }
         Button(
             session.pinned ? "Unpin chat" : "Pin chat",
             glyph: session.pinned ? .pushPinSlash : .pushPin

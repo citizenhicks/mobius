@@ -672,7 +672,7 @@ pub(super) const fn provider() -> ProviderDefinition {
         build_provider,
     )
     .with_image_input()
-    .with_realtime_voice()
+    .with_realtime_voices(super::realtime::VOICES)
     .with_tool_discovery(
         manifest::TOOL_DISCOVERY,
         manifest::CUSTOM_ENDPOINT_TOOL_DISCOVERY,

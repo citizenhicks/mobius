@@ -86,6 +86,7 @@ struct RunningAgent {
     events: mpsc::Receiver<JournalEvent>,
     model_router: Arc<ModelRouter>,
     frontend: FrontendExtensions,
+    frontend_sink: mobius::middleware::FrontendEventSink,
     session: mobius::protocol::SessionConfiguredEvent,
     gateway_sandbox: Arc<GatewaySandbox>,
     subagent_template: Option<Arc<OnceLock<AgentConfig>>>,
@@ -104,9 +105,12 @@ pub(super) struct ProviderCutoverStatus {
 
 pub(crate) struct RealtimeModel {
     pub(crate) router: Arc<ModelRouter>,
+    pub(crate) voice: Option<String>,
     pub(crate) route: String,
     pub(crate) provider_instance: String,
     pub(crate) active_turn_id: Option<String>,
+    pub(crate) checkpoints: Arc<dyn CheckpointStore>,
+    pub(crate) frontend: mobius::middleware::FrontendEventSink,
 }
 
 pub(super) struct ActiveRoutine {
@@ -690,6 +694,7 @@ async fn start_agent(
     .await?;
     let session = agent.session().clone();
     let frontend = agent.frontend().clone();
+    let frontend_sink = agent.frontend_sink();
     let tool_count = agent.tool_count();
     let session_id = session.session_id.clone();
     let (sender, events) = agent.into_recorded_parts();
@@ -699,6 +704,7 @@ async fn start_agent(
         events,
         model_router,
         frontend,
+        frontend_sink,
         session,
         gateway_sandbox,
         subagent_template,

@@ -38,6 +38,7 @@ enum MobiusSymbol {
         "storage": .hardDrives,
         "steer": .workflowSquare03,
         "task": .checkCircle,
+        "voice": .audioWave01,
     ]
 }
 

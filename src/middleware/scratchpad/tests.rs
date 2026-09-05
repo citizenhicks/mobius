@@ -146,6 +146,7 @@ async fn active_command(
     let mut queued = Vec::new();
     let mut events = Vec::new();
     let mut context = ActiveCommandContext {
+        checkpoints: middleware.store.checkpoints.as_ref(),
         submission_id: "active-command",
         session_id: "session",
         metadata: &metadata,

@@ -1034,7 +1034,8 @@ extension AppModelTests {
             author: .peer(
                 messageID: "message-1",
                 sessionID: "chat-reviewer",
-                handle: "@reviewer"
+                handle: "@reviewer",
+                symbol: nil
             ),
             delivery: .steer,
             text: "The parser boundary is covered."
@@ -1090,7 +1091,8 @@ extension AppModelTests {
             author: .peer(
                 messageID: "message-1",
                 sessionID: "chat-reviewer",
-                handle: "@reviewer"
+                handle: "@reviewer",
+                symbol: nil
             ),
             text: "Review the parser boundary."
         )))
@@ -1118,7 +1120,8 @@ extension AppModelTests {
             .peer(
                 messageID: "message-1",
                 sessionID: "chat-reviewer",
-                handle: "@reviewer"
+                handle: "@reviewer",
+                symbol: nil
             )
         )
         XCTAssertEqual(

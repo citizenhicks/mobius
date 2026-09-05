@@ -229,6 +229,7 @@ pub struct VersionedAgentConfig {
 #[serde(deny_unknown_fields)]
 pub struct AgentComposition {
     pub provider: ProviderConfig,
+    pub realtime_voice: Option<String>,
     pub middleware: MiddlewareConfig,
     pub extensions: BTreeSet<String>,
     pub system_prompt: String,
@@ -313,7 +314,7 @@ pub struct ProviderStatus {
     pub web_search: Vec<FrontendSettingOption>,
     pub tool_discovery: ToolDiscoveryMode,
     pub custom_endpoint_tool_discovery: Option<ToolDiscoveryMode>,
-    pub supports_realtime_voice: bool,
+    pub realtime_voices: Vec<String>,
 }
 
 /// User-chosen accent for distinguishing provider instances in model selectors.
@@ -364,6 +365,18 @@ pub struct ClientStatus {
 }
 
 impl ProviderStatus {
+    #[must_use]
+    pub fn realtime_voices(&self, base_url: Option<&str>) -> &[String] {
+        if mobius::backend::model::provider::uses_default_endpoint(
+            self.default_base_url.as_deref(),
+            base_url,
+        ) {
+            &self.realtime_voices
+        } else {
+            &[]
+        }
+    }
+
     #[must_use]
     pub fn configurable_base_url(&self) -> bool {
         self.default_base_url.is_some()
@@ -476,6 +489,7 @@ pub struct RenderedPreview {
 /// One preview event and its capability-rendered blocks.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RenderedEvent {
+    pub submission_id: Option<String>,
     pub recorded_at_ms: i64,
     pub event: EventMsg,
     pub blocks: Vec<RenderedBlock>,

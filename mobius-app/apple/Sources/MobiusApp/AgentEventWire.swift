@@ -9,9 +9,16 @@ extension AgentEventRecord {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: DynamicCodingKey.self)
         let msg = try container.decode(JSONValue.self, forKey: "msg")
-        try Self.validate(msg)
         submissionId = try container.decodeIfPresent(String.self, forKey: "submissionId")
+        try Self.validate(msg, submissionId: submissionId)
         self.msg = msg
+    }
+
+    static func validate(_ msg: JSONValue, submissionId: String?) throws {
+        try validate(msg)
+        if msg["type"]?.stringValue == "message_delta", submissionId?.isEmpty != false {
+            throw GatewayWireError.invalidFrame("message_delta has no submission identity")
+        }
     }
 
     static func validate(_ msg: JSONValue) throws {
@@ -45,6 +52,8 @@ private struct AgentEventValidator {
             try requireString("message")
         case "message":
             _ = try MessageEventPayload(json: msg)
+        case "message_delta":
+            try requireString("text")
         case "session_configured":
             try requireString("sessionId")
             guard let context = msg["context"], let model = msg["model"] else {

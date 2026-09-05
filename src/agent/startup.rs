@@ -403,6 +403,13 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
     }
     let model_choices = config.model.choices().cloned().collect();
     let model_router = Arc::clone(&config.model);
+    let weak_frontend = Arc::downgrade(&runtime.frontend);
+    let frontend_sink: crate::middleware::FrontendEventSink = Arc::new(move |event| {
+        let frontend = weak_frontend
+            .upgrade()
+            .ok_or_else(|| Error::Stopped("agent frontend stopped".into()))?;
+        frontend(event)
+    });
     let mut runner = Runner {
         config,
         runtime,
@@ -441,6 +448,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         events: event_rx,
         model_router,
         frontend,
+        frontend_sink,
         session,
         model,
         model_choices,

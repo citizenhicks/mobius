@@ -581,6 +581,7 @@ mod accounting_tests {
                 message_id: "message-1".into(),
                 session_id: "reviewer".into(),
                 handle: "reviewer".into(),
+                symbol: None,
             },
             delivery,
             text: "Review this".into(),

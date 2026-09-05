@@ -67,6 +67,7 @@ extension AppModel {
             if type == "warning" || type == "error" || type == "submission_rejected" {
                 if let draft = pendingDrafts.removeValue(forKey: submissionID) { restoreDraft(draft) }
                 previewSelections.removeValue(forKey: submissionID)
+                if previewWidgetRequestID == submissionID { previewWidgetRequestID = nil }
                 if previewPageRequestID == submissionID {
                     previewPageRequestID = nil
                     isLoadingPreviewPage = false
@@ -98,13 +99,16 @@ extension AppModel {
             )
         }
         if let preview = record.preview {
+            let opensWidget = event.submissionId != nil && event.submissionId == previewWidgetRequestID
+            if opensWidget { previewWidgetRequestID = nil }
             let completesPageLoad = event.submissionId == previewPageRequestID
             if completesPageLoad {
                 previewPageRequestID = nil
             }
             apply(
                 preview,
-                selection: event.submissionId.flatMap { previewSelections.removeValue(forKey: $0) }
+                selection: event.submissionId.flatMap { previewSelections.removeValue(forKey: $0) },
+                present: opensWidget
             )
             if completesPageLoad { isLoadingPreviewPage = false }
         }
@@ -119,6 +123,11 @@ extension AppModel {
         turnID: String?
     ) -> Bool {
         switch type {
+        case "message_delta":
+            mutateTranscriptPreservingPrefix { entries in
+                appendMessageDelta(record, to: &entries)
+            }
+            return true
         case "message":
             guard let message else { return true }
             appendMessage(
@@ -459,7 +468,7 @@ extension AppModel {
         return result
     }
 
-    func apply(_ preview: RenderedPreview, selection: FrontendPickerOption?) {
+    func apply(_ preview: RenderedPreview, selection: FrontendPickerOption?, present: Bool = false) {
         var pageEntries: [TranscriptEntry] = []
         var turnState = TranscriptHistoryTurnState()
         for (index, rendered) in preview.events.enumerated() {
@@ -467,7 +476,7 @@ extension AppModel {
                 RecordedEvent(
                     sequence: UInt64(index + 1),
                     recordedAtMs: rendered.recordedAtMs,
-                    event: AgentEventRecord(submissionId: nil, msg: rendered.event),
+                    event: AgentEventRecord(submissionId: rendered.submissionId, msg: rendered.event),
                     streamMetrics: [],
                     blocks: rendered.blocks,
                     preview: nil
@@ -478,9 +487,18 @@ extension AppModel {
             )
         }
         let existing = previews.first { $0.id == preview.id }
+        var retained: [TranscriptEntry] = []
+        if preview.update == .replace, !present, selection == nil,
+           presentedPreview?.id == preview.id, let existing {
+            let ids = Set(pageEntries.map(\.id))
+            let steps = Set(pageEntries.compactMap(\.modelStepID))
+            retained = Array(existing.entries.prefix {
+                !ids.contains($0.id) && $0.modelStepID.map(steps.contains) != true
+            })
+        }
         let visibleEntries = switch preview.update {
         case .replace:
-            pageEntries
+            retained + pageEntries
         case .prepend:
             mergePreviewPages(older: pageEntries, newer: existing?.entries ?? [])
         }
@@ -491,14 +509,14 @@ extension AppModel {
             status: selection?.description ?? existing?.status,
             model: selection?.detail ?? existing?.model,
             entries: visibleEntries,
-            next: preview.next
+            next: retained.isEmpty ? preview.next : existing?.next
         )
         if let index = previews.firstIndex(where: { $0.id == preview.id }) {
             previews[index] = record
         } else {
             previews.append(record)
         }
-        if selection != nil || presentedPreview?.id == preview.id { presentedPreview = record }
+        if present || selection != nil || presentedPreview?.id == preview.id { presentedPreview = record }
     }
 
     func applyRoutineRunPreview(_ preview: RoutineRunPreview) {
@@ -613,14 +631,14 @@ extension AppModel {
         if let peer = message.author.peerFields {
             id = "message:peer:\(peer.sessionID.utf8.count):\(peer.sessionID):\(peer.messageID)"
         } else if let submissionID = record.event.submissionId {
-            id = "message:submission:\(submissionID.utf8.count):\(submissionID)"
+            id = submittedMessageID(submissionID)
         } else if let recordID {
             id = "message:record:\(recordID.utf8.count):\(recordID)"
         } else {
             id = "message:record:\(record.sequence)"
         }
         let kind: TranscriptEntry.Kind = message.author == .user ? .user : .peer
-        entries.append(TranscriptEntry(
+        let entry = TranscriptEntry(
             id: id,
             text: message.text,
             kind: kind,
@@ -637,7 +655,33 @@ extension AppModel {
                 author: message.author,
                 delivery: message.delivery
             )
-        ))
+        )
+        if let index = entries.lastIndex(where: { $0.id == id }) {
+            entries[index] = entry
+        } else {
+            entries.append(entry)
+        }
+    }
+
+    private func submittedMessageID(_ submissionID: String) -> String {
+        "message:submission:\(submissionID.utf8.count):\(submissionID)"
+    }
+
+    func appendMessageDelta(_ record: RecordedEvent, to entries: inout [TranscriptEntry]) {
+        guard let submissionID = record.event.submissionId,
+              let delta = record.event.msg["text"]?.stringValue, !delta.isEmpty else { return }
+        let id = submittedMessageID(submissionID)
+        if let entry = entries.last(where: { $0.id == id }) {
+            guard entry.pending else { return }
+            entry.text.append(delta)
+            entry.sourceSequence = record.sequence
+            entry.recordedAtMs = record.recordedAtMs
+        } else {
+            entries.append(TranscriptEntry(
+                id: id, text: delta, kind: .user, format: "plain_text", pending: true,
+                sourceSequence: record.sequence, recordedAtMs: record.recordedAtMs
+            ))
+        }
     }
 
     func appendText(

@@ -3,13 +3,39 @@ import Observation
 @preconcurrency import AVFoundation
 @preconcurrency import WebRTC
 
+/// Instantaneous native audio levels, never a transcript or a recording history.
+struct RealtimeAudioLevels: Equatable, Sendable {
+    var microphone: Double = 0
+    var playback: Double = 0
+
+    // Ignore digital silence; a quiet microphone never overrides audible Bot playback.
+    var isPlaybackActive: Bool { playback > 0.001 }
+    var displayLevel: Double { isPlaybackActive ? playback : microphone }
+
+    mutating func include(type: String, values: [String: NSObject]) {
+        guard values["kind"] as? String == "audio",
+              let value = (values["audioLevel"] as? NSNumber)?.doubleValue,
+              value.isFinite else { return }
+        let level = min(max(value, 0), 1)
+        switch type {
+        case "media-source": microphone = max(microphone, level)
+        case "inbound-rtp": playback = max(playback, level)
+        default: break
+        }
+    }
+}
+
 /// Native media only. The gateway owns authentication, voice control, and conversation history.
 @MainActor
 @Observable
 final class RealtimeVoiceSession: NSObject {
     private(set) var isConnected = false
+    private(set) var audioLevels = RealtimeAudioLevels()
     var isMuted = false {
-        didSet { audioTrack?.isEnabled = !isMuted }
+        didSet {
+            audioTrack?.isEnabled = !isMuted
+            if isMuted { audioLevels.microphone = 0 }
+        }
     }
     @ObservationIgnored private static let factory: RTCPeerConnectionFactory? = {
         guard RTCInitializeSSL() else { return nil }
@@ -21,6 +47,7 @@ final class RealtimeVoiceSession: NSObject {
     @ObservationIgnored private var failure: ((String) -> Void)?
     @ObservationIgnored private var generation = UUID()
     @ObservationIgnored private var audioIsActive = false
+    @ObservationIgnored private var meteringTask: Task<Void, Never>?
 
     init(onFailure: ((String) -> Void)? = nil) {
         failure = onFailure
@@ -47,6 +74,7 @@ final class RealtimeVoiceSession: NSObject {
             with: factory.audioSource(with: constraints), trackId: "voice"
         )
         audioTrack = track
+        track.isEnabled = !isMuted
         peer.add(track, streamIds: ["voice"])
         // Establish SCTP, but all provider events/control stay on the gateway sideband.
         dataChannel = peer.dataChannel(forLabel: "oai-events", configuration: RTCDataChannelConfiguration())
@@ -56,6 +84,7 @@ final class RealtimeVoiceSession: NSObject {
         try await peer.setLocalDescription(offer)
         try Task.checkCancellation()
         guard self.generation == generation else { throw CancellationError() }
+        startMetering(peer)
         return offer.sdp
     }
 
@@ -76,6 +105,9 @@ final class RealtimeVoiceSession: NSObject {
     func close() {
         generation = UUID()
         failure = nil
+        meteringTask?.cancel()
+        meteringTask = nil
+        audioLevels = RealtimeAudioLevels()
         dataChannel?.close()
         dataChannel = nil
         audioTrack?.isEnabled = false
@@ -92,6 +124,28 @@ final class RealtimeVoiceSession: NSObject {
         defer { audio.unlockForConfiguration() }
         try? audio.setActive(false)
         audioIsActive = false
+    }
+
+    private func startMetering(_ peer: RTCPeerConnection) {
+        let generation = generation
+        meteringTask = Task { [weak self] in
+            while !Task.isCancelled {
+                let report = await peer.statistics()
+                guard let self, !Task.isCancelled,
+                      self.generation == generation, self.peer === peer else { return }
+                var levels = RealtimeAudioLevels()
+                for statistic in report.statistics.values {
+                    levels.include(type: statistic.type, values: statistic.values)
+                }
+                self.updateAudioLevels(levels)
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
+    }
+
+    func updateAudioLevels(_ levels: RealtimeAudioLevels) {
+        audioLevels = levels
+        if isMuted { audioLevels.microphone = 0 }
     }
 
     private func activateAudio() throws {

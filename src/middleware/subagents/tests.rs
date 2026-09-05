@@ -212,7 +212,7 @@ async fn active_command_emits_a_subagent_transcript_preview() {
         .shared
         .session_start(RuntimeContext {
             sender: crate::agent::test_sender(),
-            checkpoints,
+            checkpoints: Arc::clone(&checkpoints),
             session_id: root.session_id.clone(),
             model_route: "test".into(),
             model: "model".into(),
@@ -244,6 +244,7 @@ async fn active_command_emits_a_subagent_transcript_preview() {
 
     let result = middleware
         .active_command(&mut ActiveCommandContext {
+            checkpoints: checkpoints.as_ref(),
             submission_id: "preview-1",
             session_id: "root",
             metadata: &root.metadata,

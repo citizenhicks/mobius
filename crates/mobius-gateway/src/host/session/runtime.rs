@@ -196,9 +196,12 @@ impl HostState {
                     .ok_or_else(|| internal("voice route is no longer configured"))?;
                     Ok(RealtimeModel {
                         router: Arc::clone(router),
+                        voice: self.spec.agent.config.realtime_voice.clone(),
                         route: route.clone(),
                         provider_instance,
                         active_turn_id: self.activity().map_err(internal)?.turn_id,
+                        checkpoints: Arc::clone(&self.checkpoints),
+                        frontend: Arc::clone(&self.running.frontend_sink),
                     })
                 });
                 let _ = reply.send(result);

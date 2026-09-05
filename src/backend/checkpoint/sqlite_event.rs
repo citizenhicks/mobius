@@ -76,7 +76,13 @@ pub(super) fn store_event(
         "UPDATE sessions SET latest_event_sequence = ?2 WHERE session_id = ?1",
         params![session_id, sequence],
     )?;
-    if has_authoritative_snapshot && let Some(model_step_id) = index.model_step_id {
+    if matches!(&event.msg, EventMsg::Message(_)) {
+        transaction.execute(
+            "DELETE FROM event_journal WHERE session_id = ?1 AND event_kind = 'message_delta'
+             AND json_extract(event_json, '$.submission_id') = ?2",
+            params![session_id, event.submission_id],
+        )?;
+    } else if has_authoritative_snapshot && let Some(model_step_id) = index.model_step_id {
         transaction.execute(
             "DELETE FROM event_journal
              WHERE session_id = ?1 AND model_step_id = ?2
@@ -136,6 +142,7 @@ fn event_index(event: &EventMsg) -> Result<EventIndex<'_>> {
         EventMsg::TurnComplete(_) => plain("turn_complete"),
         EventMsg::TurnAborted(_) => plain("turn_aborted"),
         EventMsg::Message(_) => plain("message"),
+        EventMsg::MessageDelta(_) => plain("message_delta"),
         EventMsg::AssistantMessage(message) => step("assistant_message", &message.model_step_id),
         EventMsg::AssistantContentDelta(delta) => EventIndex {
             kind: "assistant_content_delta",

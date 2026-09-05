@@ -903,6 +903,39 @@ extension AppModelTests {
         XCTAssertEqual(model.toast?.message, "Review failed: New failure.")
     }
 
+    func testExplicitUnreadSurvivesCatalogAndStoredStateUntilMarkedRead() throws {
+        for sequence in [UInt64(0), 12] {
+            let model = try model()
+            let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
+            model.accounts = [account]
+            model.selectedAccountID = account.id
+            let chat = session(state: .idle, sequence: sequence)
+            model.applySessions([chat])
+            model.selectedSessionID = chat.sessionId
+            model.setChatVisible(true)
+
+            model.markSessionUnread(chat.sessionId)
+            model.applySessions([chat])
+            XCTAssertTrue(model.unreadSessionIDs.contains(chat.sessionId))
+            XCTAssertNil(try XCTUnwrap(model.sessionReadCursors?[chat.sessionId]).sequence)
+
+            // Reload the durable cursor just as account restoration does on launch.
+            model.restoreSessionReadState()
+            model.applySessions([chat])
+            XCTAssertTrue(model.unreadSessionIDs.contains(chat.sessionId))
+
+            model.markSessionRead(chat.sessionId)
+            model.restoreSessionReadState()
+            model.applySessions([chat])
+            XCTAssertFalse(model.unreadSessionIDs.contains(chat.sessionId))
+            XCTAssertEqual(model.sessionReadCursors?[chat.sessionId]?.sequence, sequence)
+
+            model.markSessionUnread(chat.sessionId)
+            model.openChat(chat.sessionId)
+            XCTAssertFalse(model.unreadSessionIDs.contains(chat.sessionId))
+        }
+    }
+
     func testFailedSessionSnapshotUsesGatewayMessage() throws {
         let model = try model()
         model.applySessions([session(state: .idle, title: "Review")])

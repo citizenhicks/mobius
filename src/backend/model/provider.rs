@@ -247,6 +247,24 @@ impl ProviderCredential {
 
 type ProviderBuilder = fn(ProviderBuildConfig) -> Result<Arc<dyn Model>>;
 
+/// Reports whether an endpoint selection uses the provider-advertised default.
+/// An omitted selection uses the default endpoint.
+#[must_use]
+pub fn uses_default_endpoint(default: Option<&str>, selected: Option<&str>) -> bool {
+    match (default, selected) {
+        (_, None) => true,
+        (Some(default), Some(selected)) => {
+            let (Ok(default), Ok(selected)) =
+                (reqwest::Url::parse(default), reqwest::Url::parse(selected))
+            else {
+                return false;
+            };
+            same_endpoint(&default, &selected)
+        }
+        (None, Some(_)) => false,
+    }
+}
+
 /// One backend provider's setup manifest and constructor.
 pub struct ProviderDefinition {
     id: &'static str,
@@ -258,7 +276,7 @@ pub struct ProviderDefinition {
     default_model: Option<&'static str>,
     web_search: &'static [HostedWebSearch],
     supports_image_input: bool,
-    supports_realtime_voice: bool,
+    realtime_voices: &'static [&'static str],
     tool_discovery: ToolDiscoveryMode,
     custom_endpoint_tool_discovery: Option<ToolDiscoveryMode>,
     default_base_url: Option<&'static str>,
@@ -292,7 +310,7 @@ impl ProviderDefinition {
             default_model,
             web_search,
             supports_image_input: false,
-            supports_realtime_voice: false,
+            realtime_voices: &[],
             tool_discovery: ToolDiscoveryMode::Rebuild,
             custom_endpoint_tool_discovery: None,
             default_base_url: None,
@@ -308,8 +326,8 @@ impl ProviderDefinition {
         self
     }
 
-    pub(crate) const fn with_realtime_voice(mut self) -> Self {
-        self.supports_realtime_voice = true;
+    pub(crate) const fn with_realtime_voices(mut self, voices: &'static [&'static str]) -> Self {
+        self.realtime_voices = voices;
         self
     }
 
@@ -383,10 +401,14 @@ impl ProviderDefinition {
         self.supports_image_input
     }
 
-    /// Reports realtime capability only for the provider's supported first-party endpoint.
+    /// Returns supported voices, with the default first, for this provider endpoint.
     #[must_use]
-    pub fn supports_realtime_voice(&self, base_url: Option<&str>) -> bool {
-        self.supports_realtime_voice && self.uses_default_endpoint(base_url)
+    pub fn realtime_voices(&self, base_url: Option<&str>) -> &'static [&'static str] {
+        if self.uses_default_endpoint(base_url) {
+            self.realtime_voices
+        } else {
+            &[]
+        }
     }
 
     /// Resolves cache behavior for one model and endpoint selection.
@@ -430,19 +452,7 @@ impl ProviderDefinition {
     /// Reports whether a resolved base URL selects the provider's default endpoint.
     #[must_use]
     pub fn uses_default_endpoint(&self, base_url: Option<&str>) -> bool {
-        match (self.default_base_url, base_url) {
-            (None, None) => true,
-            (Some(default), Some(base_url)) => {
-                let Ok(default) = reqwest::Url::parse(default) else {
-                    return false;
-                };
-                let Ok(base_url) = reqwest::Url::parse(base_url) else {
-                    return false;
-                };
-                same_endpoint(&default, &base_url)
-            }
-            _ => false,
-        }
+        uses_default_endpoint(self.default_base_url, base_url)
     }
 
     /// Reports whether non-default endpoints may be configured without credentials.

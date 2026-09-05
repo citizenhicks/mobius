@@ -2,6 +2,22 @@ import Foundation
 import XCTest
 
 extension GatewayWireTests {
+    func testPeerAuthorPreservesItsSemanticSymbol() throws {
+        let author = try decoder().decode(
+            MessageAuthor.self,
+            from: Data(#"{"type":"peer","message_id":"handoff","session_id":"voice-session","handle":"voice agent","symbol":"voice"}"#.utf8)
+        )
+        XCTAssertEqual(author.peerFields?.symbol, "voice")
+        XCTAssertEqual(
+            try decoder().decode(MessageAuthor.self, from: JSONEncoder().encode(author)),
+            author
+        )
+        XCTAssertThrowsError(try decoder().decode(
+            MessageAuthor.self,
+            from: Data(#"{"type":"peer","message_id":"handoff","session_id":"voice-session","handle":"voice agent","symbol":42}"#.utf8)
+        ))
+    }
+
     func testV28MessageTargetsAreStrict() throws {
         let operation = try decoder().decode(
             AgentOperation.self,
@@ -56,7 +72,7 @@ extension GatewayWireTests {
         let message = try MessageEventPayload(json: record.event.msg)
         XCTAssertEqual(
             message.author,
-            .peer(messageID: "message-1", sessionID: "chat-reviewer", handle: "@reviewer")
+            .peer(messageID: "message-1", sessionID: "chat-reviewer", handle: "@reviewer", symbol: nil)
         )
         XCTAssertEqual(message.delivery, .steer)
         XCTAssertEqual(message.text, "Check the parser boundary.")

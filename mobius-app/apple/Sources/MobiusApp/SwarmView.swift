@@ -563,7 +563,8 @@ private func swarmTranscriptEntry(_ message: SwarmMessageRecord) -> TranscriptEn
         : .peer(
             messageID: message.id,
             sessionID: message.sourceSessionId,
-            handle: message.authorHandle
+            handle: message.authorHandle,
+            symbol: nil
         )
     return TranscriptEntry(
         id: message.id,

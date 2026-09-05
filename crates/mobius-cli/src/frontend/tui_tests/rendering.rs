@@ -465,6 +465,7 @@ fn peer_message_renders_its_handle_without_entering_composer_history() {
                 message_id: "message".into(),
                 session_id: "session".into(),
                 handle: "curie".into(),
+                symbol: None,
             },
             delivery: MessageDelivery::Steer,
             text: "Check the protocol boundary".into(),
@@ -482,6 +483,33 @@ fn peer_message_renders_its_handle_without_entering_composer_history() {
         ),
         (Some("@curie › Check the protocol boundary"), 0)
     );
+}
+
+#[test]
+fn peer_message_renders_its_advertised_voice_symbol() {
+    let mut state = state();
+    state.transcript.clear();
+    state.handle_agent_event(
+        EventMsg::Message(MessageEvent {
+            author: MessageAuthor::Peer {
+                message_id: "message".into(),
+                session_id: "voice-child".into(),
+                handle: "voice agent".into(),
+                symbol: Some(FrontendSymbol::Custom("voice".into())),
+            },
+            delivery: MessageDelivery::Steer,
+            text: "Run the tests".into(),
+            attachments: Vec::new(),
+            reply: None,
+            message_target: None,
+        }),
+        Vec::new(),
+    );
+    assert_eq!(
+        state.transcript.front().expect("message").text,
+        "♫ @voice agent › Run the tests"
+    );
+    assert!(state.composer_history.is_empty());
 }
 
 #[test]

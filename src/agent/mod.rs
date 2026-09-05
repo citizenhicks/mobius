@@ -416,6 +416,7 @@ pub struct Agent {
     events: mpsc::Receiver<JournalEvent>,
     model_router: Arc<ModelRouter>,
     frontend: FrontendExtensions,
+    frontend_sink: crate::middleware::FrontendEventSink,
     session: SessionConfiguredEvent,
     model: ModelInfo,
     model_choices: Vec<ModelChoice>,
@@ -447,6 +448,13 @@ impl Agent {
     #[must_use]
     pub fn frontend(&self) -> &FrontendExtensions {
         &self.frontend
+    }
+
+    /// Returns the existing recorder for capability-owned frontend updates.
+    /// This sink does not keep a stopped Agent or its event stream alive.
+    #[must_use]
+    pub fn frontend_sink(&self) -> crate::middleware::FrontendEventSink {
+        Arc::clone(&self.frontend_sink)
     }
 
     /// Returns the immutable session descriptor emitted at startup.

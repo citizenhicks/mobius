@@ -507,11 +507,11 @@ extension GatewayWireTests {
         let ready = readyPayloadJSON.replacingOccurrences(
             of: #""supports_realtime_voice":false"#,
             with: #""supports_realtime_voice":true"#
-        )
+        ).replacingOccurrences(of: #""realtime_voices":[]"#, with: #""realtime_voices":["marin","cedar"]"#)
         guard case .ready(let payload) = try decodeEnvelope(
             "{\"version\":68,\"type\":\"ready\",\"payload\":\(ready)}"
         ) else { return XCTFail("Expected ready") }
-        XCTAssertEqual(payload.providers.first?.supportsRealtimeVoice, true)
+        XCTAssertEqual(payload.providers.first?.realtimeVoices, ["marin", "cedar"])
         XCTAssertEqual(payload.models.first?.supportsRealtimeVoice, true)
     }
 }

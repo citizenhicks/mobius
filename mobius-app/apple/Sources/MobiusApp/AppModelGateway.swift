@@ -810,7 +810,7 @@ extension AppModel {
             navigationPath = [.chat(.session(payload.session.sessionId))]
             prepareChatTitle(for: payload.session.sessionId)
         }
-        if isChatVisible {
+        if isChatVisible, sessionReadCursors?[payload.session.sessionId]?.isMarkedUnread != true {
             markSessionRead(payload.session.sessionId)
         }
         selectedModelRoute = payload.session.model.route
@@ -915,15 +915,19 @@ extension AppModel {
     ) -> Bool {
         let sessionID = session.sessionId
         let cursor = sessionReadCursor(for: session)
+        if cursors[sessionID]?.isMarkedUnread == true {
+            unreadSessionIDs.insert(sessionID)
+            return false
+        }
         if selectedSessionID == sessionID, isChatVisible {
             unreadSessionIDs.remove(sessionID)
             guard cursors[sessionID] != cursor else { return false }
             cursors[sessionID] = cursor
             return true
         }
-        if let readCursor = cursors[sessionID] {
+        if let readCursor = cursors[sessionID], let readSequence = readCursor.sequence {
             if session.activity.state == .idle,
-               session.sequence > readCursor.sequence || readCursor.wasActive {
+               session.sequence > readSequence || readCursor.wasActive {
                 unreadSessionIDs.insert(sessionID)
             }
             return false

@@ -65,6 +65,7 @@ enum UncommittedRoute {
 }
 
 struct ActiveTurnRouter<'a> {
+    pub checkpoints: &'a dyn crate::backend::checkpoint::CheckpointStore,
     pub middleware: &'a MiddlewareStack,
     pub session_id: &'a str,
     pub metadata: &'a std::collections::BTreeMap<String, serde_json::Value>,
@@ -193,6 +194,7 @@ impl Runner {
             });
         }
         let route = (ActiveTurnRouter {
+            checkpoints: self.config.checkpoints.as_ref(),
             middleware: &self.config.middleware,
             session_id: &self.config.session_id,
             metadata: &self.config.metadata,
@@ -333,6 +335,7 @@ impl ActiveTurnRouter<'_> {
                     .active_command(
                         &capability,
                         &mut ActiveCommandContext {
+                            checkpoints: self.checkpoints,
                             submission_id: &id,
                             session_id: self.session_id,
                             metadata: self.metadata,
@@ -477,11 +480,12 @@ mod tests {
 
     async fn event_recorder() -> (
         tempfile::TempDir,
+        Arc<dyn crate::backend::checkpoint::CheckpointStore>,
         EventRecorder,
         mpsc::Receiver<JournalEvent>,
     ) {
         let directory = tempfile::tempdir().expect("checkpoint directory");
-        let checkpoints = Arc::new(
+        let checkpoints: Arc<dyn crate::backend::checkpoint::CheckpointStore> = Arc::new(
             SqliteCheckpoint::new(directory.path().join("checkpoints.sqlite3"))
                 .expect("checkpoint store"),
         );
@@ -491,8 +495,8 @@ mod tests {
             .save(&checkpoint, &[], None)
             .await
             .expect("initial checkpoint");
-        let (recorder, events) = EventRecorder::spawn(checkpoints, "session-1".into());
-        (directory, recorder, events)
+        let (recorder, events) = EventRecorder::spawn(Arc::clone(&checkpoints), "session-1".into());
+        (directory, checkpoints, recorder, events)
     }
 
     #[tokio::test]
@@ -746,10 +750,11 @@ mod tests {
         let middleware =
             MiddlewareStack::new(vec![Arc::new(EditableMiddleware)]).expect("middleware stack");
         let mut queued = Vec::new();
-        let (_directory, events, _receiver) = event_recorder().await;
+        let (_directory, checkpoints, events, _receiver) = event_recorder().await;
 
         let route = (ActiveTurnRouter {
             middleware: &middleware,
+            checkpoints: checkpoints.as_ref(),
             session_id: "session-1",
             metadata: &std::collections::BTreeMap::new(),
             turn_id: "turn-1",
@@ -782,10 +787,11 @@ mod tests {
         let middleware =
             MiddlewareStack::new(vec![Arc::new(EditableMiddleware)]).expect("middleware stack");
         let mut queued = Vec::new();
-        let (_directory, events, mut receiver) = event_recorder().await;
+        let (_directory, checkpoints, events, mut receiver) = event_recorder().await;
 
         let route = (ActiveTurnRouter {
             middleware: &middleware,
+            checkpoints: checkpoints.as_ref(),
             session_id: "session-1",
             metadata: &std::collections::BTreeMap::new(),
             turn_id: "turn-1",
@@ -822,7 +828,7 @@ mod tests {
         let middleware =
             MiddlewareStack::new(vec![Arc::new(EditableMiddleware)]).expect("middleware stack");
         let mut queued = Vec::new();
-        let (_directory, events, mut receiver) = event_recorder().await;
+        let (_directory, checkpoints, events, mut receiver) = event_recorder().await;
         let submission = Submission {
             id: "command-1".into(),
             op: Op::CapabilityCommand {
@@ -836,6 +842,7 @@ mod tests {
 
         let route = (ActiveTurnRouter {
             middleware: &middleware,
+            checkpoints: checkpoints.as_ref(),
             session_id: "session-1",
             metadata: &std::collections::BTreeMap::new(),
             turn_id: "turn-1",
@@ -862,10 +869,11 @@ mod tests {
         let middleware =
             MiddlewareStack::new(vec![Arc::new(EditableMiddleware)]).expect("middleware stack");
         let mut queued = Vec::new();
-        let (_directory, events, _receiver) = event_recorder().await;
+        let (_directory, checkpoints, events, _receiver) = event_recorder().await;
 
         let result = (ActiveTurnRouter {
             middleware: &middleware,
+            checkpoints: checkpoints.as_ref(),
             session_id: "session-1",
             metadata: &std::collections::BTreeMap::new(),
             turn_id: "turn-1",
@@ -900,9 +908,10 @@ mod tests {
                 MiddlewareStack::new(vec![Arc::new(MutatingMessageMiddleware(outcome))])
                     .expect("middleware stack");
             let mut queued = Vec::new();
-            let (_directory, events, mut receiver) = event_recorder().await;
+            let (_directory, checkpoints, events, mut receiver) = event_recorder().await;
             let result = (ActiveTurnRouter {
                 middleware: &middleware,
+                checkpoints: checkpoints.as_ref(),
                 session_id: "session-1",
                 metadata: &std::collections::BTreeMap::new(),
                 turn_id: "turn-1",

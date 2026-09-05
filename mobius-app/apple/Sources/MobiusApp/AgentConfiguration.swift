@@ -23,6 +23,7 @@ struct AgentComposition: Codable, Equatable, Sendable {
     var extensions: Set<String>
     var systemPrompt: String
     var maxModelSteps: UInt64
+    var realtimeVoice: String? = nil
 }
 
 extension AgentComposition {
@@ -32,6 +33,7 @@ extension AgentComposition {
         case extensions
         case systemPrompt
         case maxModelSteps
+        case realtimeVoice
     }
 
     init(from decoder: Decoder) throws {
@@ -49,7 +51,8 @@ extension AgentComposition {
             middleware: try container.decode(MiddlewareConfig.self, forKey: .middleware),
             extensions: try container.decode(Set<String>.self, forKey: .extensions),
             systemPrompt: try container.decode(String.self, forKey: .systemPrompt),
-            maxModelSteps: maxModelSteps
+            maxModelSteps: maxModelSteps,
+            realtimeVoice: try container.decodeIfPresent(String.self, forKey: .realtimeVoice)
         )
     }
 }
@@ -287,7 +290,7 @@ struct ProviderStatus: Identifiable, Decodable, Equatable, Sendable {
     let webSearch: [FrontendSettingOption]
     let toolDiscovery: ToolDiscoveryMode
     let customEndpointToolDiscovery: ToolDiscoveryMode?
-    var supportsRealtimeVoice: Bool = false
+    var realtimeVoices: [String] = []
 }
 
 extension ProviderStatus {

@@ -1226,6 +1226,51 @@ fn config_rejects_an_empty_system_prompt() {
 }
 
 #[test]
+fn realtime_voice_selection_uses_the_provider_catalog_and_persists() {
+    for (provider_id, voice, invalid_voice) in [
+        ("openai_socket", "cedar", "cove"),
+        ("openai_codex", "cove", "cedar"),
+        ("responses", "cedar", "cove"),
+    ] {
+        let mut config = AgentComposition::default();
+        config.provider.provider = provider_id.into();
+        config.provider.instance = provider_id.into();
+        config.provider.model = "gpt-5.6-sol".into();
+        config.provider.base_url = provider(provider_id)
+            .expect("provider")
+            .default_base_url()
+            .map(str::to_string);
+        config.realtime_voice = Some(voice.into());
+        validate_agent_composition(&config).expect("advertised voice");
+        let stored = toml::to_string(&config).expect("encode Bot configuration");
+        assert_eq!(
+            toml::from_str::<AgentComposition>(&stored).expect("decode"),
+            config
+        );
+
+        config.realtime_voice = Some(invalid_voice.into());
+        assert!(
+            validate_agent_composition(&config)
+                .expect_err("unsupported voice")
+                .to_string()
+                .contains("voice")
+        );
+    }
+    let mut config = AgentComposition::default();
+    config.provider.provider = "responses".into();
+    config.provider.base_url = Some("http://localhost:11434/v1".into());
+    config.realtime_voice = Some("marin".into());
+    assert!(
+        validate_agent_composition(&config)
+            .expect_err("custom endpoint has no voice catalog")
+            .to_string()
+            .contains("voice")
+    );
+    config.realtime_voice = None;
+    validate_agent_composition(&config).expect("voice selection is optional");
+}
+
+#[test]
 fn agent_composition_requires_a_positive_model_step_limit() {
     let config = AgentComposition {
         max_model_steps: 0,

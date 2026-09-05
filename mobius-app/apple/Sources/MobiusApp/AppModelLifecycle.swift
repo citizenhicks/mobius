@@ -324,6 +324,7 @@ extension AppModel {
         previews = []
         presentedPreview = nil
         previewSelections.removeAll()
+        previewWidgetRequestID = nil
         previewPageRequestID = nil
         isLoadingPreviewPage = false
         showsInspector = false

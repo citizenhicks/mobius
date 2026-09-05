@@ -2248,6 +2248,7 @@ fn swarm_message_submission(entry: BoardEntry) -> Submission {
             message_id: message_id.clone(),
             session_id: entry.source_session_id,
             handle: entry.author.handle,
+            symbol: None,
         }
     };
     Submission {

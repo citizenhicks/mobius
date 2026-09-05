@@ -800,6 +800,7 @@ pub struct MessageRouteContext<'a> {
 
 /// Mutable turn state exposed to a capability command that can run immediately.
 pub struct ActiveCommandContext<'a> {
+    pub checkpoints: &'a dyn CheckpointStore,
     pub submission_id: &'a str,
     pub session_id: &'a str,
     pub metadata: &'a BTreeMap<String, Value>,

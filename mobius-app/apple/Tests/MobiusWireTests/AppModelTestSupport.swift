@@ -13,12 +13,13 @@ func testMessageEvent(
     let author: JSONValue = switch author {
     case .user:
         .object(["type": .string("user")])
-    case .peer(let messageID, let sessionID, let handle):
+    case .peer(let messageID, let sessionID, let handle, let symbol):
         .object([
             "type": .string("peer"),
             "messageId": .string(messageID),
             "sessionId": .string(sessionID),
-            "handle": .string(handle)
+            "handle": .string(handle),
+            "symbol": symbol.map(JSONValue.string) ?? .null
         ])
     }
     let attachments = attachments.map { file in

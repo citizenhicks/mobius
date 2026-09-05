@@ -67,7 +67,7 @@ final class GatewayWireTests: XCTestCase {
             )
             .replacingOccurrences(
                 of: #""model_ids_configurable":false,"web_search":"#,
-                with: #""model_ids_configurable":false,"tool_discovery":"native","custom_endpoint_tool_discovery":"rebuild","supports_realtime_voice":false,"web_search":"#
+                with: #""model_ids_configurable":false,"tool_discovery":"native","custom_endpoint_tool_discovery":"rebuild","realtime_voices":[],"web_search":"#
             )
             .replacingOccurrences(
                 of: #""supports_image_input":true}"#,

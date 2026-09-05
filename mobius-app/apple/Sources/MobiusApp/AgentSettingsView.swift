@@ -68,6 +68,10 @@ struct AgentSettingsView: View {
                         )
                     )
 
+                    if !model.realtimeVoices(for: draft).isEmpty {
+                        voicePicker
+                    }
+
                     HStack(spacing: MobiusSpace.xs) {
                         // Hundreds: this ceiling is set in the thousands, and stepping by one
                         // makes the control useless for reaching any value someone wants.
@@ -516,6 +520,36 @@ struct AgentSettingsView: View {
             get: { draft?.systemPrompt ?? "" },
             set: { value in updateDraft { $0.systemPrompt = value } }
         )
+    }
+
+    private var voicePicker: some View {
+        let voices = model.realtimeVoices(for: draft)
+        let selected = draft?.realtimeVoice ?? voices.first ?? ""
+        return LabeledContent("Voice") {
+            Menu {
+                Picker("Voice", selection: Binding(
+                    get: { selected },
+                    set: { voice in updateDraft { $0.realtimeVoice = voice } }
+                )) {
+                    ForEach(voices, id: \.self) { voice in
+                        Text(verbatim: voice.capitalized).tag(voice)
+                    }
+                }
+                .labelsHidden()
+            } label: {
+                MobiusMenuLabel(
+                    text: .verbatim(selected.capitalized),
+                    glyph: .audioWave01,
+                    font: MobiusStyle.bodyFont
+                )
+                .foregroundStyle(palette.accent)
+            }
+            .menuIndicator(.hidden)
+            .buttonStyle(.mobiusPlain)
+            .accessibilityLabel("Voice")
+            .accessibilityValue(Text(verbatim: selected.capitalized))
+        }
+        .sensoryFeedback(.selection, trigger: selected)
     }
 
     private var maxModelSteps: Binding<UInt64> {

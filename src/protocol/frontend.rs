@@ -288,6 +288,8 @@ pub struct FrontendEditor {
 /// One timestamped semantic event shown inside a capability preview.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FrontendPreviewEvent {
+    /// Canonical message identity retained from the recorded event.
+    pub submission_id: Option<String>,
     pub recorded_at_ms: i64,
     pub event: EventMsg,
 }

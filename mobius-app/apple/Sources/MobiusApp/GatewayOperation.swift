@@ -118,7 +118,7 @@ enum MessageDelivery: String, Codable, Hashable, Sendable {
 
 enum MessageAuthor: Codable, Hashable, Sendable {
     case user
-    case peer(messageID: String, sessionID: String, handle: String)
+    case peer(messageID: String, sessionID: String, handle: String, symbol: String?)
 
     init(from decoder: Decoder) throws {
         try self.init(json: JSONValue(from: decoder))
@@ -141,7 +141,18 @@ enum MessageAuthor: Codable, Hashable, Sendable {
             else {
                 throw GatewayWireError.invalidFrame("peer message author is incomplete")
             }
-            self = .peer(messageID: messageID, sessionID: sessionID, handle: handle)
+            let symbol = json["symbol"]
+            guard symbol == nil || symbol == .null || symbol?.stringValue != nil else {
+                throw GatewayWireError.invalidFrame("peer message author has an invalid symbol")
+            }
+            if let value = symbol?.stringValue,
+               value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || value.utf8.count > 256 {
+                throw GatewayWireError.invalidFrame("peer message author has an invalid symbol")
+            }
+            self = .peer(
+                messageID: messageID, sessionID: sessionID, handle: handle,
+                symbol: symbol?.stringValue
+            )
         default:
             throw GatewayWireError.invalidFrame("unknown message author \(type)")
         }
@@ -152,19 +163,20 @@ enum MessageAuthor: Codable, Hashable, Sendable {
         switch self {
         case .user:
             try container.encode("user", forKey: "type")
-        case .peer(let messageID, let sessionID, let handle):
+        case .peer(let messageID, let sessionID, let handle, let symbol):
             try container.encode("peer", forKey: "type")
             try container.encode(messageID, forKey: "messageId")
             try container.encode(sessionID, forKey: "sessionId")
             try container.encode(handle, forKey: "handle")
+            try container.encodeIfPresent(symbol, forKey: "symbol")
         }
     }
 }
 
 extension MessageAuthor {
-    var peerFields: (messageID: String, sessionID: String, handle: String)? {
-        guard case .peer(let messageID, let sessionID, let handle) = self else { return nil }
-        return (messageID, sessionID, handle)
+    var peerFields: (messageID: String, sessionID: String, handle: String, symbol: String?)? {
+        guard case .peer(let messageID, let sessionID, let handle, let symbol) = self else { return nil }
+        return (messageID, sessionID, handle, symbol)
     }
 }
 

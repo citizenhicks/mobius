@@ -37,6 +37,7 @@ fn peer_submission_uses_the_board_id_and_defers_delivery_policy() {
                     message_id: peer_message_id,
                     session_id,
                     handle,
+                    ..
                 },
                 text,
                 requested_delivery: None,
@@ -327,7 +328,7 @@ async fn mention_delivery_uses_the_bots_private_swarm_conversation() {
         matches!(
             &record.event.msg,
             EventMsg::Message(MessageEvent {
-                author: MessageAuthor::Peer { message_id, session_id, handle },
+                author: MessageAuthor::Peer { message_id, session_id, handle, .. },
                 delivery,
                 text: message_text,
                 ..
@@ -463,6 +464,7 @@ async fn startup_ack_reuses_the_reserved_conversation_without_resubmitting() {
                         message_id: post.entry.id.clone(),
                         session_id: source_session_id,
                         handle: source_bot.handle,
+                        symbol: None,
                     },
                     delivery: MessageDelivery::Turn,
                     text,

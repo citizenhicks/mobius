@@ -142,6 +142,9 @@ pub enum MessageAuthor {
         message_id: String,
         session_id: String,
         handle: String,
+        /// Optional semantic icon for the sending peer.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        symbol: Option<FrontendSymbol>,
     },
 }
 
@@ -212,10 +215,14 @@ pub(crate) fn validate_message_content(
             message_id,
             session_id,
             handle,
+            symbol,
         } => {
             validate_message_identifier("peer message ID", message_id, MAX_IDENTIFIER_BYTES)?;
             validate_message_identifier("peer session ID", session_id, MAX_IDENTIFIER_BYTES)?;
             validate_message_identifier("peer handle", handle, MAX_HANDLE_BYTES)?;
+            if let Some(symbol) = symbol {
+                validate_message_identifier("peer symbol", symbol.as_str(), MAX_HANDLE_BYTES)?;
+            }
             if text.trim().is_empty() {
                 return Err(crate::Error::Config("peer message cannot be empty".into()));
             }
@@ -322,6 +329,14 @@ pub enum Op {
     ResumeSession { session_id: String },
 }
 
+/// Which participant produced text in an externally hosted conversation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationRole {
+    User,
+    Assistant,
+}
+
 fn required_option<'de, D, T>(deserializer: D) -> std::result::Result<Option<T>, D::Error>
 where
     D: Deserializer<'de>,
@@ -345,6 +360,7 @@ pub struct Event {
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum EventMsg {
+    MessageDelta(MessageDeltaEvent),
     Error(ErrorEvent),
     Warning(WarningEvent),
     SubmissionRejected(SubmissionRejectedEvent),
@@ -794,6 +810,27 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn peer_message_symbol_is_optional_and_validated() {
+        for (symbol, valid) in [(None, true), (Some("voice"), true), (Some(""), false)] {
+            let author = MessageAuthor::Peer {
+                message_id: "message".into(),
+                session_id: "child".into(),
+                handle: "voice agent".into(),
+                symbol: symbol.map(|symbol| FrontendSymbol::Custom(symbol.into())),
+            };
+            let encoded = serde_json::to_value(&author).expect("encode");
+            assert_eq!(
+                serde_json::from_value::<MessageAuthor>(encoded).expect("decode"),
+                author
+            );
+            assert_eq!(
+                validate_message_content(&author, "Run the tests", &[]).is_ok(),
+                valid
+            );
+        }
     }
 
     #[test]

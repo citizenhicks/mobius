@@ -212,6 +212,7 @@ fn peer_op(
                 message_id: message_id.into(),
                 session_id: session_id.into(),
                 handle: handle.into(),
+                symbol: None,
             },
             text: text.into(),
             attachments: Vec::new(),

@@ -338,6 +338,7 @@ struct TuiState {
     reference_cache: Option<(char, String, Vec<MenuItem>)>,
     picker: Option<PickerState>,
     preview: Option<PreviewState>,
+    preview_request_id: Option<String>,
     capability_overlay: Option<CapabilityOverlay>,
     requested_resume: Option<SessionResumeRequestedEvent>,
 }
@@ -388,6 +389,7 @@ impl TuiState {
             reference_cache: None,
             picker: None,
             preview: None,
+            preview_request_id: None,
             capability_overlay: None,
             requested_resume: None,
         }

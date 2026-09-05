@@ -649,8 +649,11 @@ private actor GatewayDiskStore {
 }
 
 struct SessionReadCursor: Codable, Equatable {
-    let sequence: UInt64
+    /// Nil keeps a chat explicitly unread until it is opened or marked read.
+    let sequence: UInt64?
     let wasActive: Bool
+
+    var isMarkedUnread: Bool { sequence == nil }
 }
 
 @MainActor

@@ -20,6 +20,7 @@ fn projected_preview_drops_the_raw_nested_event_duplicate() {
         page_id: "/root/reviewer:latest".into(),
         update: mobius::protocol::FrontendPreviewUpdate::Replace,
         events: vec![FrontendPreviewEvent {
+            submission_id: None,
             recorded_at_ms: 1,
             event: EventMsg::ContextCompacted,
         }],

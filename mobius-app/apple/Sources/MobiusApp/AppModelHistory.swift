@@ -106,6 +106,8 @@ extension AppModel {
         }
 
         switch type {
+        case "message_delta":
+            appendMessageDelta(record, to: &entries)
         case "message":
             guard let message = try? MessageEventPayload(json: event) else { break }
             let startsTurn = message.delivery.startsTurn
