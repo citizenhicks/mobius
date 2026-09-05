@@ -218,6 +218,7 @@ async fn busy_bot_chat_blocks_provider_removal_without_mutation() {
                 terminated: Arc::new(AtomicBool::new(true)),
                 termination: Arc::new(tokio::sync::Notify::new()),
                 session_mutations: Arc::new(tokio::sync::RwLock::new(())),
+                realtime_voice: Arc::new(tokio::sync::Mutex::new(())),
             }),
         },
     );

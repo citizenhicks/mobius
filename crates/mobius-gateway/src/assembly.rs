@@ -182,7 +182,12 @@ pub(crate) async fn assemble(
             .max_model_steps(max_model_steps)
             .metadata(metadata)
             .usage_observer(move |route, usage| {
-                persist_usage(&gateway, &usage_store, &model_providers, route, usage)
+                let provider = model_providers.get(route).ok_or_else(|| {
+                    MobiusError::Config(
+                        "model route is not in the configured gateway usage catalog".into(),
+                    )
+                })?;
+                persist_usage(&gateway, &usage_store, provider, usage)
             })
             .session_context(SessionContext {
                 bot_id: chat.bot_id.clone(),
@@ -213,16 +218,12 @@ pub(crate) async fn assemble(
     })
 }
 
-fn persist_usage(
+pub(crate) fn persist_usage(
     gateway: &Mutex<GatewayConfig>,
     store: &ConfigStore,
-    model_providers: &BTreeMap<String, String>,
-    route: &str,
+    provider: &str,
     usage: &TokenUsage,
 ) -> mobius::Result<()> {
-    let provider = model_providers.get(route).ok_or_else(|| {
-        MobiusError::Config("model route is not in the configured gateway usage catalog".into())
-    })?;
     let mut gateway = gateway
         .lock()
         .map_err(|_| MobiusError::Config("gateway configuration lock is poisoned".into()))?;
@@ -459,6 +460,7 @@ fn unavailable_models(
         reasoning_effort: effort,
         context_window: Some(context_window),
         supports_image_input: definition.supports_image_input(),
+        supports_realtime_voice: false,
         tool_discovery: definition.tool_discovery(&selection.model, selection.base_url.as_deref()),
     })?;
     Ok((Arc::new(router), context_window))

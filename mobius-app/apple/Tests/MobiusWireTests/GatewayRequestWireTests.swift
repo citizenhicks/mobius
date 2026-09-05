@@ -479,3 +479,39 @@ extension GatewayWireTests {
     }
 
 }
+
+extension GatewayWireTests {
+    func testRealtimeSignalingUsesGatewayWireKeys() throws {
+        let request = try requestObject(.startRealtimeVoice(
+            requestID: "voice-1", sessionID: "chat-1", offerSDP: "v=0\r\n"
+        ))
+        XCTAssertEqual(request["type"] as? String, "start_realtime_voice")
+        XCTAssertEqual(request["request_id"] as? String, "voice-1")
+        XCTAssertEqual(request["session_id"] as? String, "chat-1")
+        XCTAssertEqual(request["offer_sdp"] as? String, "v=0\r\n")
+        let end = try requestObject(.endRealtimeVoice(sessionID: "chat-1", voiceID: "voice-1"))
+        XCTAssertEqual(end["type"] as? String, "end_realtime_voice")
+        XCTAssertEqual(end["voice_id"] as? String, "voice-1")
+        guard case .realtimeVoiceStarted("voice-1", "chat-1", "voice-1", "answer") = try decodeEnvelope(
+            #"{"version":68,"type":"realtime_voice_started","request_id":"voice-1","session_id":"chat-1","voice_id":"voice-1","answer_sdp":"answer"}"#
+        ) else { return XCTFail("Expected gateway answer") }
+        guard case .realtimeVoiceEnded("chat-1", "voice-1", nil) = try decodeEnvelope(
+            #"{"version":68,"type":"realtime_voice_ended","session_id":"chat-1","voice_id":"voice-1","reason":null}"#
+        ) else { return XCTFail("Expected gateway end") }
+        guard case .realtimeVoiceFailed("voice-1", "chat-1", "unavailable") = try decodeEnvelope(
+            #"{"version":68,"type":"realtime_voice_failed","request_id":"voice-1","session_id":"chat-1","message":"unavailable"}"#
+        ) else { return XCTFail("Expected correlated gateway failure") }
+    }
+
+    func testRealtimeAvailabilityDecodesFromOwnedCatalog() throws {
+        let ready = readyPayloadJSON.replacingOccurrences(
+            of: #""supports_realtime_voice":false"#,
+            with: #""supports_realtime_voice":true"#
+        )
+        guard case .ready(let payload) = try decodeEnvelope(
+            "{\"version\":68,\"type\":\"ready\",\"payload\":\(ready)}"
+        ) else { return XCTFail("Expected ready") }
+        XCTAssertEqual(payload.providers.first?.supportsRealtimeVoice, true)
+        XCTAssertEqual(payload.models.first?.supportsRealtimeVoice, true)
+    }
+}

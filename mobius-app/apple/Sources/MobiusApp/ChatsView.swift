@@ -80,7 +80,7 @@ struct ChatsView: View {
                         organizationMenu
                     }
                     ToolbarItem(placement: .primaryAction) {
-                        newChatButton
+                        newChatButtons
                     }
                     .sharedBackgroundVisibility(.hidden)
                 } else {
@@ -92,7 +92,7 @@ struct ChatsView: View {
                 if !usesIPadLayout {
                     ToolbarSpacer(.fixed, placement: .bottomBar)
                     ToolbarItem(placement: .bottomBar) {
-                        newChatButton
+                        newChatButtons
                     }
                     .sharedBackgroundVisibility(.hidden)
                 }
@@ -261,6 +261,19 @@ struct ChatsView: View {
                     ? Text("\(organization.title), 1 Bot selected")
                     : Text("\(organization.title), \(model.chatBotFilterIDs.count) Bots selected")
         )
+    }
+
+    private var newChatButtons: some View {
+        HStack(spacing: MobiusSpace.s) {
+            newChatButton
+            if model.selectedRouteSupportsRealtimeVoice {
+                Button("New voice chat", glyph: .audioWave01) { model.openNewVoiceChat() }
+                    .mobiusProminentIconButton()
+                    .disabled(!model.canCreateSession)
+                    .accessibilityHint("Choose a workspace and Bot for the new voice chat")
+                    .help("New voice chat")
+            }
+        }
     }
 
     private var newChatButton: some View {

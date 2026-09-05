@@ -126,6 +126,15 @@ pub enum ClientMessage {
         session_id: String,
         submission: Submission,
     },
+    StartRealtimeVoice {
+        request_id: String,
+        session_id: String,
+        offer_sdp: String,
+    },
+    EndRealtimeVoice {
+        session_id: String,
+        voice_id: String,
+    },
     GetContributions {
         request_id: String,
         scope: ContributionScope,
@@ -410,6 +419,22 @@ pub enum ServerMessage {
     },
     SessionChanged {
         payload: SessionReadyPayload,
+    },
+    RealtimeVoiceStarted {
+        request_id: String,
+        session_id: String,
+        voice_id: String,
+        answer_sdp: String,
+    },
+    RealtimeVoiceFailed {
+        request_id: String,
+        session_id: String,
+        message: String,
+    },
+    RealtimeVoiceEnded {
+        session_id: String,
+        voice_id: String,
+        reason: Option<String>,
     },
     GatewayConfigured {
         request_id: String,

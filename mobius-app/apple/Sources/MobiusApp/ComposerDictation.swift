@@ -30,6 +30,7 @@ final class ComposerDictation {
     @ObservationIgnored private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
     @ObservationIgnored private var analyzer: SpeechAnalyzer?
     @ObservationIgnored private var feedTask: Task<Void, Never>?
+    @ObservationIgnored var cancellationTask: Task<Void, Never>?
     @ObservationIgnored private var recognitionTasks: [Task<Void, Never>] = []
     @ObservationIgnored private var workerFailure: ComposerDictationError?
     @ObservationIgnored private var hasAudioTap = false
@@ -171,6 +172,7 @@ final class ComposerDictation {
             try checkGeneration(currentGeneration)
             state = .recording
         } catch {
+            guard generation == currentGeneration else { throw CancellationError() }
             let workerFailure = workerFailure
             await cancel()
             throw workerFailure ?? error
@@ -185,22 +187,25 @@ final class ComposerDictation {
         }
         state = .stopping
         generation += 1
+        let currentGeneration = generation
         audioEngine?.stop()
         removeAudioTap()
         audioContinuation?.finish()
 
         do {
             await feedTask?.value
+            try checkGeneration(currentGeneration)
             try checkWorkerFailure()
             inputContinuation?.finish()
             try await analyzer?.finalizeAndFinishThroughEndOfInput()
             for task in recognitionTasks {
                 await task.value
             }
+            try checkGeneration(currentGeneration)
             try checkWorkerFailure()
             finish()
         } catch {
-            await cancel()
+            if generation == currentGeneration { await cancel() }
             throw error
         }
     }
@@ -214,6 +219,10 @@ final class ComposerDictation {
     }
 
     private func cancel(keepingFinalizedText: Bool) async {
+        if let cancellationTask {
+            await cancellationTask.value
+            return
+        }
         guard state != .idle else { return }
         state = .stopping
         generation += 1
@@ -224,9 +233,14 @@ final class ComposerDictation {
         audioContinuation?.finish()
         feedTask?.cancel()
         inputContinuation?.finish()
-        await analyzer?.cancelAndFinishNow()
-        recognitionTasks.forEach { $0.cancel() }
-        finish()
+        let task = Task {
+            await analyzer?.cancelAndFinishNow()
+            recognitionTasks.forEach { $0.cancel() }
+            finish()
+            cancellationTask = nil
+        }
+        cancellationTask = task
+        await task.value
     }
 
     private func consume(_ result: DictationTranscriber.Result, transcriptIndex: Int) {

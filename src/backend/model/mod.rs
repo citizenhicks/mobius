@@ -29,9 +29,13 @@ pub mod openai_codex;
 pub mod openai_socket;
 pub mod openrouter;
 pub mod provider;
+pub mod realtime;
 mod router;
 mod transport;
 
+pub use self::realtime::{
+    RealtimeVoiceCall, RealtimeVoiceCommand, RealtimeVoiceEvent, RealtimeVoiceRequest,
+};
 pub use self::router::ModelRouter;
 
 use crate::protocol::ModelInfo;
@@ -712,6 +716,23 @@ pub trait Model: Send + Sync {
     /// Reports whether this provider accepts native image input.
     fn supports_image_input(&self) -> bool {
         false
+    }
+
+    /// Reports whether this transport can negotiate a provider-owned realtime voice call.
+    fn supports_realtime_voice(&self) -> bool {
+        false
+    }
+
+    /// Negotiates voice media without exposing provider credentials to the frontend.
+    fn start_realtime_voice(
+        &self,
+        _request: RealtimeVoiceRequest,
+    ) -> BoxFuture<'_, Result<RealtimeVoiceCall>> {
+        Box::pin(async {
+            Err(Error::Provider(
+                "realtime voice is unavailable for this provider".into(),
+            ))
+        })
     }
 
     /// Reports the provider's prompt-cache mode without exposing transport details.

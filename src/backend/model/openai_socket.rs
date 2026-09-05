@@ -54,6 +54,7 @@ use super::provider::ModelPreset;
 use super::provider::ProviderAuth;
 use super::provider::ProviderBuildConfig;
 use super::provider::ProviderDefinition;
+use super::{RealtimeVoiceCall, RealtimeVoiceRequest};
 use crate::BoxFuture;
 use crate::Error;
 use crate::ProviderError;
@@ -148,6 +149,11 @@ impl OpenAiSocket {
             sessions: Mutex::new(BTreeMap::new()),
             http,
         })
+    }
+
+    pub(super) fn with_codex_realtime_voice(mut self) -> Result<Self> {
+        self.http = self.http.with_codex_realtime_voice()?;
+        Ok(self)
     }
 
     fn with_explicit_prompt_cache(mut self) -> Self {
@@ -497,6 +503,17 @@ impl Model for OpenAiSocket {
         true
     }
 
+    fn supports_realtime_voice(&self) -> bool {
+        self.http.supports_realtime_voice()
+    }
+
+    fn start_realtime_voice(
+        &self,
+        request: RealtimeVoiceRequest,
+    ) -> BoxFuture<'_, Result<RealtimeVoiceCall>> {
+        self.http.start_realtime_voice(request)
+    }
+
     fn prompt_cache_capability(&self) -> PromptCacheMode {
         if self.explicit_prompt_cache {
             PromptCacheMode::Explicit
@@ -655,6 +672,7 @@ pub(super) const fn provider() -> ProviderDefinition {
         build_provider,
     )
     .with_image_input()
+    .with_realtime_voice()
     .with_tool_discovery(
         manifest::TOOL_DISCOVERY,
         manifest::CUSTOM_ENDPOINT_TOOL_DISCOVERY,

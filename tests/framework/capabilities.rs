@@ -144,6 +144,7 @@ async fn async_subagent_uses_configured_model_reasoning_and_durable_fork() {
             reasoning_effort: None,
             context_window: None,
             supports_image_input: true,
+            supports_realtime_voice: false,
             tool_discovery: ToolDiscoveryMode::Rebuild,
         },
         ModelChoice {
@@ -153,6 +154,7 @@ async fn async_subagent_uses_configured_model_reasoning_and_durable_fork() {
             reasoning_effort: Some("low".into()),
             context_window: None,
             supports_image_input: true,
+            supports_realtime_voice: false,
             tool_discovery: ToolDiscoveryMode::Rebuild,
         },
         ModelChoice {
@@ -162,6 +164,7 @@ async fn async_subagent_uses_configured_model_reasoning_and_durable_fork() {
             reasoning_effort: Some("high".into()),
             context_window: None,
             supports_image_input: true,
+            supports_realtime_voice: false,
             tool_discovery: ToolDiscoveryMode::Rebuild,
         },
     ] {

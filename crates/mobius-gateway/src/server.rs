@@ -3,6 +3,7 @@
 mod dispatch;
 mod responses;
 mod transport;
+mod voice;
 
 use std::collections::BTreeMap;
 use std::fs;

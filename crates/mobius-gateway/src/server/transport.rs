@@ -552,6 +552,7 @@ where
     )
     .await?;
     let mut selected: Option<SelectedChat> = None;
+    let mut voice = None;
     let session_files = host.session_file_store().await;
     let mut uploads: BTreeMap<(String, String), PendingSessionFileWrite> = BTreeMap::new();
 
@@ -568,6 +569,10 @@ where
                 None
             }
             incoming = read_frame::<ClientFrame>(&mut reader) => Some(incoming),
+            outgoing = super::voice::next_update(&mut voice) => {
+                super::voice::write_update(&mut voice, outgoing, &mut writer).await?;
+                None
+            }
             outgoing = gateway_broadcasts.recv() => {
                 match outgoing {
                     Ok(frame) => write_frame(&mut writer, &frame).await?,
@@ -588,19 +593,7 @@ where
             }
             outgoing = selected_broadcast(&mut selected) => {
                 match outgoing {
-                    Ok(frame) => {
-                        let active = selected
-                            .as_mut()
-                            .expect("a selected-chat broadcast requires a selected chat");
-                        if !sequence(&frame)
-                            .is_some_and(|value| value <= active.delivered_sequence)
-                        {
-                            if let Some(value) = sequence(&frame) {
-                                active.delivered_sequence = value;
-                            }
-                            write_frame(&mut writer, &frame).await?;
-                        }
-                    }
+                    Ok(frame) => write_frame(&mut writer, &frame).await?,
                     Err(broadcast::error::RecvError::Lagged(_)) => {
                         write_server_error(
                             &mut writer,
@@ -642,6 +635,7 @@ where
                 session_files: &session_files,
                 bots: &bots,
                 uploads: &mut uploads,
+                voice: &mut voice,
             },
             &mut writer,
         )

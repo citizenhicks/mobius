@@ -31,6 +31,7 @@ use super::provider::ProviderAuth;
 use super::provider::ProviderBuildConfig;
 use super::provider::ProviderDefinition;
 use super::provider::validate_base_url;
+use super::realtime::{RealtimeTransport, VoiceApi};
 use super::transport::MAX_SSE_FRAME_BYTES;
 use super::transport::frame_data;
 use super::transport::push_sse_chunk;
@@ -39,6 +40,7 @@ use super::transport::status_error;
 use super::transport::streaming_client;
 use super::transport::take_sse_frame;
 use super::usage_i64;
+use super::{RealtimeVoiceCall, RealtimeVoiceRequest};
 use crate::BoxFuture;
 use crate::Error;
 use crate::Result;
@@ -93,6 +95,7 @@ fn openai_model_pricing(model: &str) -> Option<ModelPricing> {
 pub struct OpenAi {
     client: Client,
     auth: Option<Arc<dyn OpenAiAuthorization>>,
+    realtime: Option<RealtimeTransport>,
     base_url: String,
     model: String,
     reasoning_effort: Option<String>,
@@ -149,9 +152,17 @@ impl OpenAi {
         if model.trim().is_empty() {
             return Err(Error::Config("OPENAI_MODEL is empty".into()));
         }
+        let realtime = if base_url == DEFAULT_BASE_URL {
+            auth.as_ref()
+                .map(|auth| RealtimeTransport::new(VoiceApi::OpenAi, Arc::clone(auth)))
+                .transpose()?
+        } else {
+            None
+        };
         Ok(Self {
             client,
             auth,
+            realtime,
             base_url,
             model,
             reasoning_effort: None,
@@ -162,6 +173,15 @@ impl OpenAi {
             explicit_prompt_cache: false,
             tool_discovery: ToolDiscoveryWire::Rebuild,
         })
+    }
+
+    pub(super) fn with_codex_realtime_voice(mut self) -> Result<Self> {
+        let auth = self
+            .auth
+            .as_ref()
+            .ok_or_else(|| Error::Config("Codex voice requires authorization".into()))?;
+        self.realtime = Some(RealtimeTransport::new(VoiceApi::Codex, Arc::clone(auth))?);
+        Ok(self)
     }
 
     /// Selects a Responses reasoning effort.
@@ -581,6 +601,25 @@ impl Model for OpenAi {
         self.image_input
     }
 
+    fn supports_realtime_voice(&self) -> bool {
+        self.realtime.is_some()
+    }
+
+    fn start_realtime_voice(
+        &self,
+        request: RealtimeVoiceRequest,
+    ) -> BoxFuture<'_, Result<RealtimeVoiceCall>> {
+        Box::pin(async move {
+            self.realtime
+                .as_ref()
+                .ok_or_else(|| {
+                    Error::Provider("realtime voice is unavailable for this provider".into())
+                })?
+                .start(request)
+                .await
+        })
+    }
+
     fn prompt_cache_capability(&self) -> PromptCacheMode {
         if self.explicit_prompt_cache {
             PromptCacheMode::Explicit
@@ -761,6 +800,7 @@ pub(super) const fn generic_provider() -> ProviderDefinition {
         build_generic,
     )
     .with_image_input()
+    .with_realtime_voice()
     .with_tool_discovery(
         manifest::TOOL_DISCOVERY,
         manifest::CUSTOM_ENDPOINT_TOOL_DISCOVERY,

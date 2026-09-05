@@ -287,6 +287,7 @@ struct ProviderStatus: Identifiable, Decodable, Equatable, Sendable {
     let webSearch: [FrontendSettingOption]
     let toolDiscovery: ToolDiscoveryMode
     let customEndpointToolDiscovery: ToolDiscoveryMode?
+    var supportsRealtimeVoice: Bool = false
 }
 
 extension ProviderStatus {

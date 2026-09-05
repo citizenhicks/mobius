@@ -784,8 +784,33 @@ extension AppModel {
 
     func appDidEnterBackground() {
         appIsInBackground = true
+        cancelVoiceChatIntent()
+        let voiceCall = realtimeVoiceCall
+        stopRealtimeVoice(notifyGateway: false)
         cancelReconnect()
         reconnectsOnActivation = true
+        // Retire this socket before suspension. Cloud resume checks subscription state
+        // asynchronously, so its old receive callback must already be out of generation.
+        if pendingPairingAccount == nil, !automaticReconnectBlocked {
+            connectionGeneration = UUID()
+            let generation = connectionGeneration
+            eventTask?.cancel()
+            eventTask = nil
+            flushStreamDeltas()
+            restorePendingDrafts()
+            if connectionState.isReady || connectionState.isLoading { connectionState = .disconnected }
+            Task { [weak self] in
+                guard let self, self.connectionGeneration == generation else { return }
+                if let voiceCall {
+                    try? await self.requestSender(.endRealtimeVoice(
+                        sessionID: voiceCall.sessionID,
+                        voiceID: voiceCall.voiceID ?? voiceCall.requestID
+                    ))
+                    guard self.connectionGeneration == generation else { return }
+                }
+                await self.client.disconnect()
+            }
+        }
         flushComposerDraft()
         guard appLockEnabled else { return }
         discardFilePresentation(preservingWorkspaceTextDraft: true)

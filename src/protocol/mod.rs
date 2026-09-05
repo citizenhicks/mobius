@@ -129,6 +129,7 @@ pub struct ModelChoice {
     pub reasoning_effort: Option<String>,
     pub context_window: Option<i64>,
     pub supports_image_input: bool,
+    pub supports_realtime_voice: bool,
     pub tool_discovery: ToolDiscoveryMode,
 }
 

@@ -131,6 +131,8 @@ extension AppModel {
 
     func setSceneActive(_ active: Bool) {
         guard active else {
+            messageSpeaker.stop()
+            Task { await dictation.cancel() }
             cancelReconnect()
             reconnectsOnActivation = true
             return
@@ -159,6 +161,7 @@ extension AppModel {
             return
         }
         guard canCreateSession else { return }
+        if newVoiceChatIntent == .selectingWorkspace { newVoiceChatIntent = .selectingBot }
         changeComposerDraftOwner(to: nil)
         discardComposerAttachments()
         discardFilePresentation()
@@ -184,6 +187,7 @@ extension AppModel {
         else { return }
         pendingNewChatBotID = bot.id
         workspaceError = nil
+        createPendingVoiceChat()
     }
 
     @discardableResult
@@ -207,6 +211,7 @@ extension AppModel {
             self.isChangingWorkspace = false
             self.connectionState = .ready
             self.workspaceError = message
+            self.cancelVoiceChatIntent()
         }
         return id
     }
@@ -297,6 +302,8 @@ extension AppModel {
 
     func openNewSession() {
         guard canCreateSession else { return }
+        cancelVoiceChatIntent()
+        stopRealtimeVoice()
         destination = .chats
         navigationPath = []
         openWorkspaceBrowser()
@@ -418,6 +425,8 @@ extension AppModel {
     }
 
     func openSession(_ sessionID: String) {
+        cancelVoiceChatIntent()
+        if selectedSessionID != sessionID { stopRealtimeVoice() }
         guard canOpenSession, sessionID != selectedSessionID else { return }
         let generation = UUID()
         transcriptLoadGeneration = generation

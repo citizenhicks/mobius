@@ -171,6 +171,52 @@ impl HostState {
 
     pub(super) async fn handle(&mut self, command: HostCommand) -> bool {
         match command {
+            HostCommand::RealtimeModel { reply } => {
+                let result = self.begin_session_mutation().and_then(|_mutation| {
+                    let router = &self.running.model_router;
+                    let route = &self.running.session.model.route;
+                    if !router.supports_realtime_voice(route).map_err(internal)? {
+                        return Err(Rejection {
+                            code: "realtime_voice",
+                            message: "the selected provider does not support realtime voice".into(),
+                            fatal: false,
+                        });
+                    }
+                    let config = self
+                        .gateway
+                        .lock()
+                        .map_err(|_| internal("gateway configuration lock is poisoned"))?;
+                    let provider_instance = crate::provider_catalog::configured_model_providers(
+                        &config,
+                        &self.store,
+                        &self.credentials,
+                    )
+                    .map_err(internal)?
+                    .remove(route)
+                    .ok_or_else(|| internal("voice route is no longer configured"))?;
+                    Ok(RealtimeModel {
+                        router: Arc::clone(router),
+                        route: route.clone(),
+                        provider_instance,
+                        active_turn_id: self.activity().map_err(internal)?.turn_id,
+                    })
+                });
+                let _ = reply.send(result);
+            }
+            HostCommand::ObserveVoiceUsage {
+                provider_instance,
+                usage,
+                reply,
+            } => {
+                let result = crate::assembly::persist_usage(
+                    &self.gateway,
+                    &self.store,
+                    &provider_instance,
+                    &usage,
+                )
+                .map_err(internal);
+                let _ = reply.send(result);
+            }
             HostCommand::Snapshot {
                 last_sequence,
                 reply,

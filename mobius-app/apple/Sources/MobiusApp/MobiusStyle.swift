@@ -161,6 +161,7 @@ struct MobiusGlyph: Hashable {
     static let arrowUp02 = Self("hi.arrowUp02")
     static let arrowUpRight01 = Self("hi.arrowUpRight01")
     static let aiScan = Self("hi.aiScan")
+    static let audioWave01 = Self("hi.audioWave01")
     static let bell = Self("hi.bell")
     static let bellDot = Self("hi.bellDot")
     static let bellOff = Self("hi.bellOff")

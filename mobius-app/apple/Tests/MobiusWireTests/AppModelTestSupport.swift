@@ -490,6 +490,7 @@ final class AppModelTests: XCTestCase {
         latestSequence: UInt64,
         nextBeforeSequence: UInt64? = nil,
         sessionID: String = "chat-1",
+        modelRoute: String = "openai",
         contributions: [FrontendContribution] = [],
         widgets: [SessionWidget] = [],
         compactionCount: UInt64 = 0,
@@ -512,7 +513,7 @@ final class AppModelTests: XCTestCase {
                     originLabel: nil
                 ),
                 model: ModelChanged(
-                    route: "openai",
+                    route: modelRoute,
                     model: "gpt-5.6-sol",
                     reasoningEffort: "high",
                     modelContextWindow: 200_000

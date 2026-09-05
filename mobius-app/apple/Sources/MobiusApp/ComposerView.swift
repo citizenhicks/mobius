@@ -42,7 +42,7 @@ private struct ComposerSurface: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
     @Environment(\.scenePhase) private var scenePhase
-    @State private var dictation = ComposerDictation()
+    private var dictation: ComposerDictation { model.dictation }
     @State private var selection: TextSelection?
     @FocusState private var isComposerFocused: Bool
     @State private var referenceSuggestions: ReferenceSuggestions?
@@ -185,6 +185,7 @@ private struct ComposerSurface: View {
                 as? UInt,
                   AVAudioSession.InterruptionType(rawValue: rawValue) == .began
             else { return }
+            model.stopRealtimeVoice()
             Task { await dictation.cancel() }
         }
         .onDisappear {

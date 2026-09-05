@@ -32,6 +32,7 @@ pub(super) struct HostInner {
     pub(super) terminated: Arc<AtomicBool>,
     pub(super) termination: Arc<tokio::sync::Notify>,
     pub(super) session_mutations: Arc<RwLock<()>>,
+    pub(super) realtime_voice: Arc<Mutex<()>>,
 }
 
 struct HostState {
@@ -101,6 +102,13 @@ pub(super) struct ProviderCutoverStatus {
     pub(super) idle: bool,
 }
 
+pub(crate) struct RealtimeModel {
+    pub(crate) router: Arc<ModelRouter>,
+    pub(crate) route: String,
+    pub(crate) provider_instance: String,
+    pub(crate) active_turn_id: Option<String>,
+}
+
 pub(super) struct ActiveRoutine {
     pub(super) run: ActiveRoutineRun,
     pub(super) submission_id: String,
@@ -109,6 +117,14 @@ pub(super) struct ActiveRoutine {
 }
 
 pub(super) enum HostCommand {
+    RealtimeModel {
+        reply: oneshot::Sender<std::result::Result<RealtimeModel, Rejection>>,
+    },
+    ObserveVoiceUsage {
+        provider_instance: String,
+        usage: mobius::protocol::TokenUsage,
+        reply: oneshot::Sender<std::result::Result<(), Rejection>>,
+    },
     Snapshot {
         last_sequence: Option<u64>,
         reply: oneshot::Sender<std::result::Result<HostSnapshot, Rejection>>,
@@ -300,6 +316,7 @@ impl HostHandle {
                 terminated,
                 termination,
                 session_mutations,
+                realtime_voice: Arc::new(Mutex::new(())),
             }),
         })
     }
@@ -311,6 +328,39 @@ impl HostHandle {
 
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<ServerFrame> {
         self.inner.events.subscribe()
+    }
+
+    pub(crate) fn claim_realtime_voice(
+        &self,
+    ) -> std::result::Result<tokio::sync::OwnedMutexGuard<()>, Rejection> {
+        Arc::clone(&self.inner.realtime_voice)
+            .try_lock_owned()
+            .map_err(|_| Rejection {
+                code: "realtime_voice",
+                message: "this chat already has an active voice call".into(),
+                fatal: false,
+            })
+    }
+
+    pub(crate) async fn realtime_model(&self) -> std::result::Result<RealtimeModel, Rejection> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(HostCommand::RealtimeModel { reply }).await?;
+        receive(receiver).await
+    }
+
+    pub(crate) async fn observe_voice_usage(
+        &self,
+        provider_instance: String,
+        usage: mobius::protocol::TokenUsage,
+    ) -> std::result::Result<(), Rejection> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(HostCommand::ObserveVoiceUsage {
+            provider_instance,
+            usage,
+            reply,
+        })
+        .await?;
+        receive(receiver).await
     }
 
     #[must_use]
@@ -515,7 +565,7 @@ impl HostHandle {
         stopped
     }
 
-    async fn wait_terminated(&self) {
+    pub(crate) async fn wait_terminated(&self) {
         while !self.inner.terminated.load(Ordering::Acquire) {
             let terminated = self.inner.termination.notified();
             if self.inner.terminated.load(Ordering::Acquire) {

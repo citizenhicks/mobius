@@ -36,6 +36,8 @@ enum GatewayRequest: Encodable, Sendable {
         swarmID: String,
         text: String
     )
+    case startRealtimeVoice(requestID: String, sessionID: String, offerSDP: String)
+    case endRealtimeVoice(sessionID: String, voiceID: String)
     case submit(sessionID: String, submission: Submission)
     case getContributions(requestID: String, scope: ContributionScope)
     case submitContribution(
@@ -181,6 +183,15 @@ enum GatewayRequest: Encodable, Sendable {
         var container = encoder.container(keyedBy: DynamicCodingKey.self)
         try container.encode(gatewayProtocolVersion, forKey: "version")
         switch self {
+        case .startRealtimeVoice(let requestID, let sessionID, let offerSDP):
+            try container.encode("start_realtime_voice", forKey: "type")
+            try container.encode(requestID, forKey: "requestId")
+            try container.encode(sessionID, forKey: "sessionId")
+            try container.encode(offerSDP, forKey: "offerSdp")
+        case .endRealtimeVoice(let sessionID, let voiceID):
+            try container.encode("end_realtime_voice", forKey: "type")
+            try container.encode(sessionID, forKey: "sessionId")
+            try container.encode(voiceID, forKey: "voiceId")
         case .pair(let code, let clientLabel, let clientKind):
             try container.encode("pair", forKey: "type")
             try container.encode(code, forKey: "code")
@@ -539,6 +550,9 @@ enum GatewayEnvelope: Decodable, Sendable {
     case paired(clientID: String, token: String)
     case authenticated
     case ready(ReadyPayload)
+    case realtimeVoiceStarted(requestID: String, sessionID: String, voiceID: String, answerSDP: String)
+    case realtimeVoiceEnded(sessionID: String, voiceID: String, reason: String?)
+    case realtimeVoiceFailed(requestID: String, sessionID: String, message: String)
     case sessionOpened(requestID: String, payload: SessionReadyPayload)
     case sessionReplayComplete(requestID: String, sessionID: String)
     case sessionHistory(
@@ -642,6 +656,25 @@ enum GatewayEnvelope: Decodable, Sendable {
         }
         let type = try container.decode(String.self, forKey: "type")
         switch type {
+        case "realtime_voice_started":
+            self = .realtimeVoiceStarted(
+                requestID: try container.decode(String.self, forKey: "requestId"),
+                sessionID: try container.decode(String.self, forKey: "sessionId"),
+                voiceID: try container.decode(String.self, forKey: "voiceId"),
+                answerSDP: try container.decode(String.self, forKey: "answerSdp")
+            )
+        case "realtime_voice_ended":
+            self = .realtimeVoiceEnded(
+                sessionID: try container.decode(String.self, forKey: "sessionId"),
+                voiceID: try container.decode(String.self, forKey: "voiceId"),
+                reason: try container.decodeIfPresent(String.self, forKey: "reason")
+            )
+        case "realtime_voice_failed":
+            self = .realtimeVoiceFailed(
+                requestID: try container.decode(String.self, forKey: "requestId"),
+                sessionID: try container.decode(String.self, forKey: "sessionId"),
+                message: try container.decode(String.self, forKey: "message")
+            )
         case "paired":
             self = .paired(
                 clientID: try container.decode(String.self, forKey: "clientId"),
@@ -1192,7 +1225,7 @@ enum SessionOutcome: String, Codable, Hashable, Sendable {
 struct ModelChoice: Identifiable, Codable, Hashable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case route, group, model, reasoningEffort, contextWindow, supportsImageInput
-        case toolDiscovery
+        case toolDiscovery, supportsRealtimeVoice
     }
 
     var id: String { route }
@@ -1203,6 +1236,7 @@ struct ModelChoice: Identifiable, Codable, Hashable, Sendable {
     let reasoningEffort: String?
     let contextWindow: Int64?
     let supportsImageInput: Bool
+    let supportsRealtimeVoice: Bool
     let toolDiscovery: ToolDiscoveryMode
 
     init(
@@ -1212,6 +1246,7 @@ struct ModelChoice: Identifiable, Codable, Hashable, Sendable {
         reasoningEffort: String?,
         contextWindow: Int64?,
         supportsImageInput: Bool,
+        supportsRealtimeVoice: Bool = false,
         toolDiscovery: ToolDiscoveryMode
     ) {
         self.route = route
@@ -1220,6 +1255,7 @@ struct ModelChoice: Identifiable, Codable, Hashable, Sendable {
         self.reasoningEffort = reasoningEffort
         self.contextWindow = contextWindow
         self.supportsImageInput = supportsImageInput
+        self.supportsRealtimeVoice = supportsRealtimeVoice
         self.toolDiscovery = toolDiscovery
     }
 
@@ -1235,6 +1271,7 @@ struct ModelChoice: Identifiable, Codable, Hashable, Sendable {
                 Bool.self,
                 forKey: .supportsImageInput
             ),
+            supportsRealtimeVoice: try container.decode(Bool.self, forKey: .supportsRealtimeVoice),
             toolDiscovery: try container.decode(ToolDiscoveryMode.self, forKey: .toolDiscovery)
         )
     }

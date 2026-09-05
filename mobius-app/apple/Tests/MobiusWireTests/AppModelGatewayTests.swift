@@ -545,3 +545,43 @@ extension AppModelTests {
     }
 
 }
+
+@MainActor
+extension AppModelTests {
+    func testBackgroundRetiresSocketBeforeDelayedCloudResume() throws {
+        let model = try model()
+        let userID = UUID()
+        let account = GatewayAccount(
+            endpoint: try GatewayEndpoint("wss://test.sprites.app"), cloudUserID: userID
+        )
+        model.accounts = [account]
+        model.selectedAccountID = account.id
+        model.cloudSession = MobiusCloudSession(userID: userID, expiresAt: .distantFuture)
+        model.selectedSessionID = "chat-1"
+        model.navigationPath = [.chat(.session("chat-1"))]
+        model.composer = "Keep my draft"
+        model.connectionState = .ready
+        let suspendedGeneration = model.connectionGeneration
+
+        model.setSceneActive(false)
+        model.appDidEnterBackground()
+        XCTAssertNotEqual(model.connectionGeneration, suspendedGeneration)
+        XCTAssertEqual(model.connectionState, .disconnected)
+        XCTAssertNil(model.eventTask)
+        model.setSceneActive(true)
+        model.connectionEnded(
+            generation: suspendedGeneration,
+            error: NSError(domain: NSPOSIXErrorDomain, code: Int(ECONNABORTED))
+        )
+        XCTAssertNil(model.toast)
+        XCTAssertEqual(model.connectionState, .disconnected)
+        XCTAssertEqual(model.composer, "Keep my draft")
+        XCTAssertEqual(model.navigationPath, [.chat(.session("chat-1"))])
+        XCTAssertTrue(model.reconnectsOnActivation)
+
+        // A failure on the replacement transport remains visible.
+        model.connectionEnded(generation: model.connectionGeneration, message: "Current transport failed")
+        XCTAssertEqual(model.connectionState, .failed("Current transport failed"))
+        XCTAssertNotNil(model.toast)
+    }
+}

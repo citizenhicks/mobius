@@ -18,6 +18,8 @@ extension AppModel {
 
     func connectionEnded(generation: UUID, message: String) {
         guard connectionGeneration == generation else { return }
+        cancelVoiceChatIntent()
+        stopRealtimeVoice()
         cancelReconnect()
         connectionGeneration = UUID()
         transcriptLoadGeneration = UUID()
@@ -86,6 +88,8 @@ extension AppModel {
         preservingDrafts: Bool,
         preservingSession: Bool = false
     ) -> UUID {
+        cancelVoiceChatIntent()
+        stopRealtimeVoice()
         if cloudPairingContinuation != nil {
             completeCloudPairing(.failure(CancellationError()))
         }
@@ -246,6 +250,7 @@ extension AppModel {
     }
 
     func resetSessionState(preservingComposerAttachments: Bool = false) {
+        stopRealtimeVoice()
         composerReply = nil
         messageNavigationRequest = nil
         workspace = nil

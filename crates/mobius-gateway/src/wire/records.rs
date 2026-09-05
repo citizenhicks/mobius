@@ -313,6 +313,7 @@ pub struct ProviderStatus {
     pub web_search: Vec<FrontendSettingOption>,
     pub tool_discovery: ToolDiscoveryMode,
     pub custom_endpoint_tool_discovery: Option<ToolDiscoveryMode>,
+    pub supports_realtime_voice: bool,
 }
 
 /// User-chosen accent for distinguishing provider instances in model selectors.

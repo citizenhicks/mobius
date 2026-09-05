@@ -58,6 +58,7 @@ fn status(provider: &str) -> ProviderStatus {
         symbol: FrontendSymbol::Storage,
         description: format!("{provider} provider"),
         model_ids_configurable,
+        supports_realtime_voice: false,
         auth,
         default_base_url,
         default_api_key_env,

@@ -109,6 +109,8 @@ extension AppModel {
 
     func handle(_ envelope: GatewayEnvelope) {
         switch envelope {
+        case .realtimeVoiceStarted, .realtimeVoiceEnded, .realtimeVoiceFailed:
+            handleRealtimeVoiceEnvelope(envelope)
         case .paired, .authenticated, .ready:
             handleConnectionEnvelope(envelope)
         case .sessionOpened, .sessionReplayComplete, .sessionHistory, .sessionChanged:
@@ -484,6 +486,8 @@ extension AppModel {
             }
             showToast(verbatim: failure.message, tone: .error)
             if failure.fatal {
+                cancelVoiceChatIntent()
+                stopRealtimeVoice()
                 automaticReconnectBlocked = true
                 cancelReconnect()
                 connectionGeneration = UUID()
@@ -528,6 +532,7 @@ extension AppModel {
         requestSessionData()
         cacheSelectedTranscript()
         submitPendingNewChatDraft(requestID: completedRequestID)
+        completePendingVoiceChat(requestID: completedRequestID)
     }
 
     func submitPendingNewChatDraft(requestID: String?) {
@@ -719,6 +724,7 @@ extension AppModel {
         if providerDraft == nil, let instance = providerInstances.first {
             editProviderInstance(instance)
         }
+        if !selectedRouteSupportsRealtimeVoice { stopRealtimeVoice() }
     }
 
     private func rememberGatewayMachineName(_ machineName: String) {
@@ -736,6 +742,7 @@ extension AppModel {
         replayRequestID: String? = nil
     ) {
         guard let bot = bots.first(where: { $0.id == payload.session.context.botId }) else {
+            cancelVoiceChatIntent()
             restorePendingDrafts()
             sessionRequestID = nil
             sessionOpeningID = nil
@@ -1367,6 +1374,7 @@ extension AppModel {
             approvalRequestID = nil
         }
         if rejection.requestId == sessionRequestID {
+            cancelVoiceChatIntent()
             sessionRequestID = nil
             sessionOpeningID = nil
             sessionOpenCursor = nil

@@ -71,8 +71,8 @@ use self::git::{
 };
 use self::profile::*;
 use self::replay::*;
-pub(crate) use self::session::HostHandle;
 use self::session::*;
+pub(crate) use self::session::{HostHandle, RealtimeModel};
 use self::ssh::{generate as generate_ssh_identity_on_host, identities as ssh_identities_on_host};
 
 const COMMAND_CAPACITY: usize = 128;

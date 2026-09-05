@@ -30,3 +30,28 @@ final class ComposerDictationTests: XCTestCase {
         )
     }
 }
+
+extension ComposerDictationTests {
+    @MainActor
+    func testConcurrentCancelAndDiscardJoinRecognitionTeardown() async {
+        let dictation = ComposerDictation()
+        let stopping = expectation(description: "Recognition teardown is suspended")
+        var resume: CheckedContinuation<Void, Never>?
+        var returned = 0
+        // Stand in for the asynchronous SpeechAnalyzer teardown without recording audio.
+        dictation.cancellationTask = Task {
+            await withCheckedContinuation { continuation in
+                resume = continuation
+                stopping.fulfill()
+            }
+        }
+        let first = Task { await dictation.cancel(); returned += 1 }
+        let second = Task { await dictation.discard(); returned += 1 }
+        await fulfillment(of: [stopping], timeout: 1)
+        XCTAssertEqual(returned, 0)
+        resume?.resume()
+        await first.value
+        await second.value
+        XCTAssertEqual(returned, 2)
+    }
+}

@@ -108,6 +108,7 @@ impl ModelRouter {
             .find(|current| current.choice.route == choice.route)
             .ok_or_else(|| Error::Unknown(format!("model route `{}`", choice.route)))?;
         choice.supports_image_input = current.provider.supports_image_input();
+        choice.supports_realtime_voice = current.provider.supports_realtime_voice();
         choice.tool_discovery = current.provider.tool_discovery();
         current.choice = choice;
         Ok(())
@@ -137,6 +138,20 @@ impl ModelRouter {
     /// Reports whether one route accepts native image input.
     pub fn supports_image_input(&self, provider: &str) -> Result<bool> {
         Ok(self.provider(provider)?.supports_image_input())
+    }
+
+    /// Reports whether one route can negotiate realtime voice.
+    pub fn supports_realtime_voice(&self, provider: &str) -> Result<bool> {
+        Ok(self.provider(provider)?.supports_realtime_voice())
+    }
+
+    /// Starts a provider-owned voice call through the selected model route.
+    pub async fn start_realtime_voice(
+        &self,
+        provider: &str,
+        request: super::RealtimeVoiceRequest,
+    ) -> Result<super::RealtimeVoiceCall> {
+        self.provider(provider)?.start_realtime_voice(request).await
     }
 
     /// Reports deferred-tool cache behavior for one route.
@@ -252,6 +267,7 @@ fn inferred_choice(route: &str, provider: &dyn Model) -> ModelChoice {
         reasoning_effort: info.reasoning_effort,
         context_window: None,
         supports_image_input: provider.supports_image_input(),
+        supports_realtime_voice: provider.supports_realtime_voice(),
         tool_discovery: provider.tool_discovery(),
     }
 }

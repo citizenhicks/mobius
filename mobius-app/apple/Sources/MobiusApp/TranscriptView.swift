@@ -1,35 +1,5 @@
 import Foundation
 import SwiftUI
-@preconcurrency import AVFoundation
-
-@MainActor
-private final class MessageSpeaker {
-    private let synthesizer = AVSpeechSynthesizer()
-    private var speechTask: Task<Void, Never>?
-
-    init() {
-        synthesizer.usesApplicationAudioSession = false
-    }
-
-    func speak(_ markdown: String) {
-        speechTask?.cancel()
-        _ = synthesizer.stopSpeaking(at: .immediate)
-        speechTask = Task { [weak self] in
-            let text = await markdown.markdownToPlainText()
-            guard let self,
-                  !Task.isCancelled,
-                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            else { return }
-            synthesizer.speak(AVSpeechUtterance(string: text))
-        }
-    }
-
-    func stop() {
-        speechTask?.cancel()
-        speechTask = nil
-        _ = synthesizer.stopSpeaking(at: .immediate)
-    }
-}
 
 /// The transcript body shared by the full chat and read-only agent previews.
 /// Navigation, pagination, and composing controls stay with their owning surface.
@@ -40,7 +10,8 @@ struct TranscriptRowsView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var visibleRowIDs = Set<TranscriptPresentationID>()
     @State private var hasAppeared = false
-    @State private var speaker = MessageSpeaker()
+    @Environment(AppModel.self) private var model
+    private var speaker: MessageSpeaker { model.messageSpeaker }
     let projection: TranscriptProjection
     let fileSessionID: String?
     var activeStepID: TranscriptPresentationID?
@@ -101,7 +72,6 @@ struct TranscriptRowsView: View {
                     entry: entry,
                     isUser: row.kind == .user,
                     isPeer: row.kind == .peer,
-                    speaker: speaker,
                     fileSessionID: fileSessionID,
                     allowsMessageActions: allowsMessageActions,
                     turnDiff: turnDiff(entry)
@@ -501,7 +471,6 @@ private struct TranscriptRow: View {
     /// projection sends only what the reader wrote and what the agent said back.
     let isUser: Bool
     let isPeer: Bool
-    let speaker: MessageSpeaker
     let fileSessionID: String?
     let allowsMessageActions: Bool
     let turnDiff: String
@@ -625,7 +594,7 @@ private struct TranscriptRow: View {
             }
             if !entry.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 MessageActionButton(title: "Speak", glyph: .volumeHigh) {
-                    speaker.speak(entry.text)
+                    model.speakMessage(entry.text)
                 }
             }
             if !entry.pending, let bot = displayedBot {
@@ -687,7 +656,7 @@ private struct TranscriptRow: View {
             }
         }
         if !entry.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            Button("Speak", glyph: .volumeHigh) { speaker.speak(entry.text) }
+            Button("Speak", glyph: .volumeHigh) { model.speakMessage(entry.text) }
         }
         if allowsMessageActions, entry.messageTarget != nil {
             Button("Reply", glyph: .re) { model.beginReplying(to: entry) }

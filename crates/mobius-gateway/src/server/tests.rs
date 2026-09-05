@@ -60,6 +60,7 @@ mod protocol;
 mod sessions;
 mod swarms;
 mod transport;
+mod voice;
 
 async fn create_bot_chat(
     sender: &GatewaySender,

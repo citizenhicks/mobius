@@ -211,7 +211,7 @@ fn same_provider_instances_have_distinct_routes_and_models() {
 }
 
 #[test]
-fn usage_sink_attributes_a_model_route_to_its_provider() {
+fn usage_sink_attributes_usage_to_its_provider() {
     let root = tempfile::tempdir().expect("root");
     let state = root.path().join("state");
     let (store, config) = ConfigStore::initialize(
@@ -221,14 +221,13 @@ fn usage_sink_attributes_a_model_route_to_its_provider() {
     )
     .expect("config");
     let gateway = Mutex::new(config);
-    let model_providers = BTreeMap::from([("primary".into(), "openai_socket".into())]);
     let usage = TokenUsage {
         input_tokens: 11,
         total_tokens: 11,
         ..TokenUsage::default()
     };
 
-    persist_usage(&gateway, &store, &model_providers, "primary", &usage).expect("persist usage");
+    persist_usage(&gateway, &store, "openai_socket", &usage).expect("persist usage");
 
     let (_, restored) = ConfigStore::open(state).expect("reopen config");
     let daily_usage = restored.profile().daily_usage;

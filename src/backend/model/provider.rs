@@ -258,6 +258,7 @@ pub struct ProviderDefinition {
     default_model: Option<&'static str>,
     web_search: &'static [HostedWebSearch],
     supports_image_input: bool,
+    supports_realtime_voice: bool,
     tool_discovery: ToolDiscoveryMode,
     custom_endpoint_tool_discovery: Option<ToolDiscoveryMode>,
     default_base_url: Option<&'static str>,
@@ -291,6 +292,7 @@ impl ProviderDefinition {
             default_model,
             web_search,
             supports_image_input: false,
+            supports_realtime_voice: false,
             tool_discovery: ToolDiscoveryMode::Rebuild,
             custom_endpoint_tool_discovery: None,
             default_base_url: None,
@@ -303,6 +305,11 @@ impl ProviderDefinition {
     #[must_use]
     pub(crate) const fn with_image_input(mut self) -> Self {
         self.supports_image_input = true;
+        self
+    }
+
+    pub(crate) const fn with_realtime_voice(mut self) -> Self {
+        self.supports_realtime_voice = true;
         self
     }
 
@@ -374,6 +381,12 @@ impl ProviderDefinition {
     #[must_use]
     pub const fn supports_image_input(&self) -> bool {
         self.supports_image_input
+    }
+
+    /// Reports realtime capability only for the provider's supported first-party endpoint.
+    #[must_use]
+    pub fn supports_realtime_voice(&self, base_url: Option<&str>) -> bool {
+        self.supports_realtime_voice && self.uses_default_endpoint(base_url)
     }
 
     /// Resolves cache behavior for one model and endpoint selection.

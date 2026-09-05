@@ -184,6 +184,8 @@ pub(crate) fn catalog_routes(
                         preset.map_or(DEFAULT_CONTEXT_WINDOW, |preset| preset.context_window),
                     ),
                     supports_image_input: definition.supports_image_input(),
+                    supports_realtime_voice: definition
+                        .supports_realtime_voice(selection.base_url.as_deref()),
                     tool_discovery: definition.tool_discovery(model, selection.base_url.as_deref()),
                 },
                 provider,
@@ -279,6 +281,7 @@ fn provider_status(definition: &ProviderDefinition) -> ProviderStatus {
             .collect(),
         tool_discovery: definition.default_tool_discovery(),
         custom_endpoint_tool_discovery: definition.custom_endpoint_tool_discovery(),
+        supports_realtime_voice: definition.supports_realtime_voice(None),
     }
 }
 

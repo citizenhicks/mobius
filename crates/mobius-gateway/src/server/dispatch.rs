@@ -21,14 +21,22 @@ pub(super) struct ConnectionSessionState<'a> {
     pub(super) session_files: &'a SessionFileStore,
     pub(super) bots: &'a BotStore,
     pub(super) uploads: &'a mut BTreeMap<(String, String), PendingSessionFileWrite>,
+    pub(super) voice: &'a mut Option<super::voice::ConnectionVoice>,
 }
 
 pub(super) async fn selected_broadcast(
     selected: &mut Option<SelectedChat>,
 ) -> std::result::Result<ServerFrame, broadcast::error::RecvError> {
-    match selected {
-        Some(active) => active.broadcasts.recv().await,
-        None => std::future::pending().await,
+    let Some(active) = selected else {
+        return std::future::pending().await;
+    };
+    loop {
+        let frame = active.broadcasts.recv().await?;
+        let sequence = sequence(&frame);
+        if sequence.is_none_or(|value| value > active.delivered_sequence) {
+            active.delivered_sequence = sequence.unwrap_or(active.delivered_sequence);
+            return Ok(frame);
+        }
     }
 }
 
@@ -45,6 +53,10 @@ pub(super) async fn handle_message(
         return write_server_error(writer, "bot_deletion_recovery", rejection.message, false).await;
     }
     let Some(message) = handle_collaboration_message(message, writer, gateway).await? else {
+        return Ok(());
+    };
+    let Some(message) = super::voice::handle_message(message, &mut connection, writer).await?
+    else {
         return Ok(());
     };
     match message {
@@ -565,6 +577,9 @@ pub(super) async fn handle_message(
         } => {
             get_routine_run_preview(writer, request_id, id, before_sequence, gateway).await?;
         }
+        ClientMessage::StartRealtimeVoice { .. } | ClientMessage::EndRealtimeVoice { .. } => {
+            unreachable!("voice messages are handled before general dispatch")
+        }
         ClientMessage::ListBotSessions { .. }
         | ClientMessage::CreateSwarm { .. }
         | ClientMessage::AddSwarmMember { .. }
@@ -943,6 +958,13 @@ async fn delete_sessions(
 }
 
 fn forget_deleted_sessions(connection: &mut ConnectionSessionState<'_>, deleted: &[String]) {
+    if connection
+        .voice
+        .as_ref()
+        .is_some_and(|voice| deleted.contains(&voice.session_id))
+    {
+        *connection.voice = None;
+    }
     connection
         .uploads
         .retain(|(session_id, _), _| !deleted.contains(session_id));

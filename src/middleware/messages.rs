@@ -1,5 +1,7 @@
 //! Durable conversation-message delivery.
 
+pub mod voice;
+
 use super::manifest::{
     MiddlewareManifest, MiddlewareSettingChoice, MiddlewareSettingChoices,
     MiddlewareSettingManifest,

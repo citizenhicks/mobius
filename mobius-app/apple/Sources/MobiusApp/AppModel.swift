@@ -56,7 +56,11 @@ final class AppModel {
     @ObservationIgnored var chatTitleTasks: [String: Task<Void, Never>] = [:]
     @ObservationIgnored var titleEligibleSessionIDs: Set<String> = []
     var pendingChatTitles: [String: PendingChatTitle] = [:]
-    var selectedSessionID: String?
+    var selectedSessionID: String? {
+        didSet {
+            if oldValue != selectedSessionID { stopRealtimeVoice() }
+        }
+    }
     var chatPresentationRevision = 0
     var sessionToRename: SessionRecord?
     var sessionRenameDraft = ""
@@ -184,7 +188,17 @@ final class AppModel {
     var gatewayContributions: [FrontendContribution] = []
     var swarmContributions: [String: [FrontendContribution]] = [:]
     var extensionInstallSource = ""
-    var selectedModelRoute = ""
+    var selectedModelRoute = "" {
+        didSet {
+            if oldValue != selectedModelRoute { stopRealtimeVoice() }
+        }
+    }
+    let dictation = ComposerDictation()
+    @ObservationIgnored let messageSpeaker = MessageSpeaker()
+    var realtimeVoice = RealtimeVoiceSession()
+    var realtimeVoiceCall: RealtimeVoiceCall?
+    var newVoiceChatIntent: NewVoiceChatIntent?
+    @ObservationIgnored var realtimeVoiceTask: Task<Void, Never>?
     private(set) var contributionsRevision = 0
     var contributions: [FrontendContribution] = [] {
         didSet { contributionsRevision &+= 1 }
@@ -234,7 +248,11 @@ final class AppModel {
     var isChangingWorkspace = false
     var pendingNewChatWorkspace: String?
     var pendingNewChatBotID: String?
-    var showsWorkspaceBrowser = false
+    var showsWorkspaceBrowser = false {
+        didSet {
+            if !showsWorkspaceBrowser, newVoiceChatIntent == .selectingWorkspace { cancelVoiceChatIntent() }
+        }
+    }
     var directoryListing: DirectoryListing?
     var directoryError: String?
     var isLoadingDirectories = false

@@ -677,6 +677,7 @@ async fn delete_sessions_preflight_all_roots_before_durable_removal() {
                 terminated: Arc::new(AtomicBool::new(true)),
                 termination: Arc::new(tokio::sync::Notify::new()),
                 session_mutations: Arc::new(tokio::sync::RwLock::new(())),
+                realtime_voice: Arc::new(tokio::sync::Mutex::new(())),
             }),
         },
     );
@@ -841,6 +842,7 @@ async fn capacity_reclaims_an_unreferenced_idle_chat() {
                     terminated: Arc::new(AtomicBool::new(true)),
                     termination: Arc::new(tokio::sync::Notify::new()),
                     session_mutations: Arc::new(tokio::sync::RwLock::new(())),
+                    realtime_voice: Arc::new(tokio::sync::Mutex::new(())),
                 }),
             },
         );

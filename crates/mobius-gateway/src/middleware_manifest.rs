@@ -314,6 +314,7 @@ mod tests {
             reasoning_effort: Some("high".into()),
             context_window: Some(200_000),
             supports_image_input: true,
+            supports_realtime_voice: false,
             tool_discovery: mobius::protocol::ToolDiscoveryMode::Native,
         }];
         let subagents = features(&models)

@@ -83,6 +83,7 @@ fn fake_bot_host(
                 terminated: Arc::new(AtomicBool::new(true)),
                 termination: Arc::new(tokio::sync::Notify::new()),
                 session_mutations: Arc::new(tokio::sync::RwLock::new(())),
+                realtime_voice: Arc::new(tokio::sync::Mutex::new(())),
             }),
         },
         updated_receiver,
@@ -162,6 +163,7 @@ fn fake_racing_bot_host(
                 terminated: Arc::new(AtomicBool::new(true)),
                 termination: Arc::new(tokio::sync::Notify::new()),
                 session_mutations: Arc::new(tokio::sync::RwLock::new(())),
+                realtime_voice: Arc::new(tokio::sync::Mutex::new(())),
             }),
         },
         reload_started_receiver,
@@ -217,6 +219,7 @@ fn fake_rollback_host(
                 terminated: Arc::new(AtomicBool::new(true)),
                 termination: Arc::new(tokio::sync::Notify::new()),
                 session_mutations: Arc::new(tokio::sync::RwLock::new(())),
+                realtime_voice: Arc::new(tokio::sync::Mutex::new(())),
             }),
         },
         updated_receiver,
@@ -1489,6 +1492,7 @@ async fn routine_acceptance_keeps_the_gateway_registry_locked() {
             terminated: Arc::new(AtomicBool::new(true)),
             termination: Arc::new(tokio::sync::Notify::new()),
             session_mutations: Arc::new(tokio::sync::RwLock::new(())),
+            realtime_voice: Arc::new(tokio::sync::Mutex::new(())),
         }),
     };
     let mut state = gateway.state.lock().await;
