@@ -379,9 +379,10 @@ struct AppShell: View {
             .labelsHidden()
         } label: {
             HStack(spacing: MobiusSpace.xs) {
-                Circle()
-                    .fill(model.connectionState.tone.color(in: palette))
-                    .frame(width: 6, height: 6)
+                MobiusStatusIndicator(
+                    color: model.connectionState.tone.color(in: palette),
+                    isLoading: model.connectionState.isLoading
+                )
                 Text(verbatim: account.machineName)
                     .font(MobiusStyle.captionFont)
                     .lineLimit(1)

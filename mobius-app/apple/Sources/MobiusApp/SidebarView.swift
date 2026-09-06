@@ -163,7 +163,6 @@ struct SidebarDrawer<Sidebar: View, Detail: View>: View {
 
 struct SidebarView: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.mobiusPalette) private var palette
     let showDetail: (AppDestination) -> Void
     @State private var showsConnectionDetails = false
@@ -194,18 +193,12 @@ struct SidebarView: View {
                     Button {
                         showsConnectionDetails = true
                     } label: {
-                        // A solid dot, not an icon: HugeIcons is a stroked set with no
-                        // filled circle, and an outlined ring reads as a control here.
-                        Circle()
-                            .fill(model.connectionState.tone.color(in: palette))
-                            .frame(width: 8, height: 8)
-                            .symbolEffect(
-                                .pulse.byLayer,
-                                options: .repeat(.continuous),
-                                isActive: !reduceMotion
-                            )
-                            .frame(width: MobiusStyle.iconButtonSize, height: MobiusStyle.iconButtonSize)
-                            .contentShape(Rectangle())
+                        MobiusStatusIndicator(
+                            color: model.connectionState.tone.color(in: palette),
+                            isLoading: model.connectionState.isLoading
+                        )
+                        .frame(width: MobiusStyle.iconButtonSize, height: MobiusStyle.iconButtonSize)
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.mobiusPlain)
                     .accessibilityLabel("Gateway connection")

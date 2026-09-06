@@ -1,6 +1,25 @@
 import SwiftUI
 import UIKit
 
+struct MobiusStatusIndicator: View {
+    let color: Color
+    var isLoading = false
+
+    var body: some View {
+        Group {
+            if isLoading {
+                MobiusSpinner(size: MobiusStyle.glyphInline, foreground: color)
+            } else {
+                Circle()
+                    .fill(color)
+                    .frame(width: 8, height: 8)
+            }
+        }
+        .frame(width: MobiusStyle.glyphInline, height: MobiusStyle.glyphInline)
+        .accessibilityHidden(true)
+    }
+}
+
 struct MobiusCard<Content: View>: View {
     let content: Content
 

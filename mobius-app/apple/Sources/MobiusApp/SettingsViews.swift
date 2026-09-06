@@ -204,13 +204,13 @@ struct SettingsStatusAccessory: View {
 }
 
 struct SettingsStatusButton: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.mobiusPalette) private var palette
     @State private var showsStatus = false
     let subject: MobiusText
     let statusLabel: MobiusText
     let statusDetail: MobiusText
     let statusColor: Color
+    let isLoading: Bool
     var secondaryActionLabel: MobiusText?
     var secondaryAction: (() -> Void)?
 
@@ -219,6 +219,7 @@ struct SettingsStatusButton: View {
         statusLabel: LocalizedStringResource,
         statusDetail: LocalizedStringResource,
         statusColor: Color,
+        isLoading: Bool = false,
         secondaryActionLabel: LocalizedStringResource? = nil,
         secondaryAction: (() -> Void)? = nil
     ) {
@@ -227,6 +228,7 @@ struct SettingsStatusButton: View {
             statusLabel: .localized(statusLabel),
             statusDetail: .localized(statusDetail),
             statusColor: statusColor,
+            isLoading: isLoading,
             secondaryActionLabel: secondaryActionLabel.map { .localized($0) },
             secondaryAction: secondaryAction
         )
@@ -237,6 +239,7 @@ struct SettingsStatusButton: View {
         statusLabel: MobiusText,
         statusDetail: MobiusText,
         statusColor: Color,
+        isLoading: Bool = false,
         secondaryActionLabel: MobiusText? = nil,
         secondaryAction: (() -> Void)? = nil
     ) {
@@ -244,6 +247,7 @@ struct SettingsStatusButton: View {
         self.statusLabel = statusLabel
         self.statusDetail = statusDetail
         self.statusColor = statusColor
+        self.isLoading = isLoading
         self.secondaryActionLabel = secondaryActionLabel
         self.secondaryAction = secondaryAction
     }
@@ -252,14 +256,7 @@ struct SettingsStatusButton: View {
         Button {
             showsStatus = true
         } label: {
-            Circle()
-                .fill(statusColor)
-                .frame(width: 8, height: 8)
-                .symbolEffect(
-                    .pulse.byLayer,
-                    options: .repeat(.continuous),
-                    isActive: !reduceMotion
-                )
+            MobiusStatusIndicator(color: statusColor, isLoading: isLoading)
         }
         .accessibilityLabel(statusAccessibilityLabel)
         .accessibilityValue(statusLabel.text)
@@ -336,7 +333,8 @@ struct GatewayView: View {
                         subject: .localized("Gateway"),
                         statusLabel: status.label,
                         statusDetail: status.detail,
-                        statusColor: status.color
+                        statusColor: status.color,
+                        isLoading: model.connectionState.isLoading
                     )
                     .groupedHeaderAction()
                 }
@@ -396,7 +394,7 @@ struct GatewayView: View {
             return (
                 .localized(model.connectionState.label),
                 .localized("Pair a gateway to run chats on it."),
-                palette.warning
+                model.connectionState.tone.color(in: palette)
             )
         }
     }
@@ -527,9 +525,10 @@ struct GatewayDetailView: View {
                 if isActive {
                     LabeledContent("Status") {
                         HStack(spacing: MobiusSpace.s) {
-                            Circle()
-                                .fill(model.connectionState.tone.color(in: palette))
-                                .frame(width: 7, height: 7)
+                            MobiusStatusIndicator(
+                                color: model.connectionState.tone.color(in: palette),
+                                isLoading: model.connectionState.isLoading
+                            )
                             Text(model.connectionState.label)
                         }
                         .font(MobiusStyle.controlFont)

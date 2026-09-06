@@ -6,6 +6,30 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testLoadingStatusChangesItsMarkWithoutMovingTheLabel() throws {
+        var images: [UIImage] = []
+        for isLoading in [false, true] {
+            let renderer = ImageRenderer(content:
+                HStack {
+                    Mobius.MobiusStatusIndicator(color: .black, isLoading: isLoading)
+                    Text(verbatim: "Gateway")
+                }
+                .foregroundStyle(.black)
+                .padding()
+                .background(.white)
+                .environment(\.scenePhase, .inactive)
+            )
+            let image = try XCTUnwrap(renderer.uiImage)
+            images.append(image)
+            let attachment = XCTAttachment(image: image)
+            attachment.name = isLoading ? "Gateway connecting spinner" : "Gateway status dot"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+        XCTAssertEqual(images[0].size, images[1].size)
+        XCTAssertNotEqual(try XCTUnwrap(images[0].pngData()), try XCTUnwrap(images[1].pngData()))
+    }
+
     func testAppLockKeepsPresentedFormAndItsDraftMounted() async throws {
         let suite = UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))

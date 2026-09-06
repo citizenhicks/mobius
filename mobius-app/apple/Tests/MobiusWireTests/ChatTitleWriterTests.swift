@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import XCTest
 
 final class ChatTitleWriterTests: XCTestCase {
@@ -62,5 +63,50 @@ final class ChatTitleWriterTests: XCTestCase {
         }
         XCTAssertEqual(message, "Apple returned an unusable chat title.")
         XCTAssertFalse(message.contains("Private prompt"))
+    }
+
+    @MainActor
+    func testGeneratedTitlesPreserveWordBoundariesAndUnspacedLanguages() async {
+        for (raw, expected) in [
+            ("  Review\t the   gateway  ", "Review the gateway"),
+            ("L’état\u{00A0}de\u{202F}la connexion", "L’état de la connexion"),
+            ("同步网关", "同步网关"),
+            ("Settings", "Settings"),
+        ] {
+            let writer = ChatTitleWriter { _ in raw }
+            guard case .title(let title) = await writer.title(for: "Name this chat") else {
+                return XCTFail("Expected a usable title for \(raw)")
+            }
+            XCTAssertEqual(title, expected)
+        }
+    }
+
+    @MainActor
+    func testSettledTitlePreservesNativeTextSpacingAndTruncation() throws {
+        func pixels(_ view: some View) throws -> Data {
+            let renderer = ImageRenderer(content: view
+                .font(.headline)
+                .lineLimit(1)
+                .foregroundStyle(.black)
+                .frame(width: 180, height: 44, alignment: .leading))
+            renderer.scale = 2
+            let image = try XCTUnwrap(renderer.cgImage)
+            let pixels = try XCTUnwrap(image.dataProvider?.data) as Data
+            XCTAssertTrue(pixels.contains { $0 != 0 }, "Expected visible title glyphs")
+            return pixels
+        }
+
+        for title in [
+            "Review  the gateway",
+            "L’état\u{00A0}de la connexion",
+            "同步网关",
+            "Review the gateway connection behavior",
+        ] {
+            XCTAssertEqual(
+                try pixels(MobiusTitleText(verbatim: title)),
+                try pixels(Text(verbatim: title)),
+                title
+            )
+        }
     }
 }

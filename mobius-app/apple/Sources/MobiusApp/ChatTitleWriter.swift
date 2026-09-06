@@ -5,7 +5,7 @@ import Observation
 
 @Generable
 private struct GeneratedChatTitle {
-    @Guide(description: "A concise chat title with no more than four words and 42 characters.")
+    @Guide(description: "A short natural-language title, at most four words. Preserve normal word spacing.")
     var title: String
 }
 #endif

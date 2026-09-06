@@ -26,7 +26,8 @@ struct ExtensionsView: View {
                         subject: .localized("Extensions"),
                         statusLabel: status.label,
                         statusDetail: status.detail,
-                        statusColor: status.color
+                        statusColor: status.color,
+                        isLoading: model.connectionState.isLoading || model.extensionAction != nil
                     )
                     .groupedHeaderAction()
                 }
@@ -205,7 +206,7 @@ struct ExtensionsView: View {
             return (
                 .localized(model.connectionState.label),
                 .localized("Connect to a gateway to manage its extension catalog."),
-                palette.warning
+                model.connectionState.tone.color(in: palette)
             )
         }
     }

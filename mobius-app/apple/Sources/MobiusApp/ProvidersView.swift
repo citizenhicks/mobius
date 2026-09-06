@@ -28,7 +28,8 @@ struct ProvidersView: View {
                         subject: .localized("Providers"),
                         statusLabel: status.label,
                         statusDetail: status.detail,
-                        statusColor: status.color
+                        statusColor: status.color,
+                        isLoading: model.connectionState.isLoading
                     )
                     .groupedHeaderAction()
                 }
@@ -115,7 +116,7 @@ struct ProvidersView: View {
             return (
                 .localized(model.connectionState.label),
                 .localized("Connect to a gateway to manage its providers."),
-                palette.warning
+                model.connectionState.tone.color(in: palette)
             )
         }
     }
