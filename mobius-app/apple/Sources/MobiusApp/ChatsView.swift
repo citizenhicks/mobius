@@ -667,7 +667,7 @@ struct SessionCatalogRow: View {
             .buttonStyle(.mobiusPlain)
             .disabled(
                 !isSelecting
-                    && !model.canOpenSession
+                    && !model.canBrowseSessions
                     && session.sessionId != model.selectedSessionID
             )
             .accessibilityValue(

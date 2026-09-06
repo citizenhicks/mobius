@@ -35,6 +35,10 @@ extension AppModel {
         cancelExtensionAndCredentialRequests()
         workspaceFilesRequestID = nil
         workspaceFileWriteRequestID = nil
+        gitBranchRequestID = nil
+        routineRunPreviewRequestID = nil
+        routineRunPreviewRequestBeforeSequence = nil
+        isLoadingRoutineRunPreview = false
         isLoadingWorkspaceFiles = false
         isSavingWorkspaceFile = false
         discardPendingComposerAttachments()
@@ -112,8 +116,8 @@ extension AppModel {
             nextHistoryBeforeSequence = nil
             transcriptWindowAnchor = .tail
             awaitingInitialMessageTurnID = nil
+            replayPresentedTranscript = nil
         }
-        if !preservingSession { replayPresentedTranscript = nil }
         if preservingDrafts {
             discardPendingComposerAttachments()
         } else {
@@ -130,8 +134,6 @@ extension AppModel {
         pendingPresentedTranscript = nil
         botSessionsRequestID = nil
         pendingBotSessionResume = nil
-        botSessions = []
-        botSessionsBotID = nil
         isLoadingBotSessions = false
         sessionMutationRequestID = nil
         swarmMutationRequestID = nil
@@ -141,10 +143,8 @@ extension AppModel {
         botMutationSuccessMessage = nil
         pendingDeletedSessionIDs = []
         pendingDeletedPresentedSessionID = nil
-        if preservingSession {
-            for sessionID in Array(pendingChatTitles.keys) {
-                pendingChatTitles[sessionID]?.renameRequestID = nil
-            }
+        for sessionID in Array(pendingChatTitles.keys) {
+            pendingChatTitles[sessionID]?.renameRequestID = nil
         }
         sessionToRestoreID = nil
         botDefaultsRequestID = nil
@@ -153,11 +153,6 @@ extension AppModel {
         botDefaultsApplyState = .idle
         workspaceError = nil
         isChangingWorkspace = false
-        pendingNewChatWorkspace = nil
-        pendingNewChatBotID = nil
-        showsWorkspaceBrowser = false
-        directoryListing = nil
-        directoryError = nil
         directoryRequestID = nil
         isLoadingDirectories = false
         if preservingSession {
@@ -172,10 +167,23 @@ extension AppModel {
             cancelSessionFileThumbnailDownloads()
         }
         if !preservingSession {
+            selectedSessionID = nil
+        }
+        // A transport replacement must not replace the user's navigation or setup drafts.
+        if !preservingDrafts {
             chatTitleTasks.values.forEach { $0.cancel() }
             chatTitleTasks.removeAll()
             titleEligibleSessionIDs.removeAll()
             pendingChatTitles.removeAll()
+            botSessions = []
+            botSessionsBotID = nil
+            pendingNewChatWorkspace = nil
+            pendingNewChatBotID = nil
+            showsWorkspaceBrowser = false
+            directoryListing = nil
+            directoryError = nil
+            routineRunPreviewPollingTask?.cancel()
+            routineRunPreviewPollingTask = nil
             sessions = []
             backgroundApprovals = []
             swarmAttentions = []
@@ -183,7 +191,6 @@ extension AppModel {
             bots = []
             swarms = []
             gatewayMachineName = ""
-            selectedSessionID = nil
             navigationPath = []
             sessionToRename = nil
             sessionRenameDraft = ""
@@ -207,29 +214,52 @@ extension AppModel {
             botNameDraft = ""
             botDescriptionDraft = ""
             botTintDraft = .appDefault
+            routines = []
+            routineRuns = []
+            routineError = nil
+            presentedRoutineRun = nil
+            routineRunPreview = nil
+            routineRunPreviewEntries = []
+            routineRunPreviewNextBeforeSequence = nil
+            routineRunPreviewError = nil
             providerDraft = nil
+            providerLabelDraft = ""
+            providerTintDraft = .appDefault
+            providerAPIKey = ""
+            providerModelIDsText = ""
+            providerReasoningEffortsText = ""
+            providerActionState = .idle
+            pendingProviderLogin = nil
+            gitCredentialAvailable = nil
+            gitCredentialUsername = nil
+            gitCredentialError = nil
+            sshIdentities = nil
+            sshIdentityError = nil
+            generatedSshIdentity = nil
+            pairingCodeExpiryTask?.cancel()
+            pairingCodeExpiryTask = nil
+            pairingCodeInfo = nil
+            pairingCode = ""
+            pairingError = nil
+        } else if pendingProviderCredential != nil {
+            // A write may have reached the gateway without its response reaching us.
+            // Keep the key available for an explicit retry; never resend it automatically.
+            providerActionState = .failed(localizedString(
+                "The gateway disconnected. Send the key again to confirm it was saved."
+            ))
         }
-        providerAPIKey = ""
-        providerModelIDsText = ""
-        providerReasoningEffortsText = ""
-        providerActionState = .idle
         pendingProviderCredential = nil
-        providerLoginRequestID = nil
         providerRegistrationRequestID = nil
         pendingProviderRemoval = nil
-        gitCredentialAvailable = nil
-        gitCredentialUsername = nil
-        gitCredentialError = nil
-        sshIdentities = nil
-        sshIdentityError = nil
         cancelExtensionAndCredentialRequests()
-        generatedSshIdentity = nil
         pairingCodeRequestID = nil
-        pairingCodeExpiryTask?.cancel()
-        pairingCodeExpiryTask = nil
-        pairingCodeInfo = nil
-        pairingCode = ""
-        pairingError = nil
+        gitBranchRequestID = nil
+        workspaceFileWriteRequestID = nil
+        isSavingWorkspaceFile = false
+        routineRequestIDs.removeAll()
+        routineRunPreviewRequestID = nil
+        routineRunPreviewRequestBeforeSequence = nil
+        isLoadingRoutineRunPreview = false
         if !preservingSession {
             discardFileThumbnails()
             resetSessionState()
@@ -280,20 +310,6 @@ extension AppModel {
         contributions = []
         agentSnapshot = nil
         agentDraft = nil
-        routines = []
-        routineRuns = []
-        routineError = nil
-        routineRequestIDs.removeAll()
-        routineRunPreviewPollingTask?.cancel()
-        routineRunPreviewPollingTask = nil
-        routineRunPreviewRequestID = nil
-        routineRunPreviewRequestBeforeSequence = nil
-        presentedRoutineRun = nil
-        routineRunPreview = nil
-        routineRunPreviewEntries = []
-        routineRunPreviewNextBeforeSequence = nil
-        isLoadingRoutineRunPreview = false
-        routineRunPreviewError = nil
         transcript = []
         deltaFlushTask?.cancel()
         deltaFlushTask = nil

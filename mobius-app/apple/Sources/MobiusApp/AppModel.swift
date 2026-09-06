@@ -71,10 +71,10 @@ final class AppModel {
         didSet { updateTranscriptWindow(after: oldValue) }
     }
     var replayPresentedTranscript: [TranscriptEntry]? {
-        didSet { transcriptWindowAnchor = .tail }
+        didSet { invalidateTranscriptProjection() }
     }
     var pendingPresentedTranscript: [TranscriptEntry]? {
-        didSet { transcriptWindowAnchor = .tail }
+        didSet { invalidateTranscriptProjection() }
     }
     var transcriptWindowAnchor = TranscriptWindowAnchor.tail {
         didSet { invalidateTranscriptProjection() }
@@ -118,6 +118,10 @@ final class AppModel {
     }
 
     var isLoadingTranscript: Bool {
+        if !connectionState.isReady, let selectedSessionID,
+           sessionToRestoreID == selectedSessionID, latestSequence == nil, transcript.isEmpty {
+            return true
+        }
         guard connectionState == .loading,
               sessionRequestID != nil || replayRequestID != nil
         else { return false }
@@ -140,7 +144,7 @@ final class AppModel {
     }
     var canLoadEarlierHistory: Bool {
         hasEarlierHistory
-            && connectionState.isReady
+            && (connectionState.isReady || transcriptWindow.hasEarlierEntries)
             && historyRequestID == nil
     }
     var composer = "" {
@@ -395,7 +399,7 @@ final class AppModel {
     )?
     @ObservationIgnored var pairingCodeRequestID: String?
     @ObservationIgnored var pairingCodeExpiryTask: Task<Void, Never>?
-    @ObservationIgnored var providerLoginRequestID: String?
+    var pendingProviderLogin: (requestID: String, provider: String)?
     @ObservationIgnored var providerRegistrationRequestID: String?
     var pendingProviderRemoval: (requestID: String, instance: String)?
     @ObservationIgnored var extensionRequestID: String?
@@ -541,21 +545,19 @@ final class AppModel {
     }
 
     var presentedChatSessionID: String? {
-        guard destination == .chats,
-              case .chat(let route) = navigationPath.last
+        guard case .chat(let route) = navigationPath.last
         else { return nil }
         return route.sessionID
     }
 
     var isPresentingChat: Bool {
-        destination == .chats && navigationPath.last.map {
+        navigationPath.last.map {
             if case .chat = $0 { true } else { false }
         } == true
     }
 
     private var canChangeSession: Bool {
-        connectionState.isReady
-            && pendingDrafts.isEmpty
+        pendingDrafts.isEmpty
             && sessionRequestID == nil
             && sessionMutationRequestID == nil
             && gitBranchRequestID == nil
@@ -567,12 +569,17 @@ final class AppModel {
             && !isApplyingConfiguration
     }
 
+    var canBrowseSessions: Bool {
+        (connectionState.isReady || selectedAccountID != nil)
+            && canChangeSession && composerAttachments.isEmpty
+    }
+
     var canOpenSession: Bool {
-        canChangeSession && composerAttachments.isEmpty
+        connectionState.isReady && canBrowseSessions
     }
 
     var canCreateSession: Bool {
-        canChangeSession && (composerAttachments.isEmpty || (
+        connectionState.isReady && canChangeSession && (composerAttachments.isEmpty || (
             selectedSessionID == nil
                 && pendingNewChatWorkspace != nil
                 && composerAttachments.allSatisfy {
@@ -992,7 +999,8 @@ final class AppModel {
     func pinTranscriptWindowIfNeeded() {
         guard replayRequestID == nil,
               historyRequestID == nil,
-              let cached = transcriptWindowCache
+              let cached = transcriptWindowCache,
+              cached.turnCount > 0
         else { return }
         switch transcriptWindowAnchor {
         case .visibleTurns:

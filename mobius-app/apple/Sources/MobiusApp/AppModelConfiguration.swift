@@ -366,7 +366,7 @@ extension AppModel {
         providerModelIDsText = ""
         providerReasoningEffortsText = ""
         providerAPIKey = ""
-        providerActionState = .idle
+        if pendingProviderLogin == nil { providerActionState = .idle }
     }
 
     /// Loads an existing setup for editing. Every field, including the key, is replaceable.
@@ -377,7 +377,7 @@ extension AppModel {
         providerModelIDsText = instance.modelIds.joined(separator: ", ")
         providerReasoningEffortsText = instance.reasoningEfforts.joined(separator: ", ")
         providerAPIKey = ""
-        providerActionState = .idle
+        if pendingProviderLogin == nil { providerActionState = .idle }
     }
 
     var providerModelIDs: [String] {
@@ -498,13 +498,20 @@ extension AppModel {
     }
 
     func startProviderLogin() {
-        guard let provider = providerDraft?.provider else { return }
-        let id = requestID("login")
-        providerLoginRequestID = id
+        guard connectionState.isReady,
+              pendingProviderLogin == nil,
+              let provider = providerDraft?.provider
+        else { return }
+        pendingProviderLogin = (requestID("login"), provider)
         providerActionState = .startingLogin(provider)
-        transmit(.startProviderLogin(requestID: id, provider: provider)) { [weak self] message in
-            self?.providerActionState = .failed(message)
-        }
+        resumeProviderLogin()
+    }
+
+    func resumeProviderLogin() {
+        guard connectionState.isReady, let login = pendingProviderLogin else { return }
+        // The same request resumes its gateway-owned attempt, including a missed result.
+        // Keep the identity if sending fails: the gateway may already have received it.
+        transmit(.startProviderLogin(requestID: login.requestID, provider: login.provider))
     }
 
     func createPairingCode() {
@@ -526,8 +533,6 @@ extension AppModel {
             return
         }
         let id = requestID("git-credential")
-        gitCredentialAvailable = nil
-        gitCredentialUsername = nil
         gitCredentialError = nil
         gitCredentialRequestID = id
         isApprovingGitCredential = false

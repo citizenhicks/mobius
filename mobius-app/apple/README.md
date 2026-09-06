@@ -49,4 +49,10 @@ the hosted gateway and pairs with its one-time grant.
 The one-time code is only the first pairing credential. A successful pairing
 returns a per-pairing bearer token, which this app stores in device-only Keychain
 storage and uses for later connections. Provider credentials are write-only and
-are never stored by this app.
+are never persisted by this app.
+
+Reconnecting to the same gateway preserves navigation, loaded catalogs, open
+forms, and unsaved drafts. Cached chats remain readable while connecting; the
+visible chat then resumes from its cached event cursor. Device sign-in resumes
+the same gateway-owned attempt, including a result missed while the app was in
+the background. Switching gateways clears the previous gateway's setup state.

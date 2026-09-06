@@ -478,8 +478,9 @@ extension AppModelTests {
         model.pendingApproval = approval
 
         model.resolveApproval(.approved)
-        try await Task.sleep(for: .milliseconds(20))
+        let failed = await eventually { model.toast?.tone == .error }
 
+        XCTAssertTrue(failed)
         XCTAssertEqual(model.pendingApproval, approval)
         XCTAssertEqual(model.toast?.tone, .error)
     }
@@ -583,5 +584,30 @@ extension AppModelTests {
         model.connectionEnded(generation: model.connectionGeneration, message: "Current transport failed")
         XCTAssertEqual(model.connectionState, .failed("Current transport failed"))
         XCTAssertNotNil(model.toast)
+    }
+}
+
+@MainActor
+extension AppModelTests {
+    func testReadyKeepsSettingsOpenedWhileThePreviousChatWasReconnecting() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model { await recorder.record($0) }
+        model.selectedSessionID = "chat-1"
+        model.sessionToRestoreID = "chat-1"
+        model.connectionState = .connecting
+        model.destination = .providers
+        model.navigationPath = [.settings(.provider("my-provider"))]
+        model.handle(.ready(ready(
+            botDefaults: VersionedAgentConfig(revision: 1, config: composition())
+        )))
+        XCTAssertEqual(model.destination, .providers)
+        XCTAssertEqual(model.navigationPath, [.settings(.provider("my-provider"))])
+        XCTAssertNil(model.sessionToRestoreID)
+        XCTAssertNil(model.selectedSessionID)
+        let requests = await recorder.requests()
+        XCTAssertFalse(requests.contains {
+            if case .openSession = $0 { return true }
+            return false
+        })
     }
 }

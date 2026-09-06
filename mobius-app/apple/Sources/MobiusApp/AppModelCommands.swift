@@ -24,20 +24,8 @@ extension AppModel {
             if let sessionID = catalog.lastSessionID {
                 destination = .chats
                 navigationPath = [.chat(.session(sessionID))]
-                selectedSessionID = sessionID
+                presentCachedSession(sessionID, transcript: cachedTranscript)
                 sessionToRestoreID = sessionID
-                latestSequence = cachedTranscript?.sequence
-                nextHistoryBeforeSequence = cachedTranscript?.nextBeforeSequence
-                transcript = cachedTranscript?.transcript ?? []
-                currentUsage = cachedTranscript?.currentUsage ?? TokenUsage()
-                lastUsage = cachedTranscript?.lastUsage ?? TokenUsage()
-                updateContextTokens()
-                changeComposerDraftOwner(
-                    to: ComposerDraftOwner(
-                        accountID: account.id,
-                        sessionID: sessionID
-                    )
-                )
                 cacheChatCatalog(lastSessionID: sessionID)
             }
         }
@@ -319,7 +307,7 @@ extension AppModel {
     }
 
     func openChat(_ sessionID: String) {
-        guard canOpenSession || sessionID == selectedSessionID else { return }
+        guard canBrowseSessions || sessionID == selectedSessionID else { return }
         chatPresentationRevision &+= 1
         destination = .chats
         openSession(sessionID)
@@ -367,7 +355,7 @@ extension AppModel {
     }
 
     func openBotSession(_ sessionID: String) {
-        guard canOpenSession || sessionID == selectedSessionID,
+        guard canBrowseSessions || sessionID == selectedSessionID,
               botSessions.contains(where: { $0.sessionId == sessionID })
         else { return }
         chatPresentationRevision &+= 1
@@ -425,14 +413,24 @@ extension AppModel {
     }
 
     func openSession(_ sessionID: String) {
+        guard canBrowseSessions || sessionID == selectedSessionID else { return }
+        guard connectionState.isReady || sessionID == selectedSessionID
+            || sessions.contains(where: { $0.sessionId == sessionID })
+            || botSessions.contains(where: { $0.sessionId == sessionID })
+        else { return }
         cancelVoiceChatIntent()
         if selectedSessionID != sessionID { stopRealtimeVoice() }
-        guard canOpenSession || sessionID == selectedSessionID else { return }
         markSessionRead(sessionID)
         guard sessionID != selectedSessionID else { return }
+        flushStreamDeltas()
+        cacheSelectedTranscript()
         let generation = UUID()
         transcriptLoadGeneration = generation
         let accountID = selectedAccountID
+        if !connectionState.isReady {
+            presentCachedSession(sessionID, transcript: nil)
+            sessionToRestoreID = sessionID
+        }
         let previous = transcriptIOTask
         transcriptIOTask = Task { [weak self, store] in
             await previous?.value
@@ -444,16 +442,37 @@ extension AppModel {
             guard let self,
                   generation == transcriptLoadGeneration,
                   accountID == selectedAccountID,
-                  canOpenSession,
-                  sessionID != selectedSessionID
+                  canBrowseSessions,
+                  replayRequestID == nil
             else { return }
-            requestSessionOpen(
-                sessionID,
-                lastSequence: cached?.sequence,
-                cachedTranscript: cached,
-                presentedTranscript: cached?.transcript
-            )
+            if connectionState.isReady {
+                requestSessionOpen(
+                    sessionID,
+                    lastSequence: cached?.sequence,
+                    cachedTranscript: cached,
+                    presentedTranscript: cached?.transcript
+                )
+            } else {
+                presentCachedSession(sessionID, transcript: cached)
+                sessionToRestoreID = sessionID
+            }
         }
+    }
+
+    private func presentCachedSession(_ sessionID: String, transcript cached: CachedTranscript?) {
+        if selectedSessionID != sessionID {
+            changeComposerDraftOwner(to: selectedAccountID.map {
+                ComposerDraftOwner(accountID: $0, sessionID: sessionID)
+            })
+            resetSessionState()
+        }
+        selectedSessionID = sessionID
+        latestSequence = cached?.sequence
+        nextHistoryBeforeSequence = cached?.nextBeforeSequence
+        transcript = cached?.transcript ?? []
+        currentUsage = cached?.currentUsage ?? TokenUsage()
+        lastUsage = cached?.lastUsage ?? TokenUsage()
+        updateContextTokens()
     }
 
     func loadEarlierHistory() {
@@ -535,10 +554,12 @@ extension AppModel {
         cachedTranscript: CachedTranscript? = nil,
         presentedTranscript: [TranscriptEntry]? = nil
     ) {
+        transcriptLoadGeneration = UUID()
         replayCompletionSubmissionIDs.removeAll(keepingCapacity: true)
         replayUserMessages.removeAll(keepingCapacity: true)
         completedComposerEditReplay = false
         if sessionID != selectedSessionID {
+            transcriptWindowAnchor = .tail
             discardComposerAttachments()
             discardFilePresentation()
             cancelSessionFileThumbnailDownloads()

@@ -23,38 +23,44 @@ struct AppShell: View {
     var body: some View {
         @Bindable var model = model
         ZStack(alignment: .top) {
-            if model.isAppLocked || model.appLockEnabled && scenePhase != .active {
-                AppLockView()
+            MobiusBackdrop()
+            if model.accounts.isEmpty {
+                PairingView(canCancel: false)
+                    .frame(maxWidth: 620)
+                    .padding(MobiusSpace.xl)
             } else {
-                MobiusBackdrop()
-                if model.accounts.isEmpty {
-                    PairingView(canCancel: false)
-                        .frame(maxWidth: 620)
-                        .padding(MobiusSpace.xl)
-                } else {
-                    shell
-                        .sheet(isPresented: $model.showsInspector) {
-                            FilesView()
-                                .frame(idealWidth: 720, idealHeight: 720)
-                                .overlay(alignment: .top) {
-                                    if horizontalSizeClass == .compact { AppToastOverlay() }
-                                }
-                        }
-                        .sheet(isPresented: $model.showsPairing) {
-                            PairingView(canCancel: true)
-                                .frame(maxWidth: 560)
-                                .padding(MobiusSpace.xl)
-                                .overlay(alignment: .top) { AppToastOverlay() }
-                                .mobiusSheet(detents: [.large])
-                        }
-                        .sheet(isPresented: $model.showsWorkspaceBrowser) {
-                            WorkspaceBrowserView()
-                                .frame(idealWidth: 520, idealHeight: 620)
-                                .overlay(alignment: .top) { AppToastOverlay() }
-                                .mobiusSheet()
-                        }
+                shell
+                    .sheet(isPresented: $model.showsInspector) {
+                        FilesView()
+                            .frame(idealWidth: 720, idealHeight: 720)
+                            .overlay(alignment: .top) {
+                                if horizontalSizeClass == .compact { AppToastOverlay() }
+                            }
                     }
-                AppToastOverlay().zIndex(10)
+                    .sheet(isPresented: $model.showsPairing) {
+                        PairingView(canCancel: true)
+                            .frame(maxWidth: 560)
+                            .padding(MobiusSpace.xl)
+                            .overlay(alignment: .top) { AppToastOverlay() }
+                            .mobiusSheet(detents: [.large])
+                    }
+                    .sheet(isPresented: $model.showsWorkspaceBrowser) {
+                        WorkspaceBrowserView()
+                            .frame(idealWidth: 520, idealHeight: 620)
+                            .overlay(alignment: .top) { AppToastOverlay() }
+                            .mobiusSheet()
+                    }
+            }
+            AppToastOverlay().zIndex(10)
+        }
+        // Reconnecting to this gateway preserves local forms; changing gateways discards them.
+        .id(model.selectedAccountID)
+        .background {
+            MobiusAppLockPresenter(isCovered: model.isAppLocked || model.appLockEnabled && scenePhase != .active) {
+                AppLockView()
+                    .environment(model)
+                    .environment(\.mobiusPalette, palette)
+                    .environment(\.locale, model.language.locale)
             }
         }
         .alert(

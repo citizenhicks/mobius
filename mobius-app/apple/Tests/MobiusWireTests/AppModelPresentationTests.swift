@@ -1,9 +1,128 @@
 import Foundation
 import Observation
+import SwiftUI
+@testable import Mobius
 import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testAppLockKeepsPresentedFormAndItsDraftMounted() async throws {
+        let suite = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let app = Mobius.AppModel(
+            store: Mobius.GatewayStore(defaults: defaults),
+            settingsDefaults: defaults,
+            appLockAuthenticator: Mobius.AppLockAuthenticator(
+                method: { .faceID }, authenticate: { _ in false }
+            ),
+            requestSender: { _ in }
+        )
+        app.appLockEnabled = true
+        app.isAppLocked = false
+        let state = LockSheetTestState()
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let previous = scene.keyWindow
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 390, height: 740)
+        let host = UIHostingController(rootView: LockSheetTestPresenter(state: state).environment(app))
+        window.rootViewController = host
+        previous?.isHidden = true
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previous?.isHidden = false
+            previous?.makeKeyAndVisible()
+        }
+        state.isPresented = true
+        let appeared = await eventually(timeout: .seconds(3)) {
+            host.presentedViewController?.viewIfLoaded?.window != nil
+        }
+        XCTAssertTrue(appeared)
+        let sheet = try XCTUnwrap(host.presentedViewController)
+        func fields(in view: UIView) -> [UITextField] {
+            (view as? UITextField).map { [$0] } ?? view.subviews.flatMap { fields(in: $0) }
+        }
+        let field = try XCTUnwrap(fields(in: sheet.view).first)
+        field.text = "Unsaved setup credential"
+        field.sendActions(for: .editingChanged)
+        XCTAssertTrue(field.becomeFirstResponder())
+        for phase in [ScenePhase.inactive, .background, .active] {
+            app.isAppLocked = phase == .active
+            state.phase = phase
+            let concealed = await eventually { window.alpha == 0 && !field.isFirstResponder }
+            XCTAssertTrue(concealed)
+            XCTAssertFalse(field.isFirstResponder)
+            XCTAssertFalse(window.isUserInteractionEnabled)
+            XCTAssertTrue(window.accessibilityElementsHidden)
+            let cover = try XCTUnwrap(scene.keyWindow)
+            XCTAssertFalse(cover === window)
+            XCTAssertGreaterThan(cover.windowLevel, .alert)
+            XCTAssertEqual(cover.frame, scene.effectiveGeometry.coordinateSpace.bounds)
+            XCTAssertTrue(cover.isUserInteractionEnabled)
+            XCTAssertTrue(cover.accessibilityViewIsModal)
+            XCTAssertTrue(host.presentedViewController === sheet)
+            XCTAssertEqual(field.text, "Unsaved setup credential")
+        }
+        let cover = try XCTUnwrap(scene.keyWindow)
+        let lockedImage = UIGraphicsImageRenderer(bounds: cover.bounds).image { _ in
+            cover.drawHierarchy(in: cover.bounds, afterScreenUpdates: true)
+        }
+        let attachment = XCTAttachment(image: lockedImage)
+        attachment.name = "locked-sheet-preserves-hidden-form"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        app.isAppLocked = false
+        let revealed = await eventually { window.alpha == 1 && window.isKeyWindow }
+        XCTAssertTrue(revealed)
+        XCTAssertTrue(window.isUserInteractionEnabled)
+        XCTAssertFalse(window.accessibilityElementsHidden)
+        XCTAssertTrue(host.presentedViewController === sheet)
+        XCTAssertEqual(field.text, "Unsaved setup credential")
+
+        let alert = UIAlertController(title: "Private setup code", message: "ABCD-1234", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Continue", style: .default))
+        sheet.present(alert, animated: false)
+        let alertAppeared = await eventually { alert.viewIfLoaded?.window != nil }
+        XCTAssertTrue(alertAppeared)
+        app.isAppLocked = true
+        let alertConcealed = await eventually { window.alpha == 0 && scene.keyWindow !== window }
+        XCTAssertTrue(alertConcealed)
+        XCTAssertTrue(sheet.presentedViewController === alert)
+        XCTAssertGreaterThan(try XCTUnwrap(scene.keyWindow).windowLevel, .alert)
+        app.isAppLocked = false
+        let alertRevealed = await eventually { window.alpha == 1 && window.isKeyWindow }
+        XCTAssertTrue(alertRevealed)
+        XCTAssertTrue(sheet.presentedViewController === alert)
+        XCTAssertEqual(field.text, "Unsaved setup credential")
+        alert.dismiss(animated: false)
+        let share = UIActivityViewController(activityItems: ["ABCD-1234"], applicationActivities: nil)
+        share.popoverPresentationController?.sourceView = sheet.view
+        share.popoverPresentationController?.sourceRect = sheet.view.bounds
+        sheet.present(share, animated: false)
+        let shareAppeared = await eventually { share.viewIfLoaded?.window != nil }
+        XCTAssertTrue(shareAppeared)
+        app.isAppLocked = true
+        let shareConcealed = await eventually { window.alpha == 0 && scene.keyWindow !== window }
+        XCTAssertTrue(shareConcealed)
+        XCTAssertTrue(sheet.presentedViewController === share)
+        app.isAppLocked = false
+        let shareRevealed = await eventually { window.alpha == 1 && window.isKeyWindow }
+        XCTAssertTrue(shareRevealed)
+        XCTAssertTrue(sheet.presentedViewController === share)
+        XCTAssertEqual(field.text, "Unsaved setup credential")
+        share.dismiss(animated: false)
+        app.isAppLocked = true
+        let coveredBeforeRemoval = await eventually { window.alpha == 0 }
+        XCTAssertTrue(coveredBeforeRemoval)
+        window.rootViewController = nil
+        let restoredOnRemoval = await eventually { window.alpha == 1 && window.isKeyWindow }
+        XCTAssertTrue(restoredOnRemoval)
+        XCTAssertTrue(window.isUserInteractionEnabled)
+        XCTAssertFalse(window.accessibilityElementsHidden)
+    }
+
     func testWorkspaceSessionGroupingKeepsProjectOrderAndRecentChats() {
         let sessions = [
             session(
@@ -959,4 +1078,39 @@ extension AppModelTests {
         await fulfillment(of: [changed], timeout: 0.05)
     }
 
+}
+
+@MainActor
+@Observable
+private final class LockSheetTestState {
+    var isPresented = false
+    var phase = ScenePhase.active
+}
+
+private struct LockSheetTestPresenter: View {
+    @Environment(Mobius.AppModel.self) private var app
+    @Bindable var state: LockSheetTestState
+
+    var body: some View {
+        Color.clear
+            .sheet(isPresented: $state.isPresented) {
+                LockSheetTestForm().presentationDetents([.large])
+            }
+            .background {
+                Mobius.MobiusAppLockPresenter(isCovered: app.isAppLocked || app.appLockEnabled && state.phase != .active) {
+                    Mobius.AppLockView().environment(app)
+                }
+            }
+    }
+}
+
+private struct LockSheetTestForm: View {
+    @State private var credential = ""
+
+    var body: some View {
+        NavigationStack {
+            Form { TextField("Credential", text: $credential) }
+                .navigationTitle("Setup draft")
+        }
+    }
 }

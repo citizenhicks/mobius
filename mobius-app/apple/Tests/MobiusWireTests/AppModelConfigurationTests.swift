@@ -3,6 +3,185 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testReconnectPreservesCatalogNavigationAndSetupDraftsWithoutAnOpenChat() throws {
+        let model = try model(requestSender: { _ in })
+        let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
+        model.accounts = [account]
+        model.selectedAccountID = account.id
+        let snapshot = VersionedAgentConfig(revision: 1, config: composition())
+        model.handle(.ready(ready(botDefaults: snapshot)))
+        model.navigationPath = [.settings(.provider("new-provider"))]
+        model.providerDraft = snapshot.config.provider
+        model.providerLabelDraft = "My setup"
+        model.providerAPIKey = "unsaved-test-key"
+        model.providerModelIDsText = "model-a, model-b"
+        model.providerReasoningEffortsText = "high"
+        model.editingBotID = "bot-1"
+        model.botDraft = snapshot.config
+        model.botNameDraft = "Unsaved Bot name"
+        model.showsWorkspaceBrowser = true
+        model.pendingNewChatWorkspace = "/work"
+        model.pairingCode = "unsaved-pairing-code"
+        let navigation = model.navigationPath
+
+        model.setSceneActive(false)
+        model.appDidEnterBackground()
+        model.setSceneActive(true)
+
+        XCTAssertEqual(model.connectionState, .connecting)
+        XCTAssertEqual(model.sessions.map(\.sessionId), ["chat-1"])
+        XCTAssertEqual(model.bots.map(\.id), ["bot-1"])
+        XCTAssertEqual(model.navigationPath, navigation)
+        XCTAssertNil(model.selectedSessionID)
+        XCTAssertEqual(model.providerDraft, snapshot.config.provider)
+        XCTAssertEqual(model.providerLabelDraft, "My setup")
+        XCTAssertEqual(model.providerAPIKey, "unsaved-test-key")
+        XCTAssertEqual(model.providerModelIDsText, "model-a, model-b")
+        XCTAssertEqual(model.providerReasoningEffortsText, "high")
+        XCTAssertEqual(model.botNameDraft, "Unsaved Bot name")
+        XCTAssertTrue(model.showsWorkspaceBrowser)
+        XCTAssertEqual(model.pendingNewChatWorkspace, "/work")
+        XCTAssertEqual(model.pairingCode, "unsaved-pairing-code")
+
+        model.handle(.ready(ready(
+            botDefaults: snapshot,
+            bots: [bot(name: "Synced Bot name")],
+            sessions: [session(sessionID: "chat-2", state: .idle)]
+        )))
+
+        XCTAssertEqual(model.bots.first?.name, "Synced Bot name")
+        XCTAssertEqual(model.sessions.map(\.sessionId), ["chat-2"])
+        XCTAssertEqual(model.navigationPath, navigation)
+        XCTAssertEqual(model.botNameDraft, "Unsaved Bot name")
+        XCTAssertEqual(model.providerAPIKey, "unsaved-test-key")
+    }
+
+    func testProviderLoginSurvivesReconnectAndAcceptsItsRecoveredOutcome() async throws {
+        for succeeds in [true, false] {
+            let recorder = GatewayRequestRecorder()
+            let model = try model { request in await recorder.record(request) }
+            model.connectionState = .ready
+            model.providerDraft = composition().provider
+            let provider = try XCTUnwrap(model.providerDraft?.provider)
+            model.startProviderLogin()
+            let id = try XCTUnwrap(model.pendingProviderLogin?.requestID)
+            model.handle(.providerLoginStarted(
+                requestID: id, loginID: "attempt", provider: provider,
+                verificationURL: "https://example.com/device", userCode: "ABCD-EFGH"
+            ))
+            let code = model.providerActionState
+            model.startProviderLogin()
+            XCTAssertEqual(model.pendingProviderLogin?.requestID, id)
+            XCTAssertEqual(model.providerActionState, code)
+
+            model.resetGatewayState(preservingDrafts: true)
+            XCTAssertEqual(model.pendingProviderLogin?.requestID, id)
+            XCTAssertEqual(model.providerActionState, code)
+
+            if succeeds {
+                model.handle(.providerLoginFinished(
+                    requestID: id, loginID: "attempt", provider: provider
+                ))
+                XCTAssertEqual(model.providerActionState, .loginFinished(provider))
+            } else {
+                model.handle(.rejected(GatewayRejection(
+                    requestId: id, code: "provider_error", message: "The code expired.", fatal: false
+                )))
+                XCTAssertEqual(model.providerActionState, .failed("The code expired."))
+            }
+            XCTAssertNil(model.pendingProviderLogin?.requestID)
+        }
+    }
+
+    func testProviderLoginRetriesTheSameAttemptAfterAnUncertainSend() async throws {
+        let recorder = GatewayRequestRecorder()
+        var fails = true
+        let model = try model { request in
+            await recorder.record(request)
+            if fails { throw GatewayWireError.disconnected }
+        }
+        model.connectionState = .ready
+        model.providerDraft = composition().provider
+        model.startProviderLogin()
+        let id = try XCTUnwrap(model.pendingProviderLogin?.requestID)
+        let provider = try XCTUnwrap(model.pendingProviderLogin?.provider)
+        let disconnected = await eventually { !model.connectionState.isReady }
+        XCTAssertTrue(disconnected)
+        XCTAssertEqual(model.pendingProviderLogin?.requestID, id)
+        XCTAssertEqual(model.providerActionState, .startingLogin(provider))
+
+        // Even a changed setup draft must not change which login is being resumed.
+        model.providerDraft = nil
+        fails = false
+        model.resetGatewayState(preservingDrafts: true)
+        model.handle(.ready(ready(
+            botDefaults: VersionedAgentConfig(revision: 1, config: composition())
+        )))
+        let retried = await eventually {
+            await recorder.requests().filter {
+                if case .startProviderLogin = $0 { return true }
+                return false
+            }.count == 2
+        }
+        XCTAssertTrue(retried)
+        let logins = await recorder.requests().compactMap { request -> String? in
+            if case .startProviderLogin(let requestID, let resumedProvider) = request {
+                XCTAssertEqual(resumedProvider, provider)
+                return requestID
+            }
+            return nil
+        }
+        XCTAssertEqual(logins, [id, id])
+    }
+
+    func testReconnectReleasesInterruptedWritesButKeepsTheKeyForExplicitRetry() throws {
+        let model = try model(requestSender: { _ in })
+        model.providerDraft = composition().provider
+        model.providerAPIKey = "unsaved-test-key"
+        model.saveProviderCredential()
+        model.gitBranchRequestID = "branch"
+        model.workspaceFileWriteRequestID = "write"
+        model.isSavingWorkspaceFile = true
+        model.routineRunPreviewRequestID = "preview"
+        model.isLoadingRoutineRunPreview = true
+
+        model.resetGatewayState(preservingDrafts: true, preservingSession: true)
+
+        XCTAssertNil(model.pendingProviderCredential)
+        XCTAssertEqual(model.providerAPIKey, "unsaved-test-key")
+        guard case .failed = model.providerActionState else {
+            return XCTFail("An interrupted credential save must remain explicitly retryable")
+        }
+        XCTAssertNil(model.gitBranchRequestID)
+        XCTAssertNil(model.workspaceFileWriteRequestID)
+        XCTAssertFalse(model.isSavingWorkspaceFile)
+        XCTAssertNil(model.routineRunPreviewRequestID)
+        XCTAssertFalse(model.isLoadingRoutineRunPreview)
+    }
+
+    func testGatewaySwitchClearsProviderSecretsAndSetupState() throws {
+        let model = try model(requestSender: { _ in })
+        model.providerDraft = composition().provider
+        model.providerLabelDraft = "Private setup"
+        model.providerAPIKey = "unsaved-test-key"
+        model.pendingProviderLogin = ("login", "provider")
+        model.providerActionState = .deviceCode(
+            provider: "provider", url: "https://example.com/device", code: "ABCD"
+        )
+        model.navigationPath = [.settings(.provider("private-setup"))]
+        model.showsWorkspaceBrowser = true
+
+        model.resetGatewayState(preservingDrafts: false)
+
+        XCTAssertNil(model.providerDraft)
+        XCTAssertEqual(model.providerLabelDraft, "")
+        XCTAssertEqual(model.providerAPIKey, "")
+        XCTAssertNil(model.pendingProviderLogin?.requestID)
+        XCTAssertEqual(model.providerActionState, .idle)
+        XCTAssertTrue(model.navigationPath.isEmpty)
+        XCTAssertFalse(model.showsWorkspaceBrowser)
+    }
+
     func testEmptyGatewayCanRegisterItsFirstProviderWithoutAChat() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }

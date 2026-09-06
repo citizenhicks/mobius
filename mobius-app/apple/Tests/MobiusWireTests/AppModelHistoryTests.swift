@@ -300,6 +300,10 @@ extension AppModelTests {
             ]
         )
 
+        let visibleBeforeReconnect = model.displayedTranscript.map(\.text)
+        model.resetGatewayState(preservingDrafts: true, preservingSession: true)
+        XCTAssertEqual(model.displayedTranscript.map(\.text), visibleBeforeReconnect)
+        model.connectionState = .ready
         model.restoreSession("chat-1")
         try await Task.sleep(for: .milliseconds(30))
         let reconnectRequests = await recorder.requests()
@@ -313,9 +317,9 @@ extension AppModelTests {
         model.handle(.sessionReplayComplete(requestID: reconnectID, sessionID: "chat-1"))
         XCTAssertEqual(
             model.displayedTranscript.map(\.text),
-            ["Older question", "Earlier update", "Older answer", "Current", "Still working", "More work"]
+            visibleBeforeReconnect
         )
-        XCTAssertTrue(model.hasEarlierHistory)
+        XCTAssertFalse(model.hasEarlierHistory)
     }
 
     func testHistoryMergeDoesNotReplayABufferedDeltaTwice() async throws {
@@ -840,4 +844,163 @@ extension AppModelTests {
         XCTAssertTrue(model.transcript.allSatisfy { !$0.pending })
     }
 
+}
+
+@MainActor
+extension AppModelTests {
+    func testCachedChatsRemainBrowseableAndSyncOnlyTheCurrentChat() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model { await recorder.record($0) }
+        let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
+        model.accounts = [account]
+        model.selectedAccountID = account.id
+        let chats = [session(state: .idle), session(sessionID: "chat-2", state: .idle)]
+        model.applySessions(chats)
+        for (index, chat) in chats.enumerated() {
+            await model.store.saveTranscript(
+                accountID: account.id,
+                sessionID: chat.sessionId,
+                sequence: UInt64(index + 7),
+                transcript: [TranscriptEntry(
+                    id: chat.sessionId,
+                    text: "Cached \(chat.sessionId)",
+                    kind: .assistant,
+                    format: "plain_text",
+                    pending: false
+                )],
+                currentUsage: TokenUsage(),
+                lastUsage: TokenUsage()
+            )
+        }
+        model.connectionState = .connecting
+        XCTAssertTrue(model.canBrowseSessions)
+        XCTAssertFalse(model.canOpenSession)
+        model.openChat("chat-1")
+        await model.transcriptIOTask?.value
+        XCTAssertEqual(model.displayedTranscript.map(\.text), ["Cached chat-1"])
+        await model.composerDraftIOTask?.value
+        model.composer = "Keep this draft"
+        model.openChat("chat-2")
+        await model.transcriptIOTask?.value
+        await model.composerDraftIOTask?.value
+        XCTAssertEqual(model.selectedSessionID, "chat-2")
+        XCTAssertEqual(model.sessionToRestoreID, "chat-2")
+        XCTAssertEqual(model.displayedTranscript.map(\.text), ["Cached chat-2"])
+        XCTAssertEqual(model.latestSequence, 8)
+        XCTAssertFalse(model.canSendComposer)
+        XCTAssertFalse(model.canModifySelectedSession)
+        XCTAssertFalse(model.canCreateSession)
+        let disconnectedRequests = await recorder.requests()
+        XCTAssertTrue(disconnectedRequests.isEmpty)
+        let draft = await model.store.loadComposerDraft(accountID: account.id, sessionID: "chat-1")
+        XCTAssertEqual(draft.text, "Keep this draft")
+
+        model.handle(.ready(ready(
+            botDefaults: VersionedAgentConfig(revision: 1, config: composition()),
+            sessions: chats
+        )))
+        let request = await recorder.firstRequest(after: 0) {
+            if case .openSession = $0 { return true }
+            return false
+        }
+        guard case .openSession(let requestID, "chat-2", 8) = try XCTUnwrap(request) else {
+            return XCTFail("Only the currently visible chat should synchronize from its cache cursor")
+        }
+        XCTAssertEqual(model.displayedTranscript.map(\.text), ["Cached chat-2"])
+        model.handle(.sessionOpened(
+            requestID: requestID,
+            payload: sessionReady(latestSequence: 8, sessionID: "chat-2")
+        ))
+        model.handle(.sessionReplayComplete(requestID: requestID, sessionID: "chat-2"))
+        XCTAssertEqual(model.displayedTranscript.map(\.text), ["Cached chat-2"])
+        XCTAssertTrue(model.connectionState.isReady)
+    }
+
+    func testGatewayReadyRetiresAnUnfinishedOfflineCacheRead() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model { await recorder.record($0) }
+        let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
+        model.accounts = [account]
+        model.selectedAccountID = account.id
+        model.applySessions([session(state: .idle)])
+        model.connectionState = .connecting
+        let gate = AsyncGate()
+        model.transcriptIOTask = Task { await gate.wait() }
+        model.openChat("chat-1")
+        let cacheRead = model.transcriptIOTask
+        XCTAssertTrue(model.isLoadingTranscript)
+        XCTAssertTrue(model.displayedTranscript.isEmpty)
+        model.handle(.ready(ready(
+            botDefaults: VersionedAgentConfig(revision: 1, config: composition())
+        )))
+        let request = await recorder.firstRequest(after: 0) {
+            if case .openSession = $0 { return true }
+            return false
+        }
+        guard case .openSession(let requestID, "chat-1", nil) = try XCTUnwrap(request) else {
+            return XCTFail("An uncached chat should open after Ready")
+        }
+        model.handle(.sessionOpened(requestID: requestID, payload: sessionReady(latestSequence: 1)))
+        model.handle(.agentEvent(
+            sessionID: "chat-1",
+            record: recorded(1, testAssistantMessage(
+                turnID: "turn-1", modelStepID: "answer", text: "Fresh from replay"
+            ))
+        ))
+        XCTAssertEqual(model.transcript.map(\.text), ["Fresh from replay"], "Replay must populate the live transcript")
+        model.handle(.sessionReplayComplete(requestID: requestID, sessionID: "chat-1"))
+        XCTAssertEqual(model.displayedTranscript.map(\.text), ["Fresh from replay"], "Completed replay must be visible before the cache read resumes")
+        await gate.open()
+        await cacheRead?.value
+        XCTAssertEqual(model.displayedTranscript.map(\.text), ["Fresh from replay"])
+        let requests = await recorder.requests()
+        XCTAssertEqual(requests.filter {
+            if case .openSession = $0 { return true }
+            return false
+        }.count, 1)
+    }
+
+    func testOfflineChatSelectionSupersedesEarlierCacheReads() async throws {
+        let model = try model(requestSender: { _ in XCTFail("Browsing must not send a request") })
+        let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
+        model.accounts = [account]
+        model.selectedAccountID = account.id
+        model.applySessions([session(state: .idle), session(sessionID: "chat-2", state: .idle)])
+        let gate = AsyncGate()
+        model.transcriptIOTask = Task { await gate.wait() }
+        model.openChat("chat-1")
+        model.openChat("chat-2")
+        await gate.open()
+        await model.transcriptIOTask?.value
+        XCTAssertEqual(model.selectedSessionID, "chat-2")
+        XCTAssertEqual(model.navigationPath, [.chat(.session("chat-2"))])
+        XCTAssertEqual(model.sessionToRestoreID, "chat-2")
+        XCTAssertTrue(model.isLoadingTranscript)
+    }
+
+    func testVisibleBotSessionIsRestoredWithoutOpeningOtherBotWork() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model { await recorder.record($0) }
+        let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
+        model.accounts = [account]
+        model.selectedAccountID = account.id
+        model.botSessionsBotID = "bot-1"
+        model.botSessions = [session(state: .idle), session(sessionID: "chat-2", state: .idle)]
+        model.destination = .bots
+        model.navigationPath = [.botSessions("bot-1")]
+        model.openBotSession("chat-1")
+        await model.transcriptIOTask?.value
+        XCTAssertEqual(model.presentedChatSessionID, "chat-1")
+        XCTAssertTrue(model.isPresentingChat)
+        model.handle(.ready(ready(
+            botDefaults: VersionedAgentConfig(revision: 1, config: composition()), sessions: []
+        )))
+        let request = await recorder.firstRequest(after: 0) {
+            if case .openSession = $0 { return true }
+            return false
+        }
+        guard case .openSession(_, "chat-1", nil) = try XCTUnwrap(request) else {
+            return XCTFail("Only the visible Bot session should reopen")
+        }
+    }
 }

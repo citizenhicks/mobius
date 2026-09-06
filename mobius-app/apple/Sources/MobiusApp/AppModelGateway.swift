@@ -323,15 +323,15 @@ extension AppModel {
                 expiresAt: Date(timeIntervalSince1970: TimeInterval(expiresAt))
             )
         case .providerLoginStarted(let requestID, _, let provider, let url, let code):
-            guard requestID == providerLoginRequestID else { break }
+            guard requestID == pendingProviderLogin?.requestID else { break }
             providerActionState = .deviceCode(
                 provider: provider,
                 url: url,
                 code: code
             )
         case .providerLoginFinished(let requestID, _, let provider):
-            if requestID == providerLoginRequestID {
-                providerLoginRequestID = nil
+            if requestID == pendingProviderLogin?.requestID {
+                pendingProviderLogin = nil
                 providerActionState = .loginFinished(provider)
                 showToast("Signed in to \(provider).", tone: .success)
             }
@@ -626,6 +626,7 @@ extension AppModel {
         automaticReconnectBlocked = false
         applyGatewayCatalog(payload)
         if sessionRequestID == nil { connectionState = .ready }
+        resumeProviderLogin()
         applySessionCatalog(payload.sessions)
         refreshProfile()
         guard sessionRequestID == nil else { return }
@@ -638,8 +639,9 @@ extension AppModel {
                 clearSelectedSession()
                 return
             }
-            if let session = sessions.first(where: { $0.sessionId == sessionToRestoreID }) {
-                restoreSession(session.sessionId)
+            if sessions.contains(where: { $0.sessionId == sessionToRestoreID })
+                || botSessions.contains(where: { $0.sessionId == sessionToRestoreID }) {
+                restoreSession(sessionToRestoreID)
             } else {
                 showToast("The previously selected chat is no longer available.", tone: .error)
                 clearSelectedSession()
@@ -1195,7 +1197,7 @@ extension AppModel {
         sessionOpenCursor = nil
         sessionToRestoreID = nil
         selectedSessionID = nil
-        navigationPath = []
+        if isPresentingChat { navigationPath = [] }
         resetSessionState()
         connectionState = .ready
         cacheChatCatalog()
@@ -1445,9 +1447,9 @@ extension AppModel {
             providerActionState = .failed(rejection.message)
             pendingProviderCredential = nil
         }
-        if rejection.requestId == providerLoginRequestID {
+        if rejection.requestId == pendingProviderLogin?.requestID {
             providerActionState = .failed(rejection.message)
-            providerLoginRequestID = nil
+            pendingProviderLogin = nil
         }
         if rejection.requestId == providerRegistrationRequestID {
             providerActionState = .failed(rejection.message)

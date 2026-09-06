@@ -481,12 +481,8 @@ struct GatewayDetailView: View {
                     guard account.id == model.selectedAccountID,
                           model.connectionState.isReady
                     else { return }
-                    if model.gitCredentialAvailable == nil {
-                        model.probeGitCredential(githubCredentialTarget)
-                    }
-                    if model.sshIdentities == nil {
-                        model.listSshIdentities()
-                    }
+                    model.probeGitCredential(githubCredentialTarget)
+                    model.listSshIdentities()
                 }
         } else {
             MobiusUnavailable(
@@ -753,6 +749,9 @@ private struct GitCredentialSheet: View {
             }
         }
         .mobiusSheet()
+        .onChange(of: model.gitCredentialAvailable) { _, available in
+            if available == true { token = "" }
+        }
     }
 
     @ViewBuilder
@@ -761,18 +760,17 @@ private struct GitCredentialSheet: View {
             Button("Done") { dismiss() }
         } else {
             Button {
-                let value = token
-                token = ""
                 model.approveGitCredential(
                     target: githubCredentialTarget,
                     username: username,
-                    token: value
+                    token: token
                 )
             } label: {
                 Text(actionTitle)
             }
             .disabled(
-                model.isCheckingGitCredential
+                !model.connectionState.isReady
+                    || model.isCheckingGitCredential
                     || username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     || token.isEmpty
             )
@@ -865,14 +863,14 @@ private struct SshCredentialSheet: View {
                         } label: {
                             Text(checkActionTitle)
                         }
-                        .disabled(model.isLoadingSshIdentities)
+                        .disabled(!model.connectionState.isReady || model.isLoadingSshIdentities)
                     } else if model.sshIdentities?.isEmpty == true {
                         Button {
                             model.generateSshIdentity()
                         } label: {
                             Text(generateActionTitle)
                         }
-                        .disabled(model.isGeneratingSshIdentity)
+                        .disabled(!model.connectionState.isReady || model.isGeneratingSshIdentity)
                     } else {
                         Button("Done", action: dismiss.callAsFunction)
                     }

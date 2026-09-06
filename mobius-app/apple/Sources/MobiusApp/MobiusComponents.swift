@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct MobiusCard<Content: View>: View {
     let content: Content
@@ -488,6 +489,105 @@ private struct MobiusSheetModifier: ViewModifier {
             }
         }
         .presentationDragIndicator(.visible)
+    }
+}
+
+struct MobiusAppLockPresenter<Content: View>: UIViewRepresentable {
+    let isCovered: Bool
+    let content: Content
+
+    init(isCovered: Bool, @ViewBuilder content: () -> Content) {
+        self.isCovered = isCovered
+        self.content = content()
+    }
+
+    func makeUIView(context: Context) -> MobiusAppLockAnchor {
+        MobiusAppLockAnchor()
+    }
+
+    func updateUIView(_ view: MobiusAppLockAnchor, context: Context) {
+        view.update(isCovered: isCovered, content: AnyView(content))
+    }
+
+    static func dismantleUIView(_ view: MobiusAppLockAnchor, coordinator: ()) {
+        view.reveal()
+    }
+}
+
+/// A separate window also covers native alerts and share controllers above SwiftUI sheets.
+final class MobiusAppLockAnchor: UIView {
+    private var privacyWindow: UIWindow?
+    private weak var protectedWindow: UIWindow?
+    private weak var previousKeyWindow: UIWindow?
+    private var previousAppearance: (alpha: CGFloat, interactive: Bool, accessibilityHidden: Bool)?
+    private var isCovered = false
+    private var content = AnyView(EmptyView())
+
+    func update(isCovered: Bool, content: AnyView) {
+        self.isCovered = isCovered
+        self.content = content
+        updateCover()
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if protectedWindow !== window { reveal() }
+        updateCover()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        if let scene = window?.windowScene {
+            privacyWindow?.frame = scene.effectiveGeometry.coordinateSpace.bounds
+        }
+    }
+
+    private func updateCover() {
+        guard isCovered, let window, let scene = window.windowScene else {
+            reveal()
+            return
+        }
+        if let host = privacyWindow?.rootViewController as? UIHostingController<AnyView> {
+            host.rootView = content
+            return
+        }
+        protectedWindow = window
+        previousKeyWindow = scene.keyWindow
+        previousAppearance = (window.alpha, window.isUserInteractionEnabled, window.accessibilityElementsHidden)
+        window.endEditing(true)
+        let cover = UIWindow(windowScene: scene)
+        cover.frame = scene.effectiveGeometry.coordinateSpace.bounds
+        cover.windowLevel = .init(rawValue: UIWindow.Level.alert.rawValue + 1)
+        cover.backgroundColor = .black
+        cover.isOpaque = true
+        cover.accessibilityViewIsModal = true
+        let host = UIHostingController(rootView: content)
+        host.view.backgroundColor = .black
+        host.view.accessibilityViewIsModal = true
+        cover.rootViewController = host
+        privacyWindow = cover
+        // Keep the hierarchy mounted, but omit its pixels and accessibility from snapshots.
+        window.alpha = 0
+        window.isUserInteractionEnabled = false
+        window.accessibilityElementsHidden = true
+        cover.makeKeyAndVisible()
+    }
+
+    func reveal() {
+        guard let cover = privacyWindow else { return }
+        if let window = protectedWindow, let appearance = previousAppearance {
+            window.alpha = appearance.alpha
+            window.isUserInteractionEnabled = appearance.interactive
+            window.accessibilityElementsHidden = appearance.accessibilityHidden
+        }
+        let wasKey = cover.isKeyWindow
+        cover.isHidden = true
+        if wasKey { (previousKeyWindow ?? protectedWindow)?.makeKey() }
+        cover.rootViewController = nil
+        privacyWindow = nil
+        protectedWindow = nil
+        previousKeyWindow = nil
+        previousAppearance = nil
     }
 }
 

@@ -204,7 +204,7 @@ private struct AddProviderSheet: View {
                 if provider != nil {
                     ToolbarItem(placement: .confirmationAction) {
                         Button("Save", action: model.registerProvider)
-                            .disabled(model.isApplyingConfiguration)
+                            .disabled(model.isApplyingConfiguration || !model.connectionState.isReady)
                     }
                 }
             }
@@ -258,7 +258,7 @@ struct ProviderDetailView: View {
                             MobiusIcon(.floppyDisk, gutter: false)
                         }
                         .groupedHeaderAction(prominent: true)
-                        .disabled(model.isApplyingConfiguration)
+                        .disabled(model.isApplyingConfiguration || !model.connectionState.isReady)
                         .accessibilityLabel("Save to gateway")
                         .help("Save to gateway")
                         Button {
@@ -492,7 +492,10 @@ private struct ProviderFormSections: View {
                     model.saveProviderCredential()
                 }
                 .mobiusProminentButton()
-                .disabled(model.providerAPIKey.isEmpty)
+                .disabled(
+                    model.providerAPIKey.isEmpty || !model.connectionState.isReady
+                        || model.pendingProviderCredential != nil
+                )
             }
             .settingsStandaloneRow()
         } else if status.auth == .deviceCode {
@@ -501,6 +504,7 @@ private struct ProviderFormSections: View {
                     model.startProviderLogin()
                 }
                 .mobiusProminentButton()
+                .disabled(model.pendingProviderLogin != nil || !model.connectionState.isReady)
             }
             .settingsStandaloneRow()
         }
