@@ -17,7 +17,7 @@ use crate::protocol::{
 use crate::{BoxFuture, Error, Result};
 
 const STATE_KEY: &str = "compaction.handoff";
-const MAX_NOTE_BYTES: usize = 12_000;
+const MAX_NOTE_BYTES: usize = 21_000;
 const NOTES: &str = "handoff_notes";
 const SAVED: &str = "handoff_saved";
 const REQUEST: &str = "handoff_request";
@@ -62,7 +62,10 @@ impl Tool for HandoffTool {
                 name: "write_handoff".into(),
                 description: text::TOOL_WRITE_HANDOFF_DESCRIPTION.into(),
                 parameters: serde_json::json!({
-                    "type": "object", "properties": {"notes": {"type": "string", "minLength": 1, "maxLength": MAX_NOTE_BYTES}},
+                    "type": "object", "properties": {"notes": {
+                        "type": "string", "minLength": 1,
+                        "description": format!("Working checkpoint, at most {MAX_NOTE_BYTES} UTF-8 bytes after trimming surrounding whitespace.")
+                    }},
                     "required": ["notes"], "additionalProperties": false
                 }),
             }
@@ -110,9 +113,16 @@ impl Tool for HandoffTool {
 }
 
 fn validate_notes(notes: &str) -> Result<()> {
-    if notes.trim().is_empty() || notes.len() > MAX_NOTE_BYTES {
+    if notes.trim().is_empty() {
+        return Err(Error::Tool(
+            "handoff notes must contain non-whitespace text. Checkpoint unchanged.".into(),
+        ));
+    }
+    let size = notes.len();
+    if size > MAX_NOTE_BYTES {
         return Err(Error::Tool(format!(
-            "handoff notes must be 1–{MAX_NOTE_BYTES} UTF-8 bytes"
+            "handoff notes contain {size} UTF-8 bytes; maximum {MAX_NOTE_BYTES}. Remove at least {} bytes. Checkpoint unchanged.",
+            size - MAX_NOTE_BYTES
         )));
     }
     Ok(())

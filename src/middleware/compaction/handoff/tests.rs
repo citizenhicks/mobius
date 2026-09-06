@@ -21,6 +21,24 @@ fn call(call_id: &str, name: &str) -> Value {
 }
 
 #[test]
+fn handoff_limit_counts_utf8_bytes_and_reports_overage() {
+    for notes in ["a".repeat(21_000), "🦀".repeat(5_250)] {
+        validate_notes(&notes).expect("21,000 UTF-8 bytes fit");
+        let error = validate_notes(&(notes + &"a".repeat(50))).expect_err("over the limit");
+        assert_eq!(
+            error.to_string(),
+            "tool error: handoff notes contain 21050 UTF-8 bytes; maximum 21000. Remove at least 50 bytes. Checkpoint unchanged."
+        );
+    }
+    assert_eq!(
+        validate_notes(" \n\t")
+            .expect_err("blank notes")
+            .to_string(),
+        "tool error: handoff notes must contain non-whitespace text. Checkpoint unchanged."
+    );
+}
+
+#[test]
 fn fresh_input_preserves_the_active_request_steers_attachments_and_mixed_batch() {
     let active = message("finish the task", MessageDelivery::Turn);
     let attachment = internal_user_message(ATTACHMENT_CONTEXT_MARKER, "active upload");

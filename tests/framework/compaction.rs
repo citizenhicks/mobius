@@ -434,6 +434,11 @@ async fn handoff_resumes_one_durable_reset_in_the_same_chat() {
                 "write_handoff",
                 serde_json::json!({"notes":"Goal: finish the active task. Done: inspected old-result. Next: verify."}),
             ),
+            tool_response(
+                "oversize",
+                "write_handoff",
+                serde_json::json!({"notes": "x".repeat(21_001)}),
+            ),
             tool_response("reset", "new_context", serde_json::json!({})),
             text_response("continued"),
             text_response("finished"),
@@ -524,8 +529,21 @@ async fn handoff_resumes_one_durable_reset_in_the_same_chat() {
     }));
     {
         let requests = model.requests.lock().expect("requests");
-        assert_eq!(requests.len(), 5);
-        let reset_input = serde_json::to_string(&requests[3].input).expect("reset input");
+        assert_eq!(requests.len(), 6);
+        let notes = &requests[0]
+            .tools
+            .iter()
+            .find(|tool| tool.name == "write_handoff")
+            .expect("handoff tool")
+            .parameters["properties"]["notes"];
+        assert!(notes.get("maxLength").is_none());
+        assert!(
+            notes["description"]
+                .as_str()
+                .expect("notes description")
+                .contains("21000 UTF-8 bytes")
+        );
+        let reset_input = serde_json::to_string(&requests[4].input).expect("reset input");
         assert!(!reset_input.contains("old-result xxxx"));
         assert!(reset_input.contains("Goal: finish the active task"));
         assert!(reset_input.contains("verify twice"));
@@ -538,7 +556,7 @@ async fn handoff_resumes_one_durable_reset_in_the_same_chat() {
                 .any(|item| item.get("_mobius_internal").and_then(Value::as_str)
                     == Some("handoff_warning"))
         );
-        assert_eq!(requests[3].tools, requests[0].tools);
+        assert_eq!(requests[4].tools, requests[0].tools);
     }
     assert!(
         model
