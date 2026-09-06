@@ -185,6 +185,7 @@ private struct UnifiedDiffView: View {
                 .accessibilityLabel("Code changes")
                 .accessibilityValue("\(document.added) additions, \(document.removed) deletions")
             }
+            .sharedBackgroundVisibility(.hidden)
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(diffAccessibilityLabel(document))
