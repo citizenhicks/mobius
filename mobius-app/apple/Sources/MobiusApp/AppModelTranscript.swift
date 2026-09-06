@@ -627,21 +627,28 @@ extension AppModel {
         to entries: inout [TranscriptEntry]
     ) {
         guard !message.text.isEmpty || !message.attachments.isEmpty else { return }
+        let metadata = TranscriptMessageMetadata(author: message.author, delivery: message.delivery)
+        guard message.author == .user else {
+            if let entry = entries.first(where: { $0.sourceSequence == record.sequence }) {
+                entry.startsTurn = startsTurn
+                entry.messageMetadata = metadata
+                entry.messageTarget = message.messageTarget
+                entry.reply = message.reply
+            }
+            return
+        }
         let id: String
-        if let peer = message.author.peerFields {
-            id = "message:peer:\(peer.sessionID.utf8.count):\(peer.sessionID):\(peer.messageID)"
-        } else if let submissionID = record.event.submissionId {
+        if let submissionID = record.event.submissionId {
             id = submittedMessageID(submissionID)
         } else if let recordID {
             id = "message:record:\(recordID.utf8.count):\(recordID)"
         } else {
             id = "message:record:\(record.sequence)"
         }
-        let kind: TranscriptEntry.Kind = message.author == .user ? .user : .peer
         let entry = TranscriptEntry(
             id: id,
             text: message.text,
-            kind: kind,
+            kind: .user,
             format: "plain_text",
             pending: false,
             turnID: turnID,
@@ -651,10 +658,7 @@ extension AppModel {
             messageTarget: message.messageTarget,
             reply: message.reply,
             files: message.attachments,
-            messageMetadata: TranscriptMessageMetadata(
-                author: message.author,
-                delivery: message.delivery
-            )
+            messageMetadata: metadata
         )
         if let index = entries.lastIndex(where: { $0.id == id }) {
             entries[index] = entry

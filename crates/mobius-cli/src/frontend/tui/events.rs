@@ -178,22 +178,14 @@ impl TuiState {
     }
 
     fn handle_message(&mut self, message: MessageEvent, submission_id: Option<String>) {
-        let mut text = match &message.author {
-            MessageAuthor::User => {
-                self.remember_composer_input(message.text.clone());
-                if message.text.is_empty() {
-                    "›".to_string()
-                } else {
-                    format!("› {}", message.text)
-                }
-            }
-            MessageAuthor::Peer { handle, symbol, .. } => {
-                let icon = symbol.as_ref().map_or("", |symbol| match symbol.as_str() {
-                    "voice" => "♫ ",
-                    _ => "◇ ",
-                });
-                format!("{icon}@{handle} › {}", message.text)
-            }
+        if !matches!(message.author, MessageAuthor::User) {
+            return;
+        }
+        self.remember_composer_input(message.text.clone());
+        let mut text = if message.text.is_empty() {
+            "›".to_string()
+        } else {
+            format!("› {}", message.text)
         };
         for attachment in &message.attachments {
             text.push_str(if text == "›" { " " } else { "\n  " });

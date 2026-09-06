@@ -142,6 +142,7 @@ struct InlineUnifiedDiffView: View {
 }
 
 private struct UnifiedDiffView: View {
+    @Environment(\.mobiusPalette) private var palette
     let document: UnifiedDiffDocument
     @Binding var expandedFileIDs: Set<Int>
 
@@ -172,6 +173,19 @@ private struct UnifiedDiffView: View {
         .listStyle(.plain)
         .listRowSpacing(0)
         .scrollContentBackground(.hidden)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                HStack(spacing: MobiusSpace.s) {
+                    Text("+\(document.added)").foregroundStyle(palette.signal)
+                    Text("−\(document.removed)").foregroundStyle(palette.danger)
+                }
+                .font(MobiusStyle.badgeFont)
+                .fixedSize()
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Code changes")
+                .accessibilityValue("\(document.added) additions, \(document.removed) deletions")
+            }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(diffAccessibilityLabel(document))
     }

@@ -153,7 +153,6 @@ extension UIFont {
 final class TranscriptEntry: Identifiable {
     enum Kind: String, Codable, Sendable {
         case user
-        case peer
         case assistant
         case commentary
         case reasoning
@@ -185,7 +184,7 @@ final class TranscriptEntry: Identifiable {
     var reply: MessageReply?
     var files: [SessionFileReference]
     var annotations: [JSONValue]
-    let messageMetadata: TranscriptMessageMetadata?
+    var messageMetadata: TranscriptMessageMetadata?
 
     init(
         id: String,
@@ -245,8 +244,6 @@ final class TranscriptEntry: Identifiable {
 struct TranscriptMessageMetadata: Codable, Equatable, Sendable {
     let author: MessageAuthor
     let delivery: MessageDelivery
-
-    var kind: TranscriptEntry.Kind { author == .user ? .user : .peer }
 }
 
 struct WebSearchSource: Identifiable, Equatable {
@@ -270,7 +267,7 @@ extension TranscriptEntry.Kind {
         case .assistant: "final_answer"
         case .commentary: "commentary"
         case .reasoning: "reasoning"
-        case .user, .peer, .event, .error: nil
+        case .user, .event, .error: nil
         }
     }
 }
@@ -289,7 +286,6 @@ enum TranscriptRowSizing: Equatable {
 struct TranscriptPresentationRow: Identifiable {
     enum Kind: Equatable {
         case user
-        case peer
         case narrative
         case activityGroup
         case workedGroup
@@ -537,7 +533,7 @@ struct TranscriptProjection {
         }
 
         for entry in entries {
-            if entry.presentationID == boundaryID { appendActivity() }
+            if entry.presentationID == boundaryID || entry.startsTurn { appendActivity() }
             if entry.kind.isActivity {
                 if entry.turnTerminal { appendActivity() }
                 activity.append(entry)
@@ -547,7 +543,6 @@ struct TranscriptProjection {
             appendActivity()
             let rowKind: TranscriptPresentationRow.Kind = switch entry.kind {
             case .user: .user
-            case .peer: .peer
             default: .narrative
             }
             rows.append(TranscriptPresentationRow(
@@ -627,8 +622,7 @@ struct TranscriptProjection {
         else { return rows }
 
         let primaryInputIndex = rows.firstIndex { row in
-            (row.kind == .user || row.kind == .peer)
-                && row.records.contains(where: \.startsTurn)
+            row.kind == .user && row.records.contains(where: \.startsTurn)
         }
         let workRows: [TranscriptPresentationRow] = rows.enumerated().compactMap {
             index, row -> TranscriptPresentationRow? in

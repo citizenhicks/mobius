@@ -513,9 +513,6 @@ impl TuiState {
         let mut block = rendered.block;
         let title = bounded_title(&std::mem::take(&mut block.title));
         let mut text = bounded_terminal_text(&super::block_text(&block), MAX_ENTRY_BYTES);
-        if block.state == FrontendBlockState::Pending && block.role == FrontendBlockRole::Tool {
-            text = compact_tool_detail(&text);
-        }
         let detail = (block.state == FrontendBlockState::Pending
             && matches!(
                 block.role,

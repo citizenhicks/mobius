@@ -105,6 +105,16 @@ extension AppModelTests {
         XCTAssertEqual(model.pendingNewChatBotID, helper.id)
     }
 
+    func testBeginningSwarmCreationExplainsWhenEveryBotIsOff() throws {
+        let model = try model()
+        model.connectionState = .ready
+        model.bots = [bot(), bot(id: "bot-2", handle: "reviewer")]
+
+        XCTAssertFalse(model.beginCreatingSwarm())
+        XCTAssertEqual(model.toast?.message, "Swarm is off")
+        XCTAssertEqual(model.toast?.tone, .info)
+    }
+
     func testCreatingSwarmUsesOptedInUnclaimedBotsAndWaitsForCatalog() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
@@ -115,6 +125,7 @@ extension AppModelTests {
         model.bots = [leader, coworker, reviewer, independent]
         model.connectionState = .ready
 
+        XCTAssertTrue(model.beginCreatingSwarm())
         XCTAssertEqual(
             Set(model.availableBotsForSwarm(excluding: leader.id).map(\.id)),
             ["bot-2", "bot-3"]
@@ -160,6 +171,8 @@ extension AppModelTests {
         XCTAssertTrue(model.canMutateSwarm)
         XCTAssertEqual(model.swarm(containingBot: "bot-2")?.title, "Quiet Foxes")
         XCTAssertEqual(model.availableBotsForSwarm().map(\.id), ["bot-3"])
+        XCTAssertFalse(model.beginCreatingSwarm())
+        XCTAssertNil(model.toast)
     }
 
     func testSwarmCreationAndJoiningUseLatestBotAvailability() async throws {
@@ -191,6 +204,9 @@ extension AppModelTests {
         model.addSwarmMember(coworker, to: swarm)
         XCTAssertNil(model.swarmMutationRequestID)
         XCTAssertTrue(model.availableBotsForSwarm().isEmpty)
+        model.dismissToast()
+        XCTAssertFalse(model.beginCreatingSwarm())
+        XCTAssertNil(model.toast)
         let requestCount = await recorder.requestCount()
         XCTAssertEqual(requestCount, 0)
     }
@@ -1064,16 +1080,10 @@ extension AppModelTests {
             delivery: .steer,
             text: "Also check tests"
         )))
-        model.reduce(record: recorded(6, testMessageEvent(
-            author: .peer(
-                messageID: "message-1",
-                sessionID: "chat-reviewer",
-                handle: "@reviewer",
-                symbol: nil
-            ),
+        model.reduce(record: recordedPeerMessage(6,
             delivery: .steer,
             text: "The parser boundary is covered."
-        )))
+        ))
         model.reduce(record: recorded(7, testAssistantMessage(
             turnID: turnID,
             modelStepID: "step-2",
@@ -1082,7 +1092,7 @@ extension AppModelTests {
 
         XCTAssertEqual(
             model.transcriptProjection(breakBefore: nil).rows.map(\.kind),
-            [.user, .narrative, .activityGroup, .user, .peer, .narrative]
+            [.user, .narrative, .activityGroup, .user, .activityGroup, .narrative]
         )
 
         model.reduce(record: recorded(8, .object([
@@ -1098,7 +1108,7 @@ extension AppModelTests {
         )
         XCTAssertEqual(
             projection.rows[1].records.map(\.title),
-            ["", "context compacted", "", ""]
+            ["", "context compacted", "", "Message received from @reviewer"]
         )
         XCTAssertEqual(
             projection.rows[1].records.compactMap { $0.messageMetadata?.delivery },
@@ -1112,56 +1122,6 @@ extension AppModelTests {
         )
         XCTAssertEqual(TranscriptProjection.turnCount(in: model.transcript), 1)
         XCTAssertEqual(model.transcript.last?.turnElapsedMs, 600)
-    }
-
-    func testPeerMessageStartsAndCollapsesACompletedTurnLikeUserMessage() throws {
-        let model = try model()
-        let turnID = "peer-turn"
-        model.reduce(record: recorded(1, .object([
-            "type": .string("turn_started"),
-            "turnId": .string(turnID),
-        ])))
-        model.reduce(record: recorded(2, testMessageEvent(
-            author: .peer(
-                messageID: "message-1",
-                sessionID: "chat-reviewer",
-                handle: "@reviewer",
-                symbol: nil
-            ),
-            text: "Review the parser boundary."
-        )))
-        model.reduce(record: recorded(3, testAssistantMessage(
-            turnID: turnID,
-            modelStepID: "step-1",
-            phase: "commentary",
-            text: "Checking"
-        )))
-        model.reduce(record: recorded(4, testAssistantMessage(
-            turnID: turnID,
-            modelStepID: "step-2",
-            text: "Done"
-        )))
-        model.reduce(record: recorded(5, .object([
-            "type": .string("turn_complete"),
-            "turnId": .string(turnID),
-        ])))
-
-        XCTAssertEqual(model.transcript.map(\.turnID), Array(repeating: turnID, count: 3))
-        XCTAssertEqual(model.transcript.map(\.startsTurn), [true, false, false])
-        XCTAssertEqual(model.transcript.first?.messageMetadata?.delivery, .turn)
-        XCTAssertEqual(
-            model.transcript.first?.messageMetadata?.author,
-            .peer(
-                messageID: "message-1",
-                sessionID: "chat-reviewer",
-                handle: "@reviewer",
-                symbol: nil
-            )
-        )
-        XCTAssertEqual(
-            model.transcriptProjection(breakBefore: nil).rows.map(\.kind),
-            [.peer, .workedGroup, .narrative]
-        )
     }
 
     func testQueuedMessageStartsTheNextTranscriptTurn() throws {

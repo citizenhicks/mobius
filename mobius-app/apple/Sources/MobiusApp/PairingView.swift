@@ -61,7 +61,7 @@ struct PairingView: View {
                                 height: MobiusStyle.iconButtonSize
                             )
                             .mobiusGlass(in: Circle(), interactive: true, clear: true)
-                            .frame(maxWidth: .infinity)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
                             .accessibilityLabel("Paste pairing setup")
                             .help("Paste pairing setup")
                         }

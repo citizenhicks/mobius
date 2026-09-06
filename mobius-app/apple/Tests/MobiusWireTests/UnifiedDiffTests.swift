@@ -43,6 +43,54 @@ final class ReplyQuoteLayoutTests: XCTestCase {
             160
         )
     }
+
+    @MainActor
+    func testPeerQuoteRevealsLiveAndCompletedActivity() async throws {
+        let suite = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let model = Mobius.AppModel(
+            store: Mobius.GatewayStore(defaults: defaults), settingsDefaults: defaults,
+            requestSender: { _ in }
+        )
+        let target = Mobius.MessageTarget(checkpointSequence: 1, batchItemCount: 1)
+        let peer = Mobius.TranscriptEntry(
+            id: "peer", text: String(repeating: "Peer reply detail.\n", count: 20),
+            kind: .event, capability: "messages", role: .activity,
+            title: "Message received from @reviewer", format: "plain_text", pending: false,
+            turnID: "turn", startsTurn: true, messageTarget: target
+        )
+        let final = Mobius.TranscriptEntry(
+            id: "final", text: "Done", kind: .assistant, format: "plain_text", pending: false,
+            turnID: "turn", turnTerminal: true
+        )
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let previous = scene.keyWindow
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 390, height: 600)
+        defer { window.isHidden = true; previous?.makeKeyAndVisible() }
+        func scrollView(in view: UIView) -> UIScrollView? {
+            view as? UIScrollView ?? view.subviews.lazy.compactMap { scrollView(in: $0) }.first
+        }
+        for entries in [[peer], [peer, final]] {
+            model.messageNavigationRequest = nil
+            model.transcript = entries
+            let host = UIHostingController(rootView: Mobius.TranscriptView(
+                bottomInset: 0, isAtBottom: .constant(true), scrollToBottomRequest: 0
+            ).environment(model))
+            window.rootViewController = host
+            window.makeKeyAndVisible()
+            host.view.layoutIfNeeded()
+            let scroll = try XCTUnwrap(scrollView(in: host.view))
+            let collapsedHeight = scroll.contentSize.height
+            model.openMessageReply(Mobius.MessageReply(target: target, text: peer.text))
+            for _ in 0..<100 where scroll.contentSize.height < collapsedHeight + 200 {
+                try await Task.sleep(for: .milliseconds(10))
+                host.view.layoutIfNeeded()
+            }
+            XCTAssertGreaterThan(scroll.contentSize.height, collapsedHeight + 200)
+        }
+    }
 }
 
 final class UnifiedDiffTests: XCTestCase {

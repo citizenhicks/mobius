@@ -477,16 +477,10 @@ extension AppModelTests {
                     phase: "commentary",
                     text: "Before steering"
                 )),
-                recorded(4, testMessageEvent(
-                    author: .peer(
-                        messageID: "message-1",
-                        sessionID: "chat-reviewer",
-                        handle: "@reviewer",
-                        symbol: nil
-                    ),
+                recordedPeerMessage(4,
                     delivery: .steer,
                     text: "The parser boundary is covered."
-                )),
+                ),
             ],
             nextBeforeSequence: nil
         ))
@@ -528,15 +522,9 @@ extension AppModelTests {
         let model = try model()
         let turnID = "peer-turn"
         model.mergeHistory([
-            recorded(5, testMessageEvent(
-                author: .peer(
-                    messageID: "message-1",
-                    sessionID: "chat-reviewer",
-                    handle: "@reviewer",
-                    symbol: nil
-                ),
+            recordedPeerMessage(5,
                 text: "Review the parser boundary."
-            )),
+            ),
             recorded(6, testAssistantMessage(
                 turnID: turnID,
                 modelStepID: "step-1",
@@ -570,7 +558,7 @@ extension AppModelTests {
         XCTAssertEqual(model.transcript.map(\.startsTurn), [true, false, false])
         XCTAssertEqual(
             model.transcriptProjection(breakBefore: nil).rows.map(\.kind),
-            [.peer, .workedGroup, .narrative]
+            [.workedGroup, .narrative]
         )
     }
 

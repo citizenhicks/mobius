@@ -3,38 +3,14 @@ import Foundation
 import Security
 
 struct CachedTranscript: Codable, Sendable {
-    static let currentSchemaVersion = 4
-
-    private struct HistoryState: Codable, Sendable {
-        let nextBeforeSequence: UInt64?
-    }
-
-    private enum EntryIdentity: Codable, Sendable {
-        case message(TranscriptMessageMetadata)
-        case narrative(TranscriptEntry.Kind)
-
-        init(_ entry: TranscriptEntry) {
-            self = entry.messageMetadata.map(Self.message) ?? .narrative(entry.kind)
-        }
-
-        var kind: TranscriptEntry.Kind {
-            switch self {
-            case .message(let metadata): metadata.kind
-            case .narrative(let kind): kind
-            }
-        }
-
-        var messageMetadata: TranscriptMessageMetadata? {
-            guard case .message(let metadata) = self else { return nil }
-            return metadata
-        }
-    }
+    static let currentSchemaVersion = 5
 
     private struct Entry: Codable, Sendable {
         let id: String
         let presentationID: String?
         let text: String
-        let identity: EntryIdentity
+        let kind: TranscriptEntry.Kind
+        let messageMetadata: TranscriptMessageMetadata?
         let capability: String?
         let role: FrontendBlockRole?
         let title: String
@@ -59,7 +35,8 @@ struct CachedTranscript: Codable, Sendable {
             id = entry.id
             presentationID = entry.presentationID
             text = entry.text
-            identity = EntryIdentity(entry)
+            kind = entry.kind
+            messageMetadata = entry.messageMetadata
             capability = entry.capability
             role = entry.role
             title = entry.title
@@ -86,7 +63,7 @@ struct CachedTranscript: Codable, Sendable {
                 id: id,
                 presentationID: presentationID,
                 text: text,
-                kind: identity.kind,
+                kind: kind,
                 capability: capability,
                 role: role,
                 title: title,
@@ -106,7 +83,7 @@ struct CachedTranscript: Codable, Sendable {
                 reply: reply,
                 files: files,
                 annotations: annotations ?? [],
-                messageMetadata: identity.messageMetadata
+                messageMetadata: messageMetadata
             )
         }
     }
@@ -115,7 +92,7 @@ struct CachedTranscript: Codable, Sendable {
     let sequence: UInt64
     let currentUsage: TokenUsage
     let lastUsage: TokenUsage
-    private let history: HistoryState
+    let nextBeforeSequence: UInt64?
     private let entries: [Entry]
 
     init(
@@ -129,11 +106,10 @@ struct CachedTranscript: Codable, Sendable {
         self.sequence = sequence
         self.currentUsage = currentUsage
         self.lastUsage = lastUsage
-        history = HistoryState(nextBeforeSequence: nextBeforeSequence)
+        self.nextBeforeSequence = nextBeforeSequence
         entries = transcript.map(Entry.init)
     }
 
-    var nextBeforeSequence: UInt64? { history.nextBeforeSequence }
     var transcript: [TranscriptEntry] { entries.map(\.transcriptEntry) }
 
     fileprivate func fitsCache(maximumEntries: Int, maximumContentBytes: Int) -> Bool {
@@ -157,9 +133,9 @@ struct CachedTranscript: Codable, Sendable {
                   consume(entry.turnID),
                   consume(entry.format),
                   consume(entry.tone),
-                  consume(entry.identity.messageMetadata?.author.peerFields?.messageID),
-                  consume(entry.identity.messageMetadata?.author.peerFields?.sessionID),
-                  consume(entry.identity.messageMetadata?.author.peerFields?.handle),
+                  consume(entry.messageMetadata?.author.peerFields?.messageID),
+                  consume(entry.messageMetadata?.author.peerFields?.sessionID),
+                  consume(entry.messageMetadata?.author.peerFields?.handle),
                   consume(entry.reply?.text),
                   entry.files.allSatisfy({ file in
                       consume(file.id)

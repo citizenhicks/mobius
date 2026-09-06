@@ -31,6 +31,7 @@ use crate::frontend::theme::Role;
 use crate::frontend::theme::current;
 use mobius::protocol::ActiveMessageDelivery;
 use mobius::protocol::FrontendBlockFormat;
+use mobius::protocol::FrontendBlockRole;
 use mobius::protocol::FrontendSlot;
 use mobius::protocol::FrontendTone;
 use mobius::protocol::FrontendWidget;
@@ -338,6 +339,10 @@ fn push_block_lines(lines: &mut Vec<Line<'static>>, entry: &TranscriptEntry, wid
         transcript_role(entry.tone)
     };
     let detail = entry.detail.as_deref();
+    let compact = detail
+        .filter(|_| entry.pending && entry.role == Some(FrontendBlockRole::Tool))
+        .map(super::compact_tool_detail);
+    let detail = compact.as_deref().or(detail);
     let inline_detail = detail.is_some_and(|detail| {
         !detail.contains('\n')
             && Line::from(format!("{AGENT_MARKER}{title} {detail}")).width() <= usize::from(width)

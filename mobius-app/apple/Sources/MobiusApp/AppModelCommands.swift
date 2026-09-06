@@ -412,6 +412,15 @@ extension AppModel {
         }
     }
 
+    func beginCreatingSwarm() -> Bool {
+        guard canMutateSwarm else { return false }
+        guard bots.contains(where: \.collaborationEnabled) else {
+            showToast("Swarm is off")
+            return false
+        }
+        return availableBotsForSwarm().count >= 2
+    }
+
     func openSession(_ sessionID: String) {
         guard canBrowseSessions || sessionID == selectedSessionID else { return }
         guard connectionState.isReady || sessionID == selectedSessionID

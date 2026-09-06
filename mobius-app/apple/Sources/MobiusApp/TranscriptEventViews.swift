@@ -55,26 +55,18 @@ struct WorkedForGroupView: View {
                     fileSessionID: fileSessionID,
                     rowSpacing: MobiusSpace.s,
                     allowsMessageActions: allowsMessageActions,
-                    onExpandActivityGroup: onExpand
+                    revealMessageTarget: revealMessageTarget,
+                    onExpandActivityGroup: onExpand,
+                    onRevealMessage: onRevealMessage
                 )
             }
         }
-        .task(id: revealMessageTarget) {
-            guard let target = revealMessageTarget,
-                  entries.contains(where: { $0.messageTarget == target }),
-                  let row = TranscriptProjection(entries: entries).rows.first(where: { row in
-                      row.records.contains { $0.messageTarget == target }
-                  })
+        .onChange(of: revealMessageTarget, initial: true) {
+            guard let target = revealMessageTarget, !isExpanded,
+                  entries.contains(where: { $0.messageTarget == target })
             else { return }
-            if !isExpanded {
-                onExpand()
-                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.16)) {
-                    isExpanded = true
-                }
-            }
-            await Task.yield()
-            guard !Task.isCancelled else { return }
-            onRevealMessage(target, row.id)
+            onExpand()
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.16)) { isExpanded = true }
         }
     }
 
@@ -101,7 +93,9 @@ struct EventGroupView: View {
     /// The gap between two steps belongs to this row: rather than growing the transcript by a
     /// line that then has to disappear again, the summary hands its slot to the waiting line.
     var waiting: TranscriptWaitingPhrase?
+    var revealMessageTarget: MessageTarget?
     var onExpand: () -> Void = {}
+    var onRevealMessage: (MessageTarget, TranscriptPresentationID) -> Void = { _, _ in }
 
     var body: some View {
         VStack(alignment: .leading, spacing: MobiusSpace.s) {
@@ -130,12 +124,24 @@ struct EventGroupView: View {
                             if entry.kind == .reasoning {
                                 ReasoningLine(entry: entry, isActive: false)
                             } else {
-                                EventLine(entry: entry, isActive: false)
+                                EventLine(
+                                    entry: entry, isActive: false,
+                                    revealMessageTarget: revealMessageTarget,
+                                    onRevealMessage: onRevealMessage
+                                )
+                                .id("event-message:\(entry.presentationID)")
                             }
                         }
                     }
                 }
             }
+        }
+        .onChange(of: revealMessageTarget, initial: true) {
+            guard let target = revealMessageTarget, !isExpanded,
+                  entries.contains(where: { $0.messageTarget == target })
+            else { return }
+            onExpand()
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.16)) { isExpanded = true }
         }
     }
 
@@ -387,6 +393,8 @@ private struct EventLine: View {
     @State private var isExpanded = false
     let entry: TranscriptEntry
     let isActive: Bool
+    let revealMessageTarget: MessageTarget?
+    let onRevealMessage: (MessageTarget, TranscriptPresentationID) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: MobiusSpace.xs) {
@@ -421,6 +429,13 @@ private struct EventLine: View {
                         .background(palette.panel, in: MobiusStyle.controlShape)
                 }
             }
+        }
+        .task(id: revealMessageTarget) {
+            guard let target = revealMessageTarget, entry.messageTarget == target else { return }
+            isExpanded = true
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            onRevealMessage(target, "event-message:\(entry.presentationID)")
         }
     }
 

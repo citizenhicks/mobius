@@ -155,6 +155,20 @@ final class TranscriptProjectionTests: XCTestCase {
         XCTAssertEqual(second.structuralRevision, first.structuralRevision)
     }
 
+    func testIncomingMessageTurnStartSeparatesEarlierActivity() {
+        let earlier = entry("earlier", turnID: "turn-1")
+        let message = entry("received", turnID: "turn-2", startsTurn: true)
+        let work = entry("work", turnID: "turn-2")
+        let answer = entry("answer", kind: .assistant, turnID: "turn-2", turnTerminal: true)
+
+        let projection = TranscriptProjection(entries: [earlier, message, work, answer])
+
+        XCTAssertEqual(projection.rows.map(\.kind), [.activityGroup, .workedGroup, .narrative])
+        XCTAssertEqual(projection.rows.map { $0.records.map(\.id) }, [
+            ["earlier"], ["received", "work"], ["answer"]
+        ])
+    }
+
     func testCompletedTurnCollapsesMixedChildActivityIntoWorkedGroup() {
         let entries = [
             entry("user", kind: .user, turnID: "turn-root", startsTurn: true),

@@ -142,11 +142,15 @@ struct BotsView: View {
             .accessibilityLabel("New Bot")
             .help("New Bot")
             Button {
-                showsNewSwarm = true
+                showsNewSwarm = model.beginCreatingSwarm()
             } label: {
                 MobiusIcon(.swarm, gutter: false)
             }
-            .disabled(model.availableBotsForSwarm().count < 2 || !model.canMutateSwarm)
+            .disabled(
+                !model.canMutateSwarm
+                    || model.bots.contains(where: \.collaborationEnabled)
+                        && model.availableBotsForSwarm().count < 2
+            )
             .groupedHeaderAction()
             .accessibilityLabel("New Swarm")
             .help("Create a Swarm with Bots that have collaboration enabled in Bot capabilities.")

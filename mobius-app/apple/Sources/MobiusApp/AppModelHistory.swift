@@ -164,8 +164,7 @@ extension AppModel {
                     entries[index].turnID = explicitTurnID
                 }
                 if let firstInput = entries[start...].firstIndex(where: {
-                    ($0.kind == .user || $0.kind == .peer)
-                        && $0.messageMetadata?.delivery.startsTurn == true
+                    $0.messageMetadata?.delivery.startsTurn == true
                         && !$0.startsTurn
                 }) {
                     entries[firstInput].startsTurn = true

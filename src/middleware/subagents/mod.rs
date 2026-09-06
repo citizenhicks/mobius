@@ -31,6 +31,7 @@ use crate::backend::checkpoint::CheckpointStore;
 use crate::backend::model::internal_user_message;
 use crate::protocol::EventMsg;
 use crate::protocol::FrontendBlock;
+use crate::protocol::FrontendBlockUpdate;
 use crate::protocol::FrontendCommand;
 use crate::protocol::FrontendContribution;
 use crate::protocol::FrontendEvent;
@@ -584,7 +585,7 @@ impl Middleware for Subagents {
     }
 
     fn render(&self, event: &EventMsg, _session_id: &str) -> Option<FrontendBlock> {
-        render_tool_event(
+        let mut block = render_tool_event(
             event,
             |name| {
                 matches!(
@@ -613,7 +614,14 @@ impl Middleware for Subagents {
                 "wait_agent" => labeled_tool_heading(text::RENDER_WAIT, "timeout_ms", arguments),
                 _ => name.to_string().into(),
             },
-        )
+        )?;
+        if let EventMsg::ToolCallBegin(call) = event
+            && matches!(call.name.as_str(), "send_message" | "followup_task")
+            && let Some(message) = call.arguments.get("text").and_then(Value::as_str)
+        {
+            FrontendBlockUpdate::Append.apply(&mut block.text, message);
+        }
+        Some(block)
     }
 
     fn command<'a>(

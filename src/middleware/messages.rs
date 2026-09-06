@@ -12,7 +12,8 @@ use super::{
 };
 use crate::backend::checkpoint::QueuedMessageBoundary;
 use crate::protocol::{
-    ActiveMessageDelivery, EventMsg, FrontendCommand, FrontendContribution, FrontendEvent,
+    ActiveMessageDelivery, EventMsg, FrontendBlock, FrontendBlockFormat, FrontendBlockRole,
+    FrontendBlockState, FrontendBlockUpdate, FrontendCommand, FrontendContribution, FrontendEvent,
     FrontendSlot, FrontendSymbol, FrontendTone, FrontendWidget, MAX_CAPABILITY_INPUT_BYTES,
     MessageAuthor, MessageDelivery, MessageEvent, Op,
 };
@@ -199,6 +200,37 @@ impl Middleware for Messages {
             }],
             ..FrontendContribution::default()
         }
+    }
+
+    fn render(&self, event: &EventMsg, _session_id: &str) -> Option<FrontendBlock> {
+        let EventMsg::Message(message) = event else {
+            return None;
+        };
+        let MessageAuthor::Peer {
+            message_id,
+            session_id,
+            handle,
+            symbol,
+        } = &message.author
+        else {
+            return None;
+        };
+        Some(FrontendBlock {
+            id: Some(format!(
+                "message_received:{}:{session_id}:{message_id}",
+                session_id.len()
+            )),
+            group: None,
+            update: FrontendBlockUpdate::Replace,
+            state: FrontendBlockState::Complete,
+            role: FrontendBlockRole::Activity,
+            title: format!("Message received from @{handle}"),
+            text: message.text.clone(),
+            symbol: Some(symbol.clone().unwrap_or(FrontendSymbol::Chat)),
+            files: Vec::new(),
+            format: FrontendBlockFormat::PlainText,
+            tone: FrontendTone::Neutral,
+        })
     }
 
     fn command<'a>(
@@ -532,7 +564,7 @@ mod tests {
                 handle: "worker".into(),
                 symbol: None,
             },
-            text: "review this".into(),
+            text: "Review this.\n\nKeep the validation.\n".into(),
             attachments: Vec::new(),
             reply: None,
             requested_delivery: Some(ActiveMessageDelivery::Queue),
@@ -556,6 +588,13 @@ mod tests {
             staged[0].event.message().map(|message| message.delivery),
             Some(MessageDelivery::Steer)
         );
+        let block = Messages::default()
+            .render(&staged[0].event, "turn-1")
+            .expect("received activity");
+        assert_eq!(block.role, FrontendBlockRole::Activity);
+        assert_eq!(block.title, "Message received from @worker");
+        assert_eq!(block.text, peer.text);
+        assert_eq!(block.symbol, Some(FrontendSymbol::Chat));
     }
 
     #[test]

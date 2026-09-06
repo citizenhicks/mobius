@@ -151,13 +151,15 @@ extension AppModelTests {
         window.frame.size.height = 500
         model.transcript = [Mobius.TranscriptEntry(
             id: "voice-handoff", text: "Review the launch checklist and fix the remaining issues.",
-            kind: .peer, format: "plain_text", pending: false,
+            kind: .event, capability: "messages", role: .activity,
+            title: "Message received from voice agent", symbol: "voice",
+            format: "plain_text", pending: false,
             messageMetadata: Mobius.TranscriptMessageMetadata(
                 author: .peer(messageID: "handoff", sessionID: "voice-child", handle: "voice agent", symbol: "voice"),
                 delivery: .turn
             )
         )]
-        capture(await show(.light), name: "voice-handoff-shared-bubble")
+        capture(await show(.light), name: "voice-handoff-shared-event")
         let preview = Mobius.TranscriptPreview(
             id: "voice-child", title: "voice agent", context: "", status: nil, model: nil,
             entries: [

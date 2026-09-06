@@ -1,3 +1,6 @@
+use mobius::middleware::Middleware;
+use mobius::middleware::messages::Messages;
+
 use super::support::*;
 use super::*;
 
@@ -116,9 +119,13 @@ fn completed_diff_replaces_the_pending_block_with_a_styled_diff() {
 }
 
 #[test]
-fn completed_tool_compacts_its_detail_and_keeps_the_result() {
+fn pending_tool_compacts_its_display_without_losing_completed_detail() {
     let mut state = state();
     state.transcript.clear();
+    let detail = format!(
+        "input 0\ninput 1\ninput 2\n{}\nlast input",
+        "x".repeat(MAX_TOOL_DETAIL_BYTES + 1)
+    );
     state.apply_block(rendered(FrontendBlock {
         id: Some("turn/bash".into()),
         group: None,
@@ -126,12 +133,16 @@ fn completed_tool_compacts_its_detail_and_keeps_the_result() {
         state: FrontendBlockState::Pending,
         role: FrontendBlockRole::Tool,
         title: "Bash".into(),
-        text: "input 0\ninput 1\ninput 2\ninput 3\ninput 4".into(),
+        text: detail.clone(),
         symbol: None,
         format: FrontendBlockFormat::PlainText,
         tone: FrontendTone::Neutral,
         files: Vec::new(),
     }));
+    assert_eq!(
+        rendered_text(&view::live_transcript_lines(&mut state, 0, 80)),
+        "• Bash\n  └ input 0\n    input 1\n    input 2\n    …"
+    );
     state.apply_block(rendered(FrontendBlock {
         id: Some("turn/bash".into()),
         group: None,
@@ -147,12 +158,10 @@ fn completed_tool_compacts_its_detail_and_keeps_the_result() {
     }));
 
     let entry = state.transcript.front().expect("tool entry");
-    assert_eq!(
-        entry.detail.as_deref(),
-        Some("input 0\ninput 1\ninput 2\n…")
-    );
+    assert_eq!(entry.detail.as_deref(), Some(detail.as_str()));
     assert_eq!(entry.text, "ok");
-    assert!(rendered_text(&view::live_transcript_lines(&mut state, 0, 80)).contains("ok"));
+    let completed = rendered_text(&view::live_transcript_lines(&mut state, 0, 80));
+    assert!(completed.contains("last input\n    ok"), "{completed}");
 }
 
 #[test]
@@ -456,60 +465,76 @@ fn sent_attachment_only_message_is_visible_in_the_transcript() {
 }
 
 #[test]
-fn peer_message_renders_its_handle_without_entering_composer_history() {
-    let mut state = state();
-    state.transcript.clear();
-    state.handle_agent_event(
-        EventMsg::Message(MessageEvent {
+fn peer_messages_use_activity_rows_in_live_history_and_preview_transcripts() {
+    let messages = Messages::default();
+    let text = "Check the protocol boundary\n  Preserve this detail.";
+    for (handle, symbol) in [
+        ("curie", None),
+        ("voice agent", Some(FrontendSymbol::Custom("voice".into()))),
+    ] {
+        let event = EventMsg::Message(MessageEvent {
             author: MessageAuthor::Peer {
                 message_id: "message".into(),
                 session_id: "session".into(),
-                handle: "curie".into(),
-                symbol: None,
+                handle: handle.into(),
+                symbol,
             },
             delivery: MessageDelivery::Steer,
-            text: "Check the protocol boundary".into(),
+            text: text.into(),
             attachments: Vec::new(),
             reply: None,
             message_target: None,
-        }),
-        Vec::new(),
-    );
+        });
+        let block = messages.render(&event, "main").expect("peer activity");
+        let mut record = recorded(
+            event,
+            vec![RenderedBlock {
+                capability: messages.name().into(),
+                block,
+            }],
+            None,
+        );
+        record.event.submission_id = Some("submission".into());
 
-    assert_eq!(
-        (
-            state.transcript.front().map(|entry| entry.text.as_str()),
-            state.composer_history.len(),
-        ),
-        (Some("@curie › Check the protocol boundary"), 0)
-    );
-}
+        let mut live = state();
+        events::handle_gateway_event(&mut live, record.clone());
+        let mut history = state();
+        events::handle_gateway_history(&mut history, vec![record.clone()]);
+        let mut preview = state();
+        preview.preview_request_id = Some("preview-request".into());
+        let mut page = preview_record("child", "latest", FrontendPreviewUpdate::Replace, &[], None);
+        page.preview.as_mut().expect("preview").events = vec![RenderedEvent {
+            submission_id: record.event.submission_id,
+            recorded_at_ms: record.recorded_at_ms,
+            event: record.event.msg,
+            blocks: record.blocks,
+        }];
+        events::handle_gateway_event(&mut preview, page);
 
-#[test]
-fn peer_message_renders_its_advertised_voice_symbol() {
-    let mut state = state();
-    state.transcript.clear();
-    state.handle_agent_event(
-        EventMsg::Message(MessageEvent {
-            author: MessageAuthor::Peer {
-                message_id: "message".into(),
-                session_id: "voice-child".into(),
-                handle: "voice agent".into(),
-                symbol: Some(FrontendSymbol::Custom("voice".into())),
-            },
-            delivery: MessageDelivery::Steer,
-            text: "Run the tests".into(),
-            attachments: Vec::new(),
-            reply: None,
-            message_target: None,
-        }),
-        Vec::new(),
-    );
-    assert_eq!(
-        state.transcript.front().expect("message").text,
-        "♫ @voice agent › Run the tests"
-    );
-    assert!(state.composer_history.is_empty());
+        let title = format!("Message received from @{handle}");
+        for transcript in [
+            &live.transcript,
+            &history.transcript,
+            &snapshot(&preview).transcript,
+        ] {
+            assert_eq!(transcript.len(), 1);
+            let entry = transcript.front().expect("peer activity");
+            assert_eq!(
+                (entry.title.as_deref(), entry.text.as_str(), entry.role),
+                (
+                    Some(title.as_str()),
+                    text,
+                    Some(FrontendBlockRole::Activity)
+                )
+            );
+            assert!(matches!(entry.tone, TranscriptTone::Neutral));
+        }
+        assert!(
+            [&live, &history, &preview]
+                .iter()
+                .all(|state| state.composer_history.is_empty())
+        );
+    }
 }
 
 #[test]

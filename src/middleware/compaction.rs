@@ -241,7 +241,7 @@ impl Middleware for Compaction {
         if let Some(block) = super::tools::render_tool_event(
             event,
             |name| matches!(name, "write_handoff" | "new_context"),
-            |name, _| name.into(),
+            |name, arguments| super::tools::labeled_tool_heading(name, "notes", arguments),
         ) {
             return Some(block);
         }
@@ -694,6 +694,23 @@ fn truncate_chars(text: &str, limit: usize) -> String {
 mod tests {
     use super::*;
     use crate::backend::model::tool_output;
+
+    #[test]
+    fn handoff_event_shows_written_notes() {
+        let notes = "Goal: finish the UI update.\nVerified: regression tests pass.";
+        let block = Compaction::default()
+            .render(
+                &EventMsg::ToolCallBegin(crate::protocol::ToolCallBeginEvent {
+                    turn_id: "turn".into(),
+                    call_id: "save".into(),
+                    name: "write_handoff".into(),
+                    arguments: serde_json::json!({"notes": notes}),
+                }),
+                "session",
+            )
+            .expect("handoff event");
+        assert_eq!(block.text, notes);
+    }
 
     #[test]
     fn handoff_and_offloading_cannot_share_a_stack_in_either_order() {

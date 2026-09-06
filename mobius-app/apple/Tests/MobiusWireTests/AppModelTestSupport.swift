@@ -648,6 +648,39 @@ final class AppModelTests: XCTestCase {
         )
     }
 
+    func recordedPeerMessage(
+        _ sequence: UInt64,
+        delivery: MessageDelivery = .turn,
+        text: String,
+        reply: MessageReply? = nil,
+        messageTarget: MessageTarget? = nil
+    ) -> RecordedEvent {
+        recorded(sequence, testMessageEvent(
+            author: .peer(
+                messageID: "message-1",
+                sessionID: "chat-reviewer",
+                handle: "reviewer",
+                symbol: nil
+            ),
+            delivery: delivery,
+            text: text,
+            reply: reply,
+            messageTarget: messageTarget
+        ), blocks: [RenderedBlock(capability: "messages", block: FrontendBlock(
+            id: "message_received:13:chat-reviewer:message-1",
+            group: nil,
+            update: .replace,
+            state: .complete,
+            role: .activity,
+            title: "Message received from @reviewer",
+            text: text,
+            symbol: "chat",
+            format: "plain_text",
+            tone: "neutral",
+            files: []
+        ))])
+    }
+
     func session(
         sessionID: String = "chat-1",
         state: SessionActivityState,

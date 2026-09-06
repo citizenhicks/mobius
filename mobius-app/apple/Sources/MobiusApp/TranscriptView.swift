@@ -54,7 +54,9 @@ struct TranscriptRowsView: View {
                 fileSessionID: fileSessionID,
                 isActive: row.records.contains { $0.presentationID == activeStepID },
                 waiting: projection.waiting.phrase(forRow: row.id),
-                onExpand: onExpandActivityGroup
+                revealMessageTarget: revealMessageTarget,
+                onExpand: onExpandActivityGroup,
+                onRevealMessage: onRevealMessage
             )
         case .workedGroup:
             WorkedForGroupView(
@@ -66,16 +68,21 @@ struct TranscriptRowsView: View {
                 onExpand: onExpandActivityGroup,
                 onRevealMessage: onRevealMessage
             )
-        case .user, .peer, .narrative:
+        case .user, .narrative:
             if let entry = row.records.first {
                 TranscriptRow(
                     entry: entry,
                     isUser: row.kind == .user,
-                    isPeer: row.kind == .peer,
                     fileSessionID: fileSessionID,
                     allowsMessageActions: allowsMessageActions,
                     turnDiff: turnDiff(entry)
                 )
+                .task(id: revealMessageTarget) {
+                    guard let target = revealMessageTarget, entry.messageTarget == target else { return }
+                    await Task.yield()
+                    guard !Task.isCancelled else { return }
+                    onRevealMessage(target, row.id)
+                }
             }
         }
     }
@@ -340,10 +347,10 @@ struct TranscriptView: View {
             pendingMessageTarget = request?.target
             groupedMessageTarget = nil
             messageNavigationProgress = nil
-            seekMessageTarget(proxy: proxy)
+            seekMessageTarget()
         }
         .onChange(of: model.historyLoadSuccessRevision) { _, _ in
-            seekMessageTarget(proxy: proxy)
+            seekMessageTarget()
         }
         .onChange(of: model.historyLoadFailureRevision) { _, _ in
             pendingMessageTarget = nil
@@ -380,23 +387,13 @@ struct TranscriptView: View {
         model.loadEarlierHistory()
     }
 
-    private func seekMessageTarget(proxy: ScrollViewProxy) {
+    private func seekMessageTarget() {
         guard let target = pendingMessageTarget else { return }
-        if let row = projection.rows.first(where: { row in
+        if projection.rows.contains(where: { row in
             row.records.contains { $0.messageTarget == target }
         }) {
-            if row.kind == .workedGroup {
-                groupedMessageTarget = target
-                scroll.stopFollowingTail()
-                return
-            }
+            groupedMessageTarget = target
             scroll.stopFollowingTail()
-            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
-                proxy.scrollTo(row.id, anchor: .center)
-            }
-            pendingMessageTarget = nil
-            groupedMessageTarget = nil
-            messageNavigationProgress = nil
             return
         }
         guard !model.isLoadingEarlierHistory else { return }
@@ -470,13 +467,12 @@ private struct TranscriptRow: View {
     /// Activity never reaches this view: a run is a group row, whatever its length. The
     /// projection sends only what the reader wrote and what the agent said back.
     let isUser: Bool
-    let isPeer: Bool
     let fileSessionID: String?
     let allowsMessageActions: Bool
     let turnDiff: String
 
     var body: some View {
-        VStack(alignment: isInput ? .trailing : .leading, spacing: 0) {
+        VStack(alignment: isUser ? .trailing : .leading, spacing: 0) {
             content
             if !turnDiff.isEmpty {
                 TurnDiffCard(source: turnDiff)
@@ -486,14 +482,12 @@ private struct TranscriptRow: View {
             // final answer carries them under the text, where they are always available.
             if entry.kind == .assistant { controls }
         }
-        .frame(maxWidth: .infinity, alignment: isInput ? .trailing : .leading)
+        .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
     }
-
-    private var isInput: Bool { isUser || isPeer }
 
     @ViewBuilder
     private var content: some View {
-        if isInput {
+        if isUser {
             HStack {
                 Spacer(minLength: 42)
                 VStack(alignment: .trailing, spacing: MobiusSpace.s) {
@@ -511,28 +505,11 @@ private struct TranscriptRow: View {
                         alignsTrailing: true
                     )
                     if !entry.text.isEmpty {
-                        if isUser {
-                            CollapsibleText(text: entry.text)
-                                .padding(.horizontal, MobiusSpace.l)
-                                .padding(.vertical, MobiusSpace.m)
-                                .background(palette.accentSoft, in: MobiusStyle.cardShape)
-                                .contentShape(MobiusStyle.cardShape)
-                        } else {
-                            MobiusMarkdownText(entry.text, streaming: false)
-                                .equatable()
-                                .multilineTextAlignment(.leading)
-                                .padding(MobiusSpace.l)
-                                .background(
-                                    palette.accentSoft.opacity(0.45),
-                                    in: MobiusStyle.cardShape
-                                )
-                                .overlay {
-                                    MobiusStyle.cardShape.stroke(
-                                        palette.accent.opacity(0.3),
-                                        lineWidth: MobiusStyle.borderWidth
-                                    )
-                                }
-                        }
+                        CollapsibleText(text: entry.text)
+                            .padding(.horizontal, MobiusSpace.l)
+                            .padding(.vertical, MobiusSpace.m)
+                            .background(palette.accentSoft, in: MobiusStyle.cardShape)
+                            .contentShape(MobiusStyle.cardShape)
                     }
                     messageMetadata
                 }
@@ -554,11 +531,7 @@ private struct TranscriptRow: View {
     @ViewBuilder
     private var messageMetadata: some View {
         if let metadata = entry.messageMetadata {
-            MessageMetadata(
-                author: metadata.author,
-                delivery: metadata.delivery,
-                bot: isPeer ? displayedBot : nil
-            )
+            MessageMetadata(delivery: metadata.delivery)
         }
     }
 
@@ -667,7 +640,7 @@ private struct TranscriptRow: View {
 
     @ViewBuilder
     private var informationMenuItems: some View {
-        if timestamp != nil || isInput || displayedBot != nil {
+        if timestamp != nil || isUser || displayedBot != nil {
             Divider()
         }
         if let timestamp {
@@ -687,9 +660,6 @@ private struct TranscriptRow: View {
                 Button(verbatim: bot.name, glyph: .aiScan) {}
                     .disabled(true)
             }
-        } else if isPeer, let peer = entry.messageMetadata?.author.peerFields {
-            Button(verbatim: peer.handle, glyph: peer.symbol.map(MobiusSymbol.glyph(for:)) ?? .aiScan) {}
-                .disabled(true)
         }
     }
 
@@ -704,16 +674,14 @@ private struct TranscriptRow: View {
 
 private struct MessageMetadata: View {
     @Environment(\.mobiusPalette) private var palette
-    let author: MessageAuthor
     let delivery: MessageDelivery
-    let bot: BotRecord?
 
     var body: some View {
         HStack(spacing: MobiusSpace.xs) {
             MobiusIcon(
                 glyph,
                 size: MobiusStyle.glyphMark,
-                foreground: bot?.tint.color ?? palette.muted,
+                foreground: palette.muted,
                 gutter: false
             )
             if let deliveryLabel {
@@ -721,7 +689,7 @@ private struct MessageMetadata: View {
                 Text(verbatim: "•")
                     .accessibilityHidden(true)
             }
-            authorLabel
+            Text("you")
         }
         .font(MobiusStyle.metadataFont)
         .foregroundStyle(palette.muted)
@@ -730,11 +698,10 @@ private struct MessageMetadata: View {
     }
 
     private var glyph: MobiusGlyph {
-        if let symbol = author.peerFields?.symbol { return MobiusSymbol.glyph(for: symbol) }
-        return switch delivery {
+        switch delivery {
         case .steer: .workflowSquare03
         case .queue: .queue01
-        case .turn: author == .user ? .userFocus : .aiScan
+        case .turn: .userFocus
         }
     }
 
@@ -746,14 +713,8 @@ private struct MessageMetadata: View {
         }
     }
 
-    private var authorLabel: Text {
-        bot.map { Text(verbatim: $0.name) }
-            ?? author.peerFields.map { Text(verbatim: $0.handle) }
-            ?? Text("you")
-    }
-
     private var accessibilityLabel: Text {
-        let author = bot?.name ?? author.peerFields?.handle ?? String(localized: "you")
+        let author = String(localized: "you")
         let delivery = deliveryLabel.map { String(localized: $0) }
         return Text(verbatim: [delivery, author].compactMap { $0 }.joined(separator: ", "))
     }

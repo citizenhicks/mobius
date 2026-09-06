@@ -248,6 +248,78 @@ extension AppModelTests {
         XCTAssertEqual(entry.turnID, "turn-1")
     }
 
+    func testPeerCoordinationUsesCanonicalEventAcrossLiveReplayPreviewAndCache() throws {
+        let text = "  Check the parser boundary.\nKeep this second line.\n"
+        let target = MessageTarget(checkpointSequence: 3, batchItemCount: 1)
+        let reply = MessageReply(
+            target: MessageTarget(checkpointSequence: 1, batchItemCount: 1),
+            text: "Original decision"
+        )
+        let records = [
+            recorded(1, .object([
+                "type": .string("turn_started"),
+                "turnId": .string("peer-turn")
+            ])),
+            recordedPeerMessage(2, text: text, reply: reply, messageTarget: target),
+            recorded(3, testAssistantMessage(
+                turnID: "peer-turn", modelStepID: "step-1", phase: "commentary", text: "Checking"
+            )),
+            recorded(4, testAssistantMessage(
+                turnID: "peer-turn", modelStepID: "step-2", text: "Done"
+            )),
+            recorded(5, .object(["type": .string("turn_complete"), "turnId": .string("peer-turn")]))
+        ]
+        let live = try model()
+        for record in records { live.reduce(record: record) }
+        let replay = try model()
+        replay.mergeHistory(records)
+        replay.apply(RenderedPreview(
+            id: "reviewer",
+            title: "reviewer",
+            subtitle: "",
+            pageId: "latest",
+            update: .replace,
+            events: records.map { record in
+                RenderedEventRecord(
+                    event: record.event.msg,
+                    blocks: record.blocks,
+                    recordedAtMs: record.recordedAtMs
+                )
+            },
+            next: nil
+        ), selection: nil)
+        let preview = try XCTUnwrap(replay.previews.first)
+        let cached = CachedTranscript(
+            sequence: 5,
+            nextBeforeSequence: nil,
+            transcript: live.transcript,
+            currentUsage: TokenUsage(),
+            lastUsage: TokenUsage()
+        )
+        let restored = try JSONDecoder().decode(
+            CachedTranscript.self,
+            from: JSONEncoder().encode(cached)
+        ).transcript
+
+        for entries in [live.transcript, replay.transcript, preview.entries, restored] {
+            XCTAssertEqual(entries.count, 3)
+            XCTAssertEqual(entries.map(\.turnID), Array(repeating: "peer-turn", count: 3))
+            XCTAssertEqual(entries.map(\.startsTurn), [true, false, false])
+            let entry = try XCTUnwrap(entries.first)
+            XCTAssertEqual(entry.kind, .event)
+            XCTAssertEqual(entry.role, .activity)
+            XCTAssertEqual(entry.capability, "messages")
+            XCTAssertEqual(entry.headline, "Message received from @reviewer")
+            XCTAssertEqual(entry.eventDetail, text)
+            XCTAssertEqual(entry.symbol, "chat")
+            XCTAssertEqual(entry.messageMetadata?.author.peerFields?.handle, "reviewer")
+            XCTAssertEqual(entry.messageMetadata?.delivery, .turn)
+            XCTAssertEqual(entry.messageTarget, target)
+            XCTAssertEqual(entry.reply, reply)
+            XCTAssertEqual(TranscriptProjection(entries: entries).rows.map(\.kind), [.workedGroup, .narrative])
+        }
+    }
+
     func testBlockAppendsSeparateChunksWithoutRemovingWhitespace() {
         XCTAssertEqual(appendingBlockText("contents", to: "note.txt"), "note.txt\ncontents")
         XCTAssertEqual(appendingBlockText("\n\ncontents", to: "note.txt"), "note.txt\n\ncontents")

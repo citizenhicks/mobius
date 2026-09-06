@@ -93,14 +93,8 @@ fn prompt_section_uses_configured_child_instruction() {
 
 #[test]
 fn renders_every_subagent_tool_call() {
-    let middleware = Subagents::new(
-        1,
-        2,
-        2,
-        Arc::new(|_| Box::pin(async { Err(Error::Stopped("unused".into())) })),
-    )
-    .expect("subagents middleware");
-
+    let middleware = test_middleware();
+    let message = "Check the boundary.\n\nKeep the existing validation.\n";
     for name in [
         "spawn_agent",
         "send_message",
@@ -109,35 +103,35 @@ fn renders_every_subagent_tool_call() {
         "interrupt_agent",
         "wait_agent",
     ] {
-        assert!(
-            middleware
-                .render(
-                    &EventMsg::ToolCallBegin(ToolCallBeginEvent {
-                        turn_id: "turn".into(),
-                        call_id: "call".into(),
-                        name: name.into(),
-                        arguments: serde_json::json!({}),
-                    }),
-                    "session"
-                )
-                .is_some(),
-            "missing begin renderer for {name}"
-        );
-        assert!(
-            middleware
-                .render(
-                    &EventMsg::ToolCallEnd(ToolCallEndEvent {
-                        turn_id: "turn".into(),
-                        call_id: "call".into(),
-                        name: name.into(),
-                        output: String::new(),
-                        is_error: false,
-                    }),
-                    "session"
-                )
-                .is_some(),
-            "missing end renderer for {name}"
-        );
+        let begin = middleware
+            .render(
+                &EventMsg::ToolCallBegin(ToolCallBeginEvent {
+                    turn_id: "turn".into(),
+                    call_id: "call".into(),
+                    name: name.into(),
+                    arguments: serde_json::json!({"target": "/root/reviewer", "text": message}),
+                }),
+                "session",
+            )
+            .expect("tool begin rendering");
+        let end = middleware
+            .render(
+                &EventMsg::ToolCallEnd(ToolCallEndEvent {
+                    turn_id: "turn".into(),
+                    call_id: "call".into(),
+                    name: name.into(),
+                    output: String::new(),
+                    is_error: false,
+                }),
+                "session",
+            )
+            .expect("tool end rendering");
+        assert_eq!(begin.id, end.id);
+        let mut body = begin.text;
+        end.update.apply(&mut body, &end.text);
+        if matches!(name, "send_message" | "followup_task") {
+            assert_eq!(body, format!("/root/reviewer\n{message}"));
+        }
     }
 }
 
