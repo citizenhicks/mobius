@@ -618,16 +618,434 @@ fn credential_refresh_separates_instances_but_shares_a_browser_login() {
     );
 }
 
-#[test]
-fn active_provider_login_reserves_the_only_polling_slot() {
-    let active = StdMutex::new(None);
-    reserve_provider_login(&active, "login-a").expect("reserve first login");
-    let rejection = reserve_provider_login(&active, "login-b")
-        .expect_err("a second provider login must be rejected");
+fn provider_login_started() -> ServerMessage {
+    ServerMessage::ProviderLoginStarted {
+        request_id: "request-a".into(),
+        login_id: "login-a".into(),
+        provider: "openai_codex".into(),
+        verification_url: "https://example.com/device".into(),
+        user_code: "ABCD-1234".into(),
+    }
+}
 
-    assert_eq!(rejection.code, "provider_login_in_progress");
-    release_provider_login(&active, "another-login").expect("ignore stale completion");
-    assert!(reserve_provider_login(&active, "login-b").is_err());
-    release_provider_login(&active, "login-a").expect("finish first login");
-    reserve_provider_login(&active, "login-b").expect("reserve next login");
+async fn reserve_test_login(
+    gateway: &GatewayHost,
+    suffix: &str,
+) -> std::result::Result<bool, Rejection> {
+    let state = gateway.state.lock().await;
+    let mut logins = state.provider_login.lock().expect("login state");
+    reserve_provider_login(
+        &mut logins,
+        &format!("login-{suffix}"),
+        &format!("client-{suffix}"),
+        &format!("request-{suffix}"),
+        "openai_codex",
+    )
+}
+
+#[tokio::test]
+async fn provider_login_retry_waits_for_code_and_reconnect_replays_pending_code() {
+    let root = tempfile::tempdir().expect("root");
+    let (gateway, _, _, _) = provider_removal_gateway(&root).await;
+    assert!(
+        reserve_test_login(&gateway, "a")
+            .await
+            .expect("reserve login")
+    );
+    let mut events = gateway.subscribe();
+    gateway
+        .start_provider_login("request-a".into(), "openai_codex".into(), "client-a")
+        .await
+        .expect("retry during code acquisition");
+    assert!(matches!(
+        events.try_recv(),
+        Err(broadcast::error::TryRecvError::Empty)
+    ));
+    assert!(
+        !reserve_test_login(&gateway, "a")
+            .await
+            .expect("same polling slot")
+    );
+    gateway
+        .publish_provider_login("login-a", provider_login_started())
+        .await
+        .expect("code");
+    assert_eq!(
+        events.recv().await.expect("code event").message,
+        provider_login_started()
+    );
+    drop(events);
+
+    let mut events = gateway.subscribe();
+    assert_eq!(
+        gateway
+            .start_provider_login("request-a".into(), "openai_codex".into(), "client-a")
+            .await
+            .expect("retry after reconnect"),
+        Some(provider_login_started())
+    );
+    assert!(
+        matches!(
+            events.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ),
+        "a replay is returned only to the requesting connection"
+    );
+    gateway
+        .finish_provider_login(
+            "request-a".into(),
+            "login-a".into(),
+            "openai_codex".into(),
+            Ok(()),
+        )
+        .await;
+    assert!(matches!(events.recv().await.expect("completion").message,
+        ServerMessage::ProviderLoginFinished { request_id, login_id, .. }
+            if request_id == "request-a" && login_id == "login-a"));
+}
+
+#[tokio::test]
+async fn provider_login_retry_recovers_success_and_failure_after_another_client_starts() {
+    for result in [Ok(()), Err(String::from("device login timed out"))] {
+        let root = tempfile::tempdir().expect("root");
+        let (gateway, _, _, _) = provider_removal_gateway(&root).await;
+        reserve_test_login(&gateway, "a")
+            .await
+            .expect("reserve login");
+        gateway
+            .publish_provider_login("login-a", provider_login_started())
+            .await
+            .expect("code");
+        let expected = match &result {
+            Ok(()) => ServerMessage::ProviderLoginFinished {
+                request_id: "request-a".into(),
+                login_id: "login-a".into(),
+                provider: "openai_codex".into(),
+            },
+            Err(message) => ServerMessage::Rejected {
+                request_id: "request-a".into(),
+                code: "provider_login_failed".into(),
+                message: message.clone(),
+                fatal: false,
+            },
+        };
+        gateway
+            .finish_provider_login(
+                "request-a".into(),
+                "login-a".into(),
+                "openai_codex".into(),
+                result,
+            )
+            .await;
+        reserve_test_login(&gateway, "b")
+            .await
+            .expect("another client's login");
+        let mut events = gateway.subscribe();
+        assert!(
+            matches!(
+                events.try_recv(),
+                Err(broadcast::error::TryRecvError::Empty)
+            ),
+            "authentication alone must not replay old login errors"
+        );
+        assert_eq!(
+            gateway
+                .start_provider_login("request-a".into(), "openai_codex".into(), "client-a")
+                .await
+                .expect("retry after reconnect"),
+            Some(expected)
+        );
+        assert!(
+            matches!(
+                events.try_recv(),
+                Err(broadcast::error::TryRecvError::Empty)
+            ),
+            "terminal replay must not be followed by the older code"
+        );
+        assert_eq!(
+            gateway
+                .start_provider_login("request-a".into(), "openai_codex".into(), "client-c")
+                .await
+                .expect_err("another client cannot recover this request")
+                .code,
+            "provider_login_in_progress"
+        );
+        assert!(matches!(
+            events.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+    }
+}
+
+#[tokio::test]
+async fn active_provider_login_reserves_the_only_polling_slot_and_ignores_stale_completions() {
+    let root = tempfile::tempdir().expect("root");
+    let (gateway, _, _, _) = provider_removal_gateway(&root).await;
+    reserve_test_login(&gateway, "a")
+        .await
+        .expect("reserve first login");
+    assert_eq!(
+        reserve_test_login(&gateway, "b")
+            .await
+            .expect_err("only one login")
+            .code,
+        "provider_login_in_progress"
+    );
+    gateway
+        .finish_provider_login(
+            "request-other".into(),
+            "another-login".into(),
+            "openai_codex".into(),
+            Err("stale".into()),
+        )
+        .await;
+    assert!(reserve_test_login(&gateway, "b").await.is_err());
+    // Failures acquiring a code also release the slot and remain replayable.
+    let failure = ServerMessage::Rejected {
+        request_id: "request-a".into(),
+        code: "internal".into(),
+        message: "code request failed".into(),
+        fatal: false,
+    };
+    gateway
+        .publish_provider_login("login-a", failure.clone())
+        .await
+        .expect("start failure");
+    reserve_test_login(&gateway, "b").await.expect("next login");
+    gateway
+        .finish_provider_login(
+            "request-a".into(),
+            "login-a".into(),
+            "openai_codex".into(),
+            Err("late completion".into()),
+        )
+        .await;
+    assert!(reserve_test_login(&gateway, "c").await.is_err());
+    assert_eq!(
+        gateway
+            .start_provider_login("request-a".into(), "openai_codex".into(), "client-a")
+            .await
+            .expect("retry failed start"),
+        Some(failure)
+    );
+}
+
+#[tokio::test]
+async fn unpaired_client_login_completion_does_not_restore_its_replay() {
+    let root = tempfile::tempdir().expect("root");
+    let (gateway, _, _, _) = provider_removal_gateway(&root).await;
+    // Unpair can race an already-selected request before its reservation. Dispatch
+    // also forgets after reservation when its paired-client post-check fails.
+    gateway
+        .forget_provider_login("client-a")
+        .await
+        .expect("early unpair");
+    reserve_test_login(&gateway, "a")
+        .await
+        .expect("reserve login");
+    gateway
+        .publish_provider_login("login-a", provider_login_started())
+        .await
+        .expect("code");
+    gateway
+        .forget_provider_login("client-a")
+        .await
+        .expect("unpair");
+    assert!(reserve_test_login(&gateway, "b").await.is_err());
+    gateway
+        .finish_provider_login(
+            "request-a".into(),
+            "login-a".into(),
+            "openai_codex".into(),
+            Ok(()),
+        )
+        .await;
+    assert!(
+        gateway
+            .state
+            .lock()
+            .await
+            .provider_login
+            .lock()
+            .expect("login state")
+            .attempts
+            .is_empty()
+    );
+    reserve_test_login(&gateway, "b")
+        .await
+        .expect("slot released");
+}
+
+#[test]
+fn provider_login_reservation_rejects_changed_identity_and_starts_unknown_requests() {
+    let mut logins = ProviderLogins::default();
+    for request_id in [String::new(), "x".repeat(MAX_LOGIN_REQUEST_ID_BYTES + 1)] {
+        assert_eq!(
+            reserve_provider_login(
+                &mut logins,
+                "unused",
+                "client-a",
+                &request_id,
+                "openai_codex"
+            )
+            .expect_err("retained request identity must be bounded")
+            .code,
+            "invalid_provider_login"
+        );
+        assert!(logins.active_id.is_none());
+        assert!(logins.attempts.is_empty());
+    }
+    assert!(
+        reserve_provider_login(
+            &mut logins,
+            "login-a",
+            "client-a",
+            "request-a",
+            "openai_codex"
+        )
+        .expect("unknown request")
+    );
+    assert!(
+        !reserve_provider_login(
+            &mut logins,
+            "unused",
+            "client-a",
+            "request-a",
+            "openai_codex"
+        )
+        .expect("idempotent retry")
+    );
+    assert_eq!(logins.active_id.as_deref(), Some("login-a"));
+    assert_eq!(
+        reserve_provider_login(
+            &mut logins,
+            "unused",
+            "client-a",
+            "request-a",
+            "other-provider"
+        )
+        .expect_err("request identity changed")
+        .code,
+        "invalid_provider_login"
+    );
+    assert!(
+        reserve_provider_login(
+            &mut logins,
+            "login-b",
+            "client-b",
+            "request-a",
+            "openai_codex"
+        )
+        .is_err()
+    );
+    // A restarted gateway has no pending upstream task; retrying starts a fresh code.
+    let mut restarted = ProviderLogins::default();
+    assert!(
+        reserve_provider_login(
+            &mut restarted,
+            "login-new",
+            "client-a",
+            "request-a",
+            "openai_codex"
+        )
+        .expect("restart recovery")
+    );
+}
+
+#[tokio::test]
+async fn provider_login_code_acquisition_survives_its_request_task_cancellation() {
+    let root = tempfile::tempdir().expect("root");
+    let (gateway, _, _, _) = provider_removal_gateway(&root).await;
+    reserve_test_login(&gateway, "a")
+        .await
+        .expect("reserve login");
+    let mut events = gateway.subscribe();
+    let (started, waiting) = tokio::sync::oneshot::channel();
+    let (resume, resumed) = tokio::sync::oneshot::channel();
+    let request_gateway = gateway.clone();
+    let request = tokio::spawn(async move {
+        request_gateway.spawn_provider_login(
+            "request-a".into(),
+            "login-a".into(),
+            "openai_codex".into(),
+            Box::pin(async move {
+                started.send(()).expect("code acquisition started");
+                resumed.await.expect("resume acquisition");
+                Err(mobius::Error::Auth("code request failed".into()))
+            }),
+        );
+        std::future::pending::<()>().await;
+    });
+    waiting.await.expect("acquiring code");
+    request.abort();
+    assert!(
+        request
+            .await
+            .expect_err("request task cancelled")
+            .is_cancelled()
+    );
+    resume.send(()).expect("gateway task retained acquisition");
+    let failure = tokio::time::timeout(Duration::from_secs(1), events.recv())
+        .await
+        .expect("detached acquisition completion")
+        .expect("failure event")
+        .message;
+    assert!(
+        matches!(&failure, ServerMessage::Rejected { request_id, code, .. }
+        if request_id == "request-a" && code == "provider_login_failed")
+    );
+    assert_eq!(
+        gateway
+            .start_provider_login("request-a".into(), "openai_codex".into(), "client-a")
+            .await
+            .expect("recover detached failure"),
+        Some(failure)
+    );
+    reserve_test_login(&gateway, "b")
+        .await
+        .expect("failed acquisition released the slot");
+}
+
+#[tokio::test]
+async fn stale_provider_login_success_does_not_refresh_sessions_or_release_another_login() {
+    let root = tempfile::tempdir().expect("root");
+    let (gateway, _, _, _) = provider_removal_gateway(&root).await;
+    reserve_test_login(&gateway, "b")
+        .await
+        .expect("current login");
+    let (commands, mut receiver) = mpsc::channel(1);
+    let (events, _) = broadcast::channel(1);
+    gateway.state.lock().await.sessions.insert(
+        "observer".into(),
+        super::super::HostHandle {
+            inner: Arc::new(HostInner {
+                session_id: Arc::from("observer"),
+                bot_id: Arc::from("observer-bot"),
+                commands,
+                events,
+                accepts_file_attachments: Arc::new(AtomicBool::new(false)),
+                alive: Arc::new(AtomicBool::new(true)),
+                terminated: Arc::new(AtomicBool::new(true)),
+                termination: Arc::new(tokio::sync::Notify::new()),
+                session_mutations: Arc::new(tokio::sync::RwLock::new(())),
+                realtime_voice: Arc::new(tokio::sync::Mutex::new(())),
+            }),
+        },
+    );
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        gateway.finish_provider_login(
+            "request-a".into(),
+            "login-a".into(),
+            "openai_codex".into(),
+            Ok(()),
+        ),
+    )
+    .await
+    .expect("stale completion must not wait for a session refresh");
+    assert!(matches!(
+        receiver.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+    assert!(reserve_test_login(&gateway, "c").await.is_err());
 }

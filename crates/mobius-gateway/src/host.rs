@@ -125,7 +125,7 @@ struct GatewayState {
     extension_mutations: Arc<Mutex<()>>,
     provider_epoch: Arc<AtomicU64>,
     activities: SessionActivities,
-    provider_login: Arc<StdMutex<Option<String>>>,
+    provider_login: Arc<StdMutex<providers::ProviderLogins>>,
     sessions: HashMap<String, HostHandle>,
 }
 
@@ -199,7 +199,7 @@ impl GatewayHost {
                 extension_mutations: Arc::new(Mutex::new(())),
                 provider_epoch: Arc::new(AtomicU64::new(0)),
                 activities,
-                provider_login: Arc::new(StdMutex::new(None)),
+                provider_login: Arc::new(StdMutex::new(providers::ProviderLogins::default())),
                 sessions: HashMap::new(),
             })),
             events,

@@ -1,7 +1,9 @@
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex as StdMutex};
 
-use mobius::backend::model::provider::{ProviderAuth, provider};
+use futures_util::future::BoxFuture;
+use mobius::backend::model::provider::{DeviceLogin, ProviderAuth, provider};
 use uuid::Uuid;
 
 use crate::Error;
@@ -17,7 +19,39 @@ use crate::wire::{
 use super::session::ProviderRefresh;
 use super::{GatewayHost, Rejection, gateway_ready, internal, invalid_config};
 
+const MAX_LOGIN_REQUEST_ID_BYTES: usize = 128;
+
+#[derive(Default)]
+pub(super) struct ProviderLogins {
+    active_id: Option<String>,
+    // One latest attempt per paired client survives another client's subsequent login.
+    // Unpairing removes its entry; credentials remain in their existing protected store.
+    attempts: HashMap<String, ProviderLoginAttempt>,
+}
+
+struct ProviderLoginAttempt {
+    login_id: String,
+    request_id: String,
+    provider: String,
+    response: Option<ServerMessage>,
+}
+
 impl GatewayHost {
+    pub(crate) async fn forget_provider_login(
+        &self,
+        client_id: &str,
+    ) -> std::result::Result<(), Rejection> {
+        self.state
+            .lock()
+            .await
+            .provider_login
+            .lock()
+            .map_err(|_| internal("provider login lock is poisoned"))?
+            .attempts
+            .remove(client_id);
+        Ok(())
+    }
+
     pub(crate) async fn configure_bot_defaults(
         &self,
         expected_revision: u64,
@@ -109,7 +143,8 @@ impl GatewayHost {
         &self,
         request_id: String,
         provider_id: String,
-    ) -> std::result::Result<(), Rejection> {
+        client_id: &str,
+    ) -> std::result::Result<Option<ServerMessage>, Rejection> {
         let definition = provider(&provider_id).map_err(invalid_config)?;
         let ProviderAuth::Browser(auth) = definition.auth() else {
             return Err(Rejection {
@@ -125,40 +160,68 @@ impl GatewayHost {
                 fatal: false,
             });
         }
-        let (login_guard, path) = {
-            let state = self.state.lock().await;
-            (
-                Arc::clone(&state.provider_login),
-                state.store.provider_auth_path(),
-            )
-        };
+        let login_guard = Arc::clone(&self.state.lock().await.provider_login);
         let login_id = Uuid::new_v4().to_string();
-        reserve_provider_login(&login_guard, &login_id)?;
-        let login = match auth.start_device().await {
-            Ok(login) => login,
-            Err(error) => {
-                release_provider_login(&login_guard, &login_id)?;
-                return Err(internal(error));
+        {
+            let mut logins = login_guard
+                .lock()
+                .map_err(|_| internal("provider login lock is poisoned"))?;
+            if !reserve_provider_login(
+                &mut logins,
+                &login_id,
+                client_id,
+                &request_id,
+                &provider_id,
+            )? {
+                // Reply only to the retrying connection. Its dispatch writes this
+                // response before processing any subsequently queued completion.
+                return Ok(logins
+                    .attempts
+                    .get(client_id)
+                    .and_then(|attempt| attempt.response.clone()));
             }
-        };
-        self.broadcast(ServerMessage::ProviderLoginStarted {
-            request_id: request_id.clone(),
-            login_id: login_id.clone(),
-            provider: provider_id.clone(),
-            verification_url: login.verification_url().into(),
-            user_code: login.user_code().into(),
-        });
+        }
+        self.spawn_provider_login(request_id, login_id, provider_id, auth.start_device());
+        Ok(None)
+    }
+
+    fn spawn_provider_login(
+        &self,
+        request_id: String,
+        login_id: String,
+        provider: String,
+        start: BoxFuture<'static, mobius::Result<Box<dyn DeviceLogin>>>,
+    ) {
         let gateway = self.clone();
+        // Code acquisition and polling both belong to the gateway. No connection
+        // future can be cancelled after reserving the slot but before launching it.
         tokio::spawn(async move {
-            let result = login
-                .complete(path)
-                .await
-                .map_err(|error| error.to_string());
+            let result = async {
+                let login = start.await.map_err(|error| error.to_string())?;
+                gateway
+                    .publish_provider_login(
+                        &login_id,
+                        ServerMessage::ProviderLoginStarted {
+                            request_id: request_id.clone(),
+                            login_id: login_id.clone(),
+                            provider: provider.clone(),
+                            verification_url: login.verification_url().into(),
+                            user_code: login.user_code().into(),
+                        },
+                    )
+                    .await
+                    .map_err(|rejection| rejection.message)?;
+                let path = gateway.state.lock().await.store.provider_auth_path();
+                login
+                    .complete(path)
+                    .await
+                    .map_err(|error| error.to_string())
+            }
+            .await;
             gateway
-                .finish_provider_login(request_id, login_id, provider_id, result)
+                .finish_provider_login(request_id, login_id, provider, result)
                 .await;
         });
-        Ok(())
     }
 
     async fn finish_provider_login(
@@ -168,8 +231,21 @@ impl GatewayHost {
         provider: String,
         result: std::result::Result<(), String>,
     ) {
-        let login_guard = Arc::clone(&self.state.lock().await.provider_login);
-        match release_provider_login(&login_guard, &login_id) {
+        let refresh = result.is_ok();
+        let message = match result {
+            Ok(()) => ServerMessage::ProviderLoginFinished {
+                request_id,
+                login_id: login_id.clone(),
+                provider: provider.clone(),
+            },
+            Err(message) => ServerMessage::Rejected {
+                request_id,
+                code: "provider_login_failed".into(),
+                message,
+                fatal: false,
+            },
+        };
+        match self.publish_provider_login(&login_id, message).await {
             Ok(true) => {}
             Ok(false) => return,
             Err(rejection) => {
@@ -181,30 +257,44 @@ impl GatewayHost {
                 return;
             }
         }
-        if let Err(message) = result {
-            self.broadcast(ServerMessage::Rejected {
-                request_id,
-                code: "provider_login_failed".into(),
-                message,
-                fatal: false,
-            });
-            return;
-        }
-        let refresh = self
-            .refresh_provider_sessions(ProviderRefresh::Provider(provider.clone()))
-            .await;
-        self.broadcast(ServerMessage::ProviderLoginFinished {
-            request_id,
-            login_id,
-            provider,
-        });
-        if let Err(rejection) = refresh {
+        if refresh
+            && let Err(rejection) = self
+                .refresh_provider_sessions(ProviderRefresh::Provider(provider))
+                .await
+        {
             self.broadcast(ServerMessage::Error {
                 code: rejection.code.into(),
                 message: rejection.message,
                 fatal: rejection.fatal,
             });
         }
+    }
+
+    async fn publish_provider_login(
+        &self,
+        login_id: &str,
+        message: ServerMessage,
+    ) -> std::result::Result<bool, Rejection> {
+        let state = self.state.lock().await;
+        let mut logins = state
+            .provider_login
+            .lock()
+            .map_err(|_| internal("provider login lock is poisoned"))?;
+        if logins.active_id.as_deref() != Some(login_id) {
+            return Ok(false);
+        }
+        if !matches!(message, ServerMessage::ProviderLoginStarted { .. }) {
+            logins.active_id = None;
+        }
+        if let Some(attempt) = logins
+            .attempts
+            .values_mut()
+            .find(|attempt| attempt.login_id == login_id)
+        {
+            attempt.response = Some(message.clone());
+        }
+        self.broadcast(message);
+        Ok(true)
     }
 
     async fn refresh_provider_sessions(
@@ -549,42 +639,49 @@ fn broadcast_reload_failures(host: &GatewayHost, action: &str, failures: &[Strin
     }));
 }
 
-fn ensure_provider_login_available(
-    active_login: Option<&str>,
-) -> std::result::Result<(), Rejection> {
-    if active_login.is_some() {
+fn reserve_provider_login(
+    logins: &mut ProviderLogins,
+    login_id: &str,
+    client_id: &str,
+    request_id: &str,
+    provider_id: &str,
+) -> std::result::Result<bool, Rejection> {
+    if request_id.is_empty() || request_id.len() > MAX_LOGIN_REQUEST_ID_BYTES {
+        return Err(Rejection {
+            code: "invalid_provider_login",
+            message: "provider login request IDs must contain 1–128 bytes".into(),
+            fatal: false,
+        });
+    }
+    if let Some(attempt) = logins.attempts.get(client_id)
+        && attempt.request_id == request_id
+    {
+        if attempt.provider != provider_id {
+            return Err(Rejection {
+                code: "invalid_provider_login",
+                message: "the provider login request belongs to a different provider".into(),
+                fatal: false,
+            });
+        }
+        return Ok(false);
+    }
+    if logins.active_id.is_some() {
         return Err(Rejection {
             code: "provider_login_in_progress",
             message: "finish the active provider login before starting another".into(),
             fatal: false,
         });
     }
-    Ok(())
-}
-
-fn reserve_provider_login(
-    active_login: &StdMutex<Option<String>>,
-    login_id: &str,
-) -> std::result::Result<(), Rejection> {
-    let mut active_login = active_login
-        .lock()
-        .map_err(|_| internal("provider login lock is poisoned"))?;
-    ensure_provider_login_available(active_login.as_deref())?;
-    *active_login = Some(login_id.into());
-    Ok(())
-}
-
-fn release_provider_login(
-    active_login: &StdMutex<Option<String>>,
-    login_id: &str,
-) -> std::result::Result<bool, Rejection> {
-    let mut active_login = active_login
-        .lock()
-        .map_err(|_| internal("provider login lock is poisoned"))?;
-    if active_login.as_deref() != Some(login_id) {
-        return Ok(false);
-    }
-    *active_login = None;
+    logins.active_id = Some(login_id.into());
+    logins.attempts.insert(
+        client_id.into(),
+        ProviderLoginAttempt {
+            login_id: login_id.into(),
+            request_id: request_id.into(),
+            provider: provider_id.into(),
+            response: None,
+        },
+    );
     Ok(true)
 }
 

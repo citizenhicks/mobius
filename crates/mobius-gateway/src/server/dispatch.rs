@@ -76,7 +76,7 @@ pub(super) async fn handle_message(
         ClientMessage::UnpairClient {
             request_id,
             client_id,
-        } => return unpair_client(writer, request_id, client_id, auth, client).await,
+        } => return unpair_client(writer, request_id, client_id, auth, client, gateway).await,
         ClientMessage::ListSessions { request_id } => {
             return list_sessions(writer, request_id, gateway).await;
         }
@@ -505,12 +505,8 @@ pub(super) async fn handle_message(
             request_id,
             provider,
         } => {
-            return write_result(
-                writer,
-                request_id.clone(),
-                gateway.start_provider_login(request_id, provider).await,
-            )
-            .await;
+            return start_provider_login(writer, request_id, provider, client.id, auth, gateway)
+                .await;
         }
         ClientMessage::GetProfile { request_id } => {
             return get_profile(writer, request_id, gateway).await;
@@ -676,16 +672,47 @@ async fn handle_collaboration_message(
     Ok(None)
 }
 
+async fn start_provider_login(
+    writer: &mut (impl AsyncWrite + Unpin),
+    request_id: String,
+    provider: String,
+    client_id: &str,
+    auth: &AuthStore,
+    gateway: &GatewayHost,
+) -> Result<()> {
+    let result = gateway
+        .start_provider_login(request_id.clone(), provider, client_id)
+        .await;
+    // Unpairing may have removed replay before this already-selected request
+    // reserved its slot. Check after reservation to close that ordering too.
+    if !auth.clients()?.iter().any(|paired| paired.id == client_id) {
+        gateway
+            .forget_provider_login(client_id)
+            .await
+            .map_err(|rejection| Error::Protocol(rejection.message))?;
+        return Err(Error::Unauthorized);
+    }
+    match result {
+        Ok(Some(message)) => write_frame(writer, &ServerFrame::new(message)).await,
+        result => write_result(writer, request_id, result.map(|_| ())).await,
+    }
+}
+
 async fn unpair_client(
     writer: &mut (impl AsyncWrite + Unpin),
     request_id: String,
     client_id: String,
     auth: &AuthStore,
     client: &AuthenticatedClient<'_>,
+    gateway: &GatewayHost,
 ) -> Result<()> {
     match auth.unpair_client(client.id, &client_id) {
         Ok(true) => {
-            let _ = client.revocations.send(client_id);
+            let _ = client.revocations.send(client_id.clone());
+            gateway
+                .forget_provider_login(&client_id)
+                .await
+                .map_err(|rejection| Error::Protocol(rejection.message))?;
             write_client_inventory(writer, request_id, client.id, auth, client.connections).await
         }
         Ok(false) => {
