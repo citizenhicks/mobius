@@ -36,7 +36,7 @@ enum MobiusSymbol {
         "shield_off": .shieldOff,
         "sparkle": .sparkle,
         "storage": .hardDrives,
-        "steer": .workflowSquare03,
+        "steer": .arrowUpRight01,
         "task": .checkCircle,
         "voice": .audioWave01,
     ]

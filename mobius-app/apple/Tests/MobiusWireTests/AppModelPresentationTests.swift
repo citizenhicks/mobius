@@ -206,7 +206,7 @@ extension AppModelTests {
     }
 
     func testMessageDeliverySymbolsUseTheirRequestedGlyphs() {
-        XCTAssertEqual(MobiusSymbol.knownGlyph(for: "steer"), .workflowSquare03)
+        XCTAssertEqual(MobiusSymbol.knownGlyph(for: "steer"), .arrowUpRight01)
         XCTAssertEqual(MobiusSymbol.knownGlyph(for: "queue"), .queue01)
     }
 

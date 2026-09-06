@@ -699,7 +699,7 @@ private struct MessageMetadata: View {
 
     private var glyph: MobiusGlyph {
         switch delivery {
-        case .steer: .workflowSquare03
+        case .steer: .arrowUpRight01
         case .queue: .queue01
         case .turn: .userFocus
         }
