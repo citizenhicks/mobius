@@ -1,4 +1,5 @@
 use super::*;
+use clap::CommandFactory as _;
 use mobius::backend::model::provider::HostedWebSearch;
 
 static BOOTSTRAP_TEST_CLIENT: std::sync::Mutex<Option<(Endpoint, String)>> =
@@ -259,6 +260,11 @@ fn cloudflare_connection_advertises_public_and_local_endpoints_with_one_code() {
              another terminal: mobius pair wss://mobius.example.com one-time-code\n\
              local terminal: mobius pair tcp://127.0.0.1:8741 one-time-code\n"
     );
+}
+
+#[test]
+fn command_definition_is_valid() {
+    GatewayCli::command().debug_assert();
 }
 
 #[test]
@@ -716,7 +722,7 @@ fn parse_serve_rejects_duplicate_background_flags() {
     ])
     .expect_err("duplicate background flag must fail");
 
-    assert!(error.to_string().contains("usage:"));
+    assert!(error.to_string().contains("cannot be used multiple times"));
 }
 
 #[test]
@@ -770,14 +776,22 @@ fn init_rejects_the_removed_workspace_flag() {
     ])
     .expect_err("workspace flag must be rejected");
 
-    assert!(error.to_string().contains("usage:"));
+    assert!(
+        error
+            .to_string()
+            .contains("unexpected argument '--workspace'")
+    );
 }
 
 #[test]
 fn parse_rejects_the_removed_status_command() {
     let error = parse(vec!["status".into()]).expect_err("status must be removed");
 
-    assert!(error.to_string().contains("usage:"));
+    assert!(
+        error
+            .to_string()
+            .contains("unrecognized subcommand 'status'")
+    );
 }
 
 #[test]
@@ -945,5 +959,5 @@ fn parse_init_requires_both_tls_paths() {
     ])
     .expect_err("partial TLS config must fail");
 
-    assert!(error.to_string().contains("supplied together"));
+    assert!(error.to_string().contains("--tls-key <PATH>"));
 }

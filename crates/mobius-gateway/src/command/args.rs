@@ -1,5 +1,174 @@
-use super::*;
+use clap::{ArgAction, Args, Parser, Subcommand};
 use mobius::backend::model::provider::HostedWebSearch;
+
+use super::*;
+
+/// Parsed `mobius-gateway` command line.
+#[derive(Debug, Parser)]
+#[command(
+    name = "mobius-gateway",
+    version,
+    propagate_version = true,
+    about = "Run and configure a möbius gateway"
+)]
+pub struct GatewayCli {
+    /// Directory containing gateway configuration and runtime state.
+    #[arg(long, global = true, value_name = "PATH")]
+    state_dir: Option<PathBuf>,
+
+    #[command(subcommand)]
+    command: Option<GatewaySubcommand>,
+}
+
+/// Frontend selected by a parsed gateway command line.
+#[derive(Debug)]
+pub enum FrontendCommand {
+    /// Interactive Cloudflare initialization.
+    Init(PathBuf),
+    /// Gateway administration dashboard.
+    Dashboard(PathBuf),
+    /// Interactive provider setup.
+    Provider(PathBuf),
+}
+
+#[derive(Debug, Subcommand)]
+enum GatewaySubcommand {
+    /// Open the provider setup interface.
+    Provider,
+    /// Initialize gateway state.
+    Init(InitArgs),
+    /// Initialize a direct loopback gateway for machine use.
+    Bootstrap,
+    /// Restore the default Bot configuration.
+    ResetBotDefaults,
+    /// Issue a one-time pairing code as JSON.
+    PairingCode {
+        /// Emit machine-readable JSON.
+        #[arg(long, required = true)]
+        json: bool,
+    },
+    /// Register a model provider non-interactively.
+    RegisterProvider(RegisterProviderArgs),
+    /// Connect this installation to a running gateway.
+    Connect(ConnectArgs),
+    /// Run the gateway server.
+    Serve(ServeArgs),
+    #[command(name = "__serve", hide = true)]
+    ServeChild,
+    /// Stop a background gateway.
+    Exit,
+}
+
+#[derive(Debug, Args)]
+struct InitArgs {
+    /// Address on which the gateway listens.
+    #[arg(long, value_name = "ADDR")]
+    listen: Option<SocketAddr>,
+
+    /// PEM certificate for a direct TLS listener.
+    #[arg(
+        long = "tls-cert",
+        value_name = "PATH",
+        requires = "private_key",
+        conflicts_with_all = ["cloudflare_hostname", "cloudflare_token_file"]
+    )]
+    certificate: Option<PathBuf>,
+
+    /// PEM private key for a direct TLS listener.
+    #[arg(
+        long = "tls-key",
+        value_name = "PATH",
+        requires = "certificate",
+        conflicts_with_all = ["cloudflare_hostname", "cloudflare_token_file"]
+    )]
+    private_key: Option<PathBuf>,
+
+    /// Public hostname served by a named Cloudflare tunnel.
+    #[arg(
+        long,
+        value_name = "HOST",
+        requires = "cloudflare_token_file",
+        conflicts_with_all = ["certificate", "private_key"]
+    )]
+    cloudflare_hostname: Option<String>,
+
+    /// Owner-only file containing the named Cloudflare tunnel token.
+    #[arg(
+        long,
+        value_name = "PATH",
+        requires = "cloudflare_hostname",
+        conflicts_with_all = ["certificate", "private_key"]
+    )]
+    cloudflare_token_file: Option<PathBuf>,
+}
+
+impl InitArgs {
+    fn is_interactive(&self) -> bool {
+        self.listen.is_none()
+            && self.certificate.is_none()
+            && self.private_key.is_none()
+            && self.cloudflare_hostname.is_none()
+            && self.cloudflare_token_file.is_none()
+    }
+}
+
+#[derive(Debug, Args)]
+struct RegisterProviderArgs {
+    /// Provider identifier.
+    #[arg(long, value_name = "ID")]
+    provider: String,
+
+    /// Stable identifier for this configured provider instance.
+    #[arg(long, value_name = "ID")]
+    instance: Option<String>,
+
+    /// User-facing provider label.
+    #[arg(long, value_name = "TEXT")]
+    label: Option<String>,
+
+    /// Provider model identifier.
+    #[arg(long, value_name = "ID")]
+    model: String,
+
+    /// Comma-separated reasoning effort identifiers.
+    #[arg(
+        long,
+        value_name = "CSV",
+        value_delimiter = ',',
+        action = ArgAction::Set
+    )]
+    reasoning_efforts: Vec<String>,
+
+    /// Hosted web-search mode: off, cached, or live.
+    #[arg(long, value_name = "MODE", default_value = "off")]
+    web_search: HostedWebSearch,
+
+    /// Provider API base URL override.
+    #[arg(long, value_name = "URL")]
+    base_url: Option<String>,
+
+    /// Configure an endpoint that does not require a credential.
+    #[arg(long, conflicts_with = "credential_stdin")]
+    credentialless: bool,
+
+    /// Read the provider credential from standard input.
+    #[arg(long)]
+    credential_stdin: bool,
+}
+
+#[derive(Debug, Args)]
+struct ConnectArgs {
+    /// Public or local gateway endpoint.
+    #[arg(long, value_name = "ENDPOINT")]
+    endpoint: Option<Endpoint>,
+}
+
+#[derive(Debug, Args)]
+struct ServeArgs {
+    /// Start the gateway as a background process.
+    #[arg(long)]
+    background: bool,
+}
 
 #[derive(Debug)]
 pub(super) enum Command {
@@ -73,262 +242,83 @@ pub(super) struct RegisterProviderOptions {
     pub(super) credential_stdin: bool,
 }
 
+impl GatewayCli {
+    /// Returns the interactive frontend selected by this command line, if any.
+    pub fn frontend_command(&self) -> Result<Option<FrontendCommand>> {
+        let command = match &self.command {
+            None => FrontendCommand::Dashboard(self.resolved_state_dir()?),
+            Some(GatewaySubcommand::Provider) => {
+                FrontendCommand::Provider(self.resolved_state_dir()?)
+            }
+            Some(GatewaySubcommand::Init(arguments)) if arguments.is_interactive() => {
+                FrontendCommand::Init(self.resolved_state_dir()?)
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(command))
+    }
+
+    fn resolved_state_dir(&self) -> Result<PathBuf> {
+        self.state_dir.clone().map_or_else(state_dir, Ok)
+    }
+
+    pub(super) fn into_command(self) -> Result<Command> {
+        let state_dir = self.state_dir.map_or_else(state_dir, Ok)?;
+        match self.command {
+            Some(GatewaySubcommand::Init(arguments)) => {
+                parse_init(state_dir, arguments).map(Command::Init)
+            }
+            Some(GatewaySubcommand::Bootstrap) => Ok(Command::Bootstrap { state_dir }),
+            Some(GatewaySubcommand::ResetBotDefaults) => {
+                Ok(Command::ResetBotDefaults { state_dir })
+            }
+            Some(GatewaySubcommand::PairingCode { json: _ }) => {
+                Ok(Command::PairingCode { state_dir })
+            }
+            Some(GatewaySubcommand::RegisterProvider(arguments)) => {
+                Ok(Command::RegisterProvider(RegisterProviderOptions {
+                    state_dir,
+                    provider: arguments.provider,
+                    instance: arguments.instance,
+                    label: arguments.label,
+                    model: arguments.model,
+                    reasoning_efforts: arguments.reasoning_efforts,
+                    web_search: arguments.web_search,
+                    base_url: arguments.base_url,
+                    credentialless: arguments.credentialless,
+                    credential_stdin: arguments.credential_stdin,
+                }))
+            }
+            Some(GatewaySubcommand::Connect(arguments)) => Ok(Command::Connect(ConnectOptions {
+                state_dir,
+                endpoint: arguments.endpoint,
+            })),
+            Some(GatewaySubcommand::Serve(arguments)) => Ok(Command::Serve {
+                state_dir,
+                background: arguments.background,
+            }),
+            Some(GatewaySubcommand::ServeChild) => Ok(Command::ServeChild { state_dir }),
+            Some(GatewaySubcommand::Exit) => Ok(Command::Exit { state_dir }),
+            None | Some(GatewaySubcommand::Provider) => Err(Error::Config(
+                "an executable gateway command is required".into(),
+            )),
+        }
+    }
+}
+
+pub(super) fn parse_cli(arguments: Vec<OsString>) -> std::result::Result<GatewayCli, clap::Error> {
+    GatewayCli::try_parse_from(std::iter::once(OsString::from("mobius-gateway")).chain(arguments))
+}
+
+#[cfg(test)]
 pub(super) fn parse(arguments: Vec<OsString>) -> Result<Command> {
-    let mut arguments = arguments.into_iter();
-    let Some(command) = arguments.next() else {
-        return Err(Error::Config(USAGE.into()));
-    };
-    if command == "init" {
-        parse_init(arguments.collect()).map(Command::Init)
-    } else if command == "bootstrap" {
-        parse_state_dir(arguments.collect()).map(|state_dir| Command::Bootstrap { state_dir })
-    } else if command == "reset-bot-defaults" {
-        parse_state_dir(arguments.collect())
-            .map(|state_dir| Command::ResetBotDefaults { state_dir })
-    } else if command == "pairing-code" {
-        parse_pairing_code(arguments.collect()).map(|state_dir| Command::PairingCode { state_dir })
-    } else if command == "register-provider" {
-        parse_register_provider(arguments.collect()).map(Command::RegisterProvider)
-    } else if command == "connect" {
-        parse_connect(arguments.collect()).map(Command::Connect)
-    } else if command == "serve" {
-        parse_serve(arguments.collect())
-    } else if command == "__serve" {
-        parse_state_dir(arguments.collect()).map(|state_dir| Command::ServeChild { state_dir })
-    } else if command == "exit" {
-        parse_state_dir(arguments.collect()).map(|state_dir| Command::Exit { state_dir })
-    } else {
-        Err(Error::Config(USAGE.into()))
-    }
+    parse_cli(arguments)
+        .map_err(|error| Error::Config(error.to_string()))?
+        .into_command()
 }
 
-pub(super) fn parse_register_provider(arguments: Vec<OsString>) -> Result<RegisterProviderOptions> {
-    let mut configured_state_dir = None;
-    let mut provider = None;
-    let mut instance = None;
-    let mut label = None;
-    let mut model = None;
-    let mut reasoning_efforts = None;
-    let mut web_search = None;
-    let mut base_url = None;
-    let mut credentialless = false;
-    let mut credential_stdin = false;
-    let mut arguments = arguments.into_iter();
-    while let Some(flag) = arguments.next() {
-        if flag == "--credentialless" {
-            if credentialless {
-                return Err(Error::Config("--credentialless supplied twice".into()));
-            }
-            credentialless = true;
-            continue;
-        }
-        if flag == "--credential-stdin" {
-            if credential_stdin {
-                return Err(Error::Config("--credential-stdin supplied twice".into()));
-            }
-            credential_stdin = true;
-            continue;
-        }
-        let value = arguments
-            .next()
-            .ok_or_else(|| Error::Config(format!("{} requires a value", flag.to_string_lossy())))?;
-        if flag == "--state-dir" {
-            set_once(
-                &mut configured_state_dir,
-                PathBuf::from(value),
-                "--state-dir",
-            )?;
-        } else if flag == "--provider" {
-            set_once(
-                &mut provider,
-                value
-                    .into_string()
-                    .map_err(|_| Error::Config("--provider is not valid UTF-8".into()))?,
-                "--provider",
-            )?;
-        } else if flag == "--instance" {
-            set_once(
-                &mut instance,
-                value
-                    .into_string()
-                    .map_err(|_| Error::Config("--instance is not valid UTF-8".into()))?,
-                "--instance",
-            )?;
-        } else if flag == "--label" {
-            set_once(
-                &mut label,
-                value
-                    .into_string()
-                    .map_err(|_| Error::Config("--label is not valid UTF-8".into()))?,
-                "--label",
-            )?;
-        } else if flag == "--model" {
-            set_once(
-                &mut model,
-                value
-                    .into_string()
-                    .map_err(|_| Error::Config("--model is not valid UTF-8".into()))?,
-                "--model",
-            )?;
-        } else if flag == "--reasoning-efforts" {
-            let value = value
-                .into_string()
-                .map_err(|_| Error::Config("--reasoning-efforts is not valid UTF-8".into()))?;
-            set_once(
-                &mut reasoning_efforts,
-                value.split(',').map(str::to_owned).collect(),
-                "--reasoning-efforts",
-            )?;
-        } else if flag == "--web-search" {
-            let value = value
-                .into_string()
-                .map_err(|_| Error::Config("--web-search is not valid UTF-8".into()))?;
-            let value = value
-                .parse::<HostedWebSearch>()
-                .map_err(|_| Error::Config("--web-search must be off, cached, or live".into()))?;
-            set_once(&mut web_search, value, "--web-search")?;
-        } else if flag == "--base-url" {
-            set_once(
-                &mut base_url,
-                value
-                    .into_string()
-                    .map_err(|_| Error::Config("--base-url is not valid UTF-8".into()))?,
-                "--base-url",
-            )?;
-        } else {
-            return Err(Error::Config(USAGE.into()));
-        }
-    }
-    if credentialless && credential_stdin {
-        return Err(Error::Config(
-            "--credentialless and --credential-stdin cannot be combined".into(),
-        ));
-    }
-    Ok(RegisterProviderOptions {
-        state_dir: configured_state_dir.map_or_else(state_dir, Ok)?,
-        provider: provider.ok_or_else(|| Error::Config("--provider is required".into()))?,
-        instance,
-        label,
-        model: model.ok_or_else(|| Error::Config("--model is required".into()))?,
-        reasoning_efforts: reasoning_efforts.unwrap_or_default(),
-        web_search: web_search.unwrap_or_default(),
-        base_url,
-        credentialless,
-        credential_stdin,
-    })
-}
-
-pub(super) fn parse_pairing_code(arguments: Vec<OsString>) -> Result<PathBuf> {
-    match arguments.as_slice() {
-        [json] if json == "--json" => state_dir(),
-        [state_dir, path, json] if state_dir == "--state-dir" && json == "--json" => {
-            Ok(PathBuf::from(path))
-        }
-        _ => Err(Error::Config(USAGE.into())),
-    }
-}
-
-pub(super) fn parse_connect(arguments: Vec<OsString>) -> Result<ConnectOptions> {
-    let mut configured_state_dir = None;
-    let mut endpoint = None;
-    let mut arguments = arguments.into_iter();
-    while let Some(flag) = arguments.next() {
-        let value = arguments
-            .next()
-            .ok_or_else(|| Error::Config(format!("{} requires a value", flag.to_string_lossy())))?;
-        if flag == "--state-dir" {
-            set_once(
-                &mut configured_state_dir,
-                PathBuf::from(value),
-                "--state-dir",
-            )?;
-        } else if flag == "--endpoint" {
-            let value = value
-                .to_str()
-                .ok_or_else(|| Error::Config("--endpoint is not valid UTF-8".into()))?
-                .parse()?;
-            set_once(&mut endpoint, value, "--endpoint")?;
-        } else {
-            return Err(Error::Config(USAGE.into()));
-        }
-    }
-    Ok(ConnectOptions {
-        state_dir: configured_state_dir.map_or_else(state_dir, Ok)?,
-        endpoint,
-    })
-}
-
-pub(super) fn parse_serve(arguments: Vec<OsString>) -> Result<Command> {
-    let (configured_state_dir, background) = match arguments.as_slice() {
-        [] => (None, false),
-        [flag] if flag == "--background" => (None, true),
-        [flag, path] if flag == "--state-dir" => (Some(path), false),
-        [background, state_dir, path]
-            if background == "--background" && state_dir == "--state-dir" =>
-        {
-            (Some(path), true)
-        }
-        [state_dir, path, background]
-            if state_dir == "--state-dir" && background == "--background" =>
-        {
-            (Some(path), true)
-        }
-        _ => return Err(Error::Config(USAGE.into())),
-    };
-    let state_dir = configured_state_dir.map_or_else(state_dir, |path| Ok(PathBuf::from(path)))?;
-    Ok(Command::Serve {
-        state_dir,
-        background,
-    })
-}
-
-pub(super) fn parse_init(arguments: Vec<OsString>) -> Result<InitOptions> {
-    let mut configured_state_dir = None;
-    let mut listen = None;
-    let mut certificate = None;
-    let mut private_key = None;
-    let mut cloudflare_hostname = None;
-    let mut cloudflare_token_file = None;
-    let mut arguments = arguments.into_iter();
-    while let Some(flag) = arguments.next() {
-        let value = arguments
-            .next()
-            .ok_or_else(|| Error::Config(format!("{} requires a value", flag.to_string_lossy())))?;
-        if flag == "--state-dir" {
-            set_once(
-                &mut configured_state_dir,
-                PathBuf::from(value),
-                "--state-dir",
-            )?;
-        } else if flag == "--listen" {
-            let value = value
-                .to_str()
-                .ok_or_else(|| Error::Config("--listen is not valid UTF-8".into()))?
-                .parse()
-                .map_err(|_| Error::Config("--listen is not a socket address".into()))?;
-            set_once(&mut listen, value, "--listen")?;
-        } else if flag == "--tls-cert" {
-            set_once(&mut certificate, PathBuf::from(value), "--tls-cert")?;
-        } else if flag == "--tls-key" {
-            set_once(&mut private_key, PathBuf::from(value), "--tls-key")?;
-        } else if flag == "--cloudflare-hostname" {
-            let value = value
-                .into_string()
-                .map_err(|_| Error::Config("--cloudflare-hostname is not valid UTF-8".into()))?;
-            set_once(&mut cloudflare_hostname, value, "--cloudflare-hostname")?;
-        } else if flag == "--cloudflare-token-file" {
-            set_once(
-                &mut cloudflare_token_file,
-                PathBuf::from(value),
-                "--cloudflare-token-file",
-            )?;
-        } else {
-            return Err(Error::Config(USAGE.into()));
-        }
-    }
-    let state_dir = configured_state_dir.map_or_else(state_dir, Ok)?;
-    let listen = listen.unwrap_or(DEFAULT_LISTEN);
-    let tls = match (certificate, private_key) {
+fn parse_init(state_dir: PathBuf, arguments: InitArgs) -> Result<InitOptions> {
+    let tls = match (arguments.certificate, arguments.private_key) {
         (Some(certificate), Some(private_key)) => Some(TlsConfig {
             certificate: std::fs::canonicalize(certificate)?,
             private_key: std::fs::canonicalize(private_key)?,
@@ -340,18 +330,14 @@ pub(super) fn parse_init(arguments: Vec<OsString>) -> Result<InitOptions> {
             ));
         }
     };
-    let cloudflare = match (cloudflare_hostname, cloudflare_token_file) {
-        (Some(hostname), Some(path)) => {
-            if tls.is_some() {
-                return Err(Error::Config(
-                    "Cloudflare and direct TLS listener options cannot be combined".into(),
-                ));
-            }
-            Some(CloudflareInit::Named {
-                hostname,
-                token: load_cloudflare_token(&path)?,
-            })
-        }
+    let cloudflare = match (
+        arguments.cloudflare_hostname,
+        arguments.cloudflare_token_file,
+    ) {
+        (Some(hostname), Some(path)) => Some(CloudflareInit::Named {
+            hostname,
+            token: load_cloudflare_token(&path)?,
+        }),
         (None, None) => None,
         _ => {
             return Err(Error::Config(
@@ -362,24 +348,8 @@ pub(super) fn parse_init(arguments: Vec<OsString>) -> Result<InitOptions> {
     };
     Ok(InitOptions {
         state_dir,
-        listen,
+        listen: arguments.listen.unwrap_or(DEFAULT_LISTEN),
         tls,
         cloudflare,
     })
-}
-
-pub(super) fn parse_state_dir(arguments: Vec<OsString>) -> Result<PathBuf> {
-    let state_dir = match arguments.as_slice() {
-        [] => state_dir()?,
-        [flag, path] if flag == "--state-dir" => PathBuf::from(path),
-        _ => return Err(Error::Config(USAGE.into())),
-    };
-    Ok(state_dir)
-}
-
-pub(super) fn set_once<T>(target: &mut Option<T>, value: T, flag: &str) -> Result<()> {
-    if target.replace(value).is_some() {
-        return Err(Error::Config(format!("{flag} was supplied more than once")));
-    }
-    Ok(())
 }

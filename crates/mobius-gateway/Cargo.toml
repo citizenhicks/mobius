@@ -19,6 +19,7 @@ path = "src/lib.rs"
 base64 = "0.22"
 chrono = "0.4"
 chrono-tz = "0.10"
+clap = { version = "4.6.6", features = ["derive"] }
 croner = "3"
 futures-util = { version = "0.3", features = ["sink"] }
 mobius = { version = "=0.15.1", path = "../.." }

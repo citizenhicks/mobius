@@ -49,7 +49,12 @@ use tokio::process::{Child, Command as TokioCommand};
 use tokio::signal::unix::{Signal as TokioSignal, SignalKind, signal};
 use uuid::Uuid;
 
-use self::args::*;
+#[cfg(test)]
+use self::args::parse;
+use self::args::{
+    CloudflareInit, Command, ConnectOptions, InitOptions, RegisterProviderOptions, parse_cli,
+};
+pub use self::args::{FrontendCommand, GatewayCli};
 use self::connection::*;
 use self::init::*;
 pub use self::init::{
@@ -58,23 +63,6 @@ pub use self::init::{
 pub use self::lifecycle::ensure_background_gateway;
 use self::lifecycle::*;
 use self::provider::*;
-
-pub const USAGE: &str = "usage: mobius-gateway [--state-dir PATH]\n       \
-                     mobius-gateway provider [--state-dir PATH]\n       \
-                     mobius-gateway init [--state-dir PATH] [--listen ADDR] \
-                     [--tls-cert PATH --tls-key PATH] \
-                     [--cloudflare-hostname HOST --cloudflare-token-file PATH]\n       \
-                     mobius-gateway bootstrap [--state-dir PATH]\n       \
-                     mobius-gateway reset-bot-defaults [--state-dir PATH]\n       \
-                     mobius-gateway pairing-code [--state-dir PATH] --json\n       \
-                     mobius-gateway register-provider [--state-dir PATH] --provider ID \
-                     --model ID [--instance ID] [--label TEXT] \
-                     [--reasoning-efforts CSV] [--web-search off|cached|live] \
-                     [--base-url URL] \
-                     [--credentialless | --credential-stdin]\n       \
-                     mobius-gateway connect [--state-dir PATH] [--endpoint ENDPOINT]\n       \
-                     mobius-gateway serve [--state-dir PATH] [--background]\n       \
-                     mobius-gateway exit [--state-dir PATH]";
 
 #[cfg(any(unix, test))]
 const PROCESS_FILE: &str = "gateway-process.json";
@@ -103,15 +91,29 @@ pub async fn run(
     save_local_client: fn(&Endpoint, String) -> Result<()>,
     load_local_client: fn(&Endpoint) -> Result<Option<String>>,
 ) -> Result<()> {
-    if matches!(arguments.as_slice(), [flag] if flag == "--help" || flag == "-h") {
-        println!("{USAGE}");
-        return Ok(());
-    }
-    if matches!(arguments.as_slice(), [flag] if flag == "--version" || flag == "-V") {
-        println!("mobius-gateway {}", env!("CARGO_PKG_VERSION"));
-        return Ok(());
-    }
-    match parse(arguments)? {
+    let cli = match parse_cli(arguments) {
+        Ok(cli) => cli,
+        Err(error)
+            if matches!(
+                error.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            ) =>
+        {
+            error.print()?;
+            return Ok(());
+        }
+        Err(error) => return Err(Error::Config(error.to_string())),
+    };
+    run_cli(cli, save_local_client, load_local_client).await
+}
+
+/// Runs an already parsed gateway command.
+pub async fn run_cli(
+    cli: GatewayCli,
+    save_local_client: fn(&Endpoint, String) -> Result<()>,
+    load_local_client: fn(&Endpoint) -> Result<Option<String>>,
+) -> Result<()> {
+    match cli.into_command()? {
         Command::Init(options) => initialize(options),
         Command::Bootstrap { state_dir } => initialize_bootstrap(state_dir, save_local_client),
         Command::ResetBotDefaults { state_dir } => reset_bot_defaults(state_dir),

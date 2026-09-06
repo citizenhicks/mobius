@@ -1,5 +1,4 @@
 use std::env;
-use std::ffi::OsStr;
 use std::fs::{File, OpenOptions};
 use std::io::{IsTerminal as _, Read as _};
 #[cfg(unix)]
@@ -10,7 +9,9 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
+use clap::Parser as _;
 use mobius::{Error, Result};
+use mobius_cli::command::{Cli, Command as CliCommand};
 use mobius_cli::frontend::{self, FrontendExit};
 use mobius_cli::gateway_accounts::{
     GatewayAccounts, configured_endpoint, configured_token, missing_local_token,
@@ -27,8 +28,6 @@ use mobius_gateway::wire::{
 use tokio::process::{Child, Command};
 use uuid::Uuid;
 
-const USAGE: &str =
-    "usage: mobius [extensions | run <bot-handle> <task-file> | pair <endpoint> <one-time-code>]";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(40);
 const DEFAULT_LOCAL_ENDPOINT: &str = "tcp://127.0.0.1:8741";
@@ -37,38 +36,14 @@ const MAX_STARTUP_ERROR_BYTES: u64 = 8192;
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let mut args = std::env::args_os().skip(1);
-    match args.next() {
+    match Cli::parse().command {
         None => run_interactive().await?,
-        Some(command) if command == OsStr::new("run") => {
-            let bot = args.next().ok_or_else(|| Error::Config(USAGE.into()))?;
-            let task = args.next().ok_or_else(|| Error::Config(USAGE.into()))?;
-            if args.next().is_some() {
-                return Err(Error::Config(USAGE.into()).into());
-            }
-            run_task(text(&bot, "Bot handle")?, Path::new(&task)).await?;
-        }
-        Some(command) if command == OsStr::new("pair") => {
-            let endpoint = args.next().ok_or_else(|| Error::Config(USAGE.into()))?;
-            let code = args.next().ok_or_else(|| Error::Config(USAGE.into()))?;
-            if args.next().is_some() {
-                return Err(Error::Config(USAGE.into()).into());
-            }
-            pair(text(&endpoint, "endpoint")?, text(&code, "one-time code")?).await?;
-        }
-        Some(command) if command == OsStr::new("extensions") => {
-            if args.next().is_some() {
-                return Err(Error::Config(USAGE.into()).into());
-            }
-            run_extensions().await?;
-        }
-        Some(command) if command == OsStr::new("--help") || command == OsStr::new("-h") => {
-            println!("{USAGE}");
-        }
-        Some(command) if command == OsStr::new("--version") || command == OsStr::new("-V") => {
-            println!("mobius {}", env!("CARGO_PKG_VERSION"));
-        }
-        Some(_) => return Err(Error::Config(USAGE.into()).into()),
+        Some(CliCommand::Run { bot, task_file }) => run_task(&bot, &task_file).await?,
+        Some(CliCommand::Pair {
+            endpoint,
+            one_time_code,
+        }) => pair(&endpoint, &one_time_code).await?,
+        Some(CliCommand::Extensions) => run_extensions().await?,
     }
     Ok(())
 }
@@ -169,13 +144,12 @@ fn output_text(value: &str, terminal: bool) -> String {
     }
 }
 
-async fn pair(endpoint: &str, code: &str) -> std::result::Result<(), mobius_gateway::Error> {
-    let endpoint = endpoint.parse::<Endpoint>()?;
+async fn pair(endpoint: &Endpoint, code: &str) -> std::result::Result<(), mobius_gateway::Error> {
     let mut accounts = GatewayAccounts::load()?;
     accounts.prepare()?;
     let (_client, paired) =
-        GatewayClient::pair(&endpoint, code, "mobius-cli", ClientKind::Cli).await?;
-    accounts.add(&endpoint, paired.token)?;
+        GatewayClient::pair(endpoint, code, "mobius-cli", ClientKind::Cli).await?;
+    accounts.add(endpoint, paired.token)?;
     accounts.save()?;
     println!("paired {} · token saved", paired.client_id);
     Ok(())
@@ -788,12 +762,6 @@ async fn wait_session_opened(
     };
     events.prepend(deferred).map_err(gateway_error)?;
     result
-}
-
-fn text<'a>(value: &'a OsStr, name: &str) -> Result<&'a str> {
-    value
-        .to_str()
-        .ok_or_else(|| Error::Config(format!("{name} is not valid UTF-8")))
 }
 
 fn missing_token(endpoint: &Endpoint) -> mobius_gateway::Error {
