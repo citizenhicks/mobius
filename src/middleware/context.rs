@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
 use std::sync::Arc;
@@ -382,7 +383,6 @@ pub struct ModelContext<'a> {
     pub context_window: i64,
     pub instructions: &'a str,
     pub(crate) checkpoint_sequence: u64,
-    pub(crate) request_input: &'a mut Vec<Value>,
     pub(crate) available_tools: &'a mut BTreeSet<String>,
     pub(crate) allow_hosted_tools: &'a mut bool,
     pub(crate) durable_input: &'a mut Vec<Value>,
@@ -443,12 +443,6 @@ impl ModelContext<'_> {
         self.durable_input
     }
 
-    /// Returns the request input including earlier request-only middleware additions.
-    #[must_use]
-    pub fn request_input(&self) -> &[Value] {
-        self.request_input
-    }
-
     /// Replaces active model context and advances its rewrite epoch once per boundary.
     pub fn rewrite_input(&mut self, reason: ContextRewriteReason, input: Vec<Value>) -> Result<()> {
         if *self.durable_input == input {
@@ -463,8 +457,7 @@ impl ModelContext<'_> {
         if !self.rewrite_reasons.contains(&reason) {
             self.rewrite_reasons.push(reason);
         }
-        self.durable_input.clone_from(&input);
-        *self.request_input = input;
+        *self.durable_input = input;
         self.last_usage = None;
         *self.checkpoint_changed = true;
         Ok(())
@@ -478,14 +471,12 @@ impl ModelContext<'_> {
 
     /// Appends durable provider context without adding synthetic replay history.
     pub fn append_model_input(&mut self, item: Value) {
-        self.request_input.push(item.clone());
         self.durable_input.push(item);
         *self.checkpoint_changed = true;
     }
 
     /// Appends durable input to model context and its transcript journal.
     pub fn push_input(&mut self, item: Value) -> Result<MessageTarget> {
-        self.request_input.push(item.clone());
         self.durable_input.push(item.clone());
         self.transcript_delta.push(item);
         *self.checkpoint_changed = true;
@@ -567,7 +558,6 @@ impl ModelContext<'_> {
             )
             .await?;
         set_first(self.turn_stop, start.stop_reason);
-        self.request_input.clone_from(self.durable_input);
         Ok(())
     }
 
@@ -585,19 +575,19 @@ pub struct ModelRequestContext<'a> {
     pub session_id: &'a str,
     pub turn_id: &'a str,
     pub model_step: usize,
-    pub(crate) input: &'a mut Vec<Value>,
+    pub(crate) input: Cow<'a, [Value]>,
 }
 
 impl ModelRequestContext<'_> {
     /// Returns the input currently prepared for this one model request.
     #[must_use]
     pub fn input(&self) -> &[Value] {
-        self.input
+        self.input.as_ref()
     }
 
     /// Replaces only the input sent by this model request.
     pub fn replace_input(&mut self, input: Vec<Value>) {
-        *self.input = input;
+        self.input = Cow::Owned(input);
     }
 }
 
@@ -899,4 +889,43 @@ pub struct MiddlewareCommandContext<'a> {
     pub session_context: &'a SessionContext,
     pub checkpoint: &'a Checkpoint,
     pub checkpoints: Arc<dyn CheckpointStore>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::model::{Model, ModelEventSink, ModelOutput, ModelRequest};
+
+    struct NoModel;
+
+    impl Model for NoModel {
+        fn respond<'a>(
+            &'a self,
+            _request: ModelRequest<'a>,
+            _events: ModelEventSink,
+        ) -> crate::BoxFuture<'a, crate::Result<ModelOutput>> {
+            Box::pin(async { Err(crate::Error::Provider("unused".into())) })
+        }
+    }
+
+    #[test]
+    fn request_input_is_borrowed_until_replaced() {
+        let original = vec![Value::String("original".into())];
+        let role = AgentRole::Main;
+        let router = ModelRouter::new("test", Arc::new(NoModel));
+        let mut context = ModelRequestContext {
+            role: &role,
+            model: &router,
+            provider: "test",
+            session_id: "session",
+            turn_id: "turn",
+            model_step: 0,
+            input: Cow::Borrowed(&original),
+        };
+
+        assert!(matches!(&context.input, Cow::Borrowed(_)));
+        context.replace_input(vec![Value::String("replacement".into())]);
+        assert!(matches!(&context.input, Cow::Owned(_)));
+        assert_eq!(original, [Value::String("original".into())]);
+    }
 }

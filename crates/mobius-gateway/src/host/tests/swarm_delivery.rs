@@ -562,7 +562,7 @@ async fn startup_ack_reuses_the_reserved_conversation_without_resubmitting() {
         "approval keeps the actor active"
     );
     let hidden = reopened.snapshot(None).await.expect("hidden snapshot");
-    assert_eq!(hidden.ready.tool_count + 1, visible_tool_count);
+    assert_eq!(hidden.ready.tool_count, visible_tool_count);
     assert!(
         gateway
             .sessions()

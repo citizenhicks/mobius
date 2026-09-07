@@ -1,5 +1,6 @@
 //! Ordered middleware and capability registration.
 
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -690,7 +691,10 @@ impl MiddlewareStack {
         })
     }
 
-    pub(crate) async fn prepare_model(&self, mut context: ModelContext<'_>) -> Result<()> {
+    pub(crate) async fn prepare_model(
+        &self,
+        mut context: ModelContext<'_>,
+    ) -> Result<Option<Vec<Value>>> {
         let supports_image_input = context.model.supports_image_input(context.provider)?;
         self.resolve_tool_exposure(
             context.session_id,
@@ -703,7 +707,7 @@ impl MiddlewareStack {
             entry.pre_model(&mut context).await?;
         }
         if context.turn_stopped() {
-            return Ok(());
+            return Ok(None);
         }
         let mut request_context = ModelRequestContext {
             role: &context.runtime.role,
@@ -712,12 +716,15 @@ impl MiddlewareStack {
             session_id: context.session_id,
             turn_id: context.turn_id,
             model_step: context.model_step,
-            input: context.request_input,
+            input: Cow::Borrowed(context.durable_input),
         };
         for entry in &self.entries {
             entry.model_request(&mut request_context).await?;
         }
-        Ok(())
+        Ok(match request_context.input {
+            Cow::Borrowed(_) => None,
+            Cow::Owned(input) => Some(input),
+        })
     }
 
     pub(crate) async fn resolve_tool_exposure(

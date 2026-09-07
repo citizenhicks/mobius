@@ -645,6 +645,62 @@ fn responses_decode_normalizes_tool_calls_usage_and_errors() {
 }
 
 #[test]
+fn responses_emits_complete_tool_calls_in_output_order() {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink_seen = Arc::clone(&seen);
+    let events: ModelEventSink = Arc::new(move |event| {
+        sink_seen.lock().expect("events lock").push(event);
+        Ok(())
+    });
+    let mut output = BTreeMap::new();
+    let mut next_output_index = 0;
+    let mut streamed_tool_calls = StreamingToolCalls::default();
+
+    output.insert(
+        1,
+        serde_json::json!({
+            "type": "function_call",
+            "call_id": "call-1",
+            "name": "read_file",
+            "arguments": "{\"path\":\"README.md\"}"
+        }),
+    );
+    emit_ready_tool_calls(
+        &output,
+        &mut next_output_index,
+        &mut streamed_tool_calls,
+        &events,
+    )
+    .expect("incomplete prefix is held");
+    assert!(seen.lock().expect("events lock").is_empty());
+
+    output.insert(
+        0,
+        serde_json::json!({
+            "type": "message",
+            "role": "assistant",
+            "content": []
+        }),
+    );
+    emit_ready_tool_calls(
+        &output,
+        &mut next_output_index,
+        &mut streamed_tool_calls,
+        &events,
+    )
+    .expect("complete prefix emits");
+
+    assert_eq!(
+        *seen.lock().expect("events lock"),
+        vec![ModelEvent::ToolCallReady(crate::backend::model::ToolCall {
+            call_id: "call-1".into(),
+            name: "read_file".into(),
+            arguments: serde_json::json!({"path": "README.md"}),
+        })]
+    );
+}
+
+#[test]
 fn responses_emits_reasoning_text_deltas() {
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink_seen = Arc::clone(&seen);

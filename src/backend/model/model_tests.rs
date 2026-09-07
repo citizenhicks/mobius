@@ -416,6 +416,36 @@ fn normalized_output_rejects_bounded_and_invalid_values() {
 }
 
 #[test]
+fn streaming_tool_calls_reject_duplicates_and_overflow() {
+    let call = ToolCall {
+        call_id: "call-1".into(),
+        name: "read_file".into(),
+        arguments: serde_json::json!({"path": "README.md"}),
+    };
+    let mut streamed = StreamingToolCalls::default();
+    streamed.accept(&call).expect("first tool call");
+    assert!(streamed.accept(&call).is_err());
+
+    let mut streamed = StreamingToolCalls::default();
+    for index in 0..MAX_TOOL_CALLS {
+        streamed
+            .accept(&ToolCall {
+                call_id: format!("call-{index}"),
+                ..call.clone()
+            })
+            .expect("call within stream limit");
+    }
+    assert!(
+        streamed
+            .accept(&ToolCall {
+                call_id: "call-over-limit".into(),
+                ..call
+            })
+            .is_err()
+    );
+}
+
+#[test]
 fn usage_fields_reject_out_of_range_integers() {
     assert!(
         usage_i64(

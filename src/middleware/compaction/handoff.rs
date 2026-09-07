@@ -184,6 +184,7 @@ pub(super) fn decorate(context: &mut ModelRequestContext<'_>) {
     if let Some(prompt) = prompt {
         context
             .input
+            .to_mut()
             .push(internal_user_message("handoff_notice", prompt));
     }
 }

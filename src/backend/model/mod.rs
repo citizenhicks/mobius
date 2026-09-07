@@ -46,7 +46,7 @@ use crate::protocol::{
 pub(crate) use crate::protocol::{REPLAY_REASONING_FIELD, TOOL_ERROR_FIELD};
 // Leaves room for typed lifecycle metadata inside the frontend envelope.
 const MAX_MODEL_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
-const MAX_TOOL_CALLS: usize = 128;
+pub(crate) const MAX_TOOL_CALLS: usize = 128;
 const MAX_TOOL_ARGUMENT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_TOOL_CALL_ID_BYTES: usize = 4 * 1024;
 const MAX_TOOL_NAME_BYTES: usize = 256;
@@ -107,7 +107,7 @@ impl ToolLoad {
 }
 
 /// One model-requested function call.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolCall {
     pub call_id: String,
     pub name: String,
@@ -115,6 +115,34 @@ pub struct ToolCall {
 }
 
 impl ToolCall {
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.call_id.trim().is_empty() {
+            return Err(Error::Provider("tool call ID cannot be empty".into()));
+        }
+        if self.call_id.len() > MAX_TOOL_CALL_ID_BYTES {
+            return Err(Error::Provider("tool call ID exceeded size limit".into()));
+        }
+        if self.name.trim().is_empty() {
+            return Err(Error::Provider("tool call name cannot be empty".into()));
+        }
+        if self.name.len() > MAX_TOOL_NAME_BYTES {
+            return Err(Error::Provider("tool call name exceeded size limit".into()));
+        }
+        if !self.arguments.is_object() {
+            return Err(Error::Provider(
+                "tool call arguments must be an object".into(),
+            ));
+        }
+        let mut writer = SizeWriter::new(MAX_TOOL_ARGUMENT_BYTES);
+        serde_json::to_writer(&mut writer, &self.arguments).map_err(|error| {
+            if writer.exceeded {
+                Error::Provider("tool call arguments exceeded size limit".into())
+            } else {
+                Error::Provider(format!("tool call arguments are invalid: {error}").into())
+            }
+        })
+    }
+
     pub(crate) fn replace(&mut self, name: String, arguments: Value) -> Result<()> {
         if name.trim().is_empty() {
             return Err(Error::Tool(format!(
@@ -147,6 +175,40 @@ impl ToolCall {
         }
         self.name = name;
         self.arguments = arguments;
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct StreamingToolCalls {
+    call_ids: BTreeSet<String>,
+    bytes: usize,
+}
+
+impl StreamingToolCalls {
+    pub(crate) fn accept(&mut self, call: &ToolCall) -> Result<()> {
+        call.validate()?;
+        if self.call_ids.contains(&call.call_id) {
+            return Err(Error::Provider(
+                format!("model returned duplicate tool-call ID `{}`", call.call_id).into(),
+            ));
+        }
+        if self.call_ids.len() >= MAX_TOOL_CALLS {
+            return Err(Error::Provider(
+                format!("model returned more than {MAX_TOOL_CALLS} tool calls").into(),
+            ));
+        }
+        let remaining = MAX_MODEL_OUTPUT_BYTES.saturating_sub(self.bytes);
+        let mut writer = SizeWriter::new(remaining);
+        serde_json::to_writer(&mut writer, call).map_err(|error| {
+            if writer.exceeded {
+                Error::Provider("streamed tool calls exceeded size limit".into())
+            } else {
+                Error::Provider(format!("tool call could not be serialized: {error}").into())
+            }
+        })?;
+        self.call_ids.insert(call.call_id.clone());
+        self.bytes += writer.bytes;
         Ok(())
     }
 }
@@ -390,7 +452,13 @@ impl ModelOutput {
                     format!("model returned more than {MAX_TOOL_CALLS} tool calls").into(),
                 ));
             }
-            tool_calls.push(decode_tool_call(item, &mut call_ids)?);
+            let call = decode_tool_call(item)?;
+            if !call_ids.insert(call.call_id.clone()) {
+                return Err(Error::Provider(
+                    format!("model returned duplicate tool-call ID `{}`", call.call_id).into(),
+                ));
+            }
+            tool_calls.push(call);
         }
 
         Ok(Self {
@@ -758,7 +826,10 @@ pub trait Model: Send + Sync {
     /// Produces one streamed response.
     ///
     /// Normalize provider wire data into [`crate::protocol::ModelEvent`] and
-    /// [`ModelOutput`], and propagate [`ModelEventSink`] failures. The returned
+    /// [`ModelOutput`]. Emit only immutable, fully validated
+    /// [`crate::protocol::ModelEvent::ToolCallReady`] calls, in the same order as
+    /// the final output; the agent may execute them before stream EOF, so the
+    /// final output must agree. Propagate [`ModelEventSink`] failures. The returned
     /// future may be dropped on cancellation; implementations own cleanup of any
     /// transport work they launch outside that future.
     fn respond<'a>(
@@ -865,13 +936,8 @@ pub(super) fn usage_i64(
     })
 }
 
-fn decode_tool_call(item: &Value, call_ids: &mut BTreeSet<String>) -> Result<ToolCall> {
+pub(super) fn decode_tool_call(item: &Value) -> Result<ToolCall> {
     let call_id = required_output_string(item, "call_id", MAX_TOOL_CALL_ID_BYTES)?;
-    if !call_ids.insert(call_id.to_string()) {
-        return Err(Error::Provider(
-            format!("model returned duplicate tool-call ID `{call_id}`").into(),
-        ));
-    }
     let name = required_output_string(item, "name", MAX_TOOL_NAME_BYTES)?;
     let encoded = required_output_string(item, "arguments", MAX_TOOL_ARGUMENT_BYTES)?;
     let arguments: Value = serde_json::from_str(encoded)?;
@@ -880,11 +946,13 @@ fn decode_tool_call(item: &Value, call_ids: &mut BTreeSet<String>) -> Result<Too
             format!("tool call `{call_id}` arguments must be a JSON object").into(),
         ));
     }
-    Ok(ToolCall {
+    let call = ToolCall {
         call_id: call_id.to_string(),
         name: name.to_string(),
         arguments,
-    })
+    };
+    call.validate()?;
+    Ok(call)
 }
 
 fn required_output_string<'a>(item: &'a Value, field: &str, limit: usize) -> Result<&'a str> {

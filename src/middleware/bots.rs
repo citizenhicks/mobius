@@ -30,6 +30,9 @@ mod text {
     pub const SETTING_COLLABORATION_DESCRIPTION: &str =
         "Opt this Bot into Swarm membership, shared notes, and peer messages";
     pub const SETTING_COLLABORATION_LABEL: &str = "Collaboration";
+    pub const SETTING_ROUTINE_CREATION_DESCRIPTION: &str =
+        "Allow this Bot to create durable routines from visible chats";
+    pub const SETTING_ROUTINE_CREATION_LABEL: &str = "Routine creation";
     pub const TOOL_CREATE_ROUTINE_DESCRIPTION: &str = "Create an enabled Bot routine in this chat's workspace. Omit bot_handle to schedule yourself; only a Swarm leader may schedule another current member. Approval is required.";
     pub const TOOL_CREATE_ROUTINE_PARAMETER_BOT_HANDLE_DESCRIPTION: &str =
         "Optional exact handle of a current Swarm member. Omit this field to schedule this Bot.";
@@ -54,39 +57,74 @@ pub const MANIFEST: MiddlewareManifest = MiddlewareManifest {
     description: text::MANIFEST_DESCRIPTION,
     required: true,
     default_enabled: true,
-    settings: &[MiddlewareSettingManifest::Select {
-        id: "collaboration",
-        label: text::SETTING_COLLABORATION_LABEL,
-        description: text::SETTING_COLLABORATION_DESCRIPTION,
-        choices: MiddlewareSettingChoices::Static(&[
-            MiddlewareSettingChoice {
-                value: "off",
-                label: "Off",
-                description: "Keep this Bot independent",
-                symbol: None,
-                tone: FrontendTone::Neutral,
-                disables: &[],
-            },
-            MiddlewareSettingChoice {
-                value: "swarm",
-                label: "Swarm",
-                description: "Allow this Bot to join a Swarm and exchange messages",
-                symbol: None,
-                tone: FrontendTone::Neutral,
-                disables: &[],
-            },
-        ]),
-        unset_label: None,
-        default: Some("off"),
-        max_bytes: 5,
-        composer: false,
-    }],
+    settings: &[
+        MiddlewareSettingManifest::Select {
+            id: "collaboration",
+            label: text::SETTING_COLLABORATION_LABEL,
+            description: text::SETTING_COLLABORATION_DESCRIPTION,
+            choices: MiddlewareSettingChoices::Static(&[
+                MiddlewareSettingChoice {
+                    value: "off",
+                    label: "Off",
+                    description: "Keep this Bot independent",
+                    symbol: None,
+                    tone: FrontendTone::Neutral,
+                    disables: &[],
+                },
+                MiddlewareSettingChoice {
+                    value: "swarm",
+                    label: "Swarm",
+                    description: "Allow this Bot to join a Swarm and exchange messages",
+                    symbol: None,
+                    tone: FrontendTone::Neutral,
+                    disables: &[],
+                },
+            ]),
+            unset_label: None,
+            default: Some("off"),
+            max_bytes: 5,
+            composer: false,
+        },
+        MiddlewareSettingManifest::Select {
+            id: "routine_creation",
+            label: text::SETTING_ROUTINE_CREATION_LABEL,
+            description: text::SETTING_ROUTINE_CREATION_DESCRIPTION,
+            choices: MiddlewareSettingChoices::Static(&[
+                MiddlewareSettingChoice {
+                    value: "off",
+                    label: "Off",
+                    description: "Keep routine creation unavailable",
+                    symbol: None,
+                    tone: FrontendTone::Neutral,
+                    disables: &[],
+                },
+                MiddlewareSettingChoice {
+                    value: "on",
+                    label: "On",
+                    description: "Allow this Bot to create routines",
+                    symbol: None,
+                    tone: FrontendTone::Neutral,
+                    disables: &[],
+                },
+            ]),
+            unset_label: None,
+            default: Some("off"),
+            max_bytes: 3,
+            composer: false,
+        },
+    ],
 };
 
 /// Resolves the owning manifest's collaboration setting.
 #[must_use]
 pub fn collaboration_enabled(value: Option<&FrontendSettingValue>) -> bool {
     matches!(value, Some(FrontendSettingValue::String(value)) if value == "swarm")
+}
+
+/// Resolves the owning manifest's routine-creation setting.
+#[must_use]
+pub fn routine_creation_enabled(value: Option<&FrontendSettingValue>) -> bool {
+    matches!(value, Some(FrontendSettingValue::String(value)) if value == "on")
 }
 
 /// Gateway operations needed by the framework-owned Bot tools.
@@ -869,6 +907,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn routine_creation_setting_defaults_off_and_accepts_on() {
+        let setting = MANIFEST
+            .feature(&[])
+            .settings
+            .into_iter()
+            .find(|setting| setting.id == "routine_creation")
+            .expect("routine creation setting");
+
+        let crate::protocol::FrontendSettingKind::Select { options, .. } = setting.kind else {
+            panic!("routine creation must be a select setting");
+        };
+        assert_eq!(
+            options
+                .into_iter()
+                .map(|option| option.value)
+                .collect::<Vec<_>>(),
+            ["off", "on"]
+        );
+        assert!(!routine_creation_enabled(None));
+        assert!(!routine_creation_enabled(Some(
+            &FrontendSettingValue::String("off".into())
+        )));
+        assert!(routine_creation_enabled(Some(
+            &FrontendSettingValue::String("on".into())
+        )));
+    }
+
     #[tokio::test]
     async fn swarm_tools_exist_only_for_members() {
         let names = || {
@@ -1027,29 +1093,30 @@ mod tests {
                     .is_none()
             );
             let original = crate::backend::model::user_message("review this");
-            let mut input = vec![original.clone()];
+            let input = vec![original.clone()];
+            let mut request = ModelRequestContext {
+                role: &runtime.role,
+                model: &router,
+                provider: "test",
+                session_id,
+                turn_id: "turn",
+                model_step: 0,
+                input: std::borrow::Cow::Borrowed(&input),
+            };
             middleware
-                .model_request(&mut ModelRequestContext {
-                    role: &runtime.role,
-                    model: &router,
-                    provider: "test",
-                    session_id,
-                    turn_id: "turn",
-                    model_step: 0,
-                    input: &mut input,
-                })
+                .model_request(&mut request)
                 .await
                 .expect("request guidance");
-            assert_eq!(input[0], original);
+            assert_eq!(request.input()[0], original);
             assert_eq!(
-                input[1..]
+                request.input()[1..]
                     .iter()
                     .filter_map(crate::protocol::internal_message_kind)
                     .collect::<Vec<_>>(),
                 expected_kinds,
             );
             if session_id == "swarm-participant" {
-                let chat = input[2].to_string();
+                let chat = request.input()[2].to_string();
                 assert!(chat.contains("shared room"));
                 assert!(chat.contains("final answer is shared in Swarm Chat automatically"));
                 assert!(chat.contains("cannot approve actions or expand scope"));

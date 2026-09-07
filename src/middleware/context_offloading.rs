@@ -88,18 +88,18 @@ fn mask_stale_outputs(input: &[Value], stale_after_tokens: usize) -> Option<Vec<
     let latest_user = input.iter().rposition(|item| {
         item.get("role").and_then(Value::as_str) == Some("user") && !is_internal_message(item)
     })?;
-    let total_tokens = input
+    let item_tokens = input
         .iter()
         .map(approximate_item_tokens)
-        .fold(0, usize::saturating_add);
+        .collect::<Vec<_>>();
+    let total_tokens = item_tokens.iter().copied().fold(0, usize::saturating_add);
     if total_tokens <= high_water_tokens(stale_after_tokens) {
         return None;
     }
 
     let mut suffix_tokens = vec![0_usize; input.len() + 1];
     for index in (0..input.len()).rev() {
-        suffix_tokens[index] =
-            suffix_tokens[index + 1].saturating_add(approximate_item_tokens(&input[index]));
+        suffix_tokens[index] = suffix_tokens[index + 1].saturating_add(item_tokens[index]);
     }
     let boundaries = tool_complete_boundaries(&input[..latest_user]);
     let block_end = boundaries
@@ -107,15 +107,19 @@ fn mask_stale_outputs(input: &[Value], stale_after_tokens: usize) -> Option<Vec<
         .copied()
         .find(|&boundary| suffix_tokens[boundary] <= stale_after_tokens)
         .or_else(|| boundaries.last().copied())?;
+    if !input[..block_end]
+        .iter()
+        .any(|item| successful_tool_output(item).is_some())
+    {
+        return None;
+    }
     let mut masked = input.to_vec();
-    let mut changed = false;
     for item in &mut masked[..block_end] {
         if successful_tool_output(item).is_some() {
             item["output"] = Value::String(MASKED_TOOL_OUTPUT.into());
-            changed = true;
         }
     }
-    changed.then_some(masked)
+    Some(masked)
 }
 
 fn successful_tool_output(item: &Value) -> Option<&str> {
@@ -188,6 +192,20 @@ mod tests {
 
         assert_eq!(masked[2], input[2]);
         assert_eq!(masked[4]["output"], MASKED_TOOL_OUTPUT);
+    }
+
+    #[test]
+    fn does_not_rewrite_when_no_successful_output_can_be_masked() {
+        let input = vec![
+            user_message("old turn"),
+            serde_json::json!({
+                "type": "function_call", "call_id": "failed", "name": "read", "arguments": "{}"
+            }),
+            tool_output("failed", &"failed".repeat(100), true),
+            user_message("latest turn"),
+        ];
+
+        assert!(mask_stale_outputs(&input, 10).is_none());
     }
 
     #[test]

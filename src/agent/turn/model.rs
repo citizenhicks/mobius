@@ -6,23 +6,25 @@ use std::time::Duration;
 use serde_json::Value;
 use uuid::Uuid;
 
+use super::streaming::StreamedTools;
 use super::turn_event;
 use crate::agent::input::Wait;
-use crate::agent::tool_step::record_model_input_image_bytes;
+use crate::agent::tool_step::{order_results, record_model_input_image_bytes};
 use crate::agent::{Runner, SubmissionInbox, send_event, unix_timestamp_ms};
 use crate::backend::checkpoint::{
     ActiveModelStep, ContextRewrite, ContextRewriteReason, ExecutionOutcome, ExecutionPhase,
 };
 use crate::backend::model::{
-    ModelEventSink, ModelOutput, ModelRequest, PromptCacheIdentity, STREAM_RETRY_LIMIT, ToolCall,
-    ToolDefinition, durable_visible_message_index, insert_before_open_tool_calls,
-    internal_user_message, prompt_cache_key,
+    MAX_TOOL_CALLS, ModelEventSink, ModelOutput, ModelRequest, PromptCacheIdentity,
+    STREAM_RETRY_LIMIT, StreamingToolCalls, ToolCall, ToolDefinition,
+    durable_visible_message_index, insert_before_open_tool_calls, internal_user_message,
+    prompt_cache_key,
 };
 use crate::backend::sandbox::SandboxAuthorization;
 use crate::middleware::tools::{PreparedToolSet, ToolResult};
-use crate::middleware::{ModelContext, PreToolUseContext, StopContext, model_input_image_bytes};
+use crate::middleware::{ModelContext, StopContext, model_input_image_bytes};
 use crate::protocol::{
-    AssistantMessageEvent, Event, EventMsg, MessageTarget, ModelEventTracker,
+    AssistantMessageEvent, Event, EventMsg, MessageTarget, ModelEvent, ModelEventTracker,
     ModelStepCompletedEvent, ModelStepDiagnostics, ModelStepOutcome, ModelStepStartedEvent,
     SubmissionRejectedEvent, TokenUsage,
 };
@@ -59,6 +61,14 @@ struct CompletedModelStep {
     output: ModelOutput,
     tools: PreparedToolSet,
     model_events: ModelEventTracker,
+    streamed: StreamedTools,
+}
+
+struct NormalizedModelStep {
+    output: ModelOutput,
+    executable_calls: Vec<ToolCall>,
+    denied_results: Vec<ToolResult>,
+    streamed: StreamedTools,
 }
 
 enum ModelStepRequest {
@@ -232,7 +242,6 @@ impl Runner {
         let mut checkpoint_changed = false;
         let mut rewrite_reasons = Vec::new();
         let mut turn_stop = None;
-        let mut request_input = self.state.context.clone();
         let mut durable_input = self.state.context.clone();
         let mut transcript_delta = self.transcript_delta.clone();
         let mut context_epoch = self.state.context_epoch;
@@ -247,7 +256,7 @@ impl Runner {
         let metadata = self.config.metadata.clone();
         let instructions = Arc::clone(&self.system_prompt);
         let last_usage = self.state.last_usage.clone();
-        let catalog = self.catalog.clone();
+        let catalog = Arc::clone(&self.catalog);
         let runtime = self.runtime.clone();
         let middleware = self.config.middleware.clone();
         let prepare_model = middleware.prepare_model(ModelContext {
@@ -261,7 +270,6 @@ impl Runner {
             context_window: self.config.context_window,
             instructions: &instructions,
             checkpoint_sequence: self.state.sequence,
-            request_input: &mut request_input,
             available_tools: &mut available_tools,
             allow_hosted_tools: &mut allow_hosted_tools,
             durable_input: &mut durable_input,
@@ -293,7 +301,29 @@ impl Runner {
                 return Ok(PreparedModel::Aborted);
             }
         };
-        self.state.context = durable_input;
+        let request_input = match hook_result {
+            Ok(request_input) => {
+                let request_input = match (checkpoint_changed, request_input) {
+                    (true, Some(request_input)) => {
+                        self.state.context = durable_input;
+                        request_input
+                    }
+                    (true, None) => {
+                        self.state.context = durable_input.clone();
+                        durable_input
+                    }
+                    (false, Some(request_input)) => request_input,
+                    (false, None) => durable_input,
+                };
+                Ok(request_input)
+            }
+            Err(error) => {
+                if checkpoint_changed {
+                    self.state.context = durable_input;
+                }
+                Err(error)
+            }
+        };
         self.transcript_delta = transcript_delta;
         self.state.context_epoch = context_epoch;
         self.state.compaction_count = compaction_count;
@@ -324,7 +354,7 @@ impl Runner {
             provisional_target_sequence,
         )
         .await?;
-        hook_result?;
+        let request_input = request_input?;
         if messages_ready {
             return Ok(PreparedModel::Repeat(rewrite_reasons));
         }
@@ -390,15 +420,14 @@ impl Runner {
         let mut events = model_events
             .interrupted()?
             .into_iter()
-            .map(|event| {
-                turn_event(
-                    submission_id,
-                    event.into_event(
+            .filter_map(|event| {
+                event
+                    .into_event(
                         &started.session_id,
                         &started.turn_id,
                         &started.model_step_id,
-                    ),
-                )
+                    )
+                    .map(|event| turn_event(submission_id, event))
             })
             .collect::<Vec<_>>();
         events.push(model_step_completed_event(
@@ -519,13 +548,28 @@ impl Runner {
             let recorder = self.events.downgrade();
             let sink_gate = ModelEventGate::new();
             let stream_gate = sink_gate.clone();
+            let (ready_calls_tx, ready_calls) = tokio::sync::mpsc::channel(MAX_TOOL_CALLS);
+            let call_validation = Mutex::new(StreamingToolCalls::default());
             let stream: ModelEventSink = Arc::new(move |event| {
                 let open = stream_gate.enter()?;
                 if !*open {
                     return Err(Error::Stopped("model event sink closed".into()));
                 }
+                if let ModelEvent::ToolCallReady(call) = event {
+                    call_validation
+                        .lock()
+                        .map_err(|_| Error::Stopped("streamed tool validation unavailable".into()))?
+                        .accept(&call)?;
+                    return ready_calls_tx
+                        .try_send(call)
+                        .map_err(|_| Error::Stopped("streamed tool queue unavailable".into()));
+                }
                 streamed_events.observe(&event)?;
-                let msg = event.into_event(&event_session_id, &event_turn_id, &event_model_step_id);
+                let Some(msg) =
+                    event.into_event(&event_session_id, &event_turn_id, &event_model_step_id)
+                else {
+                    return Ok(());
+                };
                 let recorder = recorder
                     .upgrade()
                     .ok_or_else(|| Error::Stopped("event recorder stopped".into()))?;
@@ -555,7 +599,13 @@ impl Runner {
                 response_gate.close();
                 response
             };
-            let response = self.wait_active(inbox, turn_id, response).await;
+            let mut streamed = StreamedTools::default();
+            let response = self
+                .wait_streamed_response(inbox, response, ready_calls, &tools.catalog, &mut streamed)
+                .await;
+            if !matches!(&response, Ok(Wait::Ready { value: Ok(_), .. })) {
+                streamed.cancel();
+            }
             match response {
                 Ok(Wait::Ready {
                     value: Ok(output), ..
@@ -565,12 +615,16 @@ impl Runner {
                         output,
                         tools: tools.catalog.clone(),
                         model_events,
+                        streamed,
                     })));
                 }
                 Ok(Wait::Ready {
                     value: Err(Error::Provider(error)),
                     input_changed,
-                }) if error.is_stream_interrupted() && stream_retries < STREAM_RETRY_LIMIT => {
+                }) if error.is_stream_interrupted()
+                    && stream_retries < STREAM_RETRY_LIMIT
+                    && streamed.originals.is_empty() =>
+                {
                     let delay = stream_retry_delay(&error, stream_retries, &started.model_step_id);
                     self.retry_model_step(submission_id, &started, &model_events)
                         .await?;
@@ -650,14 +704,26 @@ impl Runner {
         rewrite_reasons: &[ContextRewriteReason],
         input_image_bytes: usize,
         mut step: CompletedModelStep,
-    ) -> Result<Option<(ModelOutput, Vec<ToolCall>, Vec<ToolResult>)>> {
+    ) -> Result<Option<NormalizedModelStep>> {
         let provider = self.config.provider.clone();
         if let Err(error) = self.record_usage(&provider, &step.output.usage) {
+            step.streamed.cancel();
             self.fail_model_step(submission_id, &step.started, &step.model_events, error)
                 .await?;
             return Ok(None);
         }
         self.state.last_usage = Some(step.output.usage.clone());
+        if !step.output.tool_calls.starts_with(&step.streamed.originals) {
+            step.streamed.cancel();
+            self.fail_model_step(
+                submission_id,
+                &step.started,
+                &step.model_events,
+                Error::Provider("completed response changed streamed tool calls".into()),
+            )
+            .await?;
+            return Ok(None);
+        }
         let mut tool_effects = match step.tools.accept_materialized(
             step.output.materialized_tools(),
             turn_id,
@@ -665,6 +731,7 @@ impl Runner {
         ) {
             Ok(effects) => effects,
             Err(error) => {
+                step.streamed.cancel();
                 self.fail_model_step(submission_id, &step.started, &step.model_events, error)
                     .await?;
                 return Ok(None);
@@ -672,46 +739,57 @@ impl Runner {
         };
         let original_tool_calls = step.output.tool_calls.clone();
         let mut executable_calls = Vec::new();
-        let mut denied_results = Vec::new();
-        let mut hook_events = Vec::new();
-        let mut hook_input = Vec::new();
-        for call in &mut step.output.tool_calls {
-            if let Err(error) = self.catalog.bind_prepared(call.clone(), &step.tools) {
-                denied_results.push(ToolResult::error(call, error.to_string()));
-                continue;
-            }
-            let mut context = PreToolUseContext {
-                turn: self.runtime.turn_identity(turn_id),
-                events: &mut hook_events,
-                tools: &self.catalog,
-                call,
-                input: Vec::new(),
-                denial: None,
-            };
-            if let Err(error) = self.config.middleware.pre_tool_use(&mut context).await {
-                self.fail_model_step(submission_id, &step.started, &step.model_events, error)
-                    .await?;
-                return Ok(None);
-            }
-            let denial = context.denial().map(str::to_owned);
-            hook_input.append(&mut context.input);
-            if let Some(reason) = denial {
-                denied_results.push(ToolResult::error(
-                    context.call(),
-                    format!("tool call denied: {reason}"),
-                ));
+        let mut denied_results = std::mem::take(&mut step.streamed.denied);
+        let mut hook_events = std::mem::take(&mut step.streamed.hook_events);
+        let mut hook_input = std::mem::take(&mut step.streamed.hook_input);
+        for (index, call) in step.output.tool_calls.iter_mut().enumerate() {
+            if let Some(prepared) = step.streamed.calls.get(index) {
+                *call = prepared.clone();
+                if step.streamed.started.contains(&call.call_id)
+                    || denied_results
+                        .iter()
+                        .any(|result| result.call_id == call.call_id)
+                {
+                    continue;
+                }
             } else {
-                match self.catalog.bind_prepared(call.clone(), &step.tools) {
-                    Ok(call) => executable_calls.push(call.into_call()),
+                match self
+                    .prepare_tool_call(
+                        turn_id,
+                        call,
+                        &step.tools,
+                        &mut hook_events,
+                        &mut hook_input,
+                    )
+                    .await
+                {
+                    Ok(Some(denial)) => {
+                        denied_results.push(denial);
+                        continue;
+                    }
+                    Ok(None) => {}
                     Err(error) => {
-                        denied_results.push(ToolResult::error(call, error.to_string()));
+                        step.streamed.cancel();
+                        self.fail_model_step(
+                            submission_id,
+                            &step.started,
+                            &step.model_events,
+                            error,
+                        )
+                        .await?;
+                        return Ok(None);
                     }
                 }
+            }
+            match self.catalog.bind_prepared(call.clone(), &step.tools) {
+                Ok(call) => executable_calls.push(call.into_call()),
+                Err(error) => denied_results.push(ToolResult::error(call, error.to_string())),
             }
         }
         if step.output.tool_calls != original_tool_calls
             && let Err(error) = step.output.sync_tool_calls()
         {
+            step.streamed.cancel();
             self.fail_model_step(submission_id, &step.started, &step.model_events, error)
                 .await?;
             return Ok(None);
@@ -719,6 +797,7 @@ impl Runner {
         if let Some(interrupt_submission_id) =
             self.drain_submissions(inbox, turn_id).await?.interrupted
         {
+            step.streamed.cancel();
             self.interrupt_model_step(
                 submission_id,
                 &interrupt_submission_id,
@@ -824,7 +903,12 @@ impl Runner {
             model_events.push(usage);
         }
         self.persist_with_events(model_events, None).await?;
-        Ok(Some((step.output, executable_calls, denied_results)))
+        Ok(Some(NormalizedModelStep {
+            output: step.output,
+            executable_calls,
+            denied_results,
+            streamed: step.streamed,
+        }))
     }
 
     async fn resolve_turn_completion(
@@ -1103,7 +1187,12 @@ impl Runner {
                 ModelStepRequest::Restart => continue,
                 ModelStepRequest::Finished => return Ok(()),
             };
-            let Some((output, executable_calls, denied_results)) = self
+            let Some(NormalizedModelStep {
+                output,
+                executable_calls,
+                denied_results,
+                streamed,
+            }) = self
                 .normalize_and_persist_model_step(
                     inbox,
                     &submission_id,
@@ -1119,15 +1208,17 @@ impl Runner {
             if output.tool_calls.is_empty() {
                 continue;
             }
-            if !denied_results.is_empty() {
-                self.persist_tool_results(
-                    &submission_id,
-                    &turn_id,
-                    input_image_bytes,
-                    denied_results,
-                )
+            let streamed = self.wait_active(inbox, &turn_id, streamed.finish()).await?;
+            let Some(streamed) = self.ready_or_aborted(streamed, &turn_id).await? else {
+                return Ok(());
+            };
+            let mut completion = streamed?;
+            self.post_tool_results(&turn_id, &output.tool_calls, &mut completion)
                 .await?;
-            }
+            completion.results.extend(denied_results);
+            completion.results = order_results(&output.tool_calls, completion.results);
+            self.persist_tool_results(&submission_id, &turn_id, input_image_bytes, completion)
+                .await?;
             if executable_calls.is_empty() {
                 continue;
             }

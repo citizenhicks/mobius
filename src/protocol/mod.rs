@@ -5,6 +5,8 @@ use serde::Deserializer;
 use serde::Serialize;
 use uuid::Uuid;
 
+use crate::backend::model::ToolCall;
+
 pub use self::replay::events as replay_events;
 pub(crate) use self::replay::{
     ATTACHMENT_CONTEXT_MARKER, ATTACHMENTS_FIELD, CONTEXT_COMPACTED_MARKER, INTERNAL_MESSAGE_FIELD,
@@ -413,6 +415,12 @@ pub enum ModelEvent {
     TextDelta(String),
     CommentaryDelta(String),
     ReasoningDelta(String),
+    /// One immutable, fully validated model call in final output order.
+    ///
+    /// Providers emit this before stream EOF when the complete call is known. The
+    /// agent may begin execution immediately; the final `ModelOutput` must contain
+    /// the same call and order.
+    ToolCallReady(ToolCall),
     WebSearchStarted {
         call_id: String,
     },
@@ -481,9 +489,18 @@ pub enum WebSearchAction {
 
 impl ModelEvent {
     /// Converts one normalized provider event into the frontend protocol.
+    ///
+    /// Internal tool-readiness events return `None` so they cannot duplicate the
+    /// frontend's execution-start event.
     #[must_use]
-    pub fn into_event(self, session_id: &str, turn_id: &str, model_step_id: &str) -> EventMsg {
-        match self {
+    pub fn into_event(
+        self,
+        session_id: &str,
+        turn_id: &str,
+        model_step_id: &str,
+    ) -> Option<EventMsg> {
+        Some(match self {
+            Self::ToolCallReady(_) => return None,
             Self::TextDelta(delta) => EventMsg::AssistantContentDelta(AssistantContentDeltaEvent {
                 session_id: session_id.into(),
                 turn_id: turn_id.into(),
@@ -524,7 +541,7 @@ impl ModelEvent {
                     action,
                 })
             }
-        }
+        })
     }
 }
 
@@ -536,18 +553,17 @@ mod tests {
 
     #[test]
     fn model_events_keep_typed_correlation_and_web_search_fields() {
-        let delta = ModelEvent::CommentaryDelta("Checking".into()).into_event(
-            "session-1",
-            "turn-1",
-            "step-1",
-        );
+        let delta = ModelEvent::CommentaryDelta("Checking".into())
+            .into_event("session-1", "turn-1", "step-1")
+            .expect("frontend delta");
         let search = ModelEvent::WebSearchCompleted {
             call_id: "search-1".into(),
             action: WebSearchAction::Search {
                 queries: vec!["möbius framework".into(), "möbius gateway".into()],
             },
         }
-        .into_event("session-1", "turn-1", "step-1");
+        .into_event("session-1", "turn-1", "step-1")
+        .expect("frontend search");
 
         assert_eq!(
             serde_json::to_value(delta).expect("serialize delta"),
@@ -573,6 +589,19 @@ mod tests {
                     "queries": ["möbius framework", "möbius gateway"]
                 }
             })
+        );
+    }
+
+    #[test]
+    fn tool_call_ready_stays_internal_to_the_agent_loop() {
+        assert_eq!(
+            ModelEvent::ToolCallReady(crate::backend::model::ToolCall {
+                call_id: "call-1".into(),
+                name: "read_file".into(),
+                arguments: json!({"path": "README.md"}),
+            })
+            .into_event("session-1", "turn-1", "step-1"),
+            None
         );
     }
 

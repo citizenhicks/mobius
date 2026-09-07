@@ -838,6 +838,8 @@ mod peer_messages;
 mod recorder;
 #[path = "runtime_tests/resume_and_recovery.rs"]
 mod resume_and_recovery;
+#[path = "runtime_tests/streaming_tools.rs"]
+mod streaming_tools;
 #[path = "runtime_tests/tool_discovery.rs"]
 mod tool_discovery;
 #[path = "runtime_tests/usage_and_approval.rs"]

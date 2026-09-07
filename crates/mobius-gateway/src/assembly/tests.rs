@@ -9,9 +9,14 @@ use super::*;
 
 struct PromptCaptureModel {
     instructions: Arc<Mutex<Option<String>>>,
+    tools: Arc<Mutex<Vec<String>>>,
 }
 
 impl Model for PromptCaptureModel {
+    fn tool_discovery(&self) -> mobius::protocol::ToolDiscoveryMode {
+        mobius::protocol::ToolDiscoveryMode::Native
+    }
+
     fn respond<'a>(
         &'a self,
         request: ModelRequest<'a>,
@@ -19,6 +24,12 @@ impl Model for PromptCaptureModel {
     ) -> mobius::BoxFuture<'a, mobius::Result<ModelOutput>> {
         *self.instructions.lock().expect("captured instructions") =
             Some(request.instructions.to_owned());
+        *self.tools.lock().expect("captured tools") = request
+            .tools
+            .iter()
+            .chain(request.deferred_tools.iter())
+            .map(|tool| tool.name.clone())
+            .collect();
         Box::pin(async {
             ModelOutput::from_output(
                 vec![serde_json::json!({
@@ -478,6 +489,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
         .await
         .expect("seed checkpoint");
     let captured_instructions = Arc::new(Mutex::new(None));
+    let captured_tools = Arc::new(Mutex::new(Vec::new()));
     let usage_route = configured_model_providers(&gateway, &store, &credentials)
         .expect("configured model routes")
         .into_keys()
@@ -487,10 +499,62 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
         usage_route,
         Arc::new(PromptCaptureModel {
             instructions: Arc::clone(&captured_instructions),
+            tools: Arc::clone(&captured_tools),
         }),
     ));
+    let gateway = Arc::new(Mutex::new(gateway));
+    let (swarm, _deliveries) = SwarmStore::new(Arc::clone(&checkpoints), Arc::clone(&bots));
+    let swarm: Arc<dyn BotsBackend> = Arc::new(swarm);
+    let default_tools = {
+        let mut built = assemble(
+            Arc::clone(&gateway),
+            &original,
+            &store,
+            Arc::clone(&credentials),
+            Arc::clone(&checkpoints),
+            ScratchpadStore::new(Arc::clone(&checkpoints)),
+            SessionFileStore::new(store.state_dir()),
+            Arc::new(tokio::sync::Mutex::new(())),
+            Arc::clone(&swarm),
+            Some("chat".into()),
+            "test",
+            true,
+            Some(Arc::clone(&reusable_router)),
+        )
+        .await
+        .expect("assemble default recipe");
+        built
+            .agent
+            .sender()
+            .submit(mobius::protocol::Op::Message {
+                message: mobius::protocol::MessageSubmission {
+                    author: mobius::protocol::MessageAuthor::User,
+                    text: "capture default tools".into(),
+                    attachments: Vec::new(),
+                    reply: None,
+                    requested_delivery: None,
+                    target_turn_id: None,
+                },
+            })
+            .expect("submit default tool capture");
+        while let Some(event) = built.agent.next_event().await {
+            if matches!(event.msg, mobius::protocol::EventMsg::TurnComplete(_)) {
+                break;
+            }
+        }
+        let tools = captured_tools.lock().expect("captured tools").clone();
+        let (sender, mut events) = built.agent.into_parts();
+        drop(sender);
+        while events.recv().await.is_some() {}
+        tools
+    };
     let mut composition = original.agent.config.clone();
     composition.middleware.set_enabled("scratchpad", false);
+    composition.middleware.set_setting(
+        "bots",
+        "routine_creation",
+        Some(mobius::protocol::FrontendSettingValue::String("on".into())),
+    );
     composition.system_prompt = "updated instructions".into();
     let updated_bot = bots
         .update_bot(
@@ -504,9 +568,13 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
         .expect("updated Bot");
     let updated = ChatSpec::for_bot(&workspace, &updated_bot, store.state_dir(), None)
         .expect("updated chat spec");
-    let gateway = Arc::new(Mutex::new(gateway));
-    let (swarm, _deliveries) = SwarmStore::new(Arc::clone(&checkpoints), Arc::clone(&bots));
-    let swarm: Arc<dyn BotsBackend> = Arc::new(swarm);
+    assert!(routine_creation_enabled(
+        updated
+            .agent
+            .config
+            .middleware
+            .setting("bots", "routine_creation")
+    ));
 
     let mut built = assemble(
         Arc::clone(&gateway),
@@ -561,6 +629,14 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
     })
     .await
     .expect("prompt capture agent completed");
+    assert!(!default_tools.iter().any(|tool| tool == "create_routine"));
+    {
+        let captured_tools = captured_tools.lock().expect("captured tools");
+        assert!(
+            captured_tools.iter().any(|tool| tool == "create_routine"),
+            "captured tools: {captured_tools:?}"
+        );
+    }
     assert!(
         captured_instructions
             .lock()

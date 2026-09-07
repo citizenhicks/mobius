@@ -537,7 +537,7 @@ struct Runner {
     config: AgentConfig,
     runtime: RuntimeContext,
     system_prompt: Arc<str>,
-    catalog: Catalog,
+    catalog: Arc<Catalog>,
     state: Checkpoint,
     transcript_delta: Vec<Value>,
     pending_session_start_stop: Option<String>,

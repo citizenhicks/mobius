@@ -18,6 +18,7 @@ use super::ModelRequest;
 use super::PROMPT_CACHE_BREAKPOINT_FIELD;
 use super::PromptCacheMode;
 use super::REPLAY_REASONING_FIELD;
+use super::StreamingToolCalls;
 use super::TOOL_ERROR_FIELD;
 use super::TOOLS_SEARCH_NAME;
 use super::ToolDefinition;
@@ -360,6 +361,9 @@ impl Model for Anthropic {
 struct StreamState {
     blocks: BTreeMap<usize, Value>,
     partial_json: BTreeMap<usize, String>,
+    completed_blocks: BTreeSet<usize>,
+    next_completed_block: usize,
+    streamed_tool_calls: StreamingToolCalls,
     web_queries: BTreeMap<String, Option<String>>,
     usage: Usage,
     stop_reason: Option<String>,
@@ -372,7 +376,7 @@ impl StreamState {
             Some("message_start") => self.usage.update(event.pointer("/message/usage"))?,
             Some("content_block_start") => self.start_block(&event, events)?,
             Some("content_block_delta") => self.delta_block(&event, events)?,
-            Some("content_block_stop") => self.stop_block(&event)?,
+            Some("content_block_stop") => self.stop_block(&event, events)?,
             Some("message_delta") => {
                 self.usage.update(event.get("usage"))?;
                 self.stop_reason = event
@@ -439,6 +443,11 @@ impl StreamState {
 
     fn delta_block(&mut self, event: &Value, events: &ModelEventSink) -> Result<()> {
         let index = event_index(event)?;
+        if self.completed_blocks.contains(&index) {
+            return Err(Error::Provider(
+                format!("Anthropic delta followed completed content block index {index}").into(),
+            ));
+        }
         let delta = event
             .get("delta")
             .ok_or_else(|| Error::Provider("Anthropic content delta omitted value".into()))?;
@@ -488,26 +497,63 @@ impl StreamState {
         Ok(())
     }
 
-    fn stop_block(&mut self, event: &Value) -> Result<()> {
+    fn stop_block(&mut self, event: &Value, events: &ModelEventSink) -> Result<()> {
         let index = event_index(event)?;
-        let Some(partial) = self.partial_json.remove(&index) else {
-            return Ok(());
-        };
-        let input: Value = serde_json::from_str(&partial)?;
-        let block = self
-            .blocks
-            .get_mut(&index)
-            .ok_or_else(|| Error::Provider("Anthropic stop referenced unknown block".into()))?;
-        block["input"] = input;
-        if block.get("type").and_then(Value::as_str) == Some("server_tool_use")
-            && block.get("name").and_then(Value::as_str) == Some("web_search")
-        {
-            let id = required_string(block, "id")?.to_string();
-            let query = block
-                .pointer("/input/query")
-                .and_then(Value::as_str)
-                .map(ToString::to_string);
-            self.web_queries.insert(id, query);
+        if self.completed_blocks.contains(&index) {
+            return Err(Error::Provider(
+                format!("Anthropic repeated content block stop index {index}").into(),
+            ));
+        }
+        if let Some(partial) = self.partial_json.remove(&index) {
+            let input: Value = serde_json::from_str(&partial)?;
+            let block = self
+                .blocks
+                .get_mut(&index)
+                .ok_or_else(|| Error::Provider("Anthropic stop referenced unknown block".into()))?;
+            block["input"] = input;
+            if block.get("type").and_then(Value::as_str) == Some("server_tool_use")
+                && block.get("name").and_then(Value::as_str) == Some("web_search")
+            {
+                let id = required_string(block, "id")?.to_string();
+                let query = block
+                    .pointer("/input/query")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string);
+                self.web_queries.insert(id, query);
+            }
+        }
+        self.completed_blocks.insert(index);
+        self.emit_ready_tool_calls(events)
+    }
+
+    fn emit_ready_tool_calls(&mut self, events: &ModelEventSink) -> Result<()> {
+        while self.completed_blocks.contains(&self.next_completed_block) {
+            let index = self.next_completed_block;
+            self.next_completed_block = self
+                .next_completed_block
+                .checked_add(1)
+                .ok_or_else(|| Error::Provider("Anthropic block index overflowed".into()))?;
+            let Some(block) = self.blocks.get(&index) else {
+                return Err(Error::Provider(
+                    "Anthropic completed block was not started".into(),
+                ));
+            };
+            if block.get("type").and_then(Value::as_str) != Some("tool_use") {
+                continue;
+            }
+            let input = block
+                .get("input")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            let item = serde_json::json!({
+                "type": "function_call",
+                "call_id": required_string(block, "id")?,
+                "name": required_string(block, "name")?,
+                "arguments": serde_json::to_string(&input)?
+            });
+            let call = super::decode_tool_call(&item)?;
+            self.streamed_tool_calls.accept(&call)?;
+            events(ModelEvent::ToolCallReady(call))?;
         }
         Ok(())
     }

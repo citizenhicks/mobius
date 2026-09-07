@@ -683,6 +683,8 @@ fn stream_normalizes_deltas_tools_usage_and_errors() {
             "index": 1,
             "delta": {"type": "thinking_delta", "thinking": "Plan."}
         }),
+        serde_json::json!({"type": "content_block_stop", "index": 0}),
+        serde_json::json!({"type": "content_block_stop", "index": 1}),
         serde_json::json!({
             "type": "content_block_start",
             "index": 2,
@@ -716,7 +718,11 @@ fn stream_normalizes_deltas_tools_usage_and_errors() {
     assert_eq!(output.usage().cached_input_tokens, 4);
     assert!(matches!(
         seen.lock().expect("events lock").as_slice(),
-        [ModelEvent::TextDelta(_), ModelEvent::ReasoningDelta(_)]
+        [
+            ModelEvent::TextDelta(_),
+            ModelEvent::ReasoningDelta(_),
+            ModelEvent::ToolCallReady(crate::backend::model::ToolCall { .. })
+        ]
     ));
 
     let error = StreamState::default()
@@ -726,6 +732,49 @@ fn stream_normalizes_deltas_tools_usage_and_errors() {
         )
         .expect_err("stream error");
     assert!(error.to_string().contains("quota"));
+}
+
+#[test]
+fn stream_rejects_mutation_or_duplicate_stop_after_block_completion() {
+    let events: ModelEventSink = Arc::new(|_| Ok(()));
+    let mut stream = StreamState::default();
+    stream
+        .apply(
+            serde_json::json!({
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": "done"}
+            }),
+            &events,
+        )
+        .expect("block start");
+    stream
+        .apply(
+            serde_json::json!({"type": "content_block_stop", "index": 0}),
+            &events,
+        )
+        .expect("block stop");
+
+    assert!(
+        stream
+            .apply(
+                serde_json::json!({
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": "mutated"}
+                }),
+                &events,
+            )
+            .is_err()
+    );
+    assert!(
+        stream
+            .apply(
+                serde_json::json!({"type": "content_block_stop", "index": 0}),
+                &events,
+            )
+            .is_err()
+    );
 }
 
 #[test]

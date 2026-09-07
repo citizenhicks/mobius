@@ -13,7 +13,9 @@ use mobius::backend::model::{Model, ModelEventSink, ModelOutput, ModelRequest, M
 use mobius::backend::sandbox::{ApprovalPolicy, Sandbox, SandboxBackend};
 use mobius::middleware::artifacts::Artifacts;
 use mobius::middleware::attachments::Attachments;
-use mobius::middleware::bots::{Bots, BotsBackend};
+use mobius::middleware::bots::{
+    Bots, BotsBackend, collaboration_enabled, routine_creation_enabled,
+};
 use mobius::middleware::compaction::{Compaction, CompactionMode};
 use mobius::middleware::context_offloading::ContextOffloading;
 use mobius::middleware::extensions::{Extensions, MANIFEST as EXTENSIONS_MANIFEST};
@@ -666,16 +668,19 @@ fn build_middleware(
                 crate::middleware_manifest::usize_setting(settings, "sessions", "page_size")?,
             )?),
             BuiltinMiddleware::Bots => {
-                let bots = Bots::new(Arc::clone(&swarm), bot_id.to_owned()).with_collaboration(
-                    mobius::middleware::bots::collaboration_enabled(
-                        settings.setting("bots", "collaboration"),
-                    ),
-                );
-                Arc::new(if catalog_visible {
-                    bots.with_routine_creation(workspace)
-                } else {
-                    bots
-                })
+                let collaboration =
+                    collaboration_enabled(settings.setting("bots", "collaboration"));
+                let bots = Bots::new(Arc::clone(&swarm), bot_id.to_owned())
+                    .with_collaboration(collaboration);
+                Arc::new(
+                    if catalog_visible
+                        && routine_creation_enabled(settings.setting("bots", "routine_creation"))
+                    {
+                        bots.with_routine_creation(workspace)
+                    } else {
+                        bots
+                    },
+                )
             }
         };
         entries.push(middleware);

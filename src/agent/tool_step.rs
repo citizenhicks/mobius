@@ -12,8 +12,10 @@ use crate::Result;
 use crate::backend::model::ToolCall;
 use crate::backend::model::tool_output;
 use crate::backend::sandbox::SandboxPermissions;
-use crate::middleware::tools::{ToolResult, execute_batch};
-use crate::middleware::{PostToolUseContext, checked_image_input_bytes, model_input_image_stats};
+use crate::middleware::tools::{PreparedToolSet, ToolResult, execute_batch};
+use crate::middleware::{
+    PostToolUseContext, PreToolUseContext, checked_image_input_bytes, model_input_image_stats,
+};
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
 use crate::protocol::ToolCallBeginEvent;
@@ -37,6 +39,63 @@ impl From<Vec<ToolResult>> for ToolCompletion {
 }
 
 impl Runner {
+    pub(super) async fn prepare_tool_call(
+        &self,
+        turn_id: &str,
+        call: &mut ToolCall,
+        tools: &PreparedToolSet,
+        events: &mut Vec<EventMsg>,
+        input: &mut Vec<serde_json::Value>,
+    ) -> Result<Option<ToolResult>> {
+        if let Err(error) = self.catalog.bind_prepared(call.clone(), tools) {
+            return Ok(Some(ToolResult::error(call, error.to_string())));
+        }
+        let mut context = PreToolUseContext {
+            turn: self.runtime.turn_identity(turn_id),
+            events,
+            tools: &self.catalog,
+            call,
+            input: Vec::new(),
+            denial: None,
+        };
+        self.config.middleware.pre_tool_use(&mut context).await?;
+        let denial = context.denial().map(str::to_owned);
+        input.append(&mut context.input);
+        if let Some(reason) = denial {
+            return Ok(Some(ToolResult::error(
+                call,
+                format!("tool call denied: {reason}"),
+            )));
+        }
+        Ok(None)
+    }
+
+    pub(super) async fn post_tool_results(
+        &self,
+        turn_id: &str,
+        calls: &[ToolCall],
+        completion: &mut ToolCompletion,
+    ) -> Result<()> {
+        for result in &mut completion.results {
+            let call = calls
+                .iter()
+                .find(|call| call.call_id == result.call_id)
+                .ok_or_else(|| Error::Tool("tool result has no matching call".into()))?;
+            if !result.handler_executed {
+                continue;
+            }
+            let mut context = PostToolUseContext {
+                turn: self.runtime.turn_identity(turn_id),
+                call,
+                events: &mut completion.events,
+                tools: &self.catalog,
+                result,
+            };
+            self.config.middleware.post_tool_use(&mut context).await?;
+        }
+        Ok(())
+    }
+
     pub(super) async fn execute_tools(
         &mut self,
         inbox: &mut SubmissionInbox,
@@ -63,7 +122,7 @@ impl Runner {
             )
             .await?;
         }
-        let catalog = self.catalog.clone();
+        let catalog = Arc::clone(&self.catalog);
         let cancel_on_input = catalog.cancels_on_input(&callable);
         let drained = self.drain_submissions(inbox, turn_id).await?;
         if let Some(submission_id) = drained.interrupted {
@@ -175,29 +234,11 @@ impl Runner {
                 input_changed,
             });
         }
-        let mut hook_events = Vec::new();
-        for result in &mut results {
-            let call = calls
-                .iter()
-                .find(|call| call.call_id == result.call_id)
-                .ok_or_else(|| Error::Tool("tool result has no matching call".into()))?;
-            if !result.handler_executed {
-                continue;
-            }
-            let mut context = PostToolUseContext {
-                turn: self.runtime.turn_identity(turn_id),
-                call,
-                events: &mut hook_events,
-                tools: &self.catalog,
-                result,
-            };
-            self.config.middleware.post_tool_use(&mut context).await?;
-        }
+        let mut completion = results.into();
+        self.post_tool_results(turn_id, calls, &mut completion)
+            .await?;
         Ok(Wait::Ready {
-            value: ToolCompletion {
-                results,
-                events: hook_events,
-            },
+            value: completion,
             input_changed,
         })
     }
@@ -216,7 +257,22 @@ impl Runner {
         if results.is_empty() && hook_events.is_empty() {
             return Ok(());
         }
-        enforce_tool_image_budget(input_image_bytes, &mut results);
+        // Streamed results can be persisted before the rest of this same batch.
+        let tail = self
+            .state
+            .context
+            .iter()
+            .rposition(|item| {
+                item.get("type").and_then(serde_json::Value::as_str) == Some("function_call")
+                    && self.state.pending_tools.iter().any(|call| {
+                        item.get("call_id").and_then(serde_json::Value::as_str)
+                            == Some(&call.call_id)
+                    })
+            })
+            .map_or(&[][..], |index| &self.state.context[index + 1..]);
+        let previous_images = model_input_image_stats(tail)?;
+        let used = checked_image_input_bytes(input_image_bytes, previous_images.bytes)?;
+        enforce_tool_image_budget(used, previous_images.count, &mut results);
         let mut events = hook_events
             .into_iter()
             .map(|msg| Event {
@@ -324,6 +380,9 @@ impl Runner {
         reason: &str,
     ) -> Result<Vec<Event>> {
         let calls = std::mem::take(&mut self.state.pending_tools);
+        if self.state.active_model_step.is_some() {
+            self.extend_context(tool_call_inputs(&calls)?);
+        }
         let results = interrupted_results(
             &calls,
             &format!("execution interrupted; result unknown: {reason}"),
@@ -335,6 +394,20 @@ impl Runner {
         self.append_tool_results(results)?;
         Ok(events)
     }
+}
+
+pub(super) fn tool_call_inputs(calls: &[ToolCall]) -> Result<Vec<serde_json::Value>> {
+    calls
+        .iter()
+        .map(|call| {
+            Ok(serde_json::json!({
+                "type": "function_call",
+                "call_id": call.call_id,
+                "name": call.name,
+                "arguments": serde_json::to_string(&call.arguments)?,
+            }))
+        })
+        .collect()
 }
 
 pub(in crate::agent) fn record_model_input_image_bytes(
@@ -388,8 +461,7 @@ fn interrupted_results(calls: &[ToolCall], message: &str) -> Vec<ToolResult> {
         .collect()
 }
 
-fn enforce_tool_image_budget(mut used: usize, results: &mut [ToolResult]) {
-    let mut used_images = 0_usize;
+fn enforce_tool_image_budget(mut used: usize, mut used_images: usize, results: &mut [ToolResult]) {
     for result in results {
         let additional = model_input_image_stats(&result.additional_input).and_then(|additional| {
             let images = used_images
@@ -462,7 +534,7 @@ mod tests {
             events: Vec::new(),
         }];
 
-        enforce_tool_image_budget(crate::middleware::MAX_IMAGE_INPUT_BYTES, &mut results);
+        enforce_tool_image_budget(crate::middleware::MAX_IMAGE_INPUT_BYTES, 0, &mut results);
 
         assert!(results[0].is_error);
         assert!(results[0].additional_input.is_empty());
@@ -489,7 +561,7 @@ mod tests {
         };
         let mut results = vec![image("call-1"), image("call-2")];
 
-        enforce_tool_image_budget(0, &mut results);
+        enforce_tool_image_budget(0, 0, &mut results);
 
         assert!(!results[0].is_error);
         assert!(results[1].is_error);

@@ -232,6 +232,11 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         });
     }
     if uncertain_tools {
+        if interrupted_model_step {
+            let calls = super::tool_step::tool_call_inputs(&state.pending_tools)?;
+            state.context.extend(calls.iter().cloned());
+            recovery_delta.extend(calls);
+        }
         let recovered_tool_calls = u64::try_from(state.pending_tools.len())
             .map_err(|_| Error::Checkpoint("recovered tool-call count is unsupported".into()))?;
         let recovered_turn = state
@@ -414,7 +419,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         config,
         runtime,
         system_prompt,
-        catalog,
+        catalog: Arc::new(catalog),
         state,
         transcript_delta: Vec::new(),
         pending_session_start_stop,

@@ -230,52 +230,60 @@ async fn interrupted_approval_is_one_durable_terminal_transition() {
 }
 
 #[tokio::test]
-async fn restarted_approval_counts_request_only_images_before_tool_results() {
+async fn restarted_approval_shares_image_budget_across_request_and_streamed_images() {
     let workspace = tempfile::tempdir().expect("workspace");
     let checkpoints = Arc::new(
         SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
             .expect("checkpoint store"),
     );
+    let pending_checkpoint = |session_id: &str, context: Vec<Value>, call: ToolCall| {
+        let mut checkpoint = Checkpoint::empty(session_id);
+        checkpoint.session_context = test_session_context();
+        checkpoint.model_route = Some("test".into());
+        checkpoint.active_execution = Some(crate::backend::checkpoint::ActiveExecution {
+            submission_id: "submission-1".into(),
+            turn_id: "turn-1".into(),
+            started_at_ms: 1,
+            model_calls: 1,
+            tool_calls: 0,
+            failed_tool_calls: 0,
+            usage: TokenUsage::default(),
+            next_model_step: 1,
+            stop_hook_active: false,
+            phase: crate::backend::checkpoint::ExecutionPhase::Model,
+        });
+        checkpoint.context = context;
+        checkpoint.pending_tools.push(call.clone());
+        checkpoint.pending_approval = Some(crate::backend::checkpoint::PendingApproval {
+            submission_id: "submission-1".into(),
+            turn_id: "turn-1".into(),
+            request_id: "approval-1".into(),
+            approval_call_ids: vec![call.call_id.clone()],
+            authorized_call_ids: vec![call.call_id.clone()],
+            calls: vec![call],
+            reason: "test approval".into(),
+            sandbox_mode: crate::backend::sandbox::SandboxMode::WorkspaceWrite,
+            network_access: crate::backend::sandbox::NetworkAccess::Denied,
+            decision_received: false,
+        });
+        checkpoint
+    };
     let call = ToolCall {
         call_id: "image-call".into(),
         name: "approval_required_image".into(),
         arguments: serde_json::json!({}),
     };
-    let mut checkpoint = Checkpoint::empty("image-approval-restart");
-    checkpoint.session_context = test_session_context();
-    checkpoint.model_route = Some("test".into());
-    checkpoint.active_execution = Some(crate::backend::checkpoint::ActiveExecution {
-        submission_id: "submission-1".into(),
-        turn_id: "turn-1".into(),
-        started_at_ms: 1,
-        model_calls: 1,
-        tool_calls: 0,
-        failed_tool_calls: 0,
-        usage: TokenUsage::default(),
-        next_model_step: 1,
-        stop_hook_active: false,
-        phase: crate::backend::checkpoint::ExecutionPhase::Model,
-    });
-    checkpoint.context.push(serde_json::json!({
+    let checkpoint = pending_checkpoint(
+        "image-approval-restart",
+        vec![serde_json::json!({
         "type": "function_call",
         "call_id": call.call_id.clone(),
         "name": call.name.clone(),
         "arguments": call.arguments.to_string(),
         "_mobius_image_bytes": crate::middleware::MAX_IMAGE_INPUT_BYTES
-    }));
-    checkpoint.pending_tools.push(call.clone());
-    checkpoint.pending_approval = Some(crate::backend::checkpoint::PendingApproval {
-        submission_id: "submission-1".into(),
-        turn_id: "turn-1".into(),
-        request_id: "approval-1".into(),
-        approval_call_ids: vec![call.call_id.clone()],
-        authorized_call_ids: vec![call.call_id.clone()],
-        calls: vec![call],
-        reason: "test approval".into(),
-        sandbox_mode: crate::backend::sandbox::SandboxMode::WorkspaceWrite,
-        network_access: crate::backend::sandbox::NetworkAccess::Denied,
-        decision_received: false,
-    });
+        })],
+        call.clone(),
+    );
     checkpoints
         .save(&checkpoint, &checkpoint.context, None)
         .await
@@ -362,6 +370,112 @@ async fn restarted_approval_counts_request_only_images_before_tool_results() {
         crate::middleware::model_input_image_bytes(&saved.context).expect("durable image bytes"),
         0
     );
+
+    let second_call = ToolCall {
+        call_id: "pending-image-call".into(),
+        name: "approval_required_image".into(),
+        arguments: serde_json::json!({}),
+    };
+    let streamed_call = ToolCall {
+        call_id: "streamed-image-call".into(),
+        name: "approval_required_image".into(),
+        arguments: serde_json::json!({}),
+    };
+    let second_checkpoint = pending_checkpoint(
+        "streamed-image-approval-restart",
+        vec![
+            serde_json::json!({
+                "type": "function_call",
+                "call_id": streamed_call.call_id,
+                "name": streamed_call.name,
+                "arguments": streamed_call.arguments.to_string(),
+            }),
+            serde_json::json!({
+                "type": "function_call",
+                "call_id": second_call.call_id.clone(),
+                "name": second_call.name.clone(),
+                "arguments": second_call.arguments.to_string(),
+                "_mobius_image_bytes": 0,
+            }),
+            crate::backend::model::tool_output("streamed-image-call", "image added", false),
+            serde_json::json!({
+                "role": "user",
+                "content": [{
+                    "type": "input_image",
+                    "media_type": "image/png",
+                    "data": "AA=="
+                }]
+            }),
+        ],
+        second_call,
+    );
+    checkpoints
+        .save(&second_checkpoint, &second_checkpoint.context, None)
+        .await
+        .expect("save streamed image approval");
+    let second_model = Arc::new(ScriptedModel {
+        outputs: Mutex::new(VecDeque::from([scripted_message("done")])),
+        tool_counts: Mutex::new(Vec::new()),
+        inputs: Mutex::new(Vec::new()),
+    });
+    let second_config = AgentConfig::new(
+        Arc::new(ModelRouter::new("test", second_model.clone())),
+        Arc::new(Sandbox::new(
+            Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
+            ApprovalPolicy::Ask,
+        )),
+        checkpoints.clone(),
+        test_middleware(vec![Arc::new(Tools::new(vec![Arc::new(
+            ApprovalRequiredImageTool,
+        )]))]),
+        "test prompt",
+    )
+    .session_context(test_session_context())
+    .session_id("streamed-image-approval-restart")
+    .initial_replay_batches(0);
+    let mut second_agent = create_agent(second_config)
+        .await
+        .expect("restart streamed image approval");
+    assert!(matches!(
+        second_agent.next_event().await.expect("session event").msg,
+        EventMsg::SessionConfigured(_)
+    ));
+    let request = loop {
+        if let EventMsg::ExecApprovalRequest(request) = second_agent
+            .next_event()
+            .await
+            .expect("approval request")
+            .msg
+        {
+            break request;
+        }
+    };
+    second_agent
+        .sender()
+        .submit(Op::ExecApproval {
+            id: request.id,
+            decision: crate::protocol::ReviewDecision::Approved,
+        })
+        .expect("approve second image tool");
+    let result = loop {
+        match second_agent.next_event().await.expect("turn event").msg {
+            EventMsg::ToolCallEnd(result) if result.call_id == "pending-image-call" => {
+                break result;
+            }
+            EventMsg::Error(error) => panic!("{}", error.message),
+            _ => {}
+        }
+    };
+    assert!(result.is_error);
+    assert!(result.output.contains("only one image"));
+    while !matches!(
+        second_agent.next_event().await.expect("completed turn").msg,
+        EventMsg::TurnComplete(_)
+    ) {}
+    let inputs = second_model.inputs.lock().expect("second model inputs");
+    let stats = crate::middleware::model_input_image_stats(&inputs[0])
+        .expect("second model image input stats");
+    assert_eq!(stats.count, 1);
 }
 
 #[tokio::test]
@@ -1071,4 +1185,81 @@ async fn restart_closes_an_active_model_step_with_the_recovery_checkpoint() {
     ));
     assert!(saved.active_execution.is_none());
     assert!(saved.active_model_step.is_none());
+}
+
+#[tokio::test]
+async fn restart_recovers_streamed_calls_without_reexecuting_them() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let checkpoints = Arc::new(
+        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
+            .expect("checkpoint store"),
+    );
+    let mut checkpoint = Checkpoint::empty("recover-streamed-call");
+    checkpoint.session_context = test_session_context();
+    checkpoint.model_route = Some("test".into());
+    checkpoint.active_execution = Some(crate::backend::checkpoint::ActiveExecution {
+        submission_id: "submission-1".into(),
+        turn_id: "turn-1".into(),
+        started_at_ms: 10,
+        model_calls: 1,
+        tool_calls: 0,
+        failed_tool_calls: 0,
+        usage: TokenUsage::default(),
+        next_model_step: 0,
+        stop_hook_active: false,
+        phase: crate::backend::checkpoint::ExecutionPhase::Model,
+    });
+    checkpoint.active_model_step = Some(crate::backend::checkpoint::ActiveModelStep {
+        model_step_id: "step-1".into(),
+        step_index: 0,
+        started_at_ms: 20,
+    });
+    checkpoint.pending_tools.push(ToolCall {
+        call_id: "streamed-call".into(),
+        name: "write_file".into(),
+        arguments: serde_json::json!({"path": "never-replay.txt", "content": "side effect"}),
+    });
+    checkpoints
+        .save(&checkpoint, &[], None)
+        .await
+        .expect("save interrupted stream");
+
+    let mut agent = create_agent(
+        config(
+            workspace.path(),
+            checkpoints.clone(),
+            &checkpoint.session_id,
+        )
+        .initial_replay_batches(0),
+    )
+    .await
+    .expect("recover agent");
+    while !matches!(
+        agent.next_event().await.expect("recovery event").msg,
+        EventMsg::TurnAborted(_)
+    ) {}
+    let saved = checkpoints
+        .load(&checkpoint.session_id)
+        .await
+        .expect("load checkpoint")
+        .expect("saved checkpoint");
+    assert!(saved.active_execution.is_none());
+    assert!(saved.pending_tools.is_empty());
+    assert!(!workspace.path().join("never-replay.txt").exists());
+    assert_eq!(
+        saved.context,
+        vec![
+            serde_json::json!({
+                "type": "function_call",
+                "call_id": "streamed-call",
+                "name": "write_file",
+                "arguments": checkpoint.pending_tools[0].arguments.to_string(),
+            }),
+            crate::backend::model::tool_output(
+                "streamed-call",
+                "execution interrupted; result unknown after restart",
+                true
+            ),
+        ]
+    );
 }

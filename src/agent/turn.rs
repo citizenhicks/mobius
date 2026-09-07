@@ -1,4 +1,5 @@
 mod model;
+mod streaming;
 
 use uuid::Uuid;
 
@@ -320,8 +321,8 @@ impl Runner {
         let previous_state = self.state.clone();
         let previous_transcript = self.transcript_delta.clone();
         let result = async {
-            self.state.active_model_step = None;
             events.extend(self.finish_pending_tools(submission_id, turn_id, reason)?);
+            self.state.active_model_step = None;
             self.state.pending_approval = None;
             self.finish_turn(
                 submission_id,

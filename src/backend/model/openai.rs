@@ -16,6 +16,7 @@ use super::ModelPricing;
 use super::ModelRequest;
 use super::PROMPT_CACHE_BREAKPOINT_FIELD;
 use super::PromptCacheMode;
+use super::StreamingToolCalls;
 use super::TOOLS_SEARCH_NAME;
 use super::ToolDefinition;
 use super::ToolLoad;
@@ -275,6 +276,8 @@ impl OpenAi {
         let mut reasoning_part = None;
         let mut web_searches = BTreeSet::new();
         let mut output = BTreeMap::new();
+        let mut next_output_index = 0;
+        let mut streamed_tool_calls = StreamingToolCalls::default();
         while let Some(chunk) = response.chunk().await? {
             sse.push(&chunk, "Responses")?;
             while let Some(frame) = sse.next_frame()? {
@@ -286,6 +289,12 @@ impl OpenAi {
                 }
                 let event: Value = serde_json::from_str(&data)?;
                 collect_stream_output(&event, &mut output)?;
+                emit_ready_tool_calls(
+                    &output,
+                    &mut next_output_index,
+                    &mut streamed_tool_calls,
+                    &events,
+                )?;
                 if emit_web_event(&event, &mut web_searches, &events)? {
                     continue;
                 }
@@ -706,6 +715,25 @@ pub(super) fn collect_stream_output(
         return Err(Error::Provider(
             format!("response repeated output item index {index}").into(),
         ));
+    }
+    Ok(())
+}
+
+pub(super) fn emit_ready_tool_calls(
+    output: &BTreeMap<u64, Value>,
+    next_output_index: &mut u64,
+    tool_calls: &mut StreamingToolCalls,
+    events: &ModelEventSink,
+) -> Result<()> {
+    while let Some(item) = output.get(next_output_index) {
+        if item.get("type").and_then(Value::as_str) == Some("function_call") {
+            let call = super::decode_tool_call(item)?;
+            tool_calls.accept(&call)?;
+            events(ModelEvent::ToolCallReady(call))?;
+        }
+        *next_output_index = next_output_index
+            .checked_add(1)
+            .ok_or_else(|| Error::Provider("Responses output index overflowed".into()))?;
     }
     Ok(())
 }

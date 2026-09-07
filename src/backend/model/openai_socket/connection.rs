@@ -23,8 +23,10 @@ use tokio_tungstenite::tungstenite::http::header::AUTHORIZATION;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
 use super::super::ModelEventSink;
+use super::super::StreamingToolCalls;
 use super::super::openai::attach_stream_output;
 use super::super::openai::collect_stream_output;
+use super::super::openai::emit_ready_tool_calls;
 use super::super::openai::emit_reasoning_event;
 use super::super::openai::emit_text_event;
 use super::super::openai::emit_web_event;
@@ -364,6 +366,8 @@ pub(super) async fn read_exchange(
     let mut commentary = BTreeSet::new();
     let mut reasoning_part = None;
     let mut output = BTreeMap::new();
+    let mut next_output_index = 0;
+    let mut streamed_tool_calls = StreamingToolCalls::default();
     let mut stream_bytes = 0;
     let output_delivered = Arc::new(AtomicBool::new(false));
     let tracked_delivery = Arc::clone(&output_delivered);
@@ -394,6 +398,12 @@ pub(super) async fn read_exchange(
             Message::Close(_) => return Ok(Exchange::Reconnect),
         };
         collect_stream_output(&event, &mut output)?;
+        emit_ready_tool_calls(
+            &output,
+            &mut next_output_index,
+            &mut streamed_tool_calls,
+            &tracked_events,
+        )?;
         if emit_web_event(&event, &mut web_searches, &tracked_events)? {
             continue;
         }
