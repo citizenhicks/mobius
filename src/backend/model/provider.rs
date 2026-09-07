@@ -16,12 +16,13 @@ use crate::protocol::FrontendSymbol;
 use crate::protocol::ToolDiscoveryMode;
 
 mod text {
-    include!(concat!(
-        env!("OUT_DIR"),
-        "/src_backend_model_provider_text.rs"
-    ));
+    pub const SEARCH_CACHED_DESCRIPTION: &str = "Allow cached provider-hosted search";
+    pub const SEARCH_CACHED_LABEL: &str = "Cached";
+    pub const SEARCH_LIVE_DESCRIPTION: &str = "Allow live provider-hosted search";
+    pub const SEARCH_LIVE_LABEL: &str = "Live";
+    pub const SEARCH_OFF_DESCRIPTION: &str = "Do not use provider-hosted web search";
+    pub const SEARCH_OFF_LABEL: &str = "Off";
 }
-
 pub use super::transport::streaming_client;
 pub use reqwest::Client as HttpClient;
 
@@ -672,7 +673,10 @@ mod tests {
             assert!(!provider.symbol().as_str().trim().is_empty());
             assert!(!provider.description().trim().is_empty());
             assert_eq!(provider.web_search().first(), Some(&HostedWebSearch::Off));
+            let mut search_modes = Vec::new();
             for search in provider.web_search() {
+                assert!(!search_modes.contains(&search.id()));
+                search_modes.push(search.id());
                 assert!(!search.label().trim().is_empty());
                 assert!(!search.description().trim().is_empty());
                 assert_eq!(search.id().parse::<HostedWebSearch>().ok(), Some(*search));
@@ -690,19 +694,11 @@ mod tests {
             );
 
             assert_eq!(
-                provider.default_model().is_some(),
-                !provider.models().is_empty(),
-                "provider `{}` must advertise exactly one default model when it has presets",
+                provider.default_model(),
+                provider.models().first().map(|model| model.id),
+                "provider `{}` must use its first preset as the default model",
                 provider.id()
             );
-            assert!(
-                provider
-                    .default_model()
-                    .is_none_or(|default| provider.model(default).is_some()),
-                "provider `{}` has an unknown default model",
-                provider.id()
-            );
-
             let mut model_ids = BTreeSet::new();
             for model in provider.models() {
                 assert!(model_ids.insert(model.id), "duplicate model `{}`", model.id);

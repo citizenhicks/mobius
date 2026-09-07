@@ -1,6 +1,11 @@
 //! Local sandbox tests.
 
 use super::*;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use tokio::process::Command;
+
+#[cfg(target_os = "macos")]
+use crate::backend::sandbox::MACOS_COMMAND_WRAPPER;
 
 #[cfg(target_os = "linux")]
 #[test]
@@ -14,13 +19,13 @@ fn ssh_agent_mount_accepts_only_a_real_socket() {
     let socket = directory.path().join("agent.sock");
     let _listener = UnixListener::bind(&socket).expect("agent socket");
     assert_eq!(
-        validated_ssh_agent_socket(Some(socket.as_os_str()), &[]),
+        platform::validated_ssh_agent_socket(Some(socket.as_os_str()), &[]),
         std::fs::canonicalize(&socket).ok()
     );
 
     let regular = directory.path().join("not-a-socket");
     std::fs::write(&regular, b"not an agent").expect("regular file");
-    assert!(validated_ssh_agent_socket(Some(regular.as_os_str()), &[]).is_none());
+    assert!(platform::validated_ssh_agent_socket(Some(regular.as_os_str()), &[]).is_none());
 }
 
 #[tokio::test]
@@ -468,7 +473,7 @@ async fn binary_range_rejects_symlinked_files_and_parents() {
 async fn isolated_home_is_private_and_writable() {
     let workspace = tempfile::tempdir().expect("workspace");
     let sandbox = local_sandbox(workspace.path()).isolated_home();
-    let expected = command_home(sandbox.temp.path())
+    let expected = platform::command_home(sandbox.temp.path())
         .to_string_lossy()
         .into_owned();
 
@@ -710,7 +715,7 @@ async fn full_access_timeout_reaps_process_group_descendants() {
 fn host_commands_do_not_embed_the_seatbelt_cleanup_wrapper() {
     let workspace = tempfile::tempdir().expect("workspace");
     let sandbox = local_sandbox(workspace.path());
-    let command = sandbox.host_command(&Invocation::Shell("true"));
+    let command = platform::host_command(&Invocation::Shell("true"), sandbox.isolated_home);
     let command = command.as_std();
 
     assert_eq!(command.get_program(), "/bin/bash");
@@ -729,8 +734,7 @@ fn protected_full_access_masks_paths_and_scopes_cleanup() {
     let sandbox = local_sandbox(workspace.path())
         .deny_read(protected.path())
         .expect("protected path");
-    let command = sandbox
-        .protected_full_access_command(&Invocation::Shell("true"))
+    let command = platform::protected_full_access_command(&sandbox, &Invocation::Shell("true"))
         .expect("protected full access command");
     let arguments = command
         .as_std()
@@ -774,20 +778,20 @@ async fn read_only_argv_cannot_modify_the_workspace() {
 async fn network_policy_changes_command_isolation() {
     let workspace = tempfile::tempdir().expect("workspace");
     let sandbox = local_sandbox(workspace.path());
-    let denied = sandbox
-        .sandboxed_command(
-            &Invocation::Shell("true"),
-            NetworkAccess::Denied,
-            WorkspaceAccess::Writable,
-        )
-        .expect("network-disabled command");
-    let allowed = sandbox
-        .sandboxed_command(
-            &Invocation::Shell("true"),
-            NetworkAccess::Allowed,
-            WorkspaceAccess::Writable,
-        )
-        .expect("network-enabled command");
+    let denied = platform::sandboxed_command(
+        &sandbox,
+        &Invocation::Shell("true"),
+        NetworkAccess::Denied,
+        WorkspaceAccess::Writable,
+    )
+    .expect("network-disabled command");
+    let allowed = platform::sandboxed_command(
+        &sandbox,
+        &Invocation::Shell("true"),
+        NetworkAccess::Allowed,
+        WorkspaceAccess::Writable,
+    )
+    .expect("network-enabled command");
     #[cfg(target_os = "linux")]
     {
         let isolation = |command: &Command| {
@@ -830,23 +834,22 @@ fn empty_proc_keeps_pid_isolation_in_both_bubblewrap_commands() {
         .deny_read(protected.path())
         .expect("protected path")
         .empty_proc();
-    let default_command = default
-        .sandboxed_command(
+    let default_command = platform::sandboxed_command(
+        &default,
+        &Invocation::Shell("true"),
+        NetworkAccess::Denied,
+        WorkspaceAccess::Writable,
+    )
+    .expect("default command");
+    let empty_commands = [
+        platform::sandboxed_command(
+            &empty,
             &Invocation::Shell("true"),
             NetworkAccess::Denied,
             WorkspaceAccess::Writable,
         )
-        .expect("default command");
-    let empty_commands = [
-        empty
-            .sandboxed_command(
-                &Invocation::Shell("true"),
-                NetworkAccess::Denied,
-                WorkspaceAccess::Writable,
-            )
-            .expect("sandboxed command"),
-        empty
-            .protected_full_access_command(&Invocation::Shell("true"))
+        .expect("sandboxed command"),
+        platform::protected_full_access_command(&empty, &Invocation::Shell("true"))
             .expect("protected full-access command"),
     ];
     let mounts_proc = |command: &Command, option: &str| {

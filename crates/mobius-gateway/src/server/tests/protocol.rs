@@ -7,6 +7,53 @@ fn tls_loader_rejects_empty_pem_files() {
     let error = load_certificates(file.path()).expect_err("empty PEM must fail");
 
     assert!(error.to_string().contains("certificate file is empty"));
+    let error = load_private_key(file.path()).expect_err("empty key must fail");
+    assert!(error.to_string().contains("private-key file is empty"));
+}
+
+#[test]
+fn tls_loaders_select_certificates_and_the_first_private_key() {
+    let file = tempfile::NamedTempFile::new().expect("temporary PEM");
+    for label in ["PRIVATE KEY", "RSA PRIVATE KEY", "EC PRIVATE KEY"] {
+        fs::write(
+            file.path(),
+            format!(
+                "-----BEGIN CERTIFICATE-----\nAQID\n-----END CERTIFICATE-----\n\
+                 -----BEGIN {label}-----\nBAUG\n-----END {label}-----\n\
+                 -----BEGIN CERTIFICATE-----\nBwgJ\n-----END CERTIFICATE-----\n\
+                 -----BEGIN PRIVATE KEY-----\nCgsM\n-----END PRIVATE KEY-----\n"
+            ),
+        )
+        .expect("write PEM");
+        let certificates = load_certificates(file.path()).expect("certificate chain");
+        assert_eq!(certificates.len(), 2);
+        assert_eq!(certificates[0].as_ref(), [1, 2, 3]);
+        assert_eq!(certificates[1].as_ref(), [7, 8, 9]);
+        assert_eq!(
+            load_private_key(file.path())
+                .expect("first key")
+                .secret_der(),
+            [4, 5, 6]
+        );
+    }
+}
+
+#[test]
+fn tls_loaders_reject_malformed_pem() {
+    let file = tempfile::NamedTempFile::new().expect("temporary PEM");
+    fs::write(
+        file.path(),
+        "-----BEGIN CERTIFICATE-----\n!\n-----END CERTIFICATE-----\n",
+    )
+    .expect("write malformed PEM");
+    for error in [
+        load_certificates(file.path()).expect_err("invalid certificate"),
+        load_private_key(file.path()).expect_err("invalid section before key"),
+    ] {
+        assert!(
+            matches!(error, Error::Io(error) if error.kind() == std::io::ErrorKind::InvalidData)
+        );
+    }
 }
 
 #[tokio::test]

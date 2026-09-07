@@ -486,11 +486,7 @@ pub(super) fn truncate_input(mut value: String) -> String {
 }
 
 pub(super) fn truncate_to_bytes(value: &str, limit: usize) -> &str {
-    let mut end = value.len().min(limit);
-    while !value.is_char_boundary(end) {
-        end -= 1;
-    }
-    &value[..end]
+    &value[..value.floor_char_boundary(limit)]
 }
 
 pub(super) fn previous_boundary(value: &str, cursor: usize) -> usize {

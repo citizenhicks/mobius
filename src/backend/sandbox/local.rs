@@ -12,7 +12,6 @@ use cap_std::ambient_authority;
 use cap_std::fs::Dir;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
-use tokio::process::Command;
 
 use super::NetworkAccess;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -23,14 +22,13 @@ use super::{
     CommandAuthorization, CommandMode, CommandOutput, CommandOutputSink, CommandStream,
     MAX_BINARY_FILE_BYTES, MAX_FILE_BYTES,
 };
-#[cfg(target_os = "macos")]
-use super::{MACOS_COMMAND_WRAPPER, MACOS_SEATBELT_BASE_POLICY, MACOS_SEATBELT_NETWORK_POLICY};
 use crate::BoxFuture;
 use crate::Error;
 use crate::Result;
 
 #[path = "local_files.rs"]
 mod files;
+mod platform;
 
 use self::files::atomic_write;
 use self::files::read_binary_file;
@@ -53,13 +51,6 @@ const ISOLATED_ENVIRONMENT: [&str; 8] = [
 ];
 #[cfg(target_os = "linux")]
 const ISOLATED_HOME: &str = "/tmp/mobius-home";
-#[cfg(target_os = "macos")]
-const SEATBELT_POLICY_SUFFIX: &str = r#"
-(allow file-read*)
-(allow file-write*
-  (subpath (param "TEMP_ROOT"))
-  (subpath (param "WRITABLE_ROOT")))
-"#;
 
 /// Provides capability-safe file tools and policy-selected command execution.
 pub struct LocalSandbox {
@@ -92,26 +83,6 @@ enum Invocation<'a> {
         executable: &'a Path,
         arguments: &'a [&'a str],
     },
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn append_invocation(command: &mut Command, invocation: &Invocation<'_>, isolated_home: bool) {
-    match invocation {
-        Invocation::Shell(script) => {
-            command.arg("/bin/bash");
-            if isolated_home {
-                command.args(["--noprofile", "--norc", "-c", script]);
-            } else {
-                command.args(["-lc", script]);
-            }
-        }
-        Invocation::Argv {
-            executable,
-            arguments,
-        } => {
-            command.arg(executable).args(arguments.iter().copied());
-        }
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -472,301 +443,6 @@ impl LocalSandbox {
             .ok_or_else(|| Error::Sandbox(format!("{name} is unavailable outside protected paths")))
     }
 
-    #[cfg(target_os = "linux")]
-    fn sandboxed_command(
-        &self,
-        invocation: &Invocation<'_>,
-        network_access: NetworkAccess,
-        workspace_access: WorkspaceAccess,
-    ) -> Result<Command> {
-        let bwrap = self
-            .find_executable("bwrap")
-            .map_err(|_| Error::Sandbox("bubblewrap (`bwrap`) is required on Linux".into()))?;
-        let mut command = Command::new(bwrap);
-        command.args([
-            "--new-session",
-            "--die-with-parent",
-            "--ro-bind",
-            "/",
-            "/",
-            "--dev",
-            "/dev",
-        ]);
-        command.args(["--tmpfs", "/tmp"]);
-        if let Some(socket) = self.ssh_agent_socket()
-            && let Ok(relative) = socket.strip_prefix("/tmp")
-        {
-            let mut directory = PathBuf::from("/tmp");
-            if let Some(parent) = relative.parent() {
-                for component in parent.components() {
-                    let Component::Normal(component) = component else {
-                        continue;
-                    };
-                    directory.push(component);
-                    command.arg("--dir").arg(&directory);
-                }
-            }
-            command.arg("--ro-bind").arg(&socket).arg(&socket);
-            command.env("SSH_AUTH_SOCK", socket);
-        }
-        if self.isolated_home {
-            command.args(["--dir", ISOLATED_HOME]);
-        }
-        if network_access == NetworkAccess::Denied && Path::new("/run").is_dir() {
-            command.args(["--tmpfs", "/run"]);
-        }
-        command
-            .arg(if workspace_access == WorkspaceAccess::ReadOnly {
-                "--ro-bind"
-            } else {
-                "--bind"
-            })
-            .arg(&self.root)
-            .arg(&self.root);
-        for root in &self.workspace_roots {
-            command
-                .arg(if workspace_access == WorkspaceAccess::ReadOnly {
-                    "--ro-bind"
-                } else {
-                    "--bind"
-                })
-                .arg(&root.path)
-                .arg(&root.path);
-        }
-        for denied in &self.denied_reads {
-            if denied.directory {
-                command.arg("--tmpfs").arg(&denied.path);
-            } else {
-                command.arg("--ro-bind").arg("/dev/null").arg(&denied.path);
-            }
-        }
-        command.args(["--unshare-user", "--unshare-pid"]);
-        if network_access == NetworkAccess::Denied {
-            command.arg("--unshare-net");
-        }
-        command
-            .arg(if self.empty_proc { "--tmpfs" } else { "--proc" })
-            .args(["/proc", "--chdir"]);
-        command.arg(&self.root);
-        command.arg("--");
-        append_invocation(&mut command, invocation, self.isolated_home);
-        Ok(command)
-    }
-
-    fn host_command(&self, invocation: &Invocation<'_>) -> Command {
-        match invocation {
-            Invocation::Shell(script) => {
-                let mut command = Command::new("/bin/bash");
-                if self.isolated_home {
-                    command.args(["--noprofile", "--norc", "-c", script]);
-                } else {
-                    command.args(["-lc", script]);
-                }
-                command
-            }
-            Invocation::Argv {
-                executable,
-                arguments,
-            } => {
-                let mut command = Command::new(executable);
-                command.args(arguments.iter().copied());
-                command
-            }
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    fn ssh_agent_socket(&self) -> Option<PathBuf> {
-        if self.isolated_home || self.denied_environment.contains("SSH_AUTH_SOCK") {
-            return None;
-        }
-        let value = std::env::var_os("SSH_AUTH_SOCK");
-        validated_ssh_agent_socket(value.as_deref(), &self.denied_reads)
-    }
-
-    #[cfg(target_os = "linux")]
-    fn protected_full_access_command(&self, invocation: &Invocation<'_>) -> Result<Command> {
-        let bwrap = self
-            .find_executable("bwrap")
-            .map_err(|_| Error::Sandbox("bubblewrap (`bwrap`) is required on Linux".into()))?;
-        let mut command = Command::new(bwrap);
-        command.args([
-            "--new-session",
-            "--die-with-parent",
-            "--bind",
-            "/",
-            "/",
-            "--dev-bind",
-            "/dev",
-            "/dev",
-        ]);
-        for denied in &self.denied_reads {
-            if denied.directory {
-                command.arg("--tmpfs").arg(&denied.path);
-            } else {
-                command.arg("--ro-bind").arg("/dev/null").arg(&denied.path);
-            }
-        }
-        command.args(["--unshare-user", "--unshare-pid"]);
-        command
-            .arg(if self.empty_proc { "--tmpfs" } else { "--proc" })
-            .args(["/proc", "--chdir"]);
-        command.arg(&self.root).arg("--");
-        append_invocation(&mut command, invocation, self.isolated_home);
-        Ok(command)
-    }
-
-    #[cfg(target_os = "macos")]
-    fn protected_full_access_command(&self, invocation: &Invocation<'_>) -> Result<Command> {
-        let executable = Path::new("/usr/bin/sandbox-exec");
-        if !executable.is_file() {
-            return Err(Error::Sandbox(
-                "/usr/bin/sandbox-exec is unavailable".into(),
-            ));
-        }
-        let mut policy = String::from(
-            "(version 1)\n(allow default)\n\
-             (deny signal (require-not (target same-sandbox)))\n\
-             (deny process-info* (require-not (target same-sandbox)))\n\
-             (deny mach-task-name (require-not (target same-sandbox)))\n",
-        );
-        for (index, denied) in self.denied_reads.iter().enumerate() {
-            let parameter = format!("DENIED_READ_{index}");
-            policy.push_str(&format!(
-                "\n(deny file-read* file-write*\n  (literal (param \"{parameter}\")){}\n)",
-                if denied.directory {
-                    format!("\n  (subpath (param \"{parameter}\"))")
-                } else {
-                    String::new()
-                }
-            ));
-        }
-        let mut command = Command::new(executable);
-        command.arg("-p").arg(policy);
-        for (index, denied) in self.denied_reads.iter().enumerate() {
-            let path = denied
-                .path
-                .to_str()
-                .ok_or_else(|| Error::Sandbox("sandbox path is not UTF-8".into()))?;
-            command.arg(format!("-DDENIED_READ_{index}={path}"));
-        }
-        command.args([
-            "--",
-            "/bin/bash",
-            "--noprofile",
-            "--norc",
-            "-c",
-            MACOS_COMMAND_WRAPPER,
-            "mobius-command",
-        ]);
-        append_invocation(&mut command, invocation, self.isolated_home);
-        Ok(command)
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    fn protected_full_access_command(&self, _invocation: &Invocation<'_>) -> Result<Command> {
-        Err(Error::Sandbox(
-            "protected full-access execution requires Linux or macOS".into(),
-        ))
-    }
-
-    #[cfg(target_os = "macos")]
-    fn sandboxed_command(
-        &self,
-        invocation: &Invocation<'_>,
-        network_access: NetworkAccess,
-        workspace_access: WorkspaceAccess,
-    ) -> Result<Command> {
-        let executable = Path::new("/usr/bin/sandbox-exec");
-        if !executable.is_file() {
-            return Err(Error::Sandbox(
-                "/usr/bin/sandbox-exec is unavailable".into(),
-            ));
-        }
-        let temp = std::fs::canonicalize(self.temp.path())?;
-        let mut command = Command::new(executable);
-        let mut policy = format!("{MACOS_SEATBELT_BASE_POLICY}{SEATBELT_POLICY_SUFFIX}");
-        for index in 0..self.workspace_roots.len() {
-            let parameter = format!("WORKSPACE_ROOT_{index}");
-            policy.push_str(&format!(
-                "\n(allow file-write*\n  (literal (param \"{parameter}\"))\n  (subpath (param \"{parameter}\")))"
-            ));
-        }
-        for (index, denied) in self.denied_reads.iter().enumerate() {
-            let parameter = format!("DENIED_READ_{index}");
-            policy.push_str(&format!(
-                "\n(deny file-read*\n  (literal (param \"{parameter}\")){}\n)",
-                if denied.directory {
-                    format!("\n  (subpath (param \"{parameter}\"))")
-                } else {
-                    String::new()
-                }
-            ));
-        }
-        if network_access == NetworkAccess::Allowed {
-            policy.push_str("\n(allow network-outbound)\n(allow network-inbound)\n");
-            policy.push_str(MACOS_SEATBELT_NETWORK_POLICY);
-        }
-        if workspace_access == WorkspaceAccess::ReadOnly {
-            policy.push_str(
-                r#"
-(deny file-write*
-  (literal (param "WRITABLE_ROOT"))
-  (subpath (param "WRITABLE_ROOT")))"#,
-            );
-            for index in 0..self.workspace_roots.len() {
-                let parameter = format!("WORKSPACE_ROOT_{index}");
-                policy.push_str(&format!(
-                    "\n(deny file-write*\n  (literal (param \"{parameter}\"))\n  (subpath (param \"{parameter}\")))"
-                ));
-            }
-        }
-        command.arg("-p").arg(policy);
-        for (name, path) in [("WRITABLE_ROOT", self.root.clone()), ("TEMP_ROOT", temp)] {
-            let path = path
-                .to_str()
-                .ok_or_else(|| Error::Sandbox("sandbox path is not UTF-8".into()))?;
-            command.arg(format!("-D{name}={path}"));
-        }
-        for (index, root) in self.workspace_roots.iter().enumerate() {
-            let path = root
-                .path
-                .to_str()
-                .ok_or_else(|| Error::Sandbox("sandbox path is not UTF-8".into()))?;
-            command.arg(format!("-DWORKSPACE_ROOT_{index}={path}"));
-        }
-        for (index, denied) in self.denied_reads.iter().enumerate() {
-            let path = denied
-                .path
-                .to_str()
-                .ok_or_else(|| Error::Sandbox("sandbox path is not UTF-8".into()))?;
-            command.arg(format!("-DDENIED_READ_{index}={path}"));
-        }
-        command.args([
-            "--",
-            "/bin/bash",
-            "--noprofile",
-            "--norc",
-            "-c",
-            MACOS_COMMAND_WRAPPER,
-            "mobius-command",
-        ]);
-        append_invocation(&mut command, invocation, self.isolated_home);
-        Ok(command)
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    fn sandboxed_command(
-        &self,
-        _invocation: &Invocation<'_>,
-        _network_access: NetworkAccess,
-        _workspace_access: WorkspaceAccess,
-    ) -> Result<Command> {
-        Err(Error::Sandbox(
-            "local code execution requires Linux or macOS".into(),
-        ))
-    }
-
     async fn execute_invocation(
         &self,
         invocation: Invocation<'_>,
@@ -788,15 +464,18 @@ impl LocalSandbox {
         async {
             self.validate_workspace_roots()?;
             let mut command = match isolation.sandbox_mode {
-                SandboxMode::WorkspaceWrite => self.sandboxed_command(
+                SandboxMode::WorkspaceWrite => platform::sandboxed_command(
+                    self,
                     &invocation,
                     isolation.network_access,
                     isolation.workspace_access,
                 )?,
                 SandboxMode::DangerFullAccess if self.denied_reads.is_empty() => {
-                    self.host_command(&invocation)
+                    platform::host_command(&invocation, self.isolated_home)
                 }
-                SandboxMode::DangerFullAccess => self.protected_full_access_command(&invocation)?,
+                SandboxMode::DangerFullAccess => {
+                    platform::protected_full_access_command(self, &invocation)?
+                }
             };
             command.current_dir(&self.root);
             if self.isolated_home {
@@ -807,10 +486,10 @@ impl LocalSandbox {
             }
             command
                 .envs(environment.0.iter().copied())
-                .env("TMPDIR", command_temp(self.temp.path()));
+                .env("TMPDIR", platform::command_temp(self.temp.path()));
             if self.isolated_home {
                 command
-                    .env("HOME", command_home(self.temp.path()))
+                    .env("HOME", platform::command_home(self.temp.path()))
                     .env("SHELL", "/bin/bash");
             }
             for name in environment.1 {
@@ -1054,43 +733,6 @@ fn find_executable_in(
 
 fn paths_overlap(left: &Path, right: &Path) -> bool {
     left.starts_with(right) || right.starts_with(left)
-}
-
-#[cfg(target_os = "linux")]
-fn validated_ssh_agent_socket(
-    value: Option<&OsStr>,
-    denied_reads: &[DeniedRead],
-) -> Option<PathBuf> {
-    use std::os::unix::fs::FileTypeExt as _;
-
-    let path = std::fs::canonicalize(Path::new(value?)).ok()?;
-    let metadata = std::fs::metadata(&path).ok()?;
-    (path.is_absolute()
-        && metadata.file_type().is_socket()
-        && denied_reads
-            .iter()
-            .all(|denied| !path.starts_with(&denied.path)))
-    .then_some(path)
-}
-
-#[cfg(target_os = "linux")]
-fn command_temp(_private_temp: &Path) -> &Path {
-    Path::new("/tmp")
-}
-
-#[cfg(not(target_os = "linux"))]
-fn command_temp(private_temp: &Path) -> &Path {
-    private_temp
-}
-
-#[cfg(target_os = "linux")]
-fn command_home(_private_temp: &Path) -> &Path {
-    Path::new(ISOLATED_HOME)
-}
-
-#[cfg(not(target_os = "linux"))]
-fn command_home(private_temp: &Path) -> &Path {
-    private_temp
 }
 
 async fn read_output(

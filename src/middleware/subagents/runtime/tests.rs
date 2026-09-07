@@ -7,12 +7,19 @@ use std::time::Duration;
 
 use super::*;
 use crate::BoxFuture;
+use crate::agent::{AgentConfig, create_agent};
 use crate::backend::checkpoint::Checkpoint;
 use crate::backend::checkpoint::EventPage;
 use crate::backend::checkpoint::EventPageRequest;
 use crate::backend::checkpoint::ExecutionRecord;
 use crate::backend::checkpoint::JournalEvent;
 use crate::backend::checkpoint::TimestampedEvent;
+use crate::backend::model::{Model, ModelEventSink, ModelOutput, ModelRequest, ModelRouter};
+use crate::backend::sandbox::ApprovalPolicy;
+use crate::backend::sandbox::Sandbox;
+use crate::backend::sandbox::local::LocalSandbox;
+use crate::middleware::MiddlewareStack;
+use crate::middleware::messages::Messages;
 use crate::protocol::Event;
 
 struct FailOnceStore {
@@ -26,6 +33,18 @@ struct BlockingRetryStore {
     block_at: Option<usize>,
     retry_started: Notify,
     release_retry: Notify,
+}
+
+struct IdleModel;
+
+impl Model for IdleModel {
+    fn respond<'a>(
+        &'a self,
+        _request: ModelRequest<'a>,
+        _events: ModelEventSink,
+    ) -> BoxFuture<'a, Result<ModelOutput>> {
+        Box::pin(std::future::pending())
+    }
 }
 
 fn test_presentation() -> AgentPresentation {
@@ -514,16 +533,15 @@ async fn coordination_targets_require_canonical_paths_in_the_current_task_tree()
         "@analyst",
         "778d6339-979e-4af4-933e-a2c43a884729",
     ] {
+        let message_error = match shared
+            .send_message("root", "/root", target, message.clone())
+            .await
+        {
+            Ok(_) => panic!("reject noncanonical message target"),
+            Err(error) => error,
+        };
         let errors = [
-            shared
-                .submit_message("root", "/root", target, message.clone())
-                .await
-                .expect_err("reject noncanonical message target"),
-            shared
-                .prepare_followup("root", "/root", target)
-                .await
-                .err()
-                .expect("reject noncanonical followup target"),
+            message_error,
             shared
                 .interrupt("root", target)
                 .await
@@ -543,12 +561,6 @@ async fn coordination_targets_require_canonical_paths_in_the_current_task_tree()
         *checkpoints.saved_state.lock().expect("saved state"),
         saved_before
     );
-    assert!(matches!(
-        shared
-            .submit_message("root", "/root", "/root/analyst", message)
-            .await,
-        Err(Error::Stopped(_))
-    ));
     assert_eq!(
         shared
             .interrupt("root", "/root/analyst")
@@ -556,11 +568,27 @@ async fn coordination_targets_require_canonical_paths_in_the_current_task_tree()
             .expect("canonical target"),
         "completed"
     );
-    let followup = shared
-        .prepare_followup("root", "/root", "/root/analyst")
+    let wake = shared
+        .send_message("root", "/root", "/root/analyst", message)
         .await
-        .expect("follow up with canonical target");
-    assert!(matches!(followup.previous, AgentStatus::Completed));
+        .expect("wake canonical target")
+        .expect("completed child wake");
+    assert!(matches!(wake.previous, AgentStatus::Completed));
+
+    let root_message = MessageSubmission {
+        author: crate::protocol::MessageAuthor::User,
+        text: "Root stays send-only".into(),
+        attachments: Vec::new(),
+        reply: None,
+        requested_delivery: None,
+        target_turn_id: None,
+    };
+    assert!(matches!(
+        shared
+            .send_message("root", "/root/analyst", "/root", root_message)
+            .await,
+        Err(Error::Stopped(_))
+    ));
 }
 
 #[tokio::test]
@@ -801,70 +829,83 @@ async fn terminal_update_is_retained_until_its_checkpoint_marker_is_acknowledged
 }
 
 #[tokio::test]
-async fn terminal_update_does_not_repeat_a_delivered_parent_report() {
-    let shared = test_shared();
+async fn running_parent_records_real_child_message_for_terminal_dedup() {
+    let shared = Shared::new(3, 3).expect("valid nested limits");
+    let workspace = tempfile::tempdir().expect("workspace");
     let checkpoints: Arc<dyn CheckpointStore> = Arc::new(FailOnceStore {
         fail_next_save: AtomicBool::new(false),
         saved_state: StdMutex::new(None),
     });
     shared
-        .session_start(test_context(checkpoints, Arc::new(|_| Ok(()))))
+        .session_start(test_context(Arc::clone(&checkpoints), Arc::new(|_| Ok(()))))
         .await
         .expect("initialize runtime");
     shared
         .reserve(
             "root",
-            "/root/child",
+            "/root/parent",
             "/root",
-            "child".into(),
+            "parent".into(),
             1,
             test_presentation(),
         )
         .await
-        .expect("reserve child");
+        .expect("reserve parent");
     shared
-        .root("root")
+        .reserve(
+            "root",
+            "/root/parent/child",
+            "/root/parent",
+            "child".into(),
+            2,
+            test_presentation(),
+        )
         .await
-        .expect("root runtime")
-        .state
-        .lock()
+        .expect("reserve child");
+    let parent = create_agent(
+        AgentConfig::new(
+            Arc::new(ModelRouter::new("test", Arc::new(IdleModel))),
+            Arc::new(Sandbox::new(
+                Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
+                ApprovalPolicy::Ask,
+            )),
+            Arc::clone(&checkpoints),
+            MiddlewareStack::new(vec![Arc::new(Messages::default())]).expect("middleware"),
+            "test prompt",
+        )
+        .session_id("parent"),
+    )
+    .await
+    .expect("create parent agent");
+    let (parent_sender, _parent_events) = parent.into_parts();
+    shared
+        .attach("root", "/root/parent", parent_sender, Some("test".into()))
         .await
-        .parent_reports
-        .insert(
-            "/root/child".into(),
-            vec![
-                crate::protocol::MessageSubmission {
-                    author: crate::protocol::MessageAuthor::Peer {
-                        message_id: "report-a".into(),
-                        session_id: "child".into(),
-                        handle: "child".into(),
-                        symbol: None,
-                    },
-                    text: "done".into(),
-                    attachments: Vec::new(),
-                    reply: None,
-                    requested_delivery: None,
-                    target_turn_id: None,
-                },
-                crate::protocol::MessageSubmission {
-                    author: crate::protocol::MessageAuthor::Peer {
-                        message_id: "report-b".into(),
-                        session_id: "child".into(),
-                        handle: "child".into(),
-                        symbol: None,
-                    },
-                    text: "still checking".into(),
-                    attachments: Vec::new(),
-                    reply: None,
-                    requested_delivery: None,
-                    target_turn_id: None,
-                },
-            ],
-        );
+        .expect("attach parent agent");
+    let message = crate::protocol::MessageSubmission {
+        author: crate::protocol::MessageAuthor::Peer {
+            message_id: "report-a".into(),
+            session_id: "child".into(),
+            handle: "child".into(),
+            symbol: None,
+        },
+        text: "done".into(),
+        attachments: Vec::new(),
+        reply: None,
+        requested_delivery: None,
+        target_turn_id: None,
+    };
+    assert!(
+        shared
+            .send_message("root", "/root/parent/child", "/root/parent", message)
+            .await
+            .expect("send child report")
+            .is_none()
+    );
     shared
         .finished(
             "root",
-            "/root/child",
+            "/root/parent/child",
             AgentStatus::Completed,
             Some("done".into()),
         )
@@ -872,13 +913,17 @@ async fn terminal_update_does_not_repeat_a_delivered_parent_report() {
         .expect("finish child");
 
     let pending = shared
-        .receive_updates("root", "/root", &BTreeSet::new())
+        .receive_updates("root", "/root/parent", &BTreeSet::new())
         .await
         .expect("receive updates");
 
     assert_eq!(
+        pending[0].reported_message_ids,
+        vec!["report-a".to_string()]
+    );
+    assert_eq!(
         pending[0].render(&BTreeSet::from(["report-a".into()])),
-        "<subagent_update agent=\"/root/child\" status=\"completed\">\n\n</subagent_update>"
+        "<subagent_update agent=\"/root/parent/child\" status=\"completed\">\n\n</subagent_update>"
     );
 }
 

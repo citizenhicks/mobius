@@ -65,12 +65,176 @@ use crate::protocol::ToolDiscoveryMode;
 mod connection;
 
 mod manifest {
-    include!(concat!(
-        env!("OUT_DIR"),
-        "/src_backend_model_openai_socket_manifest.rs"
-    ));
+    use crate::backend::model::provider::{HostedWebSearch, ModelPreset, ReasoningPreset};
+    use crate::protocol::ToolDiscoveryMode;
+    pub const PROVIDER_LABEL: &str = "OpenAI";
+    pub const PROVIDER_DESCRIPTION: &str = "Persistent Responses WebSocket with native compaction";
+    pub const TOOL_DISCOVERY: ToolDiscoveryMode = ToolDiscoveryMode::Native;
+    pub const CUSTOM_ENDPOINT_TOOL_DISCOVERY: Option<ToolDiscoveryMode> = None;
+    pub const DEFAULT_MODEL: Option<&str> = Some("gpt-5.6-sol");
+    pub const MODELS: &[ModelPreset] = &[
+        ModelPreset {
+            id: "gpt-5.6-sol",
+            label: "Sol",
+            description: "Frontier capability for complex work",
+            context_window: 1050000,
+            reasoning: &[
+                ReasoningPreset {
+                    id: "none",
+                    label: "None",
+                    description: "Skip reasoning for the lowest latency",
+                },
+                ReasoningPreset {
+                    id: "low",
+                    label: "Low",
+                    description: "Faster answers for straightforward work",
+                },
+                ReasoningPreset {
+                    id: "medium",
+                    label: "Medium",
+                    description: "Balanced reasoning and latency",
+                },
+                ReasoningPreset {
+                    id: "high",
+                    label: "High",
+                    description: "Deeper reasoning for complex work",
+                },
+                ReasoningPreset {
+                    id: "xhigh",
+                    label: "Extra high",
+                    description: "Extended reasoning for demanding work",
+                },
+                ReasoningPreset {
+                    id: "max",
+                    label: "Maximum",
+                    description: "Maximum reasoning for the hardest work",
+                },
+            ],
+            default_reasoning: Some("medium"),
+            tool_discovery: ToolDiscoveryMode::Native,
+        },
+        ModelPreset {
+            id: "gpt-5.6-terra",
+            label: "Terra",
+            description: "Balance intelligence and cost",
+            context_window: 1050000,
+            reasoning: &[
+                ReasoningPreset {
+                    id: "none",
+                    label: "None",
+                    description: "Skip reasoning for the lowest latency",
+                },
+                ReasoningPreset {
+                    id: "low",
+                    label: "Low",
+                    description: "Faster answers for straightforward work",
+                },
+                ReasoningPreset {
+                    id: "medium",
+                    label: "Medium",
+                    description: "Balanced reasoning and latency",
+                },
+                ReasoningPreset {
+                    id: "high",
+                    label: "High",
+                    description: "Deeper reasoning for complex work",
+                },
+                ReasoningPreset {
+                    id: "xhigh",
+                    label: "Extra high",
+                    description: "Extended reasoning for demanding work",
+                },
+                ReasoningPreset {
+                    id: "max",
+                    label: "Maximum",
+                    description: "Maximum reasoning for the hardest work",
+                },
+            ],
+            default_reasoning: Some("medium"),
+            tool_discovery: ToolDiscoveryMode::Native,
+        },
+        ModelPreset {
+            id: "gpt-5.6-luna",
+            label: "Luna",
+            description: "Efficient, high-volume workloads",
+            context_window: 1050000,
+            reasoning: &[
+                ReasoningPreset {
+                    id: "none",
+                    label: "None",
+                    description: "Skip reasoning for the lowest latency",
+                },
+                ReasoningPreset {
+                    id: "low",
+                    label: "Low",
+                    description: "Faster answers for straightforward work",
+                },
+                ReasoningPreset {
+                    id: "medium",
+                    label: "Medium",
+                    description: "Balanced reasoning and latency",
+                },
+                ReasoningPreset {
+                    id: "high",
+                    label: "High",
+                    description: "Deeper reasoning for complex work",
+                },
+                ReasoningPreset {
+                    id: "xhigh",
+                    label: "Extra high",
+                    description: "Extended reasoning for demanding work",
+                },
+                ReasoningPreset {
+                    id: "max",
+                    label: "Maximum",
+                    description: "Maximum reasoning for the hardest work",
+                },
+            ],
+            default_reasoning: Some("medium"),
+            tool_discovery: ToolDiscoveryMode::Native,
+        },
+        ModelPreset {
+            id: "gpt-6-astra",
+            label: "Astra",
+            description: "Advanced reasoning and complex end-to-end work",
+            context_window: 1050000,
+            reasoning: &[
+                ReasoningPreset {
+                    id: "low",
+                    label: "Low",
+                    description: "Faster answers for straightforward work",
+                },
+                ReasoningPreset {
+                    id: "medium",
+                    label: "Medium",
+                    description: "Balanced reasoning and latency",
+                },
+                ReasoningPreset {
+                    id: "high",
+                    label: "High",
+                    description: "Deeper reasoning for complex work",
+                },
+                ReasoningPreset {
+                    id: "xhigh",
+                    label: "Extra high",
+                    description: "Extended reasoning for demanding work",
+                },
+                ReasoningPreset {
+                    id: "max",
+                    label: "Maximum",
+                    description: "Maximum reasoning for the hardest work",
+                },
+            ],
+            default_reasoning: Some("medium"),
+            tool_discovery: ToolDiscoveryMode::Native,
+        },
+    ];
+    pub const SEARCH: &[HostedWebSearch] = &[
+        HostedWebSearch::Off,
+        HostedWebSearch::Cached,
+        HostedWebSearch::Live,
+    ];
 }
-
 const OPENAI_HTTP_URL: &str = "https://api.openai.com/v1";
 const OPENAI_SOCKET_URL: &str = "wss://api.openai.com/v1/responses";
 const MAX_SOCKET_SESSIONS: usize = 128;
@@ -346,21 +510,19 @@ impl OpenAiSocket {
         input.push(serde_json::json!({"type": "compaction_trigger"}));
         let mut retries = 0;
         let output = loop {
+            let model_request = ModelRequest {
+                session_id: request.session_id,
+                prompt_cache: request.prompt_cache,
+                instructions: request.instructions,
+                input: &input,
+                catalog_revision: request.catalog_revision,
+                tools: request.tools,
+                deferred_tools: request.deferred_tools,
+                allow_hosted_tools: true,
+                allow_continuation: true,
+            };
             match self
-                .send_response(
-                    ModelRequest {
-                        session_id: request.session_id,
-                        prompt_cache: request.prompt_cache,
-                        instructions: request.instructions,
-                        input: &input,
-                        catalog_revision: request.catalog_revision,
-                        tools: request.tools,
-                        deferred_tools: request.deferred_tools,
-                        allow_hosted_tools: true,
-                        allow_continuation: true,
-                    },
-                    Arc::new(|_| Ok(())),
-                )
+                .send_response(model_request, Arc::new(|_| Ok(())))
                 .await
             {
                 Ok(output) => break output,

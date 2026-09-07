@@ -6,7 +6,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use uuid::Uuid;
 
-use super::runtime::{AgentPresentation, Followup, MAX_MESSAGE_BYTES, Shared, monitor_agent};
+use super::runtime::{AgentPresentation, MAX_MESSAGE_BYTES, Shared, Wake, monitor_agent};
 use super::{
     AgentScope, DEFAULT_WAIT_MS, ForkTurns, MAX_TASK_NAME_BYTES, MAX_WAIT_MS, MIN_WAIT_MS, text,
 };
@@ -163,11 +163,6 @@ pub(super) struct SendMessage {
     pub(super) scope: Arc<AgentScope>,
 }
 
-pub(super) struct FollowupTask {
-    pub(super) shared: Arc<Shared>,
-    pub(super) scope: Arc<AgentScope>,
-}
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MessageArgs {
@@ -177,37 +172,22 @@ struct MessageArgs {
 
 impl Tool for SendMessage {
     fn definition(&self) -> ToolDefinition {
-        message_definition("send_message", text::TOOL_SEND_MESSAGE_DESCRIPTION)
-    }
-
-    fn call<'a>(
-        &'a self,
-        _context: ToolContext,
-        arguments: Value,
-    ) -> BoxFuture<'a, Result<String>> {
-        Box::pin(async move {
-            let arguments: MessageArgs = serde_json::from_value(arguments)?;
-            let message = peer_submission(
-                &self.scope.session_id,
-                &self.scope.agent_path,
-                validate_text(arguments.text)?,
-            );
-            self.shared
-                .submit_message(
-                    &self.scope.root_session_id,
-                    &self.scope.agent_path,
-                    &arguments.target,
-                    message,
-                )
-                .await?;
-            Ok(String::new())
-        })
-    }
-}
-
-impl Tool for FollowupTask {
-    fn definition(&self) -> ToolDefinition {
-        message_definition("followup_task", text::TOOL_FOLLOWUP_TASK_DESCRIPTION)
+        ToolDefinition {
+            name: "send_message".into(),
+            description: text::TOOL_SEND_MESSAGE_DESCRIPTION.into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": text::TOOL_PARAMETER_TARGET_DESCRIPTION
+                    },
+                    "text": {"type": "string"}
+                },
+                "required": ["target", "text"],
+                "additionalProperties": false
+            }),
+        }
     }
 
     fn call<'a>(&'a self, context: ToolContext, arguments: Value) -> BoxFuture<'a, Result<String>> {
@@ -220,25 +200,35 @@ impl Tool for FollowupTask {
             );
             let shared = Arc::clone(&self.shared);
             let scope = Arc::clone(&self.scope);
+            let target = arguments.target;
+            let turn_id = context.turn_id;
             supervise(async move {
-                let followup = shared
-                    .prepare_followup(&scope.root_session_id, &scope.agent_path, &arguments.target)
+                let wake = shared
+                    .send_message(
+                        &scope.root_session_id,
+                        &scope.agent_path,
+                        &target,
+                        message.clone(),
+                    )
                     .await?;
-                let Followup {
+                let Some(Wake {
                     record,
                     sender,
                     previous,
-                } = followup;
+                }) = wake
+                else {
+                    return Ok(String::new());
+                };
                 let (sender, events, model) = match sender {
                     Some(sender) => (sender, None, None),
                     None => {
                         let agent = match scope
                             .resume(
                                 record.session_id,
-                                arguments.target.clone(),
+                                target.clone(),
                                 record.depth,
                                 record.model,
-                                context.turn_id,
+                                turn_id,
                             )
                             .await
                         {
@@ -247,11 +237,7 @@ impl Tool for FollowupTask {
                                 return Err(cleanup_error(
                                     error,
                                     shared
-                                        .rollback(
-                                            &scope.root_session_id,
-                                            &arguments.target,
-                                            previous.clone(),
-                                        )
+                                        .rollback(&scope.root_session_id, &target, previous.clone())
                                         .await,
                                 ));
                             }
@@ -262,19 +248,14 @@ impl Tool for FollowupTask {
                     }
                 };
                 if let Err(error) = shared
-                    .attach(
-                        &scope.root_session_id,
-                        &arguments.target,
-                        sender.clone(),
-                        model,
-                    )
+                    .attach(&scope.root_session_id, &target, sender.clone(), model)
                     .await
                     .and_then(|()| sender.submit(Op::Message { message }).map(|_| ()))
                 {
                     return Err(cleanup_error(
                         error,
                         shared
-                            .rollback(&scope.root_session_id, &arguments.target, previous)
+                            .rollback(&scope.root_session_id, &target, previous)
                             .await,
                     ));
                 }
@@ -282,7 +263,7 @@ impl Tool for FollowupTask {
                     tokio::spawn(monitor_agent(
                         Arc::clone(&shared),
                         scope.root_session_id.clone(),
-                        arguments.target,
+                        target,
                         events,
                     ));
                 }
@@ -290,25 +271,6 @@ impl Tool for FollowupTask {
             })
             .await
         })
-    }
-}
-
-fn message_definition(name: &str, description: &str) -> ToolDefinition {
-    ToolDefinition {
-        name: name.into(),
-        description: description.into(),
-        parameters: serde_json::json!({
-            "type": "object",
-            "properties": {
-                "target": {
-                    "type": "string",
-                    "description": text::TOOL_PARAMETER_TARGET_DESCRIPTION
-                },
-                "text": {"type": "string"}
-            },
-            "required": ["target", "text"],
-            "additionalProperties": false
-        }),
     }
 }
 
@@ -603,19 +565,5 @@ mod tests {
                 && handle == "reviewer"
                 && text == "Review the parser"
         ));
-    }
-
-    #[test]
-    fn message_tool_schema_names_message_content_text() {
-        let definition = message_definition("send_message", "send");
-
-        assert_eq!(
-            definition.parameters["required"],
-            serde_json::json!(["target", "text"])
-        );
-        assert_eq!(
-            definition.parameters["properties"]["target"]["description"],
-            "Exact canonical task path from spawn_agent or list_agents, such as /root/reviewer; not a Bot handle or Bot ID."
-        );
     }
 }

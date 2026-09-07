@@ -2,6 +2,8 @@ use std::sync::atomic::AtomicBool;
 
 use tokio::sync::{broadcast, mpsc};
 
+use crate::host::deletion::prepare_bot_session_tree_deletion;
+
 use super::super::session::{HostCommand, HostInner, ProviderCutoverStatus};
 use super::*;
 

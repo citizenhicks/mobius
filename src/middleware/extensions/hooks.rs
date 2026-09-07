@@ -34,7 +34,7 @@ const MAX_DOCUMENT_BYTES: u64 = 256_000;
 const MAX_COMMAND_BYTES: usize = 8_000;
 const MAX_MATCHER_BYTES: usize = 1_024;
 const MAX_PATH_BYTES: usize = 4_096;
-const MAX_STATUS_BYTES: usize = 256;
+const MAX_DESCRIPTION_BYTES: usize = 256;
 const MAX_INPUT_BYTES: usize = 5 * 1024 * 1024;
 const MAX_OUTPUT_BYTES: usize = 40_000;
 const DEFAULT_CONTEXT_BYTES: usize = 10_000;
@@ -319,18 +319,12 @@ struct RawHookGroup {
 enum RawHookHandler {
     Command {
         command: String,
-        #[serde(rename = "commandWindows")]
-        command_windows: Option<String>,
         timeout: Option<u64>,
-        #[serde(rename = "statusMessage")]
-        status_message: Option<String>,
         #[serde(rename = "additionalContextLimit")]
         additional_context_limit: Option<usize>,
         #[serde(rename = "async")]
         asynchronous: Option<bool>,
     },
-    Prompt,
-    Agent,
 }
 
 struct CommandHook {
@@ -342,33 +336,17 @@ struct CommandHook {
 }
 
 impl CommandHook {
-    fn parse(event: HookEvent, matcher: Option<&str>, raw: RawHookHandler) -> Result<Option<Self>> {
+    fn parse(event: HookEvent, matcher: Option<&str>, raw: RawHookHandler) -> Result<Self> {
         let RawHookHandler::Command {
             command,
-            command_windows,
             timeout,
-            status_message,
             additional_context_limit,
             asynchronous,
-        } = raw
-        else {
-            return Ok(None);
-        };
+        } = raw;
         if asynchronous == Some(true) && event != HookEvent::SessionEnd {
             return Err(Error::Config("asynchronous hooks are not supported".into()));
         }
         validate_text(&command, 1, MAX_COMMAND_BYTES, "hook command")?;
-        if let Some(command_windows) = &command_windows {
-            validate_text(
-                command_windows,
-                1,
-                MAX_COMMAND_BYTES,
-                "Windows hook command",
-            )?;
-        }
-        if let Some(status) = &status_message {
-            validate_text(status, 1, MAX_STATUS_BYTES, "hook status message")?;
-        }
 
         let timeout = Duration::from_secs(timeout.unwrap_or_else(|| {
             if event == HookEvent::SessionEnd {
@@ -409,13 +387,13 @@ impl CommandHook {
             }
         };
 
-        Ok(Some(Self {
+        Ok(Self {
             matcher,
             matcher_text,
             command,
             timeout,
             context_bytes: context_bytes(additional_context_limit)?,
-        }))
+        })
     }
 
     fn matches(&self, event: HookEvent, subjects: &[&str]) -> bool {
@@ -435,7 +413,7 @@ fn load_manifest_sources(
 ) -> Result<()> {
     let sources = value
         .as_array()
-        .map_or_else(|| vec![value], |sources| sources.iter().collect::<Vec<_>>());
+        .map_or(std::slice::from_ref(value), Vec::as_slice);
     if sources.len() > MAX_HOOK_FILES {
         return Err(Error::Config(format!(
             "plugin hook source count exceeds {MAX_HOOK_FILES}"
@@ -488,7 +466,7 @@ fn append_document(
     count: &mut usize,
 ) -> Result<()> {
     if let Some(description) = document.description {
-        validate_text(&description, 1, MAX_STATUS_BYTES, "hook description")?;
+        validate_text(&description, 1, MAX_DESCRIPTION_BYTES, "hook description")?;
     }
     for (event, groups) in document.hooks {
         for group in groups {
@@ -499,9 +477,11 @@ fn append_document(
                     )));
                 }
                 *count += 1;
-                if let Some(hook) = CommandHook::parse(event, group.matcher.as_deref(), raw)? {
-                    hooks.entry(event).or_default().push(hook);
-                }
+                hooks.entry(event).or_default().push(CommandHook::parse(
+                    event,
+                    group.matcher.as_deref(),
+                    raw,
+                )?);
             }
         }
     }
@@ -600,7 +580,6 @@ struct RawHookOutput {
     continue_session: Option<bool>,
     stop_reason: Option<String>,
     system_message: Option<String>,
-    suppress_output: Option<bool>,
     decision: Option<HookDecision>,
     reason: Option<String>,
     hook_specific_output: Option<RawHookSpecificOutput>,
@@ -724,7 +703,6 @@ fn normalize_output(
         mut continue_session,
         mut stop_reason,
         system_message,
-        suppress_output,
         decision,
         reason,
         hook_specific_output,
@@ -771,7 +749,6 @@ fn normalize_output(
     let fields = output_fields([
         continue_session.is_some(),
         stop_reason.is_some(),
-        suppress_output.is_some(),
         decision.is_some(),
         reason.is_some(),
         additional_context.is_some(),
@@ -817,19 +794,17 @@ fn normalize_output(
 
 const CONTINUE: u16 = 1 << 0;
 const STOP_REASON: u16 = 1 << 1;
-const SUPPRESS_OUTPUT: u16 = 1 << 2;
-const DECISION: u16 = 1 << 3;
-const REASON: u16 = 1 << 4;
-const ADDITIONAL_CONTEXT: u16 = 1 << 5;
-const TOOL_PERMISSION: u16 = 1 << 6;
-const PERMISSION_REQUEST: u16 = 1 << 7;
-const UPDATED_INPUT: u16 = 1 << 8;
+const DECISION: u16 = 1 << 2;
+const REASON: u16 = 1 << 3;
+const ADDITIONAL_CONTEXT: u16 = 1 << 4;
+const TOOL_PERMISSION: u16 = 1 << 5;
+const PERMISSION_REQUEST: u16 = 1 << 6;
+const UPDATED_INPUT: u16 = 1 << 7;
 
-fn output_fields(present: [bool; 9]) -> u16 {
+fn output_fields(present: [bool; 8]) -> u16 {
     [
         CONTINUE,
         STOP_REASON,
-        SUPPRESS_OUTPUT,
         DECISION,
         REASON,
         ADDITIONAL_CONTEXT,
@@ -861,7 +836,7 @@ fn validate_output_shape(
     }
 
     let allowed = match event {
-        HookEvent::SessionStart => CONTINUE | STOP_REASON | SUPPRESS_OUTPUT | ADDITIONAL_CONTEXT,
+        HookEvent::SessionStart => CONTINUE | STOP_REASON | ADDITIONAL_CONTEXT,
         HookEvent::SessionEnd => 0,
         HookEvent::SubagentStart => ADDITIONAL_CONTEXT,
         HookEvent::PreToolUse => {
@@ -869,13 +844,11 @@ fn validate_output_shape(
         }
         HookEvent::PermissionRequest => PERMISSION_REQUEST,
         HookEvent::PostToolUse => CONTINUE | STOP_REASON | DECISION | REASON | ADDITIONAL_CONTEXT,
-        HookEvent::PreCompact | HookEvent::PostCompact => CONTINUE | STOP_REASON | SUPPRESS_OUTPUT,
+        HookEvent::PreCompact | HookEvent::PostCompact => CONTINUE | STOP_REASON,
         HookEvent::UserPromptSubmit => {
-            CONTINUE | STOP_REASON | SUPPRESS_OUTPUT | DECISION | REASON | ADDITIONAL_CONTEXT
+            CONTINUE | STOP_REASON | DECISION | REASON | ADDITIONAL_CONTEXT
         }
-        HookEvent::SubagentStop | HookEvent::Stop => {
-            CONTINUE | STOP_REASON | SUPPRESS_OUTPUT | DECISION | REASON
-        }
+        HookEvent::SubagentStop | HookEvent::Stop => CONTINUE | STOP_REASON | DECISION | REASON,
     };
     if fields & !allowed != 0 {
         return Err(Error::Config(format!(
@@ -1050,7 +1023,7 @@ mod tests {
     }
 
     #[test]
-    fn parser_accepts_every_event_and_skips_inert_handlers() {
+    fn parser_accepts_every_event_and_rejects_unsupported_handlers() {
         let root = tempfile::tempdir().expect("plugin root");
         let data = tempfile::tempdir().expect("plugin data");
         let events = [
@@ -1083,16 +1056,6 @@ mod tests {
         .expect("valid hooks");
         assert_eq!(set.hooks.values().map(Vec::len).sum::<usize>(), 11);
 
-        let inert = json!({"Stop":[{"hooks":[
-            {"type":"prompt"},
-            {"type":"prompt","command":"true"},
-            {"type":"agent"}
-        ]}]});
-        assert!(
-            HookSet::load(root.path().into(), data.path().into(), Some(&inert))
-                .expect("inert handlers parse")
-                .is_empty()
-        );
         HookSet::load(
             root.path().into(),
             data.path().into(),
@@ -1101,6 +1064,10 @@ mod tests {
         .expect("SessionEnd remains synchronous");
 
         for invalid in [
+            json!({"Stop":[{"hooks":[{"type":"prompt"}]}]}),
+            json!({"Stop":[{"hooks":[{"type":"agent"}]}]}),
+            json!({"Stop":[{"hooks":[{"type":"command","command":"true","commandWindows":"true"}]}]}),
+            json!({"Stop":[{"hooks":[{"type":"command","command":"true","statusMessage":"working"}]}]}),
             json!({"Stop":[{"hooks":[{"type":"command","command":"true","async":true}]}]}),
             json!({"Stop":[{"hooks":[{"type":"command","command":"true","unknown":true}]}]}),
         ] {
@@ -1144,6 +1111,19 @@ mod tests {
 
         assert!(outcome.failure.is_some());
         assert_eq!(outcome.decision, None);
+    }
+
+    #[test]
+    fn unsupported_hook_output_fields_are_rejected() {
+        let output = CommandOutput {
+            exit_code: 0,
+            stdout: r#"{"suppressOutput":true}"#.into(),
+            stdout_truncated: false,
+            stderr: String::new(),
+            stderr_truncated: false,
+        };
+
+        assert!(parse_output(HookEvent::SessionStart, DEFAULT_CONTEXT_BYTES, output).is_err());
     }
 
     #[tokio::test]

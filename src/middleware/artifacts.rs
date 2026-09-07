@@ -18,12 +18,18 @@ use crate::protocol::{EventMsg, FrontendBlock, FrontendContribution, SessionFile
 use crate::{BoxFuture, Error, Result};
 
 mod text {
-    include!(concat!(
-        env!("OUT_DIR"),
-        "/src_middleware_artifacts_text.rs"
-    ));
+    pub const MANIFEST_DESCRIPTION: &str =
+        "Let the agent publish workspace files to the current chat";
+    pub const MANIFEST_LABEL: &str = "Artifacts";
+    pub const PROMPT_MAIN: &str = "To send a generated file to the user, first create it in the workspace with another tool, then call `send_artifact` with its relative path.";
+    pub const RENDER_SEND: &str = "Send";
+    pub const RENDER_SENT_PREFIX: &str = "Sent ";
+    pub const RENDER_UNAVAILABLE_PREFIX: &str = "Artifact unavailable in this session: ";
+    pub const TOOL_SEND_ARTIFACT_DESCRIPTION: &str =
+        "Send one existing workspace file to the user.";
+    pub const TOOL_SEND_ARTIFACT_PARAMETER_PATH_DESCRIPTION: &str =
+        "Workspace-relative path to the finished file.";
 }
-
 /// Configuration metadata for agent-published files.
 pub const MANIFEST: MiddlewareManifest = MiddlewareManifest {
     id: "artifacts",

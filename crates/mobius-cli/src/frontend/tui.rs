@@ -704,14 +704,7 @@ fn bounded_title(value: &str) -> String {
 }
 
 fn truncate_bytes(value: &mut String, limit: usize) {
-    if value.len() <= limit {
-        return;
-    }
-    let mut end = limit;
-    while !value.is_char_boundary(end) {
-        end -= 1;
-    }
-    value.truncate(end);
+    value.truncate(value.floor_char_boundary(limit));
 }
 
 #[cfg(test)]

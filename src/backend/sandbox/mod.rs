@@ -36,12 +36,28 @@ pub(crate) const MAX_FILE_BYTES: usize = 1024 * 1024;
 pub(crate) const MAX_BINARY_FILE_BYTES: usize = 50 * 1024 * 1024;
 
 mod text {
-    include!(concat!(
-        env!("OUT_DIR"),
-        "/src_backend_sandbox_sandbox_text.rs"
-    ));
+    pub const APPROVAL_POLICY_ALLOW_DESCRIPTION: &str =
+        "Run approval-required actions without network access";
+    pub const APPROVAL_POLICY_ALLOW_LABEL: &str = "Allow · no network";
+    pub const APPROVAL_POLICY_ALLOW_NETWORK_DESCRIPTION: &str =
+        "Run approval-required actions with network access";
+    pub const APPROVAL_POLICY_ALLOW_NETWORK_LABEL: &str = "Allow · network";
+    pub const APPROVAL_POLICY_ASK_DESCRIPTION: &str =
+        "Pause approval-required actions for a human decision";
+    pub const APPROVAL_POLICY_ASK_LABEL: &str = "Ask";
+    pub const APPROVAL_POLICY_FULL_ACCESS_DESCRIPTION: &str =
+        "Run shell commands with host filesystem and network access without approval";
+    pub const APPROVAL_POLICY_FULL_ACCESS_LABEL: &str = "Full access";
+    pub const DEFAULTS_APPROVAL_POLICY: &str = "ask";
+    pub const MANIFEST_DESCRIPTION: &str = "Control mutation approval and command isolation";
+    pub const MANIFEST_LABEL: &str = "Sandbox";
+    pub const PROMPT_LINUX: &str = "möbius is running on Linux.";
+    pub const PROMPT_MACOS: &str = "möbius is running on macOS.";
+    pub const PROMPT_OTHER: &str = "möbius is running on an unsupported operating system.";
+    pub const SETTING_APPROVAL_POLICY_DESCRIPTION: &str =
+        "How approval-required actions receive mutation authority";
+    pub const SETTING_APPROVAL_POLICY_LABEL: &str = "Approval policy";
 }
-
 const APPROVAL_POLICIES: &[MiddlewareSettingChoice] = &[
     MiddlewareSettingChoice {
         disables: &[],

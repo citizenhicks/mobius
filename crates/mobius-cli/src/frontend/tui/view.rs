@@ -970,11 +970,7 @@ pub(super) fn bounded_terminal_text(value: &str, limit: usize) -> String {
     if value.len() <= limit {
         return value;
     }
-    let mut end = limit;
-    while !value.is_char_boundary(end) {
-        end -= 1;
-    }
-    value.truncate(end);
+    value.truncate(value.floor_char_boundary(limit));
     value.push_str("\n[display truncated]");
     value
 }

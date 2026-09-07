@@ -1,6 +1,13 @@
 use super::*;
 
 #[test]
+fn output_capping_keeps_complete_characters_at_both_ends() {
+    assert_eq!(capped("é🗣é🗣", 7), "é…2 chars truncated…🗣");
+    assert_eq!(capped("🗣é", 1), "…2 chars truncated…");
+    assert_eq!(capped("é", 2), "é");
+}
+
+#[test]
 fn tools_do_not_claim_footer_space() {
     assert!(Tools::coding().frontend().widgets.is_empty());
 }

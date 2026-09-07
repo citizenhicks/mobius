@@ -31,7 +31,7 @@ mod coordination;
 mod monitor;
 
 pub(super) use coordination::CompletionUpdate;
-pub(super) use coordination::Followup;
+pub(super) use coordination::Wake;
 pub(super) use monitor::monitor_agent;
 
 const STATE_KEY: &str = "subagents.v2";

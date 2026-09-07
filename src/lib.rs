@@ -171,11 +171,7 @@ pub(crate) fn preview_json(value: &serde_json::Value) -> String {
 }
 
 pub(crate) fn truncate_utf8(value: &str, max_bytes: usize) -> &str {
-    let mut end = value.len().min(max_bytes);
-    while !value.is_char_boundary(end) {
-        end -= 1;
-    }
-    &value[..end]
+    &value[..value.floor_char_boundary(max_bytes)]
 }
 
 #[cfg(test)]

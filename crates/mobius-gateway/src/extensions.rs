@@ -862,5 +862,4 @@ pub(crate) fn extensions_path(state_dir: &Path) -> PathBuf {
 }
 
 #[cfg(test)]
-#[path = "extensions/tests.rs"]
 mod tests;

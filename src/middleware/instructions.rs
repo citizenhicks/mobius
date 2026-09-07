@@ -14,12 +14,10 @@ use super::manifest::MiddlewareManifest;
 use crate::{Error, Result};
 
 mod text {
-    include!(concat!(
-        env!("OUT_DIR"),
-        "/src_middleware_instructions_text.rs"
-    ));
+    pub const MANIFEST_DESCRIPTION: &str = "Load optional root AGENTS.md guidance";
+    pub const MANIFEST_LABEL: &str = "Workspace instructions";
+    pub const PROMPT_TITLE: &str = "workspace instructions";
 }
-
 const OVERRIDE_FILE: &str = "AGENTS.override.md";
 const INSTRUCTIONS_FILE: &str = "AGENTS.md";
 const MAX_INSTRUCTIONS_BYTES: u64 = 40_000;

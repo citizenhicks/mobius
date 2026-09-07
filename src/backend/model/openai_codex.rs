@@ -18,12 +18,13 @@ use crate::Result;
 mod auth;
 
 mod manifest {
-    include!(concat!(
-        env!("OUT_DIR"),
-        "/src_backend_model_openai_codex_manifest.rs"
-    ));
+    use crate::protocol::ToolDiscoveryMode;
+    pub const PROVIDER_LABEL: &str = "Codex";
+    pub const PROVIDER_DESCRIPTION: &str = "Use a ChatGPT Plus or Pro subscription";
+    pub const TOOL_DISCOVERY: ToolDiscoveryMode = ToolDiscoveryMode::Native;
+    pub const CUSTOM_ENDPOINT_TOOL_DISCOVERY: Option<ToolDiscoveryMode> = None;
+    pub const AUTH_LABEL: &str = "ChatGPT";
 }
-
 const PROVIDER_ID: &str = "openai_codex";
 const HTTP_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 const SOCKET_URL: &str = "wss://chatgpt.com/backend-api/codex/responses";

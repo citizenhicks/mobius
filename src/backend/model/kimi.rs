@@ -30,12 +30,51 @@ use crate::protocol::ModelInfo;
 use crate::protocol::TokenUsage;
 
 mod manifest {
-    include!(concat!(
-        env!("OUT_DIR"),
-        "/src_backend_model_kimi_manifest.rs"
-    ));
+    use crate::backend::model::provider::{HostedWebSearch, ModelPreset, ReasoningPreset};
+    use crate::protocol::ToolDiscoveryMode;
+    pub const PROVIDER_LABEL: &str = "Kimi";
+    pub const PROVIDER_DESCRIPTION: &str = "Kimi Chat Completions API";
+    pub const TOOL_DISCOVERY: ToolDiscoveryMode = ToolDiscoveryMode::Rebuild;
+    pub const CUSTOM_ENDPOINT_TOOL_DISCOVERY: Option<ToolDiscoveryMode> = None;
+    pub const DEFAULT_MODEL: Option<&str> = Some("kimi-k3");
+    pub const MODELS: &[ModelPreset] = &[
+        ModelPreset {
+            id: "kimi-k3",
+            label: "Kimi K3",
+            description: "Moonshot's agentic coding model",
+            context_window: 1048576,
+            reasoning: &[
+                ReasoningPreset {
+                    id: "low",
+                    label: "Low",
+                    description: "Prefer speed and lower cost",
+                },
+                ReasoningPreset {
+                    id: "high",
+                    label: "High",
+                    description: "Use deeper reasoning",
+                },
+                ReasoningPreset {
+                    id: "max",
+                    label: "Maximum",
+                    description: "Use K3's maximum reasoning effort",
+                },
+            ],
+            default_reasoning: Some("max"),
+            tool_discovery: ToolDiscoveryMode::Rebuild,
+        },
+        ModelPreset {
+            id: "kimi-k2.7-code",
+            label: "Kimi K2.7 Code",
+            description: "Moonshot's coding model",
+            context_window: 262144,
+            reasoning: &[],
+            default_reasoning: None,
+            tool_discovery: ToolDiscoveryMode::Rebuild,
+        },
+    ];
+    pub const SEARCH: &[HostedWebSearch] = &[HostedWebSearch::Off];
 }
-
 const DEFAULT_BASE_URL: &str = "https://api.moonshot.ai/v1";
 
 /// Kimi's native Chat Completions provider.

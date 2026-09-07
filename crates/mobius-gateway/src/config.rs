@@ -59,19 +59,15 @@ const MAX_ATTACHED_FOLDERS: usize = 8;
 const SECONDS_PER_DAY: u64 = 86_400;
 const USAGE_HISTORY_DAYS: u64 = 52 * 7;
 
-mod defaults {
-    include!(concat!(env!("OUT_DIR"), "/defaults.rs"));
-}
-
 /// Default loopback listener used by a local gateway.
 pub const DEFAULT_LISTEN: SocketAddr =
     SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 8741);
 
 /// Default system prompt installed by `mobius-gateway init`.
-pub const DEFAULT_SYSTEM_PROMPT: &str = defaults::DEFAULT_SYSTEM_PROMPT;
+pub const DEFAULT_SYSTEM_PROMPT: &str = include_str!("config/default_prompt.md");
 
 /// Context window used for custom models without an advertised preset.
-pub const DEFAULT_CONTEXT_WINDOW: i64 = defaults::DEFAULT_CONTEXT_WINDOW;
+pub const DEFAULT_CONTEXT_WINDOW: i64 = 272_000;
 
 /// Certificate paths required by a TLS listener.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

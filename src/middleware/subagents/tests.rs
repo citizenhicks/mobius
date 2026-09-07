@@ -98,7 +98,6 @@ fn renders_every_subagent_tool_call() {
     for name in [
         "spawn_agent",
         "send_message",
-        "followup_task",
         "list_agents",
         "interrupt_agent",
         "wait_agent",
@@ -129,7 +128,7 @@ fn renders_every_subagent_tool_call() {
         assert_eq!(begin.id, end.id);
         let mut body = begin.text;
         end.update.apply(&mut body, &end.text);
-        if matches!(name, "send_message" | "followup_task") {
+        if name == "send_message" {
             assert_eq!(body, format!("/root/reviewer\n{message}"));
         }
     }

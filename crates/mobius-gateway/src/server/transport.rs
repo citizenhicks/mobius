@@ -1,9 +1,11 @@
 use super::*;
 
 use std::collections::VecDeque;
+use std::fs::File;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+use rustls::pki_types::pem::{self, PemObject as _};
 use serde::Deserialize;
 use tokio::io::{AsyncWriteExt as _, ReadBuf};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
@@ -671,8 +673,9 @@ pub(super) fn tls_acceptor(config: &TlsConfig) -> Result<TlsAcceptor> {
 }
 
 pub(super) fn load_certificates(path: &Path) -> Result<Vec<CertificateDer<'static>>> {
-    let mut reader = BufReader::new(File::open(path)?);
-    let certificates = rustls_pemfile::certs(&mut reader).collect::<std::io::Result<Vec<_>>>()?;
+    let certificates = CertificateDer::pem_reader_iter(File::open(path)?)
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(pem_error)?;
     if certificates.is_empty() {
         return Err(Error::Config("TLS certificate file is empty".into()));
     }
@@ -680,7 +683,16 @@ pub(super) fn load_certificates(path: &Path) -> Result<Vec<CertificateDer<'stati
 }
 
 pub(super) fn load_private_key(path: &Path) -> Result<PrivateKeyDer<'static>> {
-    let mut reader = BufReader::new(File::open(path)?);
-    rustls_pemfile::private_key(&mut reader)?
+    PrivateKeyDer::pem_reader_iter(File::open(path)?)
+        .next()
+        .transpose()
+        .map_err(pem_error)?
         .ok_or_else(|| Error::Config("TLS private-key file is empty".into()))
+}
+
+fn pem_error(error: pem::Error) -> std::io::Error {
+    match error {
+        pem::Error::Io(error) => error,
+        error => std::io::Error::new(std::io::ErrorKind::InvalidData, error),
+    }
 }

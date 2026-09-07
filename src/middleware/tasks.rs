@@ -21,9 +21,15 @@ use crate::protocol::{
 use crate::{BoxFuture, Error, Result};
 
 mod text {
-    include!(concat!(env!("OUT_DIR"), "/src_middleware_tasks_text.rs"));
+    pub const COMMAND_TASKS_DESCRIPTION: &str = "show the current todo list";
+    pub const MANIFEST_DESCRIPTION: &str = "Maintain a durable todo list for multi-step work";
+    pub const MANIFEST_LABEL: &str = "Tasks";
+    pub const PROMPT_MAIN: &str = "Use `write_todos` only for genuinely multi-step work. Keep the list short, mark work in_progress before starting and completed immediately after finishing, and end with a substantive answer. A <tasks> block restores the authoritative saved list when context restarts.";
+    pub const RENDER_EMPTY: &str = "No tasks.";
+    pub const RENDER_HEADING: &str = "Tasks";
+    pub const TOOL_WRITE_TODOS_DESCRIPTION: &str =
+        "Replace the session todo list; an empty list clears it.";
 }
-
 const STATE_KEY: &str = "tasks.v1";
 const PROJECTION_KIND: &str = "tasks_state";
 const MAX_TODOS: usize = 50;

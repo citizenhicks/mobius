@@ -13,12 +13,17 @@ use crate::Result;
 use crate::protocol::ToolDiscoveryMode;
 
 mod manifest {
-    include!(concat!(
-        env!("OUT_DIR"),
-        "/src_backend_model_openrouter_manifest.rs"
-    ));
+    use crate::backend::model::provider::{HostedWebSearch, ModelPreset};
+    use crate::protocol::ToolDiscoveryMode;
+    pub const PROVIDER_LABEL: &str = "OpenRouter";
+    pub const PROVIDER_DESCRIPTION: &str = "Responses API across multiple model vendors";
+    pub const TOOL_DISCOVERY: ToolDiscoveryMode = ToolDiscoveryMode::Native;
+    pub const CUSTOM_ENDPOINT_TOOL_DISCOVERY: Option<ToolDiscoveryMode> =
+        Some(ToolDiscoveryMode::Rebuild);
+    pub const DEFAULT_MODEL: Option<&str> = None;
+    pub const MODELS: &[ModelPreset] = &[];
+    pub const SEARCH: &[HostedWebSearch] = &[HostedWebSearch::Off, HostedWebSearch::Live];
 }
-
 const BASE_URL: &str = "https://openrouter.ai/api/v1";
 
 pub(super) const fn provider() -> ProviderDefinition {

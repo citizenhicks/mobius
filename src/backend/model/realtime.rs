@@ -534,10 +534,7 @@ async fn drive(
 fn context_chunks(mut text: &str) -> Vec<&str> {
     let mut chunks = Vec::new();
     while !text.is_empty() {
-        let mut end = text.len().min(500);
-        while !text.is_char_boundary(end) {
-            end -= 1;
-        }
+        let end = text.floor_char_boundary(500);
         chunks.push(&text[..end]);
         text = &text[end..];
     }

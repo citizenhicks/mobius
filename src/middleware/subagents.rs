@@ -46,9 +46,7 @@ use self::runtime::Shared;
 mod runtime;
 mod tools;
 
-use self::tools::{
-    FollowupTask, InterruptAgent, ListAgents, SendMessage, SpawnAgent, WaitAgent, fork_context,
-};
+use self::tools::{InterruptAgent, ListAgents, SendMessage, SpawnAgent, WaitAgent, fork_context};
 #[cfg(test)]
 use self::tools::{cleanup_error, supervise, wait_parameters, wait_timeout};
 
@@ -56,12 +54,52 @@ const MAX_TASK_NAME_BYTES: usize = 64;
 const IDENTITY_KEY: &str = "subagents.identity";
 const SPAWN_CONTEXT_KEY: &str = "subagents.spawn_context";
 mod text {
-    include!(concat!(
-        env!("OUT_DIR"),
-        "/src_middleware_subagents_text.rs"
-    ));
+    pub const COMMAND_DESCRIPTION: &str = "open a subagent thread";
+    pub const DEFAULTS_MAX_AGENTS: i64 = 32;
+    pub const DEFAULTS_MAX_CONCURRENCY: i64 = 8;
+    pub const DEFAULTS_MAX_DEPTH: i64 = 4;
+    pub const DEFAULTS_WAIT_MS: i64 = 30000;
+    pub const MANIFEST_DESCRIPTION: &str = "Delegate independent work to durable child agents";
+    pub const MANIFEST_LABEL: &str = "Subagents";
+    pub const PROMPT_DEFAULT: &str = "Complete the task and report concisely to your parent.";
+    pub const PROMPT_ROOT: &str = "Delegate independent work to subagents when it can run in parallel. Spawn with fresh context by default; include recent turns only when the task requires them, and full history only when essential. They share your workspace; continue your own work while they run, and wait only when you need their results.";
+    pub const RENDER_AGENT: &str = "Agent";
+    pub const RENDER_AGENTS: &str = "Agents";
+    pub const RENDER_EMPTY: &str = "no subagents";
+    pub const RENDER_INTERRUPT: &str = "Interrupt";
+    pub const RENDER_MESSAGE: &str = "Message";
+    pub const RENDER_OPEN: &str = "Open subagent";
+    pub const RENDER_WAIT: &str = "Wait";
+    pub const SETTING_MAX_AGENTS_DESCRIPTION: &str = "Maximum retained agents, including the root";
+    pub const SETTING_MAX_AGENTS_LABEL: &str = "Maximum agents";
+    pub const SETTING_MAX_AGENTS_STEP: i64 = 1;
+    pub const SETTING_MAX_CONCURRENCY_DESCRIPTION: &str =
+        "Maximum active agents, including the root";
+    pub const SETTING_MAX_CONCURRENCY_LABEL: &str = "Maximum concurrency";
+    pub const SETTING_MAX_CONCURRENCY_STEP: i64 = 1;
+    pub const SETTING_MAX_DEPTH_DESCRIPTION: &str = "Maximum child-agent nesting depth";
+    pub const SETTING_MAX_DEPTH_LABEL: &str = "Maximum depth";
+    pub const SETTING_MAX_DEPTH_STEP: i64 = 1;
+    pub const SETTING_MODEL_ROUTE_DESCRIPTION: &str =
+        "Model route used by child agents when a spawn does not select one";
+    pub const SETTING_MODEL_ROUTE_LABEL: &str = "Default model";
+    pub const SETTING_MODEL_ROUTE_UNSET_LABEL: &str = "Inherit parent";
+    pub const TOOL_INTERRUPT_AGENT_DESCRIPTION: &str = "Interrupt a subagent in this chat's task tree and return its prior status. Cannot target /root.";
+    pub const TOOL_LIST_AGENTS_DESCRIPTION: &str =
+        "List this chat's subagents and their canonical task paths; does not list peer Bots.";
+    pub const TOOL_PARAMETER_TARGET_DESCRIPTION: &str = "Exact canonical task path from spawn_agent or list_agents, such as /root/reviewer; not a Bot handle or Bot ID.";
+    pub const TOOL_SEND_MESSAGE_DESCRIPTION: &str = "Send collaboration context to an agent in this chat's subagent task tree; completed or interrupted children are started again for the message. A child may message its parent at the parent's canonical path, including /root. The root agent is never restarted.";
+    pub const TOOL_SPAWN_AGENT_DESCRIPTION: &str = "Start an async child for independent work in this chat's subagent task tree; return its canonical task path.";
+    pub const TOOL_SPAWN_AGENT_PARAMETER_FORK_TURNS_DESCRIPTION: &str = "`none` for a fresh child (default), a positive integer for required recent turns, or `all` only when full history is essential.";
+    pub const TOOL_SPAWN_AGENT_PARAMETER_MODEL_DESCRIPTION: &str =
+        "Registered route; defaults to the child route, then parent.";
+    pub const TOOL_SPAWN_AGENT_PARAMETER_REASONING_EFFORT_DESCRIPTION: &str =
+        "Reasoning effort for the selected model; defaults to middleware configuration.";
+    pub const TOOL_SPAWN_AGENT_PARAMETER_TASK_NAME_DESCRIPTION: &str =
+        "1-64 lowercase letters, digits, or underscores.";
+    pub const TOOL_WAIT_AGENT_DESCRIPTION: &str =
+        "Wait for an update from this chat's subagent task tree.";
 }
-
 const MIN_WAIT_MS: u64 = 10_000;
 const MAX_WAIT_MS: u64 = 120_000;
 const MAX_CONFIGURED_DEPTH: u8 = 16;
@@ -550,10 +588,6 @@ impl Middleware for Subagents {
             shared: Arc::clone(&self.shared),
             scope: Arc::clone(&scope),
         }))?;
-        catalog.register(Arc::new(FollowupTask {
-            shared: Arc::clone(&self.shared),
-            scope: Arc::clone(&scope),
-        }))?;
         catalog.register(Arc::new(ListAgents {
             shared: Arc::clone(&self.shared),
             scope: Arc::clone(&scope),
@@ -597,7 +631,6 @@ impl Middleware for Subagents {
                     name,
                     "spawn_agent"
                         | "send_message"
-                        | "followup_task"
                         | "list_agents"
                         | "interrupt_agent"
                         | "wait_agent"
@@ -607,9 +640,6 @@ impl Middleware for Subagents {
                 _ if matches!(event, EventMsg::ToolCallEnd(_)) => name.into(),
                 "spawn_agent" => labeled_tool_heading(text::RENDER_AGENT, "task_name", arguments),
                 "send_message" => labeled_tool_heading(text::RENDER_MESSAGE, "target", arguments),
-                "followup_task" => {
-                    labeled_tool_heading(text::RENDER_FOLLOW_UP, "target", arguments)
-                }
                 "list_agents" => {
                     labeled_tool_heading(text::RENDER_AGENTS, "path_prefix", arguments)
                 }
@@ -621,7 +651,7 @@ impl Middleware for Subagents {
             },
         )?;
         if let EventMsg::ToolCallBegin(call) = event
-            && matches!(call.name.as_str(), "send_message" | "followup_task")
+            && call.name == "send_message"
             && let Some(message) = call.arguments.get("text").and_then(Value::as_str)
         {
             FrontendBlockUpdate::Append.apply(&mut block.text, message);

@@ -534,24 +534,21 @@ impl Runner {
                     msg,
                 })
             });
-            let response = model.respond(
-                &provider,
-                ModelRequest {
-                    session_id: &model_session_id,
-                    prompt_cache: Some(PromptCacheIdentity {
-                        key: &cache_key,
-                        context_epoch: self.state.context_epoch,
-                    }),
-                    instructions: &instructions,
-                    input: request_input,
-                    catalog_revision: &catalog_revision,
-                    tools: &tools.direct,
-                    deferred_tools: &tools.deferred,
-                    allow_hosted_tools: tools.allow_hosted_tools,
-                    allow_continuation: true,
-                },
-                stream,
-            );
+            let request = ModelRequest {
+                session_id: &model_session_id,
+                prompt_cache: Some(PromptCacheIdentity {
+                    key: &cache_key,
+                    context_epoch: self.state.context_epoch,
+                }),
+                instructions: &instructions,
+                input: request_input,
+                catalog_revision: &catalog_revision,
+                tools: &tools.direct,
+                deferred_tools: &tools.deferred,
+                allow_hosted_tools: tools.allow_hosted_tools,
+                allow_continuation: true,
+            };
+            let response = model.respond(&provider, request, stream);
             let response_gate = sink_gate;
             let response = async move {
                 let response = response.await;

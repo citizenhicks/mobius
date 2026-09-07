@@ -189,11 +189,7 @@ async fn filtered_session_catalog(
         if let Some(message) = &mut session.first_user_message
             && message.len() > MAX_SESSION_PREVIEW_BYTES
         {
-            let mut end = MAX_SESSION_PREVIEW_BYTES;
-            while !message.is_char_boundary(end) {
-                end -= 1;
-            }
-            message.truncate(end);
+            message.truncate(message.floor_char_boundary(MAX_SESSION_PREVIEW_BYTES));
         }
     }
     let activities = activities

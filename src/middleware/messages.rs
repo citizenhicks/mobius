@@ -20,9 +20,23 @@ use crate::protocol::{
 use crate::{BoxFuture, Error, Result};
 
 mod text {
-    include!(concat!(env!("OUT_DIR"), "/src_middleware_messages_text.rs"));
+    pub const DEFAULTS_MAX_PENDING: i64 = 64;
+    pub const MANIFEST_DESCRIPTION: &str =
+        "Deliver conversation messages at the correct turn boundary";
+    pub const MANIFEST_LABEL: &str = "Messages";
+    pub const SETTING_DELIVERY_DESCRIPTION: &str =
+        "Default behavior for user messages sent while the agent is working";
+    pub const SETTING_DELIVERY_LABEL: &str = "Active message delivery";
+    pub const SETTING_DELIVERY_QUEUE_DESCRIPTION: &str =
+        "Start a new turn after the active turn finishes";
+    pub const SETTING_DELIVERY_QUEUE_LABEL: &str = "Queue";
+    pub const SETTING_DELIVERY_STEER_DESCRIPTION: &str =
+        "Inject at the next model boundary of the active turn";
+    pub const SETTING_DELIVERY_STEER_LABEL: &str = "Steer";
+    pub const SETTING_MAX_PENDING_DESCRIPTION: &str = "Maximum messages waiting for delivery";
+    pub const SETTING_MAX_PENDING_LABEL: &str = "Maximum pending messages";
+    pub const SETTING_MAX_PENDING_STEP: i64 = 1;
 }
-
 const MAX_PENDING_MESSAGES: usize = 1_024;
 const _: () = {
     assert!(text::DEFAULTS_MAX_PENDING >= 1);

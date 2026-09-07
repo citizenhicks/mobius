@@ -1,18 +1,17 @@
 [package]
 name = "mobius"
 version = "0.15.2"
-edition = "2024"
-rust-version = "1.98"
+edition.workspace = true
+rust-version.workspace = true
 description = "A small, modular Rust framework for building coding agents"
-license = "Apache-2.0"
-repository = "https://github.com/citizenhicks/mobius"
+license.workspace = true
+repository.workspace = true
 documentation = "https://docs.rs/mobius"
 readme = "README.md"
-publish = ["crates-io"]
+publish.workspace = true
 keywords = ["agent", "ai", "llm", "openai", "tools"]
 categories = ["asynchronous", "development-tools"]
 include = [
-    "/build.rs",
     "/src/**",
     "/tests/**",
     "/Cargo.toml",
@@ -29,30 +28,50 @@ members = ["crates/mobius-cli", "crates/mobius-gateway"]
 default-members = ["crates/mobius-cli"]
 resolver = "3"
 
-[dependencies]
+[workspace.package]
+edition = "2024"
+rust-version = "1.98"
+license = "Apache-2.0"
+repository = "https://github.com/citizenhicks/mobius"
+publish = ["crates-io"]
+
+[workspace.dependencies]
 base64 = "0.22"
-bm25 = "2.3.2"
-cap-std = "4"
+chrono = "0.4"
+clap = { version = "4.6.6", features = ["derive"] }
 diffy = "0.4.2"
 futures-util = { version = "0.3", features = ["sink"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
-regex = "1"
+mobius = { version = "=0.15.2", path = "." }
 rusqlite = { version = "0.39", default-features = false, features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 tempfile = "3"
 thiserror = "2"
-tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt", "sync", "time"] }
+tokio = "1"
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 uuid = { version = "1", features = ["v4"] }
 
-[dev-dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "test-util"] }
+[dependencies]
+base64.workspace = true
+bm25 = "2.3.2"
+cap-std = "4"
+diffy.workspace = true
+futures-util.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+regex = "1"
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt", "sync", "time"] }
+tokio-tungstenite.workspace = true
+uuid.workspace = true
 
-[build-dependencies]
-serde = { version = "1", features = ["derive"] }
-toml = "1"
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

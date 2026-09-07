@@ -49,12 +49,17 @@ use crate::protocol::ToolDiscoveryMode;
 use crate::protocol::WebSearchAction;
 
 mod manifest {
-    include!(concat!(
-        env!("OUT_DIR"),
-        "/src_backend_model_openai_manifest.rs"
-    ));
+    use crate::backend::model::provider::{HostedWebSearch, ModelPreset};
+    use crate::protocol::ToolDiscoveryMode;
+    pub const PROVIDER_LABEL: &str = "Local";
+    pub const PROVIDER_DESCRIPTION: &str =
+        "Any local or remote OpenAI-compatible Responses endpoint";
+    pub const TOOL_DISCOVERY: ToolDiscoveryMode = ToolDiscoveryMode::Rebuild;
+    pub const CUSTOM_ENDPOINT_TOOL_DISCOVERY: Option<ToolDiscoveryMode> = None;
+    pub const DEFAULT_MODEL: Option<&str> = None;
+    pub const MODELS: &[ModelPreset] = &[];
+    pub const SEARCH: &[HostedWebSearch] = &[HostedWebSearch::Off];
 }
-
 const MAX_JSON_BYTES: usize = 16 * 1024 * 1024;
 const MAX_STREAM_OUTPUT_ITEMS: usize = 1_024;
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";

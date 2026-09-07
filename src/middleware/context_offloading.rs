@@ -9,12 +9,15 @@ use crate::protocol::{TOOL_ERROR_FIELD, is_internal_message, tool_complete_bound
 use crate::{BoxFuture, Error, Result};
 
 mod text {
-    include!(concat!(
-        env!("OUT_DIR"),
-        "/src_middleware_context_offloading_text.rs"
-    ));
+    pub const DEFAULTS_STALE_AFTER_TOKENS: i64 = 50000;
+    pub const MANIFEST_DESCRIPTION: &str =
+        "Mask stale successful tool output from active model context";
+    pub const MANIFEST_LABEL: &str = "Context offloading";
+    pub const SETTING_STALE_AFTER_TOKENS_DESCRIPTION: &str =
+        "Successful tool results older than this trailing window are masked";
+    pub const SETTING_STALE_AFTER_TOKENS_LABEL: &str = "Stale after tokens";
+    pub const SETTING_STALE_AFTER_TOKENS_STEP: i64 = 10000;
 }
-
 const MASKED_TOOL_OUTPUT: &str = "[offloaded]";
 
 fn high_water_tokens(stale_after_tokens: usize) -> usize {

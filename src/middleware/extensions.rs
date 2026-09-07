@@ -48,12 +48,12 @@ mod hooks;
 mod package;
 
 mod text {
-    include!(concat!(
-        env!("OUT_DIR"),
-        "/src_middleware_extensions_text.rs"
-    ));
+    pub const FALLBACK_SKILL_DESCRIPTION: &str = "Local workflow instructions.";
+    pub const MANIFEST_DESCRIPTION: &str =
+        "Load standalone Agent Skills and activated OpenAI plugin packages";
+    pub const MANIFEST_LABEL: &str = "Extensions";
+    pub const PROMPT_DEFAULT: &str = "When a skill is named or matches the task, use `read_file` to read its complete `SKILL.md` at the advertised location before following it. Resolve referenced paths relative to that skill directory and use their absolute paths with normal tools.";
 }
-
 const MAX_SKILLS: usize = 64;
 const MAX_SKILL_BYTES: u64 = 40_000;
 const MAX_PLUGINS: usize = 32;

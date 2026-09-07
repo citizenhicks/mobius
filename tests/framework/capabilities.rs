@@ -122,10 +122,26 @@ async fn async_subagent_uses_configured_model_reasoning_and_durable_fork() {
             "wait_agent",
             serde_json::json!({"timeout_ms": 10_000}),
         ),
+        tool_response(
+            "call-send",
+            "send_message",
+            serde_json::json!({
+                "target": "/root/cheap",
+                "text": "resume task"
+            }),
+        ),
+        tool_response(
+            "call-wait-resumed",
+            "wait_agent",
+            serde_json::json!({"timeout_ms": 10_000}),
+        ),
         text_response("root complete"),
     ]));
     let unused_child_model = Arc::new(ScriptedModel::new(Vec::new()));
-    let child_model = Arc::new(ScriptedModel::new(vec![text_response("child complete")]));
+    let child_model = Arc::new(ScriptedModel::new(vec![
+        text_response("child complete"),
+        text_response("child resumed"),
+    ]));
     let root_route: Arc<dyn Model> = root_model.clone();
     let child_route: Arc<dyn Model> = unused_child_model;
     let child_high_route: Arc<dyn Model> = child_model.clone();
@@ -247,6 +263,6 @@ async fn async_subagent_uses_configured_model_reasoning_and_durable_fork() {
             child_model.requests.lock().expect("child requests").len(),
             child.parent_session_id.as_deref(),
         ),
-        ("root complete".to_string(), 1, Some("root"))
+        ("root complete".to_string(), 2, Some("root"))
     );
 }

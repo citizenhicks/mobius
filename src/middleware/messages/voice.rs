@@ -243,10 +243,7 @@ fn progress_text(event: &EventMsg, assistant: &str) -> Option<String> {
 }
 
 fn tail(text: &str, max_bytes: usize) -> &str {
-    let mut start = text.len().saturating_sub(max_bytes);
-    while !text.is_char_boundary(start) {
-        start += 1;
-    }
+    let start = text.ceil_char_boundary(text.len().saturating_sub(max_bytes));
     &text[start..]
 }
 
@@ -641,6 +638,15 @@ mod tests {
         let snapshot = task_context(&history);
         assert!(snapshot.len() <= 24 * 1024);
         assert!(snapshot.ends_with('🗣'));
+    }
+
+    #[test]
+    fn tail_keeps_complete_characters_within_the_byte_budget() {
+        assert_eq!(tail("a🗣é", 0), "");
+        assert_eq!(tail("a🗣é", 1), "");
+        assert_eq!(tail("a🗣é", 3), "é");
+        assert_eq!(tail("a🗣é", 6), "🗣é");
+        assert_eq!(tail("a🗣é", usize::MAX), "a🗣é");
     }
 
     #[test]

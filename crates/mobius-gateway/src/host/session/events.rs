@@ -470,14 +470,7 @@ fn completed_activity(error: Option<String>, final_answer: Option<&str>) -> Sess
 }
 
 fn bounded_activity_message(message: &str) -> String {
-    if message.len() <= MAX_ACTIVITY_MESSAGE_BYTES {
-        return message.into();
-    }
-    let mut end = MAX_ACTIVITY_MESSAGE_BYTES;
-    while !message.is_char_boundary(end) {
-        end -= 1;
-    }
-    message[..end].into()
+    message[..message.floor_char_boundary(MAX_ACTIVITY_MESSAGE_BYTES)].into()
 }
 
 #[cfg(test)]

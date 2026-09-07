@@ -46,12 +46,97 @@ use crate::protocol::ToolDiscoveryMode;
 use crate::protocol::WebSearchAction;
 
 mod manifest {
-    include!(concat!(
-        env!("OUT_DIR"),
-        "/src_backend_model_anthropic_manifest.rs"
-    ));
+    use crate::backend::model::provider::{HostedWebSearch, ModelPreset, ReasoningPreset};
+    use crate::protocol::ToolDiscoveryMode;
+    pub const PROVIDER_LABEL: &str = "Anthropic";
+    pub const PROVIDER_DESCRIPTION: &str = "Native Messages API with adaptive thinking";
+    pub const TOOL_DISCOVERY: ToolDiscoveryMode = ToolDiscoveryMode::Rebuild;
+    pub const CUSTOM_ENDPOINT_TOOL_DISCOVERY: Option<ToolDiscoveryMode> =
+        Some(ToolDiscoveryMode::Rebuild);
+    pub const DEFAULT_MODEL: Option<&str> = Some("claude-sonnet-5");
+    pub const MODELS: &[ModelPreset] = &[
+        ModelPreset {
+            id: "claude-sonnet-5",
+            label: "Claude Sonnet 5",
+            description: "Fast frontier model for coding and agents",
+            context_window: 1000000,
+            reasoning: &[
+                ReasoningPreset {
+                    id: "low",
+                    label: "Low",
+                    description: "Prefer speed and lower cost",
+                },
+                ReasoningPreset {
+                    id: "medium",
+                    label: "Medium",
+                    description: "Balance reasoning and latency",
+                },
+                ReasoningPreset {
+                    id: "high",
+                    label: "High",
+                    description: "Anthropic's default reasoning effort",
+                },
+                ReasoningPreset {
+                    id: "xhigh",
+                    label: "Extra high",
+                    description: "Extended effort for long-horizon work",
+                },
+                ReasoningPreset {
+                    id: "max",
+                    label: "Maximum",
+                    description: "Use maximum available reasoning",
+                },
+            ],
+            default_reasoning: Some("high"),
+            tool_discovery: ToolDiscoveryMode::Rebuild,
+        },
+        ModelPreset {
+            id: "claude-opus-4-8",
+            label: "Claude Opus 4.8",
+            description: "Highest-capability Anthropic model",
+            context_window: 1000000,
+            reasoning: &[
+                ReasoningPreset {
+                    id: "low",
+                    label: "Low",
+                    description: "Prefer speed and lower cost",
+                },
+                ReasoningPreset {
+                    id: "medium",
+                    label: "Medium",
+                    description: "Balance reasoning and latency",
+                },
+                ReasoningPreset {
+                    id: "high",
+                    label: "High",
+                    description: "Anthropic's default reasoning effort",
+                },
+                ReasoningPreset {
+                    id: "xhigh",
+                    label: "Extra high",
+                    description: "Extended effort for long-horizon work",
+                },
+                ReasoningPreset {
+                    id: "max",
+                    label: "Maximum",
+                    description: "Use maximum available reasoning",
+                },
+            ],
+            default_reasoning: Some("high"),
+            tool_discovery: ToolDiscoveryMode::Native,
+        },
+        ModelPreset {
+            id: "claude-haiku-4-5",
+            label: "Claude Haiku 4.5",
+            description: "Fast, economical Anthropic model",
+            context_window: 200000,
+            reasoning: &[],
+            default_reasoning: None,
+            tool_discovery: ToolDiscoveryMode::Native,
+        },
+    ];
+    pub const SEARCH: &[HostedWebSearch] = &[HostedWebSearch::Off, HostedWebSearch::Live];
 }
-
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com/v1";
 const API_VERSION: &str = "2023-06-01";
 const MAX_OUTPUT_TOKENS: u64 = 64_000;

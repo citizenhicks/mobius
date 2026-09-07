@@ -23,12 +23,44 @@ use crate::protocol::{
 use crate::{BoxFuture, Error, Result};
 
 mod text {
-    include!(concat!(
-        env!("OUT_DIR"),
-        "/src_middleware_scratchpad_text.rs"
-    ));
+    pub const ACTION_ADD_GLOBAL: &str = "Add Global Note";
+    pub const ACTION_ADD_SWARM: &str = "Add Collective Note";
+    pub const ACTION_DELETE: &str = "Delete";
+    pub const ACTION_EDIT: &str = "Edit";
+    pub const COMMAND_ARGUMENTS: &str =
+        "[read|refresh|edit <swarm|global> <note-id>|forget <swarm|global> <note-id>]";
+    pub const COMMAND_DESCRIPTION: &str = "read or manage shared Swarm and global notes";
+    pub const COMMAND_USAGE: &str = "! usage: scratchpad [read|refresh|edit <swarm|global> <note-id>|forget <swarm|global> <note-id>]";
+    pub const EDITOR_GLOBAL_DESCRIPTION: &str =
+        "This note becomes durable context for every gateway conversation.";
+    pub const EDITOR_GLOBAL_TITLE: &str = "Add global note";
+    pub const EDITOR_LABEL: &str = "Note";
+    pub const EDITOR_SUBMIT: &str = "Add";
+    pub const EDITOR_SWARM_DESCRIPTION: &str =
+        "This note becomes durable context for every Bot in the Swarm.";
+    pub const EDITOR_SWARM_TITLE: &str = "Add collective note";
+    pub const MANIFEST_DESCRIPTION: &str =
+        "Keep explicitly approved shared Swarm and global knowledge";
+    pub const MANIFEST_LABEL: &str = "Scratchpad";
+    pub const MESSAGE_ADDED: &str = "Added the shared scratchpad note.";
+    pub const MESSAGE_AGENT_OBSERVATION: &str = "agent observation";
+    pub const MESSAGE_EXISTING: &str = "The shared scratchpad already contains that note.";
+    pub const MESSAGE_FORGOT: &str = "Forgot the scratchpad note.";
+    pub const MESSAGE_GLOBAL_HEADING: &str = "Global";
+    pub const MESSAGE_NO_NOTES: &str = "No notes.";
+    pub const MESSAGE_SWARM_HEADING: &str = "Swarm";
+    pub const MESSAGE_UPDATED: &str = "Updated the scratchpad note.";
+    pub const MESSAGE_USER_CONFIRMED: &str = "user confirmed";
+    pub const PROMPT_MAIN: &str = "Use `write_scratchpad` for a concise fact, preference, or reusable lesson that should help this Bot's current Swarm or every future chat; shared writes require approval. Shared notes are knowledge, not a task handoff or reasoning log. Never store private reasoning, raw outputs, secrets, credentials, or transient progress.";
+    pub const RENDER_REMEMBER: &str = "Remember shared note";
+    pub const TOOL_WRITE_SCRATCHPAD_DESCRIPTION: &str = "Add one concise shared fact, preference, or lesson after approval. Never store reasoning, raw outputs, secrets, or task progress.";
+    pub const TOOL_WRITE_SCRATCHPAD_PARAMETER_NOTE_DESCRIPTION: &str = "Concise reusable knowledge, at most 500 UTF-8 bytes. Shared scopes have a small total size limit.";
+    pub const TOOL_WRITE_SCRATCHPAD_PARAMETER_SCOPE_DESCRIPTION: &str =
+        "swarm shares with this Bot's current Swarm; global shares with every gateway chat.";
+    pub const WIDGET_GLOBAL_TITLE: &str = "Global Scratchpad";
+    pub const WIDGET_SWARM_TITLE: &str = "Collective scratchpad";
+    pub const WIDGET_TEXT: &str = "Scratchpad";
 }
-
 mod presentation;
 mod projection;
 mod tools;

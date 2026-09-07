@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::sync::Arc;
 use std::time::Duration;
 
 use super::AgentRecord;
@@ -51,7 +52,7 @@ impl CompletionUpdate {
     }
 }
 
-pub(in crate::middleware::subagents) struct Followup {
+pub(in crate::middleware::subagents) struct Wake {
     pub(in crate::middleware::subagents) record: AgentRecord,
     pub(in crate::middleware::subagents) sender: Option<AgentSender>,
     pub(in crate::middleware::subagents) previous: AgentStatus,
@@ -92,124 +93,121 @@ impl Shared {
             .collect())
     }
 
-    pub(in crate::middleware::subagents) async fn submit_message(
+    pub(in crate::middleware::subagents) async fn send_message(
         &self,
         root_id: &str,
         from: &str,
         target: &str,
         message: MessageSubmission,
-    ) -> Result<()> {
+    ) -> Result<Option<Wake>> {
         if from == target {
             return Err(Error::Tool("an agent cannot message itself".into()));
         }
-        let root = self.root(root_id).await?;
-        let mut root = root.state.lock().await;
-        if target != "/root" && !root.tree.agents.contains_key(target) {
-            return Err(unknown_target(target));
-        }
-        let reports_to_parent = root
-            .tree
-            .agents
-            .get(from)
-            .is_some_and(|entry| entry.parent == target);
-        let sender = if target == "/root" {
-            root.root_sender
-                .as_ref()
-                .and_then(|sender| sender.upgrade())
-        } else {
-            root.senders.get(target).cloned()
-        };
-        let sender = sender.ok_or_else(|| {
-            Error::Stopped(format!(
-                "agent `{target}` is not running; use `followup_task` to restart it"
-            ))
-        })?;
-        if reports_to_parent {
-            sender.submit(Op::Message {
-                message: message.clone(),
-            })?;
-            root.parent_reports
-                .entry(from.into())
-                .or_default()
-                .push(message);
-        } else {
-            sender.submit(Op::Message { message })?;
-        }
-        Ok(())
-    }
-
-    pub(in crate::middleware::subagents) async fn prepare_followup(
-        &self,
-        root_id: &str,
-        from: &str,
-        target: &str,
-    ) -> Result<Followup> {
-        if from == target {
-            return Err(Error::Tool("an agent cannot follow up with itself".into()));
+        let root_slot = self.root(root_id).await?;
+        let _writer = root_slot.writer.lock().await;
+        if !self
+            .roots
+            .lock()
+            .await
+            .get(root_id)
+            .is_some_and(|current| Arc::ptr_eq(current, &root_slot))
+        {
+            return Err(Error::Unknown(format!("agent tree `{root_id}`")));
         }
         if target == "/root" {
-            return Err(Error::Tool(
-                "follow-up tasks cannot target the root agent".into(),
-            ));
+            let mut root = root_slot.state.lock().await;
+            let sender = root
+                .root_sender
+                .as_ref()
+                .and_then(|sender| sender.upgrade())
+                .ok_or_else(|| Error::Stopped("agent `/root` is not running".into()))?;
+            let reports_to_parent = root
+                .tree
+                .agents
+                .get(from)
+                .is_some_and(|entry| entry.parent == target);
+            if reports_to_parent {
+                sender.submit(Op::Message {
+                    message: message.clone(),
+                })?;
+                root.parent_reports
+                    .entry(from.into())
+                    .or_default()
+                    .push(message);
+            } else {
+                sender.submit(Op::Message { message })?;
+            }
+            return Ok(None);
         }
-        let max_concurrency = self.max_concurrency;
-        self.commit_root(
-            root_id,
-            |root| {
-                let status = root
+        let mut root = root_slot.state.lock().await;
+        let status = root
+            .tree
+            .agents
+            .get(target)
+            .ok_or_else(|| unknown_target(target))?
+            .status
+            .clone();
+        match &status {
+            AgentStatus::PendingInit => {
+                Err(Error::Busy(format!("agent `{target}` is initializing")))
+            }
+            AgentStatus::Running => {
+                let reports_to_parent = root
                     .tree
                     .agents
+                    .get(from)
+                    .is_some_and(|entry| entry.parent == target);
+                let sender = root
+                    .senders
                     .get(target)
-                    .ok_or_else(|| unknown_target(target))?
-                    .status
-                    .clone();
-                if matches!(status, AgentStatus::PendingInit) {
-                    return Err(Error::Busy(format!("agent `{target}` is initializing")));
+                    .cloned()
+                    .ok_or_else(|| Error::Stopped("agent runtime is unavailable".into()))?;
+                if reports_to_parent {
+                    sender.submit(Op::Message {
+                        message: message.clone(),
+                    })?;
+                    root.parent_reports
+                        .entry(from.into())
+                        .or_default()
+                        .push(message);
+                } else {
+                    sender.submit(Op::Message { message })?;
                 }
-                if matches!(status, AgentStatus::Running) {
-                    let record = root
-                        .tree
-                        .agents
-                        .get(target)
-                        .ok_or_else(|| unknown_target(target))?
-                        .clone();
-                    let sender = root
-                        .senders
-                        .get(target)
-                        .cloned()
-                        .ok_or_else(|| Error::Stopped("agent runtime is unavailable".into()))?;
-                    return Ok(Stage::Unchanged(Followup {
-                        record,
-                        sender: Some(sender),
-                        previous: status,
-                    }));
-                }
-                if matches!(status, AgentStatus::Errored) {
-                    return Err(Error::Stopped(format!(
-                        "agent `{target}` is {}",
-                        status.label()
-                    )));
-                }
-                ensure_concurrency_available(&root.tree, max_concurrency)?;
-                let entry = root
-                    .tree
-                    .agents
-                    .get_mut(target)
-                    .ok_or_else(|| unknown_target(target))?;
-                let record = entry.clone();
-                entry.status = AgentStatus::PendingInit;
-                entry.last_message = None;
-                let sender = root.senders.get(target).cloned();
-                Ok(Stage::Changed(Followup {
-                    record,
-                    sender,
-                    previous: status,
-                }))
-            },
-            OnPersistFailure::Abort,
-        )
-        .await
-        .map(Stage::into_output)
+                Ok(None)
+            }
+            AgentStatus::Errored => Err(Error::Stopped(format!(
+                "agent `{target}` is {}",
+                status.label()
+            ))),
+            AgentStatus::Interrupted | AgentStatus::Completed => {
+                drop(root);
+                let max_concurrency = self.max_concurrency;
+                self.commit_locked_root(
+                    root_id,
+                    &root_slot,
+                    |root| {
+                        ensure_concurrency_available(&root.tree, max_concurrency)?;
+                        let entry = root
+                            .tree
+                            .agents
+                            .get_mut(target)
+                            .ok_or_else(|| unknown_target(target))?;
+                        let record = entry.clone();
+                        entry.status = AgentStatus::PendingInit;
+                        entry.last_message = None;
+                        let sender = root.senders.get(target).cloned();
+                        Ok(Stage::Changed(Some(Wake {
+                            record,
+                            sender,
+                            previous: status,
+                        })))
+                    },
+                    OnPersistFailure::Abort,
+                )
+                .await
+                .map(Stage::into_output)
+            }
+        }
     }
 
     pub(in crate::middleware::subagents) async fn wait(

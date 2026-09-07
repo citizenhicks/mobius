@@ -1,9 +1,0 @@
-[fallback]
-skill_description = "Local workflow instructions."
-
-[manifest]
-label = "Extensions"
-description = "Load standalone Agent Skills and activated OpenAI plugin packages"
-
-[prompt]
-default = "When a skill is named or matches the task, use `read_file` to read its complete `SKILL.md` at the advertised location before following it. Resolve referenced paths relative to that skill directory and use their absolute paths with normal tools."

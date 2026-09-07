@@ -12,12 +12,40 @@ use crate::Error;
 use crate::Result;
 
 mod manifest {
-    include!(concat!(
-        env!("OUT_DIR"),
-        "/src_backend_model_deepseek_manifest.rs"
-    ));
+    use crate::backend::model::provider::{HostedWebSearch, ModelPreset, ReasoningPreset};
+    use crate::protocol::ToolDiscoveryMode;
+    pub const PROVIDER_LABEL: &str = "DeepSeek";
+    pub const PROVIDER_DESCRIPTION: &str = "DeepSeek Responses API";
+    pub const TOOL_DISCOVERY: ToolDiscoveryMode = ToolDiscoveryMode::Rebuild;
+    pub const CUSTOM_ENDPOINT_TOOL_DISCOVERY: Option<ToolDiscoveryMode> = None;
+    pub const DEFAULT_MODEL: Option<&str> = Some("deepseek-v4-flash");
+    pub const MODELS: &[ModelPreset] = &[ModelPreset {
+        id: "deepseek-v4-flash",
+        label: "DeepSeek V4 Flash",
+        description: "DeepSeek's fast frontier agentic model",
+        context_window: 1000000,
+        reasoning: &[
+            ReasoningPreset {
+                id: "low",
+                label: "Low",
+                description: "Prefer speed and lower cost",
+            },
+            ReasoningPreset {
+                id: "high",
+                label: "High",
+                description: "DeepSeek's default reasoning effort",
+            },
+            ReasoningPreset {
+                id: "max",
+                label: "Maximum",
+                description: "Use maximum available reasoning",
+            },
+        ],
+        default_reasoning: Some("high"),
+        tool_discovery: ToolDiscoveryMode::Rebuild,
+    }];
+    pub const SEARCH: &[HostedWebSearch] = &[HostedWebSearch::Off, HostedWebSearch::Live];
 }
-
 const BASE_URL: &str = "https://api.deepseek.com";
 
 pub(super) const fn provider() -> ProviderDefinition {
