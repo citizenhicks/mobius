@@ -26,9 +26,7 @@ extension AppModel {
         discardFilePresentation(preservingWorkspaceTextDraft: true)
         chat.cancelSessionFileThumbnailDownloads()
         chat.restorePendingDrafts()
-        if cloudPairingContinuation != nil {
-            completeCloudPairing(.failure(MobiusCloudError.provisioningFailed))
-        }
+        cloud.completeCloudPairing(.failure(MobiusCloudError.provisioningFailed))
         if gateway.reconnectAttempt == 0 { showToast(verbatim: message, tone: .error) }
     }
 
@@ -38,9 +36,7 @@ extension AppModel {
     ) {
         cancelVoiceChatIntent()
         chat.stopRealtimeVoice()
-        if cloudPairingContinuation != nil {
-            completeCloudPairing(.failure(CancellationError()))
-        }
+        cloud.completeCloudPairing(.failure(CancellationError()))
         if !preservingSession { chat.changeComposerDraftOwner(to: nil) }
         if preservingSession { chat.flushStreamDeltas() }
         chat.abandonedSessionFileUploadRequests.removeAll()

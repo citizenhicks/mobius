@@ -169,7 +169,7 @@ enum AppNotificationKey: Hashable {
 @MainActor
 final class MobiusAppDelegate: NSObject, UIApplicationDelegate,
     @preconcurrency UNUserNotificationCenterDelegate {
-    private weak var model: AppModel?
+    private weak var cloud: MobiusCloudModel?
     private var pendingDeviceToken: Data?
     private var pendingForegroundNotification: (
         notification: RemoteNotification,
@@ -186,15 +186,15 @@ final class MobiusAppDelegate: NSObject, UIApplicationDelegate,
         return true
     }
 
-    func attach(_ model: AppModel) {
-        self.model = model
+    func attach(_ cloud: MobiusCloudModel) {
+        self.cloud = cloud
         if let pendingDeviceToken {
             self.pendingDeviceToken = nil
-            model.receivedRemoteNotificationDeviceToken(pendingDeviceToken)
+            cloud.receivedRemoteNotificationDeviceToken(pendingDeviceToken)
         }
         if let pendingForegroundNotification {
             self.pendingForegroundNotification = nil
-            model.receivedForegroundRemoteNotification(
+            cloud.receivedForegroundRemoteNotification(
                 pendingForegroundNotification.notification,
                 agentName: pendingForegroundNotification.agentName,
                 detail: pendingForegroundNotification.detail
@@ -202,7 +202,7 @@ final class MobiusAppDelegate: NSObject, UIApplicationDelegate,
         }
         if let pendingNotificationResponse {
             self.pendingNotificationResponse = nil
-            model.openRemoteNotification(pendingNotificationResponse)
+            cloud.openRemoteNotification(pendingNotificationResponse)
         }
     }
 
@@ -210,18 +210,18 @@ final class MobiusAppDelegate: NSObject, UIApplicationDelegate,
         _ application: UIApplication,
         didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
     ) {
-        guard let model else {
+        guard let cloud else {
             pendingDeviceToken = deviceToken
             return
         }
-        model.receivedRemoteNotificationDeviceToken(deviceToken)
+        cloud.receivedRemoteNotificationDeviceToken(deviceToken)
     }
 
     func application(
         _ application: UIApplication,
         didFailToRegisterForRemoteNotificationsWithError error: Error
     ) {
-        model?.remoteNotificationRegistrationFailed()
+        cloud?.remoteNotificationRegistrationFailed()
     }
 
     func userNotificationCenter(
@@ -232,11 +232,11 @@ final class MobiusAppDelegate: NSObject, UIApplicationDelegate,
         guard let event = RemoteNotification(
             userInfo: content.userInfo
         ) else { return [] }
-        guard let model else {
+        guard let cloud else {
             pendingForegroundNotification = (event, content.title, content.body)
             return []
         }
-        model.receivedForegroundRemoteNotification(
+        cloud.receivedForegroundRemoteNotification(
             event,
             agentName: content.title,
             detail: content.body
@@ -251,15 +251,15 @@ final class MobiusAppDelegate: NSObject, UIApplicationDelegate,
         guard let event = RemoteNotification(
             userInfo: response.notification.request.content.userInfo
         ) else { return }
-        guard let model else {
+        guard let cloud else {
             pendingNotificationResponse = event
             return
         }
-        model.openRemoteNotification(event)
+        cloud.openRemoteNotification(event)
     }
 }
 
-extension AppModel {
+extension MobiusCloudModel {
     func setNotificationsEnabled(_ enabled: Bool) async {
         guard enabled != notificationsEnabled, !isUpdatingNotifications else { return }
         notificationsEnabled = enabled
@@ -362,7 +362,46 @@ extension AppModel {
     ) {
         guard notificationsEnabled,
               cloudSession != nil,
-              rememberRemoteNotification(notification.eventID),
+              rememberRemoteNotification(notification.eventID)
+        else { return }
+        callbacks.presentRemoteNotification?(notification, agentName, detail)
+    }
+
+    func openRemoteNotification(_ notification: RemoteNotification) {
+        guard notificationsEnabled, cloudSession != nil else { return }
+        _ = rememberRemoteNotification(notification.eventID)
+        pendingRemoteNotification = notification
+        callbacks.openRemoteNotification?(notification)
+    }
+
+    func rememberRemoteNotification(_ eventID: String) -> Bool {
+        guard remoteNotificationEventIDs.insert(eventID).inserted else { return false }
+        remoteNotificationEventOrder.append(eventID)
+        if remoteNotificationEventOrder.count > 64 {
+            remoteNotificationEventIDs.remove(remoteNotificationEventOrder.removeFirst())
+        }
+        return true
+    }
+
+    func rememberNotification(_ key: AppNotificationKey) -> Bool {
+        guard notificationKeys.insert(key).inserted else { return false }
+        notificationKeyOrder.append(key)
+        if notificationKeys.count > 64 {
+            notificationKeys.remove(notificationKeyOrder.removeFirst())
+        }
+        return true
+    }
+
+}
+
+extension AppModel {
+    func receivedForegroundRemoteNotification(
+        _ notification: RemoteNotification,
+        agentName: String? = nil,
+        detail: String? = nil
+    ) {
+        guard cloud.notificationsEnabled,
+              cloud.cloudSession != nil,
               !catalogAlreadyIncludes(notification)
         else { return }
         switch notification {
@@ -383,32 +422,25 @@ extension AppModel {
                 text: detail
             )
         case .subscriptionExpired:
-            handleCloudSubscriptionExpired()
-            if cloudAccount != nil {
-                Task { [weak self] in await self?.refreshCloudAccount() }
+            cloud.handleCloudSubscriptionExpired()
+            if cloud.cloudAccount != nil {
+                Task { [weak self] in await self?.cloud.refreshCloudAccount() }
             }
         }
-    }
-
-    func openRemoteNotification(_ notification: RemoteNotification) {
-        guard notificationsEnabled, cloudSession != nil else { return }
-        _ = rememberRemoteNotification(notification.eventID)
-        pendingRemoteNotification = notification
-        _ = openPendingRemoteNotification()
     }
 
     @discardableResult
     func openPendingRemoteNotification() -> Bool {
-        guard let notification = pendingRemoteNotification else { return false }
+        guard let notification = cloud.pendingRemoteNotification else { return false }
         if case .subscriptionExpired = notification {
-            pendingRemoteNotification = nil
-            handleCloudSubscriptionExpired()
-            if cloudAccount != nil {
-                Task { [weak self] in await self?.refreshCloudAccount() }
+            cloud.pendingRemoteNotification = nil
+            cloud.handleCloudSubscriptionExpired()
+            if cloud.cloudAccount != nil {
+                Task { [weak self] in await self?.cloud.refreshCloudAccount() }
             }
             return true
         }
-        guard let cloudGateway = mobiusCloudGateway else { return false }
+        guard let cloudGateway = cloud.cloudGateway else { return false }
         guard gateway.selectedAccountID == cloudGateway.id else {
             connect(to: cloudGateway)
             return false
@@ -419,7 +451,7 @@ extension AppModel {
             return false
         case .swarmAttention(_, let swarmID, _):
             guard swarms.contains(where: { $0.id == swarmID }) else { return false }
-            pendingRemoteNotification = nil
+            cloud.pendingRemoteNotification = nil
             prepareToOpenNotification()
             openSwarmChat(swarmID)
             return true
@@ -430,13 +462,13 @@ extension AppModel {
                let approval = backgroundApprovals.first(where: {
                    $0.sessionId == sessionID && $0.requestId == requestID
                }) {
-                pendingRemoteNotification = nil
+                cloud.pendingRemoteNotification = nil
                 prepareToOpenNotification()
                 resumeBotSession(botID: approval.botId, sessionID: approval.sessionId)
                 return true
             }
             guard chat.sessions.contains(where: { $0.sessionId == sessionID }) else { return false }
-            pendingRemoteNotification = nil
+            cloud.pendingRemoteNotification = nil
             prepareToOpenNotification()
             openChat(sessionID)
             return true
@@ -488,7 +520,7 @@ extension AppModel {
             sessionID: sessionID,
             runCount: runCount,
             approvalRequestID: approvalRequestID
-        ), !rememberNotification(key), !refinesCompletedNotification {
+        ), !cloud.rememberNotification(key), !refinesCompletedNotification {
             return
         }
         let isHiddenApproval = kind == .awaitingApproval
@@ -546,7 +578,7 @@ extension AppModel {
         agentName: String?,
         text: String?
     ) {
-        guard rememberNotification(.swarmAttention(messageID: messageID)) else { return }
+        guard cloud.rememberNotification(.swarmAttention(messageID: messageID)) else { return }
         let name = agentName.map(collapsedNotificationText)
             .flatMap { $0.isEmpty ? nil : $0 }
             ?? localizedString("Bot")
@@ -560,6 +592,9 @@ extension AppModel {
         )
     }
 
+}
+
+extension MobiusCloudModel {
     func unregisterRemoteNotificationsForCloudSignOut() async throws {
         guard let requestedSession = cloudSession else { return }
         markPushTokenRemovalPending(for: requestedSession)
@@ -661,6 +696,9 @@ extension AppModel {
         settingsDefaults.removeObject(forKey: pushTokenRemovalCredentialIDKey)
     }
 
+}
+
+extension AppModel {
     private func catalogAlreadyIncludes(_ notification: RemoteNotification) -> Bool {
         switch notification {
         case .subscriptionExpired:
@@ -687,15 +725,6 @@ extension AppModel {
         }
     }
 
-    private func rememberRemoteNotification(_ eventID: String) -> Bool {
-        guard remoteNotificationEventIDs.insert(eventID).inserted else { return false }
-        remoteNotificationEventOrder.append(eventID)
-        if remoteNotificationEventOrder.count > 64 {
-            remoteNotificationEventIDs.remove(remoteNotificationEventOrder.removeFirst())
-        }
-        return true
-    }
-
     private func sessionNotificationKey(
         kind: SessionNotificationKind,
         sessionID: String,
@@ -708,15 +737,6 @@ extension AppModel {
         case .completed, .aborted, .failed:
             runCount.map { .terminal(kind: kind, sessionID: sessionID, runCount: $0) }
         }
-    }
-
-    private func rememberNotification(_ key: AppNotificationKey) -> Bool {
-        guard notificationKeys.insert(key).inserted else { return false }
-        notificationKeyOrder.append(key)
-        if notificationKeyOrder.count > 64 {
-            notificationKeys.remove(notificationKeyOrder.removeFirst())
-        }
-        return true
     }
 
     private func prepareToOpenNotification() {

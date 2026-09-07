@@ -92,8 +92,8 @@ struct PairingView: View {
         .scrollDismissesKeyboard(.interactively)
         .safeAreaInset(edge: .bottom) { pairAction }
         .onSubmit { model.pair() }
-        .task(id: model.cloudSession?.userID) {
-            await model.refreshCloudAccount()
+        .task(id: model.cloud.cloudSession?.userID) {
+            await model.cloud.refreshCloudAccount()
         }
     }
 
@@ -117,28 +117,28 @@ struct PairingView: View {
                 .buttonBorderShape(.capsule)
                 .controlSize(.large)
                 .buttonSizing(.flexible)
-            if !model.hasCloudAccount {
+            if !model.cloud.hasCloudAccount {
                 MobiusCloudOfferButton()
-            } else if model.cloudAccount?.subscribed == true, model.mobiusCloudGateway == nil {
+            } else if model.cloud.cloudAccount?.subscribed == true, model.cloud.cloudGateway == nil {
                 Button("Connect Cloud gateway", glyph: .cloudServer) {
-                    Task { _ = await model.connectCloudGateway() }
+                    Task { _ = await model.cloud.connectCloudGateway() }
                 }
                 .buttonStyle(.mobiusGlass)
                 .buttonBorderShape(.capsule)
                 .controlSize(.large)
                 .buttonSizing(.flexible)
                 .tint(palette.accent)
-                .disabled(model.cloudAction.isRunning)
-            } else if model.cloudAccount == nil {
-                Button(model.cloudError == nil ? "Checking Cloud account…" : "Retry Cloud account") {
-                    Task { await model.refreshCloudAccount() }
+                .disabled(model.cloud.cloudAction.isRunning)
+            } else if model.cloud.cloudAccount == nil {
+                Button(model.cloud.cloudError == nil ? "Checking Cloud account…" : "Retry Cloud account") {
+                    Task { await model.cloud.refreshCloudAccount() }
                 }
                 .buttonStyle(.mobiusGlass)
                 .buttonBorderShape(.capsule)
                 .controlSize(.large)
                 .buttonSizing(.flexible)
-                .disabled(model.cloudError == nil)
-            } else if model.cloudAccount?.subscribed == false {
+                .disabled(model.cloud.cloudError == nil)
+            } else if model.cloud.cloudAccount?.subscribed == false {
                 MobiusCloudOfferButton()
             }
             MobiusLabel(

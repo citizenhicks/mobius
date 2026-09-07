@@ -20,7 +20,7 @@ extension AppModel {
     }
 
     func installExtension(_ item: MobiusCloudExtensionCatalogItem) {
-        guard availableExtensions.contains(item) else { return }
+        guard cloud.availableExtensions.contains(item) else { return }
         beginExtensionAction(.installing) { requestID in
             .installExtension(
                 requestID: requestID,
@@ -28,43 +28,6 @@ extension AppModel {
                 reference: item.source.reference,
                 subdirectory: item.source.subdirectory
             )
-        }
-    }
-
-    func refreshExtensionCatalog() async {
-        guard let userID = cloudSession?.userID else {
-            availableExtensions = []
-            extensionCatalogError = nil
-            isLoadingExtensionCatalog = false
-            return
-        }
-        availableExtensions = []
-        extensionCatalogError = nil
-        isLoadingExtensionCatalog = true
-        defer {
-            if cloudSession?.userID == userID { isLoadingExtensionCatalog = false }
-        }
-
-        do {
-            let catalog = try await cloudClient.extensionCatalog()
-            guard cloudSession?.userID == userID else { return }
-            availableExtensions = catalog
-        } catch is CancellationError {
-            return
-        } catch {
-            guard cloudSession?.userID == userID else { return }
-            if let error = error as? MobiusCloudError {
-                switch error {
-                case .authenticationRequired, .sessionExpired, .server(401):
-                    reportCloud(error)
-                    return
-                default:
-                    break
-                }
-            }
-            extensionCatalogError = (error as? MobiusCloudError).map {
-                localizedString($0.localizedDescriptionResource)
-            } ?? localizedString("The extension catalog is temporarily unavailable.")
         }
     }
 

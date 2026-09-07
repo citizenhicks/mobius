@@ -25,7 +25,7 @@ struct ProfileView: View {
                 HStack(spacing: MobiusSpace.xs) {
                     MobiusCloudLabel(showsAccount: true)
                         .textCase(nil)
-                    if model.isLoadingCloudAccount {
+                    if model.cloud.isLoadingCloudAccount {
                         MobiusSpinner(size: MobiusStyle.glyphMark)
                     }
                 }
@@ -51,8 +51,8 @@ struct ProfileView: View {
             }
             .listRowSeparator(.hidden)
         }
-        .task(id: model.cloudSession?.credentialID) {
-            await model.refreshCloudAccount()
+        .task(id: model.cloud.cloudSession?.credentialID) {
+            await model.cloud.refreshCloudAccount()
         }
         .task(id: model.gateway.connectionState.isReady) { model.refreshProfile() }
     }
@@ -204,8 +204,8 @@ private struct CloudAccountSettings: View {
     /// Signed out, this is an offer; signed in, it is an account. Account actions stay absent
     /// until there is a Cloud session to authenticate them.
     var body: some View {
-        let subscriptionExpired = model.cloudIssue == .subscriptionExpired
-        if model.isLoadingCloudAccount, !subscriptionExpired {
+        let subscriptionExpired = model.cloud.cloudIssue == .subscriptionExpired
+        if model.cloud.isLoadingCloudAccount, !subscriptionExpired {
             SettingsLoadingRows(label: "Loading Cloud account") {
                 LabeledContent("Email") { Text("account@example.com") }
                 HStack(spacing: MobiusSpace.xs) {
@@ -222,7 +222,7 @@ private struct CloudAccountSettings: View {
                     resetsAt: Date(timeIntervalSince1970: 0)
                 ))
                 VStack(spacing: MobiusSpace.s) {
-                    ForEach(0..<(model.mobiusCloudGateway == nil ? 5 : 4), id: \.self) { _ in
+                    ForEach(0..<(model.cloud.cloudGateway == nil ? 5 : 4), id: \.self) { _ in
                         Button("Manage subscription", glyph: .sealCheck) {}
                     }
                 }
@@ -231,24 +231,24 @@ private struct CloudAccountSettings: View {
                 .buttonSizing(.flexible)
                 .controlSize(.large)
             }
-        } else if model.hasCloudAccount {
+        } else if model.cloud.hasCloudAccount {
             if subscriptionExpired {
                 StatusBanner(
                     tone: .warning,
                     title: "Subscription expired",
                     detail: "Renew or restore your subscription to reconnect to möbius Cloud."
                 )
-            } else if let cloudError = model.cloudError {
+            } else if let cloudError = model.cloud.cloudError {
                 StatusBanner(
                     tone: .error,
                     title: .localized("Cloud account unavailable"),
                     detail: .verbatim(cloudError),
-                    action: (.localized("Retry"), { Task { await model.refreshCloudAccount() } })
+                    action: (.localized("Retry"), { Task { await model.cloud.refreshCloudAccount() } })
                 )
             }
-            if !subscriptionExpired || model.cloudAccount != nil {
+            if !subscriptionExpired || model.cloud.cloudAccount != nil {
                 LabeledContent("Email") {
-                    if let email = model.cloudAccount?.email {
+                    if let email = model.cloud.cloudAccount?.email {
                         Text(verbatim: email)
                     } else {
                         Text("Unavailable")
@@ -258,13 +258,13 @@ private struct CloudAccountSettings: View {
                 // which would hand its taps to the switch.
                 HStack(spacing: MobiusSpace.xs) {
                     Toggle("Help improve möbius", isOn: Binding(
-                        get: { model.cloudAccount?.sharesDiagnostics ?? false },
+                        get: { model.cloud.cloudAccount?.sharesDiagnostics ?? false },
                         set: { sharesDiagnostics in
-                            Task { await model.setCloudSharesDiagnostics(sharesDiagnostics) }
+                            Task { await model.cloud.setCloudSharesDiagnostics(sharesDiagnostics) }
                         }
                     ))
                     .toggleStyle(.switch)
-                    .disabled(model.isUpdatingCloudDiagnostics || model.cloudAccount == nil)
+                    .disabled(model.cloud.isUpdatingCloudDiagnostics || model.cloud.cloudAccount == nil)
                     SettingsInfoButton(
                         title: "Help improve möbius",
                         detail: "Off by default. Saved to your Cloud account."
@@ -273,40 +273,40 @@ private struct CloudAccountSettings: View {
             }
             if !subscriptionExpired {
                 LabeledContent("Subscriber since") {
-                    if let startedAt = model.cloudAccount?.subscriptionStartedAt {
+                    if let startedAt = model.cloud.cloudAccount?.subscriptionStartedAt {
                         Text(startedAt, format: .dateTime.month(.wide).day().year())
                     } else {
                         Text("Unavailable")
                     }
                 }
-                CloudAgentUsageLimit(limit: model.cloudAccount?.luna)
+                CloudAgentUsageLimit(limit: model.cloud.cloudAccount?.luna)
             }
             VStack(spacing: MobiusSpace.s) {
-                if subscriptionExpired || (model.cloudAccount != nil && model.mobiusCloudGateway == nil) {
+                if subscriptionExpired || (model.cloud.cloudAccount != nil && model.cloud.cloudGateway == nil) {
                     MobiusCloudOfferButton()
                 }
                 Button("Manage subscription", glyph: .sealCheck) {
-                    Task { await model.manageCloudSubscription() }
+                    Task { await model.cloud.manageCloudSubscription() }
                 }
                 .buttonStyle(.mobiusGlass)
                 .tint(palette.accent)
                 .accessibilityHint("Opens App Store subscription management, where you can unsubscribe")
                 Button(
-                    model.cloudAction == .restoring ? "Restoring purchases…" : "Restore purchases",
+                    model.cloud.cloudAction == .restoring ? "Restoring purchases…" : "Restore purchases",
                     glyph: .arrowClockwise
                 ) {
-                    Task { _ = await model.restoreCloudPurchases() }
+                    Task { _ = await model.cloud.restoreCloudPurchases() }
                 }
                 .buttonStyle(.mobiusGlass)
                 .tint(palette.signal)
-                .disabled(model.cloudAction.isRunning)
+                .disabled(model.cloud.cloudAction.isRunning)
                 Button("Sign out", glyph: .lockOpen, role: .destructive) {
                     confirmsSignOut = true
                 }
                 .buttonStyle(.mobiusGlassProminent)
                 .tint(palette.danger)
                 .foregroundStyle(palette.onDanger)
-                .disabled(model.cloudAction.isRunning)
+                .disabled(model.cloud.cloudAction.isRunning)
                 .accessibilityHint("Forgets this Cloud sign-in and its paired gateway")
                 Button("Delete account", glyph: .trash, role: .destructive) {
                     confirmsAccountDeletion = true
@@ -314,7 +314,7 @@ private struct CloudAccountSettings: View {
                 .buttonStyle(.mobiusGlassProminent)
                 .tint(palette.danger)
                 .foregroundStyle(palette.onDanger)
-                .disabled(model.cloudAction.isRunning || model.cloudAccount == nil)
+                .disabled(model.cloud.cloudAction.isRunning || model.cloud.cloudAccount == nil)
                 .accessibilityHint("Permanently deletes your Cloud account and its data")
             }
             .buttonBorderShape(.capsule)
@@ -322,7 +322,7 @@ private struct CloudAccountSettings: View {
             .controlSize(.large)
             .alert("Sign out of möbius Cloud?", isPresented: $confirmsSignOut) {
                 Button("Sign out", role: .destructive) {
-                    Task { await model.signOutOfCloud() }
+                    Task { await model.cloud.signOutOfCloud() }
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
@@ -333,7 +333,7 @@ private struct CloudAccountSettings: View {
                     showsAccountDeletionAuthentication = true
                 }
                 Button("Manage subscription") {
-                    Task { await model.manageCloudSubscription() }
+                    Task { await model.cloud.manageCloudSubscription() }
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
@@ -379,13 +379,13 @@ private struct MobiusCloudAccountDeletionSheet: View {
                             .font(MobiusStyle.bodyFont)
                             .foregroundStyle(palette.muted)
                             .fixedSize(horizontal: false, vertical: true)
-                        if didAttemptDeletion, let cloudError = model.cloudError {
+                        if didAttemptDeletion, let cloudError = model.cloud.cloudError {
                             Text(cloudError)
                                 .font(MobiusStyle.captionFont)
                                 .foregroundStyle(palette.danger)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
-                        if model.cloudAction == .deleting {
+                        if model.cloud.cloudAction == .deleting {
                             HStack(spacing: MobiusSpace.s) {
                                 MobiusSpinner(size: MobiusStyle.glyphInline)
                                 Text("Deleting account…")
@@ -398,7 +398,7 @@ private struct MobiusCloudAccountDeletionSheet: View {
                                 authorizationCode, nonce in
                                 didAttemptDeletion = true
                                 Task {
-                                    if await model.deleteCloudAccount(
+                                    if await model.cloud.deleteCloudAccount(
                                         authorizationCode: authorizationCode,
                                         nonce: nonce
                                     ) {
@@ -407,7 +407,7 @@ private struct MobiusCloudAccountDeletionSheet: View {
                                 }
                             } onFailure: {
                                 didAttemptDeletion = true
-                                model.reportCloudSignInFailure()
+                                model.cloud.reportCloudSignInFailure()
                             }
                             .frame(maxWidth: .infinity, alignment: .center)
                         }
@@ -423,11 +423,11 @@ private struct MobiusCloudAccountDeletionSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
-                        .disabled(model.cloudAction == .deleting)
+                        .disabled(model.cloud.cloudAction == .deleting)
                 }
             }
         }
-        .interactiveDismissDisabled(model.cloudAction == .deleting)
+        .interactiveDismissDisabled(model.cloud.cloudAction == .deleting)
         .mobiusSheet()
     }
 }
@@ -723,22 +723,22 @@ private struct RemoteNotificationSettings: View {
     var body: some View {
         HStack(spacing: MobiusSpace.xs) {
             Toggle("Notifications", isOn: Binding(
-                get: { model.notificationsEnabled },
+                get: { model.cloud.notificationsEnabled },
                 set: { enabled in
-                    Task { await model.setNotificationsEnabled(enabled) }
+                    Task { await model.cloud.setNotificationsEnabled(enabled) }
                 }
             ))
             .toggleStyle(.switch)
-            .disabled(model.isUpdatingNotifications)
+            .disabled(model.cloud.isUpdatingNotifications)
             SettingsInfoButton(
                 title: "Notifications",
                 detail: "Alerts you on this device when a Cloud chat needs approval or finishes, or a Swarm needs attention."
             )
         }
-        if model.isUpdatingNotifications {
+        if model.cloud.isUpdatingNotifications {
             ProgressView("Updating notifications")
         }
-        if let error = model.notificationError {
+        if let error = model.cloud.notificationError {
             Text(error)
                 .foregroundStyle(palette.danger)
                 .accessibilityLabel("Notification status: \(error)")

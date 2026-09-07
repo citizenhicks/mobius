@@ -98,7 +98,7 @@ struct AppShell: View {
         .alert("Update möbius", isPresented: $model.showsAppUpdateAlert) {
             Button("Open App Store") {
                 Task { @MainActor in
-                    guard let url = await model.cloudPurchases.appStoreURL() else {
+                    guard let url = await model.cloud.appStoreURL() else {
                         model.showToast("The App Store update page is unavailable.", tone: .warning)
                         return
                     }

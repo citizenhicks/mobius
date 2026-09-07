@@ -13,7 +13,7 @@ struct MobiusAppleApp: App {
                 .environment(model)
         }
         .onChange(of: scenePhase, initial: true) { _, phase in
-            appDelegate.attach(model)
+            appDelegate.attach(model.cloud)
             switch phase {
             case .background:
                 model.appDidEnterBackground()
@@ -25,8 +25,8 @@ struct MobiusAppleApp: App {
                 break
             }
         }
-        .onChange(of: model.cloudSession?.credentialID) { _, _ in
-            model.scheduleCloudAuthenticationRefresh()
+        .onChange(of: model.cloud.cloudSession?.credentialID) { _, _ in
+            model.cloud.scheduleAuthenticationRefresh()
         }
     }
 }

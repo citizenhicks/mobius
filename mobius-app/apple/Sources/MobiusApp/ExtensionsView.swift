@@ -33,7 +33,7 @@ struct ExtensionsView: View {
                 }
             }
         ) {
-            if model.hasCloudAccount {
+            if model.cloud.hasCloudAccount {
                 Section("Available") {
                     availableCatalog
                 }
@@ -87,14 +87,14 @@ struct ExtensionsView: View {
         } message: {
             Text("The gateway will uninstall it without changing saved chat selections. Chats that reference it continue with the extension disabled. Per-workspace .mobius/extensions data is retained.")
         }
-        .task(id: model.cloudSession?.userID) {
-            await model.refreshExtensionCatalog()
+        .task(id: model.cloud.cloudSession?.userID) {
+            await model.cloud.refreshExtensionCatalog()
         }
     }
 
     @ViewBuilder
     private var availableCatalog: some View {
-        if model.isLoadingExtensionCatalog {
+        if model.cloud.isLoadingExtensionCatalog {
             SettingsLoadingRows(label: "Loading available extensions") {
                 ForEach(0..<3, id: \.self) { _ in
                     availableCatalogLabel(
@@ -103,16 +103,16 @@ struct ExtensionsView: View {
                     )
                 }
             }
-        } else if let error = model.extensionCatalogError {
+        } else if let error = model.cloud.extensionCatalogError {
             VStack(alignment: .leading, spacing: MobiusSpace.s) {
                 SettingsCaption(verbatim: error)
                 Button("Retry", glyph: .arrowClockwise) {
-                    Task { await model.refreshExtensionCatalog() }
+                    Task { await model.cloud.refreshExtensionCatalog() }
                 }
             }
         } else if installableExtensions.isEmpty {
             SettingsCaption(
-                model.availableExtensions.isEmpty
+                model.cloud.availableExtensions.isEmpty
                     ? "No extensions are available right now."
                     : "Every available extension is installed."
             )
@@ -163,7 +163,7 @@ struct ExtensionsView: View {
     }
 
     private var installableExtensions: [MobiusCloudExtensionCatalogItem] {
-        model.availableExtensions.filter { item in
+        model.cloud.availableExtensions.filter { item in
             !model.extensions.contains { record in
                 record.source == item.source.url
                     && record.reference == item.source.reference

@@ -112,9 +112,10 @@ extension AppModel {
     }
 
     func connect(to account: GatewayAccount) {
-        let isCloud = account.id == mobiusCloudGateway?.id
-        if isCloud, cloudIssue == .subscriptionExpired {
-            handleCloudSubscriptionExpired()
+        guard !isClearingLocalData else { return }
+        let isCloud = account.id == cloud.cloudGateway?.id
+        if isCloud, cloud.cloudIssue == .subscriptionExpired {
+            cloud.handleCloudSubscriptionExpired()
             showToast(
                 verbatim: localizedString(
                     MobiusCloudError.subscriptionRequired.localizedDescriptionResource

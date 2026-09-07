@@ -1509,7 +1509,7 @@ extension AppModelTests {
                 subdirectory: nil
             )
         )
-        model.availableExtensions = [item]
+        model.cloud.availableExtensions = [item]
 
         model.installExtension(item)
 

@@ -25,27 +25,12 @@ final class AppModel {
     var swarms: [SwarmRecord] = []
     var swarmMessageRequestID: String?
     var completedSwarmMessageRequestID: String?
-    var cloudSession: MobiusCloudSession?
-    var cloudAccount: MobiusCloudAccount?
-    var cloudAction: MobiusCloudAction = .idle
     var showsCloudOffer = false
-    var cloudError: String?
-    var cloudIssue: MobiusCloudIssue?
-    var isUpdatingCloudDiagnostics = false
-    @ObservationIgnored var cloudPurchaseUpdateTask: Task<Void, Never>?
-    @ObservationIgnored var cloudPurchaseTasks: [String: Task<Void, Error>] = [:]
-    var hasCloudAccount: Bool { cloudSession != nil }
-    var isLoadingCloudAccount: Bool {
-        hasCloudAccount && cloudAccount == nil && cloudError == nil
-    }
 
     var modelChoices: [ModelChoice] = []
     var modelProviders: [String: String] = [:]
     var middlewareFeatures: [MiddlewareFeature] = []
     var extensions: [ExtensionRecord] = []
-    var availableExtensions: [MobiusCloudExtensionCatalogItem] = []
-    var extensionCatalogError: String?
-    var isLoadingExtensionCatalog = false
     var gatewayContributions: [FrontendContribution] = []
     var swarmContributions: [String: [FrontendContribution]] = [:]
     var extensionInstallSource = ""
@@ -140,21 +125,14 @@ final class AppModel {
     var isClearingLocalData = false
     var appLockAuthenticationMethod: AppLockAuthenticationMethod
     var appLockError: String?
-    var notificationsEnabled: Bool
-    var isUpdatingNotifications = false
-    var notificationError: String?
 
     @ObservationIgnored let gateway: GatewayConnectionModel
     @ObservationIgnored let store: GatewayStore
     @ObservationIgnored let chat: ChatSessionModel
-    @ObservationIgnored let cloudClient: MobiusCloudClient
-    @ObservationIgnored let cloudPurchases: MobiusCloudPurchases
+    @ObservationIgnored let cloud: MobiusCloudModel
     @ObservationIgnored let settingsDefaults: UserDefaults
     @ObservationIgnored let appLockAuthenticator: AppLockAuthenticator
     @ObservationIgnored var appLockAuthenticationGeneration = UUID()
-    @ObservationIgnored let remoteNotifications: RemoteNotificationSystem
-    @ObservationIgnored let pushInstallationID: UUID
-    @ObservationIgnored var cloudPairingContinuation: CheckedContinuation<Void, Error>?
     @ObservationIgnored var deltaFlushTask: Task<Void, Never>?
     @ObservationIgnored var awaitingInitialMessageTurnID: String?
     @ObservationIgnored var bufferedDeltas:
@@ -171,7 +149,6 @@ final class AppModel {
     @ObservationIgnored var startupTaskID: UUID?
     @ObservationIgnored var startedAccountID: UUID?
     @ObservationIgnored var appActivationTask: Task<Void, Never>?
-    @ObservationIgnored var cloudAuthenticationTask: Task<Void, Never>?
     var swarmMutationRequestID: String?
     var botMutationRequestID: String?
     var botMutationSuccessMessage: String?
@@ -205,14 +182,6 @@ final class AppModel {
     @ObservationIgnored var routineRunPreviewPollingTask: Task<Void, Never>?
     @ObservationIgnored var toastDismissTask: Task<Void, Never>?
     @ObservationIgnored var appIsInBackground = true
-    @ObservationIgnored var remoteNotificationDeviceToken: String?
-    @ObservationIgnored var remoteNotificationRegistrationTask: Task<Void, Never>?
-    @ObservationIgnored var pushTokenRemovalPending: Bool
-    @ObservationIgnored var pendingRemoteNotification: RemoteNotification?
-    @ObservationIgnored var remoteNotificationEventIDs: Set<String> = []
-    @ObservationIgnored var remoteNotificationEventOrder: [String] = []
-    @ObservationIgnored var notificationKeys: Set<AppNotificationKey> = []
-    @ObservationIgnored var notificationKeyOrder: [AppNotificationKey] = []
 
     init(
         client: GatewayClient? = nil,
@@ -238,9 +207,6 @@ final class AppModel {
         let language = AppLanguage(
             rawValue: settingsDefaults.string(forKey: "language") ?? ""
         ) ?? .system
-        let pushInstallationID = settingsDefaults.string(forKey: pushInstallationIDKey)
-            .flatMap(UUID.init(uuidString:)) ?? UUID()
-        settingsDefaults.set(pushInstallationID.uuidString, forKey: pushInstallationIDKey)
         self.gateway = GatewayConnectionModel(
             client: client,
             store: store,
@@ -249,15 +215,14 @@ final class AppModel {
             reconnectDelay: reconnectDelay
         )
         self.store = store
-        self.cloudClient = cloudClient
-        self.cloudPurchases = cloudPurchases ?? .live()
-        self.cloudSession = try? cloudClient.loadSession()
         self.settingsDefaults = settingsDefaults
         self.appLockAuthenticator = appLockAuthenticator
-        self.remoteNotifications = remoteNotifications ?? .live()
-        self.pushInstallationID = pushInstallationID
-        self.pushTokenRemovalPending = settingsDefaults.bool(
-            forKey: pushTokenRemovalPendingKey
+        self.cloud = MobiusCloudModel(
+            gateway: gateway,
+            settingsDefaults: settingsDefaults,
+            remoteNotifications: remoteNotifications ?? .live(),
+            cloudClient: cloudClient,
+            cloudPurchases: cloudPurchases ?? .live()
         )
         self.theme = ThemePreference(rawValue: settingsDefaults.string(forKey: "theme") ?? "") ?? .system
         self.language = language
@@ -276,7 +241,6 @@ final class AppModel {
         self.appLockEnabled = appLockEnabled
         self.isAppLocked = appLockEnabled
         self.appLockAuthenticationMethod = appLockAuthenticator.method
-        self.notificationsEnabled = settingsDefaults.bool(forKey: notificationsEnabledKey)
         gateway.locale = language.locale
         restoreSessionReadState(for: gateway.selectedAccountID)
         showsPairing = gateway.accounts.isEmpty
@@ -336,30 +300,62 @@ final class AppModel {
         chat.onOpenChat = { [weak self] sessionID in
             self?.openChat(sessionID)
         }
-        observeCloudPurchaseUpdates()
+        cloud.callbacks = MobiusCloudModelCallbacks(
+            resetGatewayDependentState: { [weak self] preservingDrafts, preservingSession in
+                self?.resetGatewayDependentState(
+                    preservingDrafts: preservingDrafts,
+                    preservingSession: preservingSession
+                )
+            },
+            reconnectRecoveredGateway: { [weak self] in
+                guard let self,
+                      !self.isClearingLocalData,
+                      self.selectedGatewayIsMobiusCloud,
+                      !self.gateway.connectionState.isReady
+                else { return }
+                if self.appIsInBackground {
+                    self.gateway.setSceneActive(false)
+                } else {
+                    self.reconnect()
+                }
+            },
+            removeGateway: { [weak self] account in
+                guard let self else { return false }
+                return await self.removeGateway(account)
+            },
+            cloudPairingStarted: { [weak self] in
+                self?.showsPairing = false
+            },
+            showToast: { [weak self] message, tone in
+                self?.showToast(verbatim: message, tone: tone)
+            },
+            presentRemoteNotification: { [weak self] notification, agentName, detail in
+                self?.receivedForegroundRemoteNotification(
+                    notification,
+                    agentName: agentName,
+                    detail: detail
+                )
+            },
+            openRemoteNotification: { [weak self] notification in
+                self?.openPendingRemoteNotification()
+            }
+        )
+        cloud.observeCloudPurchaseUpdates()
     }
 
     isolated deinit {
         gateway.shutdown()
         startupTask?.cancel()
         appActivationTask?.cancel()
-        cloudAuthenticationTask?.cancel()
         chat.deltaFlushTask?.cancel()
         chat.composerDraftSaveTask?.cancel()
         pairingCodeExpiryTask?.cancel()
         toastDismissTask?.cancel()
-        cloudPurchaseUpdateTask?.cancel()
-        cloudPurchaseTasks.values.forEach { $0.cancel() }
         chat.chatTitleTasks.values.forEach { $0.cancel() }
     }
 
-    var mobiusCloudGateway: GatewayAccount? {
-        guard let userID = cloudSession?.userID else { return nil }
-        return gateway.accounts.first { $0.cloudUserID == userID }
-    }
-
     var selectedGatewayIsMobiusCloud: Bool {
-        guard let cloudGatewayID = mobiusCloudGateway?.id else { return false }
+        guard let cloudGatewayID = cloud.cloudGateway?.id else { return false }
         return gateway.selectedAccountID == cloudGatewayID
     }
 

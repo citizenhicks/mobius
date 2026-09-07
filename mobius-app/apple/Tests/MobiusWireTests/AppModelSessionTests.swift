@@ -671,7 +671,7 @@ extension AppModelTests {
         )
         model.gateway.accounts = [cloudAccount]
         model.gateway.selectedAccountID = cloudAccount.id
-        model.cloudSession = MobiusCloudSession(userID: userID, expiresAt: .distantFuture)
+        model.cloud.cloudSession = MobiusCloudSession(userID: userID, expiresAt: .distantFuture)
 
         let cloudRequestCount = await recorder.requestCount()
         model.openWorkspaceBrowser()

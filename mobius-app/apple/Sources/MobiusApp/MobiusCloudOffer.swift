@@ -9,12 +9,12 @@ struct MobiusCloudOfferButton: View {
     // as a list row that happened to be capsule-shaped. The accent tint marks it as the
     // other path rather than a second copy of the pairing button.
     var body: some View {
-        let title: LocalizedStringResource = model.cloudAccount?.subscribed == true
+        let title: LocalizedStringResource = model.cloud.cloudAccount?.subscribed == true
             ? "Connect Cloud gateway"
-            : model.hasCloudAccount
+            : model.cloud.hasCloudAccount
                 ? "Subscribe to möbius Cloud"
                 : "Connect to möbius Cloud"
-        let hint: LocalizedStringResource = model.cloudAccount?.subscribed == true
+        let hint: LocalizedStringResource = model.cloud.cloudAccount?.subscribed == true
             ? "Connects this device to your managed Cloud gateway"
             : "Explains the managed möbius Cloud subscription"
         Button {
@@ -79,14 +79,14 @@ struct MobiusCloudOfferSheet: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Close") { dismiss() }
-                        .disabled(model.cloudAction.isRunning)
+                        .disabled(model.cloud.cloudAction.isRunning)
                 }
             }
             .safeAreaInset(edge: .bottom) { signupBoundary }
         }
-        .interactiveDismissDisabled(model.cloudAction.isRunning)
+        .interactiveDismissDisabled(model.cloud.cloudAction.isRunning)
         .task { await loadProduct() }
-        .task { await model.refreshCloudAccount() }
+        .task { await model.cloud.refreshCloudAccount() }
     }
 
     /// The offer hero becomes setup status while a Cloud action is running.
@@ -116,7 +116,7 @@ struct MobiusCloudOfferSheet: View {
 
     /// The stage the flow is on, or nil when nothing is running.
     private var setupStage: CloudSetupStage? {
-        switch model.cloudAction {
+        switch model.cloud.cloudAction {
         case .idle, .deleting: nil
         case .signingIn: .signIn
         case .purchasing, .restoring: .subscription
@@ -195,29 +195,29 @@ struct MobiusCloudOfferSheet: View {
     /// text from colliding with the capsule as the page scrolls past it.
     private var signupBoundary: some View {
         VStack(spacing: MobiusSpace.m) {
-            if let cloudError = model.cloudError {
+            if let cloudError = model.cloud.cloudError {
                 Text(verbatim: cloudError)
                     .font(MobiusStyle.captionFont)
                     .foregroundStyle(palette.danger)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if model.cloudAction.isRunning {
+            if model.cloud.cloudAction.isRunning {
                 EmptyView()
-            } else if model.cloudAccount?.subscribed == true {
+            } else if model.cloud.cloudAccount?.subscribed == true {
                 Button("Connect gateway") {
                     Task {
-                        if await model.connectCloudGateway() { dismiss() }
+                        if await model.cloud.connectCloudGateway() { dismiss() }
                     }
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.extraLarge)
                 .frame(maxWidth: .infinity)
-            } else if !model.hasCloudAccount {
+            } else if !model.cloud.hasCloudAccount {
                 MobiusCloudAppleAuthorizationButton(label: .continue) {
                     authorizationCode, nonce in
                     Task {
-                        if await model.signInAndPurchaseCloud(
+                        if await model.cloud.signInAndPurchaseCloud(
                             authorizationCode: authorizationCode,
                             nonce: nonce
                         ) {
@@ -225,28 +225,28 @@ struct MobiusCloudOfferSheet: View {
                         }
                     }
                 } onFailure: {
-                    model.reportCloudSignInFailure()
+                    model.cloud.reportCloudSignInFailure()
                 }
-            } else if model.hasCloudAccount, model.cloudAccount == nil {
-                if model.cloudError == nil {
+            } else if model.cloud.hasCloudAccount, model.cloud.cloudAccount == nil {
+                if model.cloud.cloudError == nil {
                     waitingButton("Checking subscription…")
                 } else {
                     Button("Retry subscription check") {
-                        Task { await model.refreshCloudAccount() }
+                        Task { await model.cloud.refreshCloudAccount() }
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.extraLarge)
                     .frame(maxWidth: .infinity)
                 }
-            } else if model.cloudIssue == .subscriptionAccountConflict {
+            } else if model.cloud.cloudIssue == .subscriptionAccountConflict {
                 VStack(spacing: MobiusSpace.s) {
                     Button("Manage App Store subscription") {
-                        Task { await model.manageCloudSubscription() }
+                        Task { await model.cloud.manageCloudSubscription() }
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.extraLarge)
                     Button("Sign out of Cloud") {
-                        Task { await model.signOutOfCloud() }
+                        Task { await model.cloud.signOutOfCloud() }
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.large)
@@ -255,7 +255,7 @@ struct MobiusCloudOfferSheet: View {
             } else if productDisplayPrice != nil {
                 Button("Subscribe") {
                     Task {
-                        if await model.purchaseCloud() { dismiss() }
+                        if await model.cloud.purchaseCloud() { dismiss() }
                     }
                 }
                 .buttonStyle(.borderedProminent)
@@ -313,7 +313,7 @@ struct MobiusCloudOfferSheet: View {
         guard productDisplayPrice == nil else { return }
         productLoadFailed = false
         do {
-            productDisplayPrice = try await model.cloudProductDisplayPrice()
+            productDisplayPrice = try await model.cloud.cloudProductDisplayPrice()
         } catch {
             productLoadFailed = true
         }

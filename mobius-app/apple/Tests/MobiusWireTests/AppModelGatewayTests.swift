@@ -77,8 +77,8 @@ extension AppModelTests {
         model.gateway.accounts = [selfHosted, cloud]
         model.gateway.selectedAccountID = selfHosted.id
         model.gateway.connectionState = .ready
-        model.cloudSession = MobiusCloudSession(userID: userID, expiresAt: .distantFuture)
-        model.cloudIssue = .subscriptionExpired
+        model.cloud.cloudSession = MobiusCloudSession(userID: userID, expiresAt: .distantFuture)
+        model.cloud.cloudIssue = .subscriptionExpired
 
         model.selectAccount(cloud.id)
 
@@ -86,8 +86,8 @@ extension AppModelTests {
         XCTAssertTrue(model.gateway.connectionState.isReady)
         XCTAssertEqual(model.toast?.tone, .warning)
 
-        model.notificationsEnabled = true
-        model.openRemoteNotification(.session(
+        model.cloud.notificationsEnabled = true
+        model.cloud.openRemoteNotification(.session(
             eventID: "cloud-completed",
             kind: .completed,
             sessionID: "cloud-chat",
@@ -97,7 +97,7 @@ extension AppModelTests {
 
         XCTAssertEqual(model.gateway.selectedAccountID, selfHosted.id)
         XCTAssertTrue(model.gateway.connectionState.isReady)
-        XCTAssertNotNil(model.pendingRemoteNotification)
+        XCTAssertNotNil(model.cloud.pendingRemoteNotification)
     }
 
     func testMissingGatewayTokenOpensPairingRepair() async throws {
@@ -135,16 +135,16 @@ extension AppModelTests {
 
         try await withCheckedThrowingContinuation {
             (continuation: CheckedContinuation<Void, Error>) in
-            model.cloudPairingContinuation = continuation
+            model.cloud.cloudPairingContinuation = continuation
             model.appDidEnterBackground()
             XCTAssertTrue(model.gateway.hasPendingPairing)
             model.gateway.handle(.paired(clientID: "cloud-client", token: "gateway-token"))
-            if model.cloudPairingContinuation != nil {
-                model.completeCloudPairing(.failure(CancellationError()))
+            if model.cloud.cloudPairingContinuation != nil {
+                model.cloud.completeCloudPairing(.failure(CancellationError()))
             }
         }
 
-        XCTAssertNil(model.cloudPairingContinuation)
+        XCTAssertNil(model.cloud.cloudPairingContinuation)
         XCTAssertFalse(model.gateway.hasPendingPairing)
         await model.gateway.shutdown().value
         for account in model.gateway.accounts { try await store.remove(account) }
@@ -486,7 +486,7 @@ extension AppModelTests {
             },
             reconnectDelay: { _ in .milliseconds(20) }
         )
-        model.cloudSession = MobiusCloudSession(userID: userID, expiresAt: .distantFuture)
+        model.cloud.cloudSession = MobiusCloudSession(userID: userID, expiresAt: .distantFuture)
         model.appIsInBackground = false
 
         await model.start()
@@ -505,12 +505,12 @@ extension AppModelTests {
         )
         let selfHosted = GatewayAccount(endpoint: try GatewayEndpoint("wss://gateway.example"))
         model.gateway.accounts = [cloud, selfHosted]
-        model.cloudSession = MobiusCloudSession(userID: userID, expiresAt: .distantFuture)
+        model.cloud.cloudSession = MobiusCloudSession(userID: userID, expiresAt: .distantFuture)
         model.gateway.selectedAccountID = selfHosted.id
 
-        XCTAssertEqual(model.mobiusCloudGateway?.id, cloud.id)
+        XCTAssertEqual(model.cloud.cloudGateway?.id, cloud.id)
         XCTAssertFalse(model.selectedGatewayIsMobiusCloud)
-        XCTAssertTrue(model.hasCloudAccount)
+        XCTAssertTrue(model.cloud.hasCloudAccount)
     }
 
     func testAttachmentsCanBeImportedWhileATurnIsActive() async throws {
@@ -936,7 +936,7 @@ extension AppModelTests {
         )
         model.gateway.accounts = [account]
         model.gateway.selectedAccountID = account.id
-        model.cloudSession = MobiusCloudSession(userID: userID, expiresAt: .distantFuture)
+        model.cloud.cloudSession = MobiusCloudSession(userID: userID, expiresAt: .distantFuture)
         model.chat.selectedSessionID = "chat-1"
         model.navigationPath = [.chat(.session("chat-1"))]
         model.chat.composer = "Keep my draft"

@@ -8,6 +8,8 @@
 
 /* Begin PBXBuildFile section */
 		200000000000000000000001 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000001 /* AppModel.swift */; };
+		2000000000000000000000A1 /* MobiusCloudModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1000000000000000000000A1 /* MobiusCloudModel.swift */; };
+		2000000000000000000000A2 /* AppModelCloudReset.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1000000000000000000000A2 /* AppModelCloudReset.swift */; };
 		B20000000000000000000001 /* AppModelCloud.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000001 /* AppModelCloud.swift */; };
 		B20000000000000000000002 /* MobiusCloudClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* MobiusCloudClient.swift */; };
 		D20000000000000000000001 /* MobiusCloudPurchases.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000001 /* MobiusCloudPurchases.swift */; };
@@ -140,6 +142,8 @@
 
 /* Begin PBXFileReference section */
 		100000000000000000000001 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		1000000000000000000000A1 /* MobiusCloudModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobiusCloudModel.swift; sourceTree = "<group>"; };
+		1000000000000000000000A2 /* AppModelCloudReset.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelCloudReset.swift; sourceTree = "<group>"; };
 		B10000000000000000000001 /* AppModelCloud.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelCloud.swift; sourceTree = "<group>"; };
 		B10000000000000000000002 /* MobiusCloudClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobiusCloudClient.swift; sourceTree = "<group>"; };
 		D10000000000000000000001 /* MobiusCloudPurchases.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobiusCloudPurchases.swift; sourceTree = "<group>"; };
@@ -312,6 +316,8 @@
 			isa = PBXGroup;
 			children = (
 				100000000000000000000001 /* AppModel.swift */,
+				1000000000000000000000A1 /* MobiusCloudModel.swift */,
+				1000000000000000000000A2 /* AppModelCloudReset.swift */,
 				B10000000000000000000001 /* AppModelCloud.swift */,
 				B10000000000000000000002 /* MobiusCloudClient.swift */,
 				D10000000000000000000001 /* MobiusCloudPurchases.swift */,
@@ -571,6 +577,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				200000000000000000000001 /* AppModel.swift in Sources */,
+				2000000000000000000000A1 /* MobiusCloudModel.swift in Sources */,
+				2000000000000000000000A2 /* AppModelCloudReset.swift in Sources */,
 				B20000000000000000000001 /* AppModelCloud.swift in Sources */,
 				B20000000000000000000002 /* MobiusCloudClient.swift in Sources */,
 				D20000000000000000000001 /* MobiusCloudPurchases.swift in Sources */,

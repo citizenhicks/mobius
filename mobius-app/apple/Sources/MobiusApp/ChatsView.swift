@@ -109,8 +109,8 @@ struct ChatsView: View {
             let remaining = selection.intersection(sessionIDs)
             selectedSessionIDs = remaining.isEmpty ? nil : remaining
         }
-        .task(id: model.cloudSession?.credentialID) {
-            await model.refreshCloudAccount()
+        .task(id: model.cloud.cloudSession?.credentialID) {
+            await model.cloud.refreshCloudAccount()
         }
     }
 
@@ -247,7 +247,7 @@ struct ChatsView: View {
                 }
                 .disabled(displayedSessions.isEmpty || !model.canRenameSession)
             }
-            if model.hasCloudAccount, let limit = model.cloudAccount?.luna {
+            if model.cloud.hasCloudAccount, let limit = model.cloud.cloudAccount?.luna {
                 Divider()
                 Text(
                     "\(limit.remainingFraction.formatted(.percent.precision(.fractionLength(0)))) usage remaining"

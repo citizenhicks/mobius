@@ -151,6 +151,15 @@ enum MobiusCloudError: LocalizedError {
     var errorDescription: String? { String(localized: localizedDescriptionResource) }
 }
 
+struct MobiusCloudAuthenticationCleanupError: LocalizedError {
+    let status: Int
+    let cleanup: Error
+
+    var errorDescription: String? {
+        "Your Cloud sign-in expired, but this device could not forget the saved sign-in."
+    }
+}
+
 private struct MobiusCloudCredential: Codable {
     let token: String
     let userID: UUID
@@ -424,11 +433,14 @@ final class MobiusCloudClient {
         guard credential.hasValidToken else {
             throw MobiusCloudError.invalidAuthenticationResponse
         }
+        try Task.checkCancellation()
         try store.save(credential)
         return credential.session
     }
 
-    func deleteAccount(authorizationCode: String, nonce: String) async throws {
+    @discardableResult
+    func deleteAccount(authorizationCode: String, nonce: String) async throws -> Error? {
+        var localCleanupError: Error?
         do {
             _ = try await send(
                 url: Self.accountURL,
@@ -438,11 +450,13 @@ final class MobiusCloudClient {
                     nonce: nonce
                 ),
                 authenticated: true,
-                forgetAuthenticationOnSuccess: true
+                forgetAuthenticationOnSuccess: true,
+                onAuthenticationCleanupFailure: { localCleanupError = $0 }
             )
         } catch MobiusCloudError.server(403) {
             throw MobiusCloudError.invalidAuthorization
         }
+        return localCleanupError
     }
 
     func account() async throws -> MobiusCloudAccount {
@@ -618,7 +632,8 @@ final class MobiusCloudClient {
         method: String,
         body: Data? = nil,
         authenticated: Bool = false,
-        forgetAuthenticationOnSuccess: Bool = false
+        forgetAuthenticationOnSuccess: Bool = false,
+        onAuthenticationCleanupFailure: ((Error) -> Void)? = nil
     ) async throws -> Data {
         var request = URLRequest(url: url)
         var bearer: String?
@@ -651,7 +666,14 @@ final class MobiusCloudClient {
         guard data.count <= Self.maximumResponseBytes else { throw MobiusCloudError.oversizedResponse }
         guard (200..<300).contains(response.statusCode) else {
             if response.statusCode == 401, let bearer {
-                try? store.remove(ifTokenMatches: bearer)
+                do {
+                    try store.remove(ifTokenMatches: bearer)
+                } catch {
+                    throw MobiusCloudAuthenticationCleanupError(
+                        status: response.statusCode,
+                        cleanup: error
+                    )
+                }
             }
             if response.statusCode == 409,
                let error = try? decoder.decode(ErrorResponse.self, from: data).error {
@@ -664,7 +686,11 @@ final class MobiusCloudClient {
         if forgetAuthenticationOnSuccess, let bearer {
             // The server revoked every session; a newer local sign-in must still survive a
             // stale response from this request.
-            try? store.remove(ifTokenMatches: bearer)
+            do {
+                try store.remove(ifTokenMatches: bearer)
+            } catch {
+                onAuthenticationCleanupFailure?(error)
+            }
         }
         return data
     }

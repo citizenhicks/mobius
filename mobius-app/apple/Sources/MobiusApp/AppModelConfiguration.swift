@@ -814,8 +814,7 @@ extension AppModel {
         startupTask?.cancel()
         appActivationTask?.cancel()
         appActivationTask = nil
-        cloudAuthenticationTask?.cancel()
-        cloudAuthenticationTask = nil
+        cloud.cancelAuthenticationRefresh()
         messageSpeaker.stop()
         Task { await dictation.cancel() }
         cancelVoiceChatIntent()
@@ -856,18 +855,18 @@ extension AppModel {
         await unlockApp()
         guard !Task.isCancelled, !appIsInBackground else { return }
         if selectedGatewayIsMobiusCloud {
-            await refreshCloudAccount()
+            await cloud.refreshCloudAccount()
             guard !Task.isCancelled, !appIsInBackground else { return }
             if gateway.reconnectsOnActivation {
                 if selectedGatewayIsMobiusCloud,
-                   cloudIssue != .subscriptionExpired {
+                   cloud.cloudIssue != .subscriptionExpired {
                     reconnect()
                 }
             }
         } else {
             setSceneActive(true)
         }
-        await refreshRemoteNotificationRegistration()
+        await cloud.refreshRemoteNotificationRegistration()
     }
 
     func beginAppActivation() {
@@ -876,14 +875,6 @@ extension AppModel {
             guard let self else { return }
             await self.appDidBecomeActive()
             if !Task.isCancelled { self.appActivationTask = nil }
-        }
-    }
-
-    func scheduleCloudAuthenticationRefresh() {
-        cloudAuthenticationTask?.cancel()
-        cloudAuthenticationTask = Task<Void, Never> { [weak self] in
-            guard let self else { return }
-            await self.cloudAuthenticationDidChange()
         }
     }
 

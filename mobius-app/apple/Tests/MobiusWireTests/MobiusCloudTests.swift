@@ -160,25 +160,25 @@ final class MobiusCloudTests: XCTestCase {
             remoteNotifications: remoteNotifications,
             cloudClient: cloudClient
         )
-        model.cloudSession = session
-        model.pushTokenRemovalPending = true
+        model.cloud.cloudSession = session
+        model.cloud.pushTokenRemovalPending = true
         defaults.set(true, forKey: pushTokenRemovalPendingKey)
         defaults.set("previous-account", forKey: pushTokenRemovalCredentialIDKey)
 
-        await model.cloudAuthenticationDidChange()
-        XCTAssertTrue(model.pushTokenRemovalPending)
+        await model.cloud.cloudAuthenticationDidChange()
+        XCTAssertTrue(model.cloud.pushTokenRemovalPending)
 
         authorization.value = true
-        await model.cloudAuthenticationDidChange()
-        model.receivedRemoteNotificationDeviceToken(Data([0x00, 0x11]))
+        await model.cloud.cloudAuthenticationDidChange()
+        model.cloud.receivedRemoteNotificationDeviceToken(Data([0x00, 0x11]))
         let failed = await eventually { registration.count == 1 }
         XCTAssertTrue(failed)
-        XCTAssertTrue(model.pushTokenRemovalPending)
+        XCTAssertTrue(model.cloud.pushTokenRemovalPending)
 
         registration.value = true
-        model.receivedRemoteNotificationDeviceToken(Data([0x00, 0x11]))
+        model.cloud.receivedRemoteNotificationDeviceToken(Data([0x00, 0x11]))
         let replaced = await eventually {
-            registration.count == 2 && !model.pushTokenRemovalPending
+            registration.count == 2 && !model.cloud.pushTokenRemovalPending
         }
         XCTAssertTrue(replaced)
     }
@@ -198,22 +198,22 @@ final class MobiusCloudTests: XCTestCase {
                 throw URLError(.notConnectedToInternet)
             }
         )
-        model.cloudSession = MobiusCloudSession(userID: UUID(), expiresAt: .distantFuture)
+        model.cloud.cloudSession = MobiusCloudSession(userID: UUID(), expiresAt: .distantFuture)
 
-        XCTAssertTrue(model.isLoadingCloudAccount)
-        model.cloudError = "Unavailable"
-        XCTAssertFalse(model.isLoadingCloudAccount)
-        model.cloudError = nil
-        model.cloudAccount = MobiusCloudAccount(
+        XCTAssertTrue(model.cloud.isLoadingCloudAccount)
+        model.cloud.cloudError = "Unavailable"
+        XCTAssertFalse(model.cloud.isLoadingCloudAccount)
+        model.cloud.cloudError = nil
+        model.cloud.cloudAccount = MobiusCloudAccount(
             userID: UUID(),
             email: "private@privaterelay.appleid.com",
             subscribed: true,
             sharesDiagnostics: false
         )
-        XCTAssertFalse(model.isLoadingCloudAccount)
+        XCTAssertFalse(model.cloud.isLoadingCloudAccount)
 
-        model.reportCloud(MobiusCloudPurchaseError.unavailable)
-        XCTAssertEqual(model.cloudError, "The App Store purchase could not be completed.")
+        model.cloud.reportCloud(MobiusCloudPurchaseError.unavailable)
+        XCTAssertEqual(model.cloud.cloudError, "The App Store purchase could not be completed.")
     }
 
     func testClientUsesNativeCloudContractAndBearerFromDeviceOnlyKeychain() async throws {
@@ -529,20 +529,20 @@ final class MobiusCloudTests: XCTestCase {
                 purchase: { _ in throw MobiusCloudPurchaseError.unavailable }
             )
         )
-        model.cloudAccount = MobiusCloudAccount(
+        model.cloud.cloudAccount = MobiusCloudAccount(
             userID: userID,
             email: nil,
             subscribed: false,
             sharesDiagnostics: false
         )
 
-        let deleted = await model.deleteCloudAccount(
+        let deleted = await model.cloud.deleteCloudAccount(
             authorizationCode: "delete-code",
             nonce: String(repeating: "d", count: 43)
         )
         XCTAssertFalse(deleted)
-        XCTAssertNil(model.cloudSession)
-        XCTAssertNil(model.cloudAccount)
+        XCTAssertNil(model.cloud.cloudSession)
+        XCTAssertNil(model.cloud.cloudAccount)
         XCTAssertNil(try client.loadSession())
     }
 
@@ -614,23 +614,23 @@ final class MobiusCloudTests: XCTestCase {
                 purchase: { _ in throw MobiusCloudPurchaseError.unavailable }
             )
         )
-        model.cloudAccount = MobiusCloudAccount(
+        model.cloud.cloudAccount = MobiusCloudAccount(
             userID: currentUserID,
             email: "private@privaterelay.appleid.com",
             subscribed: false,
             sharesDiagnostics: false
         )
-        XCTAssertEqual(model.mobiusCloudGateway?.id, deletedGateway.id)
+        XCTAssertEqual(model.cloud.cloudGateway?.id, deletedGateway.id)
 
-        let deleted = await model.deleteCloudAccount(
+        let deleted = await model.cloud.deleteCloudAccount(
             authorizationCode: "delete-code",
             nonce: String(repeating: "d", count: 43)
         )
         XCTAssertTrue(deleted)
-        XCTAssertNil(model.cloudSession)
-        XCTAssertNil(model.cloudAccount)
+        XCTAssertNil(model.cloud.cloudSession)
+        XCTAssertNil(model.cloud.cloudAccount)
         XCTAssertNil(try client.loadSession())
-        XCTAssertEqual(model.cloudAction, .idle)
+        XCTAssertEqual(model.cloud.cloudAction, .idle)
         XCTAssertEqual(
             requests.map { ($0.url?.path ?? "") + ":" + ($0.httpMethod ?? "") },
             [
@@ -688,7 +688,7 @@ final class MobiusCloudTests: XCTestCase {
                 purchase: { _ in throw MobiusCloudPurchaseError.unavailable }
             )
         )
-        model.cloudAccount = MobiusCloudAccount(
+        model.cloud.cloudAccount = MobiusCloudAccount(
             userID: userID,
             email: nil,
             subscribed: true,
@@ -696,15 +696,15 @@ final class MobiusCloudTests: XCTestCase {
             subscriptionStartedAt: .now
         )
 
-        let deleted = await model.deleteCloudAccount(
+        let deleted = await model.cloud.deleteCloudAccount(
             authorizationCode: "delete-code",
             nonce: String(repeating: "d", count: 43)
         )
 
         XCTAssertTrue(deleted)
         XCTAssertFalse(readCurrentEntitlements)
-        XCTAssertNil(model.cloudSession)
-        XCTAssertNil(model.cloudAccount)
+        XCTAssertNil(model.cloud.cloudSession)
+        XCTAssertNil(model.cloud.cloudAccount)
         XCTAssertNil(try client.loadSession())
         XCTAssertEqual(requests.map { ($0.url?.path ?? "") + ":" + ($0.httpMethod ?? "") }, [
             "/api/mobile/auth/apple:POST",
@@ -874,20 +874,20 @@ final class MobiusCloudTests: XCTestCase {
             cloudClient: client,
             cloudPurchases: emptyCloudPurchases()
         )
-        let staleRefresh = Task { await model.refreshCloudAccount() }
+        let staleRefresh = Task { await model.cloud.refreshCloudAccount() }
         await fulfillment(of: [staleRequestStarted], timeout: 1)
 
         let secondSession = try await client.authenticate(
             authorizationCode: "second-code",
             nonce: String(repeating: "n", count: 43)
         )
-        model.cloudSession = secondSession
+        model.cloud.cloudSession = secondSession
         staleContinuation?.resume(returning: try XCTUnwrap(staleResponse))
         await staleRefresh.value
 
-        XCTAssertEqual(model.cloudSession?.userID, secondUserID)
+        XCTAssertEqual(model.cloud.cloudSession?.userID, secondUserID)
         XCTAssertEqual(try client.loadSession()?.userID, secondUserID)
-        XCTAssertNil(model.cloudError)
+        XCTAssertNil(model.cloud.cloudError)
     }
 
     func testAccountRefreshRejectsServerUserIDChangeWithoutRetaggingGateway() async throws {
@@ -931,14 +931,14 @@ final class MobiusCloudTests: XCTestCase {
             cloudPurchases: emptyCloudPurchases()
         )
 
-        await model.refreshCloudAccount()
+        await model.cloud.refreshCloudAccount()
 
-        XCTAssertNil(model.cloudSession)
+        XCTAssertNil(model.cloud.cloudSession)
         XCTAssertNil(try client.loadSession())
-        XCTAssertNil(model.cloudAccount)
+        XCTAssertNil(model.cloud.cloudAccount)
         XCTAssertEqual(model.gateway.accounts.first?.cloudUserID, sessionUserID)
         XCTAssertEqual(gatewayStore.loadAccounts().first?.cloudUserID, sessionUserID)
-        XCTAssertEqual(model.cloudError, MobiusCloudError.accountIdentityMismatch.localizedDescription)
+        XCTAssertEqual(model.cloud.cloudError, MobiusCloudError.accountIdentityMismatch.localizedDescription)
         XCTAssertEqual(requests.map { $0.url?.path }, [
             "/api/mobile/auth/apple",
             "/api/mobile/account",
@@ -1019,10 +1019,10 @@ final class MobiusCloudTests: XCTestCase {
         stream.continuation.yield(purchase)
         await fulfillment(of: [transactionFinished], timeout: 1)
 
-        let accountUpdated = await eventually { model.cloudAccount?.subscribed == true }
+        let accountUpdated = await eventually { model.cloud.cloudAccount?.subscribed == true }
         XCTAssertTrue(accountUpdated)
         XCTAssertTrue(finished)
-        XCTAssertEqual(model.cloudSession?.userID, userID)
+        XCTAssertEqual(model.cloud.cloudSession?.userID, userID)
         XCTAssertEqual(requests.map { $0.url?.path }, [
             "/api/mobile/auth/apple",
             "/api/mobile/account",
@@ -1107,16 +1107,16 @@ final class MobiusCloudTests: XCTestCase {
             authorizationCode: "second-code",
             nonce: String(repeating: "m", count: 43)
         )
-        model.cloudSession = secondSession
+        model.cloud.cloudSession = secondSession
         blockedContinuation?.resume(returning: try XCTUnwrap(blockedResponse))
-        let staleTaskFinished = await eventually { model.cloudPurchaseTasks.isEmpty }
+        let staleTaskFinished = await eventually { model.cloud.cloudPurchaseTasks.isEmpty }
         XCTAssertTrue(staleTaskFinished)
 
         XCTAssertEqual(subscriptionBearer, "Bearer \(firstToken)")
         XCTAssertFalse(finished)
-        XCTAssertEqual(model.cloudSession, secondSession)
+        XCTAssertEqual(model.cloud.cloudSession, secondSession)
         XCTAssertEqual(try client.loadSession(), secondSession)
-        XCTAssertNil(model.cloudError)
+        XCTAssertNil(model.cloud.cloudError)
     }
 
     func testAccountRefreshFinishesUnfinishedPurchaseAfterBackendAcceptsIt() async throws {
@@ -1173,10 +1173,10 @@ final class MobiusCloudTests: XCTestCase {
             cloudPurchases: purchases
         )
 
-        await model.refreshCloudAccount()
+        await model.cloud.refreshCloudAccount()
 
         XCTAssertTrue(finished)
-        XCTAssertEqual(model.cloudAccount?.subscribed, true)
+        XCTAssertEqual(model.cloud.cloudAccount?.subscribed, true)
         XCTAssertEqual(requests.map { $0.url?.path }, [
             "/api/mobile/auth/apple",
             "/api/mobile/account",
@@ -1267,13 +1267,13 @@ final class MobiusCloudTests: XCTestCase {
             cloudPurchases: purchases
         )
 
-        await model.refreshCloudAccount()
+        await model.cloud.refreshCloudAccount()
 
         XCTAssertEqual(submittedJWS, ["bad.payload.signature", "good.payload.signature"])
         XCTAssertFalse(rejectedFinished)
         XCTAssertTrue(acceptedFinished)
-        XCTAssertEqual(model.cloudAccount?.subscribed, true)
-        XCTAssertNil(model.cloudError)
+        XCTAssertEqual(model.cloud.cloudAccount?.subscribed, true)
+        XCTAssertNil(model.cloud.cloudError)
     }
 
     func testSubscriptionConflictIsActionableAndLeavesTransactionUnfinished() async throws {
@@ -1341,16 +1341,16 @@ final class MobiusCloudTests: XCTestCase {
             cloudPurchases: purchases
         )
 
-        await model.refreshCloudAccount()
+        await model.cloud.refreshCloudAccount()
 
         XCTAssertFalse(finished)
-        XCTAssertNotNil(model.cloudSession)
+        XCTAssertNotNil(model.cloud.cloudSession)
         XCTAssertEqual(
-            model.cloudError,
+            model.cloud.cloudError,
             MobiusCloudError.subscriptionAccountConflict.localizedDescription
         )
-        XCTAssertEqual(model.cloudIssue, .subscriptionAccountConflict)
-        let retried = await model.purchaseCloud()
+        XCTAssertEqual(model.cloud.cloudIssue, .subscriptionAccountConflict)
+        let retried = await model.cloud.purchaseCloud()
         XCTAssertFalse(retried)
         XCTAssertEqual(purchaseAttempts, 0)
         XCTAssertEqual(requests.map { $0.url?.path }, [
@@ -1424,9 +1424,9 @@ final class MobiusCloudTests: XCTestCase {
             cloudPurchases: purchases
         )
 
-        let firstRefresh = Task { await model.refreshCloudAccount() }
+        let firstRefresh = Task { await model.cloud.refreshCloudAccount() }
         await fulfillment(of: [finishStarted], timeout: 1)
-        let secondRefresh = Task { await model.refreshCloudAccount() }
+        let secondRefresh = Task { await model.cloud.refreshCloudAccount() }
         await fulfillment(of: [secondScan], timeout: 1)
         finishContinuation?.resume()
         await firstRefresh.value
@@ -1434,7 +1434,7 @@ final class MobiusCloudTests: XCTestCase {
 
         XCTAssertEqual(subscriptionRequests, 1)
         XCTAssertEqual(finishCount, 1)
-        XCTAssertEqual(model.cloudAccount?.subscribed, true)
+        XCTAssertEqual(model.cloud.cloudAccount?.subscribed, true)
     }
 
     func testPurchaseUsesAccountUserIDButDoesNotOverrideServerSubscription() async throws {
@@ -1495,7 +1495,7 @@ final class MobiusCloudTests: XCTestCase {
             cloudPurchases: purchases
         )
 
-        let connected = await model.signInAndPurchaseCloud(
+        let connected = await model.cloud.signInAndPurchaseCloud(
             authorizationCode: "apple-code",
             nonce: String(repeating: "n", count: 43)
         )
@@ -1504,9 +1504,9 @@ final class MobiusCloudTests: XCTestCase {
         XCTAssertTrue(queriedActivePurchases)
         XCTAssertEqual(purchaseUserID, userID)
         XCTAssertTrue(finished)
-        XCTAssertEqual(model.cloudAccount?.subscribed, false)
+        XCTAssertEqual(model.cloud.cloudAccount?.subscribed, false)
         XCTAssertEqual(
-            model.cloudError,
+            model.cloud.cloudError,
             MobiusCloudError.subscriptionRequired.localizedDescription
         )
         XCTAssertEqual(requests.map { $0.url?.path }, [
@@ -1568,13 +1568,13 @@ final class MobiusCloudTests: XCTestCase {
             )
         )
 
-        let connected = await model.signInAndPurchaseCloud(
+        let connected = await model.cloud.signInAndPurchaseCloud(
             authorizationCode: "apple-code",
             nonce: String(repeating: "n", count: 43)
         )
 
         XCTAssertFalse(connected)
-        XCTAssertNil(model.cloudError)
+        XCTAssertNil(model.cloud.cloudError)
         XCTAssertEqual(requests.map { $0.url?.path }, [
             "/api/mobile/auth/apple",
             "/api/mobile/account",
@@ -1621,7 +1621,7 @@ final class MobiusCloudTests: XCTestCase {
                 )
             )
 
-            _ = await model.signInAndPurchaseCloud(
+            _ = await model.cloud.signInAndPurchaseCloud(
                 authorizationCode: "apple-code",
                 nonce: String(repeating: "n", count: 43)
             )
@@ -1671,18 +1671,18 @@ final class MobiusCloudTests: XCTestCase {
             )
         )
 
-        _ = await model.signInAndPurchaseCloud(
+        _ = await model.cloud.signInAndPurchaseCloud(
             authorizationCode: "apple-code",
             nonce: String(repeating: "n", count: 43)
         )
-        let deleted = await model.deleteCloudAccount(
+        let deleted = await model.cloud.deleteCloudAccount(
             authorizationCode: "delete-code",
             nonce: String(repeating: "d", count: 43)
         )
 
         XCTAssertTrue(deleted)
-        XCTAssertNil(model.cloudSession)
-        XCTAssertNil(model.cloudError)
+        XCTAssertNil(model.cloud.cloudSession)
+        XCTAssertNil(model.cloud.cloudError)
         XCTAssertEqual(
             requests.map { "\($0.httpMethod ?? "") \($0.url?.path ?? "")" },
             [
@@ -1754,7 +1754,7 @@ final class MobiusCloudTests: XCTestCase {
         XCTAssertFalse(model.selectedGatewayIsMobiusCloud)
 
         let connection = Task {
-            await model.signInAndPurchaseCloud(
+            await model.cloud.signInAndPurchaseCloud(
                 authorizationCode: "apple-code",
                 nonce: String(repeating: "n", count: 43)
             )
@@ -1775,7 +1775,7 @@ final class MobiusCloudTests: XCTestCase {
             "/api/mobile/gateway",
             "/api/mobile/gateway",
         ])
-        XCTAssertEqual(model.cloudAccount?.subscribed, true)
+        XCTAssertEqual(model.cloud.cloudAccount?.subscribed, true)
         XCTAssertTrue(model.selectedGatewayIsMobiusCloud)
         XCTAssertEqual(model.gateway.selectedAccount?.displayName, "möbius Cloud")
         XCTAssertEqual(gatewayStore.loadAccounts().first?.displayName, "möbius Cloud")
@@ -1822,7 +1822,7 @@ final class MobiusCloudTests: XCTestCase {
             cloudClient: client
         )
 
-        XCTAssertNil(model.mobiusCloudGateway)
+        XCTAssertNil(model.cloud.cloudGateway)
         XCTAssertFalse(model.selectedGatewayIsMobiusCloud)
         XCTAssertEqual(model.gateway.selectedAccount, account)
         XCTAssertEqual(gatewayStore.loadAccounts(), [account])
@@ -1847,7 +1847,7 @@ final class MobiusCloudTests: XCTestCase {
         let gateway = GatewayAccount(
             endpoint: try GatewayEndpoint("wss://gateway.example"),
             displayName: "Renamed Cloud gateway",
-            machineName: mobiusCloudGatewayDisplayName,
+            machineName: cloudGatewayDisplayName,
             cloudUserID: try XCTUnwrap(UUID(
                 uuidString: "00000000-0000-0000-0000-000000000001"
             ))
@@ -1888,7 +1888,7 @@ final class MobiusCloudTests: XCTestCase {
             connectionOpener: { _ in AsyncThrowingStream { _ in } },
             cloudClient: client
         )
-        model.cloudAccount = MobiusCloudAccount(
+        model.cloud.cloudAccount = MobiusCloudAccount(
             userID: try XCTUnwrap(UUID(
                 uuidString: "00000000-0000-0000-0000-000000000001"
             )),
@@ -1901,13 +1901,13 @@ final class MobiusCloudTests: XCTestCase {
         model.destination = .chats
         model.navigationPath = [.chat(.session("chat-1"))]
 
-        await model.signOutOfCloud()
+        await model.cloud.signOutOfCloud()
 
         XCTAssertTrue(requestedPushRemoval)
-        XCTAssertNil(model.cloudSession)
-        XCTAssertNil(model.cloudAccount)
+        XCTAssertNil(model.cloud.cloudSession)
+        XCTAssertNil(model.cloud.cloudAccount)
         XCTAssertNil(try client.loadSession())
-        XCTAssertTrue(model.pushTokenRemovalPending)
+        XCTAssertTrue(model.cloud.pushTokenRemovalPending)
         XCTAssertTrue(defaults.bool(forKey: pushTokenRemovalPendingKey))
         XCTAssertTrue(model.gateway.accounts.isEmpty)
         XCTAssertTrue(gatewayStore.loadAccounts().isEmpty)
@@ -1936,7 +1936,7 @@ final class MobiusCloudTests: XCTestCase {
         let gateway = GatewayAccount(
             endpoint: try GatewayEndpoint("wss://gateway.example"),
             displayName: "möbius Cloud",
-            machineName: mobiusCloudGatewayDisplayName,
+            machineName: cloudGatewayDisplayName,
             cloudUserID: cloudUserID
         )
         try gatewayStore.save(gateway, token: "gateway-token")
@@ -1985,7 +1985,7 @@ final class MobiusCloudTests: XCTestCase {
             connectionOpener: { _ in AsyncThrowingStream { _ in } },
             cloudClient: client
         )
-        model.cloudAccount = MobiusCloudAccount(
+        model.cloud.cloudAccount = MobiusCloudAccount(
             userID: cloudUserID,
             email: nil,
             subscribed: true,
@@ -1995,10 +1995,10 @@ final class MobiusCloudTests: XCTestCase {
         model.chat.selectedSessionID = "chat-1"
         failNextCloudDelete = true
 
-        await model.signOutOfCloud()
+        await model.cloud.signOutOfCloud()
 
-        XCTAssertNotNil(model.cloudSession)
-        XCTAssertNotNil(model.cloudAccount)
+        XCTAssertNotNil(model.cloud.cloudSession)
+        XCTAssertNotNil(model.cloud.cloudAccount)
         XCTAssertEqual(model.gateway.accounts, [gateway])
         XCTAssertEqual(gatewayStore.loadAccounts(), [gateway])
         XCTAssertEqual(model.gateway.selectedAccountID, gateway.id)
@@ -2006,7 +2006,7 @@ final class MobiusCloudTests: XCTestCase {
         XCTAssertEqual(model.chat.selectedSessionID, "chat-1")
         XCTAssertEqual(model.gateway.connectionState, .ready)
         XCTAssertFalse(model.showsPairing)
-        XCTAssertFalse(model.pushTokenRemovalPending)
+        XCTAssertFalse(model.cloud.pushTokenRemovalPending)
         XCTAssertEqual(registrations.count, 1)
         XCTAssertNotNil(try client.loadSession())
         XCTAssertEqual(try gatewayStore.token(for: gateway), "gateway-token")
@@ -2015,20 +2015,20 @@ final class MobiusCloudTests: XCTestCase {
 
         pushRemovalFails.value = true
         failNextCloudDelete = true
-        await model.signOutOfCloud()
-        XCTAssertNotNil(model.cloudSession)
-        XCTAssertTrue(model.pushTokenRemovalPending)
+        await model.cloud.signOutOfCloud()
+        XCTAssertNotNil(model.cloud.cloudSession)
+        XCTAssertTrue(model.cloud.pushTokenRemovalPending)
         XCTAssertEqual(registrations.count, 2)
-        model.receivedRemoteNotificationDeviceToken(Data([0x00, 0x11]))
-        await model.remoteNotificationRegistrationTask?.value
-        XCTAssertFalse(model.pushTokenRemovalPending)
+        model.cloud.receivedRemoteNotificationDeviceToken(Data([0x00, 0x11]))
+        await model.cloud.remoteNotificationRegistrationTask?.value
+        XCTAssertFalse(model.cloud.pushTokenRemovalPending)
 
         let relaunched = AppModel(
             store: GatewayStore(defaults: defaults),
             settingsDefaults: defaults,
             cloudClient: client
         )
-        XCTAssertNotNil(relaunched.cloudSession)
+        XCTAssertNotNil(relaunched.cloud.cloudSession)
     }
 
     func testGatewayStoreClearAllDataContinuesAfterKeychainDeletionFailure() async throws {
@@ -2197,7 +2197,7 @@ final class MobiusCloudTests: XCTestCase {
             accountID: secondGateway.id,
             sessionID: "chat-1"
         )
-        XCTAssertNil(model.cloudSession)
+        XCTAssertNil(model.cloud.cloudSession)
         XCTAssertNil(try client.loadSession())
         XCTAssertTrue(model.gateway.accounts.isEmpty)
         XCTAssertTrue(gatewayStore.loadAccounts().isEmpty)
@@ -2277,7 +2277,7 @@ final class MobiusCloudTests: XCTestCase {
         )
 
         let restoration = Task {
-            await model.restoreCloudPurchases()
+            await model.cloud.restoreCloudPurchases()
         }
         _ = await gatewayRequests.firstRequest(after: 0) {
             if case .pair = $0 { return true }
@@ -2343,11 +2343,11 @@ final class MobiusCloudTests: XCTestCase {
             cloudClient: client
         )
 
-        let connected = await model.connectCloudGateway()
+        let connected = await model.cloud.connectCloudGateway()
 
         XCTAssertFalse(connected)
-        XCTAssertEqual(model.cloudAction, .idle)
-        XCTAssertEqual(model.cloudError, MobiusCloudError.subscriptionRequired.localizedDescription)
+        XCTAssertEqual(model.cloud.cloudAction, .idle)
+        XCTAssertEqual(model.cloud.cloudError, MobiusCloudError.subscriptionRequired.localizedDescription)
         XCTAssertEqual(requests.map { $0.url?.path }, [
             "/api/mobile/auth/apple",
             "/api/mobile/account",
@@ -2403,7 +2403,7 @@ final class MobiusCloudTests: XCTestCase {
             cloudClient: client
         )
         let subscriptionStartedAt = Date(timeIntervalSince1970: 1_700_000_000)
-        model.cloudAccount = MobiusCloudAccount(
+        model.cloud.cloudAccount = MobiusCloudAccount(
             userID: userID,
             email: "private@privaterelay.appleid.com",
             subscribed: true,
@@ -2414,7 +2414,7 @@ final class MobiusCloudTests: XCTestCase {
         model.gateway.pairingCode = "stale-code"
         model.showsPairing = true
 
-        let failedConnection = Task { await model.connectCloudGateway() }
+        let failedConnection = Task { await model.cloud.connectCloudGateway() }
         let firstPairRequest = await gatewayRequests.firstRequest(after: 0) {
             if case .pair = $0 { return true }
             return false
@@ -2426,7 +2426,7 @@ final class MobiusCloudTests: XCTestCase {
         XCTAssertEqual(firstCode, "fresh-code-1")
         XCTAssertEqual(openedEndpoints.map(\.rawValue), ["wss://fresh.example"])
         XCTAssertFalse(model.showsPairing)
-        XCTAssertEqual(model.cloudAction, .connecting)
+        XCTAssertEqual(model.cloud.cloudAction, .connecting)
 
         model.gateway.handle(.error(GatewayFailure(
             code: "unauthorized",
@@ -2440,7 +2440,7 @@ final class MobiusCloudTests: XCTestCase {
         XCTAssertFalse(model.gateway.hasPendingPairing)
 
         let firstRequestCount = await gatewayRequests.requestCount()
-        let cancelledConnection = Task { await model.connectCloudGateway() }
+        let cancelledConnection = Task { await model.cloud.connectCloudGateway() }
         let secondPairRequest = await gatewayRequests.firstRequest(after: firstRequestCount) {
             if case .pair = $0 { return true }
             return false
@@ -2450,19 +2450,19 @@ final class MobiusCloudTests: XCTestCase {
             return XCTFail("Expected the replacement pairing request")
         }
         XCTAssertEqual(secondCode, "fresh-code-2")
-        XCTAssertEqual(model.cloudAction, .connecting)
+        XCTAssertEqual(model.cloud.cloudAction, .connecting)
 
         model.gateway.reset(preservingDrafts: false)
         model.resetGatewayDependentState(preservingDrafts: false)
         let cancelled = await cancelledConnection.value
         XCTAssertFalse(cancelled)
-        XCTAssertEqual(model.cloudAction, .idle)
+        XCTAssertEqual(model.cloud.cloudAction, .idle)
         XCTAssertEqual(model.gateway.pairingEndpoint, "wss://")
         XCTAssertEqual(model.gateway.pairingCode, "")
         XCTAssertFalse(model.gateway.hasPendingPairing)
 
         let secondRequestCount = await gatewayRequests.requestCount()
-        let taskCancelledConnection = Task { await model.connectCloudGateway() }
+        let taskCancelledConnection = Task { await model.cloud.connectCloudGateway() }
         let thirdPairRequest = await gatewayRequests.firstRequest(after: secondRequestCount) {
             if case .pair = $0 { return true }
             return false
@@ -2472,18 +2472,18 @@ final class MobiusCloudTests: XCTestCase {
             return XCTFail("Expected the post-reset pairing request")
         }
         XCTAssertEqual(thirdCode, "fresh-code-3")
-        XCTAssertEqual(model.cloudAction, .connecting)
+        XCTAssertEqual(model.cloud.cloudAction, .connecting)
 
         taskCancelledConnection.cancel()
         let taskCancelled = await taskCancelledConnection.value
         XCTAssertFalse(taskCancelled)
-        XCTAssertEqual(model.cloudAction, .idle)
+        XCTAssertEqual(model.cloud.cloudAction, .idle)
         XCTAssertEqual(model.gateway.pairingEndpoint, "wss://")
         XCTAssertEqual(model.gateway.pairingCode, "")
         XCTAssertFalse(model.gateway.hasPendingPairing)
 
         let thirdRequestCount = await gatewayRequests.requestCount()
-        let successfulConnection = Task { await model.connectCloudGateway() }
+        let successfulConnection = Task { await model.cloud.connectCloudGateway() }
         let fourthPairRequest = await gatewayRequests.firstRequest(after: thirdRequestCount) {
             if case .pair = $0 { return true }
             return false
@@ -2493,13 +2493,13 @@ final class MobiusCloudTests: XCTestCase {
             return XCTFail("Expected the post-cancellation pairing request")
         }
         XCTAssertEqual(fourthCode, "fresh-code-4")
-        XCTAssertEqual(model.cloudAction, .connecting)
+        XCTAssertEqual(model.cloud.cloudAction, .connecting)
 
         model.gateway.handle(.paired(clientID: "cloud-client", token: "gateway-token"))
         let succeeded = await successfulConnection.value
         XCTAssertTrue(succeeded)
-        XCTAssertEqual(model.cloudAction, .idle)
-        XCTAssertEqual(model.cloudAccount?.subscriptionStartedAt, subscriptionStartedAt)
+        XCTAssertEqual(model.cloud.cloudAction, .idle)
+        XCTAssertEqual(model.cloud.cloudAccount?.subscriptionStartedAt, subscriptionStartedAt)
         XCTAssertEqual(
             requests.dropFirst().map { "\($0.httpMethod ?? "") \($0.url?.path ?? "")" },
             [
@@ -2613,7 +2613,7 @@ final class MobiusCloudTests: XCTestCase {
         await model.appDidBecomeActive()
 
         XCTAssertEqual(connectionAttempts, 0)
-        XCTAssertEqual(model.cloudIssue, .subscriptionExpired)
+        XCTAssertEqual(model.cloud.cloudIssue, .subscriptionExpired)
         XCTAssertEqual(
             model.gateway.connectionState,
             .failed(MobiusCloudError.subscriptionRequired.localizedDescription)
@@ -2624,15 +2624,15 @@ final class MobiusCloudTests: XCTestCase {
         XCTAssertEqual(model.gateway.selectedAccountID, gateway.id)
         let expiredGeneration = model.gateway.connectionGeneration
 
-        model.handleCloudSubscriptionExpired()
+        model.cloud.handleCloudSubscriptionExpired()
         model.reconnect()
-        model.reportCloud(MobiusCloudPurchaseError.unavailable)
+        model.cloud.reportCloud(MobiusCloudPurchaseError.unavailable)
 
         XCTAssertEqual(model.gateway.connectionGeneration, expiredGeneration)
         XCTAssertEqual(connectionAttempts, 0)
-        XCTAssertEqual(model.cloudIssue, .subscriptionExpired)
+        XCTAssertEqual(model.cloud.cloudIssue, .subscriptionExpired)
         XCTAssertEqual(
-            model.cloudError,
+            model.cloud.cloudError,
             MobiusCloudError.subscriptionRequired.localizedDescription
         )
 
@@ -2645,9 +2645,9 @@ final class MobiusCloudTests: XCTestCase {
         XCTAssertTrue(reconnected)
         XCTAssertTrue(subscriptionSubmitted)
         XCTAssertTrue(transactionFinished)
-        XCTAssertEqual(model.cloudAccount?.subscribed, true)
-        XCTAssertNil(model.cloudIssue)
-        XCTAssertNil(model.cloudError)
+        XCTAssertEqual(model.cloud.cloudAccount?.subscribed, true)
+        XCTAssertNil(model.cloud.cloudIssue)
+        XCTAssertNil(model.cloud.cloudError)
         XCTAssertFalse(model.gateway.automaticReconnectBlocked)
     }
 
@@ -2694,9 +2694,9 @@ final class MobiusCloudTests: XCTestCase {
         )
         model.gateway.connectionState = .ready
 
-        await model.refreshCloudAccount()
+        await model.cloud.refreshCloudAccount()
 
-        XCTAssertEqual(model.cloudIssue, .subscriptionExpired)
+        XCTAssertEqual(model.cloud.cloudIssue, .subscriptionExpired)
         XCTAssertEqual(model.gateway.connectionState, .ready)
         XCTAssertFalse(model.gateway.automaticReconnectBlocked)
         XCTAssertEqual(model.gateway.selectedAccountID, selfHosted.id)
@@ -2735,13 +2735,13 @@ final class MobiusCloudTests: XCTestCase {
             cloudPurchases: emptyCloudPurchases()
         )
 
-        await model.refreshCloudAccount()
-        XCTAssertNil(model.cloudAccount)
-        XCTAssertNotNil(model.cloudError)
+        await model.cloud.refreshCloudAccount()
+        XCTAssertNil(model.cloud.cloudAccount)
+        XCTAssertNotNil(model.cloud.cloudError)
 
-        await model.refreshCloudAccount()
+        await model.cloud.refreshCloudAccount()
         XCTAssertEqual(
-            model.cloudAccount,
+            model.cloud.cloudAccount,
             MobiusCloudAccount(
                 userID: try XCTUnwrap(UUID(
                     uuidString: "00000000-0000-0000-0000-000000000001"
@@ -2751,7 +2751,7 @@ final class MobiusCloudTests: XCTestCase {
                 sharesDiagnostics: false
             )
         )
-        XCTAssertNil(model.cloudError)
+        XCTAssertNil(model.cloud.cloudError)
         XCTAssertEqual(requests.map { $0.url?.path }, [
             "/api/mobile/auth/apple",
             "/api/mobile/account",
@@ -2797,17 +2797,17 @@ final class MobiusCloudTests: XCTestCase {
             cloudPurchases: emptyCloudPurchases()
         )
 
-        await model.refreshCloudAccount()
+        await model.cloud.refreshCloudAccount()
 
-        XCTAssertEqual(model.cloudSession, session)
-        XCTAssertNil(model.cloudAccount)
-        XCTAssertNil(model.cloudError)
+        XCTAssertEqual(model.cloud.cloudSession, session)
+        XCTAssertNil(model.cloud.cloudAccount)
+        XCTAssertNil(model.cloud.cloudError)
         XCTAssertNil(model.toast)
 
-        await model.refreshCloudAccount()
+        await model.cloud.refreshCloudAccount()
 
-        XCTAssertEqual(model.cloudAccount?.userID, userID)
-        XCTAssertNil(model.cloudError)
+        XCTAssertEqual(model.cloud.cloudAccount?.userID, userID)
+        XCTAssertNil(model.cloud.cloudError)
         XCTAssertEqual(requests.map { $0.url?.path }, [
             "/api/mobile/auth/apple",
             "/api/mobile/account",
@@ -2849,19 +2849,19 @@ final class MobiusCloudTests: XCTestCase {
             cloudPurchases: emptyCloudPurchases()
         )
 
-        await model.refreshCloudAccount()
-        XCTAssertEqual(model.cloudAccount?.sharesDiagnostics, false)
-        let usageLimit = try XCTUnwrap(model.cloudAccount?.luna)
+        await model.cloud.refreshCloudAccount()
+        XCTAssertEqual(model.cloud.cloudAccount?.sharesDiagnostics, false)
+        let usageLimit = try XCTUnwrap(model.cloud.cloudAccount?.luna)
 
-        await model.setCloudSharesDiagnostics(true)
-        XCTAssertEqual(model.cloudAccount?.sharesDiagnostics, false)
-        XCTAssertNotNil(model.cloudError)
+        await model.cloud.setCloudSharesDiagnostics(true)
+        XCTAssertEqual(model.cloud.cloudAccount?.sharesDiagnostics, false)
+        XCTAssertNotNil(model.cloud.cloudError)
 
-        await model.setCloudSharesDiagnostics(true)
-        XCTAssertEqual(model.cloudAccount?.sharesDiagnostics, true)
-        XCTAssertEqual(model.cloudAccount?.luna, usageLimit)
-        XCTAssertNil(model.cloudError)
-        XCTAssertFalse(model.isUpdatingCloudDiagnostics)
+        await model.cloud.setCloudSharesDiagnostics(true)
+        XCTAssertEqual(model.cloud.cloudAccount?.sharesDiagnostics, true)
+        XCTAssertEqual(model.cloud.cloudAccount?.luna, usageLimit)
+        XCTAssertNil(model.cloud.cloudError)
+        XCTAssertFalse(model.cloud.isUpdatingCloudDiagnostics)
         XCTAssertEqual(
             requests.dropFirst().map { "\($0.httpMethod ?? "") \($0.url?.path ?? "")" },
             [
@@ -3002,6 +3002,801 @@ final class MobiusCloudTests: XCTestCase {
                 as? [String: String],
             ["installationId": installationID.uuidString]
         )
+    }
+
+    func testFullResetRetainsCloudStateWhenCredentialRemovalFails() async throws {
+        let service = "app.mobius.cloud.tests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: service))
+        let root = URL.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let gatewayStore = GatewayStore(
+            defaults: defaults,
+            catalogDirectory: root.appendingPathComponent("Catalogs", isDirectory: true),
+            transcriptDirectory: root.appendingPathComponent("Transcripts", isDirectory: true),
+            thumbnailDirectory: root.appendingPathComponent("Thumbnails", isDirectory: true),
+            draftDirectory: root.appendingPathComponent("Drafts", isDirectory: true)
+        )
+        var keychainDeleteFails = true
+        let sessionStore = MobiusCloudSessionStore(
+            service: service,
+            keychainDelete: { query in
+                keychainDeleteFails ? errSecAuthFailed : SecItemDelete(query)
+            }
+        )
+        let remoteNotifications = RemoteNotificationSystem(
+            authorization: { .denied },
+            requestAuthorization: { false },
+            register: {},
+            unregister: {},
+            removeAll: {},
+            openSettings: {}
+        )
+        defer {
+            keychainDeleteFails = false
+            try? sessionStore.remove()
+            try? FileManager.default.removeItem(at: root)
+            defaults.removePersistentDomain(forName: service)
+        }
+        let client = MobiusCloudClient(store: sessionStore) { request in
+            if request.url?.path == "/api/mobile/auth/apple" {
+                return try self.response(
+                    for: request,
+                    json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
+                )
+            }
+            return try self.response(for: request, status: 500, json: "{}")
+        }
+        _ = try await client.authenticate(
+            authorizationCode: "apple-code",
+            nonce: String(repeating: "n", count: 43)
+        )
+        let model = AppModel(
+            store: gatewayStore,
+            settingsDefaults: defaults,
+            remoteNotifications: remoteNotifications,
+            cloudClient: client,
+            cloudPurchases: emptyCloudPurchases()
+        )
+        let account = MobiusCloudAccount(
+            userID: try XCTUnwrap(model.cloud.cloudSession?.userID),
+            email: "private@example.com",
+            subscribed: false,
+            sharesDiagnostics: false
+        )
+        model.cloud.cloudAccount = account
+
+        await model.clearDataAndGatewayInformation()
+
+        XCTAssertNotNil(model.cloud.cloudSession)
+        XCTAssertEqual(model.cloud.cloudAccount, account)
+        XCTAssertNotNil(try client.loadSession())
+        let relaunched = AppModel(
+            store: GatewayStore(
+                defaults: defaults,
+                catalogDirectory: root.appendingPathComponent("Catalogs", isDirectory: true),
+                transcriptDirectory: root.appendingPathComponent("Transcripts", isDirectory: true),
+                thumbnailDirectory: root.appendingPathComponent("Thumbnails", isDirectory: true),
+                draftDirectory: root.appendingPathComponent("Drafts", isDirectory: true)
+            ),
+            settingsDefaults: defaults,
+            remoteNotifications: remoteNotifications,
+            cloudClient: client,
+            cloudPurchases: emptyCloudPurchases()
+        )
+        XCTAssertEqual(relaunched.cloud.cloudSession, model.cloud.cloudSession)
+        XCTAssertEqual(model.toast?.tone, .error)
+        XCTAssertTrue(model.toast?.message.hasPrefix("Local data could not be fully cleared.") == true)
+    }
+
+    func testAcceptedAccountDeletionReportsLocalCredentialCleanupFailure() async throws {
+        let service = "app.mobius.cloud.tests.\(UUID())"
+        let root = URL.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        var keychainDeleteFails = true
+        let sessionStore = MobiusCloudSessionStore(
+            service: service,
+            keychainDelete: { query in
+                keychainDeleteFails ? errSecAuthFailed : SecItemDelete(query)
+            }
+        )
+        defer {
+            keychainDeleteFails = false
+            try? sessionStore.remove()
+            try? FileManager.default.removeItem(at: root)
+        }
+        let client = MobiusCloudClient(store: sessionStore) { request in
+            if request.url?.path == "/api/mobile/auth/apple" {
+                return try self.response(
+                    for: request,
+                    json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
+                )
+            }
+            return try self.response(for: request, status: 202, json: "{}")
+        }
+        _ = try await client.authenticate(
+            authorizationCode: "apple-code",
+            nonce: String(repeating: "n", count: 43)
+        )
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: service))
+        let gatewayStore = GatewayStore(
+            defaults: defaults,
+            catalogDirectory: root.appendingPathComponent("Catalogs", isDirectory: true),
+            transcriptDirectory: root.appendingPathComponent("Transcripts", isDirectory: true),
+            thumbnailDirectory: root.appendingPathComponent("Thumbnails", isDirectory: true),
+            draftDirectory: root.appendingPathComponent("Drafts", isDirectory: true)
+        )
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            defaults.removePersistentDomain(forName: service)
+        }
+        let model = AppModel(
+            store: gatewayStore,
+            settingsDefaults: defaults,
+            remoteNotifications: RemoteNotificationSystem(
+                authorization: { .denied },
+                requestAuthorization: { false },
+                register: {},
+                unregister: {},
+                removeAll: {},
+                openSettings: {}
+            ),
+            cloudClient: client,
+            cloudPurchases: emptyCloudPurchases()
+        )
+
+        let deleted = await model.cloud.deleteCloudAccount(
+            authorizationCode: "delete-code",
+            nonce: String(repeating: "d", count: 43)
+        )
+        XCTAssertTrue(deleted)
+        XCTAssertNil(model.cloud.cloudSession)
+        XCTAssertNotNil(try client.loadSession())
+        XCTAssertTrue(model.toast?.message.contains("couldn’t forget") == true)
+        XCTAssertTrue(model.toast?.message.contains("deletion has started") == true)
+    }
+
+    func testStaleAccountDeletionResponsePreservesNewCredential() async throws {
+        let firstUserID = UUID()
+        let secondUserID = UUID()
+        let firstToken = String(repeating: "a", count: 43)
+        let secondToken = String(repeating: "b", count: 43)
+        let service = "app.mobius.cloud.tests.\(UUID())"
+        let store = MobiusCloudSessionStore(service: service)
+        defer { try? store.remove() }
+        let deleteStarted = expectation(description: "Delete request started")
+        var deleteContinuation: CheckedContinuation<(Data, HTTPURLResponse), Never>?
+        var deleteResponse: (Data, HTTPURLResponse)?
+        var requestCount = 0
+        let client = MobiusCloudClient(store: store) { request in
+            requestCount += 1
+            switch requestCount {
+            case 1:
+                return try self.response(
+                    for: request,
+                    json: #"{"token":"\#(firstToken)","userId":"\#(firstUserID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                )
+            case 2:
+                deleteResponse = try self.response(for: request, status: 202, json: "{}")
+                return await withCheckedContinuation { continuation in
+                    deleteContinuation = continuation
+                    deleteStarted.fulfill()
+                }
+            case 3:
+                return try self.response(
+                    for: request,
+                    json: #"{"token":"\#(secondToken)","userId":"\#(secondUserID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                )
+            default:
+                return try self.response(for: request, status: 500, json: "{}")
+            }
+        }
+        _ = try await client.authenticate(
+            authorizationCode: "first-code",
+            nonce: String(repeating: "n", count: 43)
+        )
+        let deletion = Task {
+            try await client.deleteAccount(
+                authorizationCode: "delete-code",
+                nonce: String(repeating: "d", count: 43)
+            )
+        }
+        await fulfillment(of: [deleteStarted], timeout: 1)
+        let secondSession = try await client.authenticate(
+            authorizationCode: "second-code",
+            nonce: String(repeating: "s", count: 43)
+        )
+        deleteContinuation?.resume(returning: try XCTUnwrap(deleteResponse))
+
+        let cleanupError = try await deletion.value
+        XCTAssertNil(cleanupError)
+        XCTAssertEqual(try client.loadSession(), secondSession)
+    }
+
+    func testStaleAccountDeletionThroughCloudModelPreservesNewSession() async throws {
+        let firstUserID = UUID()
+        let secondUserID = UUID()
+        let firstToken = String(repeating: "a", count: 43)
+        let secondToken = String(repeating: "b", count: 43)
+        let service = "app.mobius.cloud.tests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: service))
+        let root = URL.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let gatewayStore = GatewayStore(
+            defaults: defaults,
+            catalogDirectory: root.appendingPathComponent("Catalogs", isDirectory: true),
+            transcriptDirectory: root.appendingPathComponent("Transcripts", isDirectory: true),
+            thumbnailDirectory: root.appendingPathComponent("Thumbnails", isDirectory: true),
+            draftDirectory: root.appendingPathComponent("Drafts", isDirectory: true)
+        )
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            defaults.removePersistentDomain(forName: service)
+        }
+        let store = MobiusCloudSessionStore(service: service)
+        defer { try? store.remove() }
+        let deleteStarted = expectation(description: "Cloud delete request started")
+        var deleteContinuation: CheckedContinuation<(Data, HTTPURLResponse), Never>?
+        var deleteResponse: (Data, HTTPURLResponse)?
+        var requestCount = 0
+        let client = MobiusCloudClient(store: store) { request in
+            requestCount += 1
+            switch requestCount {
+            case 1:
+                return try self.response(
+                    for: request,
+                    json: #"{"token":"\#(firstToken)","userId":"\#(firstUserID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                )
+            case 2:
+                deleteResponse = try self.response(for: request, status: 202, json: "{}")
+                return await withCheckedContinuation { continuation in
+                    deleteContinuation = continuation
+                    deleteStarted.fulfill()
+                }
+            case 3:
+                return try self.response(
+                    for: request,
+                    json: #"{"token":"\#(secondToken)","userId":"\#(secondUserID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                )
+            default:
+                return try self.response(for: request, status: 500, json: "{}")
+            }
+        }
+        _ = try await client.authenticate(
+            authorizationCode: "first-code",
+            nonce: String(repeating: "n", count: 43)
+        )
+        let model = AppModel(
+            store: gatewayStore,
+            settingsDefaults: defaults,
+            remoteNotifications: RemoteNotificationSystem(
+                authorization: { .denied },
+                requestAuthorization: { false },
+                register: {},
+                unregister: {},
+                removeAll: {},
+                openSettings: {}
+            ),
+            cloudClient: client,
+            cloudPurchases: emptyCloudPurchases()
+        )
+        model.showToast("Keep this toast.")
+        let oldAccount = MobiusCloudAccount(
+            userID: firstUserID,
+            email: "first@example.com",
+            subscribed: true,
+            sharesDiagnostics: false
+        )
+        model.cloud.cloudAccount = oldAccount
+        let cloudGateway = GatewayAccount(
+            endpoint: try GatewayEndpoint("wss://cloud.example"),
+            cloudUserID: firstUserID
+        )
+        model.gateway.accounts = [cloudGateway]
+        model.gateway.selectedAccountID = cloudGateway.id
+        let deletion = Task {
+            await model.cloud.deleteCloudAccount(
+                authorizationCode: "delete-code",
+                nonce: String(repeating: "d", count: 43)
+            )
+        }
+        await fulfillment(of: [deleteStarted], timeout: 1)
+        let secondSession = try await client.authenticate(
+            authorizationCode: "second-code",
+            nonce: String(repeating: "s", count: 43)
+        )
+        let newAccount = MobiusCloudAccount(
+            userID: secondUserID,
+            email: "second@example.com",
+            subscribed: false,
+            sharesDiagnostics: true
+        )
+        model.cloud.cloudSession = secondSession
+        model.cloud.cloudAccount = newAccount
+        deleteContinuation?.resume(returning: try XCTUnwrap(deleteResponse))
+
+        let deleted = await deletion.value
+        XCTAssertTrue(deleted)
+        XCTAssertEqual(model.cloud.cloudSession, secondSession)
+        XCTAssertEqual(model.cloud.cloudAccount, newAccount)
+        XCTAssertEqual(model.toast?.message, "Keep this toast.")
+        XCTAssertEqual(model.gateway.accounts, [cloudGateway])
+        XCTAssertEqual(try client.loadSession(), secondSession)
+    }
+
+    func testEmptyPurchaseScanCannotApplyAccountToReplacedSession() async throws {
+        let firstUserID = UUID()
+        let secondUserID = UUID()
+        let service = "app.mobius.cloud.tests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: service))
+        let root = URL.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let gatewayStore = GatewayStore(
+            defaults: defaults,
+            catalogDirectory: root.appendingPathComponent("Catalogs", isDirectory: true),
+            transcriptDirectory: root.appendingPathComponent("Transcripts", isDirectory: true),
+            thumbnailDirectory: root.appendingPathComponent("Thumbnails", isDirectory: true),
+            draftDirectory: root.appendingPathComponent("Drafts", isDirectory: true)
+        )
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            defaults.removePersistentDomain(forName: service)
+        }
+        let sessionStore = MobiusCloudSessionStore(service: service)
+        defer { try? sessionStore.remove() }
+        let client = MobiusCloudClient(store: sessionStore) { request in
+            if request.url?.path == "/api/mobile/auth/apple" {
+                return try self.response(
+                    for: request,
+                    json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"\#(firstUserID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                )
+            }
+            return try self.response(
+                for: request,
+                json: #"{"userId":"\#(firstUserID.uuidString)","email":"first@example.com","subscribed":false,"sharesDiagnostics":false}"#
+            )
+        }
+        _ = try await client.authenticate(
+            authorizationCode: "first-code",
+            nonce: String(repeating: "n", count: 43)
+        )
+        let scanGate = AsyncGate()
+        let scanStarted = expectation(description: "Empty StoreKit scan started")
+        let purchases = MobiusCloudPurchases(
+            displayPrice: { throw MobiusCloudPurchaseError.unavailable },
+            unfinishedPurchases: {
+                scanStarted.fulfill()
+                await scanGate.wait()
+                return MobiusCloudPurchaseScan()
+            },
+            currentEntitlements: { _ in
+                await scanGate.wait()
+                return MobiusCloudPurchaseScan()
+            },
+            purchase: { _ in throw MobiusCloudPurchaseError.unavailable }
+        )
+        let model = AppModel(
+            store: gatewayStore,
+            settingsDefaults: defaults,
+            remoteNotifications: RemoteNotificationSystem(
+                authorization: { .denied },
+                requestAuthorization: { false },
+                register: {},
+                unregister: {},
+                removeAll: {},
+                openSettings: {}
+            ),
+            cloudClient: client,
+            cloudPurchases: purchases
+        )
+        model.cloud.cloudIssue = .subscriptionExpired
+        let refresh = Task { await model.cloud.refreshCloudAccount() }
+        await fulfillment(of: [scanStarted], timeout: 1)
+        model.cloud.cloudSession = MobiusCloudSession(
+            userID: secondUserID,
+            expiresAt: .distantFuture
+        )
+        await scanGate.open()
+        await refresh.value
+
+        XCTAssertNil(model.cloud.cloudAccount)
+        XCTAssertEqual(model.cloud.cloudIssue, .subscriptionExpired)
+    }
+
+    func testUnauthorizedResponseReportsCredentialCleanupFailure() async throws {
+        let service = "app.mobius.cloud.tests.\(UUID())"
+        let root = URL.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        var keychainDeleteFails = true
+        let store = MobiusCloudSessionStore(
+            service: service,
+            keychainDelete: { query in
+                keychainDeleteFails ? errSecAuthFailed : SecItemDelete(query)
+            }
+        )
+        defer {
+            keychainDeleteFails = false
+            try? store.remove()
+            try? FileManager.default.removeItem(at: root)
+        }
+        var requestCount = 0
+        let client = MobiusCloudClient(store: store) { request in
+            requestCount += 1
+            if requestCount == 1 {
+                return try self.response(
+                    for: request,
+                    json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
+                )
+            }
+            return try self.response(for: request, status: 401, json: "{}")
+        }
+        _ = try await client.authenticate(
+            authorizationCode: "apple-code",
+            nonce: String(repeating: "n", count: 43)
+        )
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: service))
+        defer { defaults.removePersistentDomain(forName: service) }
+        let model = AppModel(
+            store: GatewayStore(
+                defaults: defaults,
+                catalogDirectory: root.appendingPathComponent("Catalogs", isDirectory: true),
+                transcriptDirectory: root.appendingPathComponent("Transcripts", isDirectory: true),
+                thumbnailDirectory: root.appendingPathComponent("Thumbnails", isDirectory: true),
+                draftDirectory: root.appendingPathComponent("Drafts", isDirectory: true)
+            ),
+            settingsDefaults: defaults,
+            remoteNotifications: RemoteNotificationSystem(
+                authorization: { .denied },
+                requestAuthorization: { false },
+                register: {},
+                unregister: {},
+                removeAll: {},
+                openSettings: {}
+            ),
+            cloudClient: client,
+            cloudPurchases: emptyCloudPurchases()
+        )
+
+        await model.cloud.refreshCloudAccount()
+
+        XCTAssertNil(model.cloud.cloudSession)
+        XCTAssertNotNil(try client.loadSession())
+        XCTAssertTrue(model.toast?.message.contains("could not forget") == true)
+        XCTAssertTrue(model.toast?.message.contains("expired") == true)
+    }
+
+    func testCloudRefreshCompletingAfterRootResetCannotReconnect() async throws {
+        let service = "app.mobius.cloud.tests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: service))
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer {
+            defaults.removePersistentDomain(forName: service)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let gatewayStore = GatewayStore(
+            defaults: defaults,
+            catalogDirectory: root.appendingPathComponent("Catalogs", isDirectory: true),
+            transcriptDirectory: root.appendingPathComponent("Transcripts", isDirectory: true),
+            thumbnailDirectory: root.appendingPathComponent("Thumbnails", isDirectory: true),
+            draftDirectory: root.appendingPathComponent("Drafts", isDirectory: true)
+        )
+        var keychainDeleteFails = true
+        let sessionStore = MobiusCloudSessionStore(
+            service: service,
+            keychainDelete: { query in
+                keychainDeleteFails ? errSecAuthFailed : SecItemDelete(query)
+            }
+        )
+        defer {
+            keychainDeleteFails = false
+            try? sessionStore.remove()
+        }
+        let accountGate = AsyncGate()
+        let accountStarted = CloudTestFlag()
+        let userID = UUID()
+        let client = MobiusCloudClient(store: sessionStore) { request in
+            if request.url?.path == "/api/mobile/auth/apple" {
+                return try self.response(
+                    for: request,
+                    json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                )
+            }
+            if request.url?.path == "/api/mobile/push-token" {
+                return try self.response(for: request, status: 204, json: "{}")
+            }
+            guard request.url?.path == "/api/mobile/account" else {
+                XCTFail("Unexpected Cloud request: \(request.url?.path ?? "nil")")
+                return try self.response(for: request, status: 500, json: "{}")
+            }
+            accountStarted.count += 1
+            await accountGate.wait()
+            return try self.response(
+                for: request,
+                json: #"{"userId":"\#(userID.uuidString)","email":"cloud@example.com","subscribed":true,"sharesDiagnostics":false,"subscriptionStartedAt":"2023-11-14T22:13:20Z"}"#
+            )
+        }
+        let session = try await client.authenticate(
+            authorizationCode: "apple-code",
+            nonce: String(repeating: "n", count: 43)
+        )
+        let cloudGateway = GatewayAccount(
+            endpoint: try GatewayEndpoint("wss://cloud.example"),
+            cloudUserID: userID
+        )
+        try gatewayStore.save(cloudGateway, token: "gateway-token")
+        addTeardownBlock { try? await gatewayStore.remove(cloudGateway) }
+        var openedEndpoints: [GatewayEndpoint] = []
+        let model = AppModel(
+            store: gatewayStore,
+            settingsDefaults: defaults,
+            remoteNotifications: RemoteNotificationSystem(
+                authorization: { .denied },
+                requestAuthorization: { false },
+                register: {},
+                unregister: {},
+                removeAll: {},
+                openSettings: {}
+            ),
+            requestSender: { _ in },
+            connectionOpener: { endpoint in
+                openedEndpoints.append(endpoint)
+                return AsyncThrowingStream { _ in }
+            },
+            cloudClient: client,
+            cloudPurchases: emptyCloudPurchases()
+        )
+        model.gateway.selectedAccountID = cloudGateway.id
+        model.gateway.connectionState = .ready
+        let account = MobiusCloudAccount(
+            userID: userID,
+            email: "cloud@example.com",
+            subscribed: false,
+            sharesDiagnostics: false
+        )
+        model.cloud.cloudAccount = account
+        model.cloud.cloudIssue = .subscriptionExpired
+        let refresh = Task { await model.cloud.refreshCloudAccount() }
+        let refreshStarted = await eventually { accountStarted.count > 0 }
+        XCTAssertTrue(refreshStarted)
+        let chatIOGate = AsyncGate()
+        model.chat.transcriptIOTask = Task { await chatIOGate.wait() }
+        let clearing = Task { await model.clearDataAndGatewayInformation() }
+        let resetStarted = await eventually {
+            model.gateway.connectionState == .disconnected && model.isClearingLocalData
+        }
+        XCTAssertTrue(resetStarted)
+        await accountGate.open()
+        await refresh.value
+
+        XCTAssertTrue(model.isClearingLocalData)
+        XCTAssertEqual(model.gateway.selectedAccountID, cloudGateway.id)
+        XCTAssertTrue(model.gateway.automaticReconnectBlocked)
+        XCTAssertFalse(model.gateway.reconnectsOnActivation)
+        XCTAssertTrue(openedEndpoints.isEmpty)
+        XCTAssertEqual(model.cloud.cloudAccount, account)
+        XCTAssertEqual(model.cloud.cloudIssue, .subscriptionExpired)
+        await chatIOGate.open()
+        await clearing.value
+
+        XCTAssertTrue(model.gateway.accounts.isEmpty)
+        XCTAssertTrue(openedEndpoints.isEmpty)
+        XCTAssertEqual(model.cloud.cloudSession, session)
+        XCTAssertEqual(model.cloud.cloudAccount, account)
+        XCTAssertEqual(model.cloud.cloudIssue, .subscriptionExpired)
+        XCTAssertEqual(model.gateway.connectionState, .disconnected)
+    }
+
+    func testCloudProvisionGrantCompletingAfterRootResetCannotPair() async throws {
+        let service = "app.mobius.cloud.tests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: service))
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer {
+            defaults.removePersistentDomain(forName: service)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let gatewayStore = GatewayStore(
+            defaults: defaults,
+            catalogDirectory: root.appendingPathComponent("Catalogs", isDirectory: true),
+            transcriptDirectory: root.appendingPathComponent("Transcripts", isDirectory: true),
+            thumbnailDirectory: root.appendingPathComponent("Thumbnails", isDirectory: true),
+            draftDirectory: root.appendingPathComponent("Drafts", isDirectory: true)
+        )
+        var keychainDeleteFails = true
+        let sessionStore = MobiusCloudSessionStore(
+            service: service,
+            keychainDelete: { query in
+                keychainDeleteFails ? errSecAuthFailed : SecItemDelete(query)
+            }
+        )
+        defer {
+            keychainDeleteFails = false
+            try? sessionStore.remove()
+        }
+        let grantGate = AsyncGate()
+        let grantStarted = CloudTestFlag()
+        let purchaseFinishGate = AsyncGate()
+        let purchaseStarted = CloudTestFlag()
+        let (updates, updateContinuation) = AsyncStream.makeStream(of: MobiusCloudPurchase.self)
+        defer { updateContinuation.finish() }
+        let userID = UUID()
+        let client = MobiusCloudClient(store: sessionStore) { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", "/api/mobile/auth/apple"):
+                return try self.response(
+                    for: request,
+                    json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                )
+            case ("GET", "/api/mobile/account"):
+                return try self.response(
+                    for: request,
+                    json: #"{"userId":"\#(userID.uuidString)","email":"cloud@example.com","subscribed":true,"sharesDiagnostics":false,"subscriptionStartedAt":"2023-11-14T22:13:20Z"}"#
+                )
+            case ("PUT", "/api/mobile/subscription"), ("DELETE", "/api/mobile/push-token"):
+                return try self.response(for: request, status: 204, json: "{}")
+            case ("GET", "/api/mobile/gateway"):
+                return try self.response(for: request, json: #"{"status":"ready"}"#)
+            case ("POST", "/api/mobile/gateway"):
+                grantStarted.count += 1
+                await grantGate.wait()
+                return try self.response(
+                    for: request,
+                    json: #"{"endpoint":"wss://cloud.example","pairingCode":"cloud-code","expiresAt":"2099-01-01T00:00:00Z"}"#
+                )
+            default:
+                XCTFail("Unexpected Cloud request: \(request.httpMethod ?? "nil") \(request.url?.path ?? "nil")")
+                return try self.response(for: request, status: 500, json: "{}")
+            }
+        }
+        let session = try await client.authenticate(
+            authorizationCode: "apple-code",
+            nonce: String(repeating: "n", count: 43)
+        )
+        var pairRequests = 0
+        var openedEndpoints: [GatewayEndpoint] = []
+        let model = AppModel(
+            store: gatewayStore,
+            settingsDefaults: defaults,
+            remoteNotifications: RemoteNotificationSystem(
+                authorization: { .denied },
+                requestAuthorization: { false },
+                register: {},
+                unregister: {},
+                removeAll: {},
+                openSettings: {}
+            ),
+            requestSender: { request in
+                if case .pair = request { pairRequests += 1 }
+            },
+            connectionOpener: { endpoint in
+                openedEndpoints.append(endpoint)
+                return AsyncThrowingStream { _ in }
+            },
+            cloudClient: client,
+            cloudPurchases: MobiusCloudPurchases(
+                displayPrice: { throw MobiusCloudPurchaseError.unavailable },
+                unfinishedPurchases: { MobiusCloudPurchaseScan() },
+                currentEntitlements: { _ in MobiusCloudPurchaseScan() },
+                purchase: { _ in throw MobiusCloudPurchaseError.unavailable },
+                updates: { updates }
+            )
+        )
+        let purchaseUpdates = try XCTUnwrap(model.cloud.cloudPurchaseUpdateTask)
+        let reconnectRecoveredGateway = model.cloud.callbacks.reconnectRecoveredGateway
+        var recoveryCallbacks = 0
+        model.cloud.callbacks.reconnectRecoveredGateway = {
+            recoveryCallbacks += 1
+            reconnectRecoveredGateway?()
+        }
+        updateContinuation.yield(MobiusCloudPurchase(
+            jws: "header.payload.signature",
+            appTransactionJWS: "app.header.signature",
+            finish: {
+                purchaseStarted.count += 1
+                await purchaseFinishGate.wait()
+            }
+        ))
+        let purchaseUpdateStarted = await eventually { purchaseStarted.count > 0 }
+        XCTAssertTrue(purchaseUpdateStarted)
+        let provisioning = Task { await model.cloud.connectCloudGateway() }
+        let grantRequestStarted = await eventually { grantStarted.count > 0 }
+        XCTAssertTrue(grantRequestStarted)
+        let retainedAccount = MobiusCloudAccount(
+            userID: userID,
+            email: "cloud@example.com",
+            subscribed: false,
+            sharesDiagnostics: false
+        )
+        model.cloud.cloudAccount = retainedAccount
+        model.cloud.cloudIssue = .subscriptionExpired
+        let chatIOGate = AsyncGate()
+        model.chat.transcriptIOTask = Task { await chatIOGate.wait() }
+        let clearing = Task { await model.clearDataAndGatewayInformation() }
+        let resetStarted = await eventually {
+            model.gateway.connectionState == .disconnected && model.isClearingLocalData
+        }
+        XCTAssertTrue(resetStarted)
+        await chatIOGate.open()
+        await clearing.value
+        await grantGate.open()
+        await purchaseFinishGate.open()
+        updateContinuation.finish()
+        await purchaseUpdates.value
+        let connected = await provisioning.value
+        XCTAssertFalse(connected)
+
+        XCTAssertTrue(model.gateway.accounts.isEmpty)
+        XCTAssertFalse(model.gateway.hasPendingPairing)
+        XCTAssertEqual(pairRequests, 0)
+        XCTAssertTrue(openedEndpoints.isEmpty)
+        XCTAssertTrue(model.cloud.cloudPurchaseTasks.isEmpty)
+        XCTAssertEqual(recoveryCallbacks, 0)
+        XCTAssertEqual(model.cloud.cloudSession, session)
+        XCTAssertEqual(model.cloud.cloudAccount, retainedAccount)
+        XCTAssertEqual(model.cloud.cloudIssue, .subscriptionExpired)
+    }
+
+    func testCloudSignInCompletingAfterRootResetCannotPersistCredential() async throws {
+        let service = "app.mobius.cloud.tests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: service))
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer {
+            defaults.removePersistentDomain(forName: service)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let gatewayStore = GatewayStore(
+            defaults: defaults,
+            catalogDirectory: root.appendingPathComponent("Catalogs", isDirectory: true),
+            transcriptDirectory: root.appendingPathComponent("Transcripts", isDirectory: true),
+            thumbnailDirectory: root.appendingPathComponent("Thumbnails", isDirectory: true),
+            draftDirectory: root.appendingPathComponent("Drafts", isDirectory: true)
+        )
+        let sessionStore = MobiusCloudSessionStore(service: service)
+        defer { try? sessionStore.remove() }
+        let authGate = AsyncGate()
+        let authStarted = CloudTestFlag()
+        let userID = UUID()
+        let client = MobiusCloudClient(store: sessionStore) { request in
+            guard request.url?.path == "/api/mobile/auth/apple" else {
+                XCTFail("Unexpected Cloud request: \(request.url?.path ?? "nil")")
+                return try self.response(for: request, status: 500, json: "{}")
+            }
+            authStarted.count += 1
+            await authGate.wait()
+            return try self.response(
+                for: request,
+                json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+            )
+        }
+        let model = AppModel(
+            store: gatewayStore,
+            settingsDefaults: defaults,
+            remoteNotifications: RemoteNotificationSystem(
+                authorization: { .denied },
+                requestAuthorization: { false },
+                register: {},
+                unregister: {},
+                removeAll: {},
+                openSettings: {}
+            ),
+            requestSender: { _ in },
+            connectionOpener: { _ in AsyncThrowingStream { _ in } },
+            cloudClient: client,
+            cloudPurchases: emptyCloudPurchases()
+        )
+        let signIn = Task {
+            await model.cloud.signInAndPurchaseCloud(
+                authorizationCode: "apple-code",
+                nonce: String(repeating: "n", count: 43)
+            )
+        }
+        let authReady = await eventually { authStarted.count > 0 }
+        XCTAssertTrue(authReady)
+        await model.clearDataAndGatewayInformation()
+        await authGate.open()
+
+        let signInSucceeded = await signIn.value
+        XCTAssertFalse(signInSucceeded)
+        let persistedSession = try client.loadSession()
+        XCTAssertNil(persistedSession)
+        XCTAssertNil(model.cloud.cloudSession)
+        XCTAssertTrue(model.gateway.accounts.isEmpty)
     }
 
     private func response(

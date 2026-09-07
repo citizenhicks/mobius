@@ -7,7 +7,7 @@ extension AppModel {
             restoreSessionReadState(for: gateway.selectedAccountID)
             showsPairing = false
             showToast("Gateway paired.", tone: .success)
-            completeCloudPairing(.success(()))
+            cloud.completeCloudPairing(.success(()))
         case .authenticated:
             break
         case .ready(let payload):
@@ -354,9 +354,7 @@ extension AppModel {
         case .error(let failure):
             let wasPairing = gateway.hasPendingPairing
             if wasPairing { gateway.pairingError = failure.message }
-            if cloudPairingContinuation != nil {
-                completeCloudPairing(.failure(MobiusCloudError.provisioningFailed))
-            }
+            cloud.completeCloudPairing(.failure(MobiusCloudError.provisioningFailed))
             showToast(verbatim: failure.message, tone: .error)
             if failure.fatal {
                 cancelVoiceChatIntent()
@@ -491,7 +489,7 @@ extension AppModel {
 
     func applyGatewayCatalog(_ payload: ReadyPayload) {
         let machineName = selectedGatewayIsMobiusCloud
-            ? mobiusCloudGatewayDisplayName
+            ? cloudGatewayDisplayName
             : payload.machineName
         gateway.updateMachineName(machineName)
         let previousBotDefaults = botDefaultsSnapshot
