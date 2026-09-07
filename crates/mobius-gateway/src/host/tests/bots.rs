@@ -237,8 +237,14 @@ fn fake_rollback_host(
 }
 
 #[tokio::test]
-async fn updating_bot_reloads_every_resident_with_the_authoritative_record() {
+async fn updating_bot_reloads_residents_and_broadcasts_current_handles() {
     let (_root, gateway, bot) = gateway_with_bot().await;
+    let leader = gateway.state.lock().await.bots.mobius().expect("Mobius");
+    gateway
+        .create_swarm("Review team".into(), leader.id, vec![bot.id.clone()])
+        .await
+        .expect("Swarm");
+    let mut events = gateway.subscribe();
     let (resident, mut updated) = fake_bot_host(&bot.id, false);
     gateway
         .state
@@ -253,7 +259,7 @@ async fn updating_bot_reloads_every_resident_with_the_authoritative_record() {
         .update_bot(
             &bot.id,
             bot.config.revision,
-            "Reviewer",
+            "Code Reviewer",
             &bot.description,
             bot.tint,
             config,
@@ -263,6 +269,8 @@ async fn updating_bot_reloads_every_resident_with_the_authoritative_record() {
     let reloaded = updated.recv().await.expect("resident reload");
 
     assert_eq!(reloaded, saved);
+    assert_eq!(saved.id, bot.id);
+    assert_eq!(saved.handle, "code-reviewer");
     assert_eq!(saved.config.revision, 2);
     assert_eq!(
         gateway
@@ -274,10 +282,28 @@ async fn updating_bot_reloads_every_resident_with_the_authoritative_record() {
             .expect("stored Bot"),
         saved
     );
+    assert!(matches!(
+        events.try_recv().expect("Bot catalog broadcast").message,
+        ServerMessage::Bots {
+            request_id: None,
+            ..
+        }
+    ));
+    let ServerMessage::Swarms { swarms, .. } =
+        events.try_recv().expect("Swarm catalog broadcast").message
+    else {
+        panic!("expected refreshed Swarms");
+    };
+    let member = swarms[0]
+        .members
+        .iter()
+        .find(|member| member.bot_id == bot.id)
+        .expect("renamed member");
+    assert_eq!(member.handle, saved.handle);
 }
 
 #[tokio::test]
-async fn failed_bot_reload_restores_the_exact_revision() {
+async fn failed_bot_reload_restores_the_exact_record_including_handle() {
     let (_root, gateway, bot) = gateway_with_bot().await;
     let (resident, mut updated) = fake_bot_host(&bot.id, true);
     gateway
@@ -293,7 +319,7 @@ async fn failed_bot_reload_restores_the_exact_revision() {
         .update_bot(
             &bot.id,
             1,
-            "Reviewer",
+            "Code Reviewer",
             &bot.description,
             bot.tint,
             config.clone(),
@@ -301,23 +327,15 @@ async fn failed_bot_reload_restores_the_exact_revision() {
         .await
         .expect_err("reload failure");
     assert_eq!(error.code, "reload_failed");
+    let attempted = updated
+        .recv()
+        .await
+        .expect("failed replacement reached resident");
+    assert_eq!(attempted.handle, "code-reviewer");
+    assert_eq!(attempted.config.revision, 2);
     assert_eq!(
-        updated
-            .recv()
-            .await
-            .expect("failed replacement reached resident")
-            .config
-            .revision,
-        2
-    );
-    assert_eq!(
-        updated
-            .recv()
-            .await
-            .expect("failing resident was restored")
-            .config
-            .revision,
-        1
+        updated.recv().await.expect("failing resident was restored"),
+        bot
     );
     assert_eq!(
         gateway
@@ -326,10 +344,8 @@ async fn failed_bot_reload_restores_the_exact_revision() {
             .await
             .bots
             .bot(&bot.id)
-            .expect("restored Bot")
-            .config
-            .revision,
-        1
+            .expect("restored Bot"),
+        bot
     );
 
     gateway.state.lock().await.sessions.clear();

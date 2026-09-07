@@ -73,7 +73,7 @@ fn finish_due(store: &BotStore, now: i64) -> Vec<String> {
 }
 
 #[test]
-fn fresh_state_seeds_one_ordinary_immutable_mobius_bot() {
+fn fresh_state_seeds_one_mobius_bot_whose_handle_survives_rename() {
     let (root, store, _) = unseeded_fixture();
     assert!(root.path().join("state").join(STATE_FILE).exists());
     assert!(store.storage.load_catalog().expect("catalog").is_none());
@@ -104,10 +104,22 @@ fn fresh_state_seeds_one_ordinary_immutable_mobius_bot() {
         )
     );
     assert_eq!(bot.config.config, defaults.config);
+    let renamed = store
+        .update_bot(
+            &bot.id,
+            bot.config.revision,
+            "My assistant",
+            &bot.description,
+            bot.tint,
+            bot.config.config.clone(),
+        )
+        .expect("rename built-in Bot");
+    assert_eq!(renamed.id, bot.id);
+    assert_eq!(renamed.handle, "mobius");
     assert!(
         store
-            .prepare_bot_deletion(&bot.id, bot.config.revision)
-            .expect_err("built-in Bot is immutable")
+            .prepare_bot_deletion(&renamed.id, renamed.config.revision)
+            .expect_err("built-in Bot cannot be deleted")
             .to_string()
             .contains("cannot be deleted")
     );
@@ -118,7 +130,7 @@ fn fresh_state_seeds_one_ordinary_immutable_mobius_bot() {
             .expect("repeat seed")
             .is_none()
     );
-    assert_eq!(reopened.bots().expect("Bots"), [bot]);
+    assert_eq!(reopened.bots().expect("Bots"), [renamed]);
 }
 
 #[test]
@@ -410,7 +422,7 @@ fn bot_profile_update_preserves_identity_and_persists_exact_revision() {
         .expect("update Bot");
 
     assert_eq!(updated.id, created.id);
-    assert_eq!(updated.handle, "reviewer");
+    assert_eq!(updated.handle, "code-reviewer");
     assert_eq!(updated.name, "Code reviewer");
     assert_eq!(updated.config.revision, 2);
     let reopened = BotStore::open(&root.path().join("state")).expect("reopen");
@@ -418,9 +430,9 @@ fn bot_profile_update_preserves_identity_and_persists_exact_revision() {
 }
 
 #[test]
-fn bot_handles_are_derived_unique_and_immutable() {
+fn bot_rename_derives_unique_handles_without_colliding_with_itself() {
     let (_root, store, _) = fixture();
-    let created = create_bot(&store, "builder");
+    create_bot(&store, "builder");
     let duplicate = store
         .create_bot("builder", "Own other work.", AgentComposition::default())
         .expect("second Bot");
@@ -430,17 +442,51 @@ fn bot_handles_are_derived_unique_and_immutable() {
     assert_eq!(duplicate.handle, "builder-2");
     assert_eq!(reserved.handle, "user-2");
 
+    let mut bot = duplicate;
+    for (name, handle) in [
+        ("Builder", "builder-2"),
+        ("Renamed", "renamed"),
+        ("RENAMED", "renamed"),
+        ("builder", "builder-2"),
+        ("User", "user-3"),
+        ("Mobius", "mobius-2"),
+    ] {
+        bot = store
+            .update_bot(
+                &bot.id,
+                bot.config.revision,
+                name,
+                "Own renamed work.",
+                ProviderTint::Teal,
+                bot.config.config,
+            )
+            .expect("rename Bot");
+        assert_eq!(bot.handle, handle, "renamed to {name}");
+    }
+}
+
+#[test]
+fn updating_bot_without_renaming_preserves_its_suffixed_handle() {
+    let (_root, store, _) = fixture();
+    let first = create_bot(&store, "reviewer");
+    let duplicate = create_bot(&store, "reviewer");
+    let deletion = store
+        .prepare_bot_deletion(&first.id, first.config.revision)
+        .expect("prepare deletion");
+    store.delete_bot(deletion).expect("free unsuffixed handle");
+
     let updated = store
         .update_bot(
-            &created.id,
-            created.config.revision,
-            "Renamed",
-            "Own renamed work.",
-            ProviderTint::Teal,
-            created.config.config,
+            &duplicate.id,
+            duplicate.config.revision,
+            &duplicate.name,
+            "Changed description, not name.",
+            duplicate.tint,
+            duplicate.config.config,
         )
-        .expect("rename Bot");
-    assert_eq!(updated.handle, "builder");
+        .expect("update profile");
+
+    assert_eq!(updated.handle, "reviewer-2");
 }
 
 #[test]

@@ -2,6 +2,17 @@ use super::*;
 use crate::bots::swarm::validate_swarm_members;
 
 impl GatewayHost {
+    pub(crate) async fn swarms(&self) -> std::result::Result<Vec<SwarmRecord>, Rejection> {
+        let _access = self.begin_mutation().await?;
+        self.state
+            .lock()
+            .await
+            .swarm
+            .records()
+            .await
+            .map_err(internal)
+    }
+
     pub(crate) async fn create_swarm(
         &self,
         title: String,

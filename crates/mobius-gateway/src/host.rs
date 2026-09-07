@@ -485,9 +485,17 @@ impl GatewayHost {
             }
         }
         let bots = state.bots.bots().map_err(internal)?;
+        let swarms = if bot.handle != previous.handle {
+            Some(state.swarm.records().await.map_err(internal)?)
+        } else {
+            None
+        };
         state.swarm.retry_pending();
         drop(state);
         self.broadcast_bots(&bots);
+        if let Some(swarms) = swarms {
+            self.broadcast_swarms(&swarms);
+        }
         Ok(bot)
     }
 

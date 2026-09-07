@@ -2,4 +2,6 @@ Moves Bot profiles and routine history from `bots.json` into transactional, owne
 
 Improves authorization, routine persistence, cancellation, and active-work reporting. Provider credential refresh now skips stopped resident sessions without preventing live sessions from receiving updates.
 
+Renaming a Bot now updates its unique handle while preserving the built-in `@mobius` handle. Bot and Swarm broadcasts refresh current catalogs instead of replaying stale names, and failed profile reloads restore the prior handle.
+
 Chat metadata 15, checkpoint format 13, and wire protocol 71 are unchanged. Update the gateway before matching clients. Binary packages retain cloudflared, LICENSE, and NOTICE.

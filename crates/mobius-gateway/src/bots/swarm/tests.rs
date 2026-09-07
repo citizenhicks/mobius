@@ -586,15 +586,26 @@ async fn mentions_are_resolved_delivered_and_acknowledged() {
         post.resolved_recipient_bot_ids,
         std::slice::from_ref(&reviewer)
     );
-    let records = store.records().await.expect("wire records");
-    assert_eq!(records[0].messages[0].text, text);
-    assert!(
+    for (id, name) in [(&reviewer, "Renamed Reviewer"), (&leader, "Renamed Leader")] {
+        let bot = store.bots.bot(id).expect("Bot");
         store
-            .snapshot_for_bot(&reviewer)
-            .await
-            .expect("active")
-            .is_some()
-    );
+            .bots
+            .update_bot(
+                id,
+                bot.config.revision,
+                name,
+                &bot.description,
+                bot.tint,
+                bot.config.config,
+            )
+            .expect("rename Bot");
+    }
+    let snapshot = store
+        .snapshot_for_bot(&reviewer)
+        .await
+        .expect("reviewer snapshot")
+        .expect("reviewer membership");
+    assert_eq!(snapshot.handle, "renamed-reviewer");
     assert_eq!(
         store
             .pending_deliveries(&reviewer)
@@ -602,6 +613,18 @@ async fn mentions_are_resolved_delivered_and_acknowledged() {
             .expect("pending")
             .len(),
         1
+    );
+    let records = store.records().await.expect("wire records");
+    assert_eq!(records[0].messages[0].text, text);
+    assert_eq!(records[0].messages[0].author_handle, leader_handle);
+    assert_eq!(
+        records[0]
+            .members
+            .iter()
+            .find(|member| member.bot_id == reviewer)
+            .expect("renamed reviewer projection")
+            .handle,
+        "renamed-reviewer"
     );
 
     assert_eq!(
@@ -647,6 +670,34 @@ async fn mentions_are_resolved_delivered_and_acknowledged() {
         .expect("board page");
     assert_eq!(page.entries[0].id, post.entry.id);
     assert!(page.entries[0].pending_recipient_bot_ids.is_empty());
+
+    let old_handle = reloaded
+        .post(
+            &leader,
+            "leader-thread",
+            format!("Can @{reviewer_handle} check this again?"),
+            None,
+        )
+        .await
+        .expect_err("old reviewer handle must not resolve");
+    assert!(
+        old_handle
+            .to_string()
+            .contains(&format!("@{reviewer_handle}"))
+    );
+    let reopened_post = reloaded
+        .post(
+            &leader,
+            "leader-thread",
+            "Can @renamed-reviewer check this again?".into(),
+            None,
+        )
+        .await
+        .expect("new reviewer handle resolves after reopen");
+    assert_eq!(
+        reopened_post.resolved_recipient_bot_ids,
+        std::slice::from_ref(&reviewer)
+    );
 }
 
 #[tokio::test]

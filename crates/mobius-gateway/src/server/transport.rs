@@ -667,12 +667,21 @@ async fn write_gateway_broadcast(
     host: &GatewayHost,
     mut frame: ServerFrame,
 ) -> Result<()> {
-    if let ServerMessage::Bots { bots, .. } = &mut frame.message {
-        // Queued catalogs can predate a mutation response on this connection.
-        *bots = host
-            .bots()
-            .await
-            .map_err(|rejection| Error::Protocol(rejection.message))?;
+    // Queued catalogs can predate a mutation response on this connection.
+    match &mut frame.message {
+        ServerMessage::Bots { bots, .. } => {
+            *bots = host
+                .bots()
+                .await
+                .map_err(|rejection| Error::Protocol(rejection.message))?;
+        }
+        ServerMessage::Swarms { swarms, .. } => {
+            *swarms = host
+                .swarms()
+                .await
+                .map_err(|rejection| Error::Protocol(rejection.message))?;
+        }
+        _ => {}
     }
     write_frame(writer, &frame).await
 }

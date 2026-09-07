@@ -305,10 +305,11 @@ impl BotStore {
         let description = validate_description(description)?;
         validate_agent_composition(&config)?;
         self.update(|state| {
-            let handle = next_handle(state, &name);
+            let id = Uuid::new_v4().to_string();
+            let handle = next_handle(state, &name, &id);
             let tint = next_tint(state);
             let bot = BotRecord {
-                id: Uuid::new_v4().to_string(),
+                id,
                 handle,
                 name,
                 description,
@@ -336,12 +337,16 @@ impl BotStore {
         let description = validate_description(description)?;
         validate_agent_composition(&config)?;
         self.update(|state| {
+            let handle = next_handle(state, &name, id);
             let bot = find_bot_mut(state, id)?;
             if bot.config.revision != expected_revision {
                 return Err(Error::Config(format!(
                     "Bot configuration revision changed from {expected_revision} to {}",
                     bot.config.revision
                 )));
+            }
+            if bot.name != name && bot.handle != MOBIUS_HANDLE {
+                bot.handle = handle;
             }
             bot.name = name;
             bot.description = description;
@@ -572,11 +577,7 @@ impl BotStore {
 
     pub(crate) fn restore_bot(&self, bot: BotRecord) -> Result<()> {
         self.update(|state| {
-            let id = bot.id.clone();
-            let current = find_bot_mut(state, &id)?;
-            if current.handle != bot.handle {
-                return Err(Error::Config("Bot handles are immutable".into()));
-            }
+            let current = find_bot_mut(state, &bot.id)?;
             *current = bot;
             Ok(())
         })
@@ -1165,7 +1166,7 @@ fn catalog_json(state: &BotState) -> Result<String> {
     Ok(contents)
 }
 
-fn next_handle(state: &BotState, name: &str) -> String {
+fn next_handle(state: &BotState, name: &str, id: &str) -> String {
     let mut base = String::new();
     let mut separator = false;
     for character in name.chars() {
@@ -1187,7 +1188,12 @@ fn next_handle(state: &BotState, name: &str) -> String {
     if base.is_empty() {
         base.push_str("bot");
     }
-    if base != USER_HANDLE && !state.bots.iter().any(|bot| bot.handle == base) {
+    if base != USER_HANDLE
+        && !state
+            .bots
+            .iter()
+            .any(|bot| bot.id != id && bot.handle == base)
+    {
         return base;
     }
     for index in 2_u64.. {
@@ -1195,7 +1201,12 @@ fn next_handle(state: &BotState, name: &str) -> String {
         let prefix_len = MAX_HANDLE_BYTES.saturating_sub(suffix.len());
         let prefix = base[..base.len().min(prefix_len)].trim_end_matches('-');
         let candidate = format!("{prefix}{suffix}");
-        if candidate != USER_HANDLE && !state.bots.iter().any(|bot| bot.handle == candidate) {
+        if candidate != USER_HANDLE
+            && !state
+                .bots
+                .iter()
+                .any(|bot| bot.id != id && bot.handle == candidate)
+        {
             return candidate;
         }
     }
