@@ -1173,36 +1173,47 @@ async fn http_unauthorized_refreshes_and_retries_once() {
 }
 
 #[tokio::test]
-async fn http_transport_failure_retries_the_same_authorized_request() {
+async fn http_transport_failure_does_not_replay_accepted_post() {
     use tokio::io::AsyncReadExt as _;
-    use tokio::io::AsyncWriteExt as _;
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
         .expect("HTTP listener");
     let address = listener.local_addr().expect("HTTP address");
     let server = tokio::spawn(async move {
-        let mut requests = Vec::new();
-        for attempt in 0..2 {
-            let (mut stream, _) = listener.accept().await.expect("HTTP connection");
-            let mut request = Vec::new();
-            while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
-                let mut chunk = [0; 1_024];
-                let count = stream.read(&mut chunk).await.expect("HTTP request");
-                assert_ne!(count, 0, "request ended before its headers");
-                request.extend_from_slice(&chunk[..count]);
+        let (mut stream, _) = listener.accept().await.expect("HTTP connection");
+        let mut request = Vec::new();
+        let header_end = loop {
+            if let Some(position) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                break position;
             }
-            requests.push(String::from_utf8_lossy(&request).into_owned());
-            if attempt == 1 {
-                stream
-                    .write_all(
-                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
-                    )
-                    .await
-                    .expect("HTTP response");
-            }
+            let mut chunk = [0; 1_024];
+            let count = stream.read(&mut chunk).await.expect("HTTP request");
+            assert_ne!(count, 0, "request ended before its headers");
+            request.extend_from_slice(&chunk[..count]);
+        };
+        let headers = String::from_utf8_lossy(&request[..header_end]);
+        let content_length = headers
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.trim()
+                    .eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().expect("content length"))
+            })
+            .expect("content length header");
+        while request.len() < header_end + 4 + content_length {
+            let mut chunk = [0; 1_024];
+            let count = stream.read(&mut chunk).await.expect("HTTP request body");
+            assert_ne!(count, 0, "request ended before its body");
+            request.extend_from_slice(&chunk[..count]);
         }
-        requests
+        drop(stream);
+        let replayed =
+            tokio::time::timeout(std::time::Duration::from_millis(500), listener.accept())
+                .await
+                .is_ok();
+        (request, replayed)
     });
     let provider = OpenAi::with_client(
         Some("test-key".into()),
@@ -1212,15 +1223,15 @@ async fn http_transport_failure_retries_the_same_authorized_request() {
     )
     .expect("provider");
 
-    let response = provider
+    let result = provider
         .send_authorized("responses", &serde_json::json!({}), false, None)
-        .await
-        .expect("request should recover");
+        .await;
 
-    assert_eq!(response.status(), reqwest::StatusCode::OK);
-    let requests = server.await.expect("HTTP server");
-    assert_eq!(requests[0], requests[1]);
-    assert!(requests[0].contains("Bearer test-key"));
+    assert!(result.is_err());
+    let (request, replayed) = server.await.expect("HTTP server");
+    assert!(!replayed);
+    assert!(request.ends_with(b"{}"));
+    assert!(String::from_utf8_lossy(&request).contains("Bearer test-key"));
 }
 
 #[tokio::test]

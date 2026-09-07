@@ -75,7 +75,8 @@ fn finish_due(store: &BotStore, now: i64) -> Vec<String> {
 #[test]
 fn fresh_state_seeds_one_ordinary_immutable_mobius_bot() {
     let (root, store, _) = unseeded_fixture();
-    assert!(!store.path.exists());
+    assert!(root.path().join("state").join(STATE_FILE).exists());
+    assert!(store.storage.load_catalog().expect("catalog").is_none());
     let defaults = VersionedAgentConfig {
         revision: 7,
         config: AgentComposition::default(),
@@ -121,10 +122,46 @@ fn fresh_state_seeds_one_ordinary_immutable_mobius_bot() {
 }
 
 #[test]
+fn concurrent_bot_stores_refresh_the_catalog_before_reads_and_seed() {
+    let root = tempfile::tempdir().expect("root");
+    let state = root.path().join("state");
+    std::fs::create_dir(&state).expect("state");
+    let first = BotStore::open(&state).expect("first store");
+    let second = BotStore::open(&state).expect("second store");
+    let defaults = VersionedAgentConfig {
+        revision: 1,
+        config: AgentComposition::default(),
+    };
+
+    let mobius = first
+        .seed_default(&defaults)
+        .expect("seed default")
+        .expect("first seed");
+    assert!(
+        second
+            .seed_default(&defaults)
+            .expect("second seed")
+            .is_none()
+    );
+    assert_eq!(second.bots().expect("refreshed bots"), [mobius]);
+
+    let created = first
+        .create_bot("fresh", "Fresh Bot", AgentComposition::default())
+        .expect("create Bot");
+    assert!(
+        second
+            .bots()
+            .expect("refreshed catalog")
+            .iter()
+            .any(|bot| bot.id == created.id)
+    );
+}
+
+#[test]
 fn opening_bot_state_rejects_removed_automatic_approval_settings_without_rewrite() {
     let (root, store, _) = fixture();
     create_bot(&store, "second");
-    let mut state = store.lock_state().expect("Bot state").clone();
+    let mut state = store.fresh_state().expect("Bot state");
     for bot in &mut state.bots {
         let middleware = &mut bot.config.config.middleware;
         middleware.set_setting(
@@ -153,7 +190,7 @@ fn opening_bot_state_rejects_removed_automatic_approval_settings_without_rewrite
     drop(store);
 
     let state_dir = root.path().join("state");
-    let before = std::fs::read_to_string(state_dir.join(STATE_FILE)).expect("Bot state");
+    let before = std::fs::read(state_dir.join(STATE_FILE)).expect("Bot state");
     let error = match BotStore::open(&state_dir) {
         Ok(_) => panic!("removed Bot settings must be rejected"),
         Err(error) => error,
@@ -161,14 +198,14 @@ fn opening_bot_state_rejects_removed_automatic_approval_settings_without_rewrite
 
     assert!(error.to_string().contains("reviewer_model_route"));
     assert_eq!(
-        std::fs::read_to_string(state_dir.join(STATE_FILE)).expect("unchanged Bot state"),
+        std::fs::read(state_dir.join(STATE_FILE)).expect("unchanged Bot state"),
         before
     );
 }
 
 #[test]
 fn bot_deletion_removes_owned_routines_history_and_scripts() {
-    let (_root, store, workspace) = fixture();
+    let (root, store, workspace) = fixture();
     let bot = create_bot(&store, "retired");
     let routine = store
         .create_routine(
@@ -195,6 +232,52 @@ fn bot_deletion_removes_owned_routines_history_and_scripts() {
     assert!(store.routine(&routine.id).is_err());
     assert!(store.history(None).expect("history").is_empty());
     assert!(!routine.instructions.exists());
+    drop(store);
+
+    let reopened = BotStore::open(&root.path().join("state")).expect("reopen");
+    assert!(reopened.bot(&bot.id).is_err());
+    assert!(reopened.routine(&routine.id).is_err());
+    assert!(reopened.history(None).expect("history").is_empty());
+}
+
+#[test]
+fn deleting_a_reassigned_routines_new_owner_preserves_earlier_history() {
+    let (root, store, workspace) = fixture();
+    let original = create_bot(&store, "original");
+    let replacement = create_bot(&store, "replacement");
+    let routine = store
+        .create_routine(&original.id, &workspace, "work", interval(60), None)
+        .expect("routine");
+    let BeginRun::Started(active) = store.begin_run(&routine.id).expect("start") else {
+        panic!("run must start");
+    };
+    let run = store
+        .finish_run(active, RoutineRunStatus::Succeeded, None)
+        .expect("finish");
+    store
+        .update_routine(
+            &routine.id,
+            &replacement.id,
+            &workspace,
+            "reassigned work",
+            routine.schedule,
+            None,
+            true,
+        )
+        .expect("reassign routine");
+    let deletion = store
+        .prepare_bot_deletion(&replacement.id, replacement.config.revision)
+        .expect("prepare new owner deletion");
+    store.delete_bot(deletion).expect("delete new owner");
+    drop(store);
+
+    let reopened = BotStore::open(&root.path().join("state")).expect("reopen");
+    for id in [routine.id.as_str(), &routine.id[..8]] {
+        assert_eq!(
+            reopened.history(Some(id)).expect("original Bot history"),
+            std::slice::from_ref(&run)
+        );
+    }
 }
 
 #[test]
@@ -926,14 +1009,14 @@ fn once_and_interval_schedules_advance_without_replay_storms() {
     let interval_routine = store
         .create_routine(&bot.id, &workspace, "interval", interval(60), None)
         .expect("interval routine");
-    store
-        .lock_state()
-        .expect("state")
+    let mut state = store.fresh_state().expect("state");
+    state
         .routines
         .iter_mut()
         .find(|routine| routine.id == interval_routine.id)
         .expect("stored interval")
         .next_run_at = Some(now - 1);
+    store.save(&state).expect("persist interval");
 
     assert_eq!(
         finish_due(&store, now),
@@ -962,14 +1045,14 @@ fn bounded_interval_runs_its_last_due_occurrence() {
     let routine = store
         .create_routine(&bot.id, &workspace, "last run", interval(60), Some(1_000))
         .expect("bounded routine");
-    store
-        .lock_state()
-        .expect("state")
+    let mut state = store.fresh_state().expect("state");
+    state
         .routines
         .iter_mut()
         .find(|stored| stored.id == routine.id)
         .expect("stored routine")
         .next_run_at = Some(1_000);
+    store.save(&state).expect("persist routine");
 
     let due = finish_due(&store, 1_007);
     assert_eq!(due, std::slice::from_ref(&routine.id));
@@ -1010,47 +1093,88 @@ fn cron_next_occurrence_uses_iana_timezone_across_dst() {
 }
 
 #[test]
-fn run_history_never_evicts_owned_sessions() {
-    let running = RoutineRun {
-        id: Uuid::new_v4().to_string(),
-        routine_id: Uuid::new_v4().to_string(),
-        bot_id: Uuid::new_v4().to_string(),
-        started_at: 0,
-        finished_at: None,
-        status: RoutineRunStatus::Running,
-        session_id: Some(Uuid::new_v4().to_string()),
-        message: None,
-    };
-    let mut state = BotState::default();
-    state.runs.push(running.clone());
-    for index in 1..300 {
-        state.runs.push(RoutineRun {
-            id: Uuid::new_v4().to_string(),
-            routine_id: running.routine_id.clone(),
-            bot_id: running.bot_id.clone(),
-            started_at: index as i64,
-            finished_at: Some(index as i64),
-            status: RoutineRunStatus::Succeeded,
-            session_id: Some(Uuid::new_v4().to_string()),
-            message: None,
-        });
+fn run_history_exceeds_one_megabyte_without_evicting_sessions() {
+    let (root, store, workspace) = fixture();
+    let bot = create_bot(&store, "long_history");
+    let routine = store
+        .create_routine(
+            &bot.id,
+            &workspace,
+            "keep every run",
+            cron("0 9 * * *", "UTC"),
+            None,
+        )
+        .expect("routine");
+    let message = "x".repeat(20 * 1024);
+    let mut newest = None;
+    for _ in 0..64 {
+        let BeginRun::Started(run) = store.begin_run(&routine.id).expect("begin run") else {
+            panic!("run must start");
+        };
+        newest = Some(
+            store
+                .finish_run(run, RoutineRunStatus::Succeeded, Some(message.clone()))
+                .expect("finish run")
+                .id,
+        );
     }
-    append_run(
-        &mut state,
-        RoutineRun {
-            id: Uuid::new_v4().to_string(),
-            routine_id: running.routine_id.clone(),
-            bot_id: running.bot_id.clone(),
-            started_at: 1,
-            finished_at: Some(1),
-            status: RoutineRunStatus::Succeeded,
-            session_id: Some(Uuid::new_v4().to_string()),
-            message: None,
-        },
-    );
 
-    assert_eq!(state.runs.len(), 301);
-    assert!(state.runs.contains(&running));
+    let history = store.history(Some(&routine.id)).expect("history");
+    assert!(serde_json::to_vec(&history).expect("history JSON").len() > MAX_STATE_BYTES as usize);
+    assert_eq!(history.len(), 64);
+    assert_eq!(
+        history.first().expect("newest run").id,
+        newest.expect("run")
+    );
+    drop(store);
+
+    let reopened = BotStore::open(&root.path().join("state")).expect("reopen");
+    assert_eq!(
+        reopened.history(Some(&routine.id)).expect("history"),
+        history
+    );
+    let deletion = reopened
+        .prepare_routine_deletion(&routine.id)
+        .expect("prepare routine deletion");
+    reopened.delete_routine(deletion).expect("delete routine");
+    drop(reopened);
+
+    let reopened = BotStore::open(&root.path().join("state")).expect("reopen after deletion");
+    assert!(reopened.routine(&routine.id).is_err());
+    assert!(reopened.history(None).expect("deleted history").is_empty());
+}
+
+#[test]
+fn reopening_marks_running_run_failed_and_retains_its_session() {
+    let (root, store, workspace) = fixture();
+    let bot = create_bot(&store, "recovery");
+    let routine = store
+        .create_routine(
+            &bot.id,
+            &workspace,
+            "recover me",
+            cron("0 9 * * *", "UTC"),
+            None,
+        )
+        .expect("routine");
+    let BeginRun::Started(run) = store.begin_run(&routine.id).expect("begin run") else {
+        panic!("run must start");
+    };
+    let session_id = run.session_id().to_owned();
+    drop(run);
+    drop(store);
+
+    let reopened = BotStore::open(&root.path().join("state")).expect("reopen");
+    let recovered = reopened.history(Some(&routine.id)).expect("history");
+    assert_eq!(recovered[0].status, RoutineRunStatus::Failed);
+    assert_eq!(
+        recovered[0].message.as_deref(),
+        Some("the gateway stopped before this run completed")
+    );
+    assert_eq!(
+        recovered[0].session_id.as_deref(),
+        Some(session_id.as_str())
+    );
 }
 
 #[test]
@@ -1084,24 +1208,13 @@ fn previous_state_version_is_rejected_without_compatibility() {
     let root = tempfile::tempdir().expect("root");
     let state_dir = root.path().join("state");
     std::fs::create_dir(&state_dir).expect("state");
-    let state = BotState {
-        version: STATE_VERSION - 1,
-        bots: Vec::new(),
-        routines: Vec::new(),
-        runs: Vec::new(),
-        pending_bot_deletion: None,
-    };
-    std::fs::write(
-        state_dir.join(STATE_FILE),
-        serde_json::to_vec(&state).expect("encode old state"),
-    )
-    .expect("write old state");
+    std::fs::write(state_dir.join(STATE_FILE), b"not a Bot database").expect("write old state");
 
     let error = match BotStore::open(&state_dir) {
         Ok(_) => panic!("old state must fail"),
         Err(error) => error,
     };
-    assert!(error.to_string().contains("unsupported Bot state version"));
+    assert!(error.to_string().contains("Bot storage"));
 }
 
 #[test]
@@ -1109,11 +1222,9 @@ fn persisted_state_requires_the_default_mobius_bot() {
     let root = tempfile::tempdir().expect("root");
     let state_dir = root.path().join("state");
     std::fs::create_dir(&state_dir).expect("state");
-    std::fs::write(
-        state_dir.join(STATE_FILE),
-        serde_json::to_vec(&BotState::default()).expect("encode state"),
-    )
-    .expect("write state");
+    let store = BotStore::open(&state_dir).expect("fresh store");
+    store.save(&BotState::default()).expect("write state");
+    drop(store);
 
     let error = BotStore::open(&state_dir)
         .err()

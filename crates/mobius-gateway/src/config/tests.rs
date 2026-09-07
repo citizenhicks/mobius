@@ -68,12 +68,10 @@ fn quick_cloudflare_config_round_trips_without_a_token() {
 #[test]
 fn opening_unmigratable_versions_never_rewrites_config() {
     for (version, invalid) in [
-        (19, false),
-        (20, false),
-        (21, false),
-        (22, false),
-        (24, false),
-        (23, true),
+        (0, false),
+        (CONFIG_VERSION - 1, false),
+        (CONFIG_VERSION + 1, false),
+        (CONFIG_VERSION, true),
     ] {
         let root = tempfile::tempdir().expect("temporary directory");
         let state = root.path().join("state");
@@ -81,7 +79,11 @@ fn opening_unmigratable_versions_never_rewrites_config() {
         let path = state.join(CONFIG_FILE);
         let mut contents = fs::read_to_string(&path)
             .expect("read gateway config")
-            .replacen("version = 23", &format!("version = {version}"), 1);
+            .replacen(
+                &format!("version = {CONFIG_VERSION}"),
+                &format!("version = {version}"),
+                1,
+            );
         if invalid {
             contents = contents.replacen("127.0.0.1:8741", "127.0.0.1:0", 1);
         }
@@ -91,6 +93,39 @@ fn opening_unmigratable_versions_never_rewrites_config() {
 
         assert_eq!(fs::read_to_string(path).expect("read config"), contents);
     }
+}
+
+#[tokio::test]
+async fn previous_storage_generation_is_rejected_without_initializing_a_new_catalog() {
+    let root = tempfile::tempdir().expect("temporary directory");
+    let state = root.path().join("state");
+    let (_, mut config) =
+        ConfigStore::initialize(state.clone(), DEFAULT_LISTEN, None).expect("initialize gateway");
+    config.version = CONFIG_VERSION - 1;
+    let contents = toml::to_string_pretty(&config).expect("previous configuration");
+    fs::write(state.join(CONFIG_FILE), &contents).expect("save previous configuration");
+    let previous_catalog = state.join("bots.json");
+    fs::write(&previous_catalog, b"previous Bot state").expect("previous catalog");
+
+    let error = match crate::server::GatewayServer::open(state.clone()).await {
+        Ok(_) => panic!("previous storage generation must be rejected"),
+        Err(error) => error,
+    };
+
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported gateway config version")
+    );
+    assert!(!state.join("bots.sqlite3").exists());
+    assert_eq!(
+        fs::read(previous_catalog).expect("unchanged catalog"),
+        b"previous Bot state"
+    );
+    assert_eq!(
+        fs::read_to_string(state.join(CONFIG_FILE)).expect("unchanged config"),
+        contents
+    );
 }
 
 #[test]
@@ -126,7 +161,7 @@ fn generated_toml_round_trips_manifest_settings() {
     let contents = fs::read_to_string(state.join(CONFIG_FILE)).expect("read config");
     let (_, restored) = ConfigStore::open(state).expect("open config");
 
-    assert!(contents.starts_with("version = 23"));
+    assert!(contents.starts_with(&format!("version = {CONFIG_VERSION}\n")));
     assert!(contents.contains("max_model_steps = 2042"));
     assert!(contents.contains("[bot_defaults.config.middleware.settings.context_offloading]"));
     assert!(contents.contains("[bot_defaults.config.middleware.settings.sessions]"));

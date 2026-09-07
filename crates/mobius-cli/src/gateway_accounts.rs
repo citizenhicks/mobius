@@ -93,11 +93,13 @@ impl GatewayAccounts {
         }
         let parent = parent(&self.path)?;
         std::fs::create_dir_all(parent)?;
+        let parent_file = std::fs::File::open(parent)?;
         let mut file = tempfile::NamedTempFile::new_in(parent)?;
         secure(&file)?;
         file.write_all(&contents)?;
         file.as_file().sync_all()?;
         file.persist(&self.path).map_err(|error| error.error)?;
+        parent_file.sync_all()?;
         Ok(())
     }
 

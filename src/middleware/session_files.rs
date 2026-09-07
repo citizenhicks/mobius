@@ -5,6 +5,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::SystemTime;
 
+use cap_std::fs::Dir;
+#[cfg(unix)]
+use cap_std::fs::MetadataExt as _;
 use serde::{Deserialize, Serialize};
 use tempfile::TempPath;
 use tokio::io::AsyncWriteExt as _;
@@ -122,6 +125,39 @@ struct StoredSessionFile {
 #[serde(deny_unknown_fields)]
 struct StoredAttachmentWorkspace {
     path: PathBuf,
+    identity: AttachmentWorkspaceIdentity,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AttachmentWorkspaceIdentity {
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+}
+
+impl AttachmentWorkspaceIdentity {
+    fn from_metadata(metadata: &cap_std::fs::Metadata) -> Result<Self> {
+        #[cfg(unix)]
+        {
+            Ok(Self {
+                device: metadata.dev(),
+                inode: metadata.ino(),
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = metadata;
+            Err(Error::Config(
+                "attachment workspace identity is unavailable".into(),
+            ))
+        }
+    }
+
+    fn matches(&self, metadata: &cap_std::fs::Metadata) -> Result<bool> {
+        Ok(*self == Self::from_metadata(metadata)?)
+    }
 }
 
 impl SessionFileStore {
@@ -215,20 +251,19 @@ impl SessionFileStore {
     pub(crate) async fn register_attachment_workspace(
         &self,
         session_id: &str,
-        workspace: &Path,
+        workspace: &Dir,
+        workspace_path: &Path,
     ) -> Result<()> {
         validate_session_id(session_id)?;
-        let workspace = tokio::fs::canonicalize(workspace).await?;
-        if !workspace.is_dir() {
-            return Err(Error::Config(
-                "attachment workspace is not a directory".into(),
-            ));
-        }
+        let identity = AttachmentWorkspaceIdentity::from_metadata(&workspace.dir_metadata()?)?;
         self.ensure_initialized().await?;
         let _commit = self.commits.lock().await;
         let directory = self.session_dir(session_id);
         ensure_private_dir(&directory).await?;
-        let stored = StoredAttachmentWorkspace { path: workspace };
+        let stored = StoredAttachmentWorkspace {
+            path: workspace_path.to_owned(),
+            identity,
+        };
         let destination = directory.join(ATTACHMENT_WORKSPACE_FILE);
         match load_attachment_workspace(&destination).await {
             Ok(existing) if existing == stored => Ok(()),
@@ -325,7 +360,7 @@ impl SessionFileStore {
             Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
                 let workspace = load_optional_attachment_workspace(&directory).await?;
                 if let Some(workspace) = workspace {
-                    remove_staged_attachments(&workspace.path, session_id).await?;
+                    remove_staged_attachments(&workspace, session_id).await?;
                 }
                 tokio::fs::remove_dir_all(directory).await?;
             }

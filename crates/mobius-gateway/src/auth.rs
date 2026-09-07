@@ -2,9 +2,6 @@
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::Write as _;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -121,13 +118,16 @@ impl AuthStore {
 
     /// Consumes the pending code and appends an independently issued client token.
     pub fn pair(&self, code: &str, client_label: &str) -> Result<IssuedToken> {
+        self.pair_at(code, client_label, unix_timestamp()?)
+    }
+
+    fn pair_at(&self, code: &str, client_label: &str, now: i64) -> Result<IssuedToken> {
         validate_client_label(client_label)?;
-        let now = unix_timestamp()?;
         let mut state = self.lock_state()?;
         let Some(pending) = &state.pending_pairing else {
             return Err(Error::Unauthorized);
         };
-        if pending.expires_at < now || !credential_matches(code, &pending.digest) {
+        if pending.expires_at <= now || !credential_matches(code, &pending.digest) {
             return Err(Error::Unauthorized);
         }
         if state.clients.len() == MAX_CLIENTS {
@@ -391,23 +391,14 @@ fn save_auth_state(path: &Path, state: &AuthState, create_new: bool) -> Result<(
     fs::create_dir_all(parent)?;
     validate_auth_state(state)?;
     let contents = serde_json::to_vec_pretty(state)?;
-    let mut file = tempfile::NamedTempFile::new_in(parent)?;
-    #[cfg(unix)]
-    file.as_file()
-        .set_permissions(fs::Permissions::from_mode(0o600))?;
-    file.write_all(&contents)?;
-    file.as_file().sync_all()?;
-    if create_new {
-        file.persist_noclobber(path).map_err(|error| error.error)?;
-    } else {
-        file.persist(path).map_err(|error| error.error)?;
-    }
-    Ok(())
+    crate::publication::publish(path, &contents, create_new)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt as _;
 
     fn client(id: &str, label: &str, digest_byte: u8) -> ClientToken {
         ClientToken {
@@ -491,6 +482,20 @@ mod tests {
         }
 
         auth.pair(&grant.code, "Mac").expect("pair canonical label");
+    }
+
+    #[test]
+    fn pairing_rejects_the_code_at_its_exact_expiry() {
+        let directory = tempfile::tempdir().expect("state directory");
+        let path = directory.path().join("auth.json");
+        let (auth, grant) = AuthStore::initialize(path).expect("initialize auth");
+
+        assert!(matches!(
+            auth.pair_at(&grant.code, "Mac", grant.expires_at),
+            Err(Error::Unauthorized)
+        ));
+        auth.pair_at(&grant.code, "Mac", grant.expires_at - 1)
+            .expect("code is valid before expiry");
     }
 
     #[test]

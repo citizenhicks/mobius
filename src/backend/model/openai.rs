@@ -3,8 +3,6 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use std::time::Duration;
-use std::time::Instant;
 
 use reqwest::Client;
 use serde_json::Value;
@@ -60,8 +58,6 @@ mod manifest {
 
 const MAX_JSON_BYTES: usize = 16 * 1024 * 1024;
 const MAX_STREAM_OUTPUT_ITEMS: usize = 1_024;
-const REQUEST_MAX_RETRIES: u32 = 4;
-const REQUEST_RETRY_BASE_DELAY_MS: u64 = 200;
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -469,73 +465,21 @@ impl OpenAi {
 
     async fn send_request(
         endpoint: &str,
-        mut request: reqwest::RequestBuilder,
+        request: reqwest::RequestBuilder,
     ) -> Result<reqwest::Response> {
-        let started = Instant::now();
-        for attempt in 0..=REQUEST_MAX_RETRIES {
-            let retry = request.try_clone();
-            match request.send().await {
-                Ok(response) => return Ok(response),
-                Err(error) if attempt < REQUEST_MAX_RETRIES => {
-                    let Some(next_request) = retry else {
-                        return Err(Self::logged_http_error(endpoint, error, started.elapsed()));
-                    };
-                    let retry = attempt + 1;
-                    let elapsed = started.elapsed();
-                    let delay = Self::request_retry_delay(retry, elapsed);
-                    Self::log_http_retry(endpoint, &error, elapsed, retry, delay);
-                    tokio::time::sleep(delay).await;
-                    request = next_request;
-                }
-                Err(error) => {
-                    return Err(Self::logged_http_error(endpoint, error, started.elapsed()));
-                }
-            }
-        }
-        unreachable!("HTTP request retry is bounded")
+        request
+            .send()
+            .await
+            .map_err(|error| Self::logged_http_error(endpoint, error))
     }
 
-    fn request_retry_delay(retry: u32, elapsed: Duration) -> Duration {
-        let exponential = 1_u64 << retry.saturating_sub(1).min(4);
-        let jitter_percent = 90 + u64::from(elapsed.subsec_nanos() % 21);
-        Duration::from_millis(
-            REQUEST_RETRY_BASE_DELAY_MS
-                .saturating_mul(exponential)
-                .saturating_mul(jitter_percent)
-                / 100,
-        )
-    }
-
-    fn log_http_retry(
-        endpoint: &str,
-        error: &reqwest::Error,
-        elapsed: Duration,
-        retry: u32,
-        delay: Duration,
-    ) {
+    fn logged_http_error(endpoint: &str, error: reqwest::Error) -> Error {
         let host = error
             .url()
             .and_then(|url| url.host_str())
             .unwrap_or("unknown");
         eprintln!(
-            "model HTTP request failed; retrying: host={host} endpoint={endpoint} elapsed_ms={} connect={} timeout={} request={} retry={retry}/{REQUEST_MAX_RETRIES} delay_ms={} source={:?}",
-            elapsed.as_millis(),
-            error.is_connect(),
-            error.is_timeout(),
-            error.is_request(),
-            delay.as_millis(),
-            std::error::Error::source(error),
-        );
-    }
-
-    fn logged_http_error(endpoint: &str, error: reqwest::Error, elapsed: Duration) -> Error {
-        let host = error
-            .url()
-            .and_then(|url| url.host_str())
-            .unwrap_or("unknown");
-        eprintln!(
-            "model HTTP request failed: host={host} endpoint={endpoint} elapsed_ms={} connect={} timeout={} request={} source={:?}",
-            elapsed.as_millis(),
+            "model HTTP request failed: host={host} endpoint={endpoint} connect={} timeout={} request={} source={:?}",
             error.is_connect(),
             error.is_timeout(),
             error.is_request(),

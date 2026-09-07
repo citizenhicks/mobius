@@ -1699,6 +1699,7 @@ dependencies = [
  "futures-util",
  "mobius",
  "nix",
+ "rusqlite",
  "rustls",
  "rustls-pemfile",
  "serde",

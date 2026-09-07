@@ -112,11 +112,17 @@ impl Middleware for Attachments {
             if context.source() == SessionStartSource::Compact {
                 return Ok(());
             }
-            let Some(workspace) = self.workspace_path.as_deref() else {
+            let (Some(workspace), Some(workspace_path)) =
+                (self.workspace.as_deref(), self.workspace_path.as_deref())
+            else {
                 return Ok(());
             };
             self.store
-                .register_attachment_workspace(&context.runtime.session_id, workspace)
+                .register_attachment_workspace(
+                    &context.runtime.session_id,
+                    workspace,
+                    workspace_path,
+                )
                 .await
         })
     }

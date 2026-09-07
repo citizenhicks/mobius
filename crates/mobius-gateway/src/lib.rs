@@ -11,6 +11,7 @@ mod extensions;
 mod host;
 mod middleware_manifest;
 mod provider_catalog;
+mod publication;
 pub mod sandbox;
 pub mod server;
 pub mod wire;
@@ -30,6 +31,8 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    #[error("Bot storage error")]
+    Sqlite(#[from] rusqlite::Error),
 }
 
 /// Result type shared by gateway modules.

@@ -129,8 +129,21 @@ impl Runner {
         tokio::pin!(future);
         let mut input_changed = false;
         loop {
+            let drained = self.drain_submissions(inbox, turn_id).await?;
+            input_changed |= drained.input_changed;
+            if let Some(submission_id) = drained.interrupted {
+                return Ok(Wait::Interrupted { submission_id });
+            }
             tokio::select! {
                 biased;
+                value = &mut future => {
+                    let drained = self.drain_submissions(inbox, turn_id).await?;
+                    input_changed |= drained.input_changed;
+                    if let Some(submission_id) = drained.interrupted {
+                        return Ok(Wait::Interrupted { submission_id });
+                    }
+                    return Ok(Wait::Ready { value, input_changed });
+                }
                 submission = inbox.recv() => {
                     let Some(submission) = submission else {
                         return Err(Error::Stopped("frontend disconnected".into()));
@@ -145,7 +158,6 @@ impl Runner {
                         ActiveRoute::Approval { .. } => {}
                     }
                 }
-                value = &mut future => return Ok(Wait::Ready { value, input_changed }),
             }
         }
     }

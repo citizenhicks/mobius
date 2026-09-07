@@ -652,6 +652,7 @@ fn write_credential(path: &Path, credential: &OAuthCredential) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| Error::Auth("auth path has no parent".into()))?;
+    let parent_file = File::open(parent)?;
     let mut file = tempfile::NamedTempFile::new_in(parent)?;
     #[cfg(unix)]
     file.as_file()
@@ -659,6 +660,7 @@ fn write_credential(path: &Path, credential: &OAuthCredential) -> Result<()> {
     file.write_all(&contents)?;
     file.as_file().sync_all()?;
     file.persist(path).map_err(|error| error.error)?;
+    parent_file.sync_all()?;
     Ok(())
 }
 

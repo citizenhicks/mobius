@@ -598,6 +598,7 @@ fn hook_context(outcomes: &[hooks::HookOutcome]) -> Option<String> {
 
 fn hook_stop_reason(outcome: &hooks::HookOutcome) -> String {
     [
+        outcome.failure.as_deref(),
         outcome.reason.as_deref(),
         outcome.stop_reason.as_deref(),
         outcome.additional_context.as_deref(),
@@ -752,7 +753,8 @@ impl Middleware for Extensions {
                 context.push_input(internal_user_message("extension_tool_hook", &additional));
             }
             if let Some(outcome) = outcomes.iter().find(|outcome| {
-                outcome.permission_decision == Some(hooks::PermissionDecision::Deny)
+                outcome.failure.is_some()
+                    || outcome.permission_decision == Some(hooks::PermissionDecision::Deny)
                     || outcome.decision == Some(hooks::HookDecision::Block)
             }) {
                 return context.deny(hook_stop_reason(outcome));
@@ -772,12 +774,7 @@ impl Middleware for Extensions {
                 .and_then(|arguments| context.replace(original_name, arguments))
             {
                 Ok(()) => Ok(()),
-                Err(error) => {
-                    context.events.push(EventMsg::Warning(WarningEvent {
-                        message: error.to_string(),
-                    }));
-                    Ok(())
-                }
+                Err(error) => context.deny(error.to_string()),
             }
         })
     }
@@ -815,7 +812,8 @@ impl Middleware for Extensions {
                     .await;
                 push_hook_notices(context.events, &outcomes);
                 if let Some(outcome) = outcomes.iter().find(|outcome| {
-                    outcome.permission_decision == Some(hooks::PermissionDecision::Deny)
+                    outcome.failure.is_some()
+                        || outcome.permission_decision == Some(hooks::PermissionDecision::Deny)
                 }) {
                     return context.deny(hook_stop_reason(outcome));
                 }
@@ -1121,6 +1119,7 @@ fn unquote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::middleware::TurnIdentity;
     use std::sync::Mutex;
 
     fn trusted_hooks() -> Option<HookAuthorization> {
@@ -1387,6 +1386,153 @@ printf '%s\n' '{"systemMessage":"PONYTAIL:FULL","hookSpecificOutput":{"hookEvent
         );
         assert!(input[0].to_string().contains("Ponytail rules active."));
         assert_eq!(notices.lock().expect("notices").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn pre_tool_failures_deny_automatically_approved_calls() {
+        let cases = [
+            r#"{"PreToolUse":[{"hooks":[{"type":"command","command":"printf '{'","timeout":1}]}]}"#,
+            r#"{"PreToolUse":[{"hooks":[{"type":"command","command":"sleep 2","timeout":1}]}]}"#,
+            r#"{"PreToolUse":[{"hooks":[{"type":"command","command":"exit 1","timeout":1}]}]}"#,
+            r#"{"PreToolUse":[{"hooks":[{"type":"command","command":"printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"updatedInput\":{}}}'","timeout":1}]}]}"#,
+        ];
+
+        for hooks in cases {
+            let temporary = tempfile::tempdir().expect("temporary extensions");
+            let extensions = extension_with_hooks(&temporary, hooks);
+            let tools = coding_catalog(&temporary);
+            let original = crate::backend::model::ToolCall {
+                call_id: "call".into(),
+                name: "bash".into(),
+                arguments: serde_json::json!({"command": "touch marker"}),
+            };
+            let (denial, call) = run_pre_tool(&extensions, &tools, original.clone()).await;
+
+            assert!(denial.is_some());
+            assert_eq!(call, original);
+        }
+    }
+
+    #[tokio::test]
+    async fn permission_allow_does_not_override_a_failed_hook() {
+        let temporary = tempfile::tempdir().expect("temporary extensions");
+        let extensions = extension_with_hooks(
+            &temporary,
+            r#"{"PermissionRequest":[{"hooks":[{"type":"command","command":"printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"allow\"}}}'","timeout":1},{"type":"command","command":"printf '{'","timeout":1}]}]}"#,
+        );
+        let tools = crate::middleware::tools::Catalog::default();
+        let calls = [crate::backend::model::ToolCall {
+            call_id: "call".into(),
+            name: "tool".into(),
+            arguments: serde_json::json!({}),
+        }];
+        let requested_call_ids = ["call".into()];
+        let mut events = Vec::new();
+        let mut context = PermissionRequestContext {
+            turn: TurnIdentity {
+                session_id: "session",
+                turn_id: "turn",
+                model: "model",
+                approval_policy: ApprovalPolicy::Allow,
+            },
+            calls: &calls,
+            requested_call_ids: &requested_call_ids,
+            reason: "test",
+            events: &mut events,
+            tools: &tools,
+            decision: None,
+        };
+
+        extensions
+            .permission_request(&mut context)
+            .await
+            .expect("failed hook should become a denial");
+
+        assert!(matches!(
+            context.decision(),
+            Some(crate::protocol::ReviewDecision::Denied { .. })
+        ));
+    }
+
+    fn extension_with_hooks(temporary: &tempfile::TempDir, hooks: &str) -> Extensions {
+        use crate::backend::sandbox::local::LocalSandbox;
+
+        let workspace = temporary.path().join("workspace");
+        let plugin = temporary.path().join("plugin");
+        std::fs::create_dir(&workspace).expect("workspace");
+        std::fs::create_dir_all(plugin.join(".codex-plugin")).expect("manifest directory");
+        std::fs::create_dir_all(plugin.join("hooks")).expect("hooks directory");
+        std::fs::write(
+            plugin.join(".codex-plugin/plugin.json"),
+            r#"{"name":"plugin","hooks":"./hooks/hooks.json"}"#,
+        )
+        .expect("plugin manifest");
+        std::fs::write(
+            plugin.join("hooks/hooks.json"),
+            format!(r#"{{"hooks":{hooks}}}"#),
+        )
+        .expect("hook manifest");
+        let backend = Arc::new(LocalSandbox::new(&workspace).expect("sandbox"));
+
+        Extensions::discover(Vec::<PathBuf>::new())
+            .expect("extensions")
+            .activate_plugins([(plugin, trusted_hooks())], &workspace, backend)
+            .expect("activate plugin")
+    }
+
+    fn coding_catalog(temporary: &tempfile::TempDir) -> crate::middleware::tools::Catalog {
+        use crate::backend::checkpoint::sqlite::SqliteCheckpoint;
+        use crate::middleware::tools::Tools;
+        use crate::protocol::SessionContext;
+
+        let runtime = RuntimeContext {
+            sender: crate::agent::test_sender(),
+            checkpoints: Arc::new(
+                SqliteCheckpoint::new(temporary.path().join("checkpoints.sqlite3"))
+                    .expect("checkpoints"),
+            ),
+            session_id: "session".into(),
+            model_route: "model".into(),
+            model: "model".into(),
+            approval_policy: ApprovalPolicy::Allow,
+            session_context: SessionContext::default(),
+            metadata: BTreeMap::new(),
+            role: AgentRole::Main,
+            frontend: Arc::new(|_| Ok(())),
+        };
+        let mut catalog = crate::middleware::tools::Catalog::default();
+        Tools::coding()
+            .register(&mut catalog, &runtime)
+            .expect("coding tools");
+        catalog
+    }
+
+    async fn run_pre_tool(
+        extensions: &Extensions,
+        tools: &crate::middleware::tools::Catalog,
+        mut call: crate::backend::model::ToolCall,
+    ) -> (Option<String>, crate::backend::model::ToolCall) {
+        let mut events = Vec::new();
+        let mut context = PreToolUseContext {
+            turn: TurnIdentity {
+                session_id: "session",
+                turn_id: "turn",
+                model: "model",
+                approval_policy: ApprovalPolicy::Allow,
+            },
+            events: &mut events,
+            tools,
+            call: &mut call,
+            input: Vec::new(),
+            denial: None,
+        };
+        extensions
+            .pre_tool_use(&mut context)
+            .await
+            .expect("failed hook should become a denial");
+        let denial = context.denial().map(str::to_owned);
+        drop(context);
+        (denial, call)
     }
 
     #[test]

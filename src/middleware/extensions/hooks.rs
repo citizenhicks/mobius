@@ -1127,6 +1127,25 @@ mod tests {
         assert_eq!(outcome.reason.as_deref(), Some("unsafe"));
     }
 
+    #[test]
+    fn nonzero_informational_hook_exit_is_a_failure_not_a_block() {
+        let outcome = parse_output(
+            HookEvent::SessionStart,
+            DEFAULT_CONTEXT_BYTES,
+            CommandOutput {
+                exit_code: 2,
+                stdout: String::new(),
+                stdout_truncated: false,
+                stderr: "informational failure".into(),
+                stderr_truncated: false,
+            },
+        )
+        .expect("nonzero informational hook");
+
+        assert!(outcome.failure.is_some());
+        assert_eq!(outcome.decision, None);
+    }
+
     #[tokio::test]
     async fn runner_starts_matches_concurrently_and_preserves_declaration_order() {
         let workspace = tempfile::tempdir().expect("workspace");

@@ -14,6 +14,11 @@ use crate::protocol::{
 };
 use crate::{Error, Result};
 
+pub(super) struct SubmissionDrain {
+    pub(super) input_changed: bool,
+    pub(super) interrupted: Option<String>,
+}
+
 impl Runner {
     pub(super) async fn stop_resumed_turn_at_session_start(&mut self) -> Result<()> {
         let Some(reason) = self.pending_session_start_stop.take() else {
@@ -221,12 +226,13 @@ impl Runner {
         Ok(())
     }
 
-    async fn drain_submissions(
+    pub(super) async fn drain_submissions(
         &mut self,
         inbox: &mut SubmissionInbox,
         turn_id: &str,
-    ) -> Result<Option<String>> {
+    ) -> Result<SubmissionDrain> {
         let cutoff = inbox.cutoff()?;
+        let mut input_changed = false;
         while inbox.last_sequence < cutoff {
             let submission = inbox.recv().await.ok_or_else(|| {
                 Error::Stopped("agent submission channel closed before terminal cutoff".into())
@@ -236,12 +242,23 @@ impl Runner {
                 .await?
             {
                 ActiveRoute::Interrupted { submission_id } => {
-                    return Ok(Some(submission_id));
+                    return Ok(SubmissionDrain {
+                        input_changed,
+                        interrupted: Some(submission_id),
+                    });
                 }
-                ActiveRoute::Continue { .. } | ActiveRoute::Approval { .. } => {}
+                ActiveRoute::Continue {
+                    input_changed: changed,
+                } => {
+                    input_changed |= changed;
+                }
+                ActiveRoute::Approval { .. } => {}
             }
         }
-        Ok(None)
+        Ok(SubmissionDrain {
+            input_changed,
+            interrupted: None,
+        })
     }
 
     pub(super) fn usage_event(

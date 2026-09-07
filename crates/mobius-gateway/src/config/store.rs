@@ -172,19 +172,7 @@ impl ConfigStore {
         if u64::try_from(contents.len()).unwrap_or(u64::MAX) > MAX_CONFIG_BYTES {
             return Err(Error::Config("gateway configuration is too large".into()));
         }
-        let mut file = tempfile::NamedTempFile::new_in(&self.state_dir)?;
-        #[cfg(unix)]
-        file.as_file()
-            .set_permissions(fs::Permissions::from_mode(0o600))?;
-        file.write_all(contents.as_bytes())?;
-        file.as_file().sync_all()?;
-        if create_new {
-            file.persist_noclobber(&self.path)
-                .map_err(|error| error.error)?;
-        } else {
-            file.persist(&self.path).map_err(|error| error.error)?;
-        }
-        Ok(())
+        crate::publication::publish(&self.path, contents.as_bytes(), create_new)
     }
 
     fn validate_config(&self, config: &GatewayConfig) -> Result<()> {
@@ -200,15 +188,7 @@ impl ConfigStore {
 
     fn save_cloudflare_token(&self, token: &str) -> Result<()> {
         let token = validate_cloudflare_token(token)?;
-        let mut file = tempfile::NamedTempFile::new_in(&self.state_dir)?;
-        #[cfg(unix)]
-        file.as_file()
-            .set_permissions(fs::Permissions::from_mode(0o600))?;
-        file.write_all(token.as_bytes())?;
-        file.as_file().sync_all()?;
-        file.persist_noclobber(self.cloudflare_token_path())
-            .map_err(|error| error.error)?;
-        Ok(())
+        crate::publication::publish(&self.cloudflare_token_path(), token.as_bytes(), true)
     }
 }
 
@@ -473,9 +453,6 @@ fn validate_credential_state(values: &BTreeMap<String, StoredCredential>) -> Res
 }
 
 fn save_private_map(path: &Path, values: &BTreeMap<String, StoredCredential>) -> Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| Error::Config("provider credential path has no parent".into()))?;
     validate_credential_state(values)?;
     let contents = serde_json::to_vec(values)?;
     if contents.len() > MAX_CREDENTIAL_STATE_BYTES {
@@ -483,14 +460,7 @@ fn save_private_map(path: &Path, values: &BTreeMap<String, StoredCredential>) ->
             "provider credential state is too large".into(),
         ));
     }
-    let mut file = tempfile::NamedTempFile::new_in(parent)?;
-    #[cfg(unix)]
-    file.as_file()
-        .set_permissions(fs::Permissions::from_mode(0o600))?;
-    file.write_all(&contents)?;
-    file.as_file().sync_all()?;
-    file.persist(path).map_err(|error| error.error)?;
-    Ok(())
+    crate::publication::publish(path, &contents, false)
 }
 
 impl UsageHistory {

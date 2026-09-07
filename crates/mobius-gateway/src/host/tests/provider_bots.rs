@@ -117,7 +117,7 @@ async fn provider_replacement_rejects_a_bot_reference_without_changing_either_st
         .expect("Bot");
     let state_dir = root.path().join("state");
     let gateway_path = state_dir.join("gateway.toml");
-    let bots_path = state_dir.join("bots.json");
+    let bots_path = state_dir.join("bots.sqlite3");
     let gateway_before = std::fs::read(&gateway_path).expect("gateway config before");
     let bots_before = std::fs::read(&bots_path).expect("Bot state before");
 

@@ -7,7 +7,7 @@ mod workspace;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
-use std::io::{Read as _, Write as _};
+use std::io::Read as _;
 use std::net::SocketAddr;
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
@@ -40,7 +40,7 @@ pub(crate) use self::workspace::{
     create_workspace_directory, local_user_name, prepare_background_workspace,
 };
 
-const CONFIG_VERSION: u32 = 23;
+const CONFIG_VERSION: u32 = 24;
 const CHAT_SPEC_VERSION: u32 = 15;
 pub(crate) const CHAT_SPEC_METADATA_KEY: &str = "mobius_gateway.chat";
 const CONFIG_FILE: &str = "gateway.toml";

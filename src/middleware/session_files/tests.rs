@@ -1,4 +1,5 @@
 use super::*;
+use cap_std::{ambient_authority, fs::Dir};
 
 #[tokio::test]
 async fn upload_round_trip_is_session_scoped_and_atomic() {
@@ -320,6 +321,147 @@ async fn delete_session_rejects_an_active_upload() {
         .delete_session("session")
         .await
         .expect("delete released session files");
+}
+
+#[tokio::test]
+async fn attachment_cleanup_remains_safe_after_real_workspace_replacement_and_restart() {
+    let state = tempfile::tempdir().expect("state");
+    let root = tempfile::tempdir().expect("workspace root");
+    let workspace = root.path().join("workspace");
+    let replacement = root.path().join("replacement");
+    let session_id = "session";
+    let staged = workspace
+        .join(".mobius")
+        .join("attachments")
+        .join(session_storage_key(session_id));
+    let replacement_staged = replacement
+        .join(".mobius")
+        .join("attachments")
+        .join(session_storage_key(session_id));
+    std::fs::create_dir_all(&staged).expect("staged attachments");
+    std::fs::create_dir_all(&replacement_staged).expect("replacement attachments");
+    let pinned_workspace = Dir::open_ambient_dir(&workspace, ambient_authority()).expect("pin");
+
+    SessionFileStore::new(state.path())
+        .register_attachment_workspace(session_id, &pinned_workspace, &workspace)
+        .await
+        .expect("register workspace");
+    std::fs::rename(&workspace, root.path().join("original")).expect("move original");
+    std::fs::rename(&replacement, &workspace).expect("install replacement");
+
+    SessionFileStore::new(state.path())
+        .delete_session(session_id)
+        .await
+        .expect("delete session");
+
+    assert!(
+        workspace
+            .join(".mobius")
+            .join("attachments")
+            .join(session_storage_key(session_id))
+            .is_dir()
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn attachment_cleanup_remains_safe_after_symlink_workspace_replacement_and_restart() {
+    use std::os::unix::fs::symlink;
+
+    let state = tempfile::tempdir().expect("state");
+    let root = tempfile::tempdir().expect("workspace root");
+    let workspace = root.path().join("workspace");
+    let outside = root.path().join("outside");
+    let session_id = "session";
+    let outside_staged = outside
+        .join(".mobius")
+        .join("attachments")
+        .join(session_storage_key(session_id));
+    std::fs::create_dir_all(
+        workspace
+            .join(".mobius")
+            .join("attachments")
+            .join(session_storage_key(session_id)),
+    )
+    .expect("staged attachments");
+    std::fs::create_dir_all(&outside_staged).expect("outside attachments");
+    let pinned_workspace = Dir::open_ambient_dir(&workspace, ambient_authority()).expect("pin");
+
+    SessionFileStore::new(state.path())
+        .register_attachment_workspace(session_id, &pinned_workspace, &workspace)
+        .await
+        .expect("register workspace");
+    std::fs::rename(&workspace, root.path().join("original")).expect("move original");
+    symlink(&outside, &workspace).expect("install symlink");
+
+    SessionFileStore::new(state.path())
+        .delete_session(session_id)
+        .await
+        .expect("delete session");
+
+    assert!(outside_staged.is_dir());
+}
+
+#[tokio::test]
+async fn attachment_cleanup_removes_staged_files_for_the_registered_workspace() {
+    let state = tempfile::tempdir().expect("state");
+    let workspace_root = tempfile::tempdir().expect("workspace");
+    let workspace = workspace_root.path();
+    let session_id = "session";
+    let staged = workspace
+        .join(".mobius")
+        .join("attachments")
+        .join(session_storage_key(session_id));
+    std::fs::create_dir_all(&staged).expect("staged attachments");
+    let pinned_workspace = Dir::open_ambient_dir(workspace, ambient_authority()).expect("pin");
+
+    let store = SessionFileStore::new(state.path());
+    store
+        .register_attachment_workspace(session_id, &pinned_workspace, workspace)
+        .await
+        .expect("register workspace");
+    store
+        .delete_session(session_id)
+        .await
+        .expect("delete session");
+
+    assert!(!staged.exists());
+}
+
+#[tokio::test]
+async fn attachment_registration_keeps_pinned_identity_after_path_replacement() {
+    let state = tempfile::tempdir().expect("state");
+    let root = tempfile::tempdir().expect("workspace root");
+    let workspace = root.path().join("workspace");
+    let replacement = root.path().join("replacement");
+    let session_id = "session";
+    let replacement_staged = replacement
+        .join(".mobius")
+        .join("attachments")
+        .join(session_storage_key(session_id));
+    std::fs::create_dir_all(&workspace).expect("workspace");
+    std::fs::create_dir_all(&replacement_staged).expect("replacement attachments");
+    let pinned_workspace = Dir::open_ambient_dir(&workspace, ambient_authority()).expect("pin");
+
+    std::fs::rename(&workspace, root.path().join("original")).expect("move original");
+    std::fs::rename(&replacement, &workspace).expect("install replacement");
+
+    SessionFileStore::new(state.path())
+        .register_attachment_workspace(session_id, &pinned_workspace, &workspace)
+        .await
+        .expect("register workspace");
+    SessionFileStore::new(state.path())
+        .delete_session(session_id)
+        .await
+        .expect("delete session");
+
+    assert!(
+        workspace
+            .join(".mobius")
+            .join("attachments")
+            .join(session_storage_key(session_id))
+            .is_dir()
+    );
 }
 
 #[tokio::test]

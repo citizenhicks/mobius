@@ -546,7 +546,7 @@ impl Runner {
                     {
                         Wait::Ready { input_changed, .. } => {
                             if let Some(interrupt_submission_id) =
-                                self.drain_submissions(inbox, turn_id).await?
+                                self.drain_submissions(inbox, turn_id).await?.interrupted
                             {
                                 self.abort(
                                     &interrupt_submission_id,
@@ -678,7 +678,9 @@ impl Runner {
                 .await?;
             return Ok(None);
         }
-        if let Some(interrupt_submission_id) = self.drain_submissions(inbox, turn_id).await? {
+        if let Some(interrupt_submission_id) =
+            self.drain_submissions(inbox, turn_id).await?.interrupted
+        {
             self.interrupt_model_step(
                 submission_id,
                 &interrupt_submission_id,
@@ -807,7 +809,9 @@ impl Runner {
             };
             (last_assistant_message.clone(), active.stop_hook_active)
         };
-        if let Some(interrupt_submission_id) = self.drain_submissions(inbox, turn_id).await? {
+        if let Some(interrupt_submission_id) =
+            self.drain_submissions(inbox, turn_id).await?.interrupted
+        {
             self.abort(
                 &interrupt_submission_id,
                 turn_id,
@@ -843,7 +847,9 @@ impl Runner {
             .into_iter()
             .map(|message| turn_event(submission_id, message))
             .collect::<Vec<_>>();
-        if let Some(interrupt_submission_id) = self.drain_submissions(inbox, turn_id).await? {
+        if let Some(interrupt_submission_id) =
+            self.drain_submissions(inbox, turn_id).await?.interrupted
+        {
             if !hook_events.is_empty() {
                 self.persist_with_events(hook_events, None).await?;
             }
@@ -984,7 +990,9 @@ impl Runner {
                 }
                 continue;
             }
-            if let Some(interrupt_submission_id) = self.drain_submissions(inbox, &turn_id).await? {
+            if let Some(interrupt_submission_id) =
+                self.drain_submissions(inbox, &turn_id).await?.interrupted
+            {
                 self.abort(
                     &interrupt_submission_id,
                     &turn_id,

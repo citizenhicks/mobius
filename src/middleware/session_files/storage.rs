@@ -226,20 +226,27 @@ pub(super) async fn save_attachment_workspace(
     temporary
         .persist_noclobber(&destination)
         .map_err(|error| error.error)?;
-    set_private_file(&destination).await
+    set_private_file(&destination).await?;
+    sync_directory(directory)
 }
 
-pub(super) async fn remove_staged_attachments(workspace: &Path, session_id: &str) -> Result<()> {
-    let workspace = workspace.to_path_buf();
+pub(super) async fn remove_staged_attachments(
+    workspace: &StoredAttachmentWorkspace,
+    session_id: &str,
+) -> Result<()> {
+    let workspace = workspace.clone();
     let staged = PathBuf::from(".mobius")
         .join("attachments")
         .join(session_storage_key(session_id));
     tokio::task::spawn_blocking(move || {
-        let directory = match Dir::open_ambient_dir(workspace, ambient_authority()) {
+        let directory = match Dir::open_ambient_dir(&workspace.path, ambient_authority()) {
             Ok(directory) => directory,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(Error::from(error)),
         };
+        if !workspace.identity.matches(&directory.dir_metadata()?)? {
+            return Ok(());
+        }
         match directory.remove_dir_all(staged) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -258,7 +265,13 @@ pub(super) async fn save_metadata(directory: &Path, file: &StoredSessionFile) ->
     temporary
         .persist_noclobber(&destination)
         .map_err(|error| error.error)?;
-    set_private_file(&destination).await
+    set_private_file(&destination).await?;
+    sync_directory(directory)
+}
+
+fn sync_directory(directory: &Path) -> Result<()> {
+    std::fs::File::open(directory)?.sync_all()?;
+    Ok(())
 }
 
 fn validate_reference(file: &SessionFileReference) -> Result<()> {

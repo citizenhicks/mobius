@@ -65,12 +65,16 @@ impl Runner {
         }
         let catalog = self.catalog.clone();
         let cancel_on_input = catalog.cancels_on_input(&callable);
-        if cancel_on_input
-            && self
-                .config
-                .middleware
-                .messages_ready(&self.state.pending_messages, turn_id)?
-        {
+        let drained = self.drain_submissions(inbox, turn_id).await?;
+        if let Some(submission_id) = drained.interrupted {
+            return Ok(Wait::Interrupted { submission_id });
+        }
+        let mut input_changed = drained.input_changed;
+        let messages_ready = self
+            .config
+            .middleware
+            .messages_ready(&self.state.pending_messages, turn_id)?;
+        if cancel_on_input && (input_changed || messages_ready) {
             let mut results = interrupted_results(
                 &callable,
                 "execution cancelled before start because newer input is ready",
@@ -90,10 +94,41 @@ impl Runner {
         );
         tokio::pin!(execution);
         let mut executed = false;
-        let mut input_changed = false;
         let results = loop {
+            let drained = self.drain_submissions(inbox, turn_id).await?;
+            input_changed |= drained.input_changed;
+            if let Some(submission_id) = drained.interrupted {
+                break Wait::Interrupted { submission_id };
+            }
+            if cancel_on_input && drained.input_changed {
+                break Wait::Ready {
+                    value: interrupted_results(
+                        &callable,
+                        "execution cancelled by newer input; result unknown",
+                    ),
+                    input_changed: true,
+                };
+            }
             tokio::select! {
                 biased;
+                results = &mut execution => {
+                    let drained = self.drain_submissions(inbox, turn_id).await?;
+                    input_changed |= drained.input_changed;
+                    if let Some(submission_id) = drained.interrupted {
+                        break Wait::Interrupted { submission_id };
+                    }
+                    if cancel_on_input && drained.input_changed {
+                        break Wait::Ready {
+                            value: interrupted_results(
+                                &callable,
+                                "execution cancelled by newer input; result unknown",
+                            ),
+                            input_changed: true,
+                        };
+                    }
+                    executed = true;
+                    break Wait::Ready { value: results, input_changed };
+                }
                 submission = inbox.recv() => {
                     let Some(submission) = submission else {
                         return Err(Error::Stopped("frontend disconnected".into()));
@@ -120,10 +155,6 @@ impl Runner {
                         }
                         ActiveRoute::Approval { .. } => {}
                     }
-                }
-                results = &mut execution => {
-                    executed = true;
-                    break Wait::Ready { value: results, input_changed };
                 }
             }
         };

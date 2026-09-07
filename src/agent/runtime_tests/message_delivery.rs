@@ -1,6 +1,8 @@
 //! Message-delivery runtime tests.
 
 use super::*;
+use crate::agent::AgentSender;
+use crate::middleware::{ActiveCommandContext, SubmissionResult};
 
 struct PartiallyBlockingBeforeModel {
     started: Arc<Notify>,
@@ -28,6 +30,116 @@ impl Middleware for PartiallyBlockingBeforeModel {
 struct BlockingPreTool {
     started: Arc<Notify>,
     release: Arc<Notify>,
+}
+
+struct RefillMiddleware {
+    count: AtomicUsize,
+    finished: Arc<AtomicBool>,
+    limit: usize,
+    release: Arc<Notify>,
+    sender: Mutex<Option<AgentSender>>,
+}
+
+struct ReleasingModel {
+    finished: Arc<AtomicBool>,
+    release: Arc<Notify>,
+    started: Arc<Notify>,
+}
+
+struct BlockingTool {
+    finished: Arc<AtomicBool>,
+    release: Arc<Notify>,
+    started: Arc<Notify>,
+}
+
+impl RefillMiddleware {
+    fn op() -> Op {
+        Op::CapabilityCommand {
+            capability: "refill".into(),
+            command: "refill".into(),
+            arguments: String::new(),
+            input: None,
+            target: None,
+        }
+    }
+}
+
+impl Middleware for RefillMiddleware {
+    fn name(&self) -> &'static str {
+        "refill"
+    }
+
+    fn active_command<'a>(
+        &'a self,
+        context: &'a mut ActiveCommandContext<'_>,
+    ) -> BoxFuture<'a, Result<Option<SubmissionResult>>> {
+        Box::pin(async move {
+            if context.command != "refill" {
+                return Ok(None);
+            }
+            let count = self.count.fetch_add(1, Ordering::SeqCst) + 1;
+            if count == 1 {
+                self.release.notify_one();
+            }
+            if count < self.limit && !self.finished.load(Ordering::SeqCst) {
+                self.sender
+                    .lock()
+                    .expect("refill sender lock")
+                    .as_ref()
+                    .expect("refill sender")
+                    .submit(Self::op())?;
+            }
+            Ok(Some(SubmissionResult::Rejected("refilled".into())))
+        })
+    }
+}
+
+impl Model for ReleasingModel {
+    fn respond<'a>(
+        &'a self,
+        _request: ModelRequest,
+        _events: ModelEventSink,
+    ) -> BoxFuture<'a, Result<ModelOutput>> {
+        let finished = Arc::clone(&self.finished);
+        let release = Arc::clone(&self.release);
+        let started = Arc::clone(&self.started);
+        Box::pin(async move {
+            started.notify_one();
+            release.notified().await;
+            finished.store(true, Ordering::SeqCst);
+            Ok(scripted_message("done"))
+        })
+    }
+}
+
+impl Tool for BlockingTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "blocking_tool".into(),
+            description: "blocks until released".into(),
+            parameters: serde_json::json!({"type": "object"}),
+        }
+    }
+
+    fn exposure(&self) -> ToolExposure {
+        ToolExposure::Direct
+    }
+
+    fn call<'a>(
+        &'a self,
+        _context: ToolContext,
+        _arguments: Value,
+    ) -> BoxFuture<'a, Result<String>> {
+        let finished = Arc::clone(&self.finished);
+        let release = Arc::clone(&self.release);
+        let started = Arc::clone(&self.started);
+        Box::pin(async move {
+            started.notify_one();
+            release.notified().await;
+            finished.store(true, Ordering::SeqCst);
+            Ok("done".into())
+        })
+    }
 }
 
 impl Middleware for BlockingPreTool {
@@ -69,6 +181,137 @@ async fn active_turn(agent: &mut Agent, started: &Notify) -> String {
     .await
     .expect("active boundary started");
     turn_id
+}
+
+#[tokio::test]
+async fn rejected_input_refill_cannot_starve_model_completion() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let release = Arc::new(Notify::new());
+    let started = Arc::new(Notify::new());
+    let finished = Arc::new(AtomicBool::new(false));
+    let refill = Arc::new(RefillMiddleware {
+        count: AtomicUsize::new(0),
+        finished: Arc::clone(&finished),
+        limit: 8,
+        release: Arc::clone(&release),
+        sender: Mutex::new(None),
+    });
+    let model = Arc::new(ReleasingModel {
+        finished: Arc::clone(&finished),
+        release,
+        started: Arc::clone(&started),
+    });
+    let mut agent = create_agent(
+        AgentConfig::new(
+            Arc::new(ModelRouter::new("refill-model", model)),
+            Arc::new(Sandbox::new(
+                Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
+                ApprovalPolicy::Allow,
+            )),
+            Arc::new(
+                SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
+                    .expect("checkpoint store"),
+            ),
+            test_middleware(vec![refill.clone()]),
+            "test prompt",
+        )
+        .session_context(test_session_context())
+        .session_id("refill-model"),
+    )
+    .await
+    .expect("create agent");
+    *refill.sender.lock().expect("refill sender lock") = Some(agent.sender());
+    agent.sender().submit(user_op("start")).expect("start turn");
+    active_turn(&mut agent, &started).await;
+    agent
+        .sender()
+        .submit(RefillMiddleware::op())
+        .expect("submit refill");
+
+    while !matches!(
+        agent.next_event().await.expect("agent event").msg,
+        EventMsg::TurnComplete(_)
+    ) {}
+
+    assert!(finished.load(Ordering::SeqCst));
+    assert!(refill.count.load(Ordering::SeqCst) < refill.limit);
+}
+
+#[tokio::test]
+async fn rejected_input_refill_cannot_starve_tool_completion() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let release = Arc::new(Notify::new());
+    let finished = Arc::new(AtomicBool::new(false));
+    let refill = Arc::new(RefillMiddleware {
+        count: AtomicUsize::new(0),
+        finished: Arc::clone(&finished),
+        limit: 8,
+        release: Arc::clone(&release),
+        sender: Mutex::new(None),
+    });
+    let tool_started = Arc::new(Notify::new());
+    let tool = Arc::new(BlockingTool {
+        finished: Arc::clone(&finished),
+        release,
+        started: Arc::clone(&tool_started),
+    });
+    let model = Arc::new(ScriptedModel {
+        outputs: Mutex::new(VecDeque::from([
+            ModelOutput::from_output(
+                vec![serde_json::json!({
+                    "type": "function_call",
+                    "call_id": "blocking-call",
+                    "name": "blocking_tool",
+                    "arguments": "{}"
+                })],
+                false,
+                scripted_usage(),
+            )
+            .expect("tool call"),
+            scripted_message("done"),
+        ])),
+        tool_counts: Mutex::new(Vec::new()),
+        inputs: Mutex::new(Vec::new()),
+    });
+    let mut agent = create_agent(
+        AgentConfig::new(
+            Arc::new(ModelRouter::new("refill-tool", model)),
+            Arc::new(Sandbox::new(
+                Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
+                ApprovalPolicy::Allow,
+            )),
+            Arc::new(
+                SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
+                    .expect("checkpoint store"),
+            ),
+            test_middleware(vec![Arc::new(Tools::new(vec![tool])), refill.clone()]),
+            "test prompt",
+        )
+        .session_context(test_session_context())
+        .session_id("refill-tool"),
+    )
+    .await
+    .expect("create agent");
+    *refill.sender.lock().expect("refill sender lock") = Some(agent.sender());
+    agent.sender().submit(user_op("start")).expect("start turn");
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        drain_until_notified(&mut agent, &tool_started),
+    )
+    .await
+    .expect("tool started");
+    agent
+        .sender()
+        .submit(RefillMiddleware::op())
+        .expect("submit refill");
+
+    while !matches!(
+        agent.next_event().await.expect("agent event").msg,
+        EventMsg::TurnComplete(_)
+    ) {}
+
+    assert!(finished.load(Ordering::SeqCst));
+    assert!(refill.count.load(Ordering::SeqCst) < refill.limit);
 }
 
 #[tokio::test]
