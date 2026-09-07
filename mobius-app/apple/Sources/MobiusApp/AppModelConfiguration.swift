@@ -810,6 +810,14 @@ extension AppModel {
 
     func appDidEnterBackground() {
         appIsInBackground = true
+        appLockAuthenticationGeneration = UUID()
+        startupTask?.cancel()
+        appActivationTask?.cancel()
+        appActivationTask = nil
+        cloudAuthenticationTask?.cancel()
+        cloudAuthenticationTask = nil
+        messageSpeaker.stop()
+        Task { await dictation.cancel() }
         cancelVoiceChatIntent()
         let voiceCall = realtimeVoiceCall
         stopRealtimeVoice(notifyGateway: false)
@@ -845,10 +853,17 @@ extension AppModel {
     }
 
     func appDidBecomeActive() async {
+        guard !Task.isCancelled else { return }
         appIsInBackground = false
+        if startedAccountID == nil, connectionState == .disconnected {
+            await start()
+        }
+        guard !Task.isCancelled, !appIsInBackground else { return }
         await unlockApp()
+        guard !Task.isCancelled, !appIsInBackground else { return }
         if selectedGatewayIsMobiusCloud {
             await refreshCloudAccount()
+            guard !Task.isCancelled, !appIsInBackground else { return }
             if reconnectsOnActivation {
                 reconnectsOnActivation = false
                 if selectedGatewayIsMobiusCloud,
@@ -856,12 +871,38 @@ extension AppModel {
                     reconnect()
                 }
             }
+        } else {
+            setSceneActive(true)
         }
         await refreshRemoteNotificationRegistration()
     }
 
+    func beginAppActivation() {
+        guard appActivationTask == nil else { return }
+        appActivationTask = Task<Void, Never> { [weak self] in
+            guard let self else { return }
+            await self.appDidBecomeActive()
+            if !Task.isCancelled { self.appActivationTask = nil }
+        }
+    }
+
+    func scheduleCloudAuthenticationRefresh() {
+        cloudAuthenticationTask?.cancel()
+        cloudAuthenticationTask = Task<Void, Never> { [weak self] in
+            guard let self else { return }
+            await self.cloudAuthenticationDidChange()
+        }
+    }
+
     func unlockApp() async {
-        guard appLockEnabled, isAppLocked, !isAppLockAuthenticating else { return }
+        guard appLockEnabled, isAppLocked else { return }
+        while isAppLockAuthenticating {
+            for await authenticating in Observations({ self.isAppLockAuthenticating }) {
+                if !authenticating { break }
+            }
+            guard !Task.isCancelled else { return }
+        }
+        guard !Task.isCancelled, appLockEnabled, isAppLocked else { return }
         guard await authenticateForAppLock(
             reason: localizedString("Authenticate to unlock möbius.")
         ) else {
@@ -880,11 +921,13 @@ extension AppModel {
         }
         isAppLockAuthenticating = true
         appLockError = nil
+        let generation = appLockAuthenticationGeneration
         let succeeded = await appLockAuthenticator.authenticate(
             reason: reason,
             cancelTitle: localizedString("Cancel")
         )
         isAppLockAuthenticating = false
+        guard !Task.isCancelled, appLockAuthenticationGeneration == generation else { return false }
         guard succeeded else {
             appLockError = localizedString("Authentication wasn’t completed. Try again.")
             return false

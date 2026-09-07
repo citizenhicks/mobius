@@ -284,6 +284,7 @@ extension AppModel {
     func refreshRemoteNotificationRegistration(
         opensSettingsWhenDenied: Bool = false
     ) async {
+        guard !Task.isCancelled else { return }
         guard notificationsEnabled else {
             stopRemoteNotifications()
             if pushTokenRemovalPending {
@@ -291,21 +292,36 @@ extension AppModel {
             }
             return
         }
-        guard cloudSession != nil else {
+        guard let requestedSession = cloudSession else {
             stopRemoteNotifications()
             return
         }
 
-        switch await remoteNotifications.authorization() {
+        let authorization = await remoteNotifications.authorization()
+        guard !Task.isCancelled,
+              notificationsEnabled,
+              cloudSession == requestedSession
+        else { return }
+
+        switch authorization {
         case .notDetermined:
             do {
-                guard try await remoteNotifications.requestAuthorization() else {
+                let granted = try await remoteNotifications.requestAuthorization()
+                guard !Task.isCancelled,
+                      notificationsEnabled,
+                      cloudSession == requestedSession
+                else { return }
+                guard granted else {
                     notificationError = localizedString("Notifications are off in Settings.")
                     if opensSettingsWhenDenied { remoteNotifications.openSettings() }
                     return
                 }
                 remoteNotifications.register()
             } catch {
+                guard !Task.isCancelled,
+                      notificationsEnabled,
+                      cloudSession == requestedSession
+                else { return }
                 notificationError = localizedString(
                     "Notifications couldn’t be enabled. Try again."
                 )

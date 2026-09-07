@@ -3,6 +3,7 @@ import Observation
 
 extension AppModel {
     func start() async {
+        guard !Task.isCancelled else { return }
         guard let account = selectedAccount else {
             #if DEBUG
             if !pairingCode.isEmpty, !pairingEndpoint.isEmpty { pair(); return }
@@ -10,6 +11,29 @@ extension AppModel {
             showsPairing = true
             return
         }
+        guard startedAccountID != account.id else { return }
+        if let startupTask {
+            await startupTask.value
+            guard !Task.isCancelled, selectedAccountID == account.id else { return }
+            if startedAccountID == account.id { return }
+        }
+        guard !Task.isCancelled, selectedAccountID == account.id else { return }
+        let generation = connectionGeneration
+        let taskID = UUID()
+        let task = Task<Void, Never> { [weak self] in
+            guard let self else { return }
+            await self.performStart(account: account, generation: generation)
+        }
+        startupTask = task
+        startupTaskID = taskID
+        await task.value
+        if startupTaskID == taskID {
+            startupTask = nil
+            startupTaskID = nil
+        }
+    }
+
+    private func performStart(account: GatewayAccount, generation: UUID) async {
         let catalog = await store.loadChatCatalog(accountID: account.id)
         let cachedTranscript: CachedTranscript? =
             if let sessionID = catalog?.lastSessionID {
@@ -17,7 +41,10 @@ extension AppModel {
             } else {
                 nil
             }
-        guard selectedAccountID == account.id else { return }
+        guard !Task.isCancelled,
+              selectedAccountID == account.id,
+              connectionGeneration == generation
+        else { return }
         if let catalog {
             applyBots(catalog.bots)
             applySwarms(catalog.swarms)
@@ -30,6 +57,9 @@ extension AppModel {
                 cacheChatCatalog(lastSessionID: sessionID)
             }
         }
+        startedAccountID = account.id
+        guard !appIsInBackground else { return }
+        reconnectsOnActivation = false
         connect(to: account)
     }
 
@@ -120,8 +150,6 @@ extension AppModel {
 
     func setSceneActive(_ active: Bool) {
         guard active else {
-            messageSpeaker.stop()
-            Task { await dictation.cancel() }
             cancelReconnect()
             reconnectsOnActivation = true
             return

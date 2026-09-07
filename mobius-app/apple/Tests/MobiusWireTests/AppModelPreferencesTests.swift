@@ -127,6 +127,41 @@ extension AppModelTests {
         XCTAssertTrue(results.isEmpty)
     }
 
+    func testManualUnlockCannotSurviveBackgroundAndReactivation() async throws {
+        let suiteName = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(true, forKey: appLockEnabledKey)
+        let gate = AsyncGate()
+        var attempts = 0
+        let model = AppModel(
+            store: GatewayStore(defaults: defaults),
+            settingsDefaults: defaults,
+            appLockAuthenticator: AppLockAuthenticator(method: { .faceID }, authenticate: { _ in
+                attempts += 1
+                guard attempts == 1 else { return false }
+                await gate.wait()
+                return true
+            })
+        )
+        model.appIsInBackground = false
+        let manualUnlock = Task { await model.unlockApp() }
+        let authenticationStarted = await eventually { model.isAppLockAuthenticating }
+        XCTAssertTrue(authenticationStarted)
+        model.appDidEnterBackground()
+        model.beginAppActivation()
+        let activation = try XCTUnwrap(model.appActivationTask)
+        let reactivated = await eventually { !model.appIsInBackground }
+        XCTAssertTrue(reactivated)
+        await gate.open()
+        await manualUnlock.value
+        await activation.value
+
+        XCTAssertFalse(manualUnlock.isCancelled)
+        XCTAssertEqual(attempts, 2)
+        XCTAssertTrue(model.isAppLocked)
+    }
+
     func testClearCachedDataKeepsGatewayDraftAndSettings() async throws {
         let suiteName = UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -378,6 +413,53 @@ extension AppModelTests {
         )
         XCTAssertTrue(relaunched.notificationsEnabled)
         XCTAssertEqual(relaunched.pushInstallationID, model.pushInstallationID)
+    }
+
+    func testCanceledCloudAuthenticationRefreshCannotUpdateReplacedSession() async throws {
+        let suiteName = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(true, forKey: notificationsEnabledKey)
+        let gate = AsyncGate()
+        var requestAuthorizationCalls = 0
+        var registrations = 0
+        let system = RemoteNotificationSystem(
+            authorization: { .notDetermined },
+            requestAuthorization: {
+                requestAuthorizationCalls += 1
+                if requestAuthorizationCalls == 1 {
+                    await gate.wait()
+                    throw URLError(.cancelled)
+                }
+                return true
+            },
+            register: { registrations += 1 },
+            unregister: {},
+            removeAll: {},
+            openSettings: {}
+        )
+        let model = AppModel(
+            client: GatewayClient(),
+            store: GatewayStore(defaults: defaults),
+            settingsDefaults: defaults,
+            remoteNotifications: system
+        )
+        model.cloudSession = MobiusCloudSession(userID: UUID(), expiresAt: .distantFuture)
+        model.scheduleCloudAuthenticationRefresh()
+        let firstTask = try XCTUnwrap(model.cloudAuthenticationTask)
+        let firstStarted = await eventually { requestAuthorizationCalls == 1 }
+        XCTAssertTrue(firstStarted)
+
+        model.cloudSession = MobiusCloudSession(userID: UUID(), expiresAt: .distantFuture)
+        model.scheduleCloudAuthenticationRefresh()
+        let secondTask = try XCTUnwrap(model.cloudAuthenticationTask)
+        await secondTask.value
+        await gate.open()
+        await firstTask.value
+
+        XCTAssertEqual(requestAuthorizationCalls, 2)
+        XCTAssertEqual(registrations, 1)
+        XCTAssertNil(model.notificationError)
     }
 
     func testNotificationOptOutRemovesRegistrationThatFinishesAfterInitialDelete() async throws {

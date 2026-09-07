@@ -202,8 +202,6 @@ extension AppModelTests {
         let startup = try XCTUnwrap(model.realtimeVoiceTask)
         let oldGeneration = model.connectionGeneration
         model.newVoiceChatIntent = .openingSession("pending-session")
-        // Follow the actual scene lifecycle synchronously, before mic permission can run.
-        model.setSceneActive(false)
         model.appDidEnterBackground()
         XCTAssertNil(model.realtimeVoiceCall)
         XCTAssertNil(model.realtimeVoiceTask)

@@ -4,13 +4,29 @@ import SwiftUI
 struct MobiusAppleApp: App {
     @UIApplicationDelegateAdaptor(MobiusAppDelegate.self) private var appDelegate
     @State private var model = AppModel()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
             AppShell()
                 .mobiusTheme()
                 .environment(model)
-                .onAppear { appDelegate.attach(model) }
+        }
+        .onChange(of: scenePhase, initial: true) { _, phase in
+            appDelegate.attach(model)
+            switch phase {
+            case .background:
+                model.appDidEnterBackground()
+            case .active:
+                model.beginAppActivation()
+            case .inactive:
+                break
+            @unknown default:
+                break
+            }
+        }
+        .onChange(of: model.cloudSession?.credentialID) { _, _ in
+            model.scheduleCloudAuthenticationRefresh()
         }
     }
 }

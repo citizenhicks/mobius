@@ -152,6 +152,38 @@ extension AppModelTests {
         XCTAssertFalse(model.connectionState.isReady)
     }
 
+    func testConcurrentStartsOpenOnlyOneConnection() async throws {
+        let suiteName = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
+        let store = GatewayStore(defaults: defaults)
+        try store.save(account, token: "test-token")
+        addTeardownBlock { try await store.remove(account) }
+        var connectionAttempts = 0
+        let model = AppModel(
+            client: GatewayClient(),
+            store: store,
+            settingsDefaults: defaults,
+            requestSender: { _ in },
+            connectionOpener: { _ in
+                connectionAttempts += 1
+                return AsyncThrowingStream { _ in }
+            }
+        )
+        model.accounts = [account]
+        model.selectedAccountID = account.id
+        model.appIsInBackground = false
+
+        async let firstStart = model.start()
+        async let secondStart = model.start()
+        await firstStart
+        await secondStart
+
+        let opened = await eventually { connectionAttempts == 1 }
+        XCTAssertTrue(opened)
+    }
+
     func testCloudConnectionRetriesFailureAndSilentWarmupUntilReady() async throws {
         let suiteName = UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -626,7 +658,6 @@ extension AppModelTests {
         model.connectionState = .ready
         let suspendedGeneration = model.connectionGeneration
 
-        model.setSceneActive(false)
         model.appDidEnterBackground()
         XCTAssertNotEqual(model.connectionGeneration, suspendedGeneration)
         XCTAssertEqual(model.connectionState, .disconnected)

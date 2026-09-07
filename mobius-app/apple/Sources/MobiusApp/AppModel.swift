@@ -309,6 +309,7 @@ final class AppModel {
     @ObservationIgnored let cloudPurchases: MobiusCloudPurchases
     @ObservationIgnored let settingsDefaults: UserDefaults
     @ObservationIgnored let appLockAuthenticator: AppLockAuthenticator
+    @ObservationIgnored var appLockAuthenticationGeneration = UUID()
     @ObservationIgnored let remoteNotifications: RemoteNotificationSystem
     @ObservationIgnored let pushInstallationID: UUID
     @ObservationIgnored let requestSender:
@@ -335,6 +336,11 @@ final class AppModel {
         )] = []
     @ObservationIgnored var connectionGeneration = UUID()
     @ObservationIgnored var reconnectsOnActivation = false
+    @ObservationIgnored var startupTask: Task<Void, Never>?
+    @ObservationIgnored var startupTaskID: UUID?
+    @ObservationIgnored var startedAccountID: UUID?
+    @ObservationIgnored var appActivationTask: Task<Void, Never>?
+    @ObservationIgnored var cloudAuthenticationTask: Task<Void, Never>?
     @ObservationIgnored var pendingPairingAccount: GatewayAccount?
     @ObservationIgnored var pendingDrafts: [String: PendingComposerDraft] = [:]
     var pendingWidgetEdit: PendingWidgetEdit?
@@ -408,7 +414,7 @@ final class AppModel {
     @ObservationIgnored var routineRunPreviewRequestBeforeSequence: UInt64?
     @ObservationIgnored var routineRunPreviewPollingTask: Task<Void, Never>?
     @ObservationIgnored var toastDismissTask: Task<Void, Never>?
-    @ObservationIgnored var isChatVisible = false
+    @ObservationIgnored var visibleChatWindowTokens: Set<UUID> = []
     @ObservationIgnored var latestSequence: UInt64?
     @ObservationIgnored var sessionOpenCursor: UInt64?
     @ObservationIgnored var replayRequestID: String?
@@ -521,6 +527,9 @@ final class AppModel {
     isolated deinit {
         eventTask?.cancel()
         reconnectTask?.cancel()
+        startupTask?.cancel()
+        appActivationTask?.cancel()
+        cloudAuthenticationTask?.cancel()
         deltaFlushTask?.cancel()
         realtimeVoiceTask?.cancel()
         realtimeVoice.close()
@@ -878,8 +887,14 @@ final class AppModel {
         toast = nil
     }
 
-    func setChatVisible(_ visible: Bool) {
-        isChatVisible = visible
+    var isChatVisible: Bool { !visibleChatWindowTokens.isEmpty }
+
+    func setChatVisible(_ visible: Bool, windowToken: UUID) {
+        if visible {
+            visibleChatWindowTokens.insert(windowToken)
+        } else {
+            visibleChatWindowTokens.remove(windowToken)
+        }
         if visible, let selectedSessionID {
             markSessionRead(selectedSessionID)
         }

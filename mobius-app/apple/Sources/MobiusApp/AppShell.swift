@@ -19,6 +19,7 @@ struct AppShell: View {
     @State private var columnVisibility = NavigationSplitViewVisibility.all
     @State private var compactColumn = debugStartsOnDetail ? NavigationSplitViewColumn.detail : .sidebar
     @State private var sidebarIsOpen = !debugStartsOnDetail
+    @State private var chatWindowToken = UUID()
 
     var body: some View {
         @Bindable var model = model
@@ -138,8 +139,11 @@ struct AppShell: View {
             if oldValue != nil, newValue == nil { model.closeFilePresentation() }
         }
         .preferredColorScheme(preferredColorScheme)
-        .onChange(of: chatIsVisible, initial: true) { _, visible in
-            model.setChatVisible(visible)
+        .onAppear {
+            model.setChatVisible(chatIsVisible, windowToken: chatWindowToken)
+        }
+        .onDisappear {
+            model.setChatVisible(false, windowToken: chatWindowToken)
         }
         .onChange(of: model.isPresentingChat) { _, isPresentingChat in
             guard isPresentingChat, horizontalSizeClass == .compact else { return }
@@ -151,22 +155,16 @@ struct AppShell: View {
         }
         .sensoryFeedback(.impact(weight: .light), trigger: model.toast?.id) { _, id in id != nil }
         .sensoryFeedback(.impact(weight: .light), trigger: model.steeringDeliveryRevision)
-        // Only a backgrounded scene loses its socket. `.inactive` covers a window losing focus
-        // or a notification banner, and reconnecting on those drops a healthy session.
-        .onChange(of: scenePhase) { _, newPhase in
-            model.setSceneActive(newPhase != .background)
-            if newPhase == .background {
-                model.appDidEnterBackground()
-            } else if newPhase == .active {
-                Task { await model.appDidBecomeActive() }
-            }
+        .onChange(of: chatIsVisible) { _, visible in
+            model.setChatVisible(visible, windowToken: chatWindowToken)
         }
-        .task {
-            await model.start()
-            if scenePhase == .active { await model.appDidBecomeActive() }
+        .onChange(of: model.presentedChatSessionID) { _, _ in
+            guard chatIsVisible else { return }
+            model.setChatVisible(true, windowToken: chatWindowToken)
         }
-        .task(id: model.cloudSession?.credentialID) {
-            await model.cloudAuthenticationDidChange()
+        .onChange(of: model.selectedSessionID) { _, newSessionID in
+            guard chatIsVisible, newSessionID != nil else { return }
+            model.setChatVisible(true, windowToken: chatWindowToken)
         }
         .environment(\.locale, model.language.locale)
     }

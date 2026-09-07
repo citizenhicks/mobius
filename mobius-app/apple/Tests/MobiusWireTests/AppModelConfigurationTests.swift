@@ -25,7 +25,6 @@ extension AppModelTests {
         model.pairingCode = "unsaved-pairing-code"
         let navigation = model.navigationPath
 
-        model.setSceneActive(false)
         model.appDidEnterBackground()
         model.setSceneActive(true)
 
@@ -55,6 +54,75 @@ extension AppModelTests {
         XCTAssertEqual(model.navigationPath, navigation)
         XCTAssertEqual(model.botNameDraft, "Unsaved Bot name")
         XCTAssertEqual(model.providerAPIKey, "unsaved-test-key")
+    }
+
+    func testCanceledActivationCannotReconnectAfterASecondActivationBegins() async throws {
+        let suiteName = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(true, forKey: "app-lock-enabled")
+        let store = GatewayStore(defaults: defaults)
+        let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
+        try store.save(account, token: "test-token")
+        addTeardownBlock { try await store.remove(account) }
+        let gate = AsyncGate()
+        let secondGate = AsyncGate()
+        var authenticationAttempts = 0
+        var connectionAttempts = 0
+        let authenticator = AppLockAuthenticator(
+            method: { .faceID },
+            authenticate: { _ in
+                authenticationAttempts += 1
+                if authenticationAttempts == 1 {
+                    await gate.wait()
+                } else {
+                    await secondGate.wait()
+                }
+                return true
+            }
+        )
+        let model = AppModel(
+            client: GatewayClient(),
+            store: store,
+            settingsDefaults: defaults,
+            appLockAuthenticator: authenticator,
+            requestSender: { _ in },
+            connectionOpener: { _ in
+                connectionAttempts += 1
+                return AsyncThrowingStream { _ in }
+            }
+        )
+        model.accounts = [account]
+        model.selectedAccountID = account.id
+        model.startedAccountID = account.id
+        model.connectionState = .ready
+        model.reconnectsOnActivation = true
+
+        model.beginAppActivation()
+        let firstActivation = try XCTUnwrap(model.appActivationTask)
+        let authenticationStarted = await eventually { model.isAppLockAuthenticating }
+        XCTAssertTrue(authenticationStarted)
+        // A temporary inactive/active bounce keeps the current authentication alive.
+        model.beginAppActivation()
+        XCTAssertFalse(firstActivation.isCancelled)
+        model.appDidEnterBackground()
+        model.beginAppActivation()
+        let secondActivation = try XCTUnwrap(model.appActivationTask)
+        let reactivated = await eventually { !model.appIsInBackground }
+        XCTAssertTrue(reactivated)
+        XCTAssertEqual(connectionAttempts, 0)
+        await gate.open()
+        await firstActivation.value
+        let secondAuthenticationStarted = await eventually { authenticationAttempts == 2 }
+        XCTAssertTrue(secondAuthenticationStarted)
+        XCTAssertTrue(model.isAppLocked)
+        XCTAssertEqual(connectionAttempts, 0)
+        await secondGate.open()
+        await secondActivation.value
+        let reconnectedOnce = await eventually { connectionAttempts == 1 }
+        XCTAssertTrue(reconnectedOnce)
+        XCTAssertEqual(connectionAttempts, 1)
+        XCTAssertFalse(model.isAppLocked)
     }
 
     func testProviderLoginSurvivesReconnectAndAcceptsItsRecoveredOutcome() async throws {

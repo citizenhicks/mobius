@@ -810,10 +810,11 @@ extension AppModelTests {
 
     func testSessionSnapshotsDriveActivityAndOnlyUnseenCompletion() throws {
         let model = try model()
+        let chatWindowToken = UUID()
         model.applySessions([session(state: .idle)])
         model.selectedSessionID = "chat-1"
         model.destination = .botDefaults
-        model.setChatVisible(false)
+        model.setChatVisible(false, windowToken: chatWindowToken)
 
         model.applySessions([session(state: .running, turnID: "turn-1")])
         XCTAssertTrue(model.runningSessionIDs.contains("chat-1"))
@@ -837,7 +838,7 @@ extension AppModelTests {
 
         model.destination = .chats
         model.navigationPath = [.chat(.session("chat-1"))]
-        model.setChatVisible(true)
+        model.setChatVisible(true, windowToken: chatWindowToken)
         XCTAssertFalse(model.unreadSessionIDs.contains("chat-1"))
         XCTAssertTrue(model.attentionSessionIDs.isEmpty)
         model.dismissToast()
@@ -845,10 +846,42 @@ extension AppModelTests {
         model.applySessions([session(state: .idle, outcome: .completed)])
         XCTAssertNil(model.toast)
 
-        model.setChatVisible(false)
+        model.setChatVisible(false, windowToken: chatWindowToken)
         model.applySessions([session(state: .running, turnID: "turn-3")])
         model.applySessions([session(state: .idle)])
         XCTAssertTrue(model.unreadSessionIDs.contains("chat-1"))
+    }
+
+    func testHiddenChatWindowDoesNotHideAnotherVisibleChatWindow() throws {
+        let model = try model()
+        let firstWindow = UUID()
+        let secondWindow = UUID()
+        model.applySessions([session(state: .idle)])
+        model.selectedSessionID = "chat-1"
+        model.destination = .chats
+        model.navigationPath = [.chat(.session("chat-1"))]
+        model.setChatVisible(true, windowToken: firstWindow)
+        model.setChatVisible(true, windowToken: secondWindow)
+
+        model.setChatVisible(false, windowToken: firstWindow)
+        XCTAssertTrue(model.isChatVisible)
+        model.applySessions([session(state: .running, turnID: "turn-1")])
+        model.applySessions([session(
+            state: .idle, outcome: .completed, executionStats: ExecutionStats(runCount: 1)
+        )])
+        XCTAssertFalse(model.unreadSessionIDs.contains("chat-1"))
+        XCTAssertNil(model.toast)
+
+        model.setChatVisible(false, windowToken: secondWindow)
+        XCTAssertFalse(model.isChatVisible)
+        model.applySessions([session(
+            state: .running, turnID: "turn-2", executionStats: ExecutionStats(runCount: 1)
+        )])
+        model.applySessions([session(
+            state: .idle, outcome: .completed, executionStats: ExecutionStats(runCount: 2), sequence: 2
+        )])
+        XCTAssertTrue(model.unreadSessionIDs.contains("chat-1"))
+        XCTAssertNotNil(model.toast)
     }
 
     func testCompletedSessionNotificationUsesGatewayFinalAnswerPreviewAndBotIdentity() throws {
@@ -909,13 +942,14 @@ extension AppModelTests {
     func testExplicitUnreadSurvivesCatalogAndStoredStateUntilMarkedRead() throws {
         for sequence in [UInt64(0), 12] {
             let model = try model()
+            let chatWindowToken = UUID()
             let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
             model.accounts = [account]
             model.selectedAccountID = account.id
             let chat = session(state: .idle, sequence: sequence)
             model.applySessions([chat])
             model.selectedSessionID = chat.sessionId
-            model.setChatVisible(true)
+            model.setChatVisible(true, windowToken: chatWindowToken)
 
             model.markSessionUnread(chat.sessionId)
             model.applySessions([chat])
@@ -941,9 +975,10 @@ extension AppModelTests {
 
     func testFailedSessionSnapshotUsesGatewayMessage() throws {
         let model = try model()
+        let chatWindowToken = UUID()
         model.applySessions([session(state: .idle, title: "Review")])
         model.selectedSessionID = "chat-1"
-        model.setChatVisible(false)
+        model.setChatVisible(false, windowToken: chatWindowToken)
 
         model.applySessions([session(state: .running, turnID: "turn-1", title: "Review")])
         model.applySessions([session(
