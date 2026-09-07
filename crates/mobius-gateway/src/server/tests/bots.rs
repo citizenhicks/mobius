@@ -120,3 +120,92 @@ async fn deleting_a_bot_clears_its_selected_chat_on_the_requesting_connection() 
     shutdown.send(()).expect("stop gateway");
     serving.await.expect("gateway task").expect("gateway stop");
 }
+
+#[tokio::test]
+async fn bot_catalog_broadcasts_do_not_reintroduce_a_deleted_bot() {
+    let root = tempfile::tempdir().expect("root");
+    let (server, grant) = configured_test_server(root.path().join("state")).await;
+    let bot = server
+        .host
+        .create_bot("Original", "Bot catalog ordering test")
+        .await
+        .expect("create Bot");
+    let (client, stream) = tokio::io::duplex(1024 * 1024);
+    let (reader, mut writer) = tokio::io::split(client);
+    let mut reader = FrameReader::new(reader);
+    // Queue both mutations before polling the connection to keep the rename broadcast pending.
+    for message in [
+        ClientMessage::Pair {
+            code: grant.code,
+            client_label: "Bot catalog test".into(),
+            client_kind: ClientKind::Ios,
+        },
+        ClientMessage::UpdateBot {
+            request_id: "rename".into(),
+            id: bot.id.clone(),
+            expected_revision: bot.config.revision,
+            name: "Renamed".into(),
+            description: bot.description,
+            tint: bot.tint,
+            config: bot.config.config,
+        },
+        ClientMessage::DeleteBot {
+            request_id: "delete".into(),
+            id: bot.id.clone(),
+            expected_revision: bot.config.revision + 1,
+        },
+    ] {
+        write_frame(&mut writer, &ClientFrame::new(message))
+            .await
+            .expect("queue request");
+    }
+    let (client_revocations, _) = broadcast::channel(MAX_CONNECTIONS);
+    let serving = tokio::spawn(serve_connection(
+        stream,
+        ConnectionContext {
+            auth: server.auth,
+            host: server.host,
+            bots: server.bots,
+            client_connections: Arc::new(ClientConnections::default()),
+            client_revocations,
+            admission: ConnectionAdmission::new(1, 1).admit().await,
+        },
+        Instant::now() + PRE_AUTH_TIMEOUT,
+        None,
+    ));
+    let mut deleted = false;
+    loop {
+        let frame = tokio::time::timeout(
+            Duration::from_secs(5),
+            read_frame::<ServerFrame>(&mut reader),
+        )
+        .await
+        .expect("response timeout")
+        .expect("read response")
+        .expect("connection open");
+        match frame.message {
+            ServerMessage::Bots { request_id, bots } => {
+                deleted |= request_id.as_deref() == Some("delete");
+                if deleted {
+                    assert!(
+                        bots.iter().all(|candidate| candidate.id != bot.id),
+                        "a stale catalog reintroduced the deleted Bot after its deletion response"
+                    );
+                    if request_id.is_none() {
+                        break;
+                    }
+                }
+            }
+            ServerMessage::Rejected { code, message, .. } => {
+                panic!("Bot mutation rejected ({code}): {message}")
+            }
+            _ => {}
+        }
+    }
+    drop(reader);
+    drop(writer);
+    serving
+        .await
+        .expect("connection task")
+        .expect("connection stop");
+}

@@ -55,7 +55,7 @@ const IDENTITY_KEY: &str = "subagents.identity";
 const SPAWN_CONTEXT_KEY: &str = "subagents.spawn_context";
 mod text {
     pub const COMMAND_DESCRIPTION: &str = "open a subagent thread";
-    pub const DEFAULTS_MAX_AGENTS: i64 = 32;
+    pub const DEFAULTS_MAX_AGENTS: i64 = 101;
     pub const DEFAULTS_MAX_CONCURRENCY: i64 = 8;
     pub const DEFAULTS_MAX_DEPTH: i64 = 4;
     pub const DEFAULTS_WAIT_MS: i64 = 30000;

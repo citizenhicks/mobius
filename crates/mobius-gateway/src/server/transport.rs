@@ -594,7 +594,7 @@ where
             }
             outgoing = gateway_broadcasts.recv() => {
                 match outgoing {
-                    Ok(frame) => write_frame(&mut writer, &frame).await?,
+                    Ok(frame) => write_gateway_broadcast(&mut writer, &host, frame).await?,
                     Err(broadcast::error::RecvError::Lagged(_)) => {
                         let ready = host
                             .ready()
@@ -660,6 +660,21 @@ where
         )
         .await?;
     }
+}
+
+async fn write_gateway_broadcast(
+    writer: &mut (impl AsyncWrite + Unpin),
+    host: &GatewayHost,
+    mut frame: ServerFrame,
+) -> Result<()> {
+    if let ServerMessage::Bots { bots, .. } = &mut frame.message {
+        // Queued catalogs can predate a mutation response on this connection.
+        *bots = host
+            .bots()
+            .await
+            .map_err(|rejection| Error::Protocol(rejection.message))?;
+    }
+    write_frame(writer, &frame).await
 }
 
 pub(super) fn tls_acceptor(config: &TlsConfig) -> Result<TlsAcceptor> {
