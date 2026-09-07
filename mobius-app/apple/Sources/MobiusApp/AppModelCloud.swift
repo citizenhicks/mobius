@@ -91,20 +91,12 @@ extension AppModel {
 
         if selectedGatewayIsMobiusCloud,
            !wasAlreadyExpired
-                || !automaticReconnectBlocked
-                || connectionState != .failed(message) {
-            cancelReconnect()
-            reconnectsOnActivation = false
-            automaticReconnectBlocked = true
-            let generation = resetGatewayState(preservingDrafts: true, preservingSession: true)
-            connectionState = .failed(message)
-            Task { [weak self] in
-                guard let self,
-                      self.connectionGeneration == generation,
-                      self.selectedGatewayIsMobiusCloud
-                else { return }
-                await self.client.disconnect()
-            }
+                || !gateway.automaticReconnectBlocked
+                || gateway.connectionState != .failed(message) {
+            gateway.blockAutomaticReconnect()
+            gateway.reset(preservingDrafts: true)
+            resetGatewayDependentState(preservingDrafts: true, preservingSession: true)
+            gateway.shutdown(state: .failed(message))
         }
         if !wasAlreadyExpired {
             showToast(verbatim: message, tone: .warning)
@@ -365,7 +357,7 @@ extension AppModel {
             if recovered {
                 cloudIssue = nil
                 cloudError = nil
-                if selectedGatewayIsMobiusCloud { automaticReconnectBlocked = false }
+                if selectedGatewayIsMobiusCloud { gateway.allowAutomaticReconnect() }
             }
         } else if mobiusCloudGateway != nil || cloudIssue == .subscriptionExpired {
             handleCloudSubscriptionExpired()
@@ -374,11 +366,10 @@ extension AppModel {
     }
 
     private func reconnectRecoveredCloudGateway() {
-        guard selectedGatewayIsMobiusCloud, !connectionState.isReady else { return }
+        guard selectedGatewayIsMobiusCloud, !gateway.connectionState.isReady else { return }
         if appIsInBackground {
-            reconnectsOnActivation = true
+            gateway.setSceneActive(false)
         } else {
-            reconnectsOnActivation = false
             reconnect()
         }
     }
@@ -402,8 +393,10 @@ extension AppModel {
                 applyPairingSetup(grant.setup)
                 showsPairing = false
                 pair()
-                pendingPairingAccount?.displayName = mobiusCloudGatewayDisplayName
-                pendingPairingAccount?.cloudUserID = cloudSession?.userID
+                gateway.updatePendingPairingAccount(
+                    displayName: mobiusCloudGatewayDisplayName,
+                    cloudUserID: cloudSession?.userID
+                )
                 try await withTaskCancellationHandler {
                     try await withCheckedThrowingContinuation {
                         (continuation: CheckedContinuation<Void, Error>) in
@@ -411,8 +404,9 @@ extension AppModel {
                     }
                 } onCancel: {
                     Task { @MainActor [weak self] in
-                        guard self?.cloudPairingContinuation != nil else { return }
-                        self?.resetGatewayState(preservingDrafts: true)
+                        guard let self, self.cloudPairingContinuation != nil else { return }
+                        self.gateway.reset(preservingDrafts: true)
+                        self.resetGatewayDependentState(preservingDrafts: true)
                     }
                 }
                 return
@@ -428,10 +422,7 @@ extension AppModel {
         guard let continuation = cloudPairingContinuation else { return }
         cloudPairingContinuation = nil
         if case .failure = result {
-            pairingEndpoint = "wss://"
-            pairingCode = ""
-            pendingPairingAccount = nil
-            automaticReconnectBlocked = true
+            gateway.cancelPendingPairing()
         }
         continuation.resume(with: result)
     }
@@ -481,13 +472,13 @@ extension AppModel {
         isClearingLocalData = true
         defer { isClearingLocalData = false }
 
-        cancelReconnect()
-        automaticReconnectBlocked = true
+        gateway.blockAutomaticReconnect()
         discardComposerDraft()
-        _ = resetGatewayState(preservingDrafts: false, preservingSession: false)
+        gateway.reset(preservingDrafts: false)
+        resetGatewayDependentState(preservingDrafts: false, preservingSession: false)
         let transcriptIO = transcriptIOTask
         let composerIO = composerDraftIOTask
-        await client.disconnect()
+        await gateway.shutdown().value
         await transcriptIO?.value
         await composerIO?.value
 
@@ -505,20 +496,18 @@ extension AppModel {
             localError = localError ?? error
         }
         if let localError {
-            accounts = store.loadAccounts()
-            selectedAccountID = store.selectedAccountID() ?? accounts.first?.id
-            restoreSessionReadState()
-            showsPairing = accounts.isEmpty
+            gateway.reloadAccounts()
+            restoreSessionReadState(for: gateway.selectedAccountID)
+            showsPairing = gateway.accounts.isEmpty
             showToast(verbatim: localizedErrorDescription(localError), tone: .error)
             return
         }
 
-        accounts = []
-        selectedAccountID = nil
-        restoreSessionReadState()
-        pairingEndpoint = "wss://"
-        pairingCode = ""
-        pairingError = nil
+        gateway.clearAccounts()
+        restoreSessionReadState(for: gateway.selectedAccountID)
+        gateway.pairingEndpoint = "wss://"
+        gateway.pairingCode = ""
+        gateway.pairingError = nil
         destination = .chats
         navigationPath = []
         showsPairing = true

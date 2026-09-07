@@ -8,6 +8,7 @@ struct PairingView: View {
 
     var body: some View {
         @Bindable var model = model
+        @Bindable var gateway = model.gateway
         ScrollView {
             VStack(alignment: .leading, spacing: MobiusSpace.xl) {
                 HStack(alignment: .top) {
@@ -32,7 +33,7 @@ struct PairingView: View {
                             VStack(alignment: .leading, spacing: MobiusSpace.s) {
                                 Text("Gateway address")
                                     .font(MobiusStyle.controlFont)
-                                TextField("wss://gateway.example", text: $model.pairingEndpoint)
+                                TextField("wss://gateway.example", text: $gateway.pairingEndpoint)
                                     .textFieldStyle(.roundedBorder)
                                     .textContentType(.URL)
                                     .autocorrectionDisabled()
@@ -41,7 +42,7 @@ struct PairingView: View {
                             VStack(alignment: .leading, spacing: MobiusSpace.s) {
                                 Text("One-time code")
                                     .font(MobiusStyle.controlFont)
-                                SecureField("One-time code", text: $model.pairingCode)
+                                SecureField("One-time code", text: $gateway.pairingCode)
                                     .textFieldStyle(.roundedBorder)
                                     .textInputAutocapitalization(.never)
                                     .autocorrectionDisabled()
@@ -73,7 +74,7 @@ struct PairingView: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.horizontal, MobiusSpace.s)
 
-                    if let error = model.pairingError {
+                    if let error = model.gateway.pairingError {
                         MobiusLabel(
                             verbatim: error,
                             glyph: .warning,
@@ -100,13 +101,13 @@ struct PairingView: View {
     /// put the most technical line on the screen above the decision it belongs under.
     private var pairAction: some View {
         VStack(spacing: MobiusSpace.m) {
-            if model.connectionState == .connecting || model.connectionState == .authenticating {
+            if model.gateway.connectionState == .connecting || model.gateway.connectionState == .authenticating {
                 HStack {
                     MobiusSpinner(size: MobiusStyle.glyphLead, foreground: palette.accent)
                 }
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(
-                    model.connectionState == .authenticating
+                    model.gateway.connectionState == .authenticating
                         ? Text("Authenticating with gateway")
                         : Text("Connecting to gateway")
                 )

@@ -7,18 +7,18 @@ import XCTest
 extension AppModelTests {
     func testGitDiffScopesRejectStaleResponsesAndKeepRevisionsAcrossReset() throws {
         let model = try model { _ in }
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         model.refreshGitDiff(.staged)
         let oldID = try XCTUnwrap(model.gitDiffs[.staged]?.requestID)
         model.refreshGitDiff(.staged)
         let currentID = try XCTUnwrap(model.gitDiffs[.staged]?.requestID)
-        model.handle(.gitDiff(requestID: oldID, sessionID: "chat-1", scope: .staged, diff: "stale"))
-        model.handle(.gitDiff(requestID: currentID, sessionID: "other-chat", scope: .staged, diff: "other"))
-        model.handle(.gitDiff(requestID: currentID, sessionID: "chat-1", scope: .unstaged, diff: "wrong scope"))
+        model.gateway.handle(.gitDiff(requestID: oldID, sessionID: "chat-1", scope: .staged, diff: "stale"))
+        model.gateway.handle(.gitDiff(requestID: currentID, sessionID: "other-chat", scope: .staged, diff: "other"))
+        model.gateway.handle(.gitDiff(requestID: currentID, sessionID: "chat-1", scope: .unstaged, diff: "wrong scope"))
         XCTAssertEqual(model.gitDiffs[.staged]?.text, "")
         XCTAssertEqual(model.gitDiffs[.staged]?.requestID, currentID)
-        model.handle(.gitDiff(requestID: currentID, sessionID: "chat-1", scope: .staged, diff: "current"))
+        model.gateway.handle(.gitDiff(requestID: currentID, sessionID: "chat-1", scope: .staged, diff: "current"))
         XCTAssertEqual(model.gitDiffs[.staged]?.text, "current")
         XCTAssertEqual(model.gitDiffs[.staged]?.revision, 1)
         XCTAssertNil(model.gitDiffs[.staged]?.requestID)
@@ -92,7 +92,7 @@ extension AppModelTests {
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
 
         var requestCount = await recorder.requestCount()
@@ -113,7 +113,7 @@ extension AppModelTests {
             if case .listWorkspaceFiles = $0 { return true }
             return false
         })
-        model.handle(.gitDiff(
+        model.gateway.handle(.gitDiff(
             requestID: unstagedRequestID,
             sessionID: "chat-1",
             scope: .unstaged,
@@ -129,7 +129,7 @@ extension AppModelTests {
         }
         guard case let .getGitDiff(stagedRequestID, _, .staged) = try XCTUnwrap(stagedRequest)
         else { return XCTFail("Expected staged Git diff") }
-        model.handle(.gitDiff(
+        model.gateway.handle(.gitDiff(
             requestID: stagedRequestID,
             sessionID: "chat-1",
             scope: .staged,
@@ -148,7 +148,7 @@ extension AppModelTests {
         guard case let .getGitDiff(committedRequestID, _, .committed) =
             try XCTUnwrap(committedRequest)
         else { return XCTFail("Expected committed Git diff") }
-        model.handle(.gitDiff(
+        model.gateway.handle(.gitDiff(
             requestID: committedRequestID,
             sessionID: "chat-1",
             scope: .committed,
@@ -209,7 +209,7 @@ extension AppModelTests {
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         model.showFiles(.allFiles)
         let request = await recorder.firstRequest(after: 0) {
@@ -220,7 +220,7 @@ extension AppModelTests {
         else { return XCTFail("Expected workspace file request") }
         let file = WorkspaceFileRecord(path: "Sources/App.swift", size: 3)
 
-        model.handle(.workspaceFiles(
+        model.gateway.handle(.workspaceFiles(
             requestID: requestID,
             sessionID: "chat-1",
             files: [file],
@@ -270,7 +270,7 @@ extension AppModelTests {
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         model.showsInspector = true
         let contents = "let answer = 42\n"
@@ -295,7 +295,7 @@ extension AppModelTests {
         } onChange: {
             previewFinished.fulfill()
         }
-        model.handle(.workspaceFileChunk(
+        model.gateway.handle(.workspaceFileChunk(
             requestID: readID,
             sessionID: "chat-1",
             path: file.path,
@@ -319,7 +319,7 @@ extension AppModelTests {
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         model.createWorkspaceFile()
 
@@ -341,7 +341,7 @@ extension AppModelTests {
         XCTAssertEqual(content, "TOKEN=secret\n")
         XCTAssertTrue(model.isSavingWorkspaceFile)
 
-        model.handle(.accepted(requestID: requestID))
+        model.gateway.handle(.accepted(requestID: requestID))
 
         XCTAssertFalse(model.isSavingWorkspaceFile)
         XCTAssertNil(model.textFilePreview)
@@ -354,7 +354,7 @@ extension AppModelTests {
 
     func testActiveRunAllowsCreatingWorkspaceFileDraft() throws {
         let model = try model()
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         model.activeTurnID = "turn-1"
 
@@ -366,18 +366,19 @@ extension AppModelTests {
 
     func testUnsavedWorkspaceTextDraftSurvivesTransientConnectionReset() throws {
         let model = try model()
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         model.createWorkspaceFile()
         let draftID = try XCTUnwrap(model.textFilePreview?.id)
         model.updateWorkspaceFileDraft(id: draftID, path: ".env")
         model.updateWorkspaceFileDraft(id: draftID, contents: "TOKEN=unsaved\n")
 
-        model.connectionEnded(
-            generation: model.connectionGeneration,
+        model.gateway.connectionEnded(
+            generation: model.gateway.connectionGeneration,
             message: GatewayWireError.disconnected.localizedDescription
         )
-        _ = model.resetGatewayState(preservingDrafts: true, preservingSession: true)
+        model.gateway.reset(preservingDrafts: true)
+        model.resetGatewayDependentState(preservingDrafts: true, preservingSession: true)
 
         XCTAssertEqual(model.textFilePreview?.id, draftID)
         XCTAssertEqual(model.textFilePreview?.workspacePath, ".env")
@@ -391,7 +392,7 @@ extension AppModelTests {
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         let file = WorkspaceFileRecord(path: "image.bin", size: 3)
 
@@ -409,7 +410,7 @@ extension AppModelTests {
         } onChange: {
             previewFinished.fulfill()
         }
-        model.handle(.workspaceFileChunk(
+        model.gateway.handle(.workspaceFileChunk(
             requestID: requestID,
             sessionID: "chat-1",
             path: file.path,
@@ -449,7 +450,7 @@ extension AppModelTests {
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         let data = Data([0, 1, 2, 3])
         let file = SessionFileReference(
@@ -479,7 +480,7 @@ extension AppModelTests {
         } onChange: {
             shareFinished.fulfill()
         }
-        model.handle(.sessionFileChunk(
+        model.gateway.handle(.sessionFileChunk(
             requestID: requestID,
             sessionID: sessionID,
             fileID: fileID,
@@ -503,7 +504,7 @@ extension AppModelTests {
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         let data = try tinyPNGData()
         let file = SessionFileReference(
@@ -522,7 +523,7 @@ extension AppModelTests {
         else { return XCTFail("Expected first thumbnail read") }
 
         let split = data.count / 2
-        model.handle(.sessionFileChunk(
+        model.gateway.handle(.sessionFileChunk(
             requestID: firstID,
             sessionID: "chat-1",
             fileID: file.id,
@@ -537,7 +538,7 @@ extension AppModelTests {
         guard case .readSessionFile(let secondID, _, _, _, _) = try XCTUnwrap(secondRequest)
         else { return XCTFail("Expected second thumbnail read") }
 
-        model.handle(.sessionFileChunk(
+        model.gateway.handle(.sessionFileChunk(
             requestID: secondID,
             sessionID: "chat-1",
             fileID: file.id,
@@ -560,7 +561,7 @@ extension AppModelTests {
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         model.presentedRoutineRun = RoutineRun(
             id: "run-1",
@@ -590,7 +591,7 @@ extension AppModelTests {
         guard case .readSessionFile(let requestID, _, _, _, _) = try XCTUnwrap(request)
         else { return XCTFail("Expected routine thumbnail read") }
 
-        model.handle(.sessionFileChunk(
+        model.gateway.handle(.sessionFileChunk(
             requestID: requestID,
             sessionID: "routine-session-1",
             fileID: file.id,
@@ -607,7 +608,7 @@ extension AppModelTests {
 
     func testThumbnailQueueKeepsTheOwningSessionForDuplicateFileIDs() throws {
         let model = try model()
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         let file = SessionFileReference(
             id: "shared-id",
             name: "image.png",
@@ -629,7 +630,7 @@ extension AppModelTests {
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         let limit: Int64 = 10 * 1024 * 1024
         let eligible = SessionFileReference(
@@ -671,7 +672,7 @@ extension AppModelTests {
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         let data = Data([1, 2, 3])
         let file = SessionFileReference(
@@ -688,7 +689,7 @@ extension AppModelTests {
         }
         guard case .readSessionFile(let requestID, _, _, _, _) = try XCTUnwrap(request)
         else { return XCTFail("Expected thumbnail read") }
-        model.handle(.sessionFileChunk(
+        model.gateway.handle(.sessionFileChunk(
             requestID: requestID,
             sessionID: "chat-1",
             fileID: file.id,
@@ -711,7 +712,7 @@ extension AppModelTests {
         guard case .readSessionFile(let retryID, _, _, _, _) = try XCTUnwrap(retry)
         else { return XCTFail("Expected thumbnail retry") }
         model.cancelSessionFileThumbnailDownloads()
-        model.handle(.rejected(GatewayRejection(
+        model.gateway.handle(.rejected(GatewayRejection(
             requestId: retryID,
             code: "file_unavailable",
             message: "File unavailable",
@@ -772,9 +773,9 @@ extension AppModelTests {
             settingsDefaults: defaults,
             requestSender: { request in await firstRecorder.record(request) }
         )
-        firstModel.accounts = [account]
-        firstModel.selectedAccountID = account.id
-        firstModel.connectionState = .ready
+        firstModel.gateway.accounts = [account]
+        firstModel.gateway.selectedAccountID = account.id
+        firstModel.gateway.connectionState = .ready
 
         firstModel.requestSessionFileThumbnail(file, sessionID: "chat-1")
         let request = await firstRecorder.firstRequest(after: 0) {
@@ -783,7 +784,7 @@ extension AppModelTests {
         }
         guard case .readSessionFile(let requestID, _, _, _, _) = try XCTUnwrap(request)
         else { return XCTFail("Expected thumbnail read") }
-        firstModel.handle(
+        firstModel.gateway.handle(
             .sessionFileChunk(
                 requestID: requestID,
                 sessionID: "chat-1",
@@ -808,9 +809,9 @@ extension AppModelTests {
             settingsDefaults: defaults,
             requestSender: { request in await secondRecorder.record(request) }
         )
-        secondModel.accounts = [account]
-        secondModel.selectedAccountID = account.id
-        secondModel.connectionState = .ready
+        secondModel.gateway.accounts = [account]
+        secondModel.gateway.selectedAccountID = account.id
+        secondModel.gateway.connectionState = .ready
         secondModel.requestSessionFileThumbnail(file, sessionID: "chat-1")
 
         let restored = await eventually {
@@ -826,7 +827,7 @@ extension AppModelTests {
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         let file = SessionFileReference(
             id: "image-1",
             name: "pixel.png",
@@ -847,7 +848,8 @@ extension AppModelTests {
         let requestCount = await recorder.requestCount()
         XCTAssertEqual(requestCount, 0)
 
-        model.resetGatewayState(preservingDrafts: false)
+        model.gateway.reset(preservingDrafts: false)
+        model.resetGatewayDependentState(preservingDrafts: false)
         XCTAssertNil(model.fileThumbnail(for: file, sessionID: "chat-1"))
     }
 
@@ -856,7 +858,7 @@ extension AppModelTests {
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         let data = Data("<svg/>".utf8)
         let file = SessionFileReference(
@@ -881,7 +883,7 @@ extension AppModelTests {
         } onChange: {
             previewFinished.fulfill()
         }
-        model.handle(.sessionFileChunk(
+        model.gateway.handle(.sessionFileChunk(
             requestID: requestID,
             sessionID: "chat-1",
             fileID: file.id,
@@ -939,7 +941,7 @@ extension AppModelTests {
         else { return XCTFail("Expected second session file read") }
         XCTAssertNotEqual(firstRequestID, secondRequestID)
 
-        model.handle(.sessionFileChunk(
+        model.gateway.handle(.sessionFileChunk(
             requestID: firstRequestID,
             sessionID: "chat-1",
             fileID: firstFile.id,
@@ -956,7 +958,7 @@ extension AppModelTests {
         } onChange: {
             previewFinished.fulfill()
         }
-        model.handle(.sessionFileChunk(
+        model.gateway.handle(.sessionFileChunk(
             requestID: secondRequestID,
             sessionID: "chat-1",
             fileID: secondFile.id,
@@ -1000,7 +1002,7 @@ extension AppModelTests {
         else { return XCTFail("Expected second workspace file read") }
         XCTAssertNotEqual(firstRequestID, secondRequestID)
 
-        model.handle(.workspaceFileChunk(
+        model.gateway.handle(.workspaceFileChunk(
             requestID: firstRequestID,
             sessionID: "chat-1",
             path: firstFile.path,
@@ -1011,7 +1013,7 @@ extension AppModelTests {
         XCTAssertTrue(model.isLoadingFilePresentation)
         XCTAssertNil(model.toast)
 
-        model.handle(.workspaceFileChunk(
+        model.gateway.handle(.workspaceFileChunk(
             requestID: secondRequestID,
             sessionID: "chat-1",
             path: secondFile.path,

@@ -194,16 +194,16 @@ struct SidebarView: View {
                         showsConnectionDetails = true
                     } label: {
                         MobiusStatusIndicator(
-                            color: model.connectionState.tone.color(in: palette),
-                            isLoading: model.connectionState.isLoading
+                            color: model.gateway.connectionState.tone.color(in: palette),
+                            isLoading: model.gateway.connectionState.isLoading
                         )
                         .frame(width: MobiusStyle.iconButtonSize, height: MobiusStyle.iconButtonSize)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.mobiusPlain)
                     .accessibilityLabel("Gateway connection")
-                    .accessibilityValue(Text(model.connectionState.label))
-                    .help(Text("Gateway: \(model.connectionState.label)"))
+                    .accessibilityValue(Text(model.gateway.connectionState.label))
+                    .help(Text("Gateway: \(model.gateway.connectionState.label)"))
                     .popover(isPresented: $showsConnectionDetails) { connectionDetails }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -264,11 +264,11 @@ struct SidebarView: View {
 
     private var connectionDetails: some View {
         VStack(spacing: MobiusSpace.m) {
-            Text(model.connectionState.label)
+            Text(model.gateway.connectionState.label)
                 .font(MobiusStyle.controlFont.weight(.semibold))
-                .foregroundStyle(model.connectionState.tone.color(in: palette))
+                .foregroundStyle(model.gateway.connectionState.tone.color(in: palette))
 
-            if let account = model.selectedAccount {
+            if let account = model.gateway.selectedAccount {
                 Text(account.displayName)
                 Text(account.endpoint.rawValue)
                     .font(MobiusStyle.metadataFont)
@@ -278,7 +278,7 @@ struct SidebarView: View {
                     .foregroundStyle(palette.muted)
             }
 
-            if case .failed(let message) = model.connectionState {
+            if case .failed(let message) = model.gateway.connectionState {
                 Text(message)
                     .font(MobiusStyle.bodyFont)
                     .foregroundStyle(palette.danger)
@@ -286,7 +286,7 @@ struct SidebarView: View {
                     .frame(maxWidth: .infinity, alignment: .center)
             }
 
-            if !model.connectionState.isReady {
+            if !model.gateway.connectionState.isReady {
                 Divider()
                 Button {
                     showsConnectionDetails = false
@@ -294,14 +294,14 @@ struct SidebarView: View {
                 } label: {
                     MobiusLabel(title: "Retry connection", glyph: .arrowClockwise)
                 }
-                .disabled(model.selectedAccount == nil)
+                .disabled(model.gateway.selectedAccount == nil)
                 Button {
                     showsConnectionDetails = false
                     model.repairSelectedGateway()
                 } label: {
                     MobiusLabel(title: "Repair pairing", glyph: .link)
                 }
-                .disabled(model.selectedAccount == nil)
+                .disabled(model.gateway.selectedAccount == nil)
             }
         }
         .multilineTextAlignment(.center)

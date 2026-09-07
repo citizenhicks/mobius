@@ -4,6 +4,221 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testLateGatewayStreamCannotReplaceTheCurrentAccount() async throws {
+        let suiteName = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = GatewayStore(defaults: defaults)
+        let first = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
+        let second = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9192"))
+        try store.save(first, token: "first-token")
+        try store.save(second, token: "second-token")
+        addTeardownBlock {
+            try await store.remove(first)
+            try await store.remove(second)
+        }
+        let gate = AsyncGate()
+        let oldStream = AsyncThrowingStream<GatewayEnvelope, Error>.makeStream()
+        let currentStream = AsyncThrowingStream<GatewayEnvelope, Error>.makeStream()
+        var oldConnectionStarted = false
+        var oldConnectionReturned = false
+        let model = AppModel(
+            store: store,
+            settingsDefaults: defaults,
+            requestSender: { _ in },
+            connectionOpener: { endpoint in
+                if endpoint == first.endpoint {
+                    oldConnectionStarted = true
+                    await gate.wait()
+                    oldConnectionReturned = true
+                    return oldStream.stream
+                }
+                return currentStream.stream
+            }
+        )
+        model.selectAccount(first.id)
+        let started = await eventually { oldConnectionStarted }
+        XCTAssertTrue(started)
+        model.selectAccount(second.id)
+        let config = VersionedAgentConfig(revision: 1, config: composition())
+        currentStream.continuation.yield(.ready(ready(botDefaults: config, sessions: [])))
+        let connected = await eventually { model.gateway.connectionState.isReady }
+        XCTAssertTrue(connected)
+
+        oldStream.continuation.yield(.ready(ready(botDefaults: config, bots: [], sessions: [])))
+        oldStream.continuation.finish(
+            throwing: GatewayWireError.unsupportedVersion(gatewayProtocolVersion + 1)
+        )
+        await gate.open()
+        let returned = await eventually { oldConnectionReturned }
+        XCTAssertTrue(returned)
+        await Task.yield()
+        currentStream.continuation.yield(.ready(ready(
+            botDefaults: config,
+            bots: [bot(id: "current-bot")],
+            sessions: []
+        )))
+        let stillConnected = await eventually { model.bots.first?.id == "current-bot" }
+        XCTAssertTrue(stillConnected)
+        XCTAssertEqual(model.gateway.selectedAccountID, second.id)
+        XCTAssertTrue(model.gateway.connectionState.isReady)
+        XCTAssertFalse(model.showsAppUpdateAlert)
+        await model.gateway.shutdown().value
+    }
+
+    func testSelectingExpiredCloudKeepsTheCurrentSelfHostedGateway() throws {
+        let model = try model()
+        let userID = UUID()
+        let selfHosted = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
+        let cloud = GatewayAccount(
+            endpoint: try GatewayEndpoint("wss://cloud.sprites.app"),
+            cloudUserID: userID
+        )
+        model.gateway.accounts = [selfHosted, cloud]
+        model.gateway.selectedAccountID = selfHosted.id
+        model.gateway.connectionState = .ready
+        model.cloudSession = MobiusCloudSession(userID: userID, expiresAt: .distantFuture)
+        model.cloudIssue = .subscriptionExpired
+
+        model.selectAccount(cloud.id)
+
+        XCTAssertEqual(model.gateway.selectedAccountID, selfHosted.id)
+        XCTAssertTrue(model.gateway.connectionState.isReady)
+        XCTAssertEqual(model.toast?.tone, .warning)
+
+        model.notificationsEnabled = true
+        model.openRemoteNotification(.session(
+            eventID: "cloud-completed",
+            kind: .completed,
+            sessionID: "cloud-chat",
+            runCount: 1,
+            approvalRequestID: nil
+        ))
+
+        XCTAssertEqual(model.gateway.selectedAccountID, selfHosted.id)
+        XCTAssertTrue(model.gateway.connectionState.isReady)
+        XCTAssertNotNil(model.pendingRemoteNotification)
+    }
+
+    func testMissingGatewayTokenOpensPairingRepair() async throws {
+        let model = try model()
+        let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
+        model.gateway.accounts = [account]
+        model.showsPairing = false
+
+        model.selectAccount(account.id)
+
+        let repairing = await eventually { model.showsPairing }
+        XCTAssertTrue(repairing)
+        XCTAssertEqual(model.gateway.pairingEndpoint, account.endpoint.rawValue)
+        XCTAssertTrue(model.gateway.pairingCode.isEmpty)
+        XCTAssertNotNil(model.gateway.pairingError)
+        XCTAssertTrue(model.gateway.automaticReconnectBlocked)
+        await model.gateway.shutdown().value
+    }
+
+    func testBackgroundPreservesPairingUntilItsCloudContinuationCompletes() async throws {
+        let suiteName = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = GatewayStore(defaults: defaults)
+        let model = AppModel(
+            store: store,
+            settingsDefaults: defaults,
+            requestSender: { _ in },
+            connectionOpener: { _ in AsyncThrowingStream { _ in } }
+        )
+        model.applyPairingSetup(try GatewayPairingSetup(
+            endpoint: "tcp://localhost:9191", code: "pairing-code"
+        ))
+        model.pair()
+
+        try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<Void, Error>) in
+            model.cloudPairingContinuation = continuation
+            model.appDidEnterBackground()
+            XCTAssertTrue(model.gateway.hasPendingPairing)
+            model.gateway.handle(.paired(clientID: "cloud-client", token: "gateway-token"))
+            if model.cloudPairingContinuation != nil {
+                model.completeCloudPairing(.failure(CancellationError()))
+            }
+        }
+
+        XCTAssertNil(model.cloudPairingContinuation)
+        XCTAssertFalse(model.gateway.hasPendingPairing)
+        await model.gateway.shutdown().value
+        for account in model.gateway.accounts { try await store.remove(account) }
+    }
+
+    func testSwitchingGatewaysRestoresTheNewAccountsReadCursors() async throws {
+        let suiteName = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = GatewayStore(defaults: defaults)
+        let first = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
+        let second = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9192"))
+        try store.save(first, token: "first-token")
+        try store.save(second, token: "second-token")
+        addTeardownBlock {
+            try await store.remove(first)
+            try await store.remove(second)
+        }
+        let firstCursors = ["chat-1": SessionReadCursor(sequence: 7, wasActive: false)]
+        let secondCursors = ["chat-1": SessionReadCursor(sequence: 42, wasActive: true)]
+        store.saveSessionReadCursors(firstCursors, accountID: first.id)
+        store.saveSessionReadCursors(secondCursors, accountID: second.id)
+        store.select(first)
+        let model = AppModel(
+            store: store,
+            settingsDefaults: defaults,
+            requestSender: { _ in },
+            connectionOpener: { _ in AsyncThrowingStream { _ in } }
+        )
+        XCTAssertEqual(model.sessionReadCursors, firstCursors)
+
+        model.selectAccount(second.id)
+
+        XCTAssertEqual(model.gateway.selectedAccountID, second.id)
+        XCTAssertEqual(model.sessionReadCursors, secondCursors)
+        await model.gateway.shutdown().value
+    }
+
+    func testBackgroundShutdownCannotRetireAReplacementConnection() async throws {
+        let suiteName = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = GatewayStore(defaults: defaults)
+        let first = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
+        let second = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9192"))
+        try store.save(first, token: "first-token")
+        try store.save(second, token: "second-token")
+        addTeardownBlock {
+            try await store.remove(first)
+            try await store.remove(second)
+        }
+        store.select(first)
+        let payload = ready(botDefaults: VersionedAgentConfig(revision: 1, config: composition()))
+        let model = AppModel(
+            store: store,
+            settingsDefaults: defaults,
+            requestSender: { _ in },
+            connectionOpener: { _ in
+                AsyncThrowingStream { $0.yield(.ready(payload)) }
+            }
+        )
+        model.gateway.connectionState = .ready
+        model.appIsInBackground = false
+
+        model.appDidEnterBackground()
+        model.setSceneActive(true)
+        model.selectAccount(second.id)
+
+        let reconnected = await eventually { model.gateway.connectionState.isReady }
+        XCTAssertTrue(reconnected)
+        XCTAssertEqual(model.gateway.selectedAccountID, second.id)
+        await model.gateway.shutdown().value
+    }
+
     func testRemovingGatewayDrainsPendingTranscriptWritesBeforeDeletingCache() async throws {
         let suiteName = UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -31,10 +246,10 @@ extension AppModelTests {
         )
         let gate = AsyncGate()
         let model = AppModel(client: GatewayClient(), store: store)
-        model.accounts = [account]
-        model.selectedAccountID = account.id
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
         model.selectedSessionID = "chat-1"
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.transcriptIOTask = Task {
             await gate.wait()
             await store.saveTranscript(
@@ -55,7 +270,7 @@ extension AppModelTests {
 
         let removal = Task { @MainActor in await model.removeGateway(account) }
         let quiesced = await eventually {
-            model.accounts.isEmpty && model.selectedAccountID == nil
+            model.gateway.accounts.isEmpty && model.gateway.selectedAccountID == nil
         }
         XCTAssertTrue(quiesced)
         await gate.open()
@@ -149,7 +364,7 @@ extension AppModelTests {
         XCTAssertEqual(model.selectedSessionID, "chat-1")
         XCTAssertEqual(model.navigationPath, [.chat(.session("chat-1"))])
         XCTAssertEqual(model.displayedTranscript.map(\.text), ["Restored before the network"])
-        XCTAssertFalse(model.connectionState.isReady)
+        XCTAssertFalse(model.gateway.connectionState.isReady)
     }
 
     func testConcurrentStartsOpenOnlyOneConnection() async throws {
@@ -171,8 +386,8 @@ extension AppModelTests {
                 return AsyncThrowingStream { _ in }
             }
         )
-        model.accounts = [account]
-        model.selectedAccountID = account.id
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
         model.appIsInBackground = false
 
         async let firstStart = model.start()
@@ -224,7 +439,7 @@ extension AppModelTests {
 
         await model.start()
 
-        let becameReady = await eventually { model.connectionState.isReady }
+        let becameReady = await eventually { model.gateway.connectionState.isReady }
         XCTAssertTrue(becameReady)
         XCTAssertEqual(attempts, 3)
     }
@@ -237,9 +452,9 @@ extension AppModelTests {
             cloudUserID: userID
         )
         let selfHosted = GatewayAccount(endpoint: try GatewayEndpoint("wss://gateway.example"))
-        model.accounts = [cloud, selfHosted]
+        model.gateway.accounts = [cloud, selfHosted]
         model.cloudSession = MobiusCloudSession(userID: userID, expiresAt: .distantFuture)
-        model.selectedAccountID = selfHosted.id
+        model.gateway.selectedAccountID = selfHosted.id
 
         XCTAssertEqual(model.mobiusCloudGateway?.id, cloud.id)
         XCTAssertFalse(model.selectedGatewayIsMobiusCloud)
@@ -251,7 +466,7 @@ extension AppModelTests {
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         model.contributions = [fileAttachmentContribution()]
         model.activeTurnID = "turn-1"
@@ -290,8 +505,8 @@ extension AppModelTests {
         store.select(first)
 
         let model = AppModel(client: GatewayClient(), store: store)
-        model.accounts = [first, second]
-        model.connectionState = .ready
+        model.gateway.accounts = [first, second]
+        model.gateway.connectionState = .ready
         model.composer = "Gateway A draft"
         model.providerAPIKey = "gateway-a-secret"
         model.providerActionState = .credentialSaved("Gateway A")
@@ -311,8 +526,8 @@ extension AppModelTests {
 
         model.selectAccount(second.id)
 
-        XCTAssertEqual(model.selectedAccountID, second.id)
-        XCTAssertEqual(model.connectionState, .connecting)
+        XCTAssertEqual(model.gateway.selectedAccountID, second.id)
+        XCTAssertEqual(model.gateway.connectionState, .connecting)
         XCTAssertEqual(model.composer, "")
         XCTAssertEqual(model.providerAPIKey, "")
         XCTAssertEqual(model.providerActionState, .idle)
@@ -325,7 +540,7 @@ extension AppModelTests {
 
     func testConnectionEndCancelsExtensionAndCredentialRequests() throws {
         let model = try model()
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.extensionAction = .installing
         model.extensionRequestID = "extension-request"
         model.gitCredentialRequestID = "git-request"
@@ -335,8 +550,8 @@ extension AppModelTests {
         model.isLoadingSshIdentities = true
         model.isGeneratingSshIdentity = true
 
-        model.connectionEnded(
-            generation: model.connectionGeneration,
+        model.gateway.connectionEnded(
+            generation: model.gateway.connectionGeneration,
             message: "Gateway disconnected."
         )
 
@@ -353,26 +568,44 @@ extension AppModelTests {
     func testNewerGatewayPromptsForAppUpdateAndStopsReconnects() throws {
         let model = try model()
 
-        model.connectionEnded(
-            generation: model.connectionGeneration,
+        model.gateway.connectionEnded(
+            generation: model.gateway.connectionGeneration,
             error: GatewayWireError.unsupportedVersion(gatewayProtocolVersion + 1)
         )
 
         XCTAssertTrue(model.showsAppUpdateAlert)
-        XCTAssertTrue(model.automaticReconnectBlocked)
-        XCTAssertNil(model.reconnectTask)
+        XCTAssertTrue(model.gateway.automaticReconnectBlocked)
+        XCTAssertFalse(model.gateway.reconnectsOnActivation)
+
+        let translations: [(AppLanguage, String, String, String)] = [
+            (.french, "Ouvrir l’App Store", "Mettez l’app à jour",
+             "La page de mise à jour de l’App Store est indisponible."),
+            (.german, "App Store öffnen", "Aktualisieren Sie die App",
+             "Die Update-Seite im App Store ist nicht verfügbar.")
+        ]
+        for (language, button, messagePrefix, unavailable) in translations {
+            model.language = language
+            XCTAssertEqual(model.localizedString("Open App Store"), button)
+            XCTAssertTrue(model.localizedString(
+                "Update the app to connect to this gateway. Install the latest version from the App Store, then reopen the app."
+            ).hasPrefix(messagePrefix))
+            XCTAssertEqual(
+                model.localizedString("The App Store update page is unavailable."),
+                unavailable
+            )
+        }
     }
 
     func testStaleProtocolErrorCannotBlockTheCurrentConnection() throws {
         let model = try model()
 
-        model.connectionEnded(
+        model.gateway.connectionEnded(
             generation: UUID(),
             error: GatewayWireError.unsupportedVersion(gatewayProtocolVersion + 1)
         )
 
         XCTAssertFalse(model.showsAppUpdateAlert)
-        XCTAssertFalse(model.automaticReconnectBlocked)
+        XCTAssertFalse(model.gateway.automaticReconnectBlocked)
     }
 
     func testRenamingGatewayPersistsItsFriendlyName() throws {
@@ -390,7 +623,7 @@ extension AppModelTests {
 
         model.renameGateway(account, to: "Home gateway")
 
-        XCTAssertEqual(model.selectedAccount?.displayName, "Home gateway")
+        XCTAssertEqual(model.gateway.selectedAccount?.displayName, "Home gateway")
         XCTAssertEqual(store.loadAccounts().first?.displayName, "Home gateway")
     }
 
@@ -408,27 +641,27 @@ extension AppModelTests {
             botDefaults: VersionedAgentConfig(revision: 1, config: composition())
         ))
 
-        XCTAssertEqual(model.selectedAccount?.machineName, "snowwhite.local")
+        XCTAssertEqual(model.gateway.selectedAccount?.machineName, "snowwhite.local")
         XCTAssertEqual(store.loadAccounts().first?.machineName, "snowwhite.local")
     }
 
     func testReactivationReplacesAStaleConnectionAndPreservesThePresentedChat() throws {
         let model = try model()
         let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
-        model.accounts = [account]
-        model.selectedAccountID = account.id
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
         model.selectedSessionID = "chat-1"
         model.destination = .chats
         model.navigationPath = [.chat(.session("chat-1"))]
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
 
         model.setSceneActive(true)
-        XCTAssertEqual(model.connectionState, .ready)
+        XCTAssertEqual(model.gateway.connectionState, .ready)
 
         model.setSceneActive(false)
         model.setSceneActive(true)
 
-        XCTAssertEqual(model.connectionState, .connecting)
+        XCTAssertEqual(model.gateway.connectionState, .connecting)
         XCTAssertEqual(model.selectedSessionID, "chat-1")
         XCTAssertEqual(model.navigationPath, [.chat(.session("chat-1"))])
     }
@@ -436,12 +669,12 @@ extension AppModelTests {
     func testReactivationFromChatCatalogFindsUnreadTerminalWork() throws {
         let model = try model()
         let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
-        model.accounts = [account]
-        model.selectedAccountID = account.id
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
         model.selectedSessionID = "chat-1"
         model.destination = .chats
         model.navigationPath = []
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.applySessions([session(
             state: .running,
             turnID: "turn-1",
@@ -452,7 +685,7 @@ extension AppModelTests {
         model.setSceneActive(false)
         model.setSceneActive(true)
 
-        XCTAssertEqual(model.connectionState, .connecting)
+        XCTAssertEqual(model.gateway.connectionState, .connecting)
         XCTAssertNil(model.selectedSessionID)
         XCTAssertTrue(model.navigationPath.isEmpty)
 
@@ -513,7 +746,7 @@ extension AppModelTests {
         await harness.yield(.ready(ready(
             botDefaults: VersionedAgentConfig(revision: 1, config: composition())
         )))
-        let gatewayReady = await eventually { model.connectionState.isReady }
+        let gatewayReady = await eventually { model.gateway.connectionState.isReady }
         XCTAssertTrue(gatewayReady)
         let openRequestCount = await recorder.requestCount()
         model.openChat("chat-1")
@@ -581,13 +814,13 @@ extension AppModelTests {
 
     func testGatewaySendFailureEndsTheStaleConnection() async throws {
         let model = try model { _ in throw POSIXError(.ENOTCONN) }
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.extensionInstallSource = "https://github.com/DietrichGebert/ponytail.git"
 
         model.installExtension()
 
         let disconnected = await eventually {
-            model.connectionState == .failed("The gateway disconnected.")
+            model.gateway.connectionState == .failed("The gateway disconnected.")
         }
         XCTAssertTrue(disconnected)
         XCTAssertNil(model.extensionAction)
@@ -600,7 +833,7 @@ extension AppModelTests {
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
 
         model.listSshIdentities()
         let recordedList = await recorder.firstRequest(after: 0) { request in
@@ -611,7 +844,7 @@ extension AppModelTests {
         guard case .listSshIdentities(let listID) = list else {
             return XCTFail("Expected SSH identity list request")
         }
-        model.handle(.sshIdentities(requestID: listID, identities: []))
+        model.gateway.handle(.sshIdentities(requestID: listID, identities: []))
 
         let requestCount = await recorder.requestCount()
         model.generateSshIdentity()
@@ -628,7 +861,7 @@ extension AppModelTests {
             algorithm: "ssh-ed25519",
             fingerprint: "SHA256:safe"
         )
-        model.handle(.sshIdentityGenerated(
+        model.gateway.handle(.sshIdentityGenerated(
             requestID: generateID,
             identity: identity,
             publicKey: "ssh-ed25519 AAAA mobius"
@@ -649,33 +882,32 @@ extension AppModelTests {
         let account = GatewayAccount(
             endpoint: try GatewayEndpoint("wss://test.sprites.app"), cloudUserID: userID
         )
-        model.accounts = [account]
-        model.selectedAccountID = account.id
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
         model.cloudSession = MobiusCloudSession(userID: userID, expiresAt: .distantFuture)
         model.selectedSessionID = "chat-1"
         model.navigationPath = [.chat(.session("chat-1"))]
         model.composer = "Keep my draft"
-        model.connectionState = .ready
-        let suspendedGeneration = model.connectionGeneration
+        model.gateway.connectionState = .ready
+        let suspendedGeneration = model.gateway.connectionGeneration
 
         model.appDidEnterBackground()
-        XCTAssertNotEqual(model.connectionGeneration, suspendedGeneration)
-        XCTAssertEqual(model.connectionState, .disconnected)
-        XCTAssertNil(model.eventTask)
+        XCTAssertNotEqual(model.gateway.connectionGeneration, suspendedGeneration)
+        XCTAssertEqual(model.gateway.connectionState, .disconnected)
         model.setSceneActive(true)
-        model.connectionEnded(
+        model.gateway.connectionEnded(
             generation: suspendedGeneration,
             error: NSError(domain: NSPOSIXErrorDomain, code: Int(ECONNABORTED))
         )
         XCTAssertNil(model.toast)
-        XCTAssertEqual(model.connectionState, .disconnected)
+        XCTAssertEqual(model.gateway.connectionState, .disconnected)
         XCTAssertEqual(model.composer, "Keep my draft")
         XCTAssertEqual(model.navigationPath, [.chat(.session("chat-1"))])
-        XCTAssertTrue(model.reconnectsOnActivation)
+        XCTAssertTrue(model.gateway.reconnectsOnActivation)
 
         // A failure on the replacement transport remains visible.
-        model.connectionEnded(generation: model.connectionGeneration, message: "Current transport failed")
-        XCTAssertEqual(model.connectionState, .failed("Current transport failed"))
+        model.gateway.connectionEnded(generation: model.gateway.connectionGeneration, message: "Current transport failed")
+        XCTAssertEqual(model.gateway.connectionState, .failed("Current transport failed"))
         XCTAssertNotNil(model.toast)
     }
 }
@@ -687,10 +919,10 @@ extension AppModelTests {
         let model = try model { await recorder.record($0) }
         model.selectedSessionID = "chat-1"
         model.sessionToRestoreID = "chat-1"
-        model.connectionState = .connecting
+        model.gateway.connectionState = .connecting
         model.destination = .providers
         model.navigationPath = [.settings(.provider("my-provider"))]
-        model.handle(.ready(ready(
+        model.gateway.handle(.ready(ready(
             botDefaults: VersionedAgentConfig(revision: 1, config: composition())
         )))
         XCTAssertEqual(model.destination, .providers)

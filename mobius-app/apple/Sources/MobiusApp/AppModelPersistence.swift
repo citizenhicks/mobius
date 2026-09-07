@@ -139,7 +139,7 @@ extension AppModel {
     }
 
     func persistFileThumbnail(_ thumbnail: CGImage, sessionID: String, fileID: String) {
-        guard !isClearingLocalData, let accountID = selectedAccountID else { return }
+        guard !isClearingLocalData, let accountID = gateway.selectedAccountID else { return }
         enqueueTranscriptIO { [store] in
             guard let data = await Self.encodedFileThumbnail(thumbnail) else { return }
             await store.saveThumbnail(
@@ -183,7 +183,7 @@ extension AppModel {
             size: file.size
         )
         guard requestedSessionFileThumbnailKeys.insert(key).inserted else { return }
-        guard let accountID = selectedAccountID else {
+        guard let accountID = gateway.selectedAccountID else {
             if canDownloadSource {
                 queueSessionFileThumbnail(file, sessionID: sessionID, key: key)
             } else {
@@ -204,7 +204,7 @@ extension AppModel {
                     nil
                 }
             guard let self,
-                  self.selectedAccountID == accountID,
+                  self.gateway.selectedAccountID == accountID,
                   self.requestedSessionFileThumbnailKeys.contains(key)
             else { return }
             if let thumbnail {
@@ -240,7 +240,7 @@ extension AppModel {
     }
 
     func startNextSessionFileThumbnailDownload() {
-        guard connectionState.isReady,
+        guard gateway.connectionState.isReady,
               sessionFileThumbnailDownload == nil
         else { return }
 
@@ -258,7 +258,7 @@ extension AppModel {
                 data: Data(),
                 requestID: id
             )
-            transmit(.readSessionFile(
+            gateway.transmit(.readSessionFile(
                 requestID: id,
                 sessionID: sessionID,
                 fileID: file.id,
@@ -313,7 +313,7 @@ extension AppModel {
     }
 
     func startNextSessionFileUpload() {
-        guard connectionState.isReady,
+        guard gateway.connectionState.isReady,
               activeSessionFileUpload == nil,
               sessionFileUploadRequests.isEmpty,
               abandonedSessionFileUploadRequests.isEmpty,
@@ -329,7 +329,7 @@ extension AppModel {
         composerAttachments[index].state = .uploading(0)
         let id = requestID("session-file-begin")
         sessionFileUploadRequests[id] = .begin(localID: item.id, sessionID: sessionID)
-        transmit(.beginSessionFileUpload(
+        gateway.transmit(.beginSessionFileUpload(
             requestID: id,
             sessionID: sessionID,
             name: item.name,
@@ -417,7 +417,7 @@ extension AppModel {
         guard start < data.count else {
             let id = requestID("session-file-finish")
             sessionFileUploadRequests[id] = .finish(localID: localID)
-            transmit(.finishSessionFileUpload(
+            gateway.transmit(.finishSessionFileUpload(
                 requestID: id,
                 sessionID: upload.sessionID,
                 uploadID: upload.uploadID
@@ -433,7 +433,7 @@ extension AppModel {
             localID: localID,
             expectedNextOffset: Int64(end)
         )
-        transmit(.uploadSessionFileChunk(
+        gateway.transmit(.uploadSessionFileChunk(
             requestID: id,
             sessionID: upload.sessionID,
             uploadID: upload.uploadID,
@@ -559,7 +559,7 @@ extension AppModel {
         sessionFileDeleteRequests[id] = removed
         sessionFiles.removeAll { $0.id == fileID }
         removeFileThumbnail(for: .session(sessionID: removed.sessionID, fileID: fileID))
-        transmit(.deleteSessionFile(
+        gateway.transmit(.deleteSessionFile(
             requestID: id,
             sessionID: removed.sessionID,
             fileID: fileID
@@ -661,7 +661,7 @@ extension AppModel {
             let id = self.requestID("session-file-read")
             download.requestID = id
             sessionFileDownload = download
-            transmit(.readSessionFile(
+            gateway.transmit(.readSessionFile(
                 requestID: id,
                 sessionID: sessionID,
                 fileID: fileID,
@@ -721,7 +721,7 @@ extension AppModel {
             let id = self.requestID("session-file-thumbnail")
             download.requestID = id
             sessionFileThumbnailDownload = download
-            transmit(.readSessionFile(
+            gateway.transmit(.readSessionFile(
                 requestID: id,
                 sessionID: sessionID,
                 fileID: fileID,
@@ -792,7 +792,7 @@ extension AppModel {
             let id = self.requestID("workspace-file-read")
             download.requestID = id
             workspaceFilePreviewDownload = download
-            transmit(.readWorkspaceFile(
+            gateway.transmit(.readWorkspaceFile(
                 requestID: id,
                 sessionID: sessionID,
                 path: path,
@@ -944,7 +944,7 @@ extension AppModel {
     }
 
     func cacheChatCatalog(lastSessionID: String? = nil) {
-        guard !isClearingLocalData, let accountID = selectedAccountID else { return }
+        guard !isClearingLocalData, let accountID = gateway.selectedAccountID else { return }
         let catalog = CachedChatCatalog(
             bots: bots,
             sessions: sessions,

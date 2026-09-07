@@ -3,7 +3,7 @@ import Foundation
 extension AppModel {
     /// One extension mutation is in flight at a time, and all of them need the gateway.
     var canMutateExtensions: Bool {
-        extensionAction == nil && connectionState.isReady
+        extensionAction == nil && gateway.connectionState.isReady
     }
 
     func installExtension() {
@@ -121,11 +121,11 @@ extension AppModel {
         _ action: ExtensionAction,
         request: (String) -> GatewayRequest
     ) {
-        guard extensionRequestID == nil, connectionState.isReady else { return }
+        guard extensionRequestID == nil, gateway.connectionState.isReady else { return }
         let id = requestID("extension")
         extensionRequestID = id
         extensionAction = action
-        transmit(request(id)) { [weak self] _ in
+        gateway.transmit(request(id)) { [weak self] _ in
             self?.rejectExtensionAction(requestID: id)
         }
     }

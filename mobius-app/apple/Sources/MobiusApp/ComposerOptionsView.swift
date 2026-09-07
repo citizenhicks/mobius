@@ -500,7 +500,7 @@ struct ComposerOptionsView: View {
     }
 
     private var canSend: Bool {
-        guard model.connectionState.isReady,
+        guard model.gateway.connectionState.isReady,
               model.canSendComposer,
               model.activeTurnID == nil || model.composerAttachments.isEmpty
         else { return false }
@@ -508,7 +508,7 @@ struct ComposerOptionsView: View {
     }
 
     private var isWaitingForGateway: Bool {
-        switch model.connectionState {
+        switch model.gateway.connectionState {
         case .connecting, .authenticating, .loading: true
         case .disconnected, .ready, .failed: false
         }
@@ -518,7 +518,7 @@ struct ComposerOptionsView: View {
         guard !model.selectedRouteSupportsRealtimeVoice, model.realtimeVoiceCall == nil else { return false }
         return dictation.isRecording
             || dictation.canToggle
-                && model.connectionState.isReady
+                && model.gateway.connectionState.isReady
                 && model.selectedSessionID != nil
     }
 

@@ -716,7 +716,7 @@ extension AppModelTests {
             await recorder.record(request)
         })
         model.selectedSessionID = "chat-1"
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         let requestCount = await recorder.requestCount()
         model.submitPickerOption(try FrontendPickerOption(json: .object([
             "label": .string("reviewer"),
@@ -795,7 +795,7 @@ extension AppModelTests {
             await recorder.record(request)
         })
         model.selectedSessionID = "chat-1"
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         let next = AgentOperation.capabilityCommand(
             capability: "subagents",
             command: "subagents",
@@ -881,7 +881,7 @@ extension AppModelTests {
             await recorder.record(request)
         })
         model.selectedSessionID = "chat-1"
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         let next = AgentOperation.capabilityCommand(
             capability: "subagents",
             command: "subagents",
@@ -1003,7 +1003,7 @@ extension AppModelTests {
             await recorder.record(request)
         })
         model.selectedSessionID = "chat-1"
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         let operation = AgentOperation.capabilityCommand(
             capability: "subagents",
             command: "subagents",
@@ -1021,7 +1021,7 @@ extension AppModelTests {
             return XCTFail("Expected preview page submission")
         }
 
-        model.handle(.rejected(GatewayRejection(
+        model.gateway.handle(.rejected(GatewayRejection(
             requestId: submission.id,
             code: "invalid_request",
             message: "Page unavailable",
@@ -1072,7 +1072,7 @@ extension AppModelTests {
             if case .submit = request { operationSent.fulfill() }
         })
         model.selectedSessionID = "chat-1"
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
 
         model.submitFrontendOperation(.capabilityCommand(
             capability: "notes",
@@ -1107,7 +1107,7 @@ extension AppModelTests {
             await recorder.record(request)
         })
         model.selectedSessionID = "chat-1"
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         let patch = """
         --- note.txt
         +++ note.txt
@@ -1156,7 +1156,7 @@ extension AppModelTests {
         model.bots = [helper]
         model.sessions = [original]
 
-        model.handle(.sessions(
+        model.gateway.handle(.sessions(
             requestID: nil,
             sessions: [session(state: .running, botID: "missing-bot")]
         ))

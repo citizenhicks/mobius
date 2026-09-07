@@ -83,7 +83,7 @@ extension AppModelTests {
         )
         model.bots = [try JSONDecoder().decode(Mobius.BotRecord.self, from: JSONEncoder().encode(bot(tint: .orange)))]
         model.pendingNewChatBotID = "bot-1"
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.composer = "Preserve this draft"
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
         let previous = scene.keyWindow

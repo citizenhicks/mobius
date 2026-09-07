@@ -4,9 +4,13 @@ import Observation
 extension AppModel {
     func start() async {
         guard !Task.isCancelled else { return }
-        guard let account = selectedAccount else {
+        gateway.setAppInBackground(appIsInBackground)
+        guard let account = gateway.selectedAccount else {
             #if DEBUG
-            if !pairingCode.isEmpty, !pairingEndpoint.isEmpty { pair(); return }
+            if !gateway.pairingCode.isEmpty, !gateway.pairingEndpoint.isEmpty {
+                pair()
+                return
+            }
             #endif
             showsPairing = true
             return
@@ -14,11 +18,11 @@ extension AppModel {
         guard startedAccountID != account.id else { return }
         if let startupTask {
             await startupTask.value
-            guard !Task.isCancelled, selectedAccountID == account.id else { return }
+            guard !Task.isCancelled, gateway.selectedAccountID == account.id else { return }
             if startedAccountID == account.id { return }
         }
-        guard !Task.isCancelled, selectedAccountID == account.id else { return }
-        let generation = connectionGeneration
+        guard !Task.isCancelled, gateway.selectedAccountID == account.id else { return }
+        let generation = gateway.connectionGeneration
         let taskID = UUID()
         let task = Task<Void, Never> { [weak self] in
             guard let self else { return }
@@ -42,8 +46,8 @@ extension AppModel {
                 nil
             }
         guard !Task.isCancelled,
-              selectedAccountID == account.id,
-              connectionGeneration == generation
+              gateway.selectedAccountID == account.id,
+              gateway.connectionGeneration == generation
         else { return }
         if let catalog {
             applyBots(catalog.bots)
@@ -59,7 +63,6 @@ extension AppModel {
         }
         startedAccountID = account.id
         guard !appIsInBackground else { return }
-        reconnectsOnActivation = false
         connect(to: account)
     }
 
@@ -72,71 +75,31 @@ extension AppModel {
     }
 
     private func prefillPairing(_ parse: () throws -> GatewayPairingSetup) {
-        cancelReconnect()
+        gateway.cancelReconnect()
         showsPairing = true
         do {
             let setup = try parse()
-            pairingEndpoint = setup.endpoint.rawValue
-            pairingCode = setup.code
-            pairingError = nil
+            gateway.applyPairingSetup(setup)
         } catch {
-            pairingError = localizedErrorDescription(error)
+            gateway.pairingError = localizedErrorDescription(error)
         }
     }
 
     func pair() {
-        cancelReconnect()
-        automaticReconnectBlocked = false
-        pairingError = nil
-        do {
-            let code = pairingCode.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !code.isEmpty else {
-                let message = localizedString("Enter the one-time code shown by the gateway.")
-                pairingError = message
-                showToast(verbatim: message, tone: .error)
-                return
-            }
-            let setup = try GatewayPairingSetup(endpoint: pairingEndpoint, code: code)
-            let endpoint = setup.endpoint
-            let endpointName = endpoint.displayName(locale: language.locale)
-            let account = accounts.first(where: { $0.endpoint == endpoint })
-                ?? GatewayAccount(
-                    endpoint: endpoint,
-                    displayName: endpointName,
-                    machineName: endpointName
-                )
-            let sameGateway = account.id == selectedAccountID
-            let sessionID = sameGateway ? presentedChatSessionID : nil
-            let generation = resetGatewayState(
-                preservingDrafts: sameGateway,
-                preservingSession: sessionID != nil
-            )
-            sessionToRestoreID = sessionID
-            pendingPairingAccount = account
-            beginConnection(to: endpoint, generation: generation) { [weak self] in
-                guard let self, self.connectionGeneration == generation else { return }
-                try await self.requestSender(.pair(
-                    code: setup.code,
-                    clientLabel: "möbius Apple",
-                    clientKind: .currentApplePlatform
-                ))
-            }
-        } catch {
-            pairingError = localizedErrorDescription(error)
-            showToast(verbatim: localizedErrorDescription(error), tone: .error)
+        gateway.pair()
+        if let message = gateway.pairingError {
+            showToast(verbatim: message, tone: .error)
         }
     }
 
     func selectAccount(_ id: UUID?) {
-        guard let id, let account = accounts.first(where: { $0.id == id }) else { return }
+        guard let id, let account = gateway.accounts.first(where: { $0.id == id }) else { return }
         connect(to: account)
     }
 
     func renameGateway(_ account: GatewayAccount, to name: String) {
         do {
-            let renamed = try store.rename(account, to: name)
-            guard let index = accounts.firstIndex(where: { $0.id == renamed.id }) else { return }
-            accounts[index] = renamed
+            try gateway.rename(account, to: name)
             showToast("Gateway renamed.", tone: .success)
         } catch {
             showToast(verbatim: localizedErrorDescription(error), tone: .error)
@@ -144,30 +107,35 @@ extension AppModel {
     }
 
     func reconnect() {
-        guard let account = selectedAccount else { return }
+        guard let account = gateway.selectedAccount else { return }
         connect(to: account)
     }
 
-    func setSceneActive(_ active: Bool) {
-        guard active else {
-            cancelReconnect()
-            reconnectsOnActivation = true
+    func connect(to account: GatewayAccount) {
+        let isCloud = account.id == mobiusCloudGateway?.id
+        if isCloud, cloudIssue == .subscriptionExpired {
+            handleCloudSubscriptionExpired()
+            showToast(
+                verbatim: localizedString(
+                    MobiusCloudError.subscriptionRequired.localizedDescriptionResource
+                ),
+                tone: .warning
+            )
             return
         }
-        guard reconnectsOnActivation, pendingPairingAccount == nil else { return }
-        if selectedGatewayIsMobiusCloud { return }
-        reconnectsOnActivation = false
-        reconnect()
+        gateway.connect(to: account, reconnectsUntilReady: isCloud)
+    }
+
+    func setSceneActive(_ active: Bool) {
+        gateway.setSceneActive(active, reconnectWhenActive: !selectedGatewayIsMobiusCloud)
     }
 
     func repairSelectedGateway() {
-        guard let account = selectedAccount else {
+        guard gateway.selectedAccount != nil else {
             showsPairing = true
             return
         }
-        pairingEndpoint = account.endpoint.rawValue
-        pairingCode = ""
-        pairingError = localizedString("Enter a new one-time code to repair this pairing.")
+        gateway.repairSelectedGateway()
         showsPairing = true
     }
 
@@ -219,14 +187,14 @@ extension AppModel {
         sessionRequestID = id
         workspaceError = nil
         isChangingWorkspace = true
-        connectionState = .loading
-        transmit(.createSession(requestID: id, workspace: path, botID: botID)) {
+        gateway.connectionState = .loading
+        gateway.transmit(.createSession(requestID: id, workspace: path, botID: botID)) {
             [weak self] message in
             guard let self, self.sessionRequestID == id else { return }
             self.restoreDraft(id: id)
             self.sessionRequestID = nil
             self.isChangingWorkspace = false
-            self.connectionState = .ready
+            self.gateway.connectionState = .ready
             self.workspaceError = message
             self.cancelVoiceChatIntent()
         }
@@ -244,7 +212,7 @@ extension AppModel {
         directoryRequestID = id
         directoryError = nil
         isLoadingDirectories = true
-        transmit(.listDirectories(requestID: id, path: path, includeFiles: false)) { [weak self] message in
+        gateway.transmit(.listDirectories(requestID: id, path: path, includeFiles: false)) { [weak self] message in
             guard self?.directoryRequestID == id else { return }
             self?.directoryRequestID = nil
             self?.isLoadingDirectories = false
@@ -267,7 +235,7 @@ extension AppModel {
         directoryRequestID = id
         directoryError = nil
         isLoadingDirectories = true
-        transmit(.createWorkspaceDirectory(requestID: id, parent: parent, name: name)) {
+        gateway.transmit(.createWorkspaceDirectory(requestID: id, parent: parent, name: name)) {
             [weak self] message in
             guard self?.directoryRequestID == id else { return }
             self?.directoryRequestID = nil
@@ -284,14 +252,11 @@ extension AppModel {
     }
 
     func removeGateway(_ account: GatewayAccount) async -> Bool {
-        let wasSelected = account.id == selectedAccountID
+        let wasSelected = gateway.prepareAccountRemoval(account)
         if wasSelected {
-            cancelReconnect()
             discardComposerDraft()
-            resetGatewayState(preservingDrafts: false)
-            selectedAccountID = nil
+            resetGatewayDependentState(preservingDrafts: false)
         }
-        accounts.removeAll { $0.id == account.id }
         await composerDraftIOTask?.value
         await transcriptIOTask?.value
         var removalError: Error?
@@ -300,12 +265,12 @@ extension AppModel {
         } catch {
             removalError = error
         }
-        if wasSelected, selectedAccountID == nil {
-            if let next = accounts.first {
+        if wasSelected, gateway.selectedAccountID == nil {
+            if let next = gateway.accounts.first {
                 connect(to: next)
             } else {
-                await client.disconnect()
-                if selectedAccountID == nil { showsPairing = true }
+                await gateway.shutdown().value
+                if gateway.selectedAccountID == nil { showsPairing = true }
             }
         }
         if let removalError {
@@ -367,7 +332,7 @@ extension AppModel {
     }
 
     func refreshBotSessions(_ botID: String) {
-        guard connectionState.isReady,
+        guard gateway.connectionState.isReady,
               botSessionsRequestID == nil,
               bots.contains(where: { $0.id == botID })
         else { return }
@@ -376,7 +341,7 @@ extension AppModel {
         let id = requestID("bot-sessions")
         botSessionsRequestID = id
         isLoadingBotSessions = true
-        transmit(.listBotSessions(requestID: id, botID: botID)) { [weak self] _ in
+        gateway.transmit(.listBotSessions(requestID: id, botID: botID)) { [weak self] _ in
             guard self?.botSessionsRequestID == id else { return }
             self?.botSessionsRequestID = nil
             self?.isLoadingBotSessions = false
@@ -452,7 +417,7 @@ extension AppModel {
 
     func openSession(_ sessionID: String) {
         guard canBrowseSessions || sessionID == selectedSessionID else { return }
-        guard connectionState.isReady || sessionID == selectedSessionID
+        guard gateway.connectionState.isReady || sessionID == selectedSessionID
             || sessions.contains(where: { $0.sessionId == sessionID })
             || botSessions.contains(where: { $0.sessionId == sessionID })
         else { return }
@@ -464,14 +429,14 @@ extension AppModel {
         cacheSelectedTranscript()
         let generation = UUID()
         transcriptLoadGeneration = generation
-        let accountID = selectedAccountID
-        let wasReady = connectionState.isReady
+        let accountID = gateway.selectedAccountID
+        let wasReady = gateway.connectionState.isReady
         presentCachedSession(sessionID, transcript: nil)
         sessionToRestoreID = sessionID
         sessionOpeningID = sessionID
         let openRequestID = wasReady ? requestID("open") : nil
         sessionRequestID = openRequestID
-        if wasReady { connectionState = .loading }
+        if wasReady { gateway.connectionState = .loading }
         let previous = transcriptIOTask
         transcriptIOTask = Task { [weak self, store] in
             await previous?.value
@@ -482,7 +447,7 @@ extension AppModel {
             }
             guard let self,
                   generation == transcriptLoadGeneration,
-                  accountID == selectedAccountID,
+                  accountID == gateway.selectedAccountID,
                   sessionOpeningID == sessionID,
                   sessionRequestID == openRequestID,
                   replayRequestID == nil
@@ -506,7 +471,7 @@ extension AppModel {
 
     private func presentCachedSession(_ sessionID: String, transcript cached: CachedTranscript?) {
         if selectedSessionID != sessionID {
-            changeComposerDraftOwner(to: selectedAccountID.map {
+            changeComposerDraftOwner(to: gateway.selectedAccountID.map {
                 ComposerDraftOwner(accountID: $0, sessionID: sessionID)
             })
             resetSessionState()
@@ -540,7 +505,7 @@ extension AppModel {
         isLoadingEarlierHistory = true
         transcriptWindowAnchor = .visibleTurns(window.turnCount)
         transcriptWindowCache = window
-        transmit(.getSessionHistory(
+        gateway.transmit(.getSessionHistory(
             requestID: id,
             sessionID: sessionID,
             beforeSequence: beforeSequence
@@ -629,8 +594,8 @@ extension AppModel {
         pendingPresentedTranscript = presentedTranscript
         let id = requestID ?? self.requestID("open")
         sessionRequestID = id
-        connectionState = .loading
-        transmit(.openSession(
+        gateway.connectionState = .loading
+        gateway.transmit(.openSession(
             requestID: id,
             sessionID: sessionID,
             lastSequence: lastSequence
@@ -641,7 +606,7 @@ extension AppModel {
             self?.sessionOpenCursor = nil
             self?.pendingCachedTranscript = nil
             self?.pendingPresentedTranscript = nil
-            self?.connectionState = .ready
+            self?.gateway.connectionState = .ready
         }
     }
 
@@ -668,7 +633,7 @@ extension AppModel {
         guard sessionMutationRequestID == nil else { return nil }
         let id = requestID("session-rename")
         sessionMutationRequestID = id
-        transmit(.renameSession(
+        gateway.transmit(.renameSession(
             requestID: id,
             sessionID: sessionID,
             title: title
@@ -687,7 +652,7 @@ extension AppModel {
         guard sessionMutationRequestID == nil else { return }
         let id = requestID("session-pin")
         sessionMutationRequestID = id
-        transmit(.setSessionPinned(
+        gateway.transmit(.setSessionPinned(
             requestID: id,
             sessionID: session.sessionId,
             pinned: pinned
@@ -705,7 +670,7 @@ extension AppModel {
         else { return }
         let id = requestID("session-attach-folder")
         sessionMutationRequestID = id
-        transmit(.attachSessionFolder(
+        gateway.transmit(.attachSessionFolder(
             requestID: id,
             sessionID: sessionID,
             folder: path
@@ -727,7 +692,7 @@ extension AppModel {
         let deletedPresentedSessionID = presentedChatSessionID.flatMap { presented in
             sessionIDs.contains(presented) ? presented : nil
         }
-        if let accountID = selectedAccountID {
+        if let accountID = gateway.selectedAccountID {
             enqueueTranscriptIO { [store] in
                 for sessionID in sessionIDs {
                     await store.removeTranscript(accountID: accountID, sessionID: sessionID)
@@ -738,7 +703,7 @@ extension AppModel {
         sessionMutationRequestID = id
         pendingDeletedSessionIDs = sessionIDs
         pendingDeletedPresentedSessionID = deletedPresentedSessionID
-        transmit(.deleteSessions(
+        gateway.transmit(.deleteSessions(
             requestID: id,
             sessionIDs: sessionIDs
         )) { [weak self] _ in
@@ -835,7 +800,7 @@ extension AppModel {
         else { return nil }
         let id = requestID("swarm-message")
         swarmMessageRequestID = id
-        transmit(.postSwarmMessage(
+        gateway.transmit(.postSwarmMessage(
             requestID: id,
             swarmID: swarmID,
             text: text
@@ -852,7 +817,7 @@ extension AppModel {
         guard canMutateSwarm else { return }
         let id = requestID(requestPrefix)
         swarmMutationRequestID = id
-        transmit(request(id)) { [weak self] _ in
+        gateway.transmit(request(id)) { [weak self] _ in
             if self?.swarmMutationRequestID == id { self?.swarmMutationRequestID = nil }
         }
     }
@@ -868,10 +833,10 @@ extension AppModel {
     }
 
     func refreshGitDiff(_ scope: GitDiffScope = .unstaged) {
-        guard connectionState.isReady, let sessionID = selectedSessionID else { return }
+        guard gateway.connectionState.isReady, let sessionID = selectedSessionID else { return }
         let id = requestID("git-diff")
         gitDiffs[scope, default: GitDiffState()].requestID = id
-        transmit(.getGitDiff(requestID: id, sessionID: sessionID, scope: scope)) { [weak self] _ in
+        gateway.transmit(.getGitDiff(requestID: id, sessionID: sessionID, scope: scope)) { [weak self] _ in
             guard self?.gitDiffs[scope]?.requestID == id else { return }
             self?.gitDiffs[scope]?.requestID = nil
         }
@@ -890,14 +855,14 @@ extension AppModel {
     }
 
     func refreshWorkspaceFiles() {
-        guard connectionState.isReady,
+        guard gateway.connectionState.isReady,
               let sessionID = selectedSessionID
         else { return }
         let id = requestID("workspace-files")
         workspaceFilesRequestID = id
         workspaceFilesTruncated = false
         isLoadingWorkspaceFiles = true
-        transmit(.listWorkspaceFiles(
+        gateway.transmit(.listWorkspaceFiles(
             requestID: id,
             sessionID: sessionID,
             scope: .all
@@ -917,7 +882,7 @@ extension AppModel {
         else { return }
         let id = requestID("git-branch")
         gitBranchRequestID = id
-        transmit(.switchGitBranch(requestID: id, sessionID: sessionID, branch: branch)) { [weak self] _ in
+        gateway.transmit(.switchGitBranch(requestID: id, sessionID: sessionID, branch: branch)) { [weak self] _ in
             if self?.gitBranchRequestID == id { self?.gitBranchRequestID = nil }
         }
     }
@@ -1040,11 +1005,11 @@ extension AppModel {
     }
 
     func refreshSessionFiles() {
-        guard connectionState.isReady, let sessionID = selectedSessionID else { return }
+        guard gateway.connectionState.isReady, let sessionID = selectedSessionID else { return }
         let id = requestID("session-files")
         sessionFilesRequestID = id
         isLoadingSessionFiles = true
-        transmit(.listSessionFiles(requestID: id, sessionID: sessionID)) { [weak self] _ in
+        gateway.transmit(.listSessionFiles(requestID: id, sessionID: sessionID)) { [weak self] _ in
             guard self?.sessionFilesRequestID == id else { return }
             self?.sessionFilesRequestID = nil
             self?.isLoadingSessionFiles = false
@@ -1083,7 +1048,7 @@ extension AppModel {
             requestID: id
         )
         isLoadingFilePresentation = true
-        transmit(.readSessionFile(
+        gateway.transmit(.readSessionFile(
             requestID: id,
             sessionID: sessionID,
             fileID: file.id,
@@ -1133,7 +1098,7 @@ extension AppModel {
             requestID: id
         )
         isLoadingFilePresentation = true
-        transmit(.readWorkspaceFile(
+        gateway.transmit(.readWorkspaceFile(
             requestID: id,
             sessionID: sessionID,
             path: file.path,
@@ -1174,7 +1139,7 @@ extension AppModel {
         let id = requestID("workspace-file-write")
         workspaceFileWriteRequestID = id
         isSavingWorkspaceFile = true
-        transmit(.writeWorkspaceFile(
+        gateway.transmit(.writeWorkspaceFile(
             requestID: id,
             sessionID: sessionID,
             path: path,
@@ -1238,7 +1203,7 @@ extension AppModel {
 
     @discardableResult
     func sendMessage(delivery requestedDelivery: ActiveMessageDelivery? = nil) -> Bool {
-        guard connectionState.isReady,
+        guard gateway.connectionState.isReady,
               sessionRequestID == nil
         else { return false }
         let text = composer.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1333,7 +1298,7 @@ extension AppModel {
         suppressesComposerDraftSave = false
         composerReply = nil
         composerAttachments = []
-        transmit(.submit(
+        gateway.transmit(.submit(
             sessionID: sessionID,
             submission: Submission(id: id, op: operation)
         )) { [weak self] _ in
@@ -1369,7 +1334,7 @@ extension AppModel {
         pendingDrafts[id] = PendingComposerDraft(text: composer, attachments: [])
         composer = ""
         dismissComposerFocus()
-        transmit(.submit(sessionID: sessionID, submission: Submission(
+        gateway.transmit(.submit(sessionID: sessionID, submission: Submission(
             id: id,
             op: .capabilityCommand(
                 capability: contribution.capability,
@@ -1402,11 +1367,11 @@ extension AppModel {
     }
 
     func editWidgetInputInComposer(_ mounted: MountedWidget) {
-        guard connectionState.isReady,
+        guard gateway.connectionState.isReady,
               !isLoadingComposerDraft,
               !isLoadingComposerEditRecovery,
               let sessionID = selectedSessionID,
-              let accountID = selectedAccountID,
+              let accountID = gateway.selectedAccountID,
               let operation = mounted.widget.action,
               let input = operation.capabilityInput
         else { return }
@@ -1443,9 +1408,9 @@ extension AppModel {
                 self.showToast(verbatim: self.localizedErrorDescription(error), tone: .error)
                 return
             }
-            guard self.connectionState.isReady, self.selectedSessionID == sessionID else { return }
-            guard self.selectedAccountID == accountID else { return }
-            self.transmit(.submit(
+            guard self.gateway.connectionState.isReady, self.selectedSessionID == sessionID else { return }
+            guard self.gateway.selectedAccountID == accountID else { return }
+            self.gateway.transmit(.submit(
                 sessionID: sessionID,
                 submission: Submission(id: requestID, op: operation)
             ))
@@ -1459,7 +1424,7 @@ extension AppModel {
         operation: AgentOperation
     ) {
         guard var pending = pendingWidgetEdit,
-              let accountID = selectedAccountID,
+              let accountID = gateway.selectedAccountID,
               pending.owner == ComposerDraftOwner(accountID: accountID, sessionID: sessionID),
               pending.recovery.phase == .editing
         else { return }
@@ -1481,11 +1446,11 @@ extension AppModel {
                 self.showToast(verbatim: self.localizedErrorDescription(error), tone: .error)
                 return
             }
-            guard self.connectionState.isReady, self.selectedSessionID == sessionID else {
+            guard self.gateway.connectionState.isReady, self.selectedSessionID == sessionID else {
                 self.restoreComposerEditMode(requestID: requestID)
                 return
             }
-            guard self.selectedAccountID == pending.owner.accountID else {
+            guard self.gateway.selectedAccountID == pending.owner.accountID else {
                 self.restoreComposerEditMode(requestID: requestID)
                 return
             }
@@ -1493,7 +1458,7 @@ extension AppModel {
             self.suppressesComposerDraftSave = true
             self.composer = pending.recovery.displacedDraft
             self.suppressesComposerDraftSave = false
-            self.transmit(
+            self.gateway.transmit(
                 .submit(
                     sessionID: sessionID,
                     submission: Submission(id: requestID, op: operation)
@@ -1505,8 +1470,8 @@ extension AppModel {
     }
 
     func refreshProfile() {
-        guard connectionState.isReady else { return }
-        transmit(.getProfile(requestID: requestID("profile")))
+        guard gateway.connectionState.isReady else { return }
+        gateway.transmit(.getProfile(requestID: requestID("profile")))
     }
 
     func submitWidget(_ mounted: MountedWidget) {
@@ -1516,7 +1481,7 @@ extension AppModel {
         else { return }
         let id = requestID("widget")
         previewWidgetRequestID = id
-        transmit(.submit(sessionID: sessionID, submission: Submission(id: id, op: action))) { [weak self] _ in
+        gateway.transmit(.submit(sessionID: sessionID, submission: Submission(id: id, op: action))) { [weak self] _ in
             if self?.previewWidgetRequestID == id { self?.previewWidgetRequestID = nil }
         }
     }
@@ -1538,7 +1503,7 @@ extension AppModel {
         default:
             action
         }
-        transmit(.submit(
+        gateway.transmit(.submit(
             sessionID: sessionID,
             submission: Submission(id: requestID("widget"), op: submittedAction)
         ))
@@ -1553,19 +1518,19 @@ extension AppModel {
         guard canSubmitFrontendAction(capability: capability),
               let sessionID = selectedSessionID
         else { return }
-        transmit(.submit(
+        gateway.transmit(.submit(
             sessionID: sessionID,
             submission: Submission(id: requestID("widget-action"), op: operation)
         ))
     }
 
     func submitContributionOperation(_ operation: AgentOperation, scope: ContributionScope) {
-        guard connectionState.isReady else { return }
+        guard gateway.connectionState.isReady else { return }
         if case .swarm(let id) = scope,
            !swarms.contains(where: { $0.id == id }) {
             return
         }
-        transmit(.submitContribution(
+        gateway.transmit(.submitContribution(
             requestID: requestID("contribution"),
             scope: scope,
             operation: operation
@@ -1573,9 +1538,9 @@ extension AppModel {
     }
 
     func refreshContributions(scope: ContributionScope) {
-        guard connectionState.isReady else { return }
+        guard gateway.connectionState.isReady else { return }
         if case .swarm(let id) = scope, !swarms.contains(where: { $0.id == id }) { return }
-        transmit(.getContributions(requestID: requestID("contributions"), scope: scope))
+        gateway.transmit(.getContributions(requestID: requestID("contributions"), scope: scope))
     }
 
     func loadPreviewPage(_ operation: AgentOperation) {
@@ -1591,7 +1556,7 @@ extension AppModel {
         let id = requestID("preview-page")
         previewPageRequestID = id
         isLoadingPreviewPage = true
-        transmit(.submit(
+        gateway.transmit(.submit(
             sessionID: sessionID,
             submission: Submission(id: id, op: operation)
         )) { [weak self] _ in
@@ -1622,7 +1587,7 @@ extension AppModel {
         let id = requestID("picker")
         pendingPicker = nil
         if case .capabilityCommand = option.op { previewSelections[id] = option }
-        transmit(.submit(
+        gateway.transmit(.submit(
             sessionID: sessionID,
             submission: Submission(id: id, op: option.op)
         )) { [weak self] _ in
@@ -1631,7 +1596,7 @@ extension AppModel {
     }
 
     private func canSubmitFrontendAction(capability: String?) -> Bool {
-        guard connectionState.isReady,
+        guard gateway.connectionState.isReady,
               sessionRequestID == nil,
               selectedSessionID != nil
         else { return false }

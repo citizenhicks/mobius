@@ -20,9 +20,9 @@ extension AppModelTests {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
         let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
-        model.accounts = [account]
-        model.selectedAccountID = account.id
-        model.connectionState = .ready
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
+        model.gateway.connectionState = .ready
 
         model.openSession("chat-1")
         let request = await recorder.firstRequest(after: 0) {
@@ -32,11 +32,11 @@ extension AppModelTests {
         guard case .openSession(let requestID, _, _) = try XCTUnwrap(request)
         else { return XCTFail("Expected session open") }
 
-        model.handle(.sessionOpened(
+        model.gateway.handle(.sessionOpened(
             requestID: requestID,
             payload: sessionReady(latestSequence: 8, compactionCount: 2)
         ))
-        model.handle(.agentEvent(
+        model.gateway.handle(.agentEvent(
             sessionID: "chat-1",
             sequence: 8,
             event: AgentEventRecord(submissionId: nil, msg: .object([
@@ -47,8 +47,8 @@ extension AppModelTests {
         ))
         XCTAssertEqual(model.sessionCompactionCount, 2)
 
-        model.handle(.sessionReplayComplete(requestID: requestID, sessionID: "chat-1"))
-        model.handle(.agentEvent(
+        model.gateway.handle(.sessionReplayComplete(requestID: requestID, sessionID: "chat-1"))
+        model.gateway.handle(.agentEvent(
             sessionID: "chat-1",
             sequence: 9,
             event: AgentEventRecord(submissionId: nil, msg: .object([
@@ -118,7 +118,7 @@ extension AppModelTests {
             else { return }
             interruptSent.fulfill()
         }
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         var stats = RunStats()
         stats.active = RunSummary(
@@ -135,7 +135,7 @@ extension AppModelTests {
             usage: TokenUsage()
         )
 
-        model.handle(.sessionChanged(sessionReady(latestSequence: 8, runStats: stats)))
+        model.gateway.handle(.sessionChanged(sessionReady(latestSequence: 8, runStats: stats)))
 
         XCTAssertEqual(model.activeTurnID, "turn-1")
         model.interrupt()

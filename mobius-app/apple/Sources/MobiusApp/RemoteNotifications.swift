@@ -409,11 +409,11 @@ extension AppModel {
             return true
         }
         guard let cloudGateway = mobiusCloudGateway else { return false }
-        guard selectedAccountID == cloudGateway.id else {
+        guard gateway.selectedAccountID == cloudGateway.id else {
             connect(to: cloudGateway)
             return false
         }
-        guard connectionState.isReady else { return false }
+        guard gateway.connectionState.isReady else { return false }
         switch notification {
         case .subscriptionExpired:
             return false

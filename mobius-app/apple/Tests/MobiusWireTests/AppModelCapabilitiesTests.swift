@@ -7,7 +7,7 @@ extension AppModelTests {
     func testContributedSlashCommandsUseTheirOwnerAndIdlePolicy() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { await recorder.record($0) }
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         model.contributions = [FrontendContribution(
             capability: "notes",
@@ -75,7 +75,7 @@ extension AppModelTests {
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         let routine = Routine(
             id: "routine-1",
             botId: "bot-1",
@@ -123,7 +123,7 @@ extension AppModelTests {
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         let run = RoutineRun(
             id: "run-1",
             routineId: "routine-1",
@@ -208,7 +208,7 @@ extension AppModelTests {
             await recorder.record(request)
         })
         model.selectedSessionID = "chat-1"
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.middlewareFeatures = [MiddlewareFeature(
             id: "scratchpad",
             label: "Scratchpad",
@@ -270,7 +270,7 @@ extension AppModelTests {
             botDefaults: VersionedAgentConfig(revision: 1, config: composition()),
             contributions: [contribution]
         ))
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
 
         XCTAssertNil(model.selectedSessionID)
         XCTAssertEqual(model.navigationWidgets(in: .global).first?.title, "Global Scratchpad")
@@ -299,7 +299,7 @@ extension AppModelTests {
         )
         model.bots = [helper]
         model.swarms = [swarm]
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
 
         model.refreshContributions(scope: .swarm(id: swarm.id))
         let request = await recorder.firstRequest(after: 0) {
@@ -329,7 +329,7 @@ extension AppModelTests {
             )],
             references: []
         )
-        model.handle(.contributionsChanged(
+        model.gateway.handle(.contributionsChanged(
             requestID: "scratchpad-1",
             scope: .swarm(id: swarm.id),
             contributions: [contribution]
@@ -343,7 +343,7 @@ extension AppModelTests {
     func testStaleSwarmContributionScopeDoesNotReachGateway() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
 
         model.refreshContributions(scope: .swarm(id: "removed-swarm"))
 
@@ -466,7 +466,8 @@ extension AppModelTests {
             ["global", "workspace", "project"]
         )
 
-        model.resetGatewayState(preservingDrafts: false)
+        model.gateway.reset(preservingDrafts: false)
+        model.resetGatewayDependentState(preservingDrafts: false)
         XCTAssertTrue(model.gatewayContributions.isEmpty)
     }
 
@@ -515,7 +516,7 @@ extension AppModelTests {
             references: []
         )
 
-        model.handle(.sessionChanged(sessionReady(
+        model.gateway.handle(.sessionChanged(sessionReady(
             latestSequence: 1,
             contributions: [contribution],
             widgets: [SessionWidget(capability: "tasks", item: dynamicStatus)]
@@ -532,7 +533,7 @@ extension AppModelTests {
             await recorder.record(request)
         })
         model.selectedSessionID = "chat-1"
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.reduce(
             event: AgentEventRecord(
                 submissionId: nil,
@@ -908,8 +909,8 @@ extension AppModelTests {
     func testReadSessionStaysReadWhenCatalogMetadataChangesAtSameSequence() throws {
         let model = try model()
         let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
-        model.accounts = [account]
-        model.selectedAccountID = account.id
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
         model.applySessions([session(
             state: .idle,
             outcome: .failed,
@@ -944,8 +945,8 @@ extension AppModelTests {
             let model = try model()
             let chatWindowToken = UUID()
             let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
-            model.accounts = [account]
-            model.selectedAccountID = account.id
+            model.gateway.accounts = [account]
+            model.gateway.selectedAccountID = account.id
             let chat = session(state: .idle, sequence: sequence)
             model.applySessions([chat])
             model.selectedSessionID = chat.sessionId
@@ -957,12 +958,12 @@ extension AppModelTests {
             XCTAssertNil(try XCTUnwrap(model.sessionReadCursors?[chat.sessionId]).sequence)
 
             // Reload the durable cursor just as account restoration does on launch.
-            model.restoreSessionReadState()
+            model.restoreSessionReadState(for: model.gateway.selectedAccountID)
             model.applySessions([chat])
             XCTAssertTrue(model.unreadSessionIDs.contains(chat.sessionId))
 
             model.markSessionRead(chat.sessionId)
-            model.restoreSessionReadState()
+            model.restoreSessionReadState(for: model.gateway.selectedAccountID)
             model.applySessions([chat])
             XCTAssertFalse(model.unreadSessionIDs.contains(chat.sessionId))
             XCTAssertEqual(model.sessionReadCursors?[chat.sessionId]?.sequence, sequence)
@@ -1028,18 +1029,18 @@ extension AppModelTests {
 
     func testSetupValidationUsesGlobalToast() throws {
         let model = try model()
-        model.pairingEndpoint = "tcp://localhost:9191"
+        model.gateway.pairingEndpoint = "tcp://localhost:9191"
 
         model.pair()
 
         XCTAssertEqual(model.toast?.message, "Enter the one-time code shown by the gateway.")
         XCTAssertEqual(model.toast?.tone, .error)
 
-        model.pairingCode = "code with spaces"
+        model.gateway.pairingCode = "code with spaces"
         model.pair()
 
         XCTAssertEqual(
-            model.pairingError,
+            model.gateway.pairingError,
             GatewayWireError.invalidPairingSetup.localizedDescription
         )
 
@@ -1054,16 +1055,16 @@ extension AppModelTests {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
         model.showsPairing = false
-        model.pairingError = "Old error"
+        model.gateway.pairingError = "Old error"
 
         model.applyPairingSetup(
             "mobius-pair:v1|wss://gateway.example|0123456789abcdef"
         )
 
         XCTAssertTrue(model.showsPairing)
-        XCTAssertEqual(model.pairingEndpoint, "wss://gateway.example")
-        XCTAssertEqual(model.pairingCode, "0123456789abcdef")
-        XCTAssertNil(model.pairingError)
+        XCTAssertEqual(model.gateway.pairingEndpoint, "wss://gateway.example")
+        XCTAssertEqual(model.gateway.pairingCode, "0123456789abcdef")
+        XCTAssertNil(model.gateway.pairingError)
         let requests = await recorder.requests()
         XCTAssertTrue(requests.isEmpty)
     }

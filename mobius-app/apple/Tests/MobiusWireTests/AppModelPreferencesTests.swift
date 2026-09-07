@@ -747,9 +747,9 @@ extension AppModelTests {
         )
         model.cloudSession = MobiusCloudSession(userID: userID, expiresAt: .distantFuture)
         model.notificationsEnabled = true
-        model.accounts = [cloudGateway]
-        model.selectedAccountID = cloudGateway.id
-        model.connectionState = .loading
+        model.gateway.accounts = [cloudGateway]
+        model.gateway.selectedAccountID = cloudGateway.id
+        model.gateway.connectionState = .loading
         let notification = RemoteNotification.session(
             eventID: "event-tap",
             kind: .completed,
@@ -762,7 +762,7 @@ extension AppModelTests {
         XCTAssertEqual(model.pendingRemoteNotification, notification)
 
         model.sessions = [session(state: .idle)]
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         XCTAssertTrue(model.openPendingRemoteNotification())
         XCTAssertNil(model.pendingRemoteNotification)
         XCTAssertEqual(model.navigationPath, [.chat(.session("chat-1"))])
@@ -791,16 +791,16 @@ extension AppModelTests {
         )
         model.cloudSession = MobiusCloudSession(userID: userID, expiresAt: .distantFuture)
         model.notificationsEnabled = true
-        model.accounts = [cloudGateway]
-        model.selectedAccountID = cloudGateway.id
-        model.connectionState = .loading
+        model.gateway.accounts = [cloudGateway]
+        model.gateway.selectedAccountID = cloudGateway.id
+        model.gateway.connectionState = .loading
 
         model.openRemoteNotification(notification)
         XCTAssertEqual(model.pendingRemoteNotification, notification)
 
         model.bots = [helper]
         model.swarms = [swarm]
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         XCTAssertTrue(model.openPendingRemoteNotification())
         XCTAssertNil(model.pendingRemoteNotification)
         XCTAssertEqual(
@@ -843,7 +843,7 @@ extension AppModelTests {
         )
         let remoteToastID = try XCTUnwrap(model.toast?.id)
 
-        model.handle(.swarmAttentions([attention]))
+        model.gateway.handle(.swarmAttentions([attention]))
 
         XCTAssertEqual(model.toast?.id, remoteToastID)
         XCTAssertEqual(model.toast?.message, "Helper: Choose a migration path.")
@@ -867,9 +867,9 @@ extension AppModelTests {
         )
         model.cloudSession = MobiusCloudSession(userID: userID, expiresAt: .distantFuture)
         model.notificationsEnabled = true
-        model.accounts = [cloudGateway]
-        model.selectedAccountID = cloudGateway.id
-        model.connectionState = .ready
+        model.gateway.accounts = [cloudGateway]
+        model.gateway.selectedAccountID = cloudGateway.id
+        model.gateway.connectionState = .ready
         XCTAssertTrue(model.applyBackgroundApprovals([approval], notifyingNew: false))
 
         model.openRemoteNotification(RemoteNotification.session(
@@ -898,7 +898,7 @@ extension AppModelTests {
             originLabel: "routine",
             botID: approval.botId
         )
-        model.handle(.botSessions(
+        model.gateway.handle(.botSessions(
             requestID: requestID,
             botID: approval.botId,
             sessions: [hidden]
@@ -928,20 +928,20 @@ extension AppModelTests {
         )
         model.cloudSession = MobiusCloudSession(userID: userID, expiresAt: .distantFuture)
         model.notificationsEnabled = true
-        model.accounts = [cloudGateway]
-        model.selectedAccountID = cloudGateway.id
+        model.gateway.accounts = [cloudGateway]
+        model.gateway.selectedAccountID = cloudGateway.id
         model.sessions = [cachedSession]
         model.transcript = [cachedTranscript]
-        model.connectionState = .connecting
+        model.gateway.connectionState = .connecting
 
         model.openRemoteNotification(.subscriptionExpired(eventID: "subscription-expired-1"))
 
         XCTAssertEqual(model.cloudIssue, .subscriptionExpired)
         XCTAssertEqual(
-            model.connectionState,
+            model.gateway.connectionState,
             .failed(MobiusCloudError.subscriptionRequired.localizedDescription)
         )
-        XCTAssertTrue(model.automaticReconnectBlocked)
+        XCTAssertTrue(model.gateway.automaticReconnectBlocked)
         XCTAssertNil(model.pendingRemoteNotification)
         XCTAssertEqual(model.sessions, [cachedSession])
         XCTAssertEqual(model.transcript.map(\.id), [cachedTranscript.id])
@@ -1153,7 +1153,7 @@ extension AppModelTests {
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         model.gitStatus = GitStatus(currentBranch: "main", branches: ["feature", "main"])
 

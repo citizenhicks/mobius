@@ -1,31 +1,11 @@
 import Foundation
 
 extension AppModel {
-    func connectionEnded(generation: UUID, error: Error) {
-        guard connectionGeneration == generation else { return }
-        if case .unsupportedVersion(let version) = error as? GatewayWireError,
-           version > gatewayProtocolVersion {
-            automaticReconnectBlocked = true
-            showsAppUpdateAlert = true
-            connectionEnded(
-                generation: generation,
-                message: "Update möbius to connect to this gateway."
-            )
-            return
-        }
-        connectionEnded(generation: generation, message: error.localizedDescription)
-    }
-
-    func connectionEnded(generation: UUID, message: String) {
-        guard connectionGeneration == generation else { return }
+    func handleGatewayDisconnected(_ message: String) {
         cancelVoiceChatIntent()
         stopRealtimeVoice()
-        cancelReconnect()
-        connectionGeneration = UUID()
         transcriptLoadGeneration = UUID()
         finishHistoryLoad()
-        eventTask = nil
-        connectionState = .failed(message)
         sessionFileUploadRequests.removeAll()
         abandonedSessionFileUploadRequests.removeAll()
         sessionFileDeleteRequests.removeAll()
@@ -46,53 +26,16 @@ extension AppModel {
         discardFilePresentation(preservingWorkspaceTextDraft: true)
         cancelSessionFileThumbnailDownloads()
         restorePendingDrafts()
-        if pendingPairingAccount != nil { pairingError = message }
         if cloudPairingContinuation != nil {
             completeCloudPairing(.failure(MobiusCloudError.provisioningFailed))
         }
-        if reconnectAttempt == 0 { showToast(verbatim: message, tone: .error) }
-        scheduleReconnect()
+        if gateway.reconnectAttempt == 0 { showToast(verbatim: message, tone: .error) }
     }
 
-    func scheduleReconnect() {
-        guard reconnectTask == nil,
-              !automaticReconnectBlocked,
-              pendingPairingAccount == nil,
-              let account = selectedAccount
-        else { return }
-        guard !appIsInBackground else {
-            reconnectsOnActivation = true
-            return
-        }
-        let attempt = reconnectAttempt
-        reconnectAttempt += 1
-        let generation = connectionGeneration
-        reconnectTask = Task { [weak self] in
-            guard let self else { return }
-            do {
-                try await Task.sleep(for: reconnectDelay(attempt))
-            } catch {
-                return
-            }
-            guard !Task.isCancelled,
-                  generation == connectionGeneration,
-                  selectedAccountID == account.id
-            else { return }
-            reconnectTask = nil
-            connect(to: account, retrying: true)
-        }
-    }
-
-    func cancelReconnect() {
-        reconnectTask?.cancel()
-        reconnectTask = nil
-    }
-
-    @discardableResult
-    func resetGatewayState(
+    func resetGatewayDependentState(
         preservingDrafts: Bool,
         preservingSession: Bool = false
-    ) -> UUID {
+    ) {
         cancelVoiceChatIntent()
         stopRealtimeVoice()
         if cloudPairingContinuation != nil {
@@ -100,12 +43,9 @@ extension AppModel {
         }
         if !preservingSession { changeComposerDraftOwner(to: nil) }
         if preservingSession { flushStreamDeltas() }
-        connectionGeneration = UUID()
         abandonedSessionFileUploadRequests.removeAll()
         sessionFileDeleteRequests.removeAll()
         transcriptLoadGeneration = UUID()
-        eventTask?.cancel()
-        eventTask = nil
         if !preservingSession {
             latestSequence = nil
         }
@@ -126,8 +66,6 @@ extension AppModel {
             composer = ""
             discardComposerAttachments()
         }
-        pendingPairingAccount = nil
-        connectionState = .disconnected
         dismissToast()
         sessionRequestID = nil
         sessionOpeningID = nil
@@ -191,7 +129,6 @@ extension AppModel {
             chatBotFilterIDs.removeAll()
             bots = []
             swarms = []
-            gatewayMachineName = ""
             navigationPath = []
             sessionToRename = nil
             sessionRenameDraft = ""
@@ -240,8 +177,6 @@ extension AppModel {
             pairingCodeExpiryTask?.cancel()
             pairingCodeExpiryTask = nil
             pairingCodeInfo = nil
-            pairingCode = ""
-            pairingError = nil
         } else if pendingProviderCredential != nil {
             // A write may have reached the gateway without its response reaching us.
             // Keep the key available for an explicit retry; never resend it automatically.
@@ -266,7 +201,6 @@ extension AppModel {
             resetSessionState()
         }
         if preservingDrafts { restorePendingDrafts() }
-        return connectionGeneration
     }
 
     func cancelExtensionAndCredentialRequests() {

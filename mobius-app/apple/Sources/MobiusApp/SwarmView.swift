@@ -79,14 +79,14 @@ struct SwarmView: View {
                 FrontendActionEditorSheet(
                     action: action,
                     editor: editor,
-                    isEnabled: model.connectionState.isReady
+                    isEnabled: model.gateway.connectionState.isReady
                 ) { operation in
                     model.submitContributionOperation(operation, scope: .swarm(id: swarmID))
                 }
             }
         }
-        .task(id: "\(swarmID):\(model.connectionState.isReady)") {
-            if model.connectionState.isReady {
+        .task(id: "\(swarmID):\(model.gateway.connectionState.isReady)") {
+            if model.gateway.connectionState.isReady {
                 model.refreshContributions(scope: .swarm(id: swarmID))
             }
         }
@@ -167,7 +167,7 @@ struct SwarmView: View {
                                     glyph: MobiusSymbol.glyph(for: action.symbol)
                                 )
                             }
-                            .disabled(!model.connectionState.isReady)
+                            .disabled(!model.gateway.connectionState.isReady)
                         }
                     } header: {
                         Text(frontendPresentationText(widget.widget.text))
@@ -295,7 +295,7 @@ struct SwarmView: View {
                 if let content = widget?.widget.content {
                     FrontendWidgetContentView(
                         content: content,
-                        actionsEnabled: model.connectionState.isReady,
+                        actionsEnabled: model.gateway.connectionState.isReady,
                         usesSwipeActions: true,
                         submitOperation: { model.submitContributionOperation($0, scope: scope) }
                     ) { model.submitContributionOperation($0.op, scope: scope) }

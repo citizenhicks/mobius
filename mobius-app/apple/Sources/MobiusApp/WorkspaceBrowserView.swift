@@ -195,7 +195,7 @@ struct GlobalContributionsView: View {
                         Section {
                             FrontendWidgetContentView(
                                 content: content,
-                                actionsEnabled: model.connectionState.isReady,
+                                actionsEnabled: model.gateway.connectionState.isReady,
                                 usesSwipeActions: true,
                                 submitOperation: { operation in
                                     model.submitContributionOperation(operation, scope: .global)
@@ -214,8 +214,8 @@ struct GlobalContributionsView: View {
                 )
             }
         }
-        .task(id: model.connectionState.isReady) {
-            if model.connectionState.isReady { model.refreshContributions(scope: .global) }
+        .task(id: model.gateway.connectionState.isReady) {
+            if model.gateway.connectionState.isReady { model.refreshContributions(scope: .global) }
         }
     }
 }

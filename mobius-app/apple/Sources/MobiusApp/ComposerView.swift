@@ -296,7 +296,7 @@ private struct ComposerSurface: View {
         .onChange(of: model.selectedSessionID) { _, _ in
             Task { await dictation.cancel() }
         }
-        .onChange(of: model.connectionState.isReady) { _, isReady in
+        .onChange(of: model.gateway.connectionState.isReady) { _, isReady in
             guard !isReady else { return }
             Task { await dictation.cancel() }
         }

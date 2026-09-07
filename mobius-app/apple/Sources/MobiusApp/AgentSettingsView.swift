@@ -92,7 +92,7 @@ struct AgentSettingsView: View {
                     }
                 }
                 .toggleStyle(.switch)
-            } else if model.connectionState.isLoading {
+            } else if model.gateway.connectionState.isLoading {
                 loadingDraft
             } else {
                 MobiusUnavailable(
@@ -742,7 +742,7 @@ struct AgentSettingsView: View {
     }
 
     private var unavailableDetail: LocalizedStringResource {
-        guard model.connectionState.isReady else { return "Connect to a gateway first." }
+        guard model.gateway.connectionState.isReady else { return "Connect to a gateway first." }
         if case .bot(let id) = scope, !model.bots.contains(where: { $0.id == id }) {
             return "Choose a Bot first."
         }

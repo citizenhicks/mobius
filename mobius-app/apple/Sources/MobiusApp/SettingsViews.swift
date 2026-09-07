@@ -287,17 +287,17 @@ struct GatewayView: View {
                         statusLabel: status.label,
                         statusDetail: status.detail,
                         statusColor: status.color,
-                        isLoading: model.connectionState.isLoading
+                        isLoading: model.gateway.connectionState.isLoading
                     )
                     .groupedHeaderAction()
                 }
             }
         ) {
             Section("Paired") {
-                if model.accounts.isEmpty {
+                if model.gateway.accounts.isEmpty {
                     SettingsCaption("No gateway paired on this device.")
                 } else {
-                    ForEach(model.accounts) { account in
+                    ForEach(model.gateway.accounts) { account in
                         pairedRow(account)
                     }
                 }
@@ -328,16 +328,16 @@ struct GatewayView: View {
     }
 
     private var gatewayStatus: (label: MobiusText, detail: MobiusText, color: Color) {
-        switch model.connectionState {
+        switch model.gateway.connectionState {
         case .ready:
             let detail: MobiusText
-            if let machineName = model.selectedAccount?.machineName {
-                detail = .localized("\(model.accounts.count) paired · \(machineName) selected")
+            if let machineName = model.gateway.selectedAccount?.machineName {
+                detail = .localized("\(model.gateway.accounts.count) paired · \(machineName) selected")
             } else {
-                detail = .localized("\(model.accounts.count) paired · no gateway selected")
+                detail = .localized("\(model.gateway.accounts.count) paired · no gateway selected")
             }
             return (
-                .localized(model.connectionState.label),
+                .localized(model.gateway.connectionState.label),
                 detail,
                 palette.signal
             )
@@ -345,9 +345,9 @@ struct GatewayView: View {
             return (.localized("Needs attention"), .verbatim(message), palette.danger)
         default:
             return (
-                .localized(model.connectionState.label),
+                .localized(model.gateway.connectionState.label),
                 .localized("Pair a gateway to run chats on it."),
-                model.connectionState.tone.color(in: palette)
+                model.gateway.connectionState.tone.color(in: palette)
             )
         }
     }
@@ -357,7 +357,7 @@ struct GatewayView: View {
             hint: "Shows this gateway's settings",
             open: { model.navigationPath = [.settings(.gateway(account.id))] },
             marks: {
-                if account.id == model.selectedAccountID {
+                if account.id == model.gateway.selectedAccountID {
                     MobiusIcon(.check, size: MobiusStyle.glyphMark, foreground: palette.signal)
                         .accessibilityLabel("Selected")
                 }
@@ -398,7 +398,7 @@ struct GatewayDetailView: View {
 
     var body: some View {
         @Bindable var model = model
-        if let account = model.accounts.first(where: { $0.id == id }) {
+        if let account = model.gateway.accounts.first(where: { $0.id == id }) {
             detail(account)
                 .toolbarRole(.editor)
                 .alert("Forget this gateway?", isPresented: $confirmsForget) {
@@ -428,9 +428,9 @@ struct GatewayDetailView: View {
                         SshCredentialSheet()
                     }
                 }
-                .task(id: model.connectionState.isReady) {
-                    guard account.id == model.selectedAccountID,
-                          model.connectionState.isReady
+                .task(id: model.gateway.connectionState.isReady) {
+                    guard account.id == model.gateway.selectedAccountID,
+                          model.gateway.connectionState.isReady
                     else { return }
                     model.probeGitCredential(githubCredentialTarget)
                     model.listSshIdentities()
@@ -448,7 +448,7 @@ struct GatewayDetailView: View {
     }
 
     private func detail(_ account: GatewayAccount) -> some View {
-        let isActive = account.id == model.selectedAccountID
+        let isActive = account.id == model.gateway.selectedAccountID
         return PageScaffold(
             title: .verbatim(account.machineName),
             detail: .verbatim(""),
@@ -479,10 +479,10 @@ struct GatewayDetailView: View {
                     LabeledContent("Status") {
                         HStack(spacing: MobiusSpace.s) {
                             MobiusStatusIndicator(
-                                color: model.connectionState.tone.color(in: palette),
-                                isLoading: model.connectionState.isLoading
+                                color: model.gateway.connectionState.tone.color(in: palette),
+                                isLoading: model.gateway.connectionState.isLoading
                             )
-                            Text(model.connectionState.label)
+                            Text(model.gateway.connectionState.label)
                         }
                         .font(MobiusStyle.controlFont)
                     }
@@ -540,7 +540,7 @@ struct GatewayDetailView: View {
                         gitCredentialRow
                     }
                     .buttonStyle(.plain)
-                    .disabled(!model.connectionState.isReady)
+                    .disabled(!model.gateway.connectionState.isReady)
                     .accessibilityLabel("GitHub credentials")
                     .accessibilityValue(Text(gitCredentialSummary))
                     .accessibilityHint(Text(gitCredentialHint))
@@ -551,7 +551,7 @@ struct GatewayDetailView: View {
                         sshCredentialRow
                     }
                     .buttonStyle(.plain)
-                    .disabled(!model.connectionState.isReady)
+                    .disabled(!model.gateway.connectionState.isReady)
                     .accessibilityLabel("SSH identities")
                     .accessibilityValue(sshCredentialSummary.text)
                     .accessibilityHint(Text(sshCredentialHint))
@@ -583,7 +583,7 @@ struct GatewayDetailView: View {
     }
 
     private var gitCredentialSummary: LocalizedStringResource {
-        if !model.connectionState.isReady { return "Connect to check this host." }
+        if !model.gateway.connectionState.isReady { return "Connect to check this host." }
         if model.isCheckingGitCredential { return "Checking this host…" }
         if model.gitCredentialAvailable == true { return "Credential found on this host." }
         if model.gitCredentialAvailable == false { return "No credential found. Set up GitHub." }
@@ -621,7 +621,7 @@ struct GatewayDetailView: View {
     }
 
     private var sshCredentialSummary: MobiusText {
-        if !model.connectionState.isReady { return .localized("Connect to check this host.") }
+        if !model.gateway.connectionState.isReady { return .localized("Connect to check this host.") }
         if model.isLoadingSshIdentities { return .localized("Checking this host…") }
         if model.isGeneratingSshIdentity {
             return .localized("Generating an Ed25519 key on this host…")
@@ -721,7 +721,7 @@ private struct GitCredentialSheet: View {
                 Text(actionTitle)
             }
             .disabled(
-                !model.connectionState.isReady
+                !model.gateway.connectionState.isReady
                     || model.isCheckingGitCredential
                     || username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     || token.isEmpty
@@ -815,14 +815,14 @@ private struct SshCredentialSheet: View {
                         } label: {
                             Text(checkActionTitle)
                         }
-                        .disabled(!model.connectionState.isReady || model.isLoadingSshIdentities)
+                        .disabled(!model.gateway.connectionState.isReady || model.isLoadingSshIdentities)
                     } else if model.sshIdentities?.isEmpty == true {
                         Button {
                             model.generateSshIdentity()
                         } label: {
                             Text(generateActionTitle)
                         }
-                        .disabled(!model.connectionState.isReady || model.isGeneratingSshIdentity)
+                        .disabled(!model.gateway.connectionState.isReady || model.isGeneratingSshIdentity)
                     } else {
                         Button("Done", action: dismiss.callAsFunction)
                     }

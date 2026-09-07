@@ -20,7 +20,7 @@ struct ProvidersView: View {
                         MobiusIcon(.plus, gutter: false)
                     }
                     .groupedHeaderAction(prominent: true)
-                    .disabled(!model.connectionState.isReady)
+                    .disabled(!model.gateway.connectionState.isReady)
                     .accessibilityLabel("Add provider")
                     .accessibilityHint("Opens the provider setup")
                     .help("Add provider")
@@ -29,7 +29,7 @@ struct ProvidersView: View {
                         statusLabel: status.label,
                         statusDetail: status.detail,
                         statusColor: status.color,
-                        isLoading: model.connectionState.isLoading
+                        isLoading: model.gateway.connectionState.isLoading
                     )
                     .groupedHeaderAction()
                 }
@@ -67,7 +67,7 @@ struct ProvidersView: View {
     }
 
     private var showsLoadingCatalog: Bool {
-        model.connectionState.isLoading && model.providerInstances.isEmpty
+        model.gateway.connectionState.isLoading && model.providerInstances.isEmpty
     }
 
     /// The rows this page is about to show, drawn from the same primitive so the wait
@@ -96,13 +96,13 @@ struct ProvidersView: View {
     }
 
     private var pageDetail: LocalizedStringResource {
-        model.connectionState.isReady
+        model.gateway.connectionState.isReady
             ? "Model services this gateway can reach. One setup per account or endpoint."
             : "Connect to a gateway to manage providers."
     }
 
     private var catalogStatus: (label: MobiusText, detail: MobiusText, color: Color) {
-        switch model.connectionState {
+        switch model.gateway.connectionState {
         case .ready:
             let ready = model.providerInstances.filter(\.configured).count
             return (
@@ -114,9 +114,9 @@ struct ProvidersView: View {
             return (.localized("Needs attention"), .verbatim(message), palette.danger)
         default:
             return (
-                .localized(model.connectionState.label),
+                .localized(model.gateway.connectionState.label),
                 .localized("Connect to a gateway to manage its providers."),
-                model.connectionState.tone.color(in: palette)
+                model.gateway.connectionState.tone.color(in: palette)
             )
         }
     }
@@ -144,7 +144,7 @@ struct ProvidersView: View {
                 MobiusIcon(.trash, foreground: palette.danger)
             }
             .tint(palette.panel)
-            .disabled(model.isApplyingConfiguration || !model.connectionState.isReady)
+            .disabled(model.isApplyingConfiguration || !model.gateway.connectionState.isReady)
             .accessibilityLabel("Remove \(instance.label)")
         }
     }
@@ -205,7 +205,7 @@ private struct AddProviderSheet: View {
                 if provider != nil {
                     ToolbarItem(placement: .confirmationAction) {
                         Button("Save", action: model.registerProvider)
-                            .disabled(model.isApplyingConfiguration || !model.connectionState.isReady)
+                            .disabled(model.isApplyingConfiguration || !model.gateway.connectionState.isReady)
                     }
                 }
             }
@@ -259,7 +259,7 @@ struct ProviderDetailView: View {
                             MobiusIcon(.floppyDisk, gutter: false)
                         }
                         .groupedHeaderAction(prominent: true)
-                        .disabled(model.isApplyingConfiguration || !model.connectionState.isReady)
+                        .disabled(model.isApplyingConfiguration || !model.gateway.connectionState.isReady)
                         .accessibilityLabel("Save to gateway")
                         .help("Save to gateway")
                         Button {
@@ -269,7 +269,7 @@ struct ProviderDetailView: View {
                         }
                         .groupedHeaderAction()
                         .disabled(
-                            model.isApplyingConfiguration || !model.connectionState.isReady
+                            model.isApplyingConfiguration || !model.gateway.connectionState.isReady
                         )
                         .accessibilityLabel("Remove provider")
                         .help("Remove provider")
@@ -494,7 +494,7 @@ private struct ProviderFormSections: View {
                 }
                 .mobiusProminentButton()
                 .disabled(
-                    model.providerAPIKey.isEmpty || !model.connectionState.isReady
+                    model.providerAPIKey.isEmpty || !model.gateway.connectionState.isReady
                         || model.pendingProviderCredential != nil
                 )
             }
@@ -505,7 +505,7 @@ private struct ProviderFormSections: View {
                     model.startProviderLogin()
                 }
                 .mobiusProminentButton()
-                .disabled(model.pendingProviderLogin != nil || !model.connectionState.isReady)
+                .disabled(model.pendingProviderLogin != nil || !model.gateway.connectionState.isReady)
             }
             .settingsStandaloneRow()
         }

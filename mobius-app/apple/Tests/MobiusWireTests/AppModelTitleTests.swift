@@ -272,11 +272,11 @@ extension AppModelTests {
         guard case .openSession(let requestID, _, _) = try XCTUnwrap(open) else {
             return XCTFail("Expected the selected chat to reopen")
         }
-        model.handle(.sessionOpened(
+        model.gateway.handle(.sessionOpened(
             requestID: requestID,
             payload: sessionReady(latestSequence: 1)
         ))
-        model.handle(.agentEvent(
+        model.gateway.handle(.agentEvent(
             sessionID: "chat-1",
             sequence: 1,
             event: AgentEventRecord(
@@ -291,7 +291,7 @@ extension AppModelTests {
             preview: nil
         ))
         let replayRequestCount = await recorder.requestCount()
-        model.handle(.sessionReplayComplete(requestID: requestID, sessionID: "chat-1"))
+        model.gateway.handle(.sessionReplayComplete(requestID: requestID, sessionID: "chat-1"))
 
         let rename = await recorder.firstRequest(after: replayRequestCount) { request in
             guard case .renameSession(_, "chat-1", "Generated title") = request else {
@@ -349,7 +349,7 @@ extension AppModelTests {
             botDefaults: VersionedAgentConfig(revision: 1, config: composition()),
             sessions: []
         )))
-        let gatewayReady = await eventually { model.connectionState.isReady }
+        let gatewayReady = await eventually { model.gateway.connectionState.isReady }
         XCTAssertTrue(gatewayReady)
         try await openNewSession(in: model, recorder: recorder, account: account)
         try await submitMessage("Review the gateway", in: model, recorder: recorder)
@@ -413,7 +413,7 @@ extension AppModelTests {
         )
         XCTAssertEqual(model.currentSessionTitle, "Generated title")
 
-        model.handle(.rejected(GatewayRejection(
+        model.gateway.handle(.rejected(GatewayRejection(
             requestId: firstSubmission.id,
             code: "rejected",
             message: "Try again",
@@ -455,7 +455,7 @@ extension AppModelTests {
         )
         await fulfillment(of: [firstTitleFinished], timeout: 1)
 
-        model.handle(.rejected(GatewayRejection(
+        model.gateway.handle(.rejected(GatewayRejection(
             requestId: firstSubmission.id,
             code: "rejected",
             message: "Try again",
@@ -550,7 +550,7 @@ extension AppModelTests {
         }
         let deleteID = try XCTUnwrap(deleteIDs.last)
 
-        model.handle(.accepted(requestID: deleteID))
+        model.gateway.handle(.accepted(requestID: deleteID))
         await fulfillment(of: [titleCancelled], timeout: 1)
 
         let requests = await recorder.requests()

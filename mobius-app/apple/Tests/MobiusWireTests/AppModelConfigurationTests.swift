@@ -7,10 +7,10 @@ extension AppModelTests {
     func testReconnectPreservesCatalogNavigationAndSetupDraftsWithoutAnOpenChat() throws {
         let model = try model(requestSender: { _ in })
         let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
-        model.accounts = [account]
-        model.selectedAccountID = account.id
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
         let snapshot = VersionedAgentConfig(revision: 1, config: composition())
-        model.handle(.ready(ready(botDefaults: snapshot)))
+        model.gateway.handle(.ready(ready(botDefaults: snapshot)))
         model.navigationPath = [.settings(.provider("new-provider"))]
         model.providerDraft = snapshot.config.provider
         model.providerLabelDraft = "My setup"
@@ -22,13 +22,13 @@ extension AppModelTests {
         model.botNameDraft = "Unsaved Bot name"
         model.showsWorkspaceBrowser = true
         model.pendingNewChatWorkspace = "/work"
-        model.pairingCode = "unsaved-pairing-code"
+        model.gateway.pairingCode = "unsaved-pairing-code"
         let navigation = model.navigationPath
 
         model.appDidEnterBackground()
         model.setSceneActive(true)
 
-        XCTAssertEqual(model.connectionState, .connecting)
+        XCTAssertEqual(model.gateway.connectionState, .connecting)
         XCTAssertEqual(model.sessions.map(\.sessionId), ["chat-1"])
         XCTAssertEqual(model.bots.map(\.id), ["bot-1"])
         XCTAssertEqual(model.navigationPath, navigation)
@@ -41,9 +41,9 @@ extension AppModelTests {
         XCTAssertEqual(model.botNameDraft, "Unsaved Bot name")
         XCTAssertTrue(model.showsWorkspaceBrowser)
         XCTAssertEqual(model.pendingNewChatWorkspace, "/work")
-        XCTAssertEqual(model.pairingCode, "unsaved-pairing-code")
+        XCTAssertEqual(model.gateway.pairingCode, "unsaved-pairing-code")
 
-        model.handle(.ready(ready(
+        model.gateway.handle(.ready(ready(
             botDefaults: snapshot,
             bots: [bot(name: "Synced Bot name")],
             sessions: [session(sessionID: "chat-2", state: .idle)]
@@ -92,11 +92,11 @@ extension AppModelTests {
                 return AsyncThrowingStream { _ in }
             }
         )
-        model.accounts = [account]
-        model.selectedAccountID = account.id
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
         model.startedAccountID = account.id
-        model.connectionState = .ready
-        model.reconnectsOnActivation = true
+        model.gateway.connectionState = .ready
+        model.gateway.setSceneActive(false)
 
         model.beginAppActivation()
         let firstActivation = try XCTUnwrap(model.appActivationTask)
@@ -129,12 +129,12 @@ extension AppModelTests {
         for succeeds in [true, false] {
             let recorder = GatewayRequestRecorder()
             let model = try model { request in await recorder.record(request) }
-            model.connectionState = .ready
+            model.gateway.connectionState = .ready
             model.providerDraft = composition().provider
             let provider = try XCTUnwrap(model.providerDraft?.provider)
             model.startProviderLogin()
             let id = try XCTUnwrap(model.pendingProviderLogin?.requestID)
-            model.handle(.providerLoginStarted(
+            model.gateway.handle(.providerLoginStarted(
                 requestID: id, loginID: "attempt", provider: provider,
                 verificationURL: "https://example.com/device", userCode: "ABCD-EFGH"
             ))
@@ -143,17 +143,18 @@ extension AppModelTests {
             XCTAssertEqual(model.pendingProviderLogin?.requestID, id)
             XCTAssertEqual(model.providerActionState, code)
 
-            model.resetGatewayState(preservingDrafts: true)
+            model.gateway.reset(preservingDrafts: true)
+            model.resetGatewayDependentState(preservingDrafts: true)
             XCTAssertEqual(model.pendingProviderLogin?.requestID, id)
             XCTAssertEqual(model.providerActionState, code)
 
             if succeeds {
-                model.handle(.providerLoginFinished(
+                model.gateway.handle(.providerLoginFinished(
                     requestID: id, loginID: "attempt", provider: provider
                 ))
                 XCTAssertEqual(model.providerActionState, .loginFinished(provider))
             } else {
-                model.handle(.rejected(GatewayRejection(
+                model.gateway.handle(.rejected(GatewayRejection(
                     requestId: id, code: "provider_error", message: "The code expired.", fatal: false
                 )))
                 XCTAssertEqual(model.providerActionState, .failed("The code expired."))
@@ -168,20 +169,21 @@ extension AppModelTests {
             await recorder.record(request)
             if await recorder.requestCount() == 1 { throw GatewayWireError.disconnected }
         }
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.providerDraft = composition().provider
         model.startProviderLogin()
         let id = try XCTUnwrap(model.pendingProviderLogin?.requestID)
         let provider = try XCTUnwrap(model.pendingProviderLogin?.provider)
-        let disconnected = await eventually { !model.connectionState.isReady }
+        let disconnected = await eventually { !model.gateway.connectionState.isReady }
         XCTAssertTrue(disconnected)
         XCTAssertEqual(model.pendingProviderLogin?.requestID, id)
         XCTAssertEqual(model.providerActionState, .startingLogin(provider))
 
         // Even a changed setup draft must not change which login is being resumed.
         model.providerDraft = nil
-        model.resetGatewayState(preservingDrafts: true)
-        model.handle(.ready(ready(
+        model.gateway.reset(preservingDrafts: true)
+        model.resetGatewayDependentState(preservingDrafts: true)
+        model.gateway.handle(.ready(ready(
             botDefaults: VersionedAgentConfig(revision: 1, config: composition())
         )))
         let retried = await eventually {
@@ -212,7 +214,8 @@ extension AppModelTests {
         model.routineRunPreviewRequestID = "preview"
         model.isLoadingRoutineRunPreview = true
 
-        model.resetGatewayState(preservingDrafts: true, preservingSession: true)
+        model.gateway.reset(preservingDrafts: true)
+        model.resetGatewayDependentState(preservingDrafts: true, preservingSession: true)
 
         XCTAssertNil(model.pendingProviderCredential)
         XCTAssertEqual(model.providerAPIKey, "unsaved-test-key")
@@ -238,7 +241,8 @@ extension AppModelTests {
         model.navigationPath = [.settings(.provider("private-setup"))]
         model.showsWorkspaceBrowser = true
 
-        model.resetGatewayState(preservingDrafts: false)
+        model.gateway.reset(preservingDrafts: false)
+        model.resetGatewayDependentState(preservingDrafts: false)
 
         XCTAssertNil(model.providerDraft)
         XCTAssertEqual(model.providerLabelDraft, "")
@@ -381,17 +385,17 @@ extension AppModelTests {
         guard case .setProviderCredential(let requestID, _, _, _) = try XCTUnwrap(request)
         else { return XCTFail("Expected provider credential request") }
 
-        model.handle(.providerCredentialSaved(
+        model.gateway.handle(.providerCredentialSaved(
             requestID: "stale",
             instance: sibling.instance,
             provider: sibling.provider
         ))
-        model.handle(.providerCredentialSaved(
+        model.gateway.handle(.providerCredentialSaved(
             requestID: requestID,
             instance: sibling.instance,
             provider: sibling.provider
         ))
-        model.handle(.providerCredentialSaved(
+        model.gateway.handle(.providerCredentialSaved(
             requestID: requestID,
             instance: target.instance,
             provider: "kimi"
@@ -401,7 +405,7 @@ extension AppModelTests {
         XCTAssertEqual(model.providerAPIKey, "secret")
         XCTAssertEqual(model.providerActionState, .savingCredential(target.instance))
 
-        model.handle(.providerCredentialSaved(
+        model.gateway.handle(.providerCredentialSaved(
             requestID: requestID,
             instance: target.instance,
             provider: target.provider
@@ -426,7 +430,7 @@ extension AppModelTests {
             modelIds: [],
             reasoningEfforts: []
         )
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
 
         var newDraft = selection
         newDraft.instance = "new-draft"
@@ -450,7 +454,7 @@ extension AppModelTests {
         XCTAssertEqual(model.navigationPath, [.settings(.provider(record.instance))])
         XCTAssertTrue(model.isApplyingConfiguration)
 
-        model.handle(.rejected(GatewayRejection(
+        model.gateway.handle(.rejected(GatewayRejection(
             requestId: firstRequestID,
             code: "provider_in_use",
             message: "Provider is still in use",
@@ -471,7 +475,7 @@ extension AppModelTests {
         guard case .removeProvider(let retryRequestID, _) = try XCTUnwrap(retry)
         else { return XCTFail("Expected provider removal retry") }
 
-        model.handle(.gatewayConfigured(
+        model.gateway.handle(.gatewayConfigured(
             requestID: retryRequestID,
             payload: ReadyPayload(
                 machineName: "snowwhite.local",
@@ -995,7 +999,7 @@ extension AppModelTests {
         let model = try model()
         let active = composition(systemPrompt: "Active chat")
         let botDefaults = composition(systemPrompt: "New chats")
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         model.sessions = [session(state: .idle)]
         model.agentSnapshot = VersionedAgentConfig(revision: 3, config: active)
@@ -1027,7 +1031,7 @@ extension AppModelTests {
             setting: "access"
         )
         let helper = bot(config: VersionedAgentConfig(revision: 3, config: composition()))
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.bots = [helper]
         model.beginEditingBot(helper)
         model.botNameDraft = "Durable Helper"
@@ -1068,7 +1072,7 @@ extension AppModelTests {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
         let original = bot(config: VersionedAgentConfig(revision: 3, config: composition()))
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.bots = [original]
         model.beginEditingBot(original)
         model.botNameDraft = "Locally edited"
@@ -1077,7 +1081,7 @@ extension AppModelTests {
             name: "Externally edited",
             config: VersionedAgentConfig(revision: 8, config: composition())
         )
-        model.handle(.bots(requestID: nil, bots: [external]))
+        model.gateway.handle(.bots(requestID: nil, bots: [external]))
         model.saveBotDraft()
 
         let request = await recorder.firstRequest(after: 0) {
@@ -1093,7 +1097,7 @@ extension AppModelTests {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
         let helper = bot()
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.bots = [helper]
         model.sessions = [
             session(sessionID: "chat-1", state: .idle, botID: helper.id),
@@ -1125,7 +1129,7 @@ extension AppModelTests {
             model.botMutationRequestID = "bot-update"
             model.botApplyState = .applying
 
-            model.handle(.rejected(GatewayRejection(
+            model.gateway.handle(.rejected(GatewayRejection(
                 requestId: "bot-update",
                 code: code,
                 message: "Rejected",
@@ -1142,7 +1146,7 @@ extension AppModelTests {
         var initial = composition()
         initial.middleware.enabled.insert("excluded")
         let helper = bot(config: VersionedAgentConfig(revision: 7, config: initial))
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.bots = [helper]
         model.sessions = [session(state: .idle)]
         model.selectedSessionID = "chat-1"
@@ -1193,7 +1197,7 @@ extension AppModelTests {
     func testBotCatalogResponseCompletesSaveAndRefreshesDraft() throws {
         let model = try model()
         let original = bot(config: VersionedAgentConfig(revision: 4, config: composition()))
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.bots = [original]
         model.sessions = [session(state: .idle)]
         model.selectedSessionID = "chat-1"
@@ -1215,7 +1219,7 @@ extension AppModelTests {
             tint: .purple,
             config: VersionedAgentConfig(revision: 5, config: savedConfig)
         )
-        model.handle(.bots(requestID: "bot-update-1", bots: [saved]))
+        model.gateway.handle(.bots(requestID: "bot-update-1", bots: [saved]))
 
         XCTAssertNil(model.botMutationRequestID)
         XCTAssertEqual(model.botApplyState, .applied)
@@ -1232,7 +1236,7 @@ extension AppModelTests {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
         let mobius = bot(handle: "mobius", name: "Mobius")
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.bots = [mobius]
 
         model.deleteBot(mobius)
@@ -1266,7 +1270,7 @@ extension AppModelTests {
             finished: false,
             nextRunAt: nil
         )
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.bots = [mobius, helper]
         model.routines = [helperRoutine]
         model.routineRuns = [RoutineRun(
@@ -1302,7 +1306,7 @@ extension AppModelTests {
         XCTAssertEqual(id, helper.id)
         XCTAssertEqual(revision, 7)
 
-        model.handle(.bots(requestID: requestID, bots: [mobius]))
+        model.gateway.handle(.bots(requestID: requestID, bots: [mobius]))
 
         XCTAssertTrue(model.routines.isEmpty)
         XCTAssertTrue(model.routineRuns.isEmpty)
@@ -1398,7 +1402,7 @@ extension AppModelTests {
             botDefaults: VersionedAgentConfig(revision: 8, config: draft),
             bots: [bot(config: VersionedAgentConfig(revision: 3, config: active))]
         )
-        model.handle(.ready(response))
+        model.gateway.handle(.ready(response))
         XCTAssertEqual(model.botDefaultsDraft, draft)
         model.applyGatewayConfigurationResponse(requestID: requestID, payload: response)
         XCTAssertEqual(model.agentDraft, active)
@@ -1445,7 +1449,7 @@ extension AppModelTests {
             botDefaults: VersionedAgentConfig(revision: 8, config: draft),
             bots: [bot(config: VersionedAgentConfig(revision: 3, config: active))]
         )
-        model.handle(.ready(response))
+        model.gateway.handle(.ready(response))
         XCTAssertEqual(model.botDefaultsDraft, laterBotDefaultsDraft)
         model.applyGatewayConfigurationResponse(requestID: requestID, payload: response)
         XCTAssertEqual(model.agentDraft, active)
@@ -1456,7 +1460,7 @@ extension AppModelTests {
     func testInstallingAnExtensionUsesTheGatewayRefreshAsItsResult() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
 
         model.extensionInstallSource = " https://github.com/DietrichGebert/ponytail.git "
         model.installExtension()
@@ -1494,7 +1498,7 @@ extension AppModelTests {
     func testInstallingCatalogExtensionRelaysItsGenericSourceFields() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         let item = MobiusCloudExtensionCatalogItem(
             id: "ponytail",
             name: "Ponytail",
@@ -1529,7 +1533,7 @@ extension AppModelTests {
     func testHookTrustChangesAreBoundToTheInstalledDigest() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
 
         let untrusted = extensionRecord(hooksTrusted: false)
         model.trustHooks(for: untrusted)
@@ -1589,12 +1593,12 @@ extension AppModelTests {
 
     func testFatalGatewayErrorClearsAnExtensionAction() throws {
         let model = try model { _ in }
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.extensionInstallSource = "https://github.com/DietrichGebert/ponytail.git"
         model.installExtension()
         XCTAssertEqual(model.extensionAction, .installing)
 
-        model.handle(.error(GatewayFailure(
+        model.gateway.handle(.error(GatewayFailure(
             code: "internal",
             message: "Gateway failed.",
             fatal: true

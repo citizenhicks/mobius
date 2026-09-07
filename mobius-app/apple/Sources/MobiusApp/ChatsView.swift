@@ -287,7 +287,7 @@ struct ChatsView: View {
     }
 
     private var showsLoadingCatalog: Bool {
-        model.connectionState.isLoading
+        model.gateway.connectionState.isLoading
             && model.sessions.isEmpty
             && !showsAttentionOnly
             && searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -366,8 +366,8 @@ struct ChatsView: View {
         if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return "No chats match your search"
         }
-        if !model.connectionState.isReady && model.sessions.isEmpty {
-            return model.connectionState.label
+        if !model.gateway.connectionState.isReady && model.sessions.isEmpty {
+            return model.gateway.connectionState.label
         }
         if showsAttentionOnly {
             return "No chats need attention"

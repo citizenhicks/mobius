@@ -18,7 +18,7 @@ extension AppModelTests {
                 startsTurn: true
             )
         }
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
 
         XCTAssertEqual(model.displayedTranscript.count, 1)
         XCTAssertEqual(model.displayedTranscript.first?.text, "1")
@@ -64,7 +64,7 @@ extension AppModelTests {
                 ),
             ]
         }
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
 
         XCTAssertEqual(model.displayedTranscript.count, 3)
         XCTAssertEqual(model.displayedTranscript.first?.id, "user-1")
@@ -269,9 +269,9 @@ extension AppModelTests {
             requestSender: { request in await recorder.record(request) }
         )
         model.bots = [bot()]
-        model.accounts = [account]
-        model.selectedAccountID = account.id
-        model.connectionState = .ready
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
+        model.gateway.connectionState = .ready
 
         model.openSession("chat-1")
         try await Task.sleep(for: .milliseconds(20))
@@ -285,7 +285,7 @@ extension AppModelTests {
         XCTAssertFalse(model.isLoadingTranscript)
         XCTAssertEqual(model.displayedTranscript.map(\.text), ["Already rendered"])
 
-        model.handle(.sessionOpened(requestID: requestID, payload: sessionReady(latestSequence: 7)))
+        model.gateway.handle(.sessionOpened(requestID: requestID, payload: sessionReady(latestSequence: 7)))
         XCTAssertEqual(model.transcript.map(\.text), ["Already rendered"])
         XCTAssertEqual(model.transcript.first?.turnID, "turn-cached")
         XCTAssertEqual(model.transcript.first?.startsTurn, true)
@@ -300,9 +300,9 @@ extension AppModelTests {
         XCTAssertEqual(model.currentUsage.totalTokens, 55)
         XCTAssertEqual(model.contextTokens, 42)
         XCTAssertTrue(model.hasEarlierHistory)
-        model.handle(.sessionReplayComplete(requestID: requestID, sessionID: "chat-1"))
+        model.gateway.handle(.sessionReplayComplete(requestID: requestID, sessionID: "chat-1"))
 
-        model.handle(.agentEvent(
+        model.gateway.handle(.agentEvent(
             sessionID: "chat-1",
             sequence: 7,
             event: AgentEventRecord(submissionId: nil, msg: .object([
@@ -371,7 +371,7 @@ extension AppModelTests {
 
     func testReconnectKeepsTheRetainedTranscriptVisibleWhileReplayLoads() throws {
         let model = try model()
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         model.transcript = [TranscriptEntry(
             id: "answer-1",
@@ -383,7 +383,7 @@ extension AppModelTests {
 
         model.restoreSession("chat-1")
 
-        XCTAssertEqual(model.connectionState, .loading)
+        XCTAssertEqual(model.gateway.connectionState, .loading)
         XCTAssertFalse(model.isLoadingTranscript)
         XCTAssertEqual(model.displayedTranscript.map(\.text), ["Already rendered"])
     }
@@ -392,9 +392,9 @@ extension AppModelTests {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
         let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
-        model.accounts = [account]
-        model.selectedAccountID = account.id
-        model.connectionState = .ready
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         model.sessions = [
             session(sessionID: "chat-2", state: .idle),
@@ -463,9 +463,9 @@ extension AppModelTests {
             requestSender: { request in await recorder.record(request) }
         )
         model.bots = [bot()]
-        model.accounts = [account]
-        model.selectedAccountID = account.id
-        model.connectionState = .ready
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
+        model.gateway.connectionState = .ready
 
         model.openSession("chat-1")
         try await Task.sleep(for: .milliseconds(20))
@@ -473,11 +473,11 @@ extension AppModelTests {
         guard case .openSession(let requestID, _, _) = try XCTUnwrap(requests.first) else {
             return XCTFail("Expected a session open")
         }
-        model.handle(.sessionOpened(
+        model.gateway.handle(.sessionOpened(
             requestID: requestID,
             payload: sessionReady(latestSequence: 9)
         ))
-        model.handle(.agentEvent(
+        model.gateway.handle(.agentEvent(
             sessionID: "chat-1",
             sequence: 8,
             event: AgentEventRecord(submissionId: nil, msg: .object([
@@ -493,7 +493,7 @@ extension AppModelTests {
             preview: nil
         ))
         XCTAssertEqual(model.displayedTranscript.map(\.text), ["Cached"])
-        model.handle(.agentEvent(
+        model.gateway.handle(.agentEvent(
             sessionID: "chat-1",
             sequence: 9,
             event: AgentEventRecord(
@@ -510,7 +510,7 @@ extension AppModelTests {
         ))
         XCTAssertEqual(model.displayedTranscript.map(\.text), ["Cached"])
 
-        model.handle(.sessionReplayComplete(requestID: requestID, sessionID: "chat-1"))
+        model.gateway.handle(.sessionReplayComplete(requestID: requestID, sessionID: "chat-1"))
 
         XCTAssertEqual(model.displayedTranscript.map(\.text), ["Cached", "Canonical"])
     }
@@ -548,9 +548,9 @@ extension AppModelTests {
             requestSender: { request in await recorder.record(request) }
         )
         model.bots = [bot()]
-        model.accounts = [account]
-        model.selectedAccountID = account.id
-        model.connectionState = .ready
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
+        model.gateway.connectionState = .ready
 
         model.openSession("chat-1")
         try await Task.sleep(for: .milliseconds(20))
@@ -558,11 +558,11 @@ extension AppModelTests {
         guard case .openSession(let firstRequestID, _, _) = try XCTUnwrap(requests.first) else {
             return XCTFail("Expected the first session open")
         }
-        model.handle(.sessionOpened(
+        model.gateway.handle(.sessionOpened(
             requestID: firstRequestID,
             payload: sessionReady(latestSequence: 9)
         ))
-        model.handle(.agentEvent(
+        model.gateway.handle(.agentEvent(
             sessionID: "chat-1",
             sequence: 8,
             event: AgentEventRecord(submissionId: nil, msg: .object([
@@ -584,12 +584,12 @@ extension AppModelTests {
         guard case .openSession(let secondRequestID, _, 8) = try XCTUnwrap(
             requests.last
         ) else { return XCTFail("Expected the replay cursor to resume at sequence 8") }
-        model.handle(.sessionOpened(
+        model.gateway.handle(.sessionOpened(
             requestID: secondRequestID,
             payload: sessionReady(latestSequence: 9)
         ))
         XCTAssertEqual(model.displayedTranscript.map(\.text), ["Cached"])
-        model.handle(.agentEvent(
+        model.gateway.handle(.agentEvent(
             sessionID: "chat-1",
             sequence: 9,
             event: AgentEventRecord(submissionId: nil, msg: .object([
@@ -604,7 +604,7 @@ extension AppModelTests {
             history: nil,
             preview: nil
         ))
-        model.handle(.sessionReplayComplete(
+        model.gateway.handle(.sessionReplayComplete(
             requestID: secondRequestID,
             sessionID: "chat-1"
         ))

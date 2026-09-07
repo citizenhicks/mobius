@@ -24,7 +24,7 @@ extension AppModelTests {
         model.modelProviders = ["voice-route": config.provider.instance]
         model.botDefaultsSnapshot = VersionedAgentConfig(revision: 1, config: config)
         model.selectedModelRoute = "voice-route"
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         return model
     }
 
@@ -74,7 +74,7 @@ extension AppModelTests {
         let recorder = GatewayRequestRecorder()
         let model = try model { await recorder.record($0) }
         model.selectedSessionID = "chat-1"
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         let call = RealtimeVoiceCall(requestID: "call", sessionID: "chat-1")
         model.realtimeVoiceCall = call
         let widget = MountedWidget(capability: "messages", widget: FrontendWidget(
@@ -183,13 +183,13 @@ extension AppModelTests {
         model.realtimeVoiceCall = RealtimeVoiceCall(
             requestID: "new", sessionID: "chat-1"
         )
-        model.handle(.realtimeVoiceStarted(
+        model.gateway.handle(.realtimeVoiceStarted(
             requestID: "old", sessionID: "chat-1", voiceID: "old", answerSDP: "late answer"
         ))
-        model.handle(.realtimeVoiceFailed(requestID: "old", sessionID: "chat-1", message: "late error"))
-        model.handle(.realtimeVoiceEnded(sessionID: "chat-1", voiceID: "old", reason: nil))
+        model.gateway.handle(.realtimeVoiceFailed(requestID: "old", sessionID: "chat-1", message: "late error"))
+        model.gateway.handle(.realtimeVoiceEnded(sessionID: "chat-1", voiceID: "old", reason: nil))
         XCTAssertEqual(model.realtimeVoiceCall?.requestID, "new")
-        model.handle(.realtimeVoiceFailed(requestID: "new", sessionID: "chat-1", message: "start failed"))
+        model.gateway.handle(.realtimeVoiceFailed(requestID: "new", sessionID: "chat-1", message: "start failed"))
         XCTAssertNil(model.realtimeVoiceCall)
     }
 
@@ -200,7 +200,7 @@ extension AppModelTests {
         model.startRealtimeVoice()
         let call = try XCTUnwrap(model.realtimeVoiceCall)
         let startup = try XCTUnwrap(model.realtimeVoiceTask)
-        let oldGeneration = model.connectionGeneration
+        let oldGeneration = model.gateway.connectionGeneration
         model.newVoiceChatIntent = .openingSession("pending-session")
         model.appDidEnterBackground()
         XCTAssertNil(model.realtimeVoiceCall)
@@ -208,7 +208,7 @@ extension AppModelTests {
         XCTAssertNil(model.newVoiceChatIntent)
         XCTAssertTrue(startup.isCancelled)
         XCTAssertFalse(model.realtimeVoice.isConnected)
-        XCTAssertNotEqual(model.connectionGeneration, oldGeneration)
+        XCTAssertNotEqual(model.gateway.connectionGeneration, oldGeneration)
         let ended = await recorder.firstRequest(after: 0) {
             if case .endRealtimeVoice("chat-1", call.requestID) = $0 { true } else { false }
         }
@@ -245,12 +245,12 @@ extension AppModelTests {
         guard case .openingSession(let requestID) = model.newVoiceChatIntent else {
             return XCTFail("Expected session creation after workspace and the only Bot were selected")
         }
-        model.handle(.sessionOpened(
+        model.gateway.handle(.sessionOpened(
             requestID: requestID,
             payload: sessionReady(latestSequence: 0, modelRoute: "voice-route")
         ))
         XCTAssertNil(model.realtimeVoiceCall)
-        model.handle(.sessionReplayComplete(requestID: requestID, sessionID: "chat-1"))
+        model.gateway.handle(.sessionReplayComplete(requestID: requestID, sessionID: "chat-1"))
         XCTAssertEqual(model.realtimeVoiceCall?.sessionID, "chat-1")
         XCTAssertNil(model.newVoiceChatIntent)
         // Cancel before the asynchronous permission request runs.

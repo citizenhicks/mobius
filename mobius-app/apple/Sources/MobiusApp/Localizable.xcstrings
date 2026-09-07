@@ -9597,18 +9597,18 @@
         }
       }
     },
-    "Open TestFlight" : {
+    "Open App Store" : {
       "localizations" : {
         "fr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Ouvrir TestFlight"
+            "value" : "Ouvrir l’App Store"
           }
         },
         "de" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "TestFlight öffnen"
+            "value" : "App Store öffnen"
           }
         }
       }
@@ -13902,18 +13902,34 @@
         }
       }
     },
-    "This app is older than möbius Cloud and can no longer connect. Install the latest build from TestFlight, then reopen the app." : {
+    "Update the app to connect to this gateway. Install the latest version from the App Store, then reopen the app." : {
       "localizations" : {
         "fr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Cette app est plus ancienne que möbius Cloud et ne peut plus s’y connecter. Installez la dernière version depuis TestFlight, puis rouvrez l’app."
+            "value" : "Mettez l’app à jour pour vous connecter à cette passerelle. Installez la dernière version depuis l’App Store, puis rouvrez l’app."
           }
         },
         "de" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Diese App ist älter als möbius Cloud und kann keine Verbindung mehr herstellen. Installieren Sie den neuesten Build von TestFlight, und öffnen Sie die App erneut."
+            "value" : "Aktualisieren Sie die App, um eine Verbindung zu diesem Gateway herzustellen. Installieren Sie die neueste Version aus dem App Store und öffnen Sie die App dann erneut."
+          }
+        }
+      }
+    },
+    "The App Store update page is unavailable." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La page de mise à jour de l’App Store est indisponible."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die Update-Seite im App Store ist nicht verfügbar."
           }
         }
       }

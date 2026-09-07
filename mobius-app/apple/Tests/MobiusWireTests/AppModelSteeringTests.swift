@@ -10,7 +10,7 @@ extension AppModelTests {
             await recorder.record(request)
         })
         let target = MessageTarget(checkpointSequence: 7, batchItemCount: 2)
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         model.reduce(
             event: AgentEventRecord(
@@ -61,7 +61,7 @@ extension AppModelTests {
             target: MessageTarget(checkpointSequence: 9, batchItemCount: 1),
             text: "Different original"
         )
-        model.handle(.rejected(GatewayRejection(
+        model.gateway.handle(.rejected(GatewayRejection(
             requestId: submission.id,
             code: "submission_rejected",
             message: "Try again",
@@ -90,7 +90,7 @@ extension AppModelTests {
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         model.activeTurnID = "turn-1"
         model.composer = "Use the smaller patch"
@@ -132,7 +132,7 @@ extension AppModelTests {
             blocks: [],
             preview: nil
         )
-        model.handle(.rejected(GatewayRejection(
+        model.gateway.handle(.rejected(GatewayRejection(
             requestId: "unrelated",
             code: "connection_failed",
             message: "Disconnected",
@@ -146,7 +146,7 @@ extension AppModelTests {
             "Use the smaller patch"
         )
 
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.composer = "Retry this steering"
         requestCount = await recorder.requestCount()
         model.sendMessage()
@@ -331,7 +331,7 @@ extension AppModelTests {
         var composition = composition()
         composition.middleware.settings["messages"] = ["delivery": .string("queue")]
         model.agentDraft = composition
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         model.activeTurnID = "turn-1"
 

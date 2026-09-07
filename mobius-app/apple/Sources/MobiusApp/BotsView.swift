@@ -62,8 +62,8 @@ struct BotsView: View {
                 }
             }
         }
-        .task(id: model.connectionState.isReady) {
-            guard model.connectionState.isReady else { return }
+        .task(id: model.gateway.connectionState.isReady) {
+            guard model.gateway.connectionState.isReady else { return }
             model.refreshBots()
             model.refreshRoutines()
         }
@@ -485,7 +485,7 @@ struct BotDetailView: View {
                             } label: {
                                 MobiusIcon(.plus, gutter: false)
                             }
-                            .disabled(workspaces.isEmpty || !model.connectionState.isReady)
+                            .disabled(workspaces.isEmpty || !model.gateway.connectionState.isReady)
                             .groupedHeaderAction(prominent: true)
                             .accessibilityLabel("New routine")
                             .help("New routine")
@@ -733,7 +733,7 @@ struct BotSessionsView: View {
                 )
             }
         }
-        .task(id: "\(botID):\(model.connectionState.isReady)") {
+        .task(id: "\(botID):\(model.gateway.connectionState.isReady)") {
             model.refreshBotSessions(botID)
         }
         .refreshable {

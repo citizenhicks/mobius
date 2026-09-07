@@ -168,8 +168,8 @@ struct ChatView: View {
     }
 
     private var chatSubtitle: String {
-        if model.selectedSessionIsHidden { return model.gatewayMachineName }
-        return [workspaceName, model.gatewayMachineName]
+        if model.selectedSessionIsHidden { return model.gateway.gatewayMachineName }
+        return [workspaceName, model.gateway.gatewayMachineName]
             .filter { !$0.isEmpty }
             .joined(separator: " • ")
     }
@@ -237,7 +237,7 @@ private struct ChatOptionsMenu: View {
                         glyph: .fileMagnifyingGlass
                     )
                 }
-                .disabled(model.selectedSessionID == nil || !model.connectionState.isReady)
+                .disabled(model.selectedSessionID == nil || !model.gateway.connectionState.isReady)
                 Button {
                     model.loadDirectory(
                         model.workspace?.path ?? (model.selectedGatewayIsMobiusCloud ? "." : "/")

@@ -27,7 +27,7 @@ struct ExtensionsView: View {
                         statusLabel: status.label,
                         statusDetail: status.detail,
                         statusColor: status.color,
-                        isLoading: model.connectionState.isLoading || model.extensionAction != nil
+                        isLoading: model.gateway.connectionState.isLoading || model.extensionAction != nil
                     )
                     .groupedHeaderAction()
                 }
@@ -148,7 +148,7 @@ struct ExtensionsView: View {
     }
 
     private var showsLoadingInstalled: Bool {
-        model.connectionState.isLoading && model.extensions.isEmpty
+        model.gateway.connectionState.isLoading && model.extensions.isEmpty
     }
 
     private var loadingInstalled: some View {
@@ -173,7 +173,7 @@ struct ExtensionsView: View {
     }
 
     private var pageDetail: LocalizedStringResource {
-        model.connectionState.isReady
+        model.gateway.connectionState.isReady
             ? "Portable plugins this gateway can use in a chat."
             : "Connect to a gateway to manage extensions."
     }
@@ -193,7 +193,7 @@ struct ExtensionsView: View {
                 (.localized("Disabling \(name) hooks"), .localized("The gateway is revoking executable-hook trust."), palette.accent)
             }
         }
-        switch model.connectionState {
+        switch model.gateway.connectionState {
         case .ready:
             return (
                 .localized("Catalog up to date"),
@@ -204,9 +204,9 @@ struct ExtensionsView: View {
             return (.localized("Needs attention"), .verbatim(message), palette.danger)
         default:
             return (
-                .localized(model.connectionState.label),
+                .localized(model.gateway.connectionState.label),
                 .localized("Connect to a gateway to manage its extension catalog."),
-                model.connectionState.tone.color(in: palette)
+                model.gateway.connectionState.tone.color(in: palette)
             )
         }
     }

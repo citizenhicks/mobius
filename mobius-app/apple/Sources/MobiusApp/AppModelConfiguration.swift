@@ -138,7 +138,7 @@ extension AppModel {
 
     func interrupt() {
         guard let sessionID = selectedSessionID, let activeTurnID else { return }
-        transmit(.submit(
+        gateway.transmit(.submit(
             sessionID: sessionID,
             submission: Submission(
                 id: requestID("interrupt"),
@@ -154,7 +154,7 @@ extension AppModel {
         else { return }
         let id = requestID("approval")
         approvalRequestID = id
-        transmit(.submit(
+        gateway.transmit(.submit(
             sessionID: sessionID,
             submission: Submission(
                 id: id,
@@ -200,7 +200,7 @@ extension AppModel {
         botDefaultsApplyState = .applying
         botDefaultsRequestID = id
         submittedBotDefaultsDraft = draft
-        transmit(.configureBotDefaults(
+        gateway.transmit(.configureBotDefaults(
             requestID: id,
             expectedRevision: snapshot.revision,
             config: draft
@@ -257,7 +257,7 @@ extension AppModel {
         let id = requestID("bot-create")
         botMutationRequestID = id
         botMutationSuccessMessage = localizedString("Bot created.")
-        transmit(.createBot(
+        gateway.transmit(.createBot(
             requestID: id,
             name: name,
             description: description
@@ -290,7 +290,7 @@ extension AppModel {
         botMutationRequestID = requestID
         botMutationSuccessMessage = localizedString("Bot saved.")
         botApplyState = .applying
-        transmit(.updateBot(
+        gateway.transmit(.updateBot(
             requestID: requestID,
             id: id,
             expectedRevision: expectedRevision,
@@ -311,7 +311,7 @@ extension AppModel {
         let id = requestID("bot-delete")
         botMutationRequestID = id
         botMutationSuccessMessage = localizedString("Bot deleted.")
-        transmit(.deleteBot(
+        gateway.transmit(.deleteBot(
             requestID: id,
             id: bot.id,
             expectedRevision: bot.config.revision
@@ -337,8 +337,8 @@ extension AppModel {
     }
 
     func refreshBots() {
-        guard connectionState.isReady else { return }
-        transmit(.listBots(requestID: requestID("bot-list")))
+        guard gateway.connectionState.isReady else { return }
+        gateway.transmit(.listBots(requestID: requestID("bot-list")))
     }
 
     func reloadBotDefaultsDraft() {
@@ -449,7 +449,7 @@ extension AppModel {
                 apiKey: key
             )
         }
-        transmit(request) { [weak self] message in
+        gateway.transmit(request) { [weak self] message in
             guard let self, self.pendingProviderCredential?.requestID == id else { return }
             self.pendingProviderCredential = nil
             self.providerActionState = .failed(message)
@@ -469,7 +469,7 @@ extension AppModel {
         }
         let id = requestID("provider")
         providerRegistrationRequestID = id
-        transmit(.registerProvider(
+        gateway.transmit(.registerProvider(
             requestID: id,
             config: config,
             label: providerLabelDraft.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -485,13 +485,13 @@ extension AppModel {
 
     func removeProvider(_ instance: String) {
         guard !isApplyingConfiguration,
-              connectionState.isReady,
+              gateway.connectionState.isReady,
               providerInstances.contains(where: { $0.instance == instance })
         else { return }
         let id = requestID("provider-remove")
         pendingProviderRemoval = (requestID: id, instance: instance)
         providerActionState = .idle
-        transmit(.removeProvider(requestID: id, instance: instance)) { [weak self] message in
+        gateway.transmit(.removeProvider(requestID: id, instance: instance)) { [weak self] message in
             guard self?.pendingProviderRemoval?.requestID == id else { return }
             self?.pendingProviderRemoval = nil
             self?.providerActionState = .failed(message)
@@ -499,7 +499,7 @@ extension AppModel {
     }
 
     func startProviderLogin() {
-        guard connectionState.isReady,
+        guard gateway.connectionState.isReady,
               pendingProviderLogin == nil,
               let provider = providerDraft?.provider
         else { return }
@@ -509,10 +509,10 @@ extension AppModel {
     }
 
     func resumeProviderLogin() {
-        guard connectionState.isReady, let login = pendingProviderLogin else { return }
+        guard gateway.connectionState.isReady, let login = pendingProviderLogin else { return }
         // The same request resumes its gateway-owned attempt, including a missed result.
         // Keep the identity if sending fails: the gateway may already have received it.
-        transmit(.startProviderLogin(requestID: login.requestID, provider: login.provider))
+        gateway.transmit(.startProviderLogin(requestID: login.requestID, provider: login.provider))
     }
 
     func createPairingCode() {
@@ -521,13 +521,13 @@ extension AppModel {
         pairingCodeExpiryTask?.cancel()
         pairingCodeExpiryTask = nil
         pairingCodeInfo = nil
-        transmit(.createPairingCode(requestID: id)) { [weak self] _ in
+        gateway.transmit(.createPairingCode(requestID: id)) { [weak self] _ in
             self?.pairingCodeRequestID = nil
         }
     }
 
     func probeGitCredential(_ target: String) {
-        guard connectionState.isReady, gitCredentialRequestID == nil else { return }
+        guard gateway.connectionState.isReady, gitCredentialRequestID == nil else { return }
         let target = target.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !target.isEmpty else {
             gitCredentialError = localizedString("Enter an HTTPS Git host or URL.")
@@ -538,7 +538,7 @@ extension AppModel {
         gitCredentialRequestID = id
         isApprovingGitCredential = false
         isCheckingGitCredential = true
-        transmit(.probeGitCredential(requestID: id, target: target)) { [weak self] message in
+        gateway.transmit(.probeGitCredential(requestID: id, target: target)) { [weak self] message in
             guard self?.gitCredentialRequestID == id else { return }
             self?.gitCredentialRequestID = nil
             self?.isCheckingGitCredential = false
@@ -547,7 +547,7 @@ extension AppModel {
     }
 
     func approveGitCredential(target: String, username: String, token: String) {
-        guard connectionState.isReady, gitCredentialRequestID == nil else { return }
+        guard gateway.connectionState.isReady, gitCredentialRequestID == nil else { return }
         let target = target.trimmingCharacters(in: .whitespacesAndNewlines)
         let username = username.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !target.isEmpty, !username.isEmpty, !token.isEmpty else {
@@ -561,7 +561,7 @@ extension AppModel {
         gitCredentialRequestID = id
         isApprovingGitCredential = true
         isCheckingGitCredential = true
-        transmit(.approveGitCredential(
+        gateway.transmit(.approveGitCredential(
             requestID: id,
             target: target,
             username: username,
@@ -576,12 +576,12 @@ extension AppModel {
     }
 
     func listSshIdentities() {
-        guard connectionState.isReady, sshIdentityRequestID == nil else { return }
+        guard gateway.connectionState.isReady, sshIdentityRequestID == nil else { return }
         let id = requestID("ssh-list")
         sshIdentityRequestID = id
         sshIdentityError = nil
         isLoadingSshIdentities = true
-        transmit(.listSshIdentities(requestID: id)) { [weak self] message in
+        gateway.transmit(.listSshIdentities(requestID: id)) { [weak self] message in
             guard self?.sshIdentityRequestID == id else { return }
             self?.sshIdentityRequestID = nil
             self?.isLoadingSshIdentities = false
@@ -590,7 +590,7 @@ extension AppModel {
     }
 
     func generateSshIdentity() {
-        guard connectionState.isReady,
+        guard gateway.connectionState.isReady,
               sshIdentityRequestID == nil,
               sshIdentities?.isEmpty == true
         else { return }
@@ -598,7 +598,7 @@ extension AppModel {
         sshIdentityRequestID = id
         sshIdentityError = nil
         isGeneratingSshIdentity = true
-        transmit(.generateSshIdentity(requestID: id)) { [weak self] message in
+        gateway.transmit(.generateSshIdentity(requestID: id)) { [weak self] message in
             guard self?.sshIdentityRequestID == id else { return }
             self?.sshIdentityRequestID = nil
             self?.isGeneratingSshIdentity = false
@@ -614,13 +614,13 @@ extension AppModel {
         endsAt: Int64?
     ) {
         let instructions = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard connectionState.isReady, !botID.isEmpty, !workspace.isEmpty,
+        guard gateway.connectionState.isReady, !botID.isEmpty, !workspace.isEmpty,
               !instructions.isEmpty
         else { return }
         let id = requestID("routine-create")
         routineRequestIDs.insert(id)
         routineError = nil
-        transmit(.createRoutine(
+        gateway.transmit(.createRoutine(
             requestID: id,
             botID: botID,
             workspace: workspace,
@@ -643,13 +643,13 @@ extension AppModel {
         enabled: Bool
     ) {
         let instructions = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard connectionState.isReady, !botID.isEmpty, !workspace.isEmpty,
+        guard gateway.connectionState.isReady, !botID.isEmpty, !workspace.isEmpty,
               !instructions.isEmpty
         else { return }
         let id = requestID("routine-update")
         routineRequestIDs.insert(id)
         routineError = nil
-        transmit(.updateRoutine(
+        gateway.transmit(.updateRoutine(
             requestID: id,
             id: routine.id,
             botID: botID,
@@ -665,39 +665,39 @@ extension AppModel {
     }
 
     func deleteRoutine(_ routine: Routine) {
-        guard connectionState.isReady else { return }
+        guard gateway.connectionState.isReady else { return }
         let id = requestID("routine-delete")
         routineRequestIDs.insert(id)
-        transmit(.deleteRoutine(requestID: id, id: routine.id)) { [weak self] message in
+        gateway.transmit(.deleteRoutine(requestID: id, id: routine.id)) { [weak self] message in
             self?.routineRequestIDs.remove(id)
             self?.routineError = message
         }
     }
 
     func deleteRoutineRun(_ run: RoutineRun) {
-        guard connectionState.isReady, run.status != .running else { return }
+        guard gateway.connectionState.isReady, run.status != .running else { return }
         let id = requestID("routine-run-delete")
         routineRequestIDs.insert(id)
-        transmit(.deleteRoutineRun(requestID: id, id: run.id)) { [weak self] message in
+        gateway.transmit(.deleteRoutineRun(requestID: id, id: run.id)) { [weak self] message in
             self?.routineRequestIDs.remove(id)
             self?.routineError = message
         }
     }
 
     func runRoutine(_ routine: Routine) {
-        guard connectionState.isReady else { return }
+        guard gateway.connectionState.isReady else { return }
         let id = requestID("routine-run")
         routineRequestIDs.insert(id)
-        transmit(.runRoutine(requestID: id, id: routine.id)) { [weak self] message in
+        gateway.transmit(.runRoutine(requestID: id, id: routine.id)) { [weak self] message in
             self?.routineRequestIDs.remove(id)
             self?.routineError = message
         }
     }
 
     func refreshRoutines() {
-        guard connectionState.isReady else { return }
-        transmit(.listRoutines(requestID: requestID("routine-list"), botID: nil))
-        transmit(.listRoutineHistory(requestID: requestID("routine-history"), id: nil))
+        guard gateway.connectionState.isReady else { return }
+        gateway.transmit(.listRoutines(requestID: requestID("routine-list"), botID: nil))
+        gateway.transmit(.listRoutineHistory(requestID: requestID("routine-history"), id: nil))
     }
 
     func presentRoutineRun(_ run: RoutineRun) {
@@ -754,12 +754,12 @@ extension AppModel {
     }
 
     private func loadRoutineRunPreview(runID: String, beforeSequence: UInt64? = nil) {
-        guard connectionState.isReady, routineRunPreviewRequestID == nil else { return }
+        guard gateway.connectionState.isReady, routineRunPreviewRequestID == nil else { return }
         let id = requestID("routine-preview")
         routineRunPreviewRequestID = id
         routineRunPreviewRequestBeforeSequence = beforeSequence
         isLoadingRoutineRunPreview = routineRunPreview == nil || beforeSequence != nil
-        transmit(.getRoutineRunPreview(
+        gateway.transmit(.getRoutineRunPreview(
             requestID: id,
             id: runID,
             beforeSequence: beforeSequence
@@ -821,29 +821,22 @@ extension AppModel {
         cancelVoiceChatIntent()
         let voiceCall = realtimeVoiceCall
         stopRealtimeVoice(notifyGateway: false)
-        cancelReconnect()
-        reconnectsOnActivation = true
-        // Retire this socket before suspension. Cloud resume checks subscription state
-        // asynchronously, so its old receive callback must already be out of generation.
-        if pendingPairingAccount == nil, !automaticReconnectBlocked {
-            connectionGeneration = UUID()
-            let generation = connectionGeneration
-            eventTask?.cancel()
-            eventTask = nil
-            flushStreamDeltas()
-            restorePendingDrafts()
-            if connectionState.isReady || connectionState.isLoading { connectionState = .disconnected }
-            Task { [weak self] in
-                guard let self, self.connectionGeneration == generation else { return }
-                if let voiceCall {
-                    try? await self.requestSender(.endRealtimeVoice(
-                        sessionID: voiceCall.sessionID,
-                        voiceID: voiceCall.voiceID ?? voiceCall.requestID
-                    ))
-                    guard self.connectionGeneration == generation else { return }
-                }
-                await self.client.disconnect()
-            }
+        gateway.setAppInBackground(true)
+        gateway.setSceneActive(false)
+        flushStreamDeltas()
+        restorePendingDrafts()
+        let endVoiceRequest = voiceCall.map {
+            GatewayRequest.endRealtimeVoice(
+                sessionID: $0.sessionID,
+                voiceID: $0.voiceID ?? $0.requestID
+            )
+        }
+        if !gateway.hasPendingPairing {
+            gateway.shutdown(
+                endVoiceRequest: endVoiceRequest,
+                state: gateway.connectionState.isReady || gateway.connectionState.isLoading
+                    ? .disconnected : nil
+            )
         }
         flushComposerDraft()
         guard appLockEnabled else { return }
@@ -855,7 +848,8 @@ extension AppModel {
     func appDidBecomeActive() async {
         guard !Task.isCancelled else { return }
         appIsInBackground = false
-        if startedAccountID == nil, connectionState == .disconnected {
+        gateway.setAppInBackground(false)
+        if startedAccountID == nil, gateway.connectionState == .disconnected {
             await start()
         }
         guard !Task.isCancelled, !appIsInBackground else { return }
@@ -864,8 +858,7 @@ extension AppModel {
         if selectedGatewayIsMobiusCloud {
             await refreshCloudAccount()
             guard !Task.isCancelled, !appIsInBackground else { return }
-            if reconnectsOnActivation {
-                reconnectsOnActivation = false
+            if gateway.reconnectsOnActivation {
                 if selectedGatewayIsMobiusCloud,
                    cloudIssue != .subscriptionExpired {
                     reconnect()

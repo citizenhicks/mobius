@@ -462,9 +462,9 @@ final class AppModelTests: XCTestCase {
         account: GatewayAccount,
         sessionID: String = "chat-1"
     ) async throws -> Submission {
-        model.accounts = [account]
-        model.selectedAccountID = account.id
-        model.connectionState = .ready
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
+        model.gateway.connectionState = .ready
         model.selectedSessionID = sessionID
         model.composer = "Displaced draft"
         let requestCount = await recorder.requestCount()
@@ -538,9 +538,9 @@ final class AppModelTests: XCTestCase {
         account: GatewayAccount,
         sessionID: String = "chat-1"
     ) async throws {
-        model.accounts = [account]
-        model.selectedAccountID = account.id
-        model.connectionState = .ready
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
+        model.gateway.connectionState = .ready
         let helper = bot()
         model.bots = [helper]
         let requestCount = await recorder.requestCount()
@@ -555,11 +555,11 @@ final class AppModelTests: XCTestCase {
             return XCTFail("Expected a create-session request")
         }
         XCTAssertEqual(botID, "bot-1")
-        model.handle(.sessionOpened(
+        model.gateway.handle(.sessionOpened(
             requestID: requestID,
             payload: sessionReady(latestSequence: 0, sessionID: sessionID)
         ))
-        model.handle(.sessionReplayComplete(requestID: requestID, sessionID: sessionID))
+        model.gateway.handle(.sessionReplayComplete(requestID: requestID, sessionID: sessionID))
         guard !model.canCreateSession else { return }
         let ready = expectation(description: "New session finished loading")
         withObservationTracking {

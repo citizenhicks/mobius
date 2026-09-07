@@ -27,7 +27,7 @@ extension AppModel {
     }
 
     var canStartRealtimeVoice: Bool {
-        connectionState.isReady && selectedRouteSupportsRealtimeVoice
+        gateway.connectionState.isReady && selectedRouteSupportsRealtimeVoice
             && (selectedSessionID != nil || pendingNewChatBotID != nil)
     }
 
@@ -77,14 +77,13 @@ extension AppModel {
         messageSpeaker.stop()
         dismissComposerFocus()
         let dictation = dictation
-        let requestSender = requestSender
         realtimeVoiceTask = Task { [weak self] in
             do {
                 await dictation.cancel()
                 guard self?.realtimeVoiceCall?.requestID == requestID else { return }
                 let offer = try await voice.offer()
                 guard self?.realtimeVoiceCall?.requestID == requestID else { return }
-                try await requestSender(.startRealtimeVoice(
+                try await self?.gateway.send(.startRealtimeVoice(
                     requestID: requestID, sessionID: sessionID, offerSDP: offer
                 ))
                 // A canceled request may still receive an answer; the response handler ends it.
@@ -111,7 +110,7 @@ extension AppModel {
         realtimeVoiceTask = nil
         realtimeVoice.close()
         if notifyGateway, let call {
-            transmit(.endRealtimeVoice(
+            gateway.transmit(.endRealtimeVoice(
                 sessionID: call.sessionID, voiceID: call.voiceID ?? call.requestID
             ))
         }
@@ -125,7 +124,7 @@ extension AppModel {
                   selectedSessionID == sessionID,
                   selectedRouteSupportsRealtimeVoice
             else {
-                transmit(.endRealtimeVoice(sessionID: sessionID, voiceID: voiceID))
+                gateway.transmit(.endRealtimeVoice(sessionID: sessionID, voiceID: voiceID))
                 return
             }
             realtimeVoiceCall?.voiceID = voiceID

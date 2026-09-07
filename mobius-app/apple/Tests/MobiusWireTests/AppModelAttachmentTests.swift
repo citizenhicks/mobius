@@ -22,7 +22,7 @@ extension AppModelTests {
             toolDiscovery: .native
         )]
         model.modelProviders = ["openai": "openai-work"]
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.chooseWorkspace("/srv/mobius")
 
         XCTAssertTrue(model.attachmentsEnabled)
@@ -56,7 +56,7 @@ extension AppModelTests {
             return XCTFail("Expected session creation")
         }
 
-        model.handle(.sessionOpened(
+        model.gateway.handle(.sessionOpened(
             requestID: createID,
             payload: sessionReady(
                 latestSequence: 0,
@@ -64,8 +64,8 @@ extension AppModelTests {
                 contributions: [fileAttachmentContribution()]
             )
         ))
-        model.handle(.sessionReplayComplete(requestID: createID, sessionID: "chat-created"))
-        model.handle(.sessionChanged(sessionReady(
+        model.gateway.handle(.sessionReplayComplete(requestID: createID, sessionID: "chat-created"))
+        model.gateway.handle(.sessionChanged(sessionReady(
             latestSequence: 0,
             sessionID: "chat-created",
             contributions: [fileAttachmentContribution()]
@@ -87,7 +87,7 @@ extension AppModelTests {
         }
         XCTAssertEqual(sessionID, "chat-created")
 
-        model.handle(.sessionFileUploadReady(
+        model.gateway.handle(.sessionFileUploadReady(
             requestID: beginID,
             sessionID: sessionID,
             uploadID: "upload-1",
@@ -102,7 +102,7 @@ extension AppModelTests {
         }
         XCTAssertEqual(data, bytes)
 
-        model.handle(.sessionFileUploadChunkAccepted(
+        model.gateway.handle(.sessionFileUploadChunkAccepted(
             requestID: chunkID,
             sessionID: sessionID,
             uploadID: "upload-1",
@@ -121,7 +121,7 @@ extension AppModelTests {
             size: size,
             mediaType: mediaType
         )
-        model.handle(.sessionFileUploadCompleted(
+        model.gateway.handle(.sessionFileUploadCompleted(
             requestID: finishID,
             sessionID: sessionID,
             file: attachment
@@ -144,7 +144,7 @@ extension AppModelTests {
         var config = composition()
         config.middleware.enabled.insert("attachments")
         model.bots = [bot(config: VersionedAgentConfig(revision: 1, config: config))]
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.chooseWorkspace("/srv/mobius")
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -169,7 +169,7 @@ extension AppModelTests {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
         let attachmentID = UUID()
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.sessions = [session(sessionID: "chat-created", state: .idle)]
         model.selectedSessionID = "chat-created"
         model.pendingNewChatBotID = "bot-1"
@@ -210,7 +210,7 @@ extension AppModelTests {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
         let attachmentID = UUID()
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.composerAttachments = [ComposerAttachment(
             id: attachmentID,
             name: "local.txt",
@@ -232,7 +232,7 @@ extension AppModelTests {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
         let attachmentID = UUID()
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         model.composerAttachments = [ComposerAttachment(
             id: attachmentID,
@@ -252,7 +252,7 @@ extension AppModelTests {
         XCTAssertNotNil(model.abandonedSessionFileUploadRequests["begin-1"])
         XCTAssertFalse(model.canOpenSession)
 
-        model.handle(.sessionFileUploadReady(
+        model.gateway.handle(.sessionFileUploadReady(
             requestID: "begin-1",
             sessionID: "chat-1",
             uploadID: "file-1",
@@ -276,7 +276,7 @@ extension AppModelTests {
             return false
         })
 
-        model.handle(.accepted(requestID: requestID))
+        model.gateway.handle(.accepted(requestID: requestID))
         XCTAssertTrue(model.canOpenSession)
     }
 
@@ -285,7 +285,7 @@ extension AppModelTests {
         let model = try model { request in await recorder.record(request) }
         let abandonedID = UUID()
         let queuedID = UUID()
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         model.composerAttachments = [
             ComposerAttachment(
@@ -311,7 +311,7 @@ extension AppModelTests {
         )
 
         model.removeComposerAttachment(abandonedID)
-        model.handle(.rejected(GatewayRejection(
+        model.gateway.handle(.rejected(GatewayRejection(
             requestId: "begin-1",
             code: "session_file_rejected",
             message: "Cancelled upload was rejected",
@@ -337,7 +337,7 @@ extension AppModelTests {
             size: 3,
             mediaType: "image/png"
         )
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         model.composerAttachments = [ComposerAttachment(
             id: UUID(),
@@ -357,7 +357,7 @@ extension AppModelTests {
         else { return XCTFail("Expected uploaded file deletion") }
         XCTAssertTrue(model.composerAttachments.isEmpty)
 
-        model.handle(.rejected(GatewayRejection(
+        model.gateway.handle(.rejected(GatewayRejection(
             requestId: requestID,
             code: "session_file_rejected",
             message: "File could not be deleted",
@@ -377,7 +377,7 @@ extension AppModelTests {
             size: 4,
             mediaType: "text/plain"
         )
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         model.composerAttachments = [ComposerAttachment(
             id: UUID(),
@@ -402,7 +402,7 @@ extension AppModelTests {
         XCTAssertTrue(model.composerAttachments.isEmpty)
         XCTAssertFalse(model.canOpenSession)
 
-        model.handle(.accepted(requestID: requestID))
+        model.gateway.handle(.accepted(requestID: requestID))
         XCTAssertTrue(model.canOpenSession)
     }
 
@@ -418,9 +418,9 @@ extension AppModelTests {
         let removed = RemovedComposerAttachment(sessionID: "chat-1", attachment: attachment)
         model.abandonedSessionFileUploadRequests["begin-1"] = removed
         model.sessionFileDeleteRequests["delete-1"] = removed
-        let generation = model.connectionGeneration
+        let generation = model.gateway.connectionGeneration
 
-        model.connectionEnded(generation: generation, message: "Disconnected")
+        model.gateway.connectionEnded(generation: generation, message: "Disconnected")
 
         XCTAssertTrue(model.abandonedSessionFileUploadRequests.isEmpty)
         XCTAssertTrue(model.sessionFileDeleteRequests.isEmpty)
@@ -457,7 +457,7 @@ extension AppModelTests {
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         model.selectedModelRoute = "openai"
         let capableChoice = ModelChoice(
@@ -503,7 +503,7 @@ extension AppModelTests {
         XCTAssertEqual(model.composerAttachments.first?.state, .uploading(0))
 
         requestCount = await recorder.requestCount()
-        model.handle(.sessionFileUploadReady(
+        model.gateway.handle(.sessionFileUploadReady(
             requestID: beginID,
             sessionID: "chat-1",
             uploadID: "upload-1",
@@ -523,7 +523,7 @@ extension AppModelTests {
         XCTAssertEqual(firstData, Data([1, 2]))
 
         requestCount = await recorder.requestCount()
-        model.handle(.sessionFileUploadChunkAccepted(
+        model.gateway.handle(.sessionFileUploadChunkAccepted(
             requestID: firstID,
             sessionID: "chat-1",
             uploadID: "upload-1",
@@ -544,7 +544,7 @@ extension AppModelTests {
         XCTAssertEqual(secondData, Data([3]))
 
         requestCount = await recorder.requestCount()
-        model.handle(.sessionFileUploadChunkAccepted(
+        model.gateway.handle(.sessionFileUploadChunkAccepted(
             requestID: secondID,
             sessionID: "chat-1",
             uploadID: "upload-1",
@@ -567,7 +567,7 @@ extension AppModelTests {
             size: 3,
             mediaType: "image/png"
         )
-        model.handle(.sessionFileUploadCompleted(
+        model.gateway.handle(.sessionFileUploadCompleted(
             requestID: finishID,
             sessionID: "chat-1",
             file: attachment
@@ -627,7 +627,7 @@ extension AppModelTests {
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         model.contributions = [fileAttachmentContribution()]
 
@@ -651,7 +651,7 @@ extension AppModelTests {
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         model.contributions = [fileAttachmentContribution()]
 
@@ -675,7 +675,7 @@ extension AppModelTests {
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         model.selectedModelRoute = "text-only"
         model.modelChoices = [ModelChoice(
@@ -724,7 +724,7 @@ extension AppModelTests {
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         model.contributions = [fileAttachmentContribution()]
         let fileURL = FileManager.default.temporaryDirectory
@@ -742,7 +742,7 @@ extension AppModelTests {
         guard case .beginSessionFileUpload(let beginID, _, _, _, _) = try XCTUnwrap(beginRequest)
         else { return XCTFail("Expected session file upload start") }
 
-        model.handle(.sessionFileUploadChunkAccepted(
+        model.gateway.handle(.sessionFileUploadChunkAccepted(
             requestID: beginID,
             sessionID: "chat-1",
             uploadID: "upload-1",
@@ -761,7 +761,7 @@ extension AppModelTests {
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         model.contributions = [fileAttachmentContribution()]
         let fileURL = FileManager.default.temporaryDirectory
@@ -779,7 +779,7 @@ extension AppModelTests {
         guard case .beginSessionFileUpload(let beginID, _, _, _, _) = try XCTUnwrap(beginRequest)
         else { return XCTFail("Expected session file upload start") }
         requestCount = await recorder.requestCount()
-        model.handle(.sessionFileUploadReady(
+        model.gateway.handle(.sessionFileUploadReady(
             requestID: beginID,
             sessionID: "chat-1",
             uploadID: "upload-1",
@@ -792,7 +792,7 @@ extension AppModelTests {
         guard case .uploadSessionFileChunk(let chunkID, _, _, _, _) = try XCTUnwrap(chunkRequest)
         else { return XCTFail("Expected session file chunk") }
 
-        model.handle(.sessionFileUploadChunkAccepted(
+        model.gateway.handle(.sessionFileUploadChunkAccepted(
             requestID: chunkID,
             sessionID: "chat-1",
             uploadID: "upload-1",
@@ -816,7 +816,7 @@ extension AppModelTests {
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         model.selectedModelRoute = "openai"
         model.modelChoices = [ModelChoice(
@@ -873,7 +873,7 @@ extension AppModelTests {
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         model.contributions = [fileAttachmentContribution()]
 
@@ -904,7 +904,7 @@ extension AppModelTests {
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         model.contributions = [fileAttachmentContribution()]
 

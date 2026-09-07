@@ -5,9 +5,6 @@ import Observation
 @MainActor
 @Observable
 final class AppModel {
-    var accounts: [GatewayAccount]
-    var selectedAccountID: UUID?
-    var connectionState: ConnectionState = .disconnected
     var destination: AppDestination? = .chats
     var navigationPath: [AppRoute] = []
     var workspace: WorkspaceInfo?
@@ -51,7 +48,6 @@ final class AppModel {
         hasCloudAccount && cloudAccount == nil && cloudError == nil
     }
 
-    var gatewayMachineName = ""
     @ObservationIgnored let titleWriter: ChatTitleWriter
     @ObservationIgnored var chatTitleTasks: [String: Task<Void, Never>] = [:]
     @ObservationIgnored var titleEligibleSessionIDs: Set<String> = []
@@ -111,18 +107,18 @@ final class AppModel {
         TranscriptWaitingNote.isWaiting(
             hasActiveTurn: activeTurnID != nil,
             lastEntryIsPending: displayedTranscript.last?.pending == true,
-            connectionIsReady: connectionState.isReady,
+            connectionIsReady: gateway.connectionState.isReady,
             hasPendingApproval: pendingApproval != nil,
             hasPendingPicker: pendingPicker != nil
         )
     }
 
     var isLoadingTranscript: Bool {
-        if !connectionState.isReady, let selectedSessionID,
+        if !gateway.connectionState.isReady, let selectedSessionID,
            sessionToRestoreID == selectedSessionID, latestSequence == nil, transcript.isEmpty {
             return true
         }
-        guard connectionState == .loading,
+        guard gateway.connectionState == .loading,
               sessionRequestID != nil || replayRequestID != nil
         else { return false }
 
@@ -144,7 +140,7 @@ final class AppModel {
     }
     var canLoadEarlierHistory: Bool {
         hasEarlierHistory
-            && (connectionState.isReady || transcriptWindow.hasEarlierEntries)
+            && (gateway.connectionState.isReady || transcriptWindow.hasEarlierEntries)
             && historyRequestID == nil
     }
     var composer = "" {
@@ -287,11 +283,10 @@ final class AppModel {
     var pairingCodeInfo: PairingCodeInfo?
 
     var showsPairing = false
-    var pairingEndpoint = "wss://"
-    var pairingCode = ""
-    var pairingError: String?
     var theme: ThemePreference
-    var language: AppLanguage
+    var language: AppLanguage {
+        didSet { gateway.locale = language.locale }
+    }
     var accentTint: AccentTint
     var appLockEnabled: Bool
     var isAppLocked: Bool
@@ -303,7 +298,7 @@ final class AppModel {
     var isUpdatingNotifications = false
     var notificationError: String?
 
-    @ObservationIgnored let client: GatewayClient
+    @ObservationIgnored let gateway: GatewayConnectionModel
     @ObservationIgnored let store: GatewayStore
     @ObservationIgnored let cloudClient: MobiusCloudClient
     @ObservationIgnored let cloudPurchases: MobiusCloudPurchases
@@ -312,15 +307,6 @@ final class AppModel {
     @ObservationIgnored var appLockAuthenticationGeneration = UUID()
     @ObservationIgnored let remoteNotifications: RemoteNotificationSystem
     @ObservationIgnored let pushInstallationID: UUID
-    @ObservationIgnored let requestSender:
-        @MainActor @Sendable (GatewayRequest) async throws -> Void
-    @ObservationIgnored let connectionOpener:
-        @MainActor @Sendable (GatewayEndpoint) async throws -> AsyncThrowingStream<GatewayEnvelope, Error>
-    @ObservationIgnored let reconnectDelay: @Sendable (Int) -> Duration
-    @ObservationIgnored var eventTask: Task<Void, Never>?
-    @ObservationIgnored var reconnectTask: Task<Void, Never>?
-    @ObservationIgnored var reconnectAttempt = 0
-    @ObservationIgnored var automaticReconnectBlocked = false
     @ObservationIgnored var cloudPairingContinuation: CheckedContinuation<Void, Error>?
     @ObservationIgnored var deltaFlushTask: Task<Void, Never>?
     @ObservationIgnored var awaitingInitialMessageTurnID: String?
@@ -334,14 +320,11 @@ final class AppModel {
             sourceSequence: UInt64,
             recordedAtMs: Int64
         )] = []
-    @ObservationIgnored var connectionGeneration = UUID()
-    @ObservationIgnored var reconnectsOnActivation = false
     @ObservationIgnored var startupTask: Task<Void, Never>?
     @ObservationIgnored var startupTaskID: UUID?
     @ObservationIgnored var startedAccountID: UUID?
     @ObservationIgnored var appActivationTask: Task<Void, Never>?
     @ObservationIgnored var cloudAuthenticationTask: Task<Void, Never>?
-    @ObservationIgnored var pendingPairingAccount: GatewayAccount?
     @ObservationIgnored var pendingDrafts: [String: PendingComposerDraft] = [:]
     var pendingWidgetEdit: PendingWidgetEdit?
     var stashedComposerDraft: String?
@@ -461,7 +444,13 @@ final class AppModel {
         let pushInstallationID = settingsDefaults.string(forKey: pushInstallationIDKey)
             .flatMap(UUID.init(uuidString:)) ?? UUID()
         settingsDefaults.set(pushInstallationID.uuidString, forKey: pushInstallationIDKey)
-        self.client = client
+        self.gateway = GatewayConnectionModel(
+            client: client,
+            store: store,
+            requestSender: requestSender,
+            connectionOpener: connectionOpener,
+            reconnectDelay: reconnectDelay
+        )
         self.store = store
         self.cloudClient = cloudClient
         self.cloudPurchases = cloudPurchases ?? .live()
@@ -474,21 +463,6 @@ final class AppModel {
             forKey: pushTokenRemovalPendingKey
         )
         self.titleWriter = titleWriter ?? ChatTitleWriter()
-        self.requestSender = requestSender ?? { request in
-            try await client.send(request)
-        }
-        self.connectionOpener = connectionOpener ?? { endpoint in
-            try await client.connect(to: endpoint)
-        }
-        self.reconnectDelay = reconnectDelay ?? { attempt in
-            let seconds = min(
-                8,
-                0.5 * pow(2, Double(min(attempt, 4))) * Double.random(in: 0.75...1.25)
-            )
-            return .milliseconds(Int64(seconds * 1_000))
-        }
-        self.accounts = store.loadAccounts()
-        self.selectedAccountID = store.selectedAccountID()
         self.theme = ThemePreference(rawValue: settingsDefaults.string(forKey: "theme") ?? "") ?? .system
         self.language = AppLanguage(
             rawValue: settingsDefaults.string(forKey: "language") ?? ""
@@ -500,16 +474,16 @@ final class AppModel {
         self.isAppLocked = appLockEnabled
         self.appLockAuthenticationMethod = appLockAuthenticator.method
         self.notificationsEnabled = settingsDefaults.bool(forKey: notificationsEnabledKey)
-        if selectedAccountID == nil { selectedAccountID = accounts.first?.id }
-        restoreSessionReadState()
-        showsPairing = accounts.isEmpty
+        gateway.locale = language.locale
+        restoreSessionReadState(for: gateway.selectedAccountID)
+        showsPairing = gateway.accounts.isEmpty
         #if DEBUG
         let environment = ProcessInfo.processInfo.environment
-        if accounts.isEmpty,
+        if gateway.accounts.isEmpty,
            let endpoint = environment["MOBIUS_PAIR_ENDPOINT"],
            let code = environment["MOBIUS_PAIR_CODE"] {
-            pairingEndpoint = endpoint
-            pairingCode = code
+            gateway.pairingEndpoint = endpoint
+            gateway.pairingCode = code
         }
         switch ProcessInfo.processInfo.environment["MOBIUS_PAGE"] {
         case "gateway": destination = .gateway
@@ -521,12 +495,33 @@ final class AppModel {
         default: break
         }
         #endif
+        gateway.onConnectionReplacement = { [weak self] account, preserving in
+            guard let self else { return }
+            let sessionID = preserving ? self.presentedChatSessionID : nil
+            self.resetGatewayDependentState(
+                preservingDrafts: preserving,
+                preservingSession: sessionID != nil
+            )
+            self.sessionToRestoreID = sessionID
+            self.restoreSessionReadState(for: account.id)
+        }
+        gateway.onEnvelope = { [weak self] envelope in
+            self?.reduceGatewayEnvelope(envelope)
+        }
+        gateway.onDisconnected = { [weak self] message in
+            self?.handleGatewayDisconnected(message)
+        }
+        gateway.onUpdateRequired = { [weak self] in
+            self?.showsAppUpdateAlert = true
+        }
+        gateway.onPairingRepairRequired = { [weak self] in
+            self?.showsPairing = true
+        }
         observeCloudPurchaseUpdates()
     }
 
     isolated deinit {
-        eventTask?.cancel()
-        reconnectTask?.cancel()
+        gateway.shutdown()
         startupTask?.cancel()
         appActivationTask?.cancel()
         cloudAuthenticationTask?.cancel()
@@ -541,18 +536,14 @@ final class AppModel {
         chatTitleTasks.values.forEach { $0.cancel() }
     }
 
-    var selectedAccount: GatewayAccount? {
-        accounts.first { $0.id == selectedAccountID }
-    }
-
     var mobiusCloudGateway: GatewayAccount? {
         guard let userID = cloudSession?.userID else { return nil }
-        return accounts.first { $0.cloudUserID == userID }
+        return gateway.accounts.first { $0.cloudUserID == userID }
     }
 
     var selectedGatewayIsMobiusCloud: Bool {
         guard let cloudGatewayID = mobiusCloudGateway?.id else { return false }
-        return selectedAccountID == cloudGatewayID
+        return gateway.selectedAccountID == cloudGatewayID
     }
 
     var presentedChatSessionID: String? {
@@ -581,16 +572,16 @@ final class AppModel {
     }
 
     var canBrowseSessions: Bool {
-        (connectionState.isReady || selectedAccountID != nil)
+        (gateway.connectionState.isReady || gateway.selectedAccountID != nil)
             && canChangeSession && composerAttachments.isEmpty
     }
 
     var canOpenSession: Bool {
-        connectionState.isReady && canBrowseSessions
+        gateway.connectionState.isReady && canBrowseSessions
     }
 
     var canCreateSession: Bool {
-        connectionState.isReady && canChangeSession && (composerAttachments.isEmpty || (
+        gateway.connectionState.isReady && canChangeSession && (composerAttachments.isEmpty || (
             selectedSessionID == nil
                 && pendingNewChatWorkspace != nil
                 && composerAttachments.allSatisfy {
@@ -600,7 +591,7 @@ final class AppModel {
     }
 
     var canRenameSession: Bool {
-        connectionState.isReady && sessionMutationRequestID == nil
+        gateway.connectionState.isReady && sessionMutationRequestID == nil
     }
 
     var canModifySelectedSession: Bool {
@@ -611,7 +602,7 @@ final class AppModel {
     }
 
     var canBeginReply: Bool {
-        connectionState.isReady
+        gateway.connectionState.isReady
             && selectedSessionID != nil
             && sessionRequestID == nil
             && sessionMutationRequestID == nil
@@ -663,7 +654,7 @@ final class AppModel {
 
     var canImportAttachments: Bool {
         attachmentsEnabled
-            && connectionState.isReady
+            && gateway.connectionState.isReady
             && (selectedSessionID != nil
                 || pendingNewChatWorkspace != nil && selectedBot != nil)
             && sessionFileLimits != nil
@@ -699,7 +690,7 @@ final class AppModel {
     }
 
     var canSendComposer: Bool {
-        guard connectionState.isReady,
+        guard gateway.connectionState.isReady,
               sessionRequestID == nil,
               !isLoadingComposerDraft,
               !isLoadingComposerEditRecovery
@@ -720,7 +711,7 @@ final class AppModel {
         else { return false }
         if let pending = pendingWidgetEdit {
             guard let sessionID,
-                  let accountID = selectedAccountID,
+                  let accountID = gateway.selectedAccountID,
                   pending.owner == ComposerDraftOwner(accountID: accountID, sessionID: sessionID),
                   pending.recovery.phase == .editing
             else { return false }
@@ -755,15 +746,15 @@ final class AppModel {
     }
 
     var canMutateSwarm: Bool {
-        connectionState.isReady && swarmMutationRequestID == nil
+        gateway.connectionState.isReady && swarmMutationRequestID == nil
     }
 
     var canPostSwarmMessage: Bool {
-        connectionState.isReady && swarmMessageRequestID == nil
+        gateway.connectionState.isReady && swarmMessageRequestID == nil
     }
 
     var canMutateBots: Bool {
-        connectionState.isReady && botMutationRequestID == nil
+        gateway.connectionState.isReady && botMutationRequestID == nil
     }
 
     func canMutateBot(_ botID: String) -> Bool {
@@ -900,13 +891,13 @@ final class AppModel {
         }
     }
 
-    func restoreSessionReadState() {
-        guard let selectedAccountID else {
+    func restoreSessionReadState(for accountID: UUID?) {
+        guard let accountID else {
             sessionReadCursors = nil
             unreadSessionIDs.removeAll()
             return
         }
-        sessionReadCursors = store.loadSessionReadCursors(accountID: selectedAccountID)
+        sessionReadCursors = store.loadSessionReadCursors(accountID: accountID)
         unreadSessionIDs.removeAll()
     }
 
@@ -921,7 +912,7 @@ final class AppModel {
     }
 
     private func saveSessionReadCursor(_ sessionID: String, unread: Bool) {
-        guard let accountID = selectedAccountID,
+        guard let accountID = gateway.selectedAccountID,
               let session = sessions.first(where: { $0.sessionId == sessionID })
         else { return }
         let cursor = unread
@@ -1045,7 +1036,7 @@ final class AppModel {
                           && ($0.firstUserMessage ?? "")
                               .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                   })),
-              let accountID = selectedAccountID
+              let accountID = gateway.selectedAccountID
         else { return }
         guard sessions.first(where: { $0.sessionId == sessionID })?.explicitTitle == nil
         else {
@@ -1080,7 +1071,7 @@ final class AppModel {
     private func finishChatTitle(_ outcome: ChatTitleWriter.Outcome, attempt: ChatTitleAttempt) {
         guard pendingChatTitles[attempt.sessionID]?.attempt == attempt else { return }
         chatTitleTasks.removeValue(forKey: attempt.sessionID)
-        guard !Task.isCancelled, selectedAccountID == attempt.accountID
+        guard !Task.isCancelled, gateway.selectedAccountID == attempt.accountID
         else {
             pendingChatTitles.removeValue(forKey: attempt.sessionID)
             return
@@ -1112,7 +1103,7 @@ final class AppModel {
     func reconcileChatTitles() {
         for sessionID in Array(pendingChatTitles.keys) {
             guard let pending = pendingChatTitles[sessionID] else { continue }
-            guard pending.attempt.accountID == selectedAccountID else {
+            guard pending.attempt.accountID == gateway.selectedAccountID else {
                 cancelChatTitle(sessionID)
                 continue
             }
@@ -1154,9 +1145,9 @@ final class AppModel {
     }
 
     func persistGeneratedChatTitles() {
-        guard connectionState.isReady,
+        guard gateway.connectionState.isReady,
               sessionMutationRequestID == nil,
-              let accountID = selectedAccountID
+              let accountID = gateway.selectedAccountID
         else { return }
 
         for sessionID in pendingChatTitles.keys.sorted() {

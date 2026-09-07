@@ -54,7 +54,7 @@ struct ProfileView: View {
         .task(id: model.cloudSession?.credentialID) {
             await model.refreshCloudAccount()
         }
-        .task(id: model.connectionState.isReady) { model.refreshProfile() }
+        .task(id: model.gateway.connectionState.isReady) { model.refreshProfile() }
     }
 }
 

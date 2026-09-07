@@ -40,9 +40,9 @@ extension AppModelTests {
             requestSender: { request in await recorder.record(request) }
         )
         model.bots = [bot()]
-        model.accounts = [account]
-        model.selectedAccountID = account.id
-        model.connectionState = .ready
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
+        model.gateway.connectionState = .ready
 
         var requestCount = await recorder.requestCount()
         model.openSession("chat-1")
@@ -53,11 +53,11 @@ extension AppModelTests {
         guard case .openSession(let firstID, "chat-1", _) = try XCTUnwrap(firstRequest)
         else { return XCTFail("Expected first session open") }
         model.composer = "Typed while opening"
-        model.handle(.sessionOpened(
+        model.gateway.handle(.sessionOpened(
             requestID: firstID,
             payload: sessionReady(latestSequence: 1, sessionID: "chat-1")
         ))
-        model.handle(.sessionReplayComplete(requestID: firstID, sessionID: "chat-1"))
+        model.gateway.handle(.sessionReplayComplete(requestID: firstID, sessionID: "chat-1"))
         let firstSessionReady = await eventually { model.canCreateSession }
         XCTAssertTrue(firstSessionReady)
         XCTAssertEqual(model.composer, "Typed while opening")
@@ -74,11 +74,11 @@ extension AppModelTests {
         guard case .openSession(let secondID, _, _) = secondOpen else {
             return XCTFail("Expected second session open")
         }
-        model.handle(.sessionOpened(
+        model.gateway.handle(.sessionOpened(
             requestID: secondID,
             payload: sessionReady(latestSequence: 1, sessionID: "chat-2")
         ))
-        model.handle(.sessionReplayComplete(requestID: secondID, sessionID: "chat-2"))
+        model.gateway.handle(.sessionReplayComplete(requestID: secondID, sessionID: "chat-2"))
         let secondSessionReady = await eventually {
             model.canCreateSession
                 && model.composer == "Draft two"
@@ -116,7 +116,7 @@ extension AppModelTests {
         guard case .submit(_, let submission) = try XCTUnwrap(submitRequest) else {
             return XCTFail("Expected submitted draft")
         }
-        model.handle(.accepted(requestID: submission.id))
+        model.gateway.handle(.accepted(requestID: submission.id))
         let nextDraftSaved = await eventually {
             await store.loadComposerDraft(
                 accountID: account.id,
@@ -139,8 +139,8 @@ extension AppModelTests {
         guard case .deleteSessions(let deleteID, let ids) = try XCTUnwrap(deleteRequest),
               ids == ["chat-2"]
         else { return XCTFail("Expected session delete") }
-        model.handle(.accepted(requestID: deleteID))
-        model.handle(.sessions(requestID: deleteID, sessions: []))
+        model.gateway.handle(.accepted(requestID: deleteID))
+        model.gateway.handle(.sessions(requestID: deleteID, sessions: []))
         let deletedDraftRemoved = await eventually {
             await store.loadComposerDraft(
                 accountID: account.id,
@@ -299,9 +299,9 @@ extension AppModelTests {
             requestSender: { request in await recorder.record(request) }
         )
         model.bots = [bot()]
-        model.accounts = [account]
-        model.selectedAccountID = account.id
-        model.connectionState = .ready
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
+        model.gateway.connectionState = .ready
 
         model.openSession("chat-1")
         let firstRequest = await recorder.firstRequest(after: 0) { request in
@@ -315,7 +315,7 @@ extension AppModelTests {
             return XCTFail("Expected the cached cursor")
         }
         let requestCount = await recorder.requestCount()
-        model.handle(.rejected(GatewayRejection(
+        model.gateway.handle(.rejected(GatewayRejection(
             requestId: requestID,
             code: "replay_unavailable",
             message: "Reload",

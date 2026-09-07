@@ -1,118 +1,19 @@
 import Foundation
 
 extension AppModel {
-    func connect(to account: GatewayAccount, retrying: Bool = false) {
-        if account.id == mobiusCloudGateway?.id,
-           cloudIssue == .subscriptionExpired {
-            handleCloudSubscriptionExpired()
-            showToast(
-                verbatim: localizedString(
-                    MobiusCloudError.subscriptionRequired.localizedDescriptionResource
-                ),
-                tone: .warning
-            )
-            return
-        }
-        cancelReconnect()
-        if !retrying {
-            reconnectAttempt = 0
-            automaticReconnectBlocked = false
-        }
-        let sameGateway = account.id == selectedAccountID
-        let sessionID = sameGateway ? presentedChatSessionID : nil
-        let generation = resetGatewayState(
-            preservingDrafts: sameGateway,
-            preservingSession: sessionID != nil
-        )
-        sessionToRestoreID = sessionID
-        selectedAccountID = account.id
-        store.select(account)
-        restoreSessionReadState()
-        connectionState = .connecting
-        Task { [weak self] in
-            guard let self, self.connectionGeneration == generation else { return }
-            await self.client.disconnect()
-            guard self.connectionGeneration == generation else { return }
-            do {
-                let token = try self.store.token(for: account)
-                self.beginConnection(to: account.endpoint, generation: generation) { [weak self] in
-                    guard let self, self.connectionGeneration == generation else { return }
-                    try await self.requestSender(.authenticate(
-                        token: token,
-                        clientKind: .currentApplePlatform
-                    ))
-                }
-            } catch {
-                self.automaticReconnectBlocked = true
-                self.connectionState = .failed(error.localizedDescription)
-                self.showToast(verbatim: self.localizedErrorDescription(error), tone: .error)
-                if let storeError = error as? GatewayStore.StoreError,
-                   case .missingToken = storeError {
-                    self.repairSelectedGateway()
-                }
-            }
-        }
-    }
-
-    func beginConnection(
-        to endpoint: GatewayEndpoint,
-        generation: UUID,
-        authenticate: @escaping @MainActor @Sendable () async throws -> Void
-    ) {
-        connectionState = .connecting
-
-        Task { [weak self] in
-            guard let self else { return }
-            do {
-                let stream = try await self.connectionOpener(endpoint)
-                guard generation == self.connectionGeneration else { return }
-                self.connectionState = .authenticating
-                self.eventTask = Task { [weak self] in
-                    do {
-                        var handledFrames = 0
-                        for try await frame in stream {
-                            guard let self, generation == self.connectionGeneration else { return }
-                            self.handle(frame)
-                            handledFrames += 1
-                            if handledFrames.isMultiple(of: 32) { await Task.yield() }
-                        }
-                        self?.connectionEnded(generation: generation, message: "The gateway closed the connection.")
-                    } catch {
-                        self?.connectionEnded(generation: generation, error: error)
-                    }
-                }
-                if self.selectedGatewayIsMobiusCloud { self.scheduleReconnect() }
-                try await authenticate()
-            } catch {
-                self.connectionEnded(generation: generation, error: error)
-            }
-        }
-    }
-
-    func transmit(
-        _ request: GatewayRequest,
-        onFailure: (@MainActor (String) -> Void)? = nil
-    ) {
-        let generation = connectionGeneration
-        Task { [weak self] in
-            guard let self, generation == self.connectionGeneration else { return }
-            do {
-                try await self.requestSender(request)
-            } catch {
-                guard generation == self.connectionGeneration else { return }
-                let message = GatewayWireError.disconnected.localizedDescription
-                onFailure?(message)
-                self.connectionEnded(generation: generation, message: message)
-            }
-        }
-    }
-
-    func handle(_ envelope: GatewayEnvelope) {
+    func reduceGatewayEnvelope(_ envelope: GatewayEnvelope) {
         switch envelope {
+        case .paired:
+            restoreSessionReadState(for: gateway.selectedAccountID)
+            showsPairing = false
+            showToast("Gateway paired.", tone: .success)
+            completeCloudPairing(.success(()))
+        case .authenticated:
+            break
+        case .ready(let payload):
+            applyGatewayReady(payload)
         case .realtimeVoiceStarted, .realtimeVoiceEnded, .realtimeVoiceFailed:
             handleRealtimeVoiceEnvelope(envelope)
-        case .paired, .authenticated, .ready:
-            handleConnectionEnvelope(envelope)
         case .sessionOpened, .sessionReplayComplete, .sessionHistory, .sessionChanged:
             handleSessionEnvelope(envelope)
         case .gatewayConfigured, .contributionsChanged, .accepted, .rejected,
@@ -129,34 +30,6 @@ extension AppModel {
             handleFileEnvelope(envelope)
         case .routines, .routineHistory, .routineRunPreview, .error:
             handleRoutineOrFailureEnvelope(envelope)
-        }
-    }
-
-    private func handleConnectionEnvelope(_ envelope: GatewayEnvelope) {
-        switch envelope {
-        case .paired(_, let token):
-            guard let account = pendingPairingAccount else { return }
-            do {
-                try store.save(account, token: token)
-                accounts = store.loadAccounts()
-                selectedAccountID = account.id
-                restoreSessionReadState()
-                pendingPairingAccount = nil
-                pairingCode = ""
-                showsPairing = false
-                showToast("Gateway paired.", tone: .success)
-                completeCloudPairing(.success(()))
-            } catch {
-                pairingError = localizedErrorDescription(error)
-                showToast(verbatim: localizedErrorDescription(error), tone: .error)
-                completeCloudPairing(.failure(error))
-            }
-        case .authenticated:
-            connectionState = .loading
-        case .ready(let payload):
-            applyGatewayReady(payload)
-        default:
-            break
         }
     }
 
@@ -474,29 +347,18 @@ extension AppModel {
         case .routineRunPreview(let preview):
             applyRoutineRunPreview(preview)
         case .error(let failure):
-            let wasPairing = pendingPairingAccount != nil
-            if wasPairing { pairingError = failure.message }
+            let wasPairing = gateway.hasPendingPairing
+            if wasPairing { gateway.pairingError = failure.message }
             if cloudPairingContinuation != nil {
                 completeCloudPairing(.failure(MobiusCloudError.provisioningFailed))
-            }
-            if failure.code == "unauthorized", !wasPairing {
-                automaticReconnectBlocked = true
-                cancelReconnect()
-                repairSelectedGateway()
             }
             showToast(verbatim: failure.message, tone: .error)
             if failure.fatal {
                 cancelVoiceChatIntent()
                 stopRealtimeVoice()
-                automaticReconnectBlocked = true
-                cancelReconnect()
-                connectionGeneration = UUID()
-                eventTask?.cancel()
-                eventTask = nil
                 restorePendingDrafts()
                 cancelExtensionAndCredentialRequests()
                 sshIdentityError = failure.message
-                connectionState = .failed(failure.message)
             }
         default:
             break
@@ -525,7 +387,7 @@ extension AppModel {
         replayRequestID = nil
         replaySnapshotSequence = nil
         replayPresentedTranscript = nil
-        connectionState = .ready
+        gateway.connectionState = .ready
         completedComposerEditReplay = true
         reconcileChatTitleAfterReplay()
         reconcileComposerEditRecovery()
@@ -548,7 +410,7 @@ extension AppModel {
         Task { [weak self] in
             await draftIO?.value
             guard let self,
-                  self.connectionState.isReady,
+                  self.gateway.connectionState.isReady,
                   self.selectedSessionID == sessionID,
                   let draft = self.pendingDrafts.removeValue(forKey: requestID)
             else { return }
@@ -597,7 +459,7 @@ extension AppModel {
 
     func cacheSelectedTranscript() {
         guard !isClearingLocalData,
-              let accountID = selectedAccountID,
+              let accountID = gateway.selectedAccountID,
               let sessionID = selectedSessionID,
               let latestSequence,
               activeTurnID == nil,
@@ -621,11 +483,8 @@ extension AppModel {
     }
 
     private func applyGatewayReady(_ payload: ReadyPayload) {
-        cancelReconnect()
-        reconnectAttempt = 0
-        automaticReconnectBlocked = false
         applyGatewayCatalog(payload)
-        if sessionRequestID == nil { connectionState = .ready }
+        gateway.connectionState = sessionRequestID == nil ? .ready : .loading
         resumeProviderLogin()
         applySessionCatalog(payload.sessions)
         refreshProfile()
@@ -695,8 +554,7 @@ extension AppModel {
         let machineName = selectedGatewayIsMobiusCloud
             ? mobiusCloudGatewayDisplayName
             : payload.machineName
-        gatewayMachineName = machineName
-        rememberGatewayMachineName(machineName)
+        gateway.updateMachineName(machineName)
         let previousBotDefaults = botDefaultsSnapshot
         let pendingBotDefaultsDraft: AgentComposition? = if botDefaultsRequestID != nil {
             botDefaultsDraft
@@ -729,15 +587,6 @@ extension AppModel {
         if !selectedRouteSupportsRealtimeVoice { stopRealtimeVoice() }
     }
 
-    private func rememberGatewayMachineName(_ machineName: String) {
-        guard let account = selectedAccount,
-              account.machineName != machineName,
-              let index = accounts.firstIndex(where: { $0.id == account.id })
-        else { return }
-        accounts[index].machineName = machineName
-        try? store.recordMachineName(machineName, for: account)
-    }
-
     private func applySessionReady(
         _ payload: SessionReadyPayload,
         opened: Bool,
@@ -753,7 +602,7 @@ extension AppModel {
             pendingPresentedTranscript = nil
             isChangingWorkspace = false
             pendingNewChatBotID = nil
-            connectionState = .ready
+            gateway.connectionState = .ready
             showToast("The gateway returned a chat with an unknown Bot.", tone: .error)
             return
         }
@@ -769,7 +618,7 @@ extension AppModel {
             : nil
         if selectedSessionID != payload.session.sessionId {
             if !createdWithPendingDraft { restorePendingDrafts() }
-            changeComposerDraftOwner(to: selectedAccountID.map {
+            changeComposerDraftOwner(to: gateway.selectedAccountID.map {
                 ComposerDraftOwner(accountID: $0, sessionID: payload.session.sessionId)
             })
             resetSessionState(preservingComposerAttachments: createdWithPendingDraft)
@@ -836,8 +685,8 @@ extension AppModel {
             incomingSnapshot: bot.config
         )
         agentSnapshot = bot.config
-        if !opened { connectionState = .ready }
-        if let accountID = selectedAccountID {
+        if !opened { gateway.connectionState = .ready }
+        if let accountID = gateway.selectedAccountID {
             prepareComposerEditRecovery(
                 for: ComposerDraftOwner(
                     accountID: accountID,
@@ -880,12 +729,12 @@ extension AppModel {
             applyExecutionStats(selected.executionStats)
             if selected.activity.state == .idle { runStats.active = nil }
         }
-        if let accountID = selectedAccountID { reconcileSessionReadState(accountID: accountID) }
+        if let accountID = gateway.selectedAccountID { reconcileSessionReadState(accountID: accountID) }
         let visible = Set(sessions.map(\.sessionId))
         unreadSessionIDs.formIntersection(visible)
         reconcileChatTitles()
         cacheChatCatalog()
-        if connectionState.isReady, openPendingRemoteNotification() { return }
+        if gateway.connectionState.isReady, openPendingRemoteNotification() { return }
         guard selectedSessionID != nil,
               selectedSession == nil,
               sessionRequestID == nil
@@ -1089,7 +938,7 @@ extension AppModel {
                 )
             }
         }
-        if connectionState.isReady { _ = openPendingRemoteNotification() }
+        if gateway.connectionState.isReady { _ = openPendingRemoteNotification() }
         return true
     }
 
@@ -1126,7 +975,7 @@ extension AppModel {
                 presentSwarmAttention(attention)
             }
         }
-        if connectionState.isReady { _ = openPendingRemoteNotification() }
+        if gateway.connectionState.isReady { _ = openPendingRemoteNotification() }
         return true
     }
 
@@ -1199,7 +1048,7 @@ extension AppModel {
         selectedSessionID = nil
         if isPresentingChat { navigationPath = [] }
         resetSessionState()
-        connectionState = .ready
+        gateway.connectionState = .ready
         cacheChatCatalog()
     }
 
@@ -1213,7 +1062,7 @@ extension AppModel {
         if requestID == sessionMutationRequestID {
             for sessionID in pendingDeletedSessionIDs {
                 cancelChatTitle(sessionID)
-                if let accountID = selectedAccountID {
+                if let accountID = gateway.selectedAccountID {
                     let owner = ComposerDraftOwner(accountID: accountID, sessionID: sessionID)
                     invalidateComposerEditRecovery(for: owner)
                     enqueueComposerDraftSave(.empty, owner: owner)
@@ -1223,7 +1072,7 @@ extension AppModel {
             }
             pendingDeletedSessionIDs = []
             pendingDeletedPresentedSessionID = nil
-            transmit(.listSessions(requestID: requestID)) { [weak self] _ in
+            gateway.transmit(.listSessions(requestID: requestID)) { [weak self] _ in
                 if self?.sessionMutationRequestID == requestID {
                     self?.sessionMutationRequestID = nil
                 }
@@ -1275,15 +1124,9 @@ extension AppModel {
             )
         }
         if rejection.fatal {
-            automaticReconnectBlocked = true
-            cancelReconnect()
-            connectionGeneration = UUID()
-            eventTask?.cancel()
-            eventTask = nil
             restorePendingDrafts()
             cancelExtensionAndCredentialRequests()
             sshIdentityError = rejection.message
-            connectionState = .failed(rejection.message)
         }
     }
 
@@ -1313,7 +1156,7 @@ extension AppModel {
               let sessionID = sessionOpeningID,
               sessionOpenCursor != nil
         else { return false }
-        if let accountID = selectedAccountID {
+        if let accountID = gateway.selectedAccountID {
             enqueueTranscriptIO { [store] in
                 await store.removeTranscript(accountID: accountID, sessionID: sessionID)
             }
@@ -1386,7 +1229,7 @@ extension AppModel {
             sessionOpenCursor = nil
             pendingCachedTranscript = nil
             pendingPresentedTranscript = nil
-            connectionState = .ready
+            gateway.connectionState = .ready
             if isChangingWorkspace { workspaceError = rejection.message }
             isChangingWorkspace = false
         }

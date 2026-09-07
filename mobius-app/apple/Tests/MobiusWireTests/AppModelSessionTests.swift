@@ -7,7 +7,7 @@ extension AppModelTests {
     func testActiveRunAllowsSessionNavigationButNotSelectedSessionMutation() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         model.activeTurnID = "turn-1"
         model.pendingApproval = PendingApproval(
@@ -44,7 +44,7 @@ extension AppModelTests {
     func testAttachingFolderUsesSelectedSessionMutation() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
 
         model.attachFolder("  /srv/other  ")
@@ -68,7 +68,7 @@ extension AppModelTests {
     func testNewChatBotCanChangeUntilFirstSendCreatesSession() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         model.activeTurnID = "turn-1"
         let helper = bot()
@@ -108,7 +108,7 @@ extension AppModelTests {
     func testNewSessionInOpenChatInheritsWorkspaceAndBotWithoutPickers() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.workspace = WorkspaceInfo(
             id: "workspace-1",
             path: "/srv/current-project"
@@ -137,7 +137,7 @@ extension AppModelTests {
 
     func testBeginningSwarmCreationExplainsWhenEveryBotIsOff() throws {
         let model = try model()
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.bots = [bot(), bot(id: "bot-2", handle: "reviewer")]
 
         XCTAssertFalse(model.beginCreatingSwarm())
@@ -153,7 +153,7 @@ extension AppModelTests {
         let reviewer = bot(id: "bot-3", handle: "reviewer", name: "Reviewer", collaborationEnabled: true)
         let independent = bot(id: "bot-4", handle: "independent", name: "Independent")
         model.bots = [leader, coworker, reviewer, independent]
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
 
         XCTAssertTrue(model.beginCreatingSwarm())
         XCTAssertEqual(
@@ -195,7 +195,7 @@ extension AppModelTests {
             messages: [],
             updatedAtMs: 200
         )
-        model.handle(.swarms(requestID: requestID, swarms: [swarm]))
+        model.gateway.handle(.swarms(requestID: requestID, swarms: [swarm]))
 
         XCTAssertNil(model.swarmMutationRequestID)
         XCTAssertTrue(model.canMutateSwarm)
@@ -211,15 +211,15 @@ extension AppModelTests {
         let leader = bot(id: "bot-1", handle: "leader", collaborationEnabled: true)
         let coworker = bot(id: "bot-2", handle: "builder", collaborationEnabled: true)
         model.bots = [leader, coworker]
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
 
-        model.handle(.bots(requestID: nil, bots: [bot(id: leader.id, handle: leader.handle), coworker]))
+        model.gateway.handle(.bots(requestID: nil, bots: [bot(id: leader.id, handle: leader.handle), coworker]))
         XCTAssertEqual(model.availableBotsForSwarm().map(\.id), [coworker.id])
         model.createSwarm(title: "Team", leaderBotID: leader.id, memberBotIDs: [coworker.id])
         XCTAssertNil(model.swarmMutationRequestID)
         XCTAssertEqual(model.toast?.tone, .warning)
 
-        model.handle(.bots(requestID: nil, bots: [leader, bot(id: coworker.id, handle: coworker.handle)]))
+        model.gateway.handle(.bots(requestID: nil, bots: [leader, bot(id: coworker.id, handle: coworker.handle)]))
         model.createSwarm(title: "Team", leaderBotID: leader.id, memberBotIDs: [coworker.id])
         XCTAssertNil(model.swarmMutationRequestID)
         let swarm = SwarmRecord(
@@ -254,7 +254,7 @@ extension AppModelTests {
             messages: [],
             updatedAtMs: 1
         )]
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
 
         let requestID = try XCTUnwrap(model.postSwarmMessage(
             to: "swarm-1",
@@ -275,11 +275,11 @@ extension AppModelTests {
         XCTAssertEqual(swarmID, "swarm-1")
         XCTAssertEqual(text, "@leader check this")
 
-        model.handle(.swarms(requestID: nil, swarms: model.swarms))
+        model.gateway.handle(.swarms(requestID: nil, swarms: model.swarms))
         XCTAssertEqual(model.swarmMessageRequestID, requestID)
         XCTAssertNil(model.completedSwarmMessageRequestID)
 
-        model.handle(.swarms(requestID: requestID, swarms: model.swarms))
+        model.gateway.handle(.swarms(requestID: requestID, swarms: model.swarms))
         XCTAssertNil(model.swarmMessageRequestID)
         XCTAssertEqual(model.completedSwarmMessageRequestID, requestID)
     }
@@ -299,7 +299,7 @@ extension AppModelTests {
         )
         model.bots = [helper]
         model.sessions = [visible]
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
 
         model.openBotSessions(helper.id)
         let request = await recorder.firstRequest(after: 0) { request in
@@ -312,7 +312,7 @@ extension AppModelTests {
         XCTAssertEqual(botID, helper.id)
         XCTAssertEqual(model.navigationPath, [.botSessions(helper.id)])
 
-        model.handle(.botSessions(
+        model.gateway.handle(.botSessions(
             requestID: requestID,
             botID: helper.id,
             sessions: [hidden]
@@ -335,7 +335,7 @@ extension AppModelTests {
 
     func testBackgroundApprovalSnapshotValidatesOwnershipAndNotifiesOncePerRequest() throws {
         let model = try model()
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         let first = BackgroundApproval(
             sessionId: "work-1",
             botId: "bot-1",
@@ -343,13 +343,13 @@ extension AppModelTests {
             requestId: "approval-1"
         )
 
-        model.handle(.backgroundApprovals([first]))
+        model.gateway.handle(.backgroundApprovals([first]))
         let firstToastID = try XCTUnwrap(model.toast?.id)
         XCTAssertEqual(model.backgroundApprovals, [first])
         XCTAssertEqual(model.toast?.message, "Helper needs approval.")
         XCTAssertEqual(model.bot(forSessionID: first.sessionId)?.id, first.botId)
 
-        model.handle(.backgroundApprovals([first]))
+        model.gateway.handle(.backgroundApprovals([first]))
         XCTAssertEqual(model.toast?.id, firstToastID)
 
         let second = BackgroundApproval(
@@ -358,7 +358,7 @@ extension AppModelTests {
             turnId: first.turnId,
             requestId: "approval-2"
         )
-        model.handle(.backgroundApprovals([second]))
+        model.gateway.handle(.backgroundApprovals([second]))
         XCTAssertNotEqual(model.toast?.id, firstToastID)
 
         XCTAssertFalse(model.applyBackgroundApprovals([
@@ -400,7 +400,7 @@ extension AppModelTests {
         )
         model.bots = [helper, leader]
         model.swarms = [swarm]
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
 
         XCTAssertTrue(model.applySwarmAttentions([baseline], notifyingNew: false))
         XCTAssertNil(model.toast)
@@ -435,7 +435,7 @@ extension AppModelTests {
 
     func testStaleBackgroundApprovalToastCannotOpenHiddenWorkAsAChat() throws {
         let model = try model()
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.backgroundApprovals = [BackgroundApproval(
             sessionId: "work-1",
             botId: "bot-1",
@@ -464,7 +464,7 @@ extension AppModelTests {
         )
         model.bots = [helper]
         model.sessions = [visible]
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.destination = .bots
         model.navigationPath = [.swarm("swarm-1"), .swarmChat("swarm-1")]
 
@@ -483,7 +483,7 @@ extension AppModelTests {
             return false
         })
 
-        model.handle(.botSessions(
+        model.gateway.handle(.botSessions(
             requestID: requestID,
             botID: helper.id,
             sessions: [hidden]
@@ -522,7 +522,7 @@ extension AppModelTests {
             botID: helper.id
         )
         model.bots = [helper]
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.destination = .bots
         model.navigationPath = [.swarm("swarm-1"), .swarmChat("swarm-1")]
 
@@ -535,14 +535,14 @@ extension AppModelTests {
             return XCTFail("Expected hidden Bot session discovery")
         }
 
-        model.handle(.botSessions(
+        model.gateway.handle(.botSessions(
             requestID: "stale-request",
             botID: helper.id,
             sessions: [target]
         ))
         XCTAssertEqual(model.pendingBotSessionResume?.sessionID, target.sessionId)
 
-        model.handle(.botSessions(
+        model.gateway.handle(.botSessions(
             requestID: requestID,
             botID: helper.id,
             sessions: [other]
@@ -565,7 +565,7 @@ extension AppModelTests {
         let source = session(sessionID: "chat-source", state: .idle, botID: helper.id)
         model.bots = [helper]
         model.sessions = [source]
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
 
         model.resumeBotSession(botID: helper.id, sessionID: source.sessionId)
         let opening = await recorder.firstRequest(after: 0) { request in
@@ -635,7 +635,7 @@ extension AppModelTests {
     func testNewWorkspaceBrowserUsesCloudWorkingDirectoryOnly() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
 
         let requestCount = await recorder.requestCount()
         model.openWorkspaceBrowser()
@@ -652,8 +652,8 @@ extension AppModelTests {
             displayName: "möbius Cloud",
             cloudUserID: userID
         )
-        model.accounts = [cloudAccount]
-        model.selectedAccountID = cloudAccount.id
+        model.gateway.accounts = [cloudAccount]
+        model.gateway.selectedAccountID = cloudAccount.id
         model.cloudSession = MobiusCloudSession(userID: userID, expiresAt: .distantFuture)
 
         let cloudRequestCount = await recorder.requestCount()
@@ -669,7 +669,7 @@ extension AppModelTests {
     func testCreatingWorkspaceDirectoryUsesCurrentListingAndEntersCreatedFolder() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.directoryListing = DirectoryListing(
             path: "/srv",
             parent: "/",
@@ -695,7 +695,7 @@ extension AppModelTests {
             parent: "/srv",
             entries: []
         )
-        model.handle(.directories(requestID: requestID, listing: created))
+        model.gateway.handle(.directories(requestID: requestID, listing: created))
 
         XCTAssertEqual(model.directoryListing, created)
         XCTAssertFalse(model.isLoadingDirectories)
@@ -710,7 +710,7 @@ extension AppModelTests {
     func testCreatingWorkspaceDirectoryRejectsNestedNameBeforeSending() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.directoryListing = DirectoryListing(
             path: "/srv",
             parent: "/",
@@ -732,7 +732,7 @@ extension AppModelTests {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
 
-        model.handle(.ready(ready(
+        model.gateway.handle(.ready(ready(
             botDefaults: VersionedAgentConfig(revision: 1, config: composition()),
             sessions: [
                 session(sessionID: "chat-1", state: .idle),
@@ -754,7 +754,7 @@ extension AppModelTests {
     func testOpenChatSetsRouteAndRequestsSessionOnce() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.sessions = [session(sessionID: "chat-2", state: .idle)]
 
         let requestCount = await recorder.requestCount()
@@ -771,7 +771,7 @@ extension AppModelTests {
         guard case .openSession(let requestID, _, _) = try XCTUnwrap(request) else {
             return XCTFail("Expected the chat to open")
         }
-        model.handle(.sessionOpened(
+        model.gateway.handle(.sessionOpened(
             requestID: requestID,
             payload: sessionReady(latestSequence: 0, sessionID: "chat-2")
         ))
@@ -824,7 +824,7 @@ extension AppModelTests {
     func testSingleBotIsAutoSelectedAndPresentsChatAfterGatewayOpensIt() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         let helper = bot()
         model.bots = [helper]
 
@@ -849,11 +849,11 @@ extension AppModelTests {
         XCTAssertEqual(botID, "bot-1")
         XCTAssertEqual(model.navigationPath, [.chat(.new)])
 
-        model.handle(.sessionOpened(
+        model.gateway.handle(.sessionOpened(
             requestID: requestID,
             payload: sessionReady(latestSequence: 0, sessionID: "chat-created")
         ))
-        model.handle(.sessionReplayComplete(
+        model.gateway.handle(.sessionReplayComplete(
             requestID: requestID,
             sessionID: "chat-created"
         ))
@@ -880,7 +880,7 @@ extension AppModelTests {
     func testRejectedFirstSendKeepsBotSelectedAndRestoresDraft() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         let helper = bot()
         model.bots = [helper]
         model.chooseWorkspace("/srv/mobius")
@@ -895,14 +895,14 @@ extension AppModelTests {
             return XCTFail("Expected a create-session request")
         }
 
-        model.handle(.rejected(GatewayRejection(
+        model.gateway.handle(.rejected(GatewayRejection(
             requestId: requestID,
             code: "create_failed",
             message: "Chat could not be created",
             fatal: false
         )))
 
-        XCTAssertEqual(model.connectionState, .ready)
+        XCTAssertEqual(model.gateway.connectionState, .ready)
         XCTAssertEqual(model.pendingNewChatBotID, helper.id)
         XCTAssertEqual(model.composer, "Try again")
         XCTAssertNil(model.selectedSessionID)
@@ -913,7 +913,7 @@ extension AppModelTests {
         let model = try model { request in await recorder.record(request) }
         let first = session(sessionID: "chat-1", state: .idle)
         let second = session(sessionID: "chat-2", state: .idle)
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.sessions = [first, second]
 
         model.deleteSessions([first, second, first])
@@ -925,8 +925,8 @@ extension AppModelTests {
         guard case .deleteSessions(let requestID, _) = try XCTUnwrap(request) else {
             return XCTFail("Expected one multi-chat deletion")
         }
-        model.handle(.accepted(requestID: requestID))
-        model.handle(.sessions(requestID: requestID, sessions: []))
+        model.gateway.handle(.accepted(requestID: requestID))
+        model.gateway.handle(.sessions(requestID: requestID, sessions: []))
 
         XCTAssertTrue(model.sessions.isEmpty)
         XCTAssertNil(model.sessionMutationRequestID)
@@ -937,7 +937,7 @@ extension AppModelTests {
         let model = try model { request in await recorder.record(request) }
         let selected = session(sessionID: "chat-1", state: .idle)
         let remaining = session(sessionID: "chat-2", state: .idle)
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.sessions = [selected, remaining]
         model.selectedSessionID = selected.sessionId
         model.destination = .chats
@@ -955,8 +955,8 @@ extension AppModelTests {
         guard case .deleteSessions(let requestID, _) = try XCTUnwrap(request) else {
             return XCTFail("Expected a delete-session request")
         }
-        model.handle(.accepted(requestID: requestID))
-        model.handle(.sessions(requestID: requestID, sessions: [remaining]))
+        model.gateway.handle(.accepted(requestID: requestID))
+        model.gateway.handle(.sessions(requestID: requestID, sessions: [remaining]))
         try await Task.sleep(for: .milliseconds(30))
 
         XCTAssertEqual(model.sessions.map(\.sessionId), ["chat-2"])
@@ -971,7 +971,7 @@ extension AppModelTests {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
         let selected = session(sessionID: "chat-1", state: .idle)
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.sessions = [selected]
         model.selectedSessionID = selected.sessionId
         model.destination = .chats
@@ -987,7 +987,7 @@ extension AppModelTests {
         }
         let requestCount = await recorder.requestCount()
 
-        model.handle(.rejected(GatewayRejection(
+        model.gateway.handle(.rejected(GatewayRejection(
             requestId: requestID,
             code: "delete_failed",
             message: "Chat could not be deleted",
@@ -1010,7 +1010,7 @@ extension AppModelTests {
             if case .deleteSessions = request { throw URLError(.cannotConnectToHost) }
         }
         let selected = session(sessionID: "chat-1", state: .running, turnID: "turn-1")
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.sessions = [selected]
         model.selectedSessionID = selected.sessionId
         model.destination = .chats
@@ -1032,7 +1032,7 @@ extension AppModelTests {
         XCTAssertNil(model.selectedSessionID)
         XCTAssertTrue(model.navigationPath.isEmpty)
         let disconnected = await eventually {
-            if case .failed = model.connectionState { return true }
+            if case .failed = model.gateway.connectionState { return true }
             return false
         }
         XCTAssertTrue(disconnected)

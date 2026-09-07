@@ -25,7 +25,7 @@ struct AppShell: View {
         @Bindable var model = model
         ZStack(alignment: .top) {
             MobiusBackdrop()
-            if model.accounts.isEmpty {
+            if model.gateway.accounts.isEmpty {
                 PairingView(canCancel: false)
                     .frame(maxWidth: 620)
                     .padding(MobiusSpace.xl)
@@ -55,7 +55,7 @@ struct AppShell: View {
             AppToastOverlay().zIndex(10)
         }
         // Reconnecting to this gateway preserves local forms; changing gateways discards them.
-        .id(model.selectedAccountID)
+        .id(model.gateway.selectedAccountID)
         .background {
             MobiusAppLockPresenter(isCovered: model.isAppLocked || model.appLockEnabled && scenePhase != .active) {
                 AppLockView()
@@ -335,7 +335,7 @@ struct AppShell: View {
         VStack(spacing: MobiusSpace.xxs) {
             rootPageTitle
                 .font(MobiusStyle.titleFont)
-            if let account = model.selectedAccount {
+            if let account = model.gateway.selectedAccount {
                 gatewayPicker(account)
             }
         }
@@ -376,10 +376,10 @@ struct AppShell: View {
     private func gatewayPicker(_ account: GatewayAccount) -> some View {
         Menu {
             Picker("Gateway", selection: Binding(
-                get: { model.selectedAccountID },
+                get: { model.gateway.selectedAccountID },
                 set: { model.selectAccount($0) }
             )) {
-                ForEach(model.accounts) { account in
+                ForEach(model.gateway.accounts) { account in
                     Text(verbatim: account.machineName)
                         .tag(Optional(account.id))
                 }
@@ -388,8 +388,8 @@ struct AppShell: View {
         } label: {
             HStack(spacing: MobiusSpace.xs) {
                 MobiusStatusIndicator(
-                    color: model.connectionState.tone.color(in: palette),
-                    isLoading: model.connectionState.isLoading
+                    color: model.gateway.connectionState.tone.color(in: palette),
+                    isLoading: model.gateway.connectionState.isLoading
                 )
                 Text(verbatim: account.machineName)
                     .font(MobiusStyle.captionFont)
@@ -406,9 +406,9 @@ struct AppShell: View {
         }
         .menuIndicator(.hidden)
         .buttonStyle(.mobiusPlain)
-        .sensoryFeedback(.selection, trigger: model.selectedAccountID)
+        .sensoryFeedback(.selection, trigger: model.gateway.selectedAccountID)
         .accessibilityLabel("Gateway")
-        .accessibilityValue(Text("\(account.machineName), \(model.connectionState.label)"))
+        .accessibilityValue(Text("\(account.machineName), \(model.gateway.connectionState.label)"))
         .help("Switch gateway")
     }
 
@@ -445,7 +445,7 @@ struct AppShell: View {
     }
 
     private var chatIsVisible: Bool {
-        guard !model.accounts.isEmpty,
+        guard !model.gateway.accounts.isEmpty,
               model.destination == .chats,
               !model.navigationPath.isEmpty,
               scenePhase == .active,

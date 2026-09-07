@@ -8,9 +8,9 @@ extension AppModelTests {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
         let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
-        model.accounts = [account]
-        model.selectedAccountID = account.id
-        model.connectionState = .ready
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
+        model.gateway.connectionState = .ready
 
         let openRequestCount = await recorder.requestCount()
         model.openSession("chat-1")
@@ -23,10 +23,10 @@ extension AppModelTests {
             return XCTFail("Expected an uncached session open")
         }
         XCTAssertTrue(model.isLoadingTranscript)
-        model.handle(.sessionOpened(requestID: requestID, payload: sessionReady(latestSequence: 2)))
+        model.gateway.handle(.sessionOpened(requestID: requestID, payload: sessionReady(latestSequence: 2)))
         XCTAssertTrue(model.isLoadingTranscript)
         model.showFiles(.unstaged)
-        model.handle(.agentEvent(
+        model.gateway.handle(.agentEvent(
             sessionID: "chat-1",
             sequence: 1,
             event: AgentEventRecord(submissionId: nil, msg: .object([
@@ -43,7 +43,7 @@ extension AppModelTests {
         ))
         XCTAssertTrue(model.displayedTranscript.isEmpty)
 
-        model.handle(.agentEvent(
+        model.gateway.handle(.agentEvent(
             sessionID: "chat-1",
             sequence: 2,
             event: AgentEventRecord(
@@ -61,7 +61,7 @@ extension AppModelTests {
         XCTAssertEqual(model.transcript.map(\.text), ["Hello"])
         XCTAssertTrue(model.displayedTranscript.isEmpty)
         let refreshRequestCount = await recorder.requestCount()
-        model.handle(.sessionReplayComplete(requestID: requestID, sessionID: "chat-1"))
+        model.gateway.handle(.sessionReplayComplete(requestID: requestID, sessionID: "chat-1"))
         XCTAssertFalse(model.isLoadingTranscript)
         XCTAssertEqual(model.displayedTranscript.map(\.text), ["Hello"])
         let gitDiffRequest = await recorder.firstRequest(after: refreshRequestCount) { request in
@@ -80,9 +80,9 @@ extension AppModelTests {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
         let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
-        model.accounts = [account]
-        model.selectedAccountID = account.id
-        model.connectionState = .ready
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
+        model.gateway.connectionState = .ready
 
         let openRequestCount = await recorder.requestCount()
         model.openSession("chat-1")
@@ -92,11 +92,11 @@ extension AppModelTests {
         }
         guard case .openSession(let openID, _, _) = try XCTUnwrap(openRequest)
         else { return XCTFail("Expected session open") }
-        model.handle(.sessionOpened(
+        model.gateway.handle(.sessionOpened(
             requestID: openID,
             payload: sessionReady(latestSequence: 8, nextBeforeSequence: 40)
         ))
-        model.handle(.agentEvent(
+        model.gateway.handle(.agentEvent(
             sessionID: "chat-1",
             sequence: 8,
             event: AgentEventRecord(
@@ -111,7 +111,7 @@ extension AppModelTests {
             history: nil,
             preview: nil
         ))
-        model.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
+        model.gateway.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
         model.selectedModelRoute = "current-route"
 
         let initialRequests = await recorder.requests()
@@ -119,7 +119,7 @@ extension AppModelTests {
             if case .getSessionHistory = $0 { return true }
             return false
         }.count
-        model.connectionState = .disconnected
+        model.gateway.connectionState = .disconnected
         model.requestEarlierHistory()
         let disconnectedRequests = await recorder.requests()
         XCTAssertEqual(
@@ -130,7 +130,7 @@ extension AppModelTests {
             historyRequestCount
         )
 
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.activeTurnID = "turn-live"
         XCTAssertTrue(model.canLoadEarlierHistory)
         let readyRequestCount = await recorder.requestCount()
@@ -156,7 +156,7 @@ extension AppModelTests {
             return XCTFail("Expected paged history request")
         }
 
-        model.handle(.agentEvent(
+        model.gateway.handle(.agentEvent(
             sessionID: "chat-1",
             record: recorded(9, testAssistantMessage(
                 turnID: "turn-live",
@@ -219,7 +219,7 @@ extension AppModelTests {
                 preview: nil
             )
         }
-        model.handle(.sessionHistory(
+        model.gateway.handle(.sessionHistory(
             requestID: "stale",
             sessionID: "chat-1",
             records: records,
@@ -227,7 +227,7 @@ extension AppModelTests {
         ))
         XCTAssertEqual(model.displayedTranscript.map(\.text), ["Current", "Still working"])
 
-        model.handle(.sessionHistory(
+        model.gateway.handle(.sessionHistory(
             requestID: historyID,
             sessionID: "chat-1",
             records: Array(records.dropFirst(2)),
@@ -258,7 +258,7 @@ extension AppModelTests {
         ) = try XCTUnwrap(olderRequest) else {
             return XCTFail("Expected the next history page")
         }
-        model.handle(.sessionHistory(
+        model.gateway.handle(.sessionHistory(
             requestID: olderHistoryID,
             sessionID: "chat-1",
             records: Array(records.prefix(2)),
@@ -278,7 +278,7 @@ extension AppModelTests {
         )
         XCTAssertFalse(model.hasEarlierHistory)
 
-        model.handle(.agentEvent(
+        model.gateway.handle(.agentEvent(
             sessionID: "chat-1",
             record: recorded(10, testAssistantMessage(
                 turnID: "turn-live",
@@ -302,20 +302,21 @@ extension AppModelTests {
         )
 
         let visibleBeforeReconnect = model.displayedTranscript.map(\.text)
-        model.resetGatewayState(preservingDrafts: true, preservingSession: true)
+        model.gateway.reset(preservingDrafts: true)
+        model.resetGatewayDependentState(preservingDrafts: true, preservingSession: true)
         XCTAssertEqual(model.displayedTranscript.map(\.text), visibleBeforeReconnect)
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         model.restoreSession("chat-1")
         try await Task.sleep(for: .milliseconds(30))
         let reconnectRequests = await recorder.requests()
         guard case .openSession(let reconnectID, _, _) = try XCTUnwrap(
             reconnectRequests.last
         ) else { return XCTFail("Expected reconnect session open") }
-        model.handle(.sessionOpened(
+        model.gateway.handle(.sessionOpened(
             requestID: reconnectID,
             payload: sessionReady(latestSequence: 8, nextBeforeSequence: 40)
         ))
-        model.handle(.sessionReplayComplete(requestID: reconnectID, sessionID: "chat-1"))
+        model.gateway.handle(.sessionReplayComplete(requestID: reconnectID, sessionID: "chat-1"))
         XCTAssertEqual(
             model.displayedTranscript.map(\.text),
             visibleBeforeReconnect
@@ -327,9 +328,9 @@ extension AppModelTests {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
         let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
-        model.accounts = [account]
-        model.selectedAccountID = account.id
-        model.connectionState = .ready
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
+        model.gateway.connectionState = .ready
 
         model.openSession("chat-1")
         let openRequest = await recorder.firstRequest(after: 0) {
@@ -339,11 +340,11 @@ extension AppModelTests {
         guard case .openSession(let openID, _, _) = try XCTUnwrap(openRequest) else {
             return XCTFail("Expected session open")
         }
-        model.handle(.sessionOpened(
+        model.gateway.handle(.sessionOpened(
             requestID: openID,
             payload: sessionReady(latestSequence: 8, nextBeforeSequence: 40)
         ))
-        model.handle(.agentEvent(
+        model.gateway.handle(.agentEvent(
             sessionID: "chat-1",
             record: recorded(8, testAssistantMessage(
                 turnID: "turn-current",
@@ -351,7 +352,7 @@ extension AppModelTests {
                 text: "Current"
             ))
         ))
-        model.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
+        model.gateway.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
         model.activeTurnID = "turn-live"
 
         let requestCount = await recorder.requestCount()
@@ -363,7 +364,7 @@ extension AppModelTests {
         guard case .getSessionHistory(let historyID, _, _) = try XCTUnwrap(historyRequest)
         else { return XCTFail("Expected history request") }
 
-        model.handle(.agentEvent(
+        model.gateway.handle(.agentEvent(
             sessionID: "chat-1",
             record: recorded(9, .object([
                 "type": .string("assistant_content_delta"),
@@ -376,7 +377,7 @@ extension AppModelTests {
         ))
         XCTAssertEqual(model.transcript.map(\.text), ["Current"])
 
-        model.handle(.sessionHistory(
+        model.gateway.handle(.sessionHistory(
             requestID: historyID,
             sessionID: "chat-1",
             records: [recorded(1, testMessageEvent(text: "Older question"))],
@@ -394,9 +395,9 @@ extension AppModelTests {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
         let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
-        model.accounts = [account]
-        model.selectedAccountID = account.id
-        model.connectionState = .ready
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
+        model.gateway.connectionState = .ready
 
         model.openSession("chat-1")
         let openRequest = await recorder.firstRequest(after: 0) {
@@ -406,11 +407,11 @@ extension AppModelTests {
         guard case .openSession(let openID, _, _) = try XCTUnwrap(openRequest) else {
             return XCTFail("Expected session open")
         }
-        model.handle(.sessionOpened(
+        model.gateway.handle(.sessionOpened(
             requestID: openID,
             payload: sessionReady(latestSequence: 8, nextBeforeSequence: 9)
         ))
-        model.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
+        model.gateway.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
 
         model.requestEarlierHistory()
         let firstRequest = await recorder.firstRequest(after: 1) {
@@ -421,7 +422,7 @@ extension AppModelTests {
             return XCTFail("Expected first history page")
         }
         let turnID = "turn-1"
-        model.handle(.sessionHistory(
+        model.gateway.handle(.sessionHistory(
             requestID: firstID,
             sessionID: "chat-1",
             records: [
@@ -463,7 +464,7 @@ extension AppModelTests {
         guard case .getSessionHistory(let secondID, _, 5) = try XCTUnwrap(secondRequest) else {
             return XCTFail("Expected second history page")
         }
-        model.handle(.sessionHistory(
+        model.gateway.handle(.sessionHistory(
             requestID: secondID,
             sessionID: "chat-1",
             records: [
@@ -567,9 +568,9 @@ extension AppModelTests {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
         let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
-        model.accounts = [account]
-        model.selectedAccountID = account.id
-        model.connectionState = .ready
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
+        model.gateway.connectionState = .ready
 
         model.openSession("chat-1")
         let openRequest = await recorder.firstRequest(after: 0) {
@@ -579,11 +580,11 @@ extension AppModelTests {
         guard case .openSession(let openID, _, _) = try XCTUnwrap(openRequest) else {
             return XCTFail("Expected session open")
         }
-        model.handle(.sessionOpened(
+        model.gateway.handle(.sessionOpened(
             requestID: openID,
             payload: sessionReady(latestSequence: 4, nextBeforeSequence: 5)
         ))
-        model.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
+        model.gateway.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
 
         let requestCount = await recorder.requestCount()
         model.requestEarlierHistory()
@@ -595,7 +596,7 @@ extension AppModelTests {
         else { return XCTFail("Expected history request") }
 
         let turnID = "turn-1"
-        model.handle(.sessionHistory(
+        model.gateway.handle(.sessionHistory(
             requestID: historyID,
             sessionID: "chat-1",
             records: [
@@ -645,9 +646,9 @@ extension AppModelTests {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
         let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
-        model.accounts = [account]
-        model.selectedAccountID = account.id
-        model.connectionState = .ready
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
+        model.gateway.connectionState = .ready
 
         model.openSession("chat-1")
         let openRequest = await recorder.firstRequest(after: 0) {
@@ -657,11 +658,11 @@ extension AppModelTests {
         guard case .openSession(let openID, _, _) = try XCTUnwrap(openRequest) else {
             return XCTFail("Expected session open")
         }
-        model.handle(.sessionOpened(
+        model.gateway.handle(.sessionOpened(
             requestID: openID,
             payload: sessionReady(latestSequence: 8, nextBeforeSequence: 40)
         ))
-        model.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
+        model.gateway.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
 
         let initialRevision = model.historyLoadCompletionRevision
         let initialSuccessRevision = model.historyLoadSuccessRevision
@@ -675,7 +676,7 @@ extension AppModelTests {
         guard case .getSessionHistory(let rejectedID, _, _) = try XCTUnwrap(rejectedRequest)
         else { return XCTFail("Expected rejected history request") }
 
-        model.handle(.rejected(GatewayRejection(
+        model.gateway.handle(.rejected(GatewayRejection(
             requestId: rejectedID,
             code: "unavailable",
             message: "Try again",
@@ -696,7 +697,7 @@ extension AppModelTests {
         guard case .getSessionHistory(let emptyID, _, _) = try XCTUnwrap(emptyRequest)
         else { return XCTFail("Expected empty history request") }
 
-        model.handle(.sessionHistory(
+        model.gateway.handle(.sessionHistory(
             requestID: emptyID,
             sessionID: "chat-1",
             records: [],
@@ -714,9 +715,9 @@ extension AppModelTests {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
         let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
-        model.accounts = [account]
-        model.selectedAccountID = account.id
-        model.connectionState = .ready
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
+        model.gateway.connectionState = .ready
         model.openSession("chat-1")
         let openRequest = await recorder.firstRequest(after: 0) {
             guard case .openSession(_, "chat-1", _) = $0 else { return false }
@@ -725,11 +726,11 @@ extension AppModelTests {
         guard case .openSession(let openID, _, _) = try XCTUnwrap(openRequest) else {
             return XCTFail("Expected session open")
         }
-        model.handle(.sessionOpened(
+        model.gateway.handle(.sessionOpened(
             requestID: openID,
             payload: sessionReady(latestSequence: 8, nextBeforeSequence: 40)
         ))
-        model.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
+        model.gateway.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
 
         let load = Task { @MainActor in await model.loadEarlierHistory() }
         let historyRequest = await recorder.firstRequest(after: 1) {
@@ -740,7 +741,7 @@ extension AppModelTests {
         else { return XCTFail("Expected history request") }
         XCTAssertTrue(model.isLoadingEarlierHistory)
 
-        model.handle(.sessionHistory(
+        model.gateway.handle(.sessionHistory(
             requestID: historyID,
             sessionID: "chat-1",
             records: [],
@@ -756,9 +757,9 @@ extension AppModelTests {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
         let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
-        model.accounts = [account]
-        model.selectedAccountID = account.id
-        model.connectionState = .ready
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
+        model.gateway.connectionState = .ready
         model.selectedSessionID = "chat-1"
         model.nextHistoryBeforeSequence = 40
         model.activeTurnID = "turn-live"
@@ -776,7 +777,7 @@ extension AppModelTests {
         XCTAssertEqual(model.historyRequestID, historyID)
         XCTAssertTrue(model.isLoadingEarlierHistory)
 
-        model.handle(.rejected(GatewayRejection(
+        model.gateway.handle(.rejected(GatewayRejection(
             requestId: historyID,
             code: "unavailable",
             message: "Try again",
@@ -785,14 +786,15 @@ extension AppModelTests {
         XCTAssertNil(model.historyRequestID)
         XCTAssertFalse(model.isLoadingEarlierHistory)
 
-        model.connectionState = .ready
+        model.gateway.connectionState = .ready
         let resetLoad = Task { @MainActor in await model.loadEarlierHistory() }
         let resetRequest = await recorder.firstRequest(after: 1) {
             if case .getSessionHistory = $0 { return true }
             return false
         }
         _ = try XCTUnwrap(resetRequest)
-        model.resetGatewayState(preservingDrafts: true)
+        model.gateway.reset(preservingDrafts: true)
+        model.resetGatewayDependentState(preservingDrafts: true)
         await resetLoad.value
         XCTAssertFalse(model.isLoadingEarlierHistory)
         XCTAssertNil(model.historyRequestID)
@@ -802,9 +804,9 @@ extension AppModelTests {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
         let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
-        model.accounts = [account]
-        model.selectedAccountID = account.id
-        model.connectionState = .ready
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
+        model.gateway.connectionState = .ready
 
         let openRequestCount = await recorder.requestCount()
         model.openSession("chat-1")
@@ -815,7 +817,7 @@ extension AppModelTests {
         guard case .openSession(let openID, _, _) = try XCTUnwrap(open) else {
             return XCTFail("Expected session open")
         }
-        model.handle(.sessionOpened(
+        model.gateway.handle(.sessionOpened(
             requestID: openID,
             payload: sessionReady(latestSequence: 8, nextBeforeSequence: 7)
         ))
@@ -850,9 +852,9 @@ extension AppModelTests {
             "completedAtMs": .number(200),
             "outcome": .object(["status": .string("failed")]),
         ]))
-        model.handle(.agentEvent(sessionID: "chat-1", record: toolEnd))
-        model.handle(.agentEvent(sessionID: "chat-1", record: failed))
-        model.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
+        model.gateway.handle(.agentEvent(sessionID: "chat-1", record: toolEnd))
+        model.gateway.handle(.agentEvent(sessionID: "chat-1", record: failed))
+        model.gateway.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
         XCTAssertEqual(model.transcript.map(\.text), ["\nOutput"])
 
         var requestCount = await recorder.requestCount()
@@ -872,7 +874,7 @@ extension AppModelTests {
             "phase": .string("reasoning"),
             "delta": .string("Partial reasoning"),
         ]))
-        model.handle(.sessionHistory(
+        model.gateway.handle(.sessionHistory(
             requestID: firstID,
             sessionID: "chat-1",
             records: [partial],
@@ -909,7 +911,7 @@ extension AppModelTests {
             tone: "neutral",
             files: []
         ))])
-        model.handle(.sessionHistory(
+        model.gateway.handle(.sessionHistory(
             requestID: secondID,
             sessionID: "chat-1",
             records: [toolBegin],
@@ -929,8 +931,8 @@ extension AppModelTests {
         let recorder = GatewayRequestRecorder()
         let model = try model { await recorder.record($0) }
         let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
-        model.accounts = [account]
-        model.selectedAccountID = account.id
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
         let chats = [session(state: .idle), session(sessionID: "chat-2", state: .idle)]
         model.applySessions(chats)
         for (index, chat) in chats.enumerated() {
@@ -949,7 +951,7 @@ extension AppModelTests {
                 lastUsage: TokenUsage()
             )
         }
-        model.connectionState = .connecting
+        model.gateway.connectionState = .connecting
         XCTAssertTrue(model.canBrowseSessions)
         XCTAssertFalse(model.canOpenSession)
         model.openChat("chat-1")
@@ -972,7 +974,7 @@ extension AppModelTests {
         let draft = await model.store.loadComposerDraft(accountID: account.id, sessionID: "chat-1")
         XCTAssertEqual(draft.text, "Keep this draft")
 
-        model.handle(.ready(ready(
+        model.gateway.handle(.ready(ready(
             botDefaults: VersionedAgentConfig(revision: 1, config: composition()),
             sessions: chats
         )))
@@ -984,30 +986,30 @@ extension AppModelTests {
             return XCTFail("Only the currently visible chat should synchronize from its cache cursor")
         }
         XCTAssertEqual(model.displayedTranscript.map(\.text), ["Cached chat-2"])
-        model.handle(.sessionOpened(
+        model.gateway.handle(.sessionOpened(
             requestID: requestID,
             payload: sessionReady(latestSequence: 8, sessionID: "chat-2")
         ))
-        model.handle(.sessionReplayComplete(requestID: requestID, sessionID: "chat-2"))
+        model.gateway.handle(.sessionReplayComplete(requestID: requestID, sessionID: "chat-2"))
         XCTAssertEqual(model.displayedTranscript.map(\.text), ["Cached chat-2"])
-        XCTAssertTrue(model.connectionState.isReady)
+        XCTAssertTrue(model.gateway.connectionState.isReady)
     }
 
     func testGatewayReadyRetiresAnUnfinishedOfflineCacheRead() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { await recorder.record($0) }
         let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
-        model.accounts = [account]
-        model.selectedAccountID = account.id
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
         model.applySessions([session(state: .idle)])
-        model.connectionState = .connecting
+        model.gateway.connectionState = .connecting
         let gate = AsyncGate()
         model.transcriptIOTask = Task { await gate.wait() }
         model.openChat("chat-1")
         let cacheRead = model.transcriptIOTask
         XCTAssertTrue(model.isLoadingTranscript)
         XCTAssertTrue(model.displayedTranscript.isEmpty)
-        model.handle(.ready(ready(
+        model.gateway.handle(.ready(ready(
             botDefaults: VersionedAgentConfig(revision: 1, config: composition())
         )))
         let request = await recorder.firstRequest(after: 0) {
@@ -1017,15 +1019,15 @@ extension AppModelTests {
         guard case .openSession(let requestID, "chat-1", nil) = try XCTUnwrap(request) else {
             return XCTFail("An uncached chat should open after Ready")
         }
-        model.handle(.sessionOpened(requestID: requestID, payload: sessionReady(latestSequence: 1)))
-        model.handle(.agentEvent(
+        model.gateway.handle(.sessionOpened(requestID: requestID, payload: sessionReady(latestSequence: 1)))
+        model.gateway.handle(.agentEvent(
             sessionID: "chat-1",
             record: recorded(1, testAssistantMessage(
                 turnID: "turn-1", modelStepID: "answer", text: "Fresh from replay"
             ))
         ))
         XCTAssertEqual(model.transcript.map(\.text), ["Fresh from replay"], "Replay must populate the live transcript")
-        model.handle(.sessionReplayComplete(requestID: requestID, sessionID: "chat-1"))
+        model.gateway.handle(.sessionReplayComplete(requestID: requestID, sessionID: "chat-1"))
         XCTAssertEqual(model.displayedTranscript.map(\.text), ["Fresh from replay"], "Completed replay must be visible before the cache read resumes")
         await gate.open()
         await cacheRead?.value
@@ -1040,8 +1042,8 @@ extension AppModelTests {
     func testOfflineChatSelectionSupersedesEarlierCacheReads() async throws {
         let model = try model(requestSender: { _ in XCTFail("Browsing must not send a request") })
         let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
-        model.accounts = [account]
-        model.selectedAccountID = account.id
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
         model.applySessions([session(state: .idle), session(sessionID: "chat-2", state: .idle)])
         let gate = AsyncGate()
         model.transcriptIOTask = Task { await gate.wait() }
@@ -1059,8 +1061,8 @@ extension AppModelTests {
         let recorder = GatewayRequestRecorder()
         let model = try model { await recorder.record($0) }
         let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
-        model.accounts = [account]
-        model.selectedAccountID = account.id
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
         model.botSessionsBotID = "bot-1"
         model.botSessions = [session(state: .idle), session(sessionID: "chat-2", state: .idle)]
         model.destination = .bots
@@ -1069,7 +1071,7 @@ extension AppModelTests {
         await model.transcriptIOTask?.value
         XCTAssertEqual(model.presentedChatSessionID, "chat-1")
         XCTAssertTrue(model.isPresentingChat)
-        model.handle(.ready(ready(
+        model.gateway.handle(.ready(ready(
             botDefaults: VersionedAgentConfig(revision: 1, config: composition()), sessions: []
         )))
         let request = await recorder.firstRequest(after: 0) {

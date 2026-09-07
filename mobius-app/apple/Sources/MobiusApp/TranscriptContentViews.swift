@@ -311,7 +311,7 @@ struct SessionFileCard: View {
     }
 
     private var thumbnailTaskID: FileThumbnailKey? {
-        guard model.connectionState.isReady,
+        guard model.gateway.connectionState.isReady,
               let sessionID
         else { return nil }
         return .session(sessionID: sessionID, fileID: file.id)
