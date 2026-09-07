@@ -211,6 +211,11 @@ impl CommandOutputSink {
 }
 
 /// Implements one sandbox execution environment.
+///
+/// Returned futures are [`Send`] and may be dropped during execution. Backends
+/// own cancellation cleanup for the processes and resources they launch;
+/// dropping a future must not leave unmanaged commands running. [`Sandbox`]
+/// owns approval and background-command tracking, not arbitrary backend cleanup.
 pub trait SandboxBackend: Send + Sync {
     /// Reads a UTF-8 file.
     fn read<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<String>>;

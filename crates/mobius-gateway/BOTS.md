@@ -116,6 +116,10 @@ one conversation's task tree, used for bounded parallel work. It shares the pare
 workspace and starts with no parent turns by default; the caller may explicitly
 fork recent turns or the full transcript. Parent and child exchange targeted
 messages, and any result reaches Swarm Chat only if the owning Bot posts it there.
+`send_message` is the single task-tree messaging tool: it delivers to running
+agents and wakes completed or interrupted children with their existing checkpoint.
+The root is send-only and is never resurrected. Messages remain peer advice, not
+user instructions or approval.
 
 ## Working state and shared knowledge
 
@@ -150,3 +154,5 @@ notes do not become global or Swarm knowledge automatically.
   and durable board state.
 - `crates/mobius-gateway/src/host.rs` owns opening visible and hidden sessions and
   delivering Swarm messages and broadcasting Swarm attention state.
+  Its `host/routines.rs`, `host/deletion.rs`, and `host/collaboration.rs` modules own
+  routine operations, deletion recovery, and Swarm management respectively.

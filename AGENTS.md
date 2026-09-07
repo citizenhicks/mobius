@@ -114,6 +114,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --locked --no-deps
 cargo test --workspace --all-targets --all-features --locked
+RUSTDOCFLAGS="-D warnings" cargo test --workspace --doc --all-features --locked
 ```
 
 Linux sandbox tests require Bubblewrap. `just test` and `just fmt` are shortcuts

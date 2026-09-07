@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use diffy::Line as DiffLine;
 use diffy::Patch;
 use ratatui::Frame;
@@ -16,6 +18,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
 
 use super::PreviewContent;
+use super::RenderedTranscript;
 use super::TranscriptEntry;
 use super::TranscriptTone;
 use super::TuiState;
@@ -125,19 +128,14 @@ pub(super) fn render(frame: &mut Frame<'_>, state: &mut TuiState, catalog: &UiCa
 }
 
 fn render_transcript(frame: &mut Frame<'_>, state: &mut TuiState, area: Rect) {
-    let lines = live_transcript_lines(state, 0, area.width);
-    let paragraph = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
-    let rendered_lines = paragraph.line_count(area.width);
-    state
-        .transcript_viewport
-        .update(rendered_lines, usize::from(area.height));
-    let scroll = state
-        .transcript_viewport
-        .effective_scroll()
-        .min(usize::from(u16::MAX)) as u16;
-    frame.render_widget(paragraph.scroll((scroll, 0)), area);
+    let (lines, scroll) = live_transcript_window(state, area.width, area.height);
+    let paragraph = Paragraph::new(Text::from(lines))
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0));
+    frame.render_widget(paragraph, area);
 }
 
+#[cfg(test)]
 pub(super) fn live_transcript_lines(
     state: &mut TuiState,
     start: usize,
@@ -153,9 +151,46 @@ pub(super) fn live_transcript_lines(
         previous_group,
         start > 0,
     );
-    if !state.streaming.is_empty() {
+    let has_transcript = !lines.is_empty();
+    append_live_tail(&mut lines, state, width, has_transcript);
+    if lines.is_empty() {
+        let card = responsive_welcome_card(state, width);
         push_lines(
             &mut lines,
+            &card,
+            TranscriptTone::Welcome,
+            FrontendBlockFormat::PlainText,
+            width,
+        );
+    }
+    lines
+}
+
+fn live_transcript_window(
+    state: &mut TuiState,
+    width: u16,
+    height: u16,
+) -> (Vec<Line<'static>>, u16) {
+    let (content_height, tail) = prepare_live_transcript(state, width);
+    render_transcript_window(
+        &mut state.transcript,
+        width,
+        &mut state.transcript_viewport,
+        height,
+        tail,
+        content_height,
+    )
+}
+
+fn append_live_tail(
+    lines: &mut Vec<Line<'static>>,
+    state: &TuiState,
+    width: u16,
+    has_transcript: bool,
+) {
+    if !state.streaming.is_empty() {
+        push_lines(
+            lines,
             &state.streaming,
             TranscriptTone::Assistant,
             FrontendBlockFormat::PlainText,
@@ -164,19 +199,20 @@ pub(super) fn live_transcript_lines(
     }
     if !state.reasoning.is_empty() {
         push_lines(
-            &mut lines,
+            lines,
             &state.reasoning,
             TranscriptTone::Reasoning,
             FrontendBlockFormat::PlainText,
             width,
         );
     }
+    let mut has_content = has_transcript || !lines.is_empty();
     for ((capability, _), item) in state
         .widgets
         .iter()
         .filter(|(_, item)| item.slot == FrontendSlot::TranscriptTail)
     {
-        if !lines.is_empty() {
+        if has_content {
             lines.push(Line::default());
         }
         let heading = item.symbol.as_ref().map_or_else(
@@ -197,18 +233,152 @@ pub(super) fn live_transcript_lines(
                 Span::styled(line.to_owned(), style),
             ])
         }));
+        has_content = true;
     }
-    if lines.is_empty() {
+}
+
+fn prepare_live_transcript(state: &mut TuiState, width: u16) -> (usize, Vec<Line<'static>>) {
+    let mut content_height = 0_usize;
+    let has_transcript = visit_transcript_lines(&mut state.transcript, width, |_, line_height| {
+        content_height = content_height.saturating_add(line_height)
+    });
+    let mut tail = Vec::new();
+    append_live_tail(&mut tail, state, width, has_transcript);
+    if !has_transcript && tail.is_empty() {
         let card = responsive_welcome_card(state, width);
         push_lines(
-            &mut lines,
+            &mut tail,
             &card,
             TranscriptTone::Welcome,
             FrontendBlockFormat::PlainText,
             width,
         );
     }
-    lines
+    (content_height, tail)
+}
+
+fn render_transcript_window(
+    transcript: &mut VecDeque<TranscriptEntry>,
+    width: u16,
+    viewport: &mut super::Viewport,
+    height: u16,
+    tail: Vec<Line<'static>>,
+    entry_height: usize,
+) -> (Vec<Line<'static>>, u16) {
+    let tail_heights = tail
+        .iter()
+        .map(|line| wrapped_line_height(line, width))
+        .collect::<Vec<_>>();
+    let content_height = entry_height.saturating_add(tail_heights.iter().sum());
+    viewport.update(content_height, usize::from(height));
+
+    let scroll = viewport.effective_scroll();
+    let end = scroll.saturating_add(viewport.page_height());
+    let mut cursor = 0_usize;
+    let mut first_skip = None;
+    let mut lines = Vec::new();
+    let mut collect = |line: &Line<'static>, line_height: usize| {
+        let start = cursor;
+        cursor = cursor.saturating_add(line_height);
+        if line_height == 0 || start >= end || cursor <= scroll {
+            return;
+        }
+        if first_skip.is_none() {
+            first_skip = Some(scroll.saturating_sub(start));
+        }
+        lines.push(line.clone());
+    };
+    visit_transcript_lines(transcript, width, &mut collect);
+    for (line, line_height) in tail.iter().zip(tail_heights) {
+        collect(line, line_height);
+    }
+
+    (
+        lines,
+        u16::try_from(first_skip.unwrap_or_default()).unwrap_or(u16::MAX),
+    )
+}
+
+fn visit_transcript_lines(
+    transcript: &mut VecDeque<TranscriptEntry>,
+    width: u16,
+    mut visit: impl FnMut(&Line<'static>, usize),
+) -> bool {
+    let mut previous_group = None;
+    let mut has_previous = false;
+    let mut has_lines = false;
+    for entry in transcript {
+        let grouped = entry.group.is_some() && entry.group == previous_group;
+        if has_previous && !grouped {
+            let line = if matches!(entry.tone, TranscriptTone::User) {
+                separator_line(width)
+            } else {
+                Line::default()
+            };
+            visit(&line, wrapped_line_height(&line, width));
+            has_lines = true;
+        }
+        ensure_rendered(entry, width);
+        if let Some((_, rendered)) = &entry.rendered {
+            for (line, height) in rendered.lines.iter().zip(&rendered.wrapped_heights) {
+                visit(line, *height);
+            }
+            has_lines |= !rendered.lines.is_empty();
+        }
+        previous_group.clone_from(&entry.group);
+        has_previous = true;
+    }
+    has_lines
+}
+
+fn ensure_rendered(entry: &mut TranscriptEntry, width: u16) {
+    if entry
+        .rendered
+        .as_ref()
+        .is_some_and(|(cached_width, _)| *cached_width == width)
+    {
+        return;
+    }
+    let text = if matches!(entry.tone, TranscriptTone::Welcome)
+        && entry
+            .text
+            .lines()
+            .any(|line| Line::from(line).width() > usize::from(width))
+    {
+        "MÖBIUS · type / for commands"
+    } else {
+        &entry.text
+    };
+    let mut lines = Vec::new();
+    if entry.role.is_some() {
+        push_block_lines(&mut lines, entry, width);
+    } else {
+        push_lines(&mut lines, text, entry.tone, entry.format, width);
+    }
+    let heights = lines
+        .iter()
+        .map(|line| wrapped_line_height(line, width))
+        .collect();
+    entry.rendered = Some((
+        width,
+        RenderedTranscript {
+            lines,
+            wrapped_heights: heights,
+        },
+    ));
+}
+
+fn wrapped_line_height(line: &Line<'static>, width: u16) -> usize {
+    Paragraph::new(Text::from(line.clone()))
+        .wrap(Wrap { trim: false })
+        .line_count(width)
+}
+
+fn separator_line(width: u16) -> Line<'static> {
+    Line::styled(
+        "─".repeat(usize::from(width)),
+        current().style(Role::Border),
+    )
 }
 
 pub(super) fn render_preview(frame: &mut Frame<'_>, state: &mut TuiState) {
@@ -242,36 +412,65 @@ pub(super) fn render_preview(frame: &mut Frame<'_>, state: &mut TuiState) {
             theme.style(Role::Accent).add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(area);
-    let mut lines = if live {
-        live_transcript_lines(state, 0, inner.width)
-    } else if let Some(PreviewContent::Snapshot(snapshot)) =
-        state.preview.as_mut().map(|preview| &mut preview.content)
-    {
-        transcript_lines(snapshot.transcript.iter_mut(), inner.width, None, false)
+    let (lines, scroll) = if live {
+        live_preview_window(state, inner.width, inner.height)
     } else {
-        Vec::new()
+        snapshot_preview_window(state, inner.width, inner.height)
     };
-    if lines.is_empty() {
-        lines.push(Line::styled(
-            "No transcript events.",
-            theme.style(Role::Muted).add_modifier(Modifier::ITALIC),
-        ));
-    }
-    let paragraph = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
-    let rendered_lines = paragraph.line_count(inner.width);
-    let preview = state.preview.as_mut().expect("preview checked");
-    preview
-        .viewport
-        .update(rendered_lines, usize::from(inner.height));
-    let scroll = preview
-        .viewport
-        .effective_scroll()
-        .min(usize::from(u16::MAX)) as u16;
+    let paragraph = Paragraph::new(Text::from(lines))
+        .wrap(Wrap { trim: false })
+        .block(block)
+        .scroll((scroll, 0));
 
-    frame.render_widget(paragraph.block(block).scroll((scroll, 0)), area);
+    frame.render_widget(paragraph, area);
 }
 
-fn transcript_lines<'a>(
+fn live_preview_window(state: &mut TuiState, width: u16, height: u16) -> (Vec<Line<'static>>, u16) {
+    let (content_height, tail) = prepare_live_transcript(state, width);
+    let preview = state.preview.as_mut().expect("preview checked");
+    render_transcript_window(
+        &mut state.transcript,
+        width,
+        &mut preview.viewport,
+        height,
+        tail,
+        content_height,
+    )
+}
+
+fn snapshot_preview_window(
+    state: &mut TuiState,
+    width: u16,
+    height: u16,
+) -> (Vec<Line<'static>>, u16) {
+    let preview = state.preview.as_mut().expect("preview checked");
+    let PreviewContent::Snapshot(snapshot) = &mut preview.content else {
+        return (Vec::new(), 0);
+    };
+    let mut content_height = 0_usize;
+    let has_transcript =
+        visit_transcript_lines(&mut snapshot.transcript, width, |_, line_height| {
+            content_height = content_height.saturating_add(line_height)
+        });
+    let mut tail = Vec::new();
+    if !has_transcript {
+        tail.push(Line::styled(
+            "No transcript events.",
+            current().style(Role::Muted).add_modifier(Modifier::ITALIC),
+        ));
+    }
+    render_transcript_window(
+        &mut snapshot.transcript,
+        width,
+        &mut preview.viewport,
+        height,
+        tail,
+        content_height,
+    )
+}
+
+#[cfg(test)]
+pub(super) fn transcript_lines<'a>(
     entries: impl Iterator<Item = &'a mut TranscriptEntry>,
     width: u16,
     mut previous_group: Option<super::BlockKey>,
@@ -282,39 +481,14 @@ fn transcript_lines<'a>(
         let grouped = entry.group.is_some() && entry.group == previous_group;
         if has_previous && !grouped {
             if matches!(entry.tone, TranscriptTone::User) {
-                lines.push(Line::styled(
-                    "─".repeat(usize::from(width)),
-                    current().style(Role::Border),
-                ));
+                lines.push(separator_line(width));
             } else {
                 lines.push(Line::default());
             }
         }
-        if entry
-            .rendered
-            .as_ref()
-            .is_none_or(|(cached_width, _)| *cached_width != width)
-        {
-            let text = if matches!(entry.tone, TranscriptTone::Welcome)
-                && entry
-                    .text
-                    .lines()
-                    .any(|line| Line::from(line).width() > usize::from(width))
-            {
-                "MÖBIUS · type / for commands"
-            } else {
-                &entry.text
-            };
-            let mut rendered = Vec::new();
-            if entry.role.is_some() {
-                push_block_lines(&mut rendered, entry, width);
-            } else {
-                push_lines(&mut rendered, text, entry.tone, entry.format, width);
-            }
-            entry.rendered = Some((width, rendered));
-        }
+        ensure_rendered(entry, width);
         if let Some((_, rendered)) = &entry.rendered {
-            lines.extend(rendered.iter().cloned());
+            lines.extend(rendered.lines.iter().cloned());
         }
         previous_group.clone_from(&entry.group);
         has_previous = true;

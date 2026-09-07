@@ -326,6 +326,11 @@ pub struct CompactRequest<'a> {
 }
 
 /// Fallible synchronous callback used to forward streaming provider events.
+///
+/// Providers must propagate callback errors instead of retrying or silently
+/// dropping events. An agent-provided sink has bounded ingress and closes when
+/// [`Model::respond`] completes or is canceled; retaining it does not extend
+/// the response lifetime.
 pub type ModelEventSink = Arc<dyn Fn(crate::protocol::ModelEvent) -> Result<()> + Send + Sync>;
 
 /// Completed output from a model response.
@@ -751,6 +756,11 @@ pub trait Model: Send + Sync {
     }
 
     /// Produces one streamed response.
+    ///
+    /// Normalize provider wire data into [`crate::protocol::ModelEvent`] and
+    /// [`ModelOutput`], and propagate [`ModelEventSink`] failures. The returned
+    /// future may be dropped on cancellation; implementations own cleanup of any
+    /// transport work they launch outside that future.
     fn respond<'a>(
         &'a self,
         request: ModelRequest<'a>,

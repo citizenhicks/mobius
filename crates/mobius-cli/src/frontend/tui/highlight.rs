@@ -66,3 +66,27 @@ pub(super) fn lines(code: &str, path: &str) -> Option<Vec<Vec<Span<'static>>>> {
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bundled_syntaxes_and_theme_highlight_without_loading_definitions() {
+        for (path, code) in [
+            ("main.rs", "fn main() {}"),
+            ("config.yaml", "enabled: true"),
+        ] {
+            let rendered = lines(code, path).expect("bundled syntax and theme must load");
+            let spans = &rendered[0];
+            assert_eq!(
+                spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>(),
+                code
+            );
+            assert!(spans.iter().any(|span| span.style.fg != spans[0].style.fg));
+        }
+    }
+}

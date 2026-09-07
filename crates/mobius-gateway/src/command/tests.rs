@@ -953,31 +953,22 @@ fn startup_lock_allows_only_one_lifecycle_operation() {
 #[cfg(unix)]
 #[tokio::test]
 async fn autostart_process_group_cleanup_kills_descendants() {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
     let directory = tempfile::tempdir().expect("process group directory");
-    let descendant_pid = directory.path().join("descendant.pid");
     let mut command = TokioCommand::new("sh");
     command
         .arg("-c")
-        .arg(format!(
-            "sleep 30 & echo $! > {}; wait",
-            descendant_pid.display()
-        ))
+        .arg("sleep 30 & echo $!; wait")
+        .stdout(std::process::Stdio::piped())
         .process_group(0);
     let mut child = command.spawn().expect("process group child");
-
-    for _ in 0..20 {
-        if descendant_pid.exists() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    let descendant = std::fs::read_to_string(&descendant_pid)
-        .expect("descendant PID")
-        .trim()
-        .parse::<u32>()
-        .expect("valid descendant PID");
-
+    let mut output = BufReader::new(child.stdout.take().expect("child stdout"));
+    let mut pid = String::new();
+    let ready = tokio::time::timeout(Duration::from_secs(5), output.read_line(&mut pid)).await;
     stop_background_child(&mut child, &directory.path().join(PROCESS_FILE)).await;
+    ready.expect("descendant ready").expect("descendant PID");
+    let descendant = pid.trim().parse::<u32>().expect("valid descendant PID");
 
     for _ in 0..20 {
         let alive = std::process::Command::new("kill")

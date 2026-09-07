@@ -345,6 +345,12 @@ impl PromptSection {
 }
 
 /// A validated, declaration-ordered middleware pipeline.
+///
+/// Registration, prompt sections, and forward hooks follow declaration order;
+/// only [`Middleware::session_end`] unwinds in reverse. All
+/// [`Middleware::pre_model`] hooks finish before any [`Middleware::model_request`]
+/// hook runs. Prompt sections are composed once at agent creation; dynamic
+/// durable state belongs in `pre_model`, request-only decoration in `model_request`.
 #[derive(Clone)]
 pub struct MiddlewareStack {
     entries: Vec<Arc<dyn Middleware>>,

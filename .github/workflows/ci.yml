@@ -22,10 +22,10 @@ jobs:
           rustup default stable
           rustup component add clippy rustfmt
       - run: cargo fmt --all -- --check
-      - name: Check Rust 1.98
+      - name: Check Rust 1.98.1
         run: |
-          rustup toolchain install 1.98.0 --profile minimal
-          cargo +1.98.0 check --workspace --all-targets --all-features --locked
+          rustup toolchain install 1.98.1 --profile minimal
+          cargo +1.98.1 check --workspace --all-targets --all-features --locked
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Build documentation
         env:
@@ -67,3 +67,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes bubblewrap
       - run: cargo test --workspace --all-targets --all-features --locked
+      - name: Test documentation examples
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo test --workspace --doc --all-features --locked

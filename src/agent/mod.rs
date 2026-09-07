@@ -235,6 +235,14 @@ impl AgentConfig {
 }
 
 /// Cloneable command side of a running agent.
+///
+/// [`Self::send`] and [`Self::submit`] never wait for queue capacity: they return
+/// [`Error::Busy`] when full and [`Error::Stopped`] when disconnected. Successful
+/// enqueueing does not mean the operation was accepted; consume the event stream
+/// for its correlated outcome.
+///
+/// Dropping all strong senders requests shutdown. Use [`Agent::into_parts`] to
+/// release the command half while draining [`AgentEvents`] until it closes.
 #[derive(Clone)]
 pub struct AgentSender {
     ingress: Arc<SubmissionIngress>,

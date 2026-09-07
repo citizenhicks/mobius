@@ -192,7 +192,7 @@ möbius requires Rust 1.98 or newer.
 
 ```toml
 [dependencies]
-mobius = "0.11"
+mobius = "0.15"
 ```
 
 The caller owns composition:
@@ -207,7 +207,8 @@ use mobius::backend::checkpoint::{CheckpointStore, sqlite::SqliteCheckpoint};
 use mobius::backend::model::{Model, ModelRouter, openai::OpenAi};
 use mobius::backend::sandbox::{ApprovalPolicy, Sandbox, local::LocalSandbox};
 use mobius::middleware::{Middleware, MiddlewareStack};
-use mobius::middleware::tools::Tools;
+use mobius::middleware::{messages::Messages, tools::Tools};
+use mobius::protocol::SessionContext;
 
 async fn build_agent(
     workspace: &Path,
@@ -226,18 +227,33 @@ async fn build_agent(
     ));
     let checkpoints: Arc<dyn CheckpointStore> =
         Arc::new(SqliteCheckpoint::new(workspace.join("mobius.sqlite3"))?);
-    let middleware: Vec<Arc<dyn Middleware>> = vec![Arc::new(Tools::coding())];
+    let middleware: Vec<Arc<dyn Middleware>> = vec![
+        Arc::new(Messages::default()),
+        Arc::new(Tools::coding()),
+    ];
 
-    create_agent(AgentConfig::new(
-        models,
-        sandbox,
-        checkpoints,
-        MiddlewareStack::new(middleware)?,
-        "You are a concise coding agent.",
-    ))
+    create_agent(
+        AgentConfig::new(
+            models,
+            sandbox,
+            checkpoints,
+            MiddlewareStack::new(middleware)?,
+            "You are a concise coding agent.",
+        )
+        .session_context(SessionContext {
+            bot_id: "embedded".into(),
+            ..SessionContext::default()
+        }),
+    )
     .await
 }
 ```
+
+The [crate documentation](https://docs.rs/mobius/latest/mobius/) compile-checks this example
+and includes custom model and middleware examples. It documents bounded submissions,
+sender-drop shutdown, atomic checkpoint saves, and middleware ordering. Keep draining agent
+events while commands are active. Sandbox backends own cancellation cleanup for resources they
+launch; gateway hosts signal shutdown through `GatewayServer::serve_until` and await it.
 
 Frontends submit
 [`protocol::Op`](https://docs.rs/mobius/latest/mobius/protocol/enum.Op.html) values and consume

@@ -40,6 +40,11 @@ workspaces. Start the gateway again after the command completes.
 
 The separately versioned `mobius-gateway` crate is the runtime library used by those binaries.
 
+Library hosts should signal shutdown through `GatewayServer::serve_until` and
+await its return. The server closes connections, finishes routine dispatch, stops
+Swarm delivery, and shuts down resident sessions, including active routines.
+Dropping the serving future is not a graceful-shutdown boundary.
+
 Initialize and pair the default gateway:
 
 ```sh
@@ -105,6 +110,9 @@ the host-side recovery flow for a stopped gateway.
 
 By default, owner-only state is stored under `~/.mobius/gateway`. Set
 `MOBIUS_GATEWAY_STATE_DIR` or pass `--state-dir` to use another location.
+Bot profiles and routine history share `bots.sqlite3`; session checkpoints and
+journals use a separate database. Unsupported configuration and database versions
+are rejected, not migrated or reset automatically. Back up state before upgrading.
 On Linux, run the gateway account without permitted or ambient capabilities;
 Bubblewrap rejects a non-root caller that retains them. Hosts that allow user,
 PID, mount, and network namespaces but forbid mounting procfs inside a child PID

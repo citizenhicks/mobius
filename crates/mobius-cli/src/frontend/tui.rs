@@ -86,7 +86,12 @@ struct TranscriptEntry {
     format: FrontendBlockFormat,
     tone: TranscriptTone,
     pending: bool,
-    rendered: Option<(u16, Vec<Line<'static>>)>,
+    rendered: Option<(u16, RenderedTranscript)>,
+}
+
+struct RenderedTranscript {
+    lines: Vec<Line<'static>>,
+    wrapped_heights: Vec<usize>,
 }
 
 #[derive(Clone, PartialEq, Eq)]

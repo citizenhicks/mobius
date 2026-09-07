@@ -178,6 +178,10 @@ impl GatewayServer {
     }
 
     /// Serves until shutdown or the same inactivity policy as [`Self::serve`].
+    ///
+    /// Signal shutdown and await this future to close connections, finish routine
+    /// dispatch, and stop resident sessions through their normal cleanup. Merely
+    /// dropping the future does not perform graceful shutdown.
     pub async fn serve_until(self, shutdown: impl Future<Output = ()>) -> Result<()> {
         let websocket_host = self.configured_websocket_host()?;
         self.serve_until_inactive_with_host(shutdown, INACTIVITY_TIMEOUT, websocket_host)

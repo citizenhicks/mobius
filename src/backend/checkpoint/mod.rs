@@ -641,6 +641,12 @@ impl TranscriptPage {
 }
 
 /// Stores durable session checkpoints and middleware state.
+///
+/// Atomic operations must not expose a partially committed logical update.
+/// Power-loss durability depends on the backend's storage guarantees. Optional
+/// catalog, transcript, execution-history, and fork methods return explicit
+/// unsupported errors unless implemented; compacted context is not a transcript
+/// journal.
 pub trait CheckpointStore: Send + Sync {
     /// Loads the latest checkpoint for a session.
     fn load<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<Option<Checkpoint>>>;
@@ -659,6 +665,10 @@ pub trait CheckpointStore: Send + Sync {
     ) -> BoxFuture<'a, Result<()>>;
 
     /// Atomically saves one checkpoint and appends its normalized event batch.
+    ///
+    /// The checkpoint, transcript delta, optional execution record, and journal
+    /// events form one commit boundary. Return the durably assigned event
+    /// sequences only after that commit succeeds.
     fn save_with_events<'a>(
         &'a self,
         checkpoint: &'a Checkpoint,
