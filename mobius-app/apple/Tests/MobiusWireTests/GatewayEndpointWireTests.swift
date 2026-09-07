@@ -1,4 +1,5 @@
 import Foundation
+@testable import Mobius
 import XCTest
 
 extension GatewayWireTests {

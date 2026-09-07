@@ -438,25 +438,42 @@ extension AppModel {
 
     func signOutOfCloud() async {
         let cloudGateway = mobiusCloudGateway
-        _ = try? await unregisterRemoteNotificationsForCloudSignOut()
-        var localError: Error?
+        let requestedSession = cloudSession
+        var pushRemovalFailed = false
+        do {
+            try await unregisterRemoteNotificationsForCloudSignOut()
+        } catch {
+            pushRemovalFailed = true
+        }
+        guard cloudSession == requestedSession else { return }
         do {
             try cloudClient.signOut()
         } catch {
-            localError = error
+            // Authentication survived; allow replacement without forgetting failed cleanup.
+            settingsDefaults.removeObject(forKey: pushTokenRemovalCredentialIDKey)
+            await cloudAuthenticationDidChange()
+            showToast(verbatim: localizedErrorDescription(error), tone: .error)
+            return
         }
         clearCloudAccountState()
+        if pushRemovalFailed {
+            pushTokenRemovalPending = true
+            settingsDefaults.set(true, forKey: pushTokenRemovalPendingKey)
+        }
         let removedGateway = if let cloudGateway {
             await removeGateway(cloudGateway)
         } else {
             true
         }
-        if let localError {
-            showToast(verbatim: localizedErrorDescription(localError), tone: .error)
-            return
-        }
         guard removedGateway else { return }
-        showToast("Signed out of möbius Cloud.", tone: .info)
+        if pushRemovalFailed {
+            showToast(
+                "Signed out of möbius Cloud. Notifications will be updated when you sign in again.",
+                tone: .warning
+            )
+        } else {
+            showToast("Signed out of möbius Cloud.", tone: .info)
+        }
     }
 
     func clearDataAndGatewayInformation() async {

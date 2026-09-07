@@ -1,3 +1,4 @@
+@testable import Mobius
 import XCTest
 
 final class ComposingOrbTests: XCTestCase {

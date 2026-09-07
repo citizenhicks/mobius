@@ -2,6 +2,14 @@ import CryptoKit
 import Foundation
 import Security
 
+private struct GatewayStoreCleanupError: LocalizedError {
+    let errors: [Error]
+
+    var errorDescription: String? {
+        errors.map(\.localizedDescription).joined(separator: " ")
+    }
+}
+
 struct CachedTranscript: Codable, Sendable {
     static let currentSchemaVersion = 5
 
@@ -501,11 +509,21 @@ private actor GatewayDiskStore {
         try FileManager.default.removeItem(at: url)
     }
 
-    func removeAccount(_ accountID: UUID) {
-        try? FileManager.default.removeItem(at: catalogURL(accountID))
-        try? FileManager.default.removeItem(at: accountTranscriptDirectory(accountID))
-        try? FileManager.default.removeItem(at: accountThumbnailDirectory(accountID))
-        try? FileManager.default.removeItem(at: accountDraftDirectory(accountID))
+    func removeAccount(_ accountID: UUID) throws {
+        var errors: [Error] = []
+        for url in [
+            catalogURL(accountID),
+            accountTranscriptDirectory(accountID),
+            accountThumbnailDirectory(accountID),
+            accountDraftDirectory(accountID),
+        ] {
+            do {
+                try removeItemIfPresent(at: url)
+            } catch {
+                errors.append(error)
+            }
+        }
+        if !errors.isEmpty { throw GatewayStoreCleanupError(errors: errors) }
     }
 
     func clearCachedData() throws {
@@ -759,20 +777,28 @@ final class GatewayStore {
     }
 
     func remove(_ account: GatewayAccount) async throws {
-        var tokenRemovalError: Error?
+        var errors: [Error] = []
         do {
             try removeToken(accountID: account.id)
         } catch {
-            tokenRemovalError = error
+            errors.append(error)
         }
         let accounts = loadAccounts().filter { $0.id != account.id }
-        defaults.set(try encoder.encode(accounts), forKey: accountsKey)
+        do {
+            defaults.set(try encoder.encode(accounts), forKey: accountsKey)
+        } catch {
+            errors.append(error)
+        }
         if selectedAccountID() == account.id {
             defaults.removeObject(forKey: selectedAccountKey)
         }
         defaults.removeObject(forKey: sessionReadCursorsKey(account.id))
-        await diskStore.removeAccount(account.id)
-        if let tokenRemovalError { throw tokenRemovalError }
+        do {
+            try await diskStore.removeAccount(account.id)
+        } catch {
+            errors.append(error)
+        }
+        if !errors.isEmpty { throw GatewayStoreCleanupError(errors: errors) }
     }
 
     func loadChatCatalog(accountID: UUID) async -> CachedChatCatalog? {

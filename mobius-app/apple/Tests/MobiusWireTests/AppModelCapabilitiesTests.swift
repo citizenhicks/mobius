@@ -1,4 +1,5 @@
 import Foundation
+@testable import Mobius
 import XCTest
 
 @MainActor
@@ -207,6 +208,7 @@ extension AppModelTests {
             await recorder.record(request)
         })
         model.selectedSessionID = "chat-1"
+        model.connectionState = .ready
         model.middlewareFeatures = [MiddlewareFeature(
             id: "scratchpad",
             label: "Scratchpad",
@@ -530,6 +532,7 @@ extension AppModelTests {
             await recorder.record(request)
         })
         model.selectedSessionID = "chat-1"
+        model.connectionState = .ready
         model.reduce(
             event: AgentEventRecord(
                 submissionId: nil,

@@ -1,8 +1,70 @@
 import Foundation
+@testable import Mobius
 import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testRemovingGatewayDrainsPendingTranscriptWritesBeforeDeletingCache() async throws {
+        let suiteName = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let store = GatewayStore(defaults: defaults, transcriptDirectory: directory)
+        let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
+        await store.saveTranscript(
+            accountID: account.id,
+            sessionID: "chat-1",
+            sequence: 1,
+            transcript: [TranscriptEntry(
+                id: "existing",
+                text: "Existing",
+                kind: .assistant,
+                format: "plain_text",
+                pending: false
+            )],
+            currentUsage: TokenUsage(),
+            lastUsage: TokenUsage()
+        )
+        let gate = AsyncGate()
+        let model = AppModel(client: GatewayClient(), store: store)
+        model.accounts = [account]
+        model.selectedAccountID = account.id
+        model.selectedSessionID = "chat-1"
+        model.connectionState = .ready
+        model.transcriptIOTask = Task {
+            await gate.wait()
+            await store.saveTranscript(
+                accountID: account.id,
+                sessionID: "chat-1",
+                sequence: 2,
+                transcript: [TranscriptEntry(
+                    id: "stale",
+                    text: "Must not resurrect",
+                    kind: .assistant,
+                    format: "plain_text",
+                    pending: false
+                )],
+                currentUsage: TokenUsage(),
+                lastUsage: TokenUsage()
+            )
+        }
+
+        let removal = Task { @MainActor in await model.removeGateway(account) }
+        let quiesced = await eventually {
+            model.accounts.isEmpty && model.selectedAccountID == nil
+        }
+        XCTAssertTrue(quiesced)
+        await gate.open()
+        let removed = await removal.value
+        let cached = await store.loadTranscript(accountID: account.id, sessionID: "chat-1")
+        XCTAssertTrue(removed)
+        XCTAssertNil(cached)
+    }
+
     func testConnectionStatePresentation() {
         let expectations: [(ConnectionState, ToastTone, Bool)] = [
             (.disconnected, .error, false),

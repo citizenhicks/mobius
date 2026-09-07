@@ -44,13 +44,14 @@ final class RealtimeVoiceSession: NSObject {
         guard RTCInitializeSSL() else { return nil }
         return RTCPeerConnectionFactory(encoderFactory: nil, decoderFactory: nil)
     }()
-    @ObservationIgnored private var peer: RTCPeerConnection?
+    @ObservationIgnored var peer: RTCPeerConnection?
     @ObservationIgnored private var audioTrack: RTCAudioTrack?
     @ObservationIgnored private var dataChannel: RTCDataChannel?
     @ObservationIgnored private var failure: ((String) -> Void)?
     @ObservationIgnored private var generation = UUID()
     @ObservationIgnored private var audioIsActive = false
     @ObservationIgnored private var meteringTask: Task<Void, Never>?
+    @ObservationIgnored private var disconnectedRecoveryTask: Task<Void, Never>?
     @ObservationIgnored private var levelBaseline = 0.0
 
     init(onFailure: ((String) -> Void)? = nil) {
@@ -111,6 +112,8 @@ final class RealtimeVoiceSession: NSObject {
         failure = nil
         meteringTask?.cancel()
         meteringTask = nil
+        disconnectedRecoveryTask?.cancel()
+        disconnectedRecoveryTask = nil
         audioLevels = RealtimeAudioLevels()
         levelFlare = 0
         levelBaseline = 0
@@ -173,6 +176,21 @@ final class RealtimeVoiceSession: NSObject {
         audio.add(self)
     }
 
+    private func scheduleDisconnectedRecovery(for peer: RTCPeerConnection) {
+        guard disconnectedRecoveryTask == nil else { return }
+        let generation = generation
+        disconnectedRecoveryTask = Task { [weak self, weak peer] in
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled, let self, let peer,
+                  self.generation == generation,
+                  self.peer === peer,
+                  !self.isConnected
+            else { return }
+            self.disconnectedRecoveryTask = nil
+            self.failure?(String(localized: "The voice connection ended."))
+        }
+    }
+
     private enum VoiceError: LocalizedError {
         case microphonePermission
         case connection
@@ -191,8 +209,18 @@ extension RealtimeVoiceSession: RTCPeerConnectionDelegate, RTCAudioSessionDelega
         Task { @MainActor [weak self] in
             guard let self, self.peer === peerConnection else { return }
             self.isConnected = newState == .connected
-            if newState == .failed || newState == .disconnected || newState == .closed {
+            switch newState {
+            case .connected:
+                self.disconnectedRecoveryTask?.cancel()
+                self.disconnectedRecoveryTask = nil
+            case .disconnected:
+                self.scheduleDisconnectedRecovery(for: peerConnection)
+            case .failed, .closed:
+                self.disconnectedRecoveryTask?.cancel()
+                self.disconnectedRecoveryTask = nil
                 self.failure?(String(localized: "The voice connection ended."))
+            default:
+                break
             }
         }
     }

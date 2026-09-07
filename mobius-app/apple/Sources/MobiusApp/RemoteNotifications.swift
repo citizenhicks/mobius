@@ -5,6 +5,7 @@ import UserNotifications
 let notificationsEnabledKey = "notifications-enabled"
 let pushInstallationIDKey = "push-installation-id"
 let pushTokenRemovalPendingKey = "push-token-removal-pending"
+let pushTokenRemovalCredentialIDKey = "push-token-removal-credential-id"
 
 enum APNsEnvironment: String, Encodable, Sendable {
     case sandbox
@@ -119,7 +120,7 @@ enum RemoteNotification: Equatable {
         guard let kind = SessionNotificationKind(rawValue: rawKind),
               let sessionID = Self.identifier(userInfo["sessionId"])
         else { return nil }
-        let runCount = Self.unsignedInteger(userInfo["runCount"])
+        let runCount = Self.exactUInt64(userInfo["runCount"])
         let approvalRequestID = Self.optionalIdentifier(userInfo["approvalRequestId"])
         let hasRequiredCursor = switch kind {
         case .awaitingApproval: approvalRequestID != nil
@@ -149,12 +150,13 @@ enum RemoteNotification: Equatable {
         return identifier(value)
     }
 
-    private static func unsignedInteger(_ value: Any?) -> UInt64? {
+    private static func exactUInt64(_ value: Any?) -> UInt64? {
         guard let number = value as? NSNumber,
               CFGetTypeID(number) != CFBooleanGetTypeID(),
-              number.int64Value >= 0
+              let integer = UInt64(number.stringValue),
+              NSNumber(value: integer).compare(number) == .orderedSame
         else { return nil }
-        return number.uint64Value
+        return integer
     }
 }
 
@@ -267,12 +269,9 @@ extension AppModel {
         defer { isUpdatingNotifications = false }
 
         if enabled {
-            pushTokenRemovalPending = false
-            settingsDefaults.set(false, forKey: pushTokenRemovalPendingKey)
             await refreshRemoteNotificationRegistration(opensSettingsWhenDenied: true)
         } else {
-            pushTokenRemovalPending = true
-            settingsDefaults.set(true, forKey: pushTokenRemovalPendingKey)
+            markPushTokenRemovalPending()
             stopRemoteNotifications()
             await removeCloudPushInstallation(reportsErrors: true)
         }
@@ -293,7 +292,7 @@ extension AppModel {
             return
         }
         guard cloudSession != nil else {
-            stopRemoteNotifications(forgetsCloudInstallation: true)
+            stopRemoteNotifications()
             return
         }
 
@@ -324,7 +323,10 @@ extension AppModel {
         let token = deviceToken.map { String(format: "%02x", $0) }.joined()
         guard !token.isEmpty else { return }
         remoteNotificationDeviceToken = token
-        guard notificationsEnabled, !pushTokenRemovalPending else { return }
+        guard notificationsEnabled,
+              let cloudSession,
+              !isPushTokenRemovalPending(for: cloudSession)
+        else { return }
         let previousRegistration = remoteNotificationRegistrationTask
         remoteNotificationRegistrationTask = Task { [weak self] in
             await previousRegistration?.value
@@ -543,18 +545,19 @@ extension AppModel {
     }
 
     func unregisterRemoteNotificationsForCloudSignOut() async throws {
-        guard cloudSession != nil else { return }
-        pushTokenRemovalPending = true
-        settingsDefaults.set(true, forKey: pushTokenRemovalPendingKey)
+        guard let requestedSession = cloudSession else { return }
+        markPushTokenRemovalPending(for: requestedSession)
         await remoteNotificationRegistrationTask?.value
         remoteNotificationRegistrationTask = nil
+        guard cloudSession == requestedSession else { throw CancellationError() }
         try await cloudClient.unregisterPushToken(installationID: pushInstallationID)
+        guard cloudSession == requestedSession else { throw CancellationError() }
+        clearPushTokenRemovalPending()
     }
 
     func stopRemoteNotifications(forgetsCloudInstallation: Bool = false) {
-        if forgetsCloudInstallation {
-            pushTokenRemovalPending = false
-            settingsDefaults.set(false, forKey: pushTokenRemovalPendingKey)
+        if forgetsCloudInstallation, !pushTokenRemovalPending {
+            clearPushTokenRemovalPending()
         }
         remoteNotifications.unregister()
         remoteNotifications.removeAll()
@@ -568,10 +571,9 @@ extension AppModel {
     }
 
     private func registerCloudPushToken(_ token: String) async {
-        guard notificationsEnabled,
-              !pushTokenRemovalPending,
-              let requestedSession = cloudSession
-        else { return }
+        guard notificationsEnabled, let requestedSession = cloudSession else { return }
+        let pendingCredentialID = pendingPushTokenRemovalCredentialID
+        guard !isPushTokenRemovalPending(for: requestedSession) else { return }
         do {
             try await cloudClient.registerPushToken(
                 installationID: pushInstallationID,
@@ -580,20 +582,17 @@ extension AppModel {
             )
             guard cloudSession == requestedSession else { return }
             guard notificationsEnabled else {
-                pushTokenRemovalPending = true
-                settingsDefaults.set(true, forKey: pushTokenRemovalPendingKey)
+                markPushTokenRemovalPending(for: requestedSession)
                 await removeCloudPushInstallation(reportsErrors: false)
                 return
             }
-            guard !pushTokenRemovalPending else { return }
-            pushTokenRemovalPending = false
-            settingsDefaults.set(false, forKey: pushTokenRemovalPendingKey)
+            guard pendingPushTokenRemovalCredentialID == pendingCredentialID else { return }
+            clearPushTokenRemovalPending()
             notificationError = nil
         } catch is CancellationError {
             return
         } catch {
             guard notificationsEnabled,
-                  !pushTokenRemovalPending,
                   cloudSession == requestedSession
             else { return }
             notificationError = localizedString(
@@ -607,8 +606,7 @@ extension AppModel {
         do {
             try await cloudClient.unregisterPushToken(installationID: pushInstallationID)
             guard cloudSession == requestedSession else { return }
-            pushTokenRemovalPending = false
-            settingsDefaults.set(false, forKey: pushTokenRemovalPendingKey)
+            clearPushTokenRemovalPending()
             notificationError = nil
         } catch is CancellationError {
             return
@@ -620,6 +618,31 @@ extension AppModel {
                 )
             }
         }
+    }
+
+    private var pendingPushTokenRemovalCredentialID: String? {
+        settingsDefaults.string(forKey: pushTokenRemovalCredentialIDKey)
+    }
+
+    private func isPushTokenRemovalPending(for session: MobiusCloudSession) -> Bool {
+        pushTokenRemovalPending
+            && pendingPushTokenRemovalCredentialID == session.credentialID
+    }
+
+    private func markPushTokenRemovalPending(for session: MobiusCloudSession? = nil) {
+        pushTokenRemovalPending = true
+        settingsDefaults.set(true, forKey: pushTokenRemovalPendingKey)
+        if let credentialID = session?.credentialID {
+            settingsDefaults.set(credentialID, forKey: pushTokenRemovalCredentialIDKey)
+        } else {
+            settingsDefaults.removeObject(forKey: pushTokenRemovalCredentialIDKey)
+        }
+    }
+
+    private func clearPushTokenRemovalPending() {
+        pushTokenRemovalPending = false
+        settingsDefaults.set(false, forKey: pushTokenRemovalPendingKey)
+        settingsDefaults.removeObject(forKey: pushTokenRemovalCredentialIDKey)
     }
 
     private func catalogAlreadyIncludes(_ notification: RemoteNotification) -> Bool {

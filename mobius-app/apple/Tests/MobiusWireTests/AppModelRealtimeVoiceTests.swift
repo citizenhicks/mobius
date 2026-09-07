@@ -2,6 +2,7 @@ import Foundation
 import XCTest
 @preconcurrency import AVFoundation
 @preconcurrency import WebRTC
+@testable import Mobius
 
 @MainActor
 extension AppModelTests {
@@ -73,6 +74,7 @@ extension AppModelTests {
         let recorder = GatewayRequestRecorder()
         let model = try model { await recorder.record($0) }
         model.selectedSessionID = "chat-1"
+        model.connectionState = .ready
         let call = RealtimeVoiceCall(requestID: "call", sessionID: "chat-1")
         model.realtimeVoiceCall = call
         let widget = MountedWidget(capability: "messages", widget: FrontendWidget(
@@ -316,6 +318,38 @@ extension AppModelTests {
         await fulfillment(of: [resumed, spoken], timeout: 1)
         XCTAssertEqual(synthesizer.spoken, ["Current speech"])
         speaker.stop()
+    }
+
+    func testReleasingOwnerCancelsSuspendedVoiceTaskAndClosesPeer() async throws {
+        weak var releasedModel: AppModel?
+        let cancellation = expectation(description: "Voice task canceled")
+        let peer: RTCPeerConnection
+        do {
+            let model = try voiceModel()
+            releasedModel = model
+            XCTAssertTrue(RTCInitializeSSL())
+            let factory = RTCPeerConnectionFactory(encoderFactory: nil, decoderFactory: nil)
+            let configuration = RTCConfiguration()
+            configuration.sdpSemantics = .unifiedPlan
+            let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
+            peer = try XCTUnwrap(factory.peerConnection(
+                with: configuration, constraints: constraints, delegate: model.realtimeVoice
+            ))
+            model.realtimeVoice.peer = peer
+            model.realtimeVoiceCall = RealtimeVoiceCall(requestID: "voice", sessionID: "chat-1")
+            model.realtimeVoiceTask = Task {
+                do {
+                    try await Task.sleep(for: .seconds(3_600))
+                } catch {
+                    XCTAssertTrue(error is CancellationError)
+                    cancellation.fulfill()
+                }
+            }
+        }
+
+        XCTAssertNil(releasedModel)
+        await fulfillment(of: [cancellation], timeout: 1)
+        XCTAssertEqual(peer.signalingState, .closed)
     }
 }
 

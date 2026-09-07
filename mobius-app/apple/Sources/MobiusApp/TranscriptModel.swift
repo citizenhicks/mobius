@@ -246,6 +246,10 @@ struct TranscriptMessageMetadata: Codable, Equatable, Sendable {
     let delivery: MessageDelivery
 }
 
+extension FrontendWidget {
+    var isEditableQueuedInput: Bool { action?.capabilityInput != nil }
+}
+
 struct WebSearchSource: Identifiable, Equatable {
     let url: URL
     let title: String

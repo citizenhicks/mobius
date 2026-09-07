@@ -8,14 +8,14 @@ func formatDuration(_ interval: TimeInterval) -> String {
 
 func formatCompactDuration(_ interval: TimeInterval, locale: Locale) -> String {
     let seconds = max(0, Int64(interval))
-    let (value, unit) = if seconds >= 3_600 {
-        (seconds / 3_600, "hrs")
-    } else if seconds >= 60 {
-        (seconds / 60, "mins")
-    } else {
-        (seconds, "secs")
-    }
-    return "\(value.formatted(.number.locale(locale))) \(unit)"
+    return Duration.seconds(seconds).formatted(
+        .units(
+            allowed: [.hours, .minutes, .seconds],
+            width: .abbreviated,
+            maximumUnitCount: 1
+        )
+        .locale(locale)
+    )
 }
 
 /// Keeps app copy localizable while making server, user, and generated text explicitly
@@ -166,10 +166,8 @@ struct MobiusGlyph: Hashable {
     static let bellDot = Self("hi.bellDot")
     static let bellOff = Self("hi.bellOff")
     static let brain = Self("hi.brain")
-    static let calendarDots = Self("hi.calendarDots")
     static let caretDown = Self("hi.caretDown")
     static let caretRight = Self("hi.caretRight")
-    static let caretUp = Self("hi.caretUp")
     static let caretUpDown = Self("hi.caretUpDown")
     static let cellTower = Self("hi.cellTower")
     static let chatCircle = Self("hi.chatCircle")
@@ -192,7 +190,6 @@ struct MobiusGlyph: Hashable {
     static let dotsThree = Self("hi.dotsThree")
     static let eyeOff = Self("hi.eyeOff")
     static let expand = Self("hi.expand")
-    static let fileAxisThreeD = Self("hi.fileAxisThreeD")
     static let fileMagnifyingGlass = Self("hi.fileMagnifyingGlass")
     static let fileScript = Self("hi.fileScript")
     static let fileText = Self("hi.fileText")
@@ -215,7 +212,6 @@ struct MobiusGlyph: Hashable {
     static let key = Self("hi.key")
     static let kimiAi = Self("hi.kimiAi")
     static let link = Self("hi.link")
-    static let loading02 = Self("hi.loading02")
     static let lockOpen = Self("hi.lockOpen")
     static let magnifyingGlass = Self("hi.magnifyingGlass")
     static let markdown = Self("hi.markdown")
@@ -244,7 +240,6 @@ struct MobiusGlyph: Hashable {
     static let shieldAlert = Self("hi.shieldAlert")
     static let shieldCheck = Self("hi.shieldCheck")
     static let shieldOff = Self("hi.shieldOff")
-    static let sidebarSimple = Self("hi.sidebarSimple")
     static let signIn = Self("hi.signIn")
     static let slidersHorizontal = Self("hi.slidersHorizontal")
     static let setup01 = Self("hi.setup01")
@@ -252,8 +247,6 @@ struct MobiusGlyph: Hashable {
     static let squaresFour = Self("hi.squaresFour")
     static let stopFill = Self("hi.stopFill")
     static let swarm = Self("hi.swarm")
-    static let terminalWindow = Self("hi.terminalWindow")
-    static let text = Self("hi.text")
     static let trash = Self("hi.trash")
     static let typeCursor = Self("hi.typeCursor")
     static let typeScript = Self("hi.typeScript")
@@ -261,8 +254,6 @@ struct MobiusGlyph: Hashable {
     static let volumeHigh = Self("hi.volumeHigh")
     static let warning = Self("hi.warning")
     static let warningOctagon = Self("hi.warningOctagon")
-    static let workflowSquare01 = Self("hi.workflowSquare01")
-    static let workflowSquare03 = Self("hi.workflowSquare03")
     static let x = Self("hi.x")
     static let xCircle = Self("hi.xCircle")
 
@@ -685,16 +676,6 @@ struct MobiusUnavailable: View {
         detail: LocalizedStringResource? = nil
     ) {
         self.title = .localized(title)
-        self.glyph = glyph
-        self.detail = detail.map(MobiusText.localized)
-    }
-
-    init(
-        verbatim title: String,
-        glyph: MobiusGlyph,
-        detail: LocalizedStringResource? = nil
-    ) {
-        self.title = .verbatim(title)
         self.glyph = glyph
         self.detail = detail.map(MobiusText.localized)
     }

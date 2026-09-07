@@ -1075,10 +1075,21 @@ extension AppModel {
         let store = store
         composerDraftIOTask = Task {
             await previous?.value
-            try? await store.removeComposerEditRecovery(
-                accountID: owner.accountID,
-                sessionID: owner.sessionID
-            )
+            var lastError: Error?
+            for _ in 0..<2 {
+                do {
+                    try await store.removeComposerEditRecovery(
+                        accountID: owner.accountID,
+                        sessionID: owner.sessionID
+                    )
+                    return
+                } catch {
+                    lastError = error
+                }
+            }
+            if let lastError {
+                showToast(verbatim: localizedErrorDescription(lastError), tone: .error)
+            }
         }
     }
 

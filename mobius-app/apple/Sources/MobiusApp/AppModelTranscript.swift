@@ -568,39 +568,6 @@ extension AppModel {
         return merged
     }
 
-    func appendText(
-        _ text: String?,
-        kind: TranscriptEntry.Kind,
-        tone: String = "neutral",
-        id: String? = nil,
-        presentationID: String? = nil,
-        modelStepID: String? = nil,
-        turnID: String? = nil,
-        startsTurn: Bool = false,
-        sourceSequence: UInt64? = nil,
-        recordedAtMs: Int64? = nil,
-        messageTarget: MessageTarget? = nil,
-        files: [SessionFileReference] = []
-    ) {
-        mutateTranscriptPreservingPrefix { entries in
-            appendText(
-                text,
-                kind: kind,
-                tone: tone,
-                id: id,
-                presentationID: presentationID,
-                modelStepID: modelStepID,
-                turnID: turnID,
-                startsTurn: startsTurn,
-                sourceSequence: sourceSequence,
-                recordedAtMs: recordedAtMs,
-                messageTarget: messageTarget,
-                files: files,
-                to: &entries
-            )
-        }
-    }
-
     func appendMessage(
         _ message: MessageEventPayload,
         record: RecordedEvent,
@@ -686,41 +653,6 @@ extension AppModel {
                 sourceSequence: record.sequence, recordedAtMs: record.recordedAtMs
             ))
         }
-    }
-
-    func appendText(
-        _ text: String?,
-        kind: TranscriptEntry.Kind,
-        tone: String = "neutral",
-        id: String? = nil,
-        presentationID: String? = nil,
-        modelStepID: String? = nil,
-        turnID: String? = nil,
-        startsTurn: Bool = false,
-        sourceSequence: UInt64? = nil,
-        recordedAtMs: Int64? = nil,
-        messageTarget: MessageTarget? = nil,
-        files: [SessionFileReference] = [],
-        to entries: inout [TranscriptEntry]
-    ) {
-        let text = text ?? ""
-        guard !text.isEmpty || !files.isEmpty else { return }
-        entries.append(TranscriptEntry(
-            id: id ?? UUID().uuidString,
-            presentationID: presentationID,
-            text: text,
-            kind: kind,
-            format: "plain_text",
-            tone: tone,
-            pending: false,
-            modelStepID: modelStepID,
-            turnID: turnID,
-            startsTurn: startsTurn,
-            sourceSequence: sourceSequence,
-            recordedAtMs: recordedAtMs,
-            messageTarget: messageTarget,
-            files: files
-        ))
     }
 
     // Deltas arrive several times per frame, and every application re-lays-out the whole
@@ -941,74 +873,6 @@ extension AppModel {
                $0.isWebSearch && $0.modelStepID == modelStepID
            }) {
             entries[searchIndex].annotations = annotations
-        }
-    }
-
-    func completeStream(
-        text: String,
-        kind: TranscriptEntry.Kind,
-        modelStepID: String?,
-        turnID: String?,
-        messageTarget: MessageTarget?,
-        sourceSequence: UInt64?,
-        recordedAtMs: Int64?
-    ) {
-        mutateTranscriptPreservingPrefix { entries in
-            completeStream(
-                text: text,
-                kind: kind,
-                modelStepID: modelStepID,
-                turnID: turnID,
-                messageTarget: messageTarget,
-                sourceSequence: sourceSequence,
-                recordedAtMs: recordedAtMs,
-                in: &entries
-            )
-        }
-    }
-
-    func completeStream(
-        text: String,
-        kind: TranscriptEntry.Kind,
-        modelStepID: String?,
-        turnID: String?,
-        messageTarget: MessageTarget?,
-        sourceSequence: UInt64?,
-        recordedAtMs: Int64?,
-        in entries: inout [TranscriptEntry]
-    ) {
-        if let index = entries.lastIndex(where: {
-            $0.pending && $0.kind == kind
-                && (modelStepID == nil || $0.modelStepID == modelStepID)
-        }) {
-            entries[index].text = text
-            if entries[index].pending { invalidateTranscriptProjection() }
-            entries[index].pending = false
-            if entries[index].turnID == nil { entries[index].turnID = turnID }
-            entries[index].messageTarget = messageTarget
-            if let sourceSequence { entries[index].sourceSequence = sourceSequence }
-            if let recordedAtMs { entries[index].recordedAtMs = recordedAtMs }
-        } else {
-            let presentationID = modelStepID.flatMap { modelStepID in
-                kind.narrativePhase.map {
-                    TranscriptEntry.narrativePresentationID(
-                        modelStepID: modelStepID,
-                        phase: $0,
-                        ordinal: 0
-                    )
-                }
-            }
-            appendText(
-                text,
-                kind: kind,
-                presentationID: presentationID,
-                modelStepID: modelStepID,
-                turnID: turnID,
-                sourceSequence: sourceSequence,
-                recordedAtMs: recordedAtMs,
-                messageTarget: messageTarget,
-                to: &entries
-            )
         }
     }
 

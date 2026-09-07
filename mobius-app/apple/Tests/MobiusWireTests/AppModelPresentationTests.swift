@@ -120,7 +120,9 @@ extension AppModelTests {
         XCTAssertTrue(alertRevealed)
         XCTAssertTrue(sheet.presentedViewController === alert)
         XCTAssertEqual(field.text, "Unsaved setup credential")
-        alert.dismiss(animated: false)
+        await withCheckedContinuation { continuation in
+            alert.dismiss(animated: false) { continuation.resume() }
+        }
         let share = UIActivityViewController(activityItems: ["ABCD-1234"], applicationActivities: nil)
         share.popoverPresentationController?.sourceView = sheet.view
         share.popoverPresentationController?.sourceRect = sheet.view.bounds
@@ -199,10 +201,27 @@ extension AppModelTests {
 
     func testCollapsedDurationUsesOneCompactNaturalUnit() {
         let locale = Locale(identifier: "en_US")
-        XCTAssertEqual(formatCompactDuration(59, locale: locale), "59 secs")
-        XCTAssertEqual(formatCompactDuration(60, locale: locale), "1 mins")
-        XCTAssertEqual(formatCompactDuration(3_600, locale: locale), "1 hrs")
+        XCTAssertEqual(formatCompactDuration(59, locale: locale), "59 sec")
+        XCTAssertEqual(formatCompactDuration(60, locale: locale), "1 min")
+        XCTAssertEqual(formatCompactDuration(3_600, locale: locale), "1 hr")
+        XCTAssertEqual(formatCompactDuration(3_600, locale: Locale(identifier: "fr_FR")), "1 h")
+        XCTAssertEqual(formatCompactDuration(3_600, locale: Locale(identifier: "de_DE")), "1 Std.")
         XCTAssertEqual(formatDuration(3_600), "60:00")
+    }
+
+    func testRoutineDateUsesWeeklyWeekday() {
+        let timeZone = TimeZone(secondsFromGMT: 0)!
+        let date = routineDate(
+            for: Mobius.SimpleRoutineSchedule(minute: 0, hour: 9, weekday: 1),
+            timeZone: timeZone,
+            from: Date(timeIntervalSince1970: 0)
+        )
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+
+        XCTAssertEqual(calendar.component(.weekday, from: date), 2)
+        XCTAssertEqual(calendar.component(.hour, from: date), 9)
+        XCTAssertEqual(calendar.component(.minute, from: date), 0)
     }
 
     func testMessageDeliverySymbolsUseTheirRequestedGlyphs() {
@@ -697,6 +716,7 @@ extension AppModelTests {
             await recorder.record(request)
         })
         model.selectedSessionID = "chat-1"
+        model.connectionState = .ready
         let requestCount = await recorder.requestCount()
         model.submitPickerOption(try FrontendPickerOption(json: .object([
             "label": .string("reviewer"),
@@ -775,6 +795,7 @@ extension AppModelTests {
             await recorder.record(request)
         })
         model.selectedSessionID = "chat-1"
+        model.connectionState = .ready
         let next = AgentOperation.capabilityCommand(
             capability: "subagents",
             command: "subagents",
@@ -860,6 +881,7 @@ extension AppModelTests {
             await recorder.record(request)
         })
         model.selectedSessionID = "chat-1"
+        model.connectionState = .ready
         let next = AgentOperation.capabilityCommand(
             capability: "subagents",
             command: "subagents",
@@ -981,6 +1003,7 @@ extension AppModelTests {
             await recorder.record(request)
         })
         model.selectedSessionID = "chat-1"
+        model.connectionState = .ready
         let operation = AgentOperation.capabilityCommand(
             capability: "subagents",
             command: "subagents",
@@ -1049,6 +1072,7 @@ extension AppModelTests {
             if case .submit = request { operationSent.fulfill() }
         })
         model.selectedSessionID = "chat-1"
+        model.connectionState = .ready
 
         model.submitFrontendOperation(.capabilityCommand(
             capability: "notes",

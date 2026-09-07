@@ -265,18 +265,22 @@ private enum RoutineDurationUnit: String, CaseIterable, Identifiable {
     }
 }
 
-private func routineDate(
+func routineDate(
     for schedule: SimpleRoutineSchedule,
-    timeZone: TimeZone
+    timeZone: TimeZone,
+    from referenceDate: Date = .now
 ) -> Date {
-    var calendar = Calendar.current
+    var calendar = Calendar(identifier: .gregorian)
     calendar.timeZone = timeZone
-    return calendar.date(
-        bySettingHour: schedule.hour,
-        minute: schedule.minute,
-        second: 0,
-        of: .now
-    ) ?? .now
+    var components = DateComponents(hour: schedule.hour, minute: schedule.minute, second: 0)
+    if let weekday = schedule.weekday {
+        components.weekday = weekday + 1
+    }
+    return calendar.nextDate(
+        after: referenceDate,
+        matching: components,
+        matchingPolicy: .nextTime
+    ) ?? referenceDate
 }
 
 struct RoutineEditorSheet: View {
@@ -655,7 +659,7 @@ struct RoutineRunTranscriptSheet: View {
                 hasEarlier: model.routineRunPreviewNextBeforeSequence != nil,
                 isLoading: model.isLoadingRoutineRunPreview,
                 isRunning: model.presentedRoutineRun?.status == .running,
-                loadEarlier: model.loadEarlierRoutineRunPreview,
+                loadEarlier: model.loadEarlierRoutineRunPreviewAndWait,
                 header: { header }
             )
         } else {

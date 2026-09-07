@@ -135,24 +135,6 @@ struct MobiusMenuLabel: View {
     }
 
     init(
-        text: LocalizedStringResource,
-        glyph: MobiusGlyph? = nil,
-        detail: LocalizedStringResource? = nil,
-        showsDisclosure: Bool = true,
-        glyphSize: CGFloat = MobiusStyle.glyphInline,
-        glyphColor: Color? = nil,
-        font: Font = MobiusStyle.badgeFont
-    ) {
-        self.label = .localized(text)
-        self.glyph = glyph
-        self.detail = detail.map(MobiusText.localized)
-        self.showsDisclosure = showsDisclosure
-        self.glyphSize = glyphSize
-        self.glyphColor = glyphColor
-        self.font = font
-    }
-
-    init(
         verbatim text: String,
         glyph: MobiusGlyph? = nil,
         detail: String? = nil,
@@ -327,20 +309,6 @@ struct MobiusSwipeAction: View {
         action: @escaping () -> Void
     ) {
         self.title = .localized(title)
-        self.glyph = glyph
-        self.tone = tone
-        self.isEnabled = isEnabled
-        self.action = action
-    }
-
-    init(
-        verbatim title: String,
-        glyph: MobiusGlyph,
-        tone: String = "neutral",
-        isEnabled: Bool = true,
-        action: @escaping () -> Void
-    ) {
-        self.title = .verbatim(title)
         self.glyph = glyph
         self.tone = tone
         self.isEnabled = isEnabled

@@ -1,4 +1,5 @@
 import Foundation
+@testable import Mobius
 import XCTest
 
 @MainActor
@@ -221,6 +222,55 @@ extension AppModelTests {
         )
 
         XCTAssertTrue(model.transcriptTailWidgets.isEmpty)
+    }
+
+    func testPeerSteeringUsesEventsWhileUserSteeringKeepsItsBubble() throws {
+        let peer = MountedWidget(
+            capability: "messages",
+            widget: FrontendWidget(
+                id: "peer-steer",
+                slot: .transcriptTail,
+                text: "Review this",
+                tone: "neutral",
+                symbol: "steer",
+                iconOnly: false,
+                progress: nil,
+                content: nil,
+                action: nil
+            )
+        )
+        XCTAssertFalse(peer.widget.isEditableQueuedInput)
+        XCTAssertTrue(editableWidget().widget.isEditableQueuedInput)
+        let queuedPeerEntry = transcriptEventEntry(for: peer)
+        XCTAssertEqual(queuedPeerEntry.kind, .event)
+        XCTAssertEqual(queuedPeerEntry.role, .activity)
+        XCTAssertTrue(queuedPeerEntry.pending)
+        XCTAssertEqual(queuedPeerEntry.text, peer.widget.text)
+
+        let model = try model()
+        model.reduce(record: recordedPeerMessage(
+            1,
+            delivery: .steer,
+            text: "Review this"
+        ))
+        let peerEntry = try XCTUnwrap(model.transcript.first)
+        XCTAssertEqual(peerEntry.kind, .event)
+        XCTAssertEqual(peerEntry.messageMetadata?.delivery, .steer)
+        XCTAssertEqual(
+            TranscriptProjection(entries: model.transcript).rows.map(\.kind),
+            [.activityGroup]
+        )
+
+        model.reduce(
+            event: AgentEventRecord(
+                submissionId: "user-steer",
+                msg: testMessageEvent(delivery: .steer, text: "Use the smaller patch")
+            ),
+            blocks: [],
+            preview: nil
+        )
+        XCTAssertEqual(model.transcript.last?.kind, .user)
+        XCTAssertEqual(model.transcript.last?.messageMetadata?.delivery, .steer)
     }
 
     func testSteeringFeedbackFiresWhenTheMessageReachesModelInput() throws {

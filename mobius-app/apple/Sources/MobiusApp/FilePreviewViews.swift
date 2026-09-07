@@ -10,10 +10,6 @@ struct InspectorLoadingView: View {
         self.title = .localized(title)
     }
 
-    init(verbatim title: String) {
-        self.title = .verbatim(title)
-    }
-
     var body: some View {
         ProgressView { title.text }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -353,7 +349,7 @@ struct ReadOnlyTranscriptSheet<Header: View>: View {
     /// The run is still going, so the gap between two steps is the model thinking rather
     /// than the end of the transcript. Drives the same waiting line the chat shows.
     let isRunning: Bool
-    let loadEarlier: () -> Void
+    let loadEarlier: () async -> Void
 
     init(
         entries: [TranscriptEntry],
@@ -361,7 +357,7 @@ struct ReadOnlyTranscriptSheet<Header: View>: View {
         hasEarlier: Bool,
         isLoading: Bool,
         isRunning: Bool,
-        loadEarlier: @escaping () -> Void,
+        loadEarlier: @escaping () async -> Void,
         @ViewBuilder header: () -> Header
     ) {
         self.header = header()
@@ -384,7 +380,7 @@ struct ReadOnlyTranscriptSheet<Header: View>: View {
                                 TranscriptPaginationButton(
                                     isLoading: isLoading,
                                     isEnabled: !isLoading
-                                ) { loadEarlierPage() }
+                                ) { Task { await loadEarlierPage() } }
                                 .padding(.bottom, MobiusStyle.transcriptRowSpacing)
                             }
                             TranscriptRowsView(
@@ -404,7 +400,7 @@ struct ReadOnlyTranscriptSheet<Header: View>: View {
                         .padding(MobiusStyle.transcriptPadding)
                     }
                     .scrollIndicators(.hidden)
-                    .refreshable { loadEarlierPage() }
+                    .refreshable { await loadEarlierPage() }
                     .onChange(of: isLoading) { _, loading in
                         guard !loading, let retainedEntryID else { return }
                         let row = projection.rows.first { row in
@@ -455,10 +451,10 @@ struct ReadOnlyTranscriptSheet<Header: View>: View {
         )
     }
 
-    private func loadEarlierPage() {
+    private func loadEarlierPage() async {
         guard !isLoading else { return }
         retainedEntryID = entries.first?.presentationID
-        loadEarlier()
+        await loadEarlier()
     }
 }
 
@@ -537,9 +533,9 @@ struct PreviewTranscriptSheet: View {
             .accessibilityHidden(true)
     }
 
-    private func loadEarlierPage() {
+    private func loadEarlierPage() async {
         guard let next = currentPreview.next, !model.isLoadingPreviewPage else { return }
-        model.loadPreviewPage(next)
+        await model.loadPreviewPageAndWait(next)
     }
 
     private var currentPreview: TranscriptPreview {

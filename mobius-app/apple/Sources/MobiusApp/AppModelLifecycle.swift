@@ -23,6 +23,7 @@ extension AppModel {
         cancelReconnect()
         connectionGeneration = UUID()
         transcriptLoadGeneration = UUID()
+        finishHistoryLoad()
         eventTask = nil
         connectionState = .failed(message)
         sessionFileUploadRequests.removeAll()

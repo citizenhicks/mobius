@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import UIKit
+@testable import Mobius
 import XCTest
 
 @MainActor

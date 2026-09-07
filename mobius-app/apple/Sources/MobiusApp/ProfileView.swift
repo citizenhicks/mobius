@@ -435,7 +435,6 @@ private struct MobiusCloudAccountDeletionSheet: View {
 private let profileUsageWeekCount = 26
 
 private struct ProfileUsageSection: View {
-    @Environment(\.mobiusPalette) private var palette
     let days: [DailyUsage]
 
     var body: some View {
@@ -797,9 +796,5 @@ private struct LocalDataSettings: View {
 }
 
 private func compact(_ value: Int) -> String {
-    value.formatted(.number.notation(.compactName).precision(.fractionLength(0 ... 1)))
-}
-
-private func compact(_ value: UInt64) -> String {
     value.formatted(.number.notation(.compactName).precision(.fractionLength(0 ... 1)))
 }

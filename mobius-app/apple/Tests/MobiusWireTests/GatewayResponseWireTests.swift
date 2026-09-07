@@ -1,7 +1,73 @@
 import Foundation
+@testable import Mobius
 import XCTest
 
 extension GatewayWireTests {
+    func testJSONValuePreservesExactIntegerNumbers() throws {
+        let value = try decoder().decode(
+            JSONValue.self,
+            from: Data(#"{"large":9007199254740993,"maximum":18446744073709551615,"minimum":-9223372036854775808,"fraction":0.5,"boolean":true}"#.utf8)
+        )
+
+        XCTAssertEqual(value["large"]?.uintValue, 9_007_199_254_740_993)
+        XCTAssertEqual(value["maximum"]?.uintValue, UInt64.max)
+        XCTAssertEqual(value["minimum"]?.intValue, Int.min)
+        XCTAssertNil(value["fraction"]?.intValue)
+        XCTAssertNil(value["boolean"]?.intValue)
+        let roundedFraction = try decoder().decode(
+            JSONValue.self,
+            from: Data(#"{"checkpointSequence":9007199254740992.5,"batchItemCount":1}"#.utf8)
+        )
+        XCTAssertNil(roundedFraction["checkpointSequence"]?.uintValue)
+
+        let roundTripped = try decoder().decode(
+            JSONValue.self,
+            from: JSONEncoder().encode(value)
+        )
+        XCTAssertEqual(roundTripped, value)
+        XCTAssertEqual(roundTripped["large"]?.uintValue, 9_007_199_254_740_993)
+        XCTAssertEqual(roundTripped["maximum"]?.uintValue, UInt64.max)
+        let mixedNumbers = try decoder().decode(
+            JSONValue.self,
+            from: Data("[1,1.5]".utf8)
+        )
+        XCTAssertEqual(mixedNumbers, JSONValue.array([.number(1), .number(1.5)]))
+        let wideFloats = try decoder().decode(
+            JSONValue.self,
+            from: Data("[1e200,1e-200]".utf8)
+        )
+        XCTAssertEqual(wideFloats, JSONValue.array([.number(1e200), .number(1e-200)]))
+        let wideFloatsRoundTripped = try decoder().decode(
+            JSONValue.self,
+            from: JSONEncoder().encode(wideFloats)
+        )
+        XCTAssertEqual(wideFloatsRoundTripped, wideFloats)
+    }
+
+    func testMessageTargetPreservesLargeCheckpointSequence() throws {
+        let fixtures: [(String, UInt64)] = [
+            (
+                #"{"type":"capability_command","capability":"sessions","command":"fork","arguments":"","input":null,"target":{"checkpoint_sequence":9007199254740993,"batch_item_count":1}}"#,
+                9_007_199_254_740_993
+            ),
+            (
+                #"{"type":"capability_command","capability":"sessions","command":"fork","arguments":"","input":null,"target":{"checkpoint_sequence":18446744073709551615,"batch_item_count":1}}"#,
+                UInt64.max
+            )
+        ]
+
+        for (fixture, expectedSequence) in fixtures {
+            let operation = try decoder().decode(
+                AgentOperation.self,
+                from: Data(fixture.utf8)
+            )
+            guard case .capabilityCommand(_, _, _, _, let target) = operation else {
+                return XCTFail("Expected a capability command")
+            }
+            XCTAssertEqual(target?.checkpointSequence, expectedSequence)
+        }
+    }
+
     func testPeerAuthorPreservesItsSemanticSymbol() throws {
         let author = try decoder().decode(
             MessageAuthor.self,
@@ -43,7 +109,10 @@ extension GatewayWireTests {
         for fixture in [
             #"{"type":"capability_command","capability":"sessions","command":"fork","arguments":"","input":null}"#,
             #"{"type":"capability_command","capability":"sessions","command":"fork","arguments":"","target":null}"#,
-            #"{"type":"capability_command","capability":"sessions","command":"fork","arguments":"","input":null,"target":{"checkpoint_sequence":12,"batch_item_count":0}}"#
+            #"{"type":"capability_command","capability":"sessions","command":"fork","arguments":"","input":null,"target":{"checkpoint_sequence":12,"batch_item_count":0}}"#,
+            #"{"type":"capability_command","capability":"sessions","command":"fork","arguments":"","input":null,"target":{"checkpoint_sequence":12.5,"batch_item_count":1}}"#,
+            #"{"type":"capability_command","capability":"sessions","command":"fork","arguments":"","input":null,"target":{"checkpoint_sequence":9007199254740992.5,"batch_item_count":1}}"#,
+            #"{"type":"capability_command","capability":"sessions","command":"fork","arguments":"","input":null,"target":{"checkpoint_sequence":true,"batch_item_count":1}}"#
         ] {
             XCTAssertThrowsError(
                 try decoder().decode(AgentOperation.self, from: Data(fixture.utf8))

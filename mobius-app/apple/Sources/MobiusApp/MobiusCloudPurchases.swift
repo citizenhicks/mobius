@@ -54,6 +54,7 @@ struct MobiusCloudPurchases {
     private let requestPurchase: @MainActor (UUID) async throws -> MobiusCloudPurchase
     private let loadUpdates: @MainActor () -> AsyncStream<MobiusCloudPurchase>
     private let showSubscriptionManagement: @MainActor () async throws -> Void
+    private let loadAppStoreURL: @MainActor () async -> URL?
 
     init(
         displayPrice: @escaping @MainActor () async throws -> String,
@@ -63,7 +64,8 @@ struct MobiusCloudPurchases {
         updates: @escaping @MainActor () -> AsyncStream<MobiusCloudPurchase> = {
             AsyncStream { $0.finish() }
         },
-        manage: @escaping @MainActor () async throws -> Void = {}
+        manage: @escaping @MainActor () async throws -> Void = {},
+        appStoreURL: @escaping @MainActor () async -> URL? = { nil }
     ) {
         loadDisplayPrice = displayPrice
         loadUnfinishedPurchases = unfinishedPurchases
@@ -71,6 +73,7 @@ struct MobiusCloudPurchases {
         requestPurchase = purchase
         loadUpdates = updates
         showSubscriptionManagement = manage
+        loadAppStoreURL = appStoreURL
     }
 
     static func live() -> Self {
@@ -81,7 +84,8 @@ struct MobiusCloudPurchases {
             currentEntitlements: bridge.currentEntitlements(synchronize:),
             purchase: bridge.purchase(userID:),
             updates: { bridge.updates },
-            manage: bridge.showSubscriptionManagement
+            manage: bridge.showSubscriptionManagement,
+            appStoreURL: bridge.appStoreURL
         )
     }
 
@@ -107,6 +111,10 @@ struct MobiusCloudPurchases {
 
     func manage() async throws {
         try await showSubscriptionManagement()
+    }
+
+    func appStoreURL() async -> URL? {
+        await loadAppStoreURL()
     }
 }
 
@@ -197,6 +205,15 @@ private final class StoreKitCloudBridge {
             ?? scenes.first
         else { throw MobiusCloudPurchaseError.unavailable }
         try await AppStore.showManageSubscriptions(in: scene)
+    }
+
+    func appStoreURL() async -> URL? {
+        guard let verification = try? await AppTransaction.shared,
+              case .verified(let transaction) = verification,
+              let appID = transaction.appID,
+              appID > 0
+        else { return nil }
+        return URL(string: "https://apps.apple.com/app/id\(appID)")
     }
 
     private func product() async throws -> Product {

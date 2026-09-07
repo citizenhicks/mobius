@@ -76,26 +76,28 @@ extension AppModel {
         realtimeVoice = voice
         messageSpeaker.stop()
         dismissComposerFocus()
+        let dictation = dictation
+        let requestSender = requestSender
         realtimeVoiceTask = Task { [weak self] in
-            guard let self else { return }
             do {
-                await self.dictation.cancel()
-                guard self.realtimeVoiceCall?.requestID == requestID else { return }
+                await dictation.cancel()
+                guard self?.realtimeVoiceCall?.requestID == requestID else { return }
                 let offer = try await voice.offer()
-                guard self.realtimeVoiceCall?.requestID == requestID else { return }
-                try await self.requestSender(.startRealtimeVoice(
+                guard self?.realtimeVoiceCall?.requestID == requestID else { return }
+                try await requestSender(.startRealtimeVoice(
                     requestID: requestID, sessionID: sessionID, offerSDP: offer
                 ))
                 // A canceled request may still receive an answer; the response handler ends it.
                 try await Task.sleep(for: .seconds(45))
-                guard self.realtimeVoiceCall?.requestID == requestID,
+                guard let self,
+                      self.realtimeVoiceCall?.requestID == requestID,
                       self.realtimeVoiceCall?.voiceID == nil else { return }
                 self.stopRealtimeVoice()
                 self.showToast("Voice could not connect. Try again.", tone: .error)
             } catch is CancellationError {
                 return
             } catch {
-                guard self.realtimeVoiceCall?.requestID == requestID else { return }
+                guard let self, self.realtimeVoiceCall?.requestID == requestID else { return }
                 self.stopRealtimeVoice()
                 self.showToast(verbatim: self.localizedErrorDescription(error), tone: .error)
             }
@@ -130,11 +132,11 @@ extension AppModel {
             realtimeVoiceTask?.cancel()
             let voice = realtimeVoice
             realtimeVoiceTask = Task { [weak self] in
-                guard let self, self.realtimeVoiceCall?.requestID == requestID else { return }
+                guard self?.realtimeVoiceCall?.requestID == requestID else { return }
                 do {
                     try await voice.accept(answer: answerSDP)
                 } catch {
-                    guard self.realtimeVoiceCall?.requestID == requestID else { return }
+                    guard let self, self.realtimeVoiceCall?.requestID == requestID else { return }
                     self.stopRealtimeVoice()
                     self.showToast(verbatim: self.localizedErrorDescription(error), tone: .error)
                 }

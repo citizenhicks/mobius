@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 extension AppModel {
     func start() async {
@@ -255,28 +256,28 @@ extension AppModel {
     }
 
     func removeGateway(_ account: GatewayAccount) async -> Bool {
-        let isActive = account.id == selectedAccountID
-        let pendingDraftIO = isActive ? composerDraftIOTask : nil
-        if isActive {
+        let wasSelected = account.id == selectedAccountID
+        if wasSelected {
             cancelReconnect()
             discardComposerDraft()
+            resetGatewayState(preservingDrafts: false)
+            selectedAccountID = nil
         }
-        await pendingDraftIO?.value
+        accounts.removeAll { $0.id == account.id }
+        await composerDraftIOTask?.value
+        await transcriptIOTask?.value
         var removalError: Error?
         do {
             try await store.remove(account)
         } catch {
             removalError = error
         }
-        accounts.removeAll { $0.id == account.id }
-        if isActive {
-            selectedAccountID = nil
+        if wasSelected, selectedAccountID == nil {
             if let next = accounts.first {
                 connect(to: next)
             } else {
-                resetGatewayState(preservingDrafts: false)
                 await client.disconnect()
-                showsPairing = true
+                if selectedAccountID == nil { showsPairing = true }
             }
         }
         if let removalError {
@@ -436,10 +437,13 @@ extension AppModel {
         let generation = UUID()
         transcriptLoadGeneration = generation
         let accountID = selectedAccountID
-        if !connectionState.isReady {
-            presentCachedSession(sessionID, transcript: nil)
-            sessionToRestoreID = sessionID
-        }
+        let wasReady = connectionState.isReady
+        presentCachedSession(sessionID, transcript: nil)
+        sessionToRestoreID = sessionID
+        sessionOpeningID = sessionID
+        let openRequestID = wasReady ? requestID("open") : nil
+        sessionRequestID = openRequestID
+        if wasReady { connectionState = .loading }
         let previous = transcriptIOTask
         transcriptIOTask = Task { [weak self, store] in
             await previous?.value
@@ -451,19 +455,23 @@ extension AppModel {
             guard let self,
                   generation == transcriptLoadGeneration,
                   accountID == selectedAccountID,
-                  canBrowseSessions,
+                  sessionOpeningID == sessionID,
+                  sessionRequestID == openRequestID,
                   replayRequestID == nil
             else { return }
-            if connectionState.isReady {
+            if wasReady {
                 requestSessionOpen(
                     sessionID,
                     lastSequence: cached?.sequence,
                     cachedTranscript: cached,
-                    presentedTranscript: cached?.transcript
+                    presentedTranscript: cached?.transcript,
+                    requestID: openRequestID
                 )
             } else {
                 presentCachedSession(sessionID, transcript: cached)
                 sessionToRestoreID = sessionID
+                sessionRequestID = nil
+                sessionOpeningID = nil
             }
         }
     }
@@ -484,7 +492,7 @@ extension AppModel {
         updateContextTokens()
     }
 
-    func loadEarlierHistory() {
+    func requestEarlierHistory() {
         guard canLoadEarlierHistory else { return }
         let window = transcriptWindow
         if window.hasEarlierEntries {
@@ -511,6 +519,18 @@ extension AppModel {
         )) { [weak self] _ in
             guard self?.historyRequestID == id else { return }
             self?.finishHistoryLoad()
+        }
+    }
+
+    func loadEarlierHistory() async {
+        guard !Task.isCancelled, historyRequestID == nil else { return }
+        let initialRevision = historyLoadCompletionRevision
+        requestEarlierHistory()
+        guard historyLoadCompletionRevision == initialRevision,
+              historyRequestID != nil
+        else { return }
+        for await revision in Observations({ self.historyLoadCompletionRevision }) {
+            if revision != initialRevision { return }
         }
     }
 
@@ -561,7 +581,8 @@ extension AppModel {
         _ sessionID: String,
         lastSequence: UInt64?,
         cachedTranscript: CachedTranscript? = nil,
-        presentedTranscript: [TranscriptEntry]? = nil
+        presentedTranscript: [TranscriptEntry]? = nil,
+        requestID: String? = nil
     ) {
         transcriptLoadGeneration = UUID()
         replayCompletionSubmissionIDs.removeAll(keepingCapacity: true)
@@ -578,7 +599,7 @@ extension AppModel {
         sessionOpenCursor = lastSequence
         pendingCachedTranscript = cachedTranscript
         pendingPresentedTranscript = presentedTranscript
-        let id = requestID("open")
+        let id = requestID ?? self.requestID("open")
         sessionRequestID = id
         connectionState = .loading
         transmit(.openSession(
@@ -1461,7 +1482,10 @@ extension AppModel {
     }
 
     func submitWidget(_ mounted: MountedWidget) {
-        guard let sessionID = selectedSessionID, let action = mounted.widget.action else { return }
+        guard canSubmitFrontendAction(capability: mounted.capability),
+              let sessionID = selectedSessionID,
+              let action = mounted.widget.action
+        else { return }
         let id = requestID("widget")
         previewWidgetRequestID = id
         transmit(.submit(sessionID: sessionID, submission: Submission(id: id, op: action))) { [weak self] _ in
@@ -1470,7 +1494,10 @@ extension AppModel {
     }
 
     func submitMessageAction(_ mounted: MountedWidget, target: MessageTarget) {
-        guard let sessionID = selectedSessionID, let action = mounted.widget.action else { return }
+        guard canSubmitFrontendAction(capability: mounted.capability),
+              let sessionID = selectedSessionID,
+              let action = mounted.widget.action
+        else { return }
         let submittedAction = switch action {
         case .capabilityCommand(let capability, let command, let arguments, let input, _):
             AgentOperation.capabilityCommand(
@@ -1490,12 +1517,14 @@ extension AppModel {
     }
 
     func submitFrontendOperation(_ operation: AgentOperation) {
-        guard let sessionID = selectedSessionID else { return }
-        if case .capabilityCommand(let capability, _, _, _, _) = operation,
-           middlewareFeatures.contains(where: { $0.id == capability }),
-           !isCapabilityEnabled(capability) {
-            return
+        let capability: String? = if case .capabilityCommand(let capability, _, _, _, _) = operation {
+            capability
+        } else {
+            nil
         }
+        guard canSubmitFrontendAction(capability: capability),
+              let sessionID = selectedSessionID
+        else { return }
         transmit(.submit(
             sessionID: sessionID,
             submission: Submission(id: requestID("widget-action"), op: operation)
@@ -1522,12 +1551,15 @@ extension AppModel {
     }
 
     func loadPreviewPage(_ operation: AgentOperation) {
-        guard let sessionID = selectedSessionID, !isLoadingPreviewPage else { return }
-        if case .capabilityCommand(let capability, _, _, _, _) = operation,
-           middlewareFeatures.contains(where: { $0.id == capability }),
-           !isCapabilityEnabled(capability) {
-            return
+        let capability: String? = if case .capabilityCommand(let capability, _, _, _, _) = operation {
+            capability
+        } else {
+            nil
         }
+        guard canSubmitFrontendAction(capability: capability),
+              let sessionID = selectedSessionID,
+              !isLoadingPreviewPage
+        else { return }
         let id = requestID("preview-page")
         previewPageRequestID = id
         isLoadingPreviewPage = true
@@ -1541,8 +1573,24 @@ extension AppModel {
         }
     }
 
+    func loadPreviewPageAndWait(_ operation: AgentOperation) async {
+        guard !Task.isCancelled, previewPageRequestID == nil else { return }
+        loadPreviewPage(operation)
+        guard previewPageRequestID != nil else { return }
+        for await loading in Observations({ self.isLoadingPreviewPage }) {
+            if !loading { return }
+        }
+    }
+
     func submitPickerOption(_ option: FrontendPickerOption) {
-        guard let sessionID = selectedSessionID else { return }
+        let capability: String? = if case .capabilityCommand(let capability, _, _, _, _) = option.op {
+            capability
+        } else {
+            nil
+        }
+        guard canSubmitFrontendAction(capability: capability),
+              let sessionID = selectedSessionID
+        else { return }
         let id = requestID("picker")
         pendingPicker = nil
         if case .capabilityCommand = option.op { previewSelections[id] = option }
@@ -1552,6 +1600,17 @@ extension AppModel {
         )) { [weak self] _ in
             self?.previewSelections.removeValue(forKey: id)
         }
+    }
+
+    private func canSubmitFrontendAction(capability: String?) -> Bool {
+        guard connectionState.isReady,
+              sessionRequestID == nil,
+              selectedSessionID != nil
+        else { return false }
+        guard let capability,
+              middlewareFeatures.contains(where: { $0.id == capability })
+        else { return true }
+        return isCapabilityEnabled(capability)
     }
 
 }

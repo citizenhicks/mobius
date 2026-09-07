@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 extension AppModel {
     var botDefaultsDraftModelRoute: String? {
@@ -88,11 +89,6 @@ extension AppModel {
         return providerInstances.first { $0.instance == instance }?.label
             ?? providerStatuses.first { $0.provider == instance }?.label
             ?? instance
-    }
-
-    func providerLabel(for choice: ModelChoice) -> String {
-        guard let instance = modelProviders[choice.route] else { return choice.group }
-        return providerLabel(for: instance)
     }
 
     func providerSymbol(for choice: ModelChoice) -> String? {
@@ -746,6 +742,15 @@ extension AppModel {
               let beforeSequence = routineRunPreviewNextBeforeSequence
         else { return }
         loadRoutineRunPreview(runID: runID, beforeSequence: beforeSequence)
+    }
+
+    func loadEarlierRoutineRunPreviewAndWait() async {
+        guard !Task.isCancelled, routineRunPreviewRequestID == nil else { return }
+        loadEarlierRoutineRunPreview()
+        guard routineRunPreviewRequestID != nil else { return }
+        for await loading in Observations({ self.isLoadingRoutineRunPreview }) {
+            if !loading { return }
+        }
     }
 
     private func loadRoutineRunPreview(runID: String, beforeSequence: UInt64? = nil) {

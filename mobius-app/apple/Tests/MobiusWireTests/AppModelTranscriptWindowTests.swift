@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+@testable import Mobius
 import XCTest
 
 @MainActor
@@ -24,7 +25,7 @@ extension AppModelTests {
         XCTAssertEqual(TranscriptProjection.turnCount(in: model.displayedTranscript), 1)
         XCTAssertTrue(model.hasEarlierHistory)
 
-        model.loadEarlierHistory()
+        model.requestEarlierHistory()
 
         XCTAssertEqual(model.displayedTranscript.count, 2)
         XCTAssertFalse(model.hasEarlierHistory)
@@ -76,7 +77,7 @@ extension AppModelTests {
         )
         XCTAssertTrue(model.hasEarlierHistory)
 
-        model.loadEarlierHistory()
+        model.requestEarlierHistory()
 
         XCTAssertEqual(model.displayedTranscript.count, 6)
         XCTAssertEqual(model.displayedTranscript.first?.id, "user-0")
@@ -395,6 +396,10 @@ extension AppModelTests {
         model.selectedAccountID = account.id
         model.connectionState = .ready
         model.selectedSessionID = "chat-1"
+        model.sessions = [
+            session(sessionID: "chat-2", state: .idle),
+            session(sessionID: "chat-3", state: .idle)
+        ]
         model.transcript = [TranscriptEntry(
             id: "answer-1",
             text: "Previous chat",
@@ -404,7 +409,16 @@ extension AppModelTests {
         )]
 
         let requestCount = await recorder.requestCount()
-        model.openSession("chat-2")
+        let gate = AsyncGate()
+        model.transcriptIOTask = Task { await gate.wait() }
+        model.openChat("chat-2")
+        model.openChat("chat-3")
+        XCTAssertEqual(model.selectedSessionID, "chat-2")
+        XCTAssertEqual(model.navigationPath, [.chat(.session("chat-2"))])
+        XCTAssertTrue(model.isLoadingTranscript)
+        XCTAssertTrue(model.displayedTranscript.isEmpty)
+        XCTAssertFalse(model.canSendComposer)
+        await gate.open()
         let request = await recorder.firstRequest(after: requestCount) { request in
             guard case .openSession(_, "chat-2", _) = request else { return false }
             return true
@@ -412,7 +426,7 @@ extension AppModelTests {
 
         XCTAssertNotNil(request)
         XCTAssertTrue(model.isLoadingTranscript)
-        XCTAssertEqual(model.displayedTranscript.map(\.text), ["Previous chat"])
+        XCTAssertTrue(model.displayedTranscript.isEmpty)
     }
 
     func testCanonicalReplayCompletesAfterTheFrozenCachedTranscript() async throws {

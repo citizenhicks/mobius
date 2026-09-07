@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+@testable import Mobius
 import XCTest
 
 @MainActor
@@ -381,16 +382,11 @@ extension AppModelTests {
         let first = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
         let second = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9192"))
         try await beginComposerEdit(in: model, recorder: recorder, account: first)
-        model.accounts = [first, second]
+        model.accounts = [first]
 
-        let gatewayForgotten = expectation(description: "Gateway forgotten")
-        withObservationTracking {
-            _ = model.accounts
-        } onChange: {
-            gatewayForgotten.fulfill()
-        }
-        model.forgetGateway(first)
-        await fulfillment(of: [gatewayForgotten], timeout: 1)
+        let removed = await model.removeGateway(first)
+        XCTAssertTrue(removed)
+        model.accounts = [second]
         model.selectedAccountID = second.id
         model.selectedSessionID = "chat-1"
         model.connectionState = .ready

@@ -1,4 +1,5 @@
 import Foundation
+@testable import Mobius
 import XCTest
 
 @MainActor
@@ -119,7 +120,7 @@ extension AppModelTests {
             return false
         }.count
         model.connectionState = .disconnected
-        model.loadEarlierHistory()
+        model.requestEarlierHistory()
         let disconnectedRequests = await recorder.requests()
         XCTAssertEqual(
             disconnectedRequests.filter {
@@ -133,8 +134,8 @@ extension AppModelTests {
         model.activeTurnID = "turn-live"
         XCTAssertTrue(model.canLoadEarlierHistory)
         let readyRequestCount = await recorder.requestCount()
-        model.loadEarlierHistory()
-        model.loadEarlierHistory()
+        model.requestEarlierHistory()
+        model.requestEarlierHistory()
         let historyRequest = await recorder.firstRequest(after: readyRequestCount) { request in
             if case .getSessionHistory = request { return true }
             return false
@@ -245,7 +246,7 @@ extension AppModelTests {
         XCTAssertTrue(model.hasEarlierHistory)
 
         let olderRequestCount = await recorder.requestCount()
-        model.loadEarlierHistory()
+        model.requestEarlierHistory()
         let olderRequest = await recorder.firstRequest(after: olderRequestCount) { request in
             if case .getSessionHistory = request { return true }
             return false
@@ -354,7 +355,7 @@ extension AppModelTests {
         model.activeTurnID = "turn-live"
 
         let requestCount = await recorder.requestCount()
-        model.loadEarlierHistory()
+        model.requestEarlierHistory()
         let historyRequest = await recorder.firstRequest(after: requestCount) {
             guard case .getSessionHistory = $0 else { return false }
             return true
@@ -411,7 +412,7 @@ extension AppModelTests {
         ))
         model.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
 
-        model.loadEarlierHistory()
+        model.requestEarlierHistory()
         let firstRequest = await recorder.firstRequest(after: 1) {
             guard case .getSessionHistory = $0 else { return false }
             return true
@@ -454,7 +455,7 @@ extension AppModelTests {
         )
 
         let requestCount = await recorder.requestCount()
-        model.loadEarlierHistory()
+        model.requestEarlierHistory()
         let secondRequest = await recorder.firstRequest(after: requestCount) {
             guard case .getSessionHistory = $0 else { return false }
             return true
@@ -585,7 +586,7 @@ extension AppModelTests {
         model.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
 
         let requestCount = await recorder.requestCount()
-        model.loadEarlierHistory()
+        model.requestEarlierHistory()
         let historyRequest = await recorder.firstRequest(after: requestCount) {
             if case .getSessionHistory = $0 { return true }
             return false
@@ -666,7 +667,7 @@ extension AppModelTests {
         let initialSuccessRevision = model.historyLoadSuccessRevision
         let initialFailureRevision = model.historyLoadFailureRevision
         var requestCount = await recorder.requestCount()
-        model.loadEarlierHistory()
+        model.requestEarlierHistory()
         let rejectedRequest = await recorder.firstRequest(after: requestCount) {
             if case .getSessionHistory = $0 { return true }
             return false
@@ -687,7 +688,7 @@ extension AppModelTests {
         XCTAssertEqual(model.historyLoadFailureRevision, initialFailureRevision + 1)
 
         requestCount = await recorder.requestCount()
-        model.loadEarlierHistory()
+        model.requestEarlierHistory()
         let emptyRequest = await recorder.firstRequest(after: requestCount) {
             if case .getSessionHistory = $0 { return true }
             return false
@@ -707,6 +708,94 @@ extension AppModelTests {
         XCTAssertEqual(model.historyLoadSuccessRevision, initialSuccessRevision + 1)
         XCTAssertEqual(model.historyLoadFailureRevision, initialFailureRevision + 1)
         XCTAssertFalse(model.hasEarlierHistory)
+    }
+
+    func testAsyncHistoryLoadCompletesWhenTheGatewayFinishes() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model { request in await recorder.record(request) }
+        let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
+        model.accounts = [account]
+        model.selectedAccountID = account.id
+        model.connectionState = .ready
+        model.openSession("chat-1")
+        let openRequest = await recorder.firstRequest(after: 0) {
+            guard case .openSession(_, "chat-1", _) = $0 else { return false }
+            return true
+        }
+        guard case .openSession(let openID, _, _) = try XCTUnwrap(openRequest) else {
+            return XCTFail("Expected session open")
+        }
+        model.handle(.sessionOpened(
+            requestID: openID,
+            payload: sessionReady(latestSequence: 8, nextBeforeSequence: 40)
+        ))
+        model.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
+
+        let load = Task { @MainActor in await model.loadEarlierHistory() }
+        let historyRequest = await recorder.firstRequest(after: 1) {
+            if case .getSessionHistory = $0 { return true }
+            return false
+        }
+        guard case .getSessionHistory(let historyID, _, _) = try XCTUnwrap(historyRequest)
+        else { return XCTFail("Expected history request") }
+        XCTAssertTrue(model.isLoadingEarlierHistory)
+
+        model.handle(.sessionHistory(
+            requestID: historyID,
+            sessionID: "chat-1",
+            records: [],
+            nextBeforeSequence: nil
+        ))
+        await load.value
+
+        XCTAssertFalse(model.isLoadingEarlierHistory)
+        XCTAssertNil(model.historyRequestID)
+    }
+
+    func testAsyncHistoryLoadCancellationDoesNotCancelTheGatewayRequest() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model { request in await recorder.record(request) }
+        let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
+        model.accounts = [account]
+        model.selectedAccountID = account.id
+        model.connectionState = .ready
+        model.selectedSessionID = "chat-1"
+        model.nextHistoryBeforeSequence = 40
+        model.activeTurnID = "turn-live"
+
+        let load = Task { @MainActor in await model.loadEarlierHistory() }
+        let historyRequest = await recorder.firstRequest(after: 0) {
+            if case .getSessionHistory = $0 { return true }
+            return false
+        }
+        guard case .getSessionHistory(let historyID, "chat-1", 40) = try XCTUnwrap(historyRequest)
+        else { return XCTFail("Expected history request") }
+
+        load.cancel()
+        await load.value
+        XCTAssertEqual(model.historyRequestID, historyID)
+        XCTAssertTrue(model.isLoadingEarlierHistory)
+
+        model.handle(.rejected(GatewayRejection(
+            requestId: historyID,
+            code: "unavailable",
+            message: "Try again",
+            fatal: false
+        )))
+        XCTAssertNil(model.historyRequestID)
+        XCTAssertFalse(model.isLoadingEarlierHistory)
+
+        model.connectionState = .ready
+        let resetLoad = Task { @MainActor in await model.loadEarlierHistory() }
+        let resetRequest = await recorder.firstRequest(after: 1) {
+            if case .getSessionHistory = $0 { return true }
+            return false
+        }
+        _ = try XCTUnwrap(resetRequest)
+        model.resetGatewayState(preservingDrafts: true)
+        await resetLoad.value
+        XCTAssertFalse(model.isLoadingEarlierHistory)
+        XCTAssertNil(model.historyRequestID)
     }
 
     func testHistoryPagesRebuildCrossPageAppendsAndFailedStepDeltas() async throws {
@@ -767,7 +856,7 @@ extension AppModelTests {
         XCTAssertEqual(model.transcript.map(\.text), ["\nOutput"])
 
         var requestCount = await recorder.requestCount()
-        model.loadEarlierHistory()
+        model.requestEarlierHistory()
         let firstHistory = await recorder.firstRequest(after: requestCount) {
             guard case .getSessionHistory = $0 else { return false }
             return true
@@ -793,7 +882,7 @@ extension AppModelTests {
         XCTAssertFalse(try XCTUnwrap(model.transcript.first).pending)
 
         requestCount = await recorder.requestCount()
-        model.loadEarlierHistory()
+        model.requestEarlierHistory()
         let secondHistory = await recorder.firstRequest(after: requestCount) {
             guard case .getSessionHistory = $0 else { return false }
             return true

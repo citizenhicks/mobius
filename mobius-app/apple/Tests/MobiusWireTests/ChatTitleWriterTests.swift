@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+@testable import Mobius
 import XCTest
 
 final class ChatTitleWriterTests: XCTestCase {

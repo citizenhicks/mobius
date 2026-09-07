@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+@testable import Mobius
 import XCTest
 
 @MainActor

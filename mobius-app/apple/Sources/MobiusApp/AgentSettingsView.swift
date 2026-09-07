@@ -141,7 +141,7 @@ struct AgentSettingsView: View {
             subject: .localized(scope == .botDefaults ? "Bot defaults" : "Bot"),
             hasChanges: hasChanges,
             isSaving: model.isApplyingConfiguration,
-            saveDisabled: model.isApplyingConfiguration || (!canSave && !model.canMutateBots),
+            saveDisabled: model.isApplyingConfiguration || !canSave,
             statusLabel: .localized(agentStatusLabel),
             statusDetail: agentStatusDetail,
             statusColor: agentStatusColor,

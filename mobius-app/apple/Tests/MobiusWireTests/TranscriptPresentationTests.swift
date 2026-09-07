@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+@testable import Mobius
 import XCTest
 
 final class TranscriptMarkdownSelectionTests: XCTestCase {

@@ -48,7 +48,7 @@ struct SettingsInfoButton: View {
             MobiusIcon(glyph, size: MobiusStyle.glyphInline, foreground: palette.muted)
                 .frame(
                     minWidth: MobiusStyle.iconButtonSize,
-                    minHeight: compact ? MobiusStyle.iconSize : MobiusStyle.iconButtonSize
+                    minHeight: MobiusStyle.iconButtonSize
                 )
                 .contentShape(Rectangle())
         }
@@ -95,34 +95,6 @@ struct SettingsStatusAccessory: View {
     let save: () -> Void
 
     init(
-        subject: LocalizedStringResource,
-        hasChanges: Bool,
-        isSaving: Bool,
-        saveDisabled: Bool,
-        statusLabel: LocalizedStringResource,
-        statusDetail: LocalizedStringResource,
-        statusColor: Color,
-        saveLabel: LocalizedStringResource,
-        secondaryActionLabel: LocalizedStringResource? = nil,
-        secondaryAction: (() -> Void)? = nil,
-        save: @escaping () -> Void
-    ) {
-        self.init(
-            subject: .localized(subject),
-            hasChanges: hasChanges,
-            isSaving: isSaving,
-            saveDisabled: saveDisabled,
-            statusLabel: .localized(statusLabel),
-            statusDetail: .localized(statusDetail),
-            statusColor: statusColor,
-            saveLabel: .localized(saveLabel),
-            secondaryActionLabel: secondaryActionLabel.map { .localized($0) },
-            secondaryAction: secondaryAction,
-            save: save
-        )
-    }
-
-    init(
         subject: MobiusText,
         hasChanges: Bool,
         isSaving: Bool,
@@ -167,6 +139,7 @@ struct SettingsStatusAccessory: View {
             statusLabel: statusLabel,
             statusDetail: statusDetail,
             statusColor: statusColor,
+            isLoading: isSaving,
             secondaryActionLabel: secondaryActionLabel,
             secondaryAction: secondaryAction
         )
@@ -213,26 +186,6 @@ struct SettingsStatusButton: View {
     let isLoading: Bool
     var secondaryActionLabel: MobiusText?
     var secondaryAction: (() -> Void)?
-
-    init(
-        subject: LocalizedStringResource,
-        statusLabel: LocalizedStringResource,
-        statusDetail: LocalizedStringResource,
-        statusColor: Color,
-        isLoading: Bool = false,
-        secondaryActionLabel: LocalizedStringResource? = nil,
-        secondaryAction: (() -> Void)? = nil
-    ) {
-        self.init(
-            subject: .localized(subject),
-            statusLabel: .localized(statusLabel),
-            statusDetail: .localized(statusDetail),
-            statusColor: statusColor,
-            isLoading: isLoading,
-            secondaryActionLabel: secondaryActionLabel.map { .localized($0) },
-            secondaryAction: secondaryAction
-        )
-    }
 
     init(
         subject: MobiusText,

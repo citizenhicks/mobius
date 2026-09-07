@@ -1,5 +1,6 @@
 @testable import Mobius
 import SwiftUI
+import WebRTC
 import XCTest
 
 final class RealtimeVoiceMeterTests: XCTestCase {
@@ -39,6 +40,33 @@ final class RealtimeVoiceMeterTests: XCTestCase {
         XCTAssertFalse(voice.isMuted)
         XCTAssertNotNil(Mobius.MobiusGlyph.micOff01.menuImage(.primary))
         XCTAssertEqual(Mobius.MobiusSymbol.knownGlyph(for: "voice"), .audioWave01)
+    }
+
+    @MainActor
+    func testDisconnectedPeerGetsGraceAndTerminalStatesFailImmediately() async throws {
+        var failures = 0
+        let voice = Mobius.RealtimeVoiceSession { _ in failures += 1 }
+        XCTAssertTrue(RTCInitializeSSL())
+        let factory = RTCPeerConnectionFactory(encoderFactory: nil, decoderFactory: nil)
+        let configuration = RTCConfiguration()
+        configuration.sdpSemantics = .unifiedPlan
+        let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
+        let peer = try XCTUnwrap(factory.peerConnection(
+            with: configuration, constraints: constraints, delegate: voice
+        ))
+        voice.peer = peer
+
+        voice.peerConnection(peer, didChange: RTCPeerConnectionState.disconnected)
+        await Task.yield()
+        XCTAssertEqual(failures, 0)
+        voice.peerConnection(peer, didChange: RTCPeerConnectionState.connected)
+        try await Task.sleep(for: .milliseconds(2_100))
+        XCTAssertEqual(failures, 0)
+
+        voice.peerConnection(peer, didChange: RTCPeerConnectionState.failed)
+        await Task.yield()
+        XCTAssertEqual(failures, 1)
+        voice.close()
     }
 }
 

@@ -354,13 +354,25 @@ final class MobiusCloudClient {
             configuration.urlCache = nil
             configuration.httpCookieStorage = nil
             let session = URLSession(configuration: configuration)
-            self.transport = { request in
-                let (data, response) = try await session.data(for: request)
-                guard let response = response as? HTTPURLResponse else {
-                    throw MobiusCloudError.server(0)
-                }
-                return (data, response)
+            self.transport = Self.liveTransport(session: session)
+        }
+    }
+
+    static func liveTransport(session: URLSession) -> Transport {
+        { request in
+            let (bytes, response) = try await session.bytes(for: request)
+            guard let response = response as? HTTPURLResponse else {
+                throw MobiusCloudError.server(0)
             }
+            var data = Data()
+            data.reserveCapacity(Self.maximumResponseBytes)
+            for try await byte in bytes {
+                data.append(byte)
+                guard data.count <= Self.maximumResponseBytes else {
+                    throw MobiusCloudError.oversizedResponse
+                }
+            }
+            return (data, response)
         }
     }
 

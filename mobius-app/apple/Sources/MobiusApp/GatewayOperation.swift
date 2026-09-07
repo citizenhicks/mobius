@@ -69,12 +69,8 @@ struct MessageTarget: Codable, Hashable, Sendable {
     }
 
     init?(json: JSONValue) {
-        guard let sequenceValue = json["checkpointSequence"],
-              case .number(let sequence) = sequenceValue,
-              let checkpointSequence = UInt64(exactly: sequence),
-              let countValue = json["batchItemCount"],
-              case .number(let count) = countValue,
-              let batchItemCount = Int(exactly: count),
+        guard let checkpointSequence = json["checkpointSequence"]?.uintValue,
+              let batchItemCount = json["batchItemCount"]?.intValue,
               batchItemCount > 0
         else { return nil }
         self.init(checkpointSequence: checkpointSequence, batchItemCount: batchItemCount)

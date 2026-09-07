@@ -38,7 +38,9 @@ func swarmMentionedHandles(in text: String) -> Set<String> {
 }
 
 private func isSwarmMentionScalar(_ scalar: Unicode.Scalar) -> Bool {
-    CharacterSet.alphanumerics.contains(scalar) && scalar.isASCII || scalar == "_"
+    CharacterSet.alphanumerics.contains(scalar) && scalar.isASCII
+        || scalar == "_"
+        || scalar == "-"
 }
 
 struct SwarmStats: Equatable {

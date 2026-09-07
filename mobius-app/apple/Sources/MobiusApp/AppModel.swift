@@ -518,10 +518,12 @@ final class AppModel {
         observeCloudPurchaseUpdates()
     }
 
-    deinit {
+    isolated deinit {
         eventTask?.cancel()
         reconnectTask?.cancel()
         deltaFlushTask?.cancel()
+        realtimeVoiceTask?.cancel()
+        realtimeVoice.close()
         composerDraftSaveTask?.cancel()
         pairingCodeExpiryTask?.cancel()
         toastDismissTask?.cancel()

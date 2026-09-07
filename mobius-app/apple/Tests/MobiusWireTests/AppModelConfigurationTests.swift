@@ -1,4 +1,5 @@
 import Foundation
+@testable import Mobius
 import XCTest
 
 @MainActor
@@ -95,10 +96,9 @@ extension AppModelTests {
 
     func testProviderLoginRetriesTheSameAttemptAfterAnUncertainSend() async throws {
         let recorder = GatewayRequestRecorder()
-        var fails = true
         let model = try model { request in
             await recorder.record(request)
-            if fails { throw GatewayWireError.disconnected }
+            if await recorder.requestCount() == 1 { throw GatewayWireError.disconnected }
         }
         model.connectionState = .ready
         model.providerDraft = composition().provider
@@ -112,7 +112,6 @@ extension AppModelTests {
 
         // Even a changed setup draft must not change which login is being resumed.
         model.providerDraft = nil
-        fails = false
         model.resetGatewayState(preservingDrafts: true)
         model.handle(.ready(ready(
             botDefaults: VersionedAgentConfig(revision: 1, config: composition())

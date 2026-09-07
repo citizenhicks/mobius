@@ -1,4 +1,5 @@
 import Foundation
+@testable import Mobius
 import XCTest
 
 final class GatewayWireTests: XCTestCase {

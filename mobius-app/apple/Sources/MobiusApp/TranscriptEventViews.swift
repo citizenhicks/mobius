@@ -386,6 +386,39 @@ private struct WebSearchDetail: View {
     }
 }
 
+/// Converts a queued non-user widget into the same pending event record used by the transcript.
+func transcriptEventEntry(for widget: MountedWidget) -> TranscriptEntry {
+    TranscriptEntry(
+        id: "queued-widget:\(widget.id)",
+        text: widget.widget.text,
+        kind: .event,
+        capability: widget.capability,
+        role: .activity,
+        title: "Message",
+        symbol: widget.widget.symbol,
+        format: "plain_text",
+        tone: widget.widget.tone,
+        pending: true
+    )
+}
+
+struct TranscriptTailWidgetView: View {
+    let widget: MountedWidget
+
+    var body: some View {
+        if widget.widget.isEditableQueuedInput {
+            QueuedMessageView(widget: widget)
+        } else {
+            EventLine(
+                entry: transcriptEventEntry(for: widget),
+                isActive: true,
+                revealMessageTarget: nil,
+                onRevealMessage: { _, _ in }
+            )
+        }
+    }
+}
+
 /// One typed event on one line: its semantic owner, title, and optional detail.
 private struct EventLine: View {
     @Environment(AppModel.self) private var model

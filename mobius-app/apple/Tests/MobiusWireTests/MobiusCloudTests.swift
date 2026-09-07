@@ -1,10 +1,62 @@
 import CryptoKit
 import Foundation
 import Security
+@testable import Mobius
 import XCTest
 
 @MainActor
+private final class CloudTestFlag {
+    var value = false
+    var count = 0
+}
+
+private final class OversizedCloudResponseProtocol: URLProtocol {
+    private static let body = Data(repeating: 0, count: 64 * 1024 + 1)
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let url = request.url,
+              let response = HTTPURLResponse(
+                  url: url,
+                  statusCode: 200,
+                  httpVersion: nil,
+                  headerFields: nil
+              )
+        else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        client?.urlProtocol(
+            self,
+            didReceive: response,
+            cacheStoragePolicy: .notAllowed
+        )
+        client?.urlProtocol(self, didLoad: Self.body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+@MainActor
 final class MobiusCloudTests: XCTestCase {
+    func testCloudPurchasesUsesInjectedAppStoreURL() async throws {
+        let url = try XCTUnwrap(URL(string: "https://apps.apple.com/"))
+        let purchases = MobiusCloudPurchases(
+            displayPrice: { "$9.99" },
+            unfinishedPurchases: { MobiusCloudPurchaseScan() },
+            currentEntitlements: { _ in MobiusCloudPurchaseScan() },
+            purchase: { _ in throw MobiusCloudPurchaseError.unavailable },
+            appStoreURL: { url }
+        )
+
+        let appStoreURL = await purchases.appStoreURL()
+        XCTAssertEqual(appStoreURL, url)
+    }
+
     func testAppleNonceUsesThirtyTwoRandomBytesAndSHA256() throws {
         let nonce = try MobiusCloudAppleNonce.make()
         var encoded = nonce.rawValue
@@ -20,6 +72,115 @@ final class MobiusCloudTests: XCTestCase {
         XCTAssertEqual(rawBytes.count, 32)
         XCTAssertEqual(nonce.rawValue.count, 43)
         XCTAssertEqual(nonce.requestValue, expectedHash)
+    }
+
+    func testRemoteNotificationRunCountRequiresAnExactUInt64() throws {
+        func notification(runCount: Any) -> RemoteNotification? {
+            RemoteNotification(userInfo: [
+                "eventId": "event-1",
+                "kind": "session.completed",
+                "sessionId": "session-1",
+                "runCount": runCount,
+            ])
+        }
+
+        XCTAssertNil(notification(runCount: NSNumber(value: true)))
+        XCTAssertNil(notification(runCount: NSNumber(value: -1)))
+        XCTAssertNil(notification(runCount: NSNumber(value: 1.5)))
+        XCTAssertNil(notification(runCount: NSNumber(value: Double(UInt64.max))))
+        XCTAssertEqual(
+            notification(runCount: NSNumber(value: UInt64.max)),
+            .session(
+                eventID: "event-1",
+                kind: .completed,
+                sessionID: "session-1",
+                runCount: UInt64.max,
+                approvalRequestID: nil
+            )
+        )
+    }
+
+    func testLiveCloudTransportRejectsOversizedResponsesWhileStreaming() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [OversizedCloudResponseProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let transport = MobiusCloudClient.liveTransport(session: session)
+        let request = URLRequest(url: try XCTUnwrap(URL(string: "https://example.com")))
+
+        do {
+            _ = try await transport(request)
+            XCTFail("Expected an oversized response")
+        } catch let error as MobiusCloudError {
+            guard case .oversizedResponse = error else {
+                return XCTFail("Expected oversizedResponse, got \(error)")
+            }
+        }
+    }
+
+    func testPushRemovalPendingSurvivesDeniedAndFailedRegistrationUntilReplacement() async throws {
+        let suiteName = "app.mobius.cloud.tests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        let cloudStore = MobiusCloudSessionStore(service: suiteName)
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            try? cloudStore.remove()
+        }
+        defaults.set(true, forKey: notificationsEnabledKey)
+        let authorization = CloudTestFlag()
+        let registration = CloudTestFlag()
+        let cloudClient = MobiusCloudClient(store: cloudStore) { request in
+            if request.url?.path == "/api/mobile/auth/apple" {
+                return try self.response(
+                    for: request,
+                    json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
+                )
+            }
+            registration.count += 1
+            return try self.response(
+                for: request,
+                status: registration.value ? 204 : 500,
+                json: #"{}"#
+            )
+        }
+        let remoteNotifications = RemoteNotificationSystem(
+            authorization: { authorization.value ? .authorized : .denied },
+            requestAuthorization: { true },
+            register: {},
+            unregister: {},
+            removeAll: {},
+            openSettings: {}
+        )
+        let session = try await cloudClient.authenticate(
+            authorizationCode: "apple-code",
+            nonce: String(repeating: "n", count: 43)
+        )
+        let model = AppModel(
+            store: GatewayStore(defaults: defaults),
+            settingsDefaults: defaults,
+            remoteNotifications: remoteNotifications,
+            cloudClient: cloudClient
+        )
+        model.cloudSession = session
+        model.pushTokenRemovalPending = true
+        defaults.set(true, forKey: pushTokenRemovalPendingKey)
+        defaults.set("previous-account", forKey: pushTokenRemovalCredentialIDKey)
+
+        await model.cloudAuthenticationDidChange()
+        XCTAssertTrue(model.pushTokenRemovalPending)
+
+        authorization.value = true
+        await model.cloudAuthenticationDidChange()
+        model.receivedRemoteNotificationDeviceToken(Data([0x00, 0x11]))
+        let failed = await eventually { registration.count == 1 }
+        XCTAssertTrue(failed)
+        XCTAssertTrue(model.pushTokenRemovalPending)
+
+        registration.value = true
+        model.receivedRemoteNotificationDeviceToken(Data([0x00, 0x11]))
+        let replaced = await eventually {
+            registration.count == 2 && !model.pushTokenRemovalPending
+        }
+        XCTAssertTrue(replaced)
     }
 
     func testCloudAccountLoadingStateStopsForDataOrError() throws {
@@ -183,17 +344,19 @@ final class MobiusCloudTests: XCTestCase {
         let service = "app.mobius.cloud.tests.\(UUID())"
         let store = MobiusCloudSessionStore(service: service)
         defer { try? store.remove() }
-        var requestCount = 0
-        var deletionStatus = 409
         let client = MobiusCloudClient(store: store) { request in
-            requestCount += 1
-            if requestCount == 1 {
+            if request.url?.path == "/api/mobile/auth/apple" {
                 return try self.response(
                     for: request,
                     json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
                 )
             }
-            return try self.response(for: request, status: deletionStatus, json: #"{}"#)
+            let body = request.httpBody.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            return try self.response(
+                for: request,
+                status: body.contains("expired-code") ? 403 : 409,
+                json: #"{}"#
+            )
         }
         _ = try await client.authenticate(
             authorizationCode: "apple-code",
@@ -213,7 +376,6 @@ final class MobiusCloudTests: XCTestCase {
         }
         XCTAssertNotNil(try client.loadSession())
 
-        deletionStatus = 403
         do {
             try await client.deleteAccount(
                 authorizationCode: "expired-code",
@@ -277,20 +439,20 @@ final class MobiusCloudTests: XCTestCase {
         let service = "app.mobius.cloud.tests.\(UUID())"
         let store = MobiusCloudSessionStore(service: service)
         defer { try? store.remove() }
-        var requestCount = 0
-        var errorCode = "something_else"
         let client = MobiusCloudClient(store: store) { request in
-            requestCount += 1
-            if requestCount == 1 {
+            if request.url?.path == "/api/mobile/auth/apple" {
                 return try self.response(
                     for: request,
                     json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
                 )
             }
+            let body = request.httpBody.flatMap { String(data: $0, encoding: .utf8) } ?? ""
             return try self.response(
                 for: request,
                 status: 409,
-                json: #"{"error":"\#(errorCode)"}"#
+                json: body.contains("header.payload.second")
+                    ? #"{"error":"subscription_account_conflict"}"#
+                    : #"{"error":"something_else"}"#
             )
         }
         _ = try await client.authenticate(
@@ -310,10 +472,9 @@ final class MobiusCloudTests: XCTestCase {
             }
         }
 
-        errorCode = "subscription_account_conflict"
         do {
             try await client.submitSubscription(
-                jws: "header.payload.signature",
+                jws: "header.payload.second",
                 appTransactionJWS: "app.header.signature"
             )
             XCTFail("Expected a subscription ownership conflict")
@@ -1711,9 +1872,18 @@ final class MobiusCloudTests: XCTestCase {
             authorizationCode: "apple-code",
             nonce: String(repeating: "n", count: 43)
         )
+        let remoteNotifications = RemoteNotificationSystem(
+            authorization: { .authorized },
+            requestAuthorization: { true },
+            register: {},
+            unregister: {},
+            removeAll: {},
+            openSettings: {}
+        )
         let model = AppModel(
             store: gatewayStore,
             settingsDefaults: defaults,
+            remoteNotifications: remoteNotifications,
             requestSender: { _ in },
             connectionOpener: { _ in AsyncThrowingStream { _ in } },
             cloudClient: client
@@ -1737,6 +1907,8 @@ final class MobiusCloudTests: XCTestCase {
         XCTAssertNil(model.cloudSession)
         XCTAssertNil(model.cloudAccount)
         XCTAssertNil(try client.loadSession())
+        XCTAssertTrue(model.pushTokenRemovalPending)
+        XCTAssertTrue(defaults.bool(forKey: pushTokenRemovalPendingKey))
         XCTAssertTrue(model.accounts.isEmpty)
         XCTAssertTrue(gatewayStore.loadAccounts().isEmpty)
         XCTAssertNil(model.selectedAccountID)
@@ -1752,21 +1924,12 @@ final class MobiusCloudTests: XCTestCase {
         }
     }
 
-    func testCloudSignOutDisconnectsAndReportsCloudKeychainDeletionFailure() async throws {
+    func testCloudSignOutPreservesLocalCloudStateWhenKeychainDeletionFails() async throws {
         let suiteName = "app.mobius.cloud.tests.\(UUID())"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
-        var failNextGatewayDelete = false
-        let gatewayStore = GatewayStore(
-            defaults: defaults,
-            keychainDelete: { query in
-                if failNextGatewayDelete {
-                    failNextGatewayDelete = false
-                    return errSecInteractionNotAllowed
-                }
-                return SecItemDelete(query)
-            }
-        )
+        defaults.set(true, forKey: notificationsEnabledKey)
+        let gatewayStore = GatewayStore(defaults: defaults)
         let cloudUserID = try XCTUnwrap(UUID(
             uuidString: "00000000-0000-0000-0000-000000000001"
         ))
@@ -1781,6 +1944,7 @@ final class MobiusCloudTests: XCTestCase {
 
         let service = "app.mobius.cloud.tests.\(UUID())"
         var failNextCloudDelete = false
+        let pushRemovalFails = CloudTestFlag()
         let sessionStore = MobiusCloudSessionStore(
             service: service,
             keychainDelete: { query in
@@ -1793,7 +1957,10 @@ final class MobiusCloudTests: XCTestCase {
         )
         defer { try? sessionStore.remove() }
         let client = MobiusCloudClient(store: sessionStore) { request in
-            try self.response(
+            if request.httpMethod == "DELETE", pushRemovalFails.value {
+                return try self.response(for: request, status: 500, json: "{}")
+            }
+            return try self.response(
                 for: request,
                 json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
             )
@@ -1802,9 +1969,18 @@ final class MobiusCloudTests: XCTestCase {
             authorizationCode: "apple-code",
             nonce: String(repeating: "n", count: 43)
         )
+        let registrations = CloudTestFlag()
         let model = AppModel(
             store: gatewayStore,
             settingsDefaults: defaults,
+            remoteNotifications: RemoteNotificationSystem(
+                authorization: { .authorized },
+                requestAuthorization: { true },
+                register: { registrations.count += 1 },
+                unregister: {},
+                removeAll: {},
+                openSettings: {}
+            ),
             requestSender: { _ in },
             connectionOpener: { _ in AsyncThrowingStream { _ in } },
             cloudClient: client
@@ -1817,23 +1993,42 @@ final class MobiusCloudTests: XCTestCase {
         )
         model.connectionState = .ready
         model.selectedSessionID = "chat-1"
-        failNextGatewayDelete = true
         failNextCloudDelete = true
 
         await model.signOutOfCloud()
 
-        XCTAssertNil(model.cloudSession)
-        XCTAssertTrue(model.accounts.isEmpty)
-        XCTAssertTrue(gatewayStore.loadAccounts().isEmpty)
-        XCTAssertNil(model.selectedAccountID)
-        XCTAssertNil(gatewayStore.selectedAccountID())
-        XCTAssertNil(model.selectedSessionID)
-        XCTAssertEqual(model.connectionState, .disconnected)
-        XCTAssertTrue(model.showsPairing)
+        XCTAssertNotNil(model.cloudSession)
+        XCTAssertNotNil(model.cloudAccount)
+        XCTAssertEqual(model.accounts, [gateway])
+        XCTAssertEqual(gatewayStore.loadAccounts(), [gateway])
+        XCTAssertEqual(model.selectedAccountID, gateway.id)
+        XCTAssertEqual(gatewayStore.selectedAccountID(), gateway.id)
+        XCTAssertEqual(model.selectedSessionID, "chat-1")
+        XCTAssertEqual(model.connectionState, .ready)
+        XCTAssertFalse(model.showsPairing)
+        XCTAssertFalse(model.pushTokenRemovalPending)
+        XCTAssertEqual(registrations.count, 1)
         XCTAssertNotNil(try client.loadSession())
         XCTAssertEqual(try gatewayStore.token(for: gateway), "gateway-token")
         XCTAssertEqual(model.toast?.tone, .error)
         XCTAssertNotEqual(model.toast?.message, "Gateway removed.")
+
+        pushRemovalFails.value = true
+        failNextCloudDelete = true
+        await model.signOutOfCloud()
+        XCTAssertNotNil(model.cloudSession)
+        XCTAssertTrue(model.pushTokenRemovalPending)
+        XCTAssertEqual(registrations.count, 2)
+        model.receivedRemoteNotificationDeviceToken(Data([0x00, 0x11]))
+        await model.remoteNotificationRegistrationTask?.value
+        XCTAssertFalse(model.pushTokenRemovalPending)
+
+        let relaunched = AppModel(
+            store: GatewayStore(defaults: defaults),
+            settingsDefaults: defaults,
+            cloudClient: client
+        )
+        XCTAssertNotNil(relaunched.cloudSession)
     }
 
     func testGatewayStoreClearAllDataContinuesAfterKeychainDeletionFailure() async throws {
@@ -2319,7 +2514,7 @@ final class MobiusCloudTests: XCTestCase {
         let sessionStore = MobiusCloudSessionStore(service: service)
         defer { try? sessionStore.remove() }
         var accountRequests = 0
-        var shouldRecover = false
+        let shouldRecover = CloudTestFlag()
         var subscriptionSubmitted = false
         var transactionFinished = false
         let client = MobiusCloudClient(store: sessionStore) { request in
@@ -2373,7 +2568,7 @@ final class MobiusCloudTests: XCTestCase {
             displayPrice: { "$9.99" },
             unfinishedPurchases: { MobiusCloudPurchaseScan() },
             currentEntitlements: { _ in
-                MobiusCloudPurchaseScan(purchases: shouldRecover ? [purchase] : [])
+                MobiusCloudPurchaseScan(purchases: shouldRecover.value ? [purchase] : [])
             },
             purchase: { _ in throw MobiusCloudPurchaseError.unavailable }
         )
@@ -2428,7 +2623,7 @@ final class MobiusCloudTests: XCTestCase {
             MobiusCloudError.subscriptionRequired.localizedDescription
         )
 
-        shouldRecover = true
+        shouldRecover.value = true
         model.reconnectsOnActivation = true
         model.setSceneActive(true)
         await model.appDidBecomeActive()

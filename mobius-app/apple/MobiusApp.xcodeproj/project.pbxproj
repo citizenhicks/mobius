@@ -60,13 +60,6 @@
 		AB2000000000000000000001 /* RoutineViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1000000000000000000001 /* RoutineViews.swift */; };
 		C20000000000000000000003 /* ExtensionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000002 /* ExtensionsView.swift */; };
 		20000000000000000000000B /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000000B /* Assets.xcassets */; };
-		20000000000000000000000C /* GatewayWire.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000007 /* GatewayWire.swift */; };
-		20000000000000000000003B /* GatewayOperation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000027 /* GatewayOperation.swift */; };
-		20000000000000000000003C /* GatewayMessages.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000028 /* GatewayMessages.swift */; };
-		20000000000000000000003D /* FrontendWire.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000029 /* FrontendWire.swift */; };
-		20000000000000000000003E /* AgentEventWire.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000002A /* AgentEventWire.swift */; };
-		20000000000000000000003F /* AgentConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000002B /* AgentConfiguration.swift */; };
-		200000000000000000000040 /* JSONValue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000002C /* JSONValue.swift */; };
 		20000000000000000000000D /* GatewayWireTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000000C /* GatewayWireTestSupport.swift */; };
 		A20000000000000000000020 /* GatewayAgentEventWireTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000020 /* GatewayAgentEventWireTests.swift */; };
 		A20000000000000000000021 /* GatewayClientWireTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000021 /* GatewayClientWireTests.swift */; };
@@ -78,7 +71,6 @@
 		200000000000000000000011 /* SwiftStreamingMarkdown in Frameworks */ = {isa = PBXBuildFile; productRef = 800000000000000000000001 /* SwiftStreamingMarkdown */; };
 		200000000000000000000012 /* HighlightSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 800000000000000000000002 /* HighlightSwift */; };
 		F20000000000000000000003 /* WebRTC in Frameworks */ = {isa = PBXBuildFile; productRef = 800000000000000000000003 /* WebRTC */; };
-		200000000000000000000013 /* GatewayStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000006 /* GatewayStore.swift */; };
 		200000000000000000000014 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000010 /* PrivacyInfo.xcprivacy */; };
 		200000000000000000000015 /* AppModelTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000011 /* AppModelTestSupport.swift */; };
 		A20000000000000000000001 /* AppModelAttachmentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000001 /* AppModelAttachmentTests.swift */; };
@@ -101,56 +93,27 @@
 		A20000000000000000000027 /* SwarmStatsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000027 /* SwarmStatsTests.swift */; };
 		A20000000000000000000018 /* TranscriptPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000018 /* TranscriptPresentationTests.swift */; };
 		A20000000000000000000019 /* TranscriptProjectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000019 /* TranscriptProjectionTests.swift */; };
-		200000000000000000000016 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000001 /* AppModel.swift */; };
-		B20000000000000000000003 /* AppModelCloud.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000001 /* AppModelCloud.swift */; };
-		B20000000000000000000004 /* MobiusCloudClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* MobiusCloudClient.swift */; };
 		B20000000000000000000005 /* MobiusCloudTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000003 /* MobiusCloudTests.swift */; };
-		D20000000000000000000002 /* MobiusCloudPurchases.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000001 /* MobiusCloudPurchases.swift */; };
-		F90000000000000000000002 /* RemoteNotifications.swift in Sources */ = {isa = PBXBuildFile; fileRef = F80000000000000000000001 /* RemoteNotifications.swift */; };
-		20000000000000000000005F /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000040 /* AppState.swift */; };
-		200000000000000000000068 /* SwarmStats.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000048 /* SwarmStats.swift */; };
-		200000000000000000000052 /* TranscriptModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000003B /* TranscriptModel.swift */; };
-		200000000000000000000057 /* AppModelCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000003C /* AppModelCommands.swift */; };
-		200000000000000000000060 /* AppModelConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000041 /* AppModelConfiguration.swift */; };
-		C20000000000000000000002 /* AppModelExtensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000001 /* AppModelExtensions.swift */; };
-		200000000000000000000058 /* AppModelGateway.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000003D /* AppModelGateway.swift */; };
-		200000000000000000000059 /* AppModelTranscript.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000003E /* AppModelTranscript.swift */; };
-		200000000000000000000063 /* AppModelHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000044 /* AppModelHistory.swift */; };
-		20000000000000000000005A /* AppModelPersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000003F /* AppModelPersistence.swift */; };
-		200000000000000000000061 /* AppModelLifecycle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000042 /* AppModelLifecycle.swift */; };
-		200000000000000000000017 /* GatewayClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000005 /* GatewayClient.swift */; };
-		200000000000000000000018 /* MobiusStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000009 /* MobiusStyle.swift */; };
-		20000000000000000000004E /* MobiusTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000038 /* MobiusTheme.swift */; };
-		20000000000000000000004F /* MobiusComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000039 /* MobiusComponents.swift */; };
 		200000000000000000000019 /* ComposerDictation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000013 /* ComposerDictation.swift */; };
 		20000000000000000000001A /* ComposerOptionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000014 /* ComposerOptionsView.swift */; };
 		20000000000000000000001B /* ComposingOrb.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000015 /* ComposingOrb.swift */; };
-		F20000000000000000000001 /* ComposerDictation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000013 /* ComposerDictation.swift */; };
 		F20000000000000000000002 /* ComposerDictationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000001 /* ComposerDictationTests.swift */; };
 		20000000000000000000001C /* ProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000016 /* ProfileView.swift */; };
-		20000000000000000000001D /* ComposingOrb.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000015 /* ComposingOrb.swift */; };
 		20000000000000000000001E /* ComposingOrbTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000017 /* ComposingOrbTests.swift */; };
 		20000000000000000000001F /* UnifiedDiff.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000018 /* UnifiedDiff.swift */; };
 		200000000000000000000020 /* WorkspaceDiffView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000019 /* WorkspaceDiffView.swift */; };
-		200000000000000000000021 /* UnifiedDiff.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000018 /* UnifiedDiff.swift */; };
 		200000000000000000000022 /* UnifiedDiffTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000001A /* UnifiedDiffTests.swift */; };
 		20000000000000000000002B /* ChatTitleWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000020 /* ChatTitleWriter.swift */; };
-		20000000000000000000002C /* ChatTitleWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000020 /* ChatTitleWriter.swift */; };
 		20000000000000000000002D /* MobiusCloudOffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000021 /* MobiusCloudOffer.swift */; };
 		20000000000000000000002E /* ProviderUsageChart.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000022 /* ProviderUsageChart.swift */; };
-		20000000000000000000002F /* ProviderUsageChart.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000022 /* ProviderUsageChart.swift */; };
 		200000000000000000000030 /* ProviderUsageChartTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000023 /* ProviderUsageChartTests.swift */; };
 		200000000000000000000031 /* TranscriptWaitingNote.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000024 /* TranscriptWaitingNote.swift */; };
-		200000000000000000000032 /* TranscriptWaitingNote.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000024 /* TranscriptWaitingNote.swift */; };
 		200000000000000000000033 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000025 /* AppIcon.icon */; };
 		E20000000000000000000001 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000001 /* Localizable.xcstrings */; };
 		E20000000000000000000002 /* InfoPlist.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000002 /* InfoPlist.xcstrings */; };
 		F20000000000000000000101 /* AppModelRealtimeVoice.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000101 /* AppModelRealtimeVoice.swift */; };
-		F20000000000000000000201 /* AppModelRealtimeVoice.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000101 /* AppModelRealtimeVoice.swift */; };
 		F20000000000000000000102 /* RealtimeVoiceSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000102 /* RealtimeVoiceSession.swift */; };
-		F20000000000000000000202 /* RealtimeVoiceSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000102 /* RealtimeVoiceSession.swift */; };
 		F20000000000000000000103 /* MessageSpeaker.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000103 /* MessageSpeaker.swift */; };
-		F20000000000000000000203 /* MessageSpeaker.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000103 /* MessageSpeaker.swift */; };
 		F20000000000000000000004 /* WebRTC in Frameworks */ = {isa = PBXBuildFile; productRef = 800000000000000000000003 /* WebRTC */; };
 		F20000000000000000000005 /* SwiftStreamingMarkdown in Frameworks */ = {isa = PBXBuildFile; productRef = 800000000000000000000001 /* SwiftStreamingMarkdown */; };
 		F20000000000000000000006 /* WebRTC-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000006 /* WebRTC-LICENSE.txt */; };
@@ -681,41 +644,10 @@
 				A20000000000000000000027 /* SwarmStatsTests.swift in Sources */,
 				A20000000000000000000018 /* TranscriptPresentationTests.swift in Sources */,
 				A20000000000000000000019 /* TranscriptProjectionTests.swift in Sources */,
-				200000000000000000000016 /* AppModel.swift in Sources */,
-				B20000000000000000000003 /* AppModelCloud.swift in Sources */,
-				B20000000000000000000004 /* MobiusCloudClient.swift in Sources */,
-				D20000000000000000000002 /* MobiusCloudPurchases.swift in Sources */,
-				F90000000000000000000002 /* RemoteNotifications.swift in Sources */,
 				B20000000000000000000005 /* MobiusCloudTests.swift in Sources */,
-				20000000000000000000005F /* AppState.swift in Sources */,
-				200000000000000000000068 /* SwarmStats.swift in Sources */,
-				200000000000000000000052 /* TranscriptModel.swift in Sources */,
-				200000000000000000000057 /* AppModelCommands.swift in Sources */,
-				F20000000000000000000203 /* MessageSpeaker.swift in Sources */,
-				F20000000000000000000202 /* RealtimeVoiceSession.swift in Sources */,
-				F20000000000000000000201 /* AppModelRealtimeVoice.swift in Sources */,
-				200000000000000000000060 /* AppModelConfiguration.swift in Sources */,
-				C20000000000000000000002 /* AppModelExtensions.swift in Sources */,
-				200000000000000000000058 /* AppModelGateway.swift in Sources */,
-				200000000000000000000059 /* AppModelTranscript.swift in Sources */,
-				200000000000000000000063 /* AppModelHistory.swift in Sources */,
-				20000000000000000000005A /* AppModelPersistence.swift in Sources */,
-				200000000000000000000061 /* AppModelLifecycle.swift in Sources */,
-				20000000000000000000001D /* ComposingOrb.swift in Sources */,
 				20000000000000000000001E /* ComposingOrbTests.swift in Sources */,
-				F20000000000000000000001 /* ComposerDictation.swift in Sources */,
 				F20000000000000000000002 /* ComposerDictationTests.swift in Sources */,
-				200000000000000000000021 /* UnifiedDiff.swift in Sources */,
 				200000000000000000000022 /* UnifiedDiffTests.swift in Sources */,
-				200000000000000000000017 /* GatewayClient.swift in Sources */,
-				200000000000000000000013 /* GatewayStore.swift in Sources */,
-				20000000000000000000000C /* GatewayWire.swift in Sources */,
-				20000000000000000000003B /* GatewayOperation.swift in Sources */,
-				20000000000000000000003C /* GatewayMessages.swift in Sources */,
-				20000000000000000000003D /* FrontendWire.swift in Sources */,
-				20000000000000000000003E /* AgentEventWire.swift in Sources */,
-				20000000000000000000003F /* AgentConfiguration.swift in Sources */,
-				200000000000000000000040 /* JSONValue.swift in Sources */,
 				A20000000000000000000020 /* GatewayAgentEventWireTests.swift in Sources */,
 				A20000000000000000000021 /* GatewayClientWireTests.swift in Sources */,
 				A20000000000000000000022 /* GatewayConfigurationWireTests.swift in Sources */,
@@ -724,12 +656,6 @@
 				A20000000000000000000025 /* GatewayRequestWireTests.swift in Sources */,
 				A20000000000000000000026 /* GatewayResponseWireTests.swift in Sources */,
 				20000000000000000000000D /* GatewayWireTestSupport.swift in Sources */,
-				200000000000000000000018 /* MobiusStyle.swift in Sources */,
-				20000000000000000000004E /* MobiusTheme.swift in Sources */,
-				20000000000000000000004F /* MobiusComponents.swift in Sources */,
-				200000000000000000000032 /* TranscriptWaitingNote.swift in Sources */,
-				20000000000000000000002C /* ChatTitleWriter.swift in Sources */,
-				20000000000000000000002F /* ProviderUsageChart.swift in Sources */,
 				200000000000000000000030 /* ProviderUsageChartTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -870,7 +796,8 @@
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_STRICT_CONCURRENCY = complete;
-				SWIFT_VERSION = 5.0;
+				SWIFT_TREAT_WARNINGS_AS_ERRORS = YES;
+				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
@@ -908,7 +835,8 @@
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_STRICT_CONCURRENCY = complete;
-				SWIFT_VERSION = 5.0;
+				SWIFT_TREAT_WARNINGS_AS_ERRORS = YES;
+				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
@@ -927,7 +855,8 @@
 				SUPPORTS_MACCATALYST = NO;
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_STRICT_CONCURRENCY = complete;
-				SWIFT_VERSION = 5.0;
+				SWIFT_TREAT_WARNINGS_AS_ERRORS = YES;
+				SWIFT_VERSION = 6.0;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Mobius.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Mobius";
 			};
 			name = Debug;
@@ -946,7 +875,8 @@
 				SUPPORTS_MACCATALYST = NO;
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_STRICT_CONCURRENCY = complete;
-				SWIFT_VERSION = 5.0;
+				SWIFT_TREAT_WARNINGS_AS_ERRORS = YES;
+				SWIFT_VERSION = 6.0;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Mobius.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Mobius";
 			};
 			name = Release;

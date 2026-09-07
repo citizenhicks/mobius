@@ -101,12 +101,22 @@ struct AppShell: View {
             Text(deleteChatsMessage)
         }
         .alert("Update möbius", isPresented: $model.showsAppUpdateAlert) {
-            Button("Open TestFlight") {
-                if let url = URL(string: "itms-beta://") { openURL(url) }
+            Button("Open App Store") {
+                Task { @MainActor in
+                    guard let url = await model.cloudPurchases.appStoreURL() else {
+                        model.showToast("The App Store update page is unavailable.", tone: .warning)
+                        return
+                    }
+                    openURL(url) { accepted in
+                        if !accepted {
+                            model.showToast("The App Store update page is unavailable.", tone: .warning)
+                        }
+                    }
+                }
             }
             Button("Not now", role: .cancel) {}
         } message: {
-            Text("This app is older than möbius Cloud and can no longer connect. Install the latest build from TestFlight, then reopen the app.")
+            Text("Update the app to connect to this gateway. Install the latest version from the App Store, then reopen the app.")
         }
         .quickLookPreview($model.previewURL)
         .sheet(isPresented: $model.showsCloudOffer) {

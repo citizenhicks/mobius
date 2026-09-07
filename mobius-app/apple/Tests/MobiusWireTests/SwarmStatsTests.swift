@@ -1,4 +1,5 @@
 import Foundation
+@testable import Mobius
 import XCTest
 
 final class SwarmStatsTests: XCTestCase {
@@ -13,6 +14,15 @@ final class SwarmStatsTests: XCTestCase {
         XCTAssertEqual(swarmMentionedHandles(in: "@"), [])
         XCTAssertEqual(swarmMentionedHandles(in: "@@nested"), ["nested"])
         XCTAssertEqual(swarmMentionedHandles(in: "under_score99 @with_99"), ["with_99"])
+        XCTAssertEqual(
+            swarmMentionedHandles(in: "@one-bot @one-other"),
+            ["one-bot", "one-other"]
+        )
+
+        let stats = SwarmStats.make(messages: [
+            message(1, "s1", "amber", "@one-bot @one-other")
+        ])
+        XCTAssertEqual(stats.mentionEdges, 2)
     }
 
     func testKindsAndEdgesFollowAcceptedPostMentions() {

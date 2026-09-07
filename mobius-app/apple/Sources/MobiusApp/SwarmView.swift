@@ -427,13 +427,14 @@ struct SwarmChatView: View {
         let entries = windowed.map(swarmTranscriptEntry)
         let projection = TranscriptProjection(entries: entries)
         let hasEarlier = ordered.count > windowed.count
-        let loadEarlier = {
+        let requestEarlier = {
             loadEarlierHistory(
                 hasEarlier: hasEarlier,
                 projection: projection,
                 boundaryID: entries.first?.presentationID
             )
         }
+        let loadEarlier: () async -> Void = { requestEarlier() }
 
         return ScrollView {
             VStack(alignment: .leading, spacing: 0) {
@@ -441,7 +442,7 @@ struct SwarmChatView: View {
                     TranscriptPaginationButton(
                         isLoading: false,
                         isEnabled: true,
-                        action: loadEarlier
+                        action: requestEarlier
                     )
                     .padding(.bottom, MobiusStyle.transcriptRowSpacing)
                 }

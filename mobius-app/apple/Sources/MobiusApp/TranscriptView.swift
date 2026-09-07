@@ -180,7 +180,7 @@ private struct TranscriptScrollBehavior: ViewModifier {
     let conversationID: String?
     let scrollToBottomRequest: Int
     let isAtBottom: Binding<Bool>?
-    let loadEarlierHistory: () -> Void
+    let loadEarlierHistory: () async -> Void
 
     func body(content: Content) -> some View {
         content
@@ -201,7 +201,7 @@ private struct TranscriptScrollBehavior: ViewModifier {
             )
             .scrollIndicators(.hidden)
             .scrollDismissesKeyboard(.interactively)
-            .refreshable { loadEarlierHistory() }
+            .refreshable { await loadEarlierHistory() }
             .onAppear {
                 scroll.mode = .followingTail
                 scroll.position.scrollTo(edge: .bottom)
@@ -242,7 +242,7 @@ extension View {
         conversationID: String?,
         scrollToBottomRequest: Int = 0,
         isAtBottom: Binding<Bool>? = nil,
-        loadEarlierHistory: @escaping () -> Void
+        loadEarlierHistory: @escaping () async -> Void
     ) -> some View {
         modifier(TranscriptScrollBehavior(
             scroll: scroll,
@@ -296,7 +296,7 @@ struct TranscriptView: View {
                     TranscriptPaginationButton(
                         isLoading: model.isLoadingEarlierHistory,
                         isEnabled: model.canLoadEarlierHistory,
-                        action: loadEarlierHistory
+                        action: requestEarlierHistory
                     )
                     .padding(.bottom, rowSpacing)
                 }
@@ -315,7 +315,7 @@ struct TranscriptView: View {
                 )
                 TranscriptTailView(slot: projection.waiting, topSpacing: rowSpacing)
                 ForEach(model.transcriptTailWidgets) { widget in
-                    QueuedMessageView(widget: widget)
+                    TranscriptTailWidgetView(widget: widget)
                         .geometryGroup()
                         .padding(.top, rowSpacing)
                 }
@@ -378,13 +378,22 @@ struct TranscriptView: View {
         waiting.update(isWaiting: isWaiting)
     }
 
-    private func loadEarlierHistory() {
+    private func requestEarlierHistory() {
         guard model.canLoadEarlierHistory else { return }
         scroll.beginHistoryRestore(
             projection: projection,
             boundaryID: model.displayedTranscript.first?.presentationID
         )
-        model.loadEarlierHistory()
+        model.requestEarlierHistory()
+    }
+
+    private func loadEarlierHistory() async {
+        guard model.canLoadEarlierHistory else { return }
+        scroll.beginHistoryRestore(
+            projection: projection,
+            boundaryID: model.displayedTranscript.first?.presentationID
+        )
+        await model.loadEarlierHistory()
     }
 
     private func seekMessageTarget() {
@@ -411,7 +420,7 @@ struct TranscriptView: View {
         }
         messageNavigationProgress = progress
         scroll.stopFollowingTail()
-        model.loadEarlierHistory()
+        model.requestEarlierHistory()
     }
 
     private func revealGroupedMessage(
