@@ -311,7 +311,9 @@ impl GatewayHost {
             .collect::<Vec<_>>();
         let mut failure = None;
         for host in sessions {
-            if let Err(rejection) = host.refresh_provider(scope.clone()).await {
+            if let Err(rejection) = host.refresh_provider(scope.clone()).await
+                && rejection.code != "gateway_stopped"
+            {
                 failure.get_or_insert(rejection);
             }
         }

@@ -561,6 +561,17 @@ async fn credential_update_refreshes_every_matching_resident_chat() {
         .await
         .expect("matching chat refresh");
     }
+
+    assert!(first.stop_if_idle().await);
+    gateway
+        .set_credential(
+            "kimi".into(),
+            "kimi".into(),
+            "latest-secret".into(),
+            Some("https://api.moonshot.ai/v1".into()),
+        )
+        .await
+        .expect("replace Kimi credential with stopped cached chat");
 }
 
 #[test]
