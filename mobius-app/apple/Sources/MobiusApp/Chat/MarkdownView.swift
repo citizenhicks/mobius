@@ -95,11 +95,14 @@ private struct MobiusMarkdownDocument: View {
         )
         DocumentView(renderableDocument: document, config: request.config, listener: selection)
             .textSelection(.enabled)
-            .environment(\.openURL, OpenURLAction { url in
-                guard let file = model.workspaceFile(for: url) else { return .systemAction }
-                model.previewWorkspaceFile(file)
-                return .handled
-            })
+            .environment(
+                \.openURL,
+                OpenURLAction { url in
+                    guard let file = model.workspaceFile(for: url) else { return .systemAction }
+                    model.previewWorkspaceFile(file)
+                    return .handled
+                }
+            )
             .task(id: request) {
                 let parsed = await MarkdownParserImpl().parse(
                     text: request.text,
@@ -109,16 +112,18 @@ private struct MobiusMarkdownDocument: View {
                 document = parsed
             }
             .sheet(isPresented: $selection.isPresented) {
-                SelectableText(content: selectableMarkdown(
-                    text,
-                    markerColor: UIColor(palette.accent),
-                    quoteColor: UIColor(palette.muted)
-                ))
-                    .padding(.horizontal, MobiusSpace.l)
-                    .padding(.bottom, MobiusSpace.l)
-                    // Clears the drag indicator, which sits in the top of the sheet's own bounds.
-                    .padding(.top, MobiusSpace.xl)
-                    .mobiusSheet()
+                SelectableText(
+                    content: selectableMarkdown(
+                        text,
+                        markerColor: UIColor(palette.accent),
+                        quoteColor: UIColor(palette.muted)
+                    )
+                )
+                .padding(.horizontal, MobiusSpace.l)
+                .padding(.bottom, MobiusSpace.l)
+                // Clears the drag indicator, which sits in the top of the sheet's own bounds.
+                .padding(.top, MobiusSpace.xl)
+                .mobiusSheet()
             }
             .fileExporter(
                 isPresented: $selection.isDownloadingTable,

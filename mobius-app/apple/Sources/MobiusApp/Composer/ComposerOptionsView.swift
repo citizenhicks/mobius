@@ -14,7 +14,8 @@ private struct ImportedMediaFile: Transferable {
                 directoryHint: .isDirectory
             )
             do {
-                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                try FileManager.default.createDirectory(
+                    at: directory, withIntermediateDirectories: true)
                 let url = directory.appending(path: received.file.lastPathComponent)
                 try FileManager.default.copyItem(at: received.file, to: url)
                 return Self(url: url)
@@ -50,7 +51,9 @@ private struct ComposerSettingMenu: View {
                 ForEach(item.options) { option in
                     Text(verbatim: option.label).tag(Optional(option.value))
                 }
-            } label: { Text(verbatim: item.setting.label) }
+            } label: {
+                Text(verbatim: item.setting.label)
+            }
             .labelsHidden()
         } label: {
             MobiusLabel(
@@ -89,7 +92,7 @@ private struct ComposerSettingMenu: View {
             selectedValue
         } set: { value in
             guard let value,
-                  let option = item.options.first(where: { $0.value == value })
+                let option = item.options.first(where: { $0.value == value })
             else {
                 apply(nil)
                 return
@@ -103,9 +106,10 @@ private struct ComposerSettingMenu: View {
     }
 
     private var selectedValue: String? {
-        guard let configured = model.selectedBot?.config.config.middleware
-            .settings[item.feature.id]?[item.setting.id],
-              case .string(let value) = configured
+        guard
+            let configured = model.selectedBot?.config.config.middleware
+                .settings[item.feature.id]?[item.setting.id],
+            case .string(let value) = configured
         else { return nil }
         return value
     }
@@ -205,10 +209,14 @@ struct ComposerOptionsView: View {
     @ViewBuilder
     private var addAttachmentControl: some View {
         Menu {
-            Button { isPhotoPickerPresented = true } label: {
+            Button {
+                isPhotoPickerPresented = true
+            } label: {
                 MobiusLabel(title: "Photos", glyph: .image01)
             }
-            Button { isFileImporterPresented = true } label: {
+            Button {
+                isFileImporterPresented = true
+            } label: {
                 MobiusLabel(title: "Files", glyph: .fileText)
             }
         } label: {
@@ -220,9 +228,9 @@ struct ComposerOptionsView: View {
                 iconColor: model.canImportAttachments ? nil : palette.muted,
                 iconSize: MobiusStyle.glyphLead
             )
-                .labelStyle(.iconOnly)
-                .frame(width: MobiusStyle.iconButtonSize, height: MobiusStyle.iconButtonSize)
-                .contentShape(Rectangle())
+            .labelStyle(.iconOnly)
+            .frame(width: MobiusStyle.iconButtonSize, height: MobiusStyle.iconButtonSize)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.mobiusPlain)
         .disabled(!model.canImportAttachments)
@@ -288,9 +296,14 @@ struct ComposerOptionsView: View {
     ) -> some View {
         Group {
             if let providerSymbol,
-               let glyph = MobiusSymbol.knownGlyph(for: providerSymbol),
-               let image = glyph.menuImage(tint.color) {
-                Label { Text(verbatim: title) } icon: { image }
+                let glyph = MobiusSymbol.knownGlyph(for: providerSymbol),
+                let image = glyph.menuImage(tint.color)
+            {
+                Label {
+                    Text(verbatim: title)
+                } icon: {
+                    image
+                }
             } else {
                 Text(verbatim: title)
             }
@@ -300,7 +313,9 @@ struct ComposerOptionsView: View {
     @ViewBuilder
     private var actionButtons: some View {
         if model.selectedRouteSupportsRealtimeVoice {
-            Button { model.startRealtimeVoice() } label: {
+            Button {
+                model.startRealtimeVoice()
+            } label: {
                 MobiusLabel(title: "Start voice chat", glyph: .audioWave01)
             }
             .buttonStyle(MobiusIconButtonStyle(bare: true))
@@ -381,9 +396,11 @@ struct ComposerOptionsView: View {
     ) -> [(item: PhotosPickerItem, id: UUID)] {
         var imports: [(item: PhotosPickerItem, id: UUID)] = []
         for item in items {
-            guard let id = model.reserveComposerAttachment(
-                named: mediaPlaceholderName(for: item)
-            ) else { break }
+            guard
+                let id = model.reserveComposerAttachment(
+                    named: mediaPlaceholderName(for: item)
+                )
+            else { break }
             imports.append((item, id))
         }
         return imports
@@ -405,10 +422,12 @@ struct ComposerOptionsView: View {
     }
 
     private func mediaPlaceholderName(for item: PhotosPickerItem) -> String {
-        let type = item.supportedContentTypes.first(where: {
-            $0.conforms(to: .movie) || $0.conforms(to: .video)
-        }) ?? item.supportedContentTypes.first
-        let base = type?.conforms(to: .movie) == true || type?.conforms(to: .video) == true
+        let type =
+            item.supportedContentTypes.first(where: {
+                $0.conforms(to: .movie) || $0.conforms(to: .video)
+            }) ?? item.supportedContentTypes.first
+        let base =
+            type?.conforms(to: .movie) == true || type?.conforms(to: .video) == true
             ? "video"
             : "image"
         guard let ext = type?.preferredFilenameExtension else { return base }
@@ -432,9 +451,10 @@ struct ComposerOptionsView: View {
         } set: { route in
             guard let choice = distinctModels.first(where: { $0.route == route }) else { return }
             let effort = currentChoice?.reasoningEffort
-            let target = model.modelChoices.first {
-                model.sameModel($0, choice) && $0.reasoningEffort == effort
-            } ?? choice
+            let target =
+                model.modelChoices.first {
+                    model.sameModel($0, choice) && $0.reasoningEffort == effort
+                } ?? choice
             model.selectModelForSelectedBot(target.route)
         }
     }
@@ -460,7 +480,7 @@ struct ComposerOptionsView: View {
         model.middlewareFeatures.flatMap { feature in
             feature.settings.compactMap { setting in
                 guard setting.composer,
-                      case .select(let options, let unsetLabel) = setting.kind
+                    case .select(let options, let unsetLabel) = setting.kind
                 else { return nil }
                 return ComposerSettingItem(
                     feature: feature,
@@ -501,8 +521,8 @@ struct ComposerOptionsView: View {
 
     private var canSend: Bool {
         guard model.gateway.connectionState.isReady,
-              model.canSendComposer,
-              model.chat.activeTurnID == nil || model.chat.composerAttachments.isEmpty
+            model.canSendComposer,
+            model.chat.activeTurnID == nil || model.chat.composerAttachments.isEmpty
         else { return false }
         return !dictation.isActive
     }
@@ -515,7 +535,9 @@ struct ComposerOptionsView: View {
     }
 
     private var canToggleDictation: Bool {
-        guard !model.selectedRouteSupportsRealtimeVoice, model.chat.realtimeVoiceCall == nil else { return false }
+        guard !model.selectedRouteSupportsRealtimeVoice, model.chat.realtimeVoiceCall == nil else {
+            return false
+        }
         return dictation.isRecording
             || dictation.canToggle
                 && model.gateway.connectionState.isReady
@@ -670,7 +692,8 @@ private struct ComposerDictationWaveform: View {
 
             for index in 0..<count {
                 let level = index < leadingEmpty ? 0 : levels[index - leadingEmpty]
-                let height = minimumHeight
+                let height =
+                    minimumHeight
                     + pow(min(1, max(0, level)), 0.7) * max(0, size.height - minimumHeight)
                 let rect = CGRect(
                     x: (Double(index) + 0.5) * step - barWidth / 2,

@@ -13,7 +13,8 @@ extension AppModel {
         directoryRequestID = id
         directoryError = nil
         isLoadingDirectories = true
-        gateway.transmit(.listDirectories(requestID: id, path: path, includeFiles: false)) { [weak self] message in
+        gateway.transmit(.listDirectories(requestID: id, path: path, includeFiles: false)) {
+            [weak self] message in
             guard self?.directoryRequestID == id else { return }
             self?.directoryRequestID = nil
             self?.isLoadingDirectories = false
@@ -56,10 +57,13 @@ extension AppModel {
     }
 
     func refreshGitDiff(_ scope: GitDiffScope = .unstaged) {
-        guard gateway.connectionState.isReady, let sessionID = chat.selectedSessionID else { return }
+        guard gateway.connectionState.isReady, let sessionID = chat.selectedSessionID else {
+            return
+        }
         let id = requestID("git-diff")
         gitDiffs[scope, default: GitDiffState()].requestID = id
-        gateway.transmit(.getGitDiff(requestID: id, sessionID: sessionID, scope: scope)) { [weak self] _ in
+        gateway.transmit(.getGitDiff(requestID: id, sessionID: sessionID, scope: scope)) {
+            [weak self] _ in
             guard self?.gitDiffs[scope]?.requestID == id else { return }
             self?.gitDiffs[scope]?.requestID = nil
         }
@@ -79,17 +83,19 @@ extension AppModel {
 
     func refreshWorkspaceFiles() {
         guard gateway.connectionState.isReady,
-              let sessionID = chat.selectedSessionID
+            let sessionID = chat.selectedSessionID
         else { return }
         let id = requestID("workspace-files")
         workspaceFilesRequestID = id
         workspaceFilesTruncated = false
         isLoadingWorkspaceFiles = true
-        gateway.transmit(.listWorkspaceFiles(
-            requestID: id,
-            sessionID: sessionID,
-            scope: .all
-        )) { [weak self] _ in
+        gateway.transmit(
+            .listWorkspaceFiles(
+                requestID: id,
+                sessionID: sessionID,
+                scope: .all
+            )
+        ) { [weak self] _ in
             guard self?.workspaceFilesRequestID == id else { return }
             self?.workspaceFilesRequestID = nil
             self?.isLoadingWorkspaceFiles = false
@@ -98,14 +104,15 @@ extension AppModel {
 
     func switchGitBranch(to branch: String) {
         guard canModifySelectedSession,
-              let sessionID = chat.selectedSessionID,
-              let gitStatus,
-              branch != gitStatus.currentBranch,
-              gitStatus.branches.contains(branch)
+            let sessionID = chat.selectedSessionID,
+            let gitStatus,
+            branch != gitStatus.currentBranch,
+            gitStatus.branches.contains(branch)
         else { return }
         let id = requestID("git-branch")
         gitBranchRequestID = id
-        gateway.transmit(.switchGitBranch(requestID: id, sessionID: sessionID, branch: branch)) { [weak self] _ in
+        gateway.transmit(.switchGitBranch(requestID: id, sessionID: sessionID, branch: branch)) {
+            [weak self] _ in
             if self?.gitBranchRequestID == id { self?.gitBranchRequestID = nil }
         }
     }
@@ -142,13 +149,15 @@ extension AppModel {
             requestID: id
         )
         isLoadingFilePresentation = true
-        gateway.transmit(.readSessionFile(
-            requestID: id,
-            sessionID: sessionID,
-            fileID: file.id,
-            offset: 0,
-            maxBytes: 256 * 1024
-        )) { [weak self] message in
+        gateway.transmit(
+            .readSessionFile(
+                requestID: id,
+                sessionID: sessionID,
+                fileID: file.id,
+                offset: 0,
+                maxBytes: 256 * 1024
+            )
+        ) { [weak self] message in
             guard self?.chat.sessionFileDownload?.requestID == id else { return }
             self?.chat.sessionFileDownload = nil
             self?.isLoadingFilePresentation = false
@@ -192,13 +201,15 @@ extension AppModel {
             requestID: id
         )
         isLoadingFilePresentation = true
-        gateway.transmit(.readWorkspaceFile(
-            requestID: id,
-            sessionID: sessionID,
-            path: file.path,
-            offset: 0,
-            maxBytes: 256 * 1024
-        )) { [weak self] message in
+        gateway.transmit(
+            .readWorkspaceFile(
+                requestID: id,
+                sessionID: sessionID,
+                path: file.path,
+                offset: 0,
+                maxBytes: 256 * 1024
+            )
+        ) { [weak self] message in
             guard self?.workspaceFilePreviewDownload?.requestID == id else { return }
             self?.workspaceFilePreviewDownload = nil
             self?.isLoadingFilePresentation = false
@@ -224,21 +235,23 @@ extension AppModel {
 
     func saveWorkspaceFile(sessionID: String, path: String, content: String) {
         guard canModifySelectedSession,
-              chat.selectedSessionID == sessionID,
-              workspaceFileWriteRequestID == nil,
-              path.utf8.count <= 4_096,
-              !path.isEmpty,
-              content.utf8.count <= maximumWorkspaceTextFileBytes
+            chat.selectedSessionID == sessionID,
+            workspaceFileWriteRequestID == nil,
+            path.utf8.count <= 4_096,
+            !path.isEmpty,
+            content.utf8.count <= maximumWorkspaceTextFileBytes
         else { return }
         let id = requestID("workspace-file-write")
         workspaceFileWriteRequestID = id
         isSavingWorkspaceFile = true
-        gateway.transmit(.writeWorkspaceFile(
-            requestID: id,
-            sessionID: sessionID,
-            path: path,
-            content: content
-        )) { [weak self] message in
+        gateway.transmit(
+            .writeWorkspaceFile(
+                requestID: id,
+                sessionID: sessionID,
+                path: path,
+                content: content
+            )
+        ) { [weak self] message in
             guard self?.workspaceFileWriteRequestID == id else { return }
             self?.workspaceFileWriteRequestID = nil
             self?.isSavingWorkspaceFile = false
@@ -248,9 +261,9 @@ extension AppModel {
 
     func updateWorkspaceFileDraft(id: UUID, path: String) {
         guard var draft = textFilePreview,
-              draft.id == id,
-              draft.workspaceSessionID != nil,
-              draft.workspacePath != nil
+            draft.id == id,
+            draft.workspaceSessionID != nil,
+            draft.workspacePath != nil
         else { return }
         draft.workspacePath = path
         textFilePreview = draft
@@ -258,9 +271,9 @@ extension AppModel {
 
     func updateWorkspaceFileDraft(id: UUID, contents: String) {
         guard var draft = textFilePreview,
-              draft.id == id,
-              draft.workspaceSessionID != nil,
-              draft.workspacePath != nil
+            draft.id == id,
+            draft.workspaceSessionID != nil,
+            draft.workspacePath != nil
         else { return }
         draft.contents = contents
         textFilePreview = draft

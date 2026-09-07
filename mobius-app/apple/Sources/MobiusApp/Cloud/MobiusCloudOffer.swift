@@ -9,12 +9,14 @@ struct MobiusCloudOfferButton: View {
     // as a list row that happened to be capsule-shaped. The accent tint marks it as the
     // other path rather than a second copy of the pairing button.
     var body: some View {
-        let title: LocalizedStringResource = model.cloud.cloudAccount?.subscribed == true
+        let title: LocalizedStringResource =
+            model.cloud.cloudAccount?.subscribed == true
             ? "Connect Cloud gateway"
             : model.cloud.hasCloudAccount
                 ? "Subscribe to möbius Cloud"
                 : "Connect to möbius Cloud"
-        let hint: LocalizedStringResource = model.cloud.cloudAccount?.subscribed == true
+        let hint: LocalizedStringResource =
+            model.cloud.cloudAccount?.subscribed == true
             ? "Connects this device to your managed Cloud gateway"
             : "Explains the managed möbius Cloud subscription"
         Button {
@@ -92,10 +94,12 @@ struct MobiusCloudOfferSheet: View {
     /// The offer hero becomes setup status while a Cloud action is running.
     private var hero: some View {
         let running = setupStage != nil
-        let title: LocalizedStringResource = running
+        let title: LocalizedStringResource =
+            running
             ? "Setting up your möbius Cloud."
             : "Your private gateway, managed by möbius."
-        let detail: LocalizedStringResource = running
+        let detail: LocalizedStringResource =
+            running
             ? "Keep this screen open. Nothing here needs your attention until it finishes."
             : "Skip server setup without giving up control. We provision, secure, and maintain a gateway scoped to your account."
         return VStack(alignment: .leading, spacing: MobiusSpace.l) {
@@ -150,25 +154,29 @@ struct MobiusCloudOfferSheet: View {
                 CloudBenefit(
                     glyph: .sparkle,
                     title: "The open-source gateway, hosted for you",
-                    detail: "Run the same generic möbius gateway in a private, persistent workspace."
+                    detail:
+                        "Run the same generic möbius gateway in a private, persistent workspace."
                 )
                 Divider().padding(.leading, MobiusStyle.glyphGutter + MobiusSpace.m)
                 CloudBenefit(
                     glyph: .setup01,
                     title: "Fast, modular harness",
-                    detail: "Choose the providers, tools, and capabilities you want while möbius keeps the runtime lean."
+                    detail:
+                        "Choose the providers, tools, and capabilities you want while möbius keeps the runtime lean."
                 )
                 Divider().padding(.leading, MobiusStyle.glyphGutter + MobiusSpace.m)
                 CloudBenefit(
                     glyph: .key,
                     title: "Bring your own keys",
-                    detail: "Connect your own model provider account without storing its API key in möbius Cloud or the gateway filesystem."
+                    detail:
+                        "Connect your own model provider account without storing its API key in möbius Cloud or the gateway filesystem."
                 )
                 Divider().padding(.leading, MobiusStyle.glyphGutter + MobiusSpace.m)
                 CloudBenefit(
                     glyph: .shieldCheck,
                     title: "Encrypted and user-scoped",
-                    detail: "Your gateway, credentials, and cloud data stay isolated to your account."
+                    detail:
+                        "Your gateway, credentials, and cloud data stay isolated to your account."
                 )
             }
         }
@@ -285,7 +293,8 @@ struct MobiusCloudOfferSheet: View {
     }
 
     private func waitingButton(_ title: LocalizedStringResource) -> some View {
-        Button {} label: {
+        Button {
+        } label: {
             HStack(spacing: MobiusSpace.s) {
                 MobiusSpinner(size: MobiusStyle.glyphInline)
                 Text(title)
@@ -343,15 +352,16 @@ struct MobiusCloudAppleAuthorizationButton: View {
             case .failure(let error):
                 nonce = nil
                 if let authorizationError = error as? ASAuthorizationError,
-                   authorizationError.code == .canceled {
+                    authorizationError.code == .canceled
+                {
                     return
                 }
                 onFailure()
             case .success(let authorization):
                 guard let nonce,
-                      let credential = authorization.credential as? ASAuthorizationAppleIDCredential,
-                      let data = credential.authorizationCode,
-                      let authorizationCode = String(data: data, encoding: .utf8)
+                    let credential = authorization.credential as? ASAuthorizationAppleIDCredential,
+                    let data = credential.authorizationCode,
+                    let authorizationCode = String(data: data, encoding: .utf8)
                 else {
                     self.nonce = nil
                     onFailure()

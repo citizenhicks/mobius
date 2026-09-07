@@ -391,14 +391,16 @@ enum GatewayRequest: Encodable, Sendable {
             try container.encode(sessionID, forKey: "sessionId")
             try container.encode(path, forKey: "path")
             try container.encode(content, forKey: "content")
-        case .beginSessionFileUpload(let requestID, let sessionID, let name, let size, let mediaType):
+        case .beginSessionFileUpload(
+            let requestID, let sessionID, let name, let size, let mediaType):
             try container.encode("begin_session_file_upload", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
             try container.encode(sessionID, forKey: "sessionId")
             try container.encode(name, forKey: "name")
             try container.encode(size, forKey: "size")
             try container.encode(mediaType, forKey: "mediaType")
-        case .uploadSessionFileChunk(let requestID, let sessionID, let uploadID, let offset, let data):
+        case .uploadSessionFileChunk(
+            let requestID, let sessionID, let uploadID, let offset, let data):
             try container.encode("upload_session_file_chunk", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
             try container.encode(sessionID, forKey: "sessionId")
@@ -556,7 +558,8 @@ enum GatewayEnvelope: Decodable, Sendable {
     case paired(clientID: String, token: String)
     case authenticated
     case ready(ReadyPayload)
-    case realtimeVoiceStarted(requestID: String, sessionID: String, voiceID: String, answerSDP: String)
+    case realtimeVoiceStarted(
+        requestID: String, sessionID: String, voiceID: String, answerSDP: String)
     case realtimeVoiceEnded(sessionID: String, voiceID: String, reason: String?)
     case realtimeVoiceFailed(requestID: String, sessionID: String, message: String)
     case sessionOpened(requestID: String, payload: SessionReadyPayload)
@@ -689,10 +692,11 @@ enum GatewayEnvelope: Decodable, Sendable {
         case "authenticated":
             self = .authenticated
         case "ready":
-            self = .ready(try container.decode(
-                ReadyPayload.self,
-                forKey: "payload"
-            ).validated())
+            self = .ready(
+                try container.decode(
+                    ReadyPayload.self,
+                    forKey: "payload"
+                ).validated())
         case "session_opened":
             self = .sessionOpened(
                 requestID: try container.decode(String.self, forKey: "requestId"),
@@ -904,16 +908,17 @@ enum GatewayEnvelope: Decodable, Sendable {
                 keyedBy: DynamicCodingKey.self,
                 forKey: DynamicCodingKey("preview")
             )
-            self = .routineRunPreview(RoutineRunPreview(
-                requestID: try container.decode(String.self, forKey: "requestId"),
-                routine: try preview.decode(Routine.self, forKey: "routine"),
-                run: try preview.decode(RoutineRun.self, forKey: "run"),
-                records: try preview.decode([RecordedEvent].self, forKey: "records"),
-                nextBeforeSequence: try preview.decodeIfPresent(
-                    UInt64.self,
-                    forKey: "nextBeforeSequence"
-                )
-            ))
+            self = .routineRunPreview(
+                RoutineRunPreview(
+                    requestID: try container.decode(String.self, forKey: "requestId"),
+                    routine: try preview.decode(Routine.self, forKey: "routine"),
+                    run: try preview.decode(RoutineRun.self, forKey: "run"),
+                    records: try preview.decode([RecordedEvent].self, forKey: "records"),
+                    nextBeforeSequence: try preview.decodeIfPresent(
+                        UInt64.self,
+                        forKey: "nextBeforeSequence"
+                    )
+                ))
         case "error":
             self = .error(try GatewayFailure(from: decoder))
         default:
@@ -965,34 +970,35 @@ struct ReadyPayload: Decodable, Sendable {
 private extension ReadyPayload {
     func validated() throws -> Self {
         guard machineName == machineName.trimmingCharacters(in: .whitespacesAndNewlines),
-              !machineName.isEmpty,
-              machineName.utf8.count <= 255,
-              !machineName.unicodeScalars.contains(where: {
-                  CharacterSet.controlCharacters.contains($0)
-              })
+            !machineName.isEmpty,
+            machineName.utf8.count <= 255,
+            !machineName.unicodeScalars.contains(where: {
+                CharacterSet.controlCharacters.contains($0)
+            })
         else {
             throw GatewayWireError.invalidFrame("gateway machine name is invalid")
         }
         for provider in providers {
             var values = Set<String>()
             guard provider.webSearch.first?.value == HostedWebSearch.off.rawValue,
-                  provider.webSearch.allSatisfy({ option in
-                      option.value == option.value.trimmingCharacters(in: .whitespacesAndNewlines)
-                          && HostedWebSearch(rawValue: option.value) != nil
-                          && !option.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                          && !option.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                          && values.insert(option.value).inserted
-                  })
+                provider.webSearch.allSatisfy({ option in
+                    option.value == option.value.trimmingCharacters(in: .whitespacesAndNewlines)
+                        && HostedWebSearch(rawValue: option.value) != nil
+                        && !option.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        && !option.description.trimmingCharacters(in: .whitespacesAndNewlines)
+                            .isEmpty
+                        && values.insert(option.value).inserted
+                })
             else {
                 throw GatewayWireError.invalidFrame("provider web search options are invalid")
             }
         }
         guard sessionFileLimits.maxAttachmentReferences > 0,
-              sessionFileLimits.maxFileBytes > 0,
-              sessionFileLimits.maxSessionFiles >= sessionFileLimits.maxAttachmentReferences,
-              sessionFileLimits.maxSessionBytes >= sessionFileLimits.maxFileBytes,
-              sessionFileLimits.maxUploadChunkBytes > 0,
-              UInt64(sessionFileLimits.maxUploadChunkBytes) <= sessionFileLimits.maxFileBytes
+            sessionFileLimits.maxFileBytes > 0,
+            sessionFileLimits.maxSessionFiles >= sessionFileLimits.maxAttachmentReferences,
+            sessionFileLimits.maxSessionBytes >= sessionFileLimits.maxFileBytes,
+            sessionFileLimits.maxUploadChunkBytes > 0,
+            UInt64(sessionFileLimits.maxUploadChunkBytes) <= sessionFileLimits.maxFileBytes
         else {
             throw GatewayWireError.invalidFrame("gateway session file limits are invalid")
         }

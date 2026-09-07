@@ -32,11 +32,12 @@ final class ReplyQuoteLayoutTests: XCTestCase {
             target: Mobius.MessageTarget(checkpointSequence: 1, batchItemCount: 1),
             text: String(repeating: "Long quoted line\n", count: 20)
         )
-        let host = UIHostingController(rootView: Mobius.ReplyQuoteView(
-            reply: reply,
-            open: {},
-            dismiss: {}
-        ))
+        let host = UIHostingController(
+            rootView: Mobius.ReplyQuoteView(
+                reply: reply,
+                open: {},
+                dismiss: {}
+            ))
 
         XCTAssertLessThan(
             host.sizeThatFits(in: CGSize(width: 320, height: 1_000)).height,
@@ -75,9 +76,10 @@ final class ReplyQuoteLayoutTests: XCTestCase {
         for entries in [[peer], [peer, final]] {
             model.chat.messageNavigationRequest = nil
             model.chat.transcript = entries
-            let host = UIHostingController(rootView: Mobius.TranscriptView(
-                bottomInset: 0, isAtBottom: .constant(true), scrollToBottomRequest: 0
-            ).environment(model))
+            let host = UIHostingController(
+                rootView: Mobius.TranscriptView(
+                    bottomInset: 0, isAtBottom: .constant(true), scrollToBottomRequest: 0
+                ).environment(model))
             window.rootViewController = host
             window.makeKeyAndVisible()
             host.view.layoutIfNeeded()
@@ -138,21 +140,23 @@ final class UnifiedDiffTests: XCTestCase {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
         let window = UIWindow(windowScene: scene)
         let proposed = CGSize(width: 320, height: 1_000)
-        let baseline = UIHostingController(rootView: TurnDiffTranscriptHost(
-            model: model,
-            showsTurnDiff: false
-        ))
+        let baseline = UIHostingController(
+            rootView: TurnDiffTranscriptHost(
+                model: model,
+                showsTurnDiff: false
+            ))
         window.rootViewController = baseline
         window.makeKeyAndVisible()
         let baselineHeight = baseline.sizeThatFits(in: proposed).height
 
-        let host = UIHostingController(rootView: TurnDiffTranscriptHost(
-            model: model,
-            showsTurnDiff: true
-        ))
+        let host = UIHostingController(
+            rootView: TurnDiffTranscriptHost(
+                model: model,
+                showsTurnDiff: true
+            ))
         window.rootViewController = host
         for _ in 0..<100
-            where host.sizeThatFits(in: proposed).height < baselineHeight + 50 {
+        where host.sizeThatFits(in: proposed).height < baselineHeight + 50 {
             try await Task.sleep(for: .milliseconds(10))
         }
         XCTAssertGreaterThanOrEqual(
@@ -227,7 +231,8 @@ final class UnifiedDiffTests: XCTestCase {
             removed: 9
         )
         XCTAssertEqual(
-            MobiusText.localized(deletionHeavyHunk.title).resolved(locale: Locale(identifier: "en")),
+            MobiusText.localized(deletionHeavyHunk.title).resolved(
+                locale: Locale(identifier: "en")),
             "Lines 128–138"
         )
     }
@@ -304,20 +309,22 @@ final class UnifiedDiffTests: XCTestCase {
         XCTAssertEqual(same.added, 2)
         XCTAssertEqual(same.removed, 1)
         XCTAssertEqual(same.rows.map(\.id), Array(same.rows.indices))
-        XCTAssertEqual(document.fileChanges, [
-            UnifiedDiffFileChange(path: "Same.swift", added: 2, removed: 1),
-            UnifiedDiffFileChange(path: "Other.swift", added: 1, removed: 0),
-        ])
+        XCTAssertEqual(
+            document.fileChanges,
+            [
+                UnifiedDiffFileChange(path: "Same.swift", added: 2, removed: 1),
+                UnifiedDiffFileChange(path: "Other.swift", added: 1, removed: 0),
+            ])
     }
 
     func testBoundsOneMinifiedLineBeforeRendering() throws {
         let source = """
-        diff --git a/data.json b/data.json
-        --- a/data.json
-        +++ b/data.json
-        @@ -0,0 +1 @@
-        +\(String(repeating: "x", count: 20_000))
-        """
+            diff --git a/data.json b/data.json
+            --- a/data.json
+            +++ b/data.json
+            @@ -0,0 +1 @@
+            +\(String(repeating: "x", count: 20_000))
+            """
         let document = UnifiedDiffDocument(source)
         let line = try XCTUnwrap(document.files.first?.rows.last)
 

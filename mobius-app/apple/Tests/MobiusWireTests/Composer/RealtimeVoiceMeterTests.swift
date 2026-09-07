@@ -6,11 +6,21 @@ import XCTest
 final class RealtimeVoiceMeterTests: XCTestCase {
     func testNativeStatsKeepMicrophoneAndPlaybackSeparate() {
         var levels = Mobius.RealtimeAudioLevels()
-        levels.include(type: "media-source", values: ["kind": "audio" as NSString, "audioLevel": 0.36 as NSNumber])
-        levels.include(type: "inbound-rtp", values: ["kind": "audio" as NSString, "audioLevel": 0.81 as NSNumber])
-        levels.include(type: "media-source", values: ["kind": "video" as NSString, "audioLevel": 1 as NSNumber])
-        levels.include(type: "outbound-rtp", values: ["kind": "audio" as NSString, "audioLevel": 1 as NSNumber])
-        levels.include(type: "inbound-rtp", values: ["kind": "audio" as NSString, "audioLevel": Double.nan as NSNumber])
+        levels.include(
+            type: "media-source",
+            values: ["kind": "audio" as NSString, "audioLevel": 0.36 as NSNumber])
+        levels.include(
+            type: "inbound-rtp",
+            values: ["kind": "audio" as NSString, "audioLevel": 0.81 as NSNumber])
+        levels.include(
+            type: "media-source",
+            values: ["kind": "video" as NSString, "audioLevel": 1 as NSNumber])
+        levels.include(
+            type: "outbound-rtp",
+            values: ["kind": "audio" as NSString, "audioLevel": 1 as NSNumber])
+        levels.include(
+            type: "inbound-rtp",
+            values: ["kind": "audio" as NSString, "audioLevel": Double.nan as NSNumber])
         levels.include(type: "media-source", values: ["kind": "audio" as NSString])
         XCTAssertEqual(levels.microphone, 0.36)
         XCTAssertEqual(levels.playback, 0.81)
@@ -51,9 +61,10 @@ final class RealtimeVoiceMeterTests: XCTestCase {
         let configuration = RTCConfiguration()
         configuration.sdpSemantics = .unifiedPlan
         let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
-        let peer = try XCTUnwrap(factory.peerConnection(
-            with: configuration, constraints: constraints, delegate: voice
-        ))
+        let peer = try XCTUnwrap(
+            factory.peerConnection(
+                with: configuration, constraints: constraints, delegate: voice
+            ))
         voice.peer = peer
 
         voice.peerConnection(peer, didChange: RTCPeerConnectionState.disconnected)
@@ -76,12 +87,17 @@ extension AppModelTests {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         let model = Mobius.AppModel(
-            store: Mobius.GatewayStore(defaults: defaults, transcriptDirectory: directory, draftDirectory: directory),
+            store: Mobius.GatewayStore(
+                defaults: defaults, transcriptDirectory: directory, draftDirectory: directory),
             settingsDefaults: defaults,
-            appLockAuthenticator: Mobius.AppLockAuthenticator(method: { .unavailable }, authenticate: { _ in false }),
+            appLockAuthenticator: Mobius.AppLockAuthenticator(
+                method: { .unavailable }, authenticate: { _ in false }),
             requestSender: { _ in }
         )
-        model.bots = [try JSONDecoder().decode(Mobius.BotRecord.self, from: JSONEncoder().encode(bot(tint: .orange)))]
+        model.bots = [
+            try JSONDecoder().decode(
+                Mobius.BotRecord.self, from: JSONEncoder().encode(bot(tint: .orange)))
+        ]
         model.chat.pendingNewChatBotID = "bot-1"
         model.gateway.connectionState = .ready
         model.chat.composer = "Preserve this draft"
@@ -100,7 +116,8 @@ extension AppModelTests {
                     VStack {
                         if !model.chat.transcript.isEmpty {
                             Mobius.TranscriptRowsView(
-                                projection: Mobius.TranscriptProjection(entries: model.chat.transcript),
+                                projection: Mobius.TranscriptProjection(
+                                    entries: model.chat.transcript),
                                 fileSessionID: nil
                             )
                             .padding(.horizontal, Mobius.MobiusSpace.l)
@@ -110,12 +127,12 @@ extension AppModelTests {
                     }
                 }
             }
-                .frame(maxHeight: .infinity, alignment: .bottom)
-                .background(Mobius.MobiusPalette(scheme).canvas)
-                .modifier(Mobius.MobiusTheme())
-                .environment(model)
-                .environment(\.colorScheme, scheme)
-                .environment(\.scenePhase, .active)
+            .frame(maxHeight: .infinity, alignment: .bottom)
+            .background(Mobius.MobiusPalette(scheme).canvas)
+            .modifier(Mobius.MobiusTheme())
+            .environment(model)
+            .environment(\.colorScheme, scheme)
+            .environment(\.scenePhase, .active)
             let host = UIHostingController(rootView: content)
             host.overrideUserInterfaceStyle = scheme == .dark ? .dark : .light
             host.view.backgroundColor = UIColor(Mobius.MobiusPalette(scheme).canvas)
@@ -128,7 +145,8 @@ extension AppModelTests {
             return host.view
         }
         func inputs(in view: UIView) -> [UIView] {
-            (view is UITextField || view is UITextView ? [view] : []) + view.subviews.flatMap { inputs(in: $0) }
+            (view is UITextField || view is UITextView ? [view] : [])
+                + view.subviews.flatMap { inputs(in: $0) }
         }
         func capture(_ view: UIView, name: String) {
             let image = UIGraphicsImageRenderer(bounds: view.bounds).image { _ in
@@ -143,12 +161,20 @@ extension AppModelTests {
         XCTAssertFalse(inputs(in: normal).isEmpty)
         capture(normal, name: "voice-normal-composer")
         // A pending call is sufficient: never request permission or create media.
-        model.chat.mountedWidgets = [Mobius.MountedWidget(capability: "test-preview", widget: Mobius.FrontendWidget(
-            id: "voice-preview", slot: .composerFooter, text: "Voice conversation", tone: "neutral",
-            symbol: "voice", iconOnly: true, progress: nil, content: nil,
-            action: .capabilityCommand(capability: "test-preview", command: "show", arguments: "", input: nil, target: nil)
-        ))]
-        model.chat.realtimeVoiceCall = Mobius.RealtimeVoiceCall(requestID: "pending", sessionID: "chat-1")
+        model.chat.mountedWidgets = [
+            Mobius.MountedWidget(
+                capability: "test-preview",
+                widget: Mobius.FrontendWidget(
+                    id: "voice-preview", slot: .composerFooter, text: "Voice conversation",
+                    tone: "neutral",
+                    symbol: "voice", iconOnly: true, progress: nil, content: nil,
+                    action: .capabilityCommand(
+                        capability: "test-preview", command: "show", arguments: "", input: nil,
+                        target: nil)
+                ))
+        ]
+        model.chat.realtimeVoiceCall = Mobius.RealtimeVoiceCall(
+            requestID: "pending", sessionID: "chat-1")
         // The wave answers change, so a fixture needs a settled level rather than a first sample.
         func settle(_ levels: Mobius.RealtimeAudioLevels) {
             for _ in 0..<40 { model.chat.realtimeVoice.updateAudioLevels(levels) }
@@ -160,7 +186,8 @@ extension AppModelTests {
         try await Task.sleep(for: .milliseconds(250))
         capture(microphone, name: "voice-light-microphone-moving")
         // One loud sample against the settled baseline is what lifts the tails.
-        model.chat.realtimeVoice.updateAudioLevels(Mobius.RealtimeAudioLevels(microphone: 0.92, playback: 0))
+        model.chat.realtimeVoice.updateAudioLevels(
+            Mobius.RealtimeAudioLevels(microphone: 0.92, playback: 0))
         XCTAssertEqual(model.chat.realtimeVoice.levelFlare, 1)
         capture(await show(.light), name: "voice-light-microphone-flare")
         model.chat.realtimeVoice.updateAudioLevels(Mobius.RealtimeAudioLevels())
@@ -177,22 +204,32 @@ extension AppModelTests {
         settle(Mobius.RealtimeAudioLevels(microphone: 0.36, playback: 0.81))
         capture(await show(.dark), name: "voice-dark-both")
         window.frame.size.height = 500
-        model.chat.transcript = [Mobius.TranscriptEntry(
-            id: "voice-handoff", text: "Review the launch checklist and fix the remaining issues.",
-            kind: .event, capability: "messages", role: .activity,
-            title: "Message received from voice agent", symbol: "voice",
-            format: "plain_text", pending: false,
-            messageMetadata: Mobius.TranscriptMessageMetadata(
-                author: .peer(messageID: "handoff", sessionID: "voice-child", handle: "voice agent", symbol: "voice"),
-                delivery: .turn
+        model.chat.transcript = [
+            Mobius.TranscriptEntry(
+                id: "voice-handoff",
+                text: "Review the launch checklist and fix the remaining issues.",
+                kind: .event, capability: "messages", role: .activity,
+                title: "Message received from voice agent", symbol: "voice",
+                format: "plain_text", pending: false,
+                messageMetadata: Mobius.TranscriptMessageMetadata(
+                    author: .peer(
+                        messageID: "handoff", sessionID: "voice-child", handle: "voice agent",
+                        symbol: "voice"),
+                    delivery: .turn
+                )
             )
-        )]
+        ]
         capture(await show(.light), name: "voice-handoff-shared-event")
         let preview = Mobius.TranscriptPreview(
             id: "voice-child", title: "voice agent", context: "", status: nil, model: nil,
             entries: [
-                Mobius.TranscriptEntry(id: "spoken-input", text: "How is the launch looking?", kind: .user, format: "plain_text", pending: false),
-                Mobius.TranscriptEntry(id: "spoken-answer", text: "The Bot is checking the remaining items. I'll keep you updated.", kind: .assistant, format: "plain_text", pending: false)
+                Mobius.TranscriptEntry(
+                    id: "spoken-input", text: "How is the launch looking?", kind: .user,
+                    format: "plain_text", pending: false),
+                Mobius.TranscriptEntry(
+                    id: "spoken-answer",
+                    text: "The Bot is checking the remaining items. I'll keep you updated.",
+                    kind: .assistant, format: "plain_text", pending: false),
             ], next: nil
         )
         capture(await show(.light, preview: preview), name: "voice-shared-read-only-transcript")

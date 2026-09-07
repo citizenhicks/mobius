@@ -48,8 +48,8 @@ final class ComposerDictation {
     var canToggle: Bool { state == .idle || state == .recording }
     var detectedLanguageCode: String? {
         guard transcripts.indices.contains(selectedTranscriptIndex),
-              !transcripts[selectedTranscriptIndex].text.isEmpty,
-              let languageCode = transcripts[selectedTranscriptIndex]
+            !transcripts[selectedTranscriptIndex].text.isEmpty,
+            let languageCode = transcripts[selectedTranscriptIndex]
                 .locale.language.languageCode?.identifier
         else { return nil }
         return languageCode.uppercased()
@@ -99,9 +99,11 @@ final class ComposerDictation {
             }
             try checkGeneration(currentGeneration)
 
-            guard let analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(
-                compatibleWith: modules
-            ) else {
+            guard
+                let analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(
+                    compatibleWith: modules
+                )
+            else {
                 throw ComposerDictationError.audioUnavailable
             }
             try checkGeneration(currentGeneration)
@@ -271,7 +273,8 @@ final class ComposerDictation {
 
     private func renderedText(includeVolatile: Bool) -> String {
         guard transcripts.indices.contains(selectedTranscriptIndex) else { return baseText }
-        let transcript = includeVolatile
+        let transcript =
+            includeVolatile
             ? transcripts[selectedTranscriptIndex].text
             : transcripts[selectedTranscriptIndex].finalizedText
         return transcript.isEmpty ? baseText : baseText + separator + transcript
@@ -280,11 +283,14 @@ final class ComposerDictation {
     private func supportedLocales() async -> [Locale] {
         var locales: [Locale] = []
         for requested in Self.requestedLocales {
-            guard let supported = await DictationTranscriber.supportedLocale(
-                equivalentTo: requested
-            ), !locales.contains(where: {
-                $0.identifier(.bcp47) == supported.identifier(.bcp47)
-            }) else { continue }
+            guard
+                let supported = await DictationTranscriber.supportedLocale(
+                    equivalentTo: requested
+                ),
+                !locales.contains(where: {
+                    $0.identifier(.bcp47) == supported.identifier(.bcp47)
+                })
+            else { continue }
             locales.append(supported)
         }
         return locales
@@ -383,7 +389,8 @@ enum ComposerAudioMeter {
     static func normalizedLevel<S: Collection>(for samples: S) -> Double
     where S.Element == Float {
         guard !samples.isEmpty else { return 0 }
-        let meanSquare = samples.reduce(0.0) { $0 + Double($1 * $1) }
+        let meanSquare =
+            samples.reduce(0.0) { $0 + Double($1 * $1) }
             / Double(samples.count)
         guard meanSquare > 0 else { return 0 }
         let decibels = 20 * log10(sqrt(meanSquare))
@@ -394,10 +401,11 @@ enum ComposerAudioMeter {
         guard buffer.frameLength > 0, let channel = buffer.floatChannelData?.pointee else {
             return 0
         }
-        return normalizedLevel(for: UnsafeBufferPointer(
-            start: channel,
-            count: Int(buffer.frameLength)
-        ))
+        return normalizedLevel(
+            for: UnsafeBufferPointer(
+                start: channel,
+                count: Int(buffer.frameLength)
+            ))
     }
 }
 
@@ -406,9 +414,11 @@ private extension AttributedString {
         var total = 0.0
         var weight = 0
         for run in runs {
-            guard let confidence = run[
-                AttributeScopes.SpeechAttributes.ConfidenceAttribute.self
-            ] else { continue }
+            guard
+                let confidence = run[
+                    AttributeScopes.SpeechAttributes.ConfidenceAttribute.self
+                ]
+            else { continue }
             let count = self[run.range].characters.count
             total += confidence * Double(count)
             weight += count
@@ -458,10 +468,12 @@ private final class ComposerAudioBufferConverter {
             1,
             AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up))
         )
-        guard let converted = AVAudioPCMBuffer(
-            pcmFormat: converter.outputFormat,
-            frameCapacity: capacity
-        ) else {
+        guard
+            let converted = AVAudioPCMBuffer(
+                pcmFormat: converter.outputFormat,
+                frameCapacity: capacity
+            )
+        else {
             throw ComposerDictationError.conversionFailed
         }
 

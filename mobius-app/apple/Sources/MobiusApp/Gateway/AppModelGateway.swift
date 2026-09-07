@@ -20,16 +20,16 @@ extension AppModel {
         case .sessionOpened, .sessionReplayComplete, .sessionHistory, .sessionChanged:
             handleSessionEnvelope(envelope)
         case .gatewayConfigured, .contributionsChanged, .accepted, .rejected,
-             .agentEvent, .sessions, .backgroundApprovals, .swarmAttentions, .botSessions,
-             .bots, .swarms, .clients:
+            .agentEvent, .sessions, .backgroundApprovals, .swarmAttentions, .botSessions,
+            .bots, .swarms, .clients:
             handleGatewayUpdateEnvelope(envelope)
         case .providerCredentialSaved, .pairingCode, .providerLoginStarted,
-             .providerLoginFinished, .gitCredentialStatus, .sshIdentities,
-             .sshIdentityGenerated, .profile:
+            .providerLoginFinished, .gitCredentialStatus, .sshIdentities,
+            .sshIdentityGenerated, .profile:
             handleCredentialEnvelope(envelope)
         case .gitDiff, .workspaceFiles, .workspaceFileChunk, .sessionFileUploadReady,
-             .sessionFileUploadChunkAccepted, .sessionFileUploadCompleted,
-             .sessionFiles, .sessionFileChunk, .directories:
+            .sessionFileUploadChunkAccepted, .sessionFileUploadCompleted,
+            .sessionFiles, .sessionFileChunk, .directories:
             handleFileEnvelope(envelope)
         case .routines, .routineHistory, .routineRunPreview, .error:
             handleRoutineOrFailureEnvelope(envelope)
@@ -42,7 +42,9 @@ extension AppModel {
             guard requestID == chat.sessionRequestID else { break }
             applySessionReady(payload, opened: true, replayRequestID: requestID)
         case .sessionReplayComplete(let requestID, let sessionID):
-            guard requestID == chat.replayRequestID, sessionID == chat.selectedSessionID else { break }
+            guard requestID == chat.replayRequestID, sessionID == chat.selectedSessionID else {
+                break
+            }
             let completedRequestID = chat.finishSessionReplay()
             completePendingVoiceChat(requestID: completedRequestID)
             submitPendingNewChatDraft(requestID: completedRequestID)
@@ -52,12 +54,15 @@ extension AppModel {
             let records,
             let nextBeforeSequence
         ):
-            guard requestID == chat.historyRequestID, sessionID == chat.selectedSessionID else { break }
+            guard requestID == chat.historyRequestID, sessionID == chat.selectedSessionID else {
+                break
+            }
             chat.flushStreamDeltas()
             chat.mergeHistory(records)
             chat.nextHistoryBeforeSequence = nextBeforeSequence
             if !records.isEmpty,
-               case .visibleTurns(let count) = chat.transcriptWindowAnchor {
+                case .visibleTurns(let count) = chat.transcriptWindowAnchor
+            {
                 chat.transcriptWindowAnchor = .visibleTurns(count + transcriptTurnsPerPage)
                 _ = chat.transcriptWindow
             }
@@ -152,7 +157,8 @@ extension AppModel {
         applyBots(bots)
         guard completedMutation else { return }
         if let editingBotID,
-           let bot = bots.first(where: { $0.id == editingBotID }) {
+            let bot = bots.first(where: { $0.id == editingBotID })
+        {
             editingBotRevision = bot.config.revision
             botNameDraft = bot.name
             botDescriptionDraft = bot.description
@@ -180,9 +186,9 @@ extension AppModel {
         switch envelope {
         case .providerCredentialSaved(let requestID, let instance, let provider):
             guard let pending = pendingProviderCredential,
-                  requestID == pending.requestID,
-                  instance == pending.instance,
-                  provider == pending.provider
+                requestID == pending.requestID,
+                instance == pending.instance,
+                provider == pending.provider
             else { break }
             // An API key belongs to the one setup that received it.
             if let index = providerInstances.firstIndex(where: { $0.instance == instance }) {
@@ -257,12 +263,13 @@ extension AppModel {
     private func handleFileEnvelope(_ envelope: GatewayEnvelope) {
         switch envelope {
         case .gitDiff(let requestID, let sessionID, let scope, let diff):
-            guard sessionID == chat.selectedSessionID, requestID == gitDiffs[scope]?.requestID else { break }
+            guard sessionID == chat.selectedSessionID, requestID == gitDiffs[scope]?.requestID
+            else { break }
             gitDiffs[scope]?.requestID = nil
             gitDiffs[scope]?.text = diff
         case .workspaceFiles(let requestID, let sessionID, let files, let truncated):
             guard requestID == workspaceFilesRequestID,
-                  sessionID == chat.selectedSessionID
+                sessionID == chat.selectedSessionID
             else { break }
             workspaceFilesRequestID = nil
             isLoadingWorkspaceFiles = false
@@ -291,7 +298,8 @@ extension AppModel {
                 uploadID: uploadID,
                 maxChunkBytes: maxChunkBytes
             )
-        case .sessionFileUploadChunkAccepted(let requestID, let sessionID, let uploadID, let nextOffset):
+        case .sessionFileUploadChunkAccepted(
+            let requestID, let sessionID, let uploadID, let nextOffset):
             chat.handleSessionFileUploadChunkAccepted(
                 requestID: requestID,
                 sessionID: sessionID,
@@ -308,7 +316,8 @@ extension AppModel {
                 submitPendingNewChatDraft(requestID: chat.pendingDrafts.keys.first)
             }
         case .sessionFiles(let requestID, let sessionID, let files):
-            guard requestID == chat.sessionFilesRequestID, sessionID == chat.selectedSessionID else { break }
+            guard requestID == chat.sessionFilesRequestID, sessionID == chat.selectedSessionID
+            else { break }
             chat.sessionFilesRequestID = nil
             chat.isLoadingSessionFiles = false
             chat.sessionFiles = files
@@ -374,7 +383,8 @@ extension AppModel {
         chat.observeReplayCompletion(buffered)
         chat.latestSequence = buffered.record.sequence
         if isLiveEvent,
-           buffered.record.event.msg["type"]?.stringValue == "context_compacted" {
+            buffered.record.event.msg["type"]?.stringValue == "context_compacted"
+        {
             chat.sessionCompactionCount += 1
         }
         chat.transcriptRecords[buffered.record.sequence] = buffered.record
@@ -392,7 +402,7 @@ extension AppModel {
 
     func submitPendingNewChatDraft(requestID: String?) {
         guard let requestID,
-              chat.pendingDrafts[requestID] != nil
+            chat.pendingDrafts[requestID] != nil
         else { return }
         guard !chat.composerHasUnfinishedAttachments else {
             chat.startNextSessionFileUpload()
@@ -400,7 +410,7 @@ extension AppModel {
         }
         Task { [weak self] in
             guard let self,
-                  let draft = await self.chat.takePendingNewChatDraft(requestID: requestID)
+                let draft = await self.chat.takePendingNewChatDraft(requestID: requestID)
             else { return }
             self.chat.pendingNewChatBotID = nil
             let nextDraft = self.chat.composer
@@ -436,7 +446,8 @@ extension AppModel {
                 return
             }
             if chat.sessions.contains(where: { $0.sessionId == sessionToRestoreID })
-                || chat.botSessions.contains(where: { $0.sessionId == sessionToRestoreID }) {
+                || chat.botSessions.contains(where: { $0.sessionId == sessionToRestoreID })
+            {
                 chat.restoreSession(sessionToRestoreID)
             } else {
                 showToast("The previously selected chat is no longer available.", tone: .error)
@@ -455,7 +466,8 @@ extension AppModel {
         let removedProviderLabel = removedProvider.flatMap { removal in
             providerInstances.first { $0.instance == removal.instance }?.label
         }
-        let editedBotDefaultsDraft = requestID == botDefaultsRequestID
+        let editedBotDefaultsDraft =
+            requestID == botDefaultsRequestID
             ? botDefaultsDraft
             : nil
         applyGatewayReady(payload)
@@ -475,8 +487,9 @@ extension AppModel {
         } else if requestID == botDefaultsRequestID {
             botDefaultsRequestID = nil
             if let editedBotDefaultsDraft,
-               let submittedBotDefaultsDraft,
-               editedBotDefaultsDraft != submittedBotDefaultsDraft {
+                let submittedBotDefaultsDraft,
+                editedBotDefaultsDraft != submittedBotDefaultsDraft
+            {
                 botDefaultsDraft = editedBotDefaultsDraft
             }
             submittedBotDefaultsDraft = nil
@@ -488,16 +501,18 @@ extension AppModel {
     }
 
     func applyGatewayCatalog(_ payload: ReadyPayload) {
-        let machineName = selectedGatewayIsMobiusCloud
+        let machineName =
+            selectedGatewayIsMobiusCloud
             ? cloudGatewayDisplayName
             : payload.machineName
         gateway.updateMachineName(machineName)
         let previousBotDefaults = botDefaultsSnapshot
-        let pendingBotDefaultsDraft: AgentComposition? = if botDefaultsRequestID != nil {
-            botDefaultsDraft
-        } else {
-            nil
-        }
+        let pendingBotDefaultsDraft: AgentComposition? =
+            if botDefaultsRequestID != nil {
+                botDefaultsDraft
+            } else {
+                nil
+            }
         providerStatuses = payload.providers
         providerInstances = payload.providerInstances
         chat.sessionFileLimits = payload.sessionFileLimits
@@ -512,11 +527,12 @@ extension AppModel {
         applySwarmAttentions(payload.swarmAttentions, notifyingNew: false)
         botDefaultsSnapshot = payload.botDefaults
         botDefaultsDraft = payload.botDefaults.map { incomingSnapshot in
-            pendingBotDefaultsDraft ?? refreshedAgentDraft(
-                currentDraft: botDefaultsDraft,
-                currentSnapshot: previousBotDefaults,
-                incomingSnapshot: incomingSnapshot
-            )
+            pendingBotDefaultsDraft
+                ?? refreshedAgentDraft(
+                    currentDraft: botDefaultsDraft,
+                    currentSnapshot: previousBotDefaults,
+                    incomingSnapshot: incomingSnapshot
+                )
         }
         if providerDraft == nil, let instance = providerInstances.first {
             editProviderInstance(instance)
@@ -544,20 +560,24 @@ extension AppModel {
             return
         }
         let createdByThisClient = opened && isChangingWorkspace
-        let createdWithPendingDraft = createdByThisClient
+        let createdWithPendingDraft =
+            createdByThisClient
             && replayRequestID.map { chat.pendingDrafts[$0] != nil } == true
         let cursor = chat.sessionOpenCursor
-        let cached = opened && chat.sessionOpeningID == payload.session.sessionId
+        let cached =
+            opened && chat.sessionOpeningID == payload.session.sessionId
             ? chat.pendingCachedTranscript
             : nil
-        let presented = opened && chat.sessionOpeningID == payload.session.sessionId
+        let presented =
+            opened && chat.sessionOpeningID == payload.session.sessionId
             ? chat.pendingPresentedTranscript
             : nil
         if chat.selectedSessionID != payload.session.sessionId {
             if !createdWithPendingDraft { chat.restorePendingDrafts() }
-            chat.changeComposerDraftOwner(to: gateway.selectedAccountID.map {
-                ComposerDraftOwner(accountID: $0, sessionID: payload.session.sessionId)
-            })
+            chat.changeComposerDraftOwner(
+                to: gateway.selectedAccountID.map {
+                    ComposerDraftOwner(accountID: $0, sessionID: payload.session.sessionId)
+                })
             resetSessionState(preservingComposerAttachments: createdWithPendingDraft)
         }
         if opened {
@@ -598,7 +618,9 @@ extension AppModel {
             navigationPath = [.chat(.session(payload.session.sessionId))]
             chat.prepareChatTitle(for: payload.session.sessionId)
         }
-        if isChatVisible, chat.sessionReadCursors?[payload.session.sessionId]?.isMarkedUnread != true {
+        if isChatVisible,
+            chat.sessionReadCursors?[payload.session.sessionId]?.isMarkedUnread != true
+        {
             markSessionRead(payload.session.sessionId)
         }
         chat.selectedModelRoute = payload.session.model.route
@@ -635,9 +657,11 @@ extension AppModel {
     }
 
     func applySessionCatalog(_ records: [SessionRecord]) {
-        guard records.allSatisfy({ session in
-            bots.contains { $0.id == session.sessionContext.botId }
-        }) else {
+        guard
+            records.allSatisfy({ session in
+                bots.contains { $0.id == session.sessionContext.botId }
+            })
+        else {
             showToast("The gateway returned a chat with an unknown Bot.", tone: .error)
             return
         }
@@ -666,24 +690,27 @@ extension AppModel {
             applyExecutionStats(selected.executionStats)
             if selected.activity.state == .idle { chat.runStats.active = nil }
         }
-        if let accountID = gateway.selectedAccountID { reconcileSessionReadState(accountID: accountID) }
+        if let accountID = gateway.selectedAccountID {
+            reconcileSessionReadState(accountID: accountID)
+        }
         let visible = Set(chat.sessions.map(\.sessionId))
         chat.unreadSessionIDs.formIntersection(visible)
         chat.reconcileChatTitles()
         cacheChatCatalog()
         if gateway.connectionState.isReady, openPendingRemoteNotification() { return }
         guard chat.selectedSessionID != nil,
-              selectedSession == nil,
-              chat.sessionRequestID == nil
+            selectedSession == nil,
+            chat.sessionRequestID == nil
         else { return }
         clearSelectedSession()
     }
 
     private func reconcileSessionReadState(accountID: UUID) {
         guard var cursors = chat.sessionReadCursors else {
-            let cursors = Dictionary(uniqueKeysWithValues: chat.sessions.map { session in
-                (session.sessionId, sessionReadCursor(for: session))
-            })
+            let cursors = Dictionary(
+                uniqueKeysWithValues: chat.sessions.map { session in
+                    (session.sessionId, sessionReadCursor(for: session))
+                })
             chat.sessionReadCursors = cursors
             store.saveSessionReadCursors(cursors, accountID: accountID)
             return
@@ -715,7 +742,8 @@ extension AppModel {
         }
         if let readCursor = cursors[sessionID], let readSequence = readCursor.sequence {
             if session.activity.state == .idle,
-               session.sequence > readSequence || readCursor.wasActive {
+                session.sequence > readSequence || readCursor.wasActive
+            {
                 chat.unreadSessionIDs.insert(sessionID)
             }
             return false
@@ -732,8 +760,8 @@ extension AppModel {
     @discardableResult
     func applyBotSessions(_ records: [SessionRecord], botID: String) -> Bool {
         guard chat.botSessionsBotID == botID,
-              Set(records.map(\.sessionId)).count == records.count,
-              records.allSatisfy({ $0.sessionContext.botId == botID })
+            Set(records.map(\.sessionId)).count == records.count,
+            records.allSatisfy({ $0.sessionContext.botId == botID })
         else {
             showToast("The gateway returned invalid Bot work.", tone: .error)
             return false
@@ -744,23 +772,25 @@ extension AppModel {
 
     func applyBots(_ records: [BotRecord]) {
         guard Set(records.map(\.id)).count == records.count,
-              Set(records.map(\.handle)).count == records.count,
-              records.allSatisfy({ record in
-                  !record.id.isEmpty
-                      && !record.handle.isEmpty
-                      && !record.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                      && !record.description.trimmingCharacters(
-                          in: .whitespacesAndNewlines
-                      ).isEmpty
-                      && record.handle == record.handle.trimmingCharacters(
-                          in: .whitespacesAndNewlines
-                      )
-              })
+            Set(records.map(\.handle)).count == records.count,
+            records.allSatisfy({ record in
+                !record.id.isEmpty
+                    && !record.handle.isEmpty
+                    && !record.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    && !record.description.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    ).isEmpty
+                    && record.handle
+                        == record.handle.trimmingCharacters(
+                            in: .whitespacesAndNewlines
+                        )
+            })
         else {
             showToast("The gateway returned invalid Bot state.", tone: .error)
             return
         }
-        let selectedHiddenBotID = selectedSessionIsHidden
+        let selectedHiddenBotID =
+            selectedSessionIsHidden
             ? selectedSession?.sessionContext.botId ?? chat.botSessionsBotID
             : nil
         bots = records
@@ -781,7 +811,8 @@ extension AppModel {
         routines.removeAll { !botIDs.contains($0.botId) }
         routineRuns.removeAll { !botIDs.contains($0.botId) }
         if let botID = selectedSession?.sessionContext.botId,
-           let bot = records.first(where: { $0.id == botID }) {
+            let bot = records.first(where: { $0.id == botID })
+        {
             agentDraft = refreshedAgentDraft(
                 currentDraft: agentDraft,
                 currentSnapshot: agentSnapshot,
@@ -808,18 +839,18 @@ extension AppModel {
     func applySwarms(_ records: [SwarmRecord]) -> Bool {
         var claimedBotIDs = Set<String>()
         guard Set(records.map(\.id)).count == records.count,
-              records.allSatisfy({ swarm in
-                  let orderedMessages = zip(swarm.messages, swarm.messages.dropFirst())
-                      .allSatisfy { pair in pair.0.sequence < pair.1.sequence }
-                  return Set(swarm.members.map(\.botId)).count == swarm.members.count
-                      && swarm.members.contains { $0.botId == swarm.leaderBotId }
-                      && swarm.members.allSatisfy { member in
-                          bots.contains { $0.id == member.botId }
-                              && claimedBotIDs.insert(member.botId).inserted
-                      }
-                      && Set(swarm.messages.map(\.id)).count == swarm.messages.count
-                      && orderedMessages
-              })
+            records.allSatisfy({ swarm in
+                let orderedMessages = zip(swarm.messages, swarm.messages.dropFirst())
+                    .allSatisfy { pair in pair.0.sequence < pair.1.sequence }
+                return Set(swarm.members.map(\.botId)).count == swarm.members.count
+                    && swarm.members.contains { $0.botId == swarm.leaderBotId }
+                    && swarm.members.allSatisfy { member in
+                        bots.contains { $0.id == member.botId }
+                            && claimedBotIDs.insert(member.botId).inserted
+                    }
+                    && Set(swarm.messages.map(\.id)).count == swarm.messages.count
+                    && orderedMessages
+            })
         else {
             showToast("The gateway returned invalid swarm state.", tone: .error)
             return false
@@ -852,14 +883,14 @@ extension AppModel {
     ) -> Bool {
         let botIDs = Set(bots.map(\.id))
         guard Set(records.map(\.sessionId)).count == records.count,
-              Set(records.map(\.requestId)).count == records.count,
-              records.allSatisfy({ approval in
-                  !approval.sessionId.isEmpty
-                      && !approval.botId.isEmpty
-                      && !approval.turnId.isEmpty
-                      && !approval.requestId.isEmpty
-                      && botIDs.contains(approval.botId)
-              })
+            Set(records.map(\.requestId)).count == records.count,
+            records.allSatisfy({ approval in
+                !approval.sessionId.isEmpty
+                    && !approval.botId.isEmpty
+                    && !approval.turnId.isEmpty
+                    && !approval.requestId.isEmpty
+                    && botIDs.contains(approval.botId)
+            })
         else {
             showToast("The gateway returned invalid background approval state.", tone: .error)
             return false
@@ -887,21 +918,21 @@ extension AppModel {
         let botIDs = Set(bots.map(\.id))
         let previousMessageIDs = Set(swarmAttentions.map(\.messageId))
         guard Set(records.map(\.messageId)).count == records.count,
-              records.allSatisfy({ attention in
-                  !attention.swarmId.isEmpty
-                      && !attention.swarmTitle.trimmingCharacters(
-                          in: .whitespacesAndNewlines
-                      ).isEmpty
-                      && !attention.messageId.isEmpty
-                      && !attention.botId.isEmpty
-                      && !attention.text.trimmingCharacters(
-                          in: .whitespacesAndNewlines
-                      ).isEmpty
-                      && swarms.contains { swarm in
-                          swarm.id == attention.swarmId
-                      }
-                      && botIDs.contains(attention.botId)
-              })
+            records.allSatisfy({ attention in
+                !attention.swarmId.isEmpty
+                    && !attention.swarmTitle.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    ).isEmpty
+                    && !attention.messageId.isEmpty
+                    && !attention.botId.isEmpty
+                    && !attention.text.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    ).isEmpty
+                    && swarms.contains { swarm in
+                        swarm.id == attention.swarmId
+                    }
+                    && botIDs.contains(attention.botId)
+            })
         else {
             showToast("The gateway returned invalid Swarm attention state.", tone: .error)
             return false
@@ -924,8 +955,9 @@ extension AppModel {
         let activity = session.activity
         let sessionID = session.sessionId
         if activity.state == .awaitingApproval,
-           let approvalRequestID = activity.approvalRequestId,
-           previous.activity.approvalRequestId != approvalRequestID {
+            let approvalRequestID = activity.approvalRequestId,
+            previous.activity.approvalRequestId != approvalRequestID
+        {
             presentSessionNotification(
                 .awaitingApproval,
                 sessionID: sessionID,
@@ -933,7 +965,7 @@ extension AppModel {
             )
         }
         guard activity.state == .idle,
-              previous.activity.state != .idle || session.sequence > previous.sequence
+            previous.activity.state != .idle || session.sequence > previous.sequence
         else { return }
 
         let isActiveChat = chat.selectedSessionID == sessionID && isChatVisible
@@ -1034,9 +1066,11 @@ extension AppModel {
         }
         let rejectedDiscardedFileThumbnail =
             chat.discardedSessionFileThumbnailRequestIDs.remove(rejection.requestId) != nil
-        let rejectedFileThumbnail = rejectedFileThumbnailDownload != nil
+        let rejectedFileThumbnail =
+            rejectedFileThumbnailDownload != nil
             || rejectedDiscardedFileThumbnail
-        let deletedPresentedSessionID = rejection.requestId == chat.sessionMutationRequestID
+        let deletedPresentedSessionID =
+            rejection.requestId == chat.sessionMutationRequestID
             ? chat.pendingDeletedPresentedSessionID
             : nil
         handleRejectedTranscript(rejection)
@@ -1082,9 +1116,9 @@ extension AppModel {
 
     private func retryRejectedSessionReplay(_ rejection: GatewayRejection) -> Bool {
         guard rejection.requestId == chat.sessionRequestID,
-              rejection.code == "replay_unavailable",
-              let sessionID = chat.sessionOpeningID,
-              chat.sessionOpenCursor != nil
+            rejection.code == "replay_unavailable",
+            let sessionID = chat.sessionOpeningID,
+            chat.sessionOpenCursor != nil
         else { return false }
         if let accountID = gateway.selectedAccountID {
             chat.enqueueTranscriptIO { [store] in

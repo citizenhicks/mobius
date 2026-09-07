@@ -32,31 +32,38 @@ extension AppModelTests {
         guard case .openSession(let requestID, _, _) = try XCTUnwrap(request)
         else { return XCTFail("Expected session open") }
 
-        model.gateway.handle(.sessionOpened(
-            requestID: requestID,
-            payload: sessionReady(latestSequence: 8, compactionCount: 2)
-        ))
-        model.gateway.handle(.agentEvent(
-            sessionID: "chat-1",
-            sequence: 8,
-            event: AgentEventRecord(submissionId: nil, msg: .object([
-                "type": .string("context_compacted")
-            ])),
-            blocks: [],
-            preview: nil
-        ))
+        model.gateway.handle(
+            .sessionOpened(
+                requestID: requestID,
+                payload: sessionReady(latestSequence: 8, compactionCount: 2)
+            ))
+        model.gateway.handle(
+            .agentEvent(
+                sessionID: "chat-1",
+                sequence: 8,
+                event: AgentEventRecord(
+                    submissionId: nil,
+                    msg: .object([
+                        "type": .string("context_compacted")
+                    ])),
+                blocks: [],
+                preview: nil
+            ))
         XCTAssertEqual(model.chat.sessionCompactionCount, 2)
 
         model.gateway.handle(.sessionReplayComplete(requestID: requestID, sessionID: "chat-1"))
-        model.gateway.handle(.agentEvent(
-            sessionID: "chat-1",
-            sequence: 9,
-            event: AgentEventRecord(submissionId: nil, msg: .object([
-                "type": .string("context_compacted")
-            ])),
-            blocks: [],
-            preview: nil
-        ))
+        model.gateway.handle(
+            .agentEvent(
+                sessionID: "chat-1",
+                sequence: 9,
+                event: AgentEventRecord(
+                    submissionId: nil,
+                    msg: .object([
+                        "type": .string("context_compacted")
+                    ])),
+                blocks: [],
+                preview: nil
+            ))
 
         XCTAssertEqual(model.chat.sessionCompactionCount, 3)
     }
@@ -66,32 +73,39 @@ extension AppModelTests {
         model.chat.selectedSessionID = "chat-1"
 
         model.chat.reduce(
-            event: AgentEventRecord(submissionId: "input-1", msg: .object([
-                "type": .string("turn_started"),
-                "turnId": .string("turn-1")
-            ])),
+            event: AgentEventRecord(
+                submissionId: "input-1",
+                msg: .object([
+                    "type": .string("turn_started"),
+                    "turnId": .string("turn-1"),
+                ])),
             blocks: [],
             preview: nil
         )
         let active = try XCTUnwrap(model.chat.runStats.active)
         XCTAssertEqual(model.sessionRunCount, 1)
         XCTAssertGreaterThan(
-            model.sessionElapsed(at: Date(timeIntervalSince1970: TimeInterval(active.startedAtMs) / 1_000 + 2)),
+            model.sessionElapsed(
+                at: Date(timeIntervalSince1970: TimeInterval(active.startedAtMs) / 1_000 + 2)),
             1.9
         )
 
         model.chat.reduce(
-            event: AgentEventRecord(submissionId: nil, msg: .object([
-                "type": .string("tool_call_begin")
-            ])),
+            event: AgentEventRecord(
+                submissionId: nil,
+                msg: .object([
+                    "type": .string("tool_call_begin")
+                ])),
             blocks: [],
             preview: nil
         )
         model.chat.reduce(
-            event: AgentEventRecord(submissionId: nil, msg: .object([
-                "type": .string("tool_call_end"),
-                "isError": .bool(true)
-            ])),
+            event: AgentEventRecord(
+                submissionId: nil,
+                msg: .object([
+                    "type": .string("tool_call_end"),
+                    "isError": .bool(true),
+                ])),
             blocks: [],
             preview: nil
         )
@@ -99,9 +113,11 @@ extension AppModelTests {
         XCTAssertEqual(model.sessionFailedToolCalls, 1)
 
         model.chat.reduce(
-            event: AgentEventRecord(submissionId: nil, msg: .object([
-                "type": .string("turn_complete")
-            ])),
+            event: AgentEventRecord(
+                submissionId: nil,
+                msg: .object([
+                    "type": .string("turn_complete")
+                ])),
             blocks: [],
             preview: nil
         )
@@ -114,7 +130,7 @@ extension AppModelTests {
         let model = try model { request in
             await recorder.record(request)
             guard case .submit(_, let submission) = request,
-                  case .interrupt = submission.op
+                case .interrupt = submission.op
             else { return }
             interruptSent.fulfill()
         }
@@ -142,7 +158,7 @@ extension AppModelTests {
         await fulfillment(of: [interruptSent], timeout: 1)
         let requests = await recorder.requests()
         guard case .submit(let sessionID, let submission) = try XCTUnwrap(requests.last),
-              case .interrupt(let turnID) = submission.op
+            case .interrupt(let turnID) = submission.op
         else { return XCTFail("Expected active-turn interrupt") }
         XCTAssertEqual(sessionID, "chat-1")
         XCTAssertEqual(turnID, "turn-1")
@@ -153,14 +169,16 @@ extension AppModelTests {
 
         for _ in 0..<100 {
             model.chat.reduce(
-                event: AgentEventRecord(submissionId: nil, msg: .object([
-                    "type": .string("assistant_content_delta"),
-                    "sessionId": .string("chat-1"),
-                    "turnId": .string("turn-1"),
-                    "modelStepId": .string("answer-1"),
-                    "phase": .string("final_answer"),
-                    "delta": .string("x")
-                ])),
+                event: AgentEventRecord(
+                    submissionId: nil,
+                    msg: .object([
+                        "type": .string("assistant_content_delta"),
+                        "sessionId": .string("chat-1"),
+                        "turnId": .string("turn-1"),
+                        "modelStepId": .string("answer-1"),
+                        "phase": .string("final_answer"),
+                        "delta": .string("x"),
+                    ])),
                 blocks: [],
                 preview: nil
             )
@@ -195,45 +213,51 @@ extension AppModelTests {
     func testCommentaryAndFinalAnswerRemainSeparateAssistantMessages() throws {
         let model = try model()
 
-        for (phase, delta) in [("commentary", "Checking **the workspace**"), ("final_answer", "Done")] {
+        for (phase, delta) in [
+            ("commentary", "Checking **the workspace**"), ("final_answer", "Done"),
+        ] {
             model.chat.reduce(
-                event: AgentEventRecord(submissionId: nil, msg: .object([
-                    "type": .string("assistant_content_delta"),
-                    "sessionId": .string("chat-1"),
-                    "turnId": .string("turn-1"),
-                    "modelStepId": .string("response-1"),
-                    "phase": .string(phase),
-                    "delta": .string(delta)
-                ])),
+                event: AgentEventRecord(
+                    submissionId: nil,
+                    msg: .object([
+                        "type": .string("assistant_content_delta"),
+                        "sessionId": .string("chat-1"),
+                        "turnId": .string("turn-1"),
+                        "modelStepId": .string("response-1"),
+                        "phase": .string(phase),
+                        "delta": .string(delta),
+                    ])),
                 blocks: [],
                 preview: nil
             )
         }
 
         model.chat.reduce(
-            event: AgentEventRecord(submissionId: nil, msg: .object([
-                "type": .string("assistant_message"),
-                "sessionId": .string("chat-1"),
-                "turnId": .string("turn-1"),
-                "modelStepId": .string("response-1"),
-                "content": .array([
-                    .object([
-                        "outputIndex": .number(0),
-                        "partIndex": .number(0),
-                        "phase": .string("commentary"),
-                        "text": .string("Checking **the workspace**"),
-                        "annotations": .array([]),
+            event: AgentEventRecord(
+                submissionId: nil,
+                msg: .object([
+                    "type": .string("assistant_message"),
+                    "sessionId": .string("chat-1"),
+                    "turnId": .string("turn-1"),
+                    "modelStepId": .string("response-1"),
+                    "content": .array([
+                        .object([
+                            "outputIndex": .number(0),
+                            "partIndex": .number(0),
+                            "phase": .string("commentary"),
+                            "text": .string("Checking **the workspace**"),
+                            "annotations": .array([]),
+                        ]),
+                        .object([
+                            "outputIndex": .number(1),
+                            "partIndex": .number(0),
+                            "phase": .string("final_answer"),
+                            "text": .string("Done"),
+                            "annotations": .array([]),
+                        ]),
                     ]),
-                    .object([
-                        "outputIndex": .number(1),
-                        "partIndex": .number(0),
-                        "phase": .string("final_answer"),
-                        "text": .string("Done"),
-                        "annotations": .array([]),
-                    ]),
-                ]),
-                "messageTarget": .null,
-            ])),
+                    "messageTarget": .null,
+                ])),
             blocks: [],
             preview: nil
         )
@@ -263,58 +287,62 @@ extension AppModelTests {
             ]
             live.chat.reduce(record: recorded(UInt64(offset + 1), .object(fields)))
         }
-        let completion = recorded(4, .object([
-            "type": .string("model_step_completed"),
-            "sessionId": .string("chat-1"),
-            "turnId": .string("turn-1"),
-            "modelStepId": .string(stepID),
-            "stepIndex": .number(0),
-            "startedAtMs": .number(100),
-            "completedAtMs": .number(400),
-            "outcome": .object([
-                "status": .string("completed"),
-                "endTurn": .bool(true),
-                "toolCallIds": .array([]),
-                "usage": .object([
-                    "inputTokens": .number(10),
-                    "cachedInputTokens": .number(2),
-                    "cacheWriteInputTokens": .number(0),
-                    "outputTokens": .number(3),
-                    "reasoningOutputTokens": .number(1),
-                    "totalTokens": .number(13),
+        let completion = recorded(
+            4,
+            .object([
+                "type": .string("model_step_completed"),
+                "sessionId": .string("chat-1"),
+                "turnId": .string("turn-1"),
+                "modelStepId": .string(stepID),
+                "stepIndex": .number(0),
+                "startedAtMs": .number(100),
+                "completedAtMs": .number(400),
+                "outcome": .object([
+                    "status": .string("completed"),
+                    "endTurn": .bool(true),
+                    "toolCallIds": .array([]),
+                    "usage": .object([
+                        "inputTokens": .number(10),
+                        "cachedInputTokens": .number(2),
+                        "cacheWriteInputTokens": .number(0),
+                        "outputTokens": .number(3),
+                        "reasoningOutputTokens": .number(1),
+                        "totalTokens": .number(13),
+                    ]),
                 ]),
-            ]),
-        ]))
-        let snapshot = recorded(5, .object([
-            "type": .string("assistant_message"),
-            "sessionId": .string("chat-1"),
-            "turnId": .string("turn-1"),
-            "modelStepId": .string(stepID),
-            "content": .array([
-                .object([
-                    "outputIndex": .number(0),
-                    "partIndex": .number(0),
-                    "phase": .string("reasoning"),
-                    "text": .string("Reason"),
-                    "annotations": .array([]),
+            ]))
+        let snapshot = recorded(
+            5,
+            .object([
+                "type": .string("assistant_message"),
+                "sessionId": .string("chat-1"),
+                "turnId": .string("turn-1"),
+                "modelStepId": .string(stepID),
+                "content": .array([
+                    .object([
+                        "outputIndex": .number(0),
+                        "partIndex": .number(0),
+                        "phase": .string("reasoning"),
+                        "text": .string("Reason"),
+                        "annotations": .array([]),
+                    ]),
+                    .object([
+                        "outputIndex": .number(1),
+                        "partIndex": .number(0),
+                        "phase": .string("commentary"),
+                        "text": .string("Checking"),
+                        "annotations": .array([]),
+                    ]),
+                    .object([
+                        "outputIndex": .number(1),
+                        "partIndex": .number(1),
+                        "phase": .string("final_answer"),
+                        "text": .string("Done"),
+                        "annotations": .array([]),
+                    ]),
                 ]),
-                .object([
-                    "outputIndex": .number(1),
-                    "partIndex": .number(0),
-                    "phase": .string("commentary"),
-                    "text": .string("Checking"),
-                    "annotations": .array([]),
-                ]),
-                .object([
-                    "outputIndex": .number(1),
-                    "partIndex": .number(1),
-                    "phase": .string("final_answer"),
-                    "text": .string("Done"),
-                    "annotations": .array([]),
-                ]),
-            ]),
-            "messageTarget": .null,
-        ]))
+                "messageTarget": .null,
+            ]))
 
         live.chat.reduce(record: completion)
         replay.chat.reduce(record: completion)
@@ -337,80 +365,91 @@ extension AppModelTests {
                 "step-1:final_answer:0",
             ]
         )
-        XCTAssertEqual(live.chat.transcript.map(\.presentationID), replay.chat.transcript.map(\.presentationID))
+        XCTAssertEqual(
+            live.chat.transcript.map(\.presentationID), replay.chat.transcript.map(\.presentationID)
+        )
     }
 
-    func testCompletedModelStepAssignsDeterministicPresentationOrdinalsWithinEachPhase() async throws {
+    func testCompletedModelStepAssignsDeterministicPresentationOrdinalsWithinEachPhase()
+        async throws
+    {
         let live = try model()
         let replay = try model()
         let stepID = "step-1"
 
-        live.chat.reduce(record: recorded(1, .object([
-            "type": .string("assistant_content_delta"),
-            "sessionId": .string("chat-1"),
-            "turnId": .string("turn-1"),
-            "modelStepId": .string(stepID),
-            "phase": .string("commentary"),
-            "delta": .string("First"),
-        ])))
+        live.chat.reduce(
+            record: recorded(
+                1,
+                .object([
+                    "type": .string("assistant_content_delta"),
+                    "sessionId": .string("chat-1"),
+                    "turnId": .string("turn-1"),
+                    "modelStepId": .string(stepID),
+                    "phase": .string("commentary"),
+                    "delta": .string("First"),
+                ])))
         // Deltas are batched, so the streamed row exists a flush later, not on the record.
         let streamed = await eventually {
             live.chat.transcript.map(\.presentationID) == ["step-1:commentary:0"]
         }
         XCTAssertTrue(streamed)
 
-        let completion = recorded(2, .object([
-            "type": .string("model_step_completed"),
-            "sessionId": .string("chat-1"),
-            "turnId": .string("turn-1"),
-            "modelStepId": .string(stepID),
-            "stepIndex": .number(0),
-            "startedAtMs": .number(100),
-            "completedAtMs": .number(200),
-            "outcome": .object([
-                "status": .string("completed"),
-                "endTurn": .bool(false),
-                "toolCallIds": .array([]),
-                "usage": .object([
-                    "inputTokens": .number(1),
-                    "cachedInputTokens": .number(0),
-                    "cacheWriteInputTokens": .number(0),
-                    "outputTokens": .number(2),
-                    "reasoningOutputTokens": .number(0),
-                    "totalTokens": .number(3),
+        let completion = recorded(
+            2,
+            .object([
+                "type": .string("model_step_completed"),
+                "sessionId": .string("chat-1"),
+                "turnId": .string("turn-1"),
+                "modelStepId": .string(stepID),
+                "stepIndex": .number(0),
+                "startedAtMs": .number(100),
+                "completedAtMs": .number(200),
+                "outcome": .object([
+                    "status": .string("completed"),
+                    "endTurn": .bool(false),
+                    "toolCallIds": .array([]),
+                    "usage": .object([
+                        "inputTokens": .number(1),
+                        "cachedInputTokens": .number(0),
+                        "cacheWriteInputTokens": .number(0),
+                        "outputTokens": .number(2),
+                        "reasoningOutputTokens": .number(0),
+                        "totalTokens": .number(3),
+                    ]),
                 ]),
-            ]),
-        ]))
-        let snapshot = recorded(3, .object([
-            "type": .string("assistant_message"),
-            "sessionId": .string("chat-1"),
-            "turnId": .string("turn-1"),
-            "modelStepId": .string(stepID),
-            "content": .array([
-                .object([
-                    "outputIndex": .number(0),
-                    "partIndex": .number(0),
-                    "phase": .string("commentary"),
-                    "text": .string("First"),
-                    "annotations": .array([]),
+            ]))
+        let snapshot = recorded(
+            3,
+            .object([
+                "type": .string("assistant_message"),
+                "sessionId": .string("chat-1"),
+                "turnId": .string("turn-1"),
+                "modelStepId": .string(stepID),
+                "content": .array([
+                    .object([
+                        "outputIndex": .number(0),
+                        "partIndex": .number(0),
+                        "phase": .string("commentary"),
+                        "text": .string("First"),
+                        "annotations": .array([]),
+                    ]),
+                    .object([
+                        "outputIndex": .number(0),
+                        "partIndex": .number(1),
+                        "phase": .string("commentary"),
+                        "text": .string("Second"),
+                        "annotations": .array([]),
+                    ]),
+                    .object([
+                        "outputIndex": .number(1),
+                        "partIndex": .number(0),
+                        "phase": .string("final_answer"),
+                        "text": .string("Done"),
+                        "annotations": .array([]),
+                    ]),
                 ]),
-                .object([
-                    "outputIndex": .number(0),
-                    "partIndex": .number(1),
-                    "phase": .string("commentary"),
-                    "text": .string("Second"),
-                    "annotations": .array([]),
-                ]),
-                .object([
-                    "outputIndex": .number(1),
-                    "partIndex": .number(0),
-                    "phase": .string("final_answer"),
-                    "text": .string("Done"),
-                    "annotations": .array([]),
-                ]),
-            ]),
-            "messageTarget": .null,
-        ]))
+                "messageTarget": .null,
+            ]))
 
         live.chat.reduce(record: completion)
         replay.chat.reduce(record: completion)
@@ -441,24 +480,30 @@ extension AppModelTests {
 
     func testFailedModelStepKeepsItsPartialDelta() throws {
         let model = try model()
-        model.chat.reduce(record: recorded(1, .object([
-            "type": .string("assistant_content_delta"),
-            "sessionId": .string("chat-1"),
-            "turnId": .string("turn-1"),
-            "modelStepId": .string("step-1"),
-            "phase": .string("reasoning"),
-            "delta": .string("Partial reasoning"),
-        ])))
-        model.chat.reduce(record: recorded(2, .object([
-            "type": .string("model_step_completed"),
-            "sessionId": .string("chat-1"),
-            "turnId": .string("turn-1"),
-            "modelStepId": .string("step-1"),
-            "stepIndex": .number(0),
-            "startedAtMs": .number(100),
-            "completedAtMs": .number(200),
-            "outcome": .object(["status": .string("failed")]),
-        ])))
+        model.chat.reduce(
+            record: recorded(
+                1,
+                .object([
+                    "type": .string("assistant_content_delta"),
+                    "sessionId": .string("chat-1"),
+                    "turnId": .string("turn-1"),
+                    "modelStepId": .string("step-1"),
+                    "phase": .string("reasoning"),
+                    "delta": .string("Partial reasoning"),
+                ])))
+        model.chat.reduce(
+            record: recorded(
+                2,
+                .object([
+                    "type": .string("model_step_completed"),
+                    "sessionId": .string("chat-1"),
+                    "turnId": .string("turn-1"),
+                    "modelStepId": .string("step-1"),
+                    "stepIndex": .number(0),
+                    "startedAtMs": .number(100),
+                    "completedAtMs": .number(200),
+                    "outcome": .object(["status": .string("failed")]),
+                ])))
 
         XCTAssertEqual(model.chat.transcript.map(\.text), ["Partial reasoning"])
         XCTAssertFalse(try XCTUnwrap(model.chat.transcript.first).pending)
@@ -466,85 +511,115 @@ extension AppModelTests {
 
     func testRetryingModelStepSeparatesPartialOutputAndClosesSearch() throws {
         let model = try model()
-        model.chat.reduce(record: recorded(1, .object([
-            "type": .string("assistant_content_delta"),
-            "sessionId": .string("chat-1"),
-            "turnId": .string("turn-1"),
-            "modelStepId": .string("step-1"),
-            "delta": .string("Partial answer"),
-            "phase": .string("final_answer"),
-        ])))
-        model.chat.reduce(record: recorded(2, .object([
-            "type": .string("web_search_begin"),
-            "sessionId": .string("chat-1"),
-            "turnId": .string("turn-1"),
-            "modelStepId": .string("step-1"),
-            "callId": .string("search-1"),
-        ]), blocks: [RenderedBlock(capability: "web_search", block: FrontendBlock(
-            id: "step-1/search-1",
-            group: "turn-1",
-            update: .replace,
-            state: .pending,
-            role: .webSearch,
-            title: "Searching the web",
-            text: "",
-            symbol: "search",
-            format: "plain_text",
-            tone: "neutral",
-            files: []
-        ))]))
-        model.chat.reduce(record: recorded(3, .object([
-            "type": .string("web_search_end"),
-            "sessionId": .string("chat-1"),
-            "turnId": .string("turn-1"),
-            "modelStepId": .string("step-1"),
-            "callId": .string("search-1"),
-            "action": .object(["type": .string("interrupted")]),
-        ]), blocks: [RenderedBlock(capability: "web_search", block: FrontendBlock(
-            id: "step-1/search-1",
-            group: "turn-1",
-            update: .replace,
-            state: .complete,
-            role: .webSearch,
-            title: "Web search interrupted",
-            text: "",
-            symbol: "search",
-            format: "plain_text",
-            tone: "warning",
-            files: []
-        ))]))
-        model.chat.reduce(record: recorded(4, .object([
-            "type": .string("model_step_completed"),
-            "sessionId": .string("chat-1"),
-            "turnId": .string("turn-1"),
-            "modelStepId": .string("step-1"),
-            "stepIndex": .number(0),
-            "startedAtMs": .number(100),
-            "completedAtMs": .number(300),
-            "outcome": .object(["status": .string("retrying")]),
-        ]), blocks: [RenderedBlock(capability: "agent", block: FrontendBlock(
-            id: "step-1/retry",
-            group: "turn-1",
-            update: .replace,
-            state: .complete,
-            role: .notice,
-            title: "Reconnecting…",
-            text: "",
-            symbol: nil,
-            format: "plain_text",
-            tone: "warning",
-            files: []
-        ))]))
+        model.chat.reduce(
+            record: recorded(
+                1,
+                .object([
+                    "type": .string("assistant_content_delta"),
+                    "sessionId": .string("chat-1"),
+                    "turnId": .string("turn-1"),
+                    "modelStepId": .string("step-1"),
+                    "delta": .string("Partial answer"),
+                    "phase": .string("final_answer"),
+                ])))
+        model.chat.reduce(
+            record: recorded(
+                2,
+                .object([
+                    "type": .string("web_search_begin"),
+                    "sessionId": .string("chat-1"),
+                    "turnId": .string("turn-1"),
+                    "modelStepId": .string("step-1"),
+                    "callId": .string("search-1"),
+                ]),
+                blocks: [
+                    RenderedBlock(
+                        capability: "web_search",
+                        block: FrontendBlock(
+                            id: "step-1/search-1",
+                            group: "turn-1",
+                            update: .replace,
+                            state: .pending,
+                            role: .webSearch,
+                            title: "Searching the web",
+                            text: "",
+                            symbol: "search",
+                            format: "plain_text",
+                            tone: "neutral",
+                            files: []
+                        ))
+                ]))
+        model.chat.reduce(
+            record: recorded(
+                3,
+                .object([
+                    "type": .string("web_search_end"),
+                    "sessionId": .string("chat-1"),
+                    "turnId": .string("turn-1"),
+                    "modelStepId": .string("step-1"),
+                    "callId": .string("search-1"),
+                    "action": .object(["type": .string("interrupted")]),
+                ]),
+                blocks: [
+                    RenderedBlock(
+                        capability: "web_search",
+                        block: FrontendBlock(
+                            id: "step-1/search-1",
+                            group: "turn-1",
+                            update: .replace,
+                            state: .complete,
+                            role: .webSearch,
+                            title: "Web search interrupted",
+                            text: "",
+                            symbol: "search",
+                            format: "plain_text",
+                            tone: "warning",
+                            files: []
+                        ))
+                ]))
+        model.chat.reduce(
+            record: recorded(
+                4,
+                .object([
+                    "type": .string("model_step_completed"),
+                    "sessionId": .string("chat-1"),
+                    "turnId": .string("turn-1"),
+                    "modelStepId": .string("step-1"),
+                    "stepIndex": .number(0),
+                    "startedAtMs": .number(100),
+                    "completedAtMs": .number(300),
+                    "outcome": .object(["status": .string("retrying")]),
+                ]),
+                blocks: [
+                    RenderedBlock(
+                        capability: "agent",
+                        block: FrontendBlock(
+                            id: "step-1/retry",
+                            group: "turn-1",
+                            update: .replace,
+                            state: .complete,
+                            role: .notice,
+                            title: "Reconnecting…",
+                            text: "",
+                            symbol: nil,
+                            format: "plain_text",
+                            tone: "warning",
+                            files: []
+                        ))
+                ]))
 
-        let partial = try XCTUnwrap(model.chat.transcript.first(where: {
-            $0.modelStepID == "step-1" && $0.kind == .assistant
-        }))
-        let search = try XCTUnwrap(model.chat.transcript.first(where: {
-            $0.capability == "web_search"
-        }))
-        let reconnecting = try XCTUnwrap(model.chat.transcript.first(where: {
-            $0.title == "Reconnecting…"
-        }))
+        let partial = try XCTUnwrap(
+            model.chat.transcript.first(where: {
+                $0.modelStepID == "step-1" && $0.kind == .assistant
+            }))
+        let search = try XCTUnwrap(
+            model.chat.transcript.first(where: {
+                $0.capability == "web_search"
+            }))
+        let reconnecting = try XCTUnwrap(
+            model.chat.transcript.first(where: {
+                $0.title == "Reconnecting…"
+            }))
         XCTAssertFalse(partial.pending)
         XCTAssertEqual(partial.tone, "warning")
         XCTAssertFalse(search.pending)
@@ -559,59 +634,70 @@ extension AppModelTests {
     func testAssistantCitationsAttachToTheirWebSearchResult() throws {
         let model = try model()
         for (sequence, stepID) in [(UInt64(1), "step-1"), (UInt64(2), "step-2")] {
-            model.chat.reduce(record: recorded(sequence, .object([
-                "type": .string("web_search_end"),
-                "sessionId": .string("chat-1"),
-                "turnId": .string("turn-1"),
-                "modelStepId": .string(stepID),
-                "callId": .string("search-1"),
-                "action": .object([
-                    "type": .string("search"),
-                    "queries": .array([.string("möbius")]),
-                ]),
-            ]), blocks: [RenderedBlock(capability: "web_search", block: FrontendBlock(
-                id: "\(stepID)/search-1",
-                group: "turn-1",
-                update: .replace,
-                state: .complete,
-                role: .webSearch,
-                title: "Searched the web",
-                text: "möbius",
-                symbol: "search",
-                format: "plain_text",
-                tone: "success",
-                files: []
-            ))]))
+            model.chat.reduce(
+                record: recorded(
+                    sequence,
+                    .object([
+                        "type": .string("web_search_end"),
+                        "sessionId": .string("chat-1"),
+                        "turnId": .string("turn-1"),
+                        "modelStepId": .string(stepID),
+                        "callId": .string("search-1"),
+                        "action": .object([
+                            "type": .string("search"),
+                            "queries": .array([.string("möbius")]),
+                        ]),
+                    ]),
+                    blocks: [
+                        RenderedBlock(
+                            capability: "web_search",
+                            block: FrontendBlock(
+                                id: "\(stepID)/search-1",
+                                group: "turn-1",
+                                update: .replace,
+                                state: .complete,
+                                role: .webSearch,
+                                title: "Searched the web",
+                                text: "möbius",
+                                symbol: "search",
+                                format: "plain_text",
+                                tone: "success",
+                                files: []
+                            ))
+                    ]))
         }
-        model.chat.reduce(record: recorded(3, testAssistantMessage(
-            turnID: "turn-1",
-            modelStepID: "step-1",
-            text: "Done",
-            annotations: [
-                .object([
-                    "type": .string("url_citation"),
-                    "url": .string("https://example.com/source"),
-                    "title": .string("Example"),
-                    "content": .string("Relevant excerpt."),
-                    "startIndex": .number(0),
-                    "endIndex": .number(4),
-                ]),
-                .object([
-                    "type": .string("url_citation"),
-                    "url": .string("https://example.com/source"),
-                    "title": .string("Duplicate"),
-                    "startIndex": .number(0),
-                    "endIndex": .number(4),
-                ]),
-                .object([
-                    "type": .string("url_citation"),
-                    "url": .string("javascript:alert(1)"),
-                    "title": .string("Unsafe"),
-                    "startIndex": .number(0),
-                    "endIndex": .number(4),
-                ]),
-            ]
-        )))
+        model.chat.reduce(
+            record: recorded(
+                3,
+                testAssistantMessage(
+                    turnID: "turn-1",
+                    modelStepID: "step-1",
+                    text: "Done",
+                    annotations: [
+                        .object([
+                            "type": .string("url_citation"),
+                            "url": .string("https://example.com/source"),
+                            "title": .string("Example"),
+                            "content": .string("Relevant excerpt."),
+                            "startIndex": .number(0),
+                            "endIndex": .number(4),
+                        ]),
+                        .object([
+                            "type": .string("url_citation"),
+                            "url": .string("https://example.com/source"),
+                            "title": .string("Duplicate"),
+                            "startIndex": .number(0),
+                            "endIndex": .number(4),
+                        ]),
+                        .object([
+                            "type": .string("url_citation"),
+                            "url": .string("javascript:alert(1)"),
+                            "title": .string("Unsafe"),
+                            "startIndex": .number(0),
+                            "endIndex": .number(4),
+                        ]),
+                    ]
+                )))
 
         let searches = model.chat.transcript.filter(\.isWebSearch)
         XCTAssertEqual(searches.map(\.modelStepID), ["step-1", "step-2"])

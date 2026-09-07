@@ -4,18 +4,20 @@ import Observation
 extension AppModel {
     func saveBotDefaults() {
         guard !isApplyingConfiguration,
-              let draft = botDefaultsDraft,
-              let snapshot = botDefaultsSnapshot
+            let draft = botDefaultsDraft,
+            let snapshot = botDefaultsSnapshot
         else { return }
         let id = requestID("configure-default")
         botDefaultsApplyState = .applying
         botDefaultsRequestID = id
         submittedBotDefaultsDraft = draft
-        gateway.transmit(.configureBotDefaults(
-            requestID: id,
-            expectedRevision: snapshot.revision,
-            config: draft
-        )) { [weak self] message in
+        gateway.transmit(
+            .configureBotDefaults(
+                requestID: id,
+                expectedRevision: snapshot.revision,
+                config: draft
+            )
+        ) { [weak self] message in
             guard self?.botDefaultsRequestID == id else { return }
             self?.botDefaultsRequestID = nil
             self?.submittedBotDefaultsDraft = nil
@@ -35,8 +37,8 @@ extension AppModel {
 
     func selectModelForSelectedBot(_ route: String) {
         guard let bot = selectedBot,
-              let config = draft(bot.config.config, selectingModelRoute: route),
-              config != bot.config.config
+            let config = draft(bot.config.config, selectingModelRoute: route),
+            config != bot.config.config
         else { return }
         saveSelectedBot(bot, config: config)
     }
@@ -68,11 +70,13 @@ extension AppModel {
         let id = requestID("bot-create")
         botMutationRequestID = id
         botMutationSuccessMessage = localizedString("Bot created.")
-        gateway.transmit(.createBot(
-            requestID: id,
-            name: name,
-            description: description
-        )) {
+        gateway.transmit(
+            .createBot(
+                requestID: id,
+                name: name,
+                description: description
+            )
+        ) {
             [weak self] message in
             guard self?.botMutationRequestID == id else { return }
             self?.botMutationRequestID = nil
@@ -87,29 +91,32 @@ extension AppModel {
         guard let id = editingBotID else { return }
         guard canMutateBot(id) else {
             if canMutateBots {
-                showToast("Bot settings can’t be changed while this Bot is running.", tone: .warning)
+                showToast(
+                    "Bot settings can’t be changed while this Bot is running.", tone: .warning)
             }
             return
         }
         guard let expectedRevision = editingBotRevision,
-              bots.contains(where: { $0.id == id }),
-              let draft = botDraft,
-              !name.isEmpty,
-              !description.isEmpty
+            bots.contains(where: { $0.id == id }),
+            let draft = botDraft,
+            !name.isEmpty,
+            !description.isEmpty
         else { return }
         let requestID = requestID("bot-update")
         botMutationRequestID = requestID
         botMutationSuccessMessage = localizedString("Bot saved.")
         botApplyState = .applying
-        gateway.transmit(.updateBot(
-            requestID: requestID,
-            id: id,
-            expectedRevision: expectedRevision,
-            name: name,
-            description: description,
-            tint: botTintDraft,
-            config: draft
-        )) { [weak self] message in
+        gateway.transmit(
+            .updateBot(
+                requestID: requestID,
+                id: id,
+                expectedRevision: expectedRevision,
+                name: name,
+                description: description,
+                tint: botTintDraft,
+                config: draft
+            )
+        ) { [weak self] message in
             guard self?.botMutationRequestID == requestID else { return }
             self?.botMutationRequestID = nil
             self?.botMutationSuccessMessage = nil
@@ -122,11 +129,13 @@ extension AppModel {
         let id = requestID("bot-delete")
         botMutationRequestID = id
         botMutationSuccessMessage = localizedString("Bot deleted.")
-        gateway.transmit(.deleteBot(
-            requestID: id,
-            id: bot.id,
-            expectedRevision: bot.config.revision
-        )) { [weak self] message in
+        gateway.transmit(
+            .deleteBot(
+                requestID: id,
+                id: bot.id,
+                expectedRevision: bot.config.revision
+            )
+        ) { [weak self] message in
             guard self?.botMutationRequestID == id else { return }
             self?.botMutationRequestID = nil
             self?.botMutationSuccessMessage = nil
@@ -136,7 +145,7 @@ extension AppModel {
 
     func reloadBotDraft() {
         guard let editingBotID,
-              let bot = bots.first(where: { $0.id == editingBotID })
+            let bot = bots.first(where: { $0.id == editingBotID })
         else { return }
         botNameDraft = bot.name
         botDescriptionDraft = bot.description

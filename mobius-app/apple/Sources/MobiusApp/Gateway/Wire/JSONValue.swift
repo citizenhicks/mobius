@@ -28,25 +28,32 @@ indirect enum JSONValue: Codable, Equatable, Sendable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
-        if container.decodeNil() { self = .null }
-        else if let value = try? container.decode(Bool.self) { self = .bool(value) }
-        else if let value = try? container.decode(Decimal.self) {
+        if container.decodeNil() {
+            self = .null
+        } else if let value = try? container.decode(Bool.self) {
+            self = .bool(value)
+        } else if let value = try? container.decode(Decimal.self) {
             let string = NSDecimalNumber(decimal: value).stringValue
-            if let integer = Int64(string) { self = .integer(integer) }
-            else if let unsignedInteger = UInt64(string) {
+            if let integer = Int64(string) {
+                self = .integer(integer)
+            } else if let unsignedInteger = UInt64(string) {
                 self = .unsignedInteger(unsignedInteger)
             } else {
                 self = .decimal(value)
             }
-        }
-        else if let value = try? container.decode(Double.self) { self = .number(value) }
-        else if let value = try? container.decode(String.self) { self = .string(value) }
-        else if let value = try? container.decode([JSONValue].self) { self = .array(value) }
-        else {
+        } else if let value = try? container.decode(Double.self) {
+            self = .number(value)
+        } else if let value = try? container.decode(String.self) {
+            self = .string(value)
+        } else if let value = try? container.decode([JSONValue].self) {
+            self = .array(value)
+        } else {
             let keyed = try decoder.container(keyedBy: DynamicCodingKey.self)
-            self = .object(try Dictionary(uniqueKeysWithValues: keyed.allKeys.map { key in
-                (key.stringValue, try keyed.decode(JSONValue.self, forKey: key))
-            }))
+            self = .object(
+                try Dictionary(
+                    uniqueKeysWithValues: keyed.allKeys.map { key in
+                        (key.stringValue, try keyed.decode(JSONValue.self, forKey: key))
+                    }))
         }
     }
 

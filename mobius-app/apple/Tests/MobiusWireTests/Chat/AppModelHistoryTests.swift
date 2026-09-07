@@ -23,41 +23,46 @@ extension AppModelTests {
             return XCTFail("Expected an uncached session open")
         }
         XCTAssertTrue(model.chat.isLoadingTranscript)
-        model.gateway.handle(.sessionOpened(requestID: requestID, payload: sessionReady(latestSequence: 2)))
+        model.gateway.handle(
+            .sessionOpened(requestID: requestID, payload: sessionReady(latestSequence: 2)))
         XCTAssertTrue(model.chat.isLoadingTranscript)
         model.showFiles(.unstaged)
-        model.gateway.handle(.agentEvent(
-            sessionID: "chat-1",
-            sequence: 1,
-            event: AgentEventRecord(submissionId: nil, msg: .object([
-                "type": .string("assistant_content_delta"),
-                "sessionId": .string("chat-1"),
-                "turnId": .string("turn-1"),
-                "modelStepId": .string("answer-1"),
-                "phase": .string("final_answer"),
-                "delta": .string("Hel")
-            ])),
-            blocks: [],
-            history: nil,
-            preview: nil
-        ))
+        model.gateway.handle(
+            .agentEvent(
+                sessionID: "chat-1",
+                sequence: 1,
+                event: AgentEventRecord(
+                    submissionId: nil,
+                    msg: .object([
+                        "type": .string("assistant_content_delta"),
+                        "sessionId": .string("chat-1"),
+                        "turnId": .string("turn-1"),
+                        "modelStepId": .string("answer-1"),
+                        "phase": .string("final_answer"),
+                        "delta": .string("Hel"),
+                    ])),
+                blocks: [],
+                history: nil,
+                preview: nil
+            ))
         XCTAssertTrue(model.chat.displayedTranscript.isEmpty)
 
-        model.gateway.handle(.agentEvent(
-            sessionID: "chat-1",
-            sequence: 2,
-            event: AgentEventRecord(
-                submissionId: nil,
-                msg: testAssistantMessage(
-                    turnID: "turn-1",
-                    modelStepID: "answer-1",
-                    text: "Hello"
-                )
-            ),
-            blocks: [],
-            history: nil,
-            preview: nil
-        ))
+        model.gateway.handle(
+            .agentEvent(
+                sessionID: "chat-1",
+                sequence: 2,
+                event: AgentEventRecord(
+                    submissionId: nil,
+                    msg: testAssistantMessage(
+                        turnID: "turn-1",
+                        modelStepID: "answer-1",
+                        text: "Hello"
+                    )
+                ),
+                blocks: [],
+                history: nil,
+                preview: nil
+            ))
         XCTAssertEqual(model.chat.transcript.map(\.text), ["Hello"])
         XCTAssertTrue(model.chat.displayedTranscript.isEmpty)
         let refreshRequestCount = await recorder.requestCount()
@@ -68,7 +73,8 @@ extension AppModelTests {
             guard case .getGitDiff(_, "chat-1", .unstaged) = request else { return false }
             return true
         }
-        let workspaceFilesRequest = await recorder.firstRequest(after: refreshRequestCount) { request in
+        let workspaceFilesRequest = await recorder.firstRequest(after: refreshRequestCount) {
+            request in
             guard case .listWorkspaceFiles(_, "chat-1", .all) = request else { return false }
             return true
         }
@@ -92,25 +98,27 @@ extension AppModelTests {
         }
         guard case .openSession(let openID, _, _) = try XCTUnwrap(openRequest)
         else { return XCTFail("Expected session open") }
-        model.gateway.handle(.sessionOpened(
-            requestID: openID,
-            payload: sessionReady(latestSequence: 8, nextBeforeSequence: 40)
-        ))
-        model.gateway.handle(.agentEvent(
-            sessionID: "chat-1",
-            sequence: 8,
-            event: AgentEventRecord(
-                submissionId: nil,
-                msg: testAssistantMessage(
-                    turnID: "turn-live",
-                    modelStepID: "step-current",
-                    text: "Current"
-                )
-            ),
-            blocks: [],
-            history: nil,
-            preview: nil
-        ))
+        model.gateway.handle(
+            .sessionOpened(
+                requestID: openID,
+                payload: sessionReady(latestSequence: 8, nextBeforeSequence: 40)
+            ))
+        model.gateway.handle(
+            .agentEvent(
+                sessionID: "chat-1",
+                sequence: 8,
+                event: AgentEventRecord(
+                    submissionId: nil,
+                    msg: testAssistantMessage(
+                        turnID: "turn-live",
+                        modelStepID: "step-current",
+                        text: "Current"
+                    )
+                ),
+                blocks: [],
+                history: nil,
+                preview: nil
+            ))
         model.gateway.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
         model.chat.selectedModelRoute = "current-route"
 
@@ -148,23 +156,28 @@ extension AppModelTests {
             }.count,
             1
         )
-        guard case .getSessionHistory(
-            let historyID,
-            "chat-1",
-            40
-        ) = try XCTUnwrap(historyRequest) else {
+        guard
+            case .getSessionHistory(
+                let historyID,
+                "chat-1",
+                40
+            ) = try XCTUnwrap(historyRequest)
+        else {
             return XCTFail("Expected paged history request")
         }
 
-        model.gateway.handle(.agentEvent(
-            sessionID: "chat-1",
-            record: recorded(9, testAssistantMessage(
-                turnID: "turn-live",
-                modelStepID: "step-live",
-                phase: "commentary",
-                text: "Still working"
+        model.gateway.handle(
+            .agentEvent(
+                sessionID: "chat-1",
+                record: recorded(
+                    9,
+                    testAssistantMessage(
+                        turnID: "turn-live",
+                        modelStepID: "step-live",
+                        phase: "commentary",
+                        text: "Still working"
+                    ))
             ))
-        ))
 
         let events = [
             RenderedEventRecord(
@@ -179,18 +192,20 @@ extension AppModelTests {
                 ),
                 blocks: []
             ),
-            RenderedEventRecord(event: .object([
-                "type": .string("turn_started"),
-                "turnId": .string("turn-older")
-            ]), blocks: []),
+            RenderedEventRecord(
+                event: .object([
+                    "type": .string("turn_started"),
+                    "turnId": .string("turn-older"),
+                ]), blocks: []),
             RenderedEventRecord(
                 event: testMessageEvent(text: "Older question"),
                 blocks: []
             ),
-            RenderedEventRecord(event: .object([
-                "type": .string("model_changed"),
-                "route": .string("historical-route")
-            ]), blocks: []),
+            RenderedEventRecord(
+                event: .object([
+                    "type": .string("model_changed"),
+                    "route": .string("historical-route"),
+                ]), blocks: []),
             RenderedEventRecord(
                 event: testAssistantMessage(
                     turnID: "turn-older",
@@ -219,20 +234,22 @@ extension AppModelTests {
                 preview: nil
             )
         }
-        model.gateway.handle(.sessionHistory(
-            requestID: "stale",
-            sessionID: "chat-1",
-            records: records,
-            nextBeforeSequence: nil
-        ))
+        model.gateway.handle(
+            .sessionHistory(
+                requestID: "stale",
+                sessionID: "chat-1",
+                records: records,
+                nextBeforeSequence: nil
+            ))
         XCTAssertEqual(model.chat.displayedTranscript.map(\.text), ["Current", "Still working"])
 
-        model.gateway.handle(.sessionHistory(
-            requestID: historyID,
-            sessionID: "chat-1",
-            records: Array(records.dropFirst(2)),
-            nextBeforeSequence: 3
-        ))
+        model.gateway.handle(
+            .sessionHistory(
+                requestID: historyID,
+                sessionID: "chat-1",
+                records: Array(records.dropFirst(2)),
+                nextBeforeSequence: 3
+            ))
 
         XCTAssertEqual(
             model.chat.displayedTranscript.map(\.text),
@@ -251,19 +268,22 @@ extension AppModelTests {
             if case .getSessionHistory = request { return true }
             return false
         }
-        guard case .getSessionHistory(
-            let olderHistoryID,
-            "chat-1",
-            3
-        ) = try XCTUnwrap(olderRequest) else {
+        guard
+            case .getSessionHistory(
+                let olderHistoryID,
+                "chat-1",
+                3
+            ) = try XCTUnwrap(olderRequest)
+        else {
             return XCTFail("Expected the next history page")
         }
-        model.gateway.handle(.sessionHistory(
-            requestID: olderHistoryID,
-            sessionID: "chat-1",
-            records: Array(records.prefix(2)),
-            nextBeforeSequence: nil
-        ))
+        model.gateway.handle(
+            .sessionHistory(
+                requestID: olderHistoryID,
+                sessionID: "chat-1",
+                records: Array(records.prefix(2)),
+                nextBeforeSequence: nil
+            ))
         XCTAssertEqual(
             model.chat.displayedTranscript.map(\.text),
             [
@@ -278,15 +298,18 @@ extension AppModelTests {
         )
         XCTAssertFalse(model.chat.hasEarlierHistory)
 
-        model.gateway.handle(.agentEvent(
-            sessionID: "chat-1",
-            record: recorded(10, testAssistantMessage(
-                turnID: "turn-live",
-                modelStepID: "step-more",
-                phase: "commentary",
-                text: "More work"
+        model.gateway.handle(
+            .agentEvent(
+                sessionID: "chat-1",
+                record: recorded(
+                    10,
+                    testAssistantMessage(
+                        turnID: "turn-live",
+                        modelStepID: "step-more",
+                        phase: "commentary",
+                        text: "More work"
+                    ))
             ))
-        ))
         XCTAssertEqual(
             model.chat.displayedTranscript.map(\.text),
             [
@@ -309,13 +332,16 @@ extension AppModelTests {
         model.chat.restoreSession("chat-1")
         try await Task.sleep(for: .milliseconds(30))
         let reconnectRequests = await recorder.requests()
-        guard case .openSession(let reconnectID, _, _) = try XCTUnwrap(
-            reconnectRequests.last
-        ) else { return XCTFail("Expected reconnect session open") }
-        model.gateway.handle(.sessionOpened(
-            requestID: reconnectID,
-            payload: sessionReady(latestSequence: 8, nextBeforeSequence: 40)
-        ))
+        guard
+            case .openSession(let reconnectID, _, _) = try XCTUnwrap(
+                reconnectRequests.last
+            )
+        else { return XCTFail("Expected reconnect session open") }
+        model.gateway.handle(
+            .sessionOpened(
+                requestID: reconnectID,
+                payload: sessionReady(latestSequence: 8, nextBeforeSequence: 40)
+            ))
         model.gateway.handle(.sessionReplayComplete(requestID: reconnectID, sessionID: "chat-1"))
         XCTAssertEqual(
             model.chat.displayedTranscript.map(\.text),
@@ -340,18 +366,22 @@ extension AppModelTests {
         guard case .openSession(let openID, _, _) = try XCTUnwrap(openRequest) else {
             return XCTFail("Expected session open")
         }
-        model.gateway.handle(.sessionOpened(
-            requestID: openID,
-            payload: sessionReady(latestSequence: 8, nextBeforeSequence: 40)
-        ))
-        model.gateway.handle(.agentEvent(
-            sessionID: "chat-1",
-            record: recorded(8, testAssistantMessage(
-                turnID: "turn-current",
-                modelStepID: "step-current",
-                text: "Current"
+        model.gateway.handle(
+            .sessionOpened(
+                requestID: openID,
+                payload: sessionReady(latestSequence: 8, nextBeforeSequence: 40)
             ))
-        ))
+        model.gateway.handle(
+            .agentEvent(
+                sessionID: "chat-1",
+                record: recorded(
+                    8,
+                    testAssistantMessage(
+                        turnID: "turn-current",
+                        modelStepID: "step-current",
+                        text: "Current"
+                    ))
+            ))
         model.gateway.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
         model.chat.activeTurnID = "turn-live"
 
@@ -364,25 +394,29 @@ extension AppModelTests {
         guard case .getSessionHistory(let historyID, _, _) = try XCTUnwrap(historyRequest)
         else { return XCTFail("Expected history request") }
 
-        model.gateway.handle(.agentEvent(
-            sessionID: "chat-1",
-            record: recorded(9, .object([
-                "type": .string("assistant_content_delta"),
-                "sessionId": .string("chat-1"),
-                "turnId": .string("turn-live"),
-                "modelStepId": .string("step-live"),
-                "phase": .string("commentary"),
-                "delta": .string("Still working"),
-            ]))
-        ))
+        model.gateway.handle(
+            .agentEvent(
+                sessionID: "chat-1",
+                record: recorded(
+                    9,
+                    .object([
+                        "type": .string("assistant_content_delta"),
+                        "sessionId": .string("chat-1"),
+                        "turnId": .string("turn-live"),
+                        "modelStepId": .string("step-live"),
+                        "phase": .string("commentary"),
+                        "delta": .string("Still working"),
+                    ]))
+            ))
         XCTAssertEqual(model.chat.transcript.map(\.text), ["Current"])
 
-        model.gateway.handle(.sessionHistory(
-            requestID: historyID,
-            sessionID: "chat-1",
-            records: [recorded(1, testMessageEvent(text: "Older question"))],
-            nextBeforeSequence: nil
-        ))
+        model.gateway.handle(
+            .sessionHistory(
+                requestID: historyID,
+                sessionID: "chat-1",
+                records: [recorded(1, testMessageEvent(text: "Older question"))],
+                nextBeforeSequence: nil
+            ))
         try await Task.sleep(for: .milliseconds(80))
 
         XCTAssertEqual(
@@ -407,10 +441,11 @@ extension AppModelTests {
         guard case .openSession(let openID, _, _) = try XCTUnwrap(openRequest) else {
             return XCTFail("Expected session open")
         }
-        model.gateway.handle(.sessionOpened(
-            requestID: openID,
-            payload: sessionReady(latestSequence: 8, nextBeforeSequence: 9)
-        ))
+        model.gateway.handle(
+            .sessionOpened(
+                requestID: openID,
+                payload: sessionReady(latestSequence: 8, nextBeforeSequence: 9)
+            ))
         model.gateway.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
 
         model.chat.requestEarlierHistory()
@@ -422,32 +457,41 @@ extension AppModelTests {
             return XCTFail("Expected first history page")
         }
         let turnID = "turn-1"
-        model.gateway.handle(.sessionHistory(
-            requestID: firstID,
-            sessionID: "chat-1",
-            records: [
-                recorded(5, testMessageEvent(
-                    delivery: .steer,
-                    text: "Use the smaller patch"
-                )),
-                recorded(6, testAssistantMessage(
-                    turnID: turnID,
-                    modelStepID: "step-2",
-                    phase: "commentary",
-                    text: "After steering"
-                )),
-                recorded(7, testAssistantMessage(
-                    turnID: turnID,
-                    modelStepID: "step-3",
-                    text: "Done"
-                )),
-                recorded(8, .object([
-                    "type": .string("turn_complete"),
-                    "turnId": .string(turnID),
-                ])),
-            ],
-            nextBeforeSequence: 5
-        ))
+        model.gateway.handle(
+            .sessionHistory(
+                requestID: firstID,
+                sessionID: "chat-1",
+                records: [
+                    recorded(
+                        5,
+                        testMessageEvent(
+                            delivery: .steer,
+                            text: "Use the smaller patch"
+                        )),
+                    recorded(
+                        6,
+                        testAssistantMessage(
+                            turnID: turnID,
+                            modelStepID: "step-2",
+                            phase: "commentary",
+                            text: "After steering"
+                        )),
+                    recorded(
+                        7,
+                        testAssistantMessage(
+                            turnID: turnID,
+                            modelStepID: "step-3",
+                            text: "Done"
+                        )),
+                    recorded(
+                        8,
+                        .object([
+                            "type": .string("turn_complete"),
+                            "turnId": .string(turnID),
+                        ])),
+                ],
+                nextBeforeSequence: 5
+            ))
 
         XCTAssertEqual(model.chat.transcript.map(\.turnID), Array(repeating: turnID, count: 3))
         XCTAssertEqual(
@@ -464,28 +508,34 @@ extension AppModelTests {
         guard case .getSessionHistory(let secondID, _, 5) = try XCTUnwrap(secondRequest) else {
             return XCTFail("Expected second history page")
         }
-        model.gateway.handle(.sessionHistory(
-            requestID: secondID,
-            sessionID: "chat-1",
-            records: [
-                recorded(1, .object([
-                    "type": .string("turn_started"),
-                    "turnId": .string(turnID),
-                ])),
-                recorded(2, testMessageEvent(text: "Start")),
-                recorded(3, testAssistantMessage(
-                    turnID: turnID,
-                    modelStepID: "step-1",
-                    phase: "commentary",
-                    text: "Before steering"
-                )),
-                recordedPeerMessage(4,
-                    delivery: .steer,
-                    text: "The parser boundary is covered."
-                ),
-            ],
-            nextBeforeSequence: nil
-        ))
+        model.gateway.handle(
+            .sessionHistory(
+                requestID: secondID,
+                sessionID: "chat-1",
+                records: [
+                    recorded(
+                        1,
+                        .object([
+                            "type": .string("turn_started"),
+                            "turnId": .string(turnID),
+                        ])),
+                    recorded(2, testMessageEvent(text: "Start")),
+                    recorded(
+                        3,
+                        testAssistantMessage(
+                            turnID: turnID,
+                            modelStepID: "step-1",
+                            phase: "commentary",
+                            text: "Before steering"
+                        )),
+                    recordedPeerMessage(
+                        4,
+                        delivery: .steer,
+                        text: "The parser boundary is covered."
+                    ),
+                ],
+                nextBeforeSequence: nil
+            ))
 
         XCTAssertEqual(
             model.chat.transcript.map(\.text),
@@ -524,33 +574,44 @@ extension AppModelTests {
         let model = try model()
         let turnID = "peer-turn"
         model.chat.mergeHistory([
-            recordedPeerMessage(5,
+            recordedPeerMessage(
+                5,
                 text: "Review the parser boundary."
             ),
-            recorded(6, testAssistantMessage(
-                turnID: turnID,
-                modelStepID: "step-1",
-                phase: "commentary",
-                text: "Checking"
-            )),
-            recorded(7, testAssistantMessage(
-                turnID: turnID,
-                modelStepID: "step-2",
-                text: "Done"
-            )),
-            recorded(8, .object([
-                "type": .string("turn_complete"),
-                "turnId": .string(turnID),
-            ])),
+            recorded(
+                6,
+                testAssistantMessage(
+                    turnID: turnID,
+                    modelStepID: "step-1",
+                    phase: "commentary",
+                    text: "Checking"
+                )),
+            recorded(
+                7,
+                testAssistantMessage(
+                    turnID: turnID,
+                    modelStepID: "step-2",
+                    text: "Done"
+                )),
+            recorded(
+                8,
+                .object([
+                    "type": .string("turn_complete"),
+                    "turnId": .string(turnID),
+                ])),
         ])
 
         XCTAssertEqual(model.chat.transcript.map(\.turnID), Array(repeating: turnID, count: 3))
         XCTAssertEqual(model.chat.transcript.map(\.startsTurn), [true, false, false])
 
-        model.chat.mergeHistory([recorded(1, .object([
-            "type": .string("turn_started"),
-            "turnId": .string(turnID),
-        ]))])
+        model.chat.mergeHistory([
+            recorded(
+                1,
+                .object([
+                    "type": .string("turn_started"),
+                    "turnId": .string(turnID),
+                ]))
+        ])
 
         XCTAssertEqual(
             model.chat.transcript.map(\.text),
@@ -580,10 +641,11 @@ extension AppModelTests {
         guard case .openSession(let openID, _, _) = try XCTUnwrap(openRequest) else {
             return XCTFail("Expected session open")
         }
-        model.gateway.handle(.sessionOpened(
-            requestID: openID,
-            payload: sessionReady(latestSequence: 4, nextBeforeSequence: 5)
-        ))
+        model.gateway.handle(
+            .sessionOpened(
+                requestID: openID,
+                payload: sessionReady(latestSequence: 4, nextBeforeSequence: 5)
+            ))
         model.gateway.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
 
         let requestCount = await recorder.requestCount()
@@ -596,43 +658,56 @@ extension AppModelTests {
         else { return XCTFail("Expected history request") }
 
         let turnID = "turn-1"
-        model.gateway.handle(.sessionHistory(
-            requestID: historyID,
-            sessionID: "chat-1",
-            records: [
-                recorded(1, .object([
-                    "type": .string("turn_started"),
-                    "turnId": .string(turnID),
-                ])),
-                recorded(2, testMessageEvent(text: "Start")),
-                recorded(3, testAssistantMessage(
-                    turnID: turnID,
-                    modelStepID: "step-1",
-                    phase: "commentary",
-                    text: "Checking"
-                )),
-                recorded(4, .object([
-                    "type": .string("turn_aborted"),
-                    "turnId": .string(turnID),
-                    "reason": .string("Stopped"),
-                ]), blocks: [RenderedBlock(capability: "agent", block: FrontendBlock(
-                    id: nil,
-                    group: turnID,
-                    update: .replace,
-                    state: .complete,
-                    role: .notice,
-                    title: "Turn aborted",
-                    text: "Stopped",
-                    symbol: nil,
-                    format: "plain_text",
-                    tone: "warning",
-                    files: []
-                ))]),
-            ],
-            nextBeforeSequence: nil
-        ))
+        model.gateway.handle(
+            .sessionHistory(
+                requestID: historyID,
+                sessionID: "chat-1",
+                records: [
+                    recorded(
+                        1,
+                        .object([
+                            "type": .string("turn_started"),
+                            "turnId": .string(turnID),
+                        ])),
+                    recorded(2, testMessageEvent(text: "Start")),
+                    recorded(
+                        3,
+                        testAssistantMessage(
+                            turnID: turnID,
+                            modelStepID: "step-1",
+                            phase: "commentary",
+                            text: "Checking"
+                        )),
+                    recorded(
+                        4,
+                        .object([
+                            "type": .string("turn_aborted"),
+                            "turnId": .string(turnID),
+                            "reason": .string("Stopped"),
+                        ]),
+                        blocks: [
+                            RenderedBlock(
+                                capability: "agent",
+                                block: FrontendBlock(
+                                    id: nil,
+                                    group: turnID,
+                                    update: .replace,
+                                    state: .complete,
+                                    role: .notice,
+                                    title: "Turn aborted",
+                                    text: "Stopped",
+                                    symbol: nil,
+                                    format: "plain_text",
+                                    tone: "warning",
+                                    files: []
+                                ))
+                        ]),
+                ],
+                nextBeforeSequence: nil
+            ))
 
-        XCTAssertEqual(model.chat.displayedTranscript.map(\.turnID), Array(repeating: turnID, count: 3))
+        XCTAssertEqual(
+            model.chat.displayedTranscript.map(\.turnID), Array(repeating: turnID, count: 3))
         XCTAssertEqual(model.chat.displayedTranscript.map(\.turnTerminal), [false, false, true])
         let projection = model.chat.transcriptProjection(breakBefore: nil)
         XCTAssertEqual(projection.rows.map(\.kind), [.user, .workedGroup, .activityGroup])
@@ -658,10 +733,11 @@ extension AppModelTests {
         guard case .openSession(let openID, _, _) = try XCTUnwrap(openRequest) else {
             return XCTFail("Expected session open")
         }
-        model.gateway.handle(.sessionOpened(
-            requestID: openID,
-            payload: sessionReady(latestSequence: 8, nextBeforeSequence: 40)
-        ))
+        model.gateway.handle(
+            .sessionOpened(
+                requestID: openID,
+                payload: sessionReady(latestSequence: 8, nextBeforeSequence: 40)
+            ))
         model.gateway.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
 
         let initialRevision = model.chat.historyLoadCompletionRevision
@@ -676,12 +752,14 @@ extension AppModelTests {
         guard case .getSessionHistory(let rejectedID, _, _) = try XCTUnwrap(rejectedRequest)
         else { return XCTFail("Expected rejected history request") }
 
-        model.gateway.handle(.rejected(GatewayRejection(
-            requestId: rejectedID,
-            code: "unavailable",
-            message: "Try again",
-            fatal: false
-        )))
+        model.gateway.handle(
+            .rejected(
+                GatewayRejection(
+                    requestId: rejectedID,
+                    code: "unavailable",
+                    message: "Try again",
+                    fatal: false
+                )))
 
         XCTAssertFalse(model.chat.isLoadingEarlierHistory)
         XCTAssertEqual(model.chat.historyLoadCompletionRevision, initialRevision + 1)
@@ -697,12 +775,13 @@ extension AppModelTests {
         guard case .getSessionHistory(let emptyID, _, _) = try XCTUnwrap(emptyRequest)
         else { return XCTFail("Expected empty history request") }
 
-        model.gateway.handle(.sessionHistory(
-            requestID: emptyID,
-            sessionID: "chat-1",
-            records: [],
-            nextBeforeSequence: nil
-        ))
+        model.gateway.handle(
+            .sessionHistory(
+                requestID: emptyID,
+                sessionID: "chat-1",
+                records: [],
+                nextBeforeSequence: nil
+            ))
 
         XCTAssertFalse(model.chat.isLoadingEarlierHistory)
         XCTAssertEqual(model.chat.historyLoadCompletionRevision, initialRevision + 2)
@@ -726,10 +805,11 @@ extension AppModelTests {
         guard case .openSession(let openID, _, _) = try XCTUnwrap(openRequest) else {
             return XCTFail("Expected session open")
         }
-        model.gateway.handle(.sessionOpened(
-            requestID: openID,
-            payload: sessionReady(latestSequence: 8, nextBeforeSequence: 40)
-        ))
+        model.gateway.handle(
+            .sessionOpened(
+                requestID: openID,
+                payload: sessionReady(latestSequence: 8, nextBeforeSequence: 40)
+            ))
         model.gateway.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
 
         let load = Task { @MainActor in await model.chat.loadEarlierHistory() }
@@ -741,12 +821,13 @@ extension AppModelTests {
         else { return XCTFail("Expected history request") }
         XCTAssertTrue(model.chat.isLoadingEarlierHistory)
 
-        model.gateway.handle(.sessionHistory(
-            requestID: historyID,
-            sessionID: "chat-1",
-            records: [],
-            nextBeforeSequence: nil
-        ))
+        model.gateway.handle(
+            .sessionHistory(
+                requestID: historyID,
+                sessionID: "chat-1",
+                records: [],
+                nextBeforeSequence: nil
+            ))
         await load.value
 
         XCTAssertFalse(model.chat.isLoadingEarlierHistory)
@@ -777,12 +858,14 @@ extension AppModelTests {
         XCTAssertEqual(model.chat.historyRequestID, historyID)
         XCTAssertTrue(model.chat.isLoadingEarlierHistory)
 
-        model.gateway.handle(.rejected(GatewayRejection(
-            requestId: historyID,
-            code: "unavailable",
-            message: "Try again",
-            fatal: false
-        )))
+        model.gateway.handle(
+            .rejected(
+                GatewayRejection(
+                    requestId: historyID,
+                    code: "unavailable",
+                    message: "Try again",
+                    fatal: false
+                )))
         XCTAssertNil(model.chat.historyRequestID)
         XCTAssertFalse(model.chat.isLoadingEarlierHistory)
 
@@ -817,41 +900,51 @@ extension AppModelTests {
         guard case .openSession(let openID, _, _) = try XCTUnwrap(open) else {
             return XCTFail("Expected session open")
         }
-        model.gateway.handle(.sessionOpened(
-            requestID: openID,
-            payload: sessionReady(latestSequence: 8, nextBeforeSequence: 7)
-        ))
+        model.gateway.handle(
+            .sessionOpened(
+                requestID: openID,
+                payload: sessionReady(latestSequence: 8, nextBeforeSequence: 7)
+            ))
 
-        let toolEnd = recorded(7, .object([
-            "type": .string("tool_call_end"),
-            "turnId": .string("turn-1"),
-            "callId": .string("call-1"),
-            "name": .string("shell"),
-            "output": .string("Output"),
-            "isError": .bool(false),
-        ]), blocks: [RenderedBlock(capability: "tools", block: FrontendBlock(
-            id: "turn-1/call-1",
-            group: nil,
-            update: .append,
-            state: .complete,
-            role: .tool,
-            title: "Run command",
-            text: "\nOutput",
-            symbol: nil,
-            format: "plain_text",
-            tone: "success",
-            files: []
-        ))])
-        let failed = recorded(8, .object([
-            "type": .string("model_step_completed"),
-            "sessionId": .string("chat-1"),
-            "turnId": .string("turn-1"),
-            "modelStepId": .string("step-1"),
-            "stepIndex": .number(0),
-            "startedAtMs": .number(100),
-            "completedAtMs": .number(200),
-            "outcome": .object(["status": .string("failed")]),
-        ]))
+        let toolEnd = recorded(
+            7,
+            .object([
+                "type": .string("tool_call_end"),
+                "turnId": .string("turn-1"),
+                "callId": .string("call-1"),
+                "name": .string("shell"),
+                "output": .string("Output"),
+                "isError": .bool(false),
+            ]),
+            blocks: [
+                RenderedBlock(
+                    capability: "tools",
+                    block: FrontendBlock(
+                        id: "turn-1/call-1",
+                        group: nil,
+                        update: .append,
+                        state: .complete,
+                        role: .tool,
+                        title: "Run command",
+                        text: "\nOutput",
+                        symbol: nil,
+                        format: "plain_text",
+                        tone: "success",
+                        files: []
+                    ))
+            ])
+        let failed = recorded(
+            8,
+            .object([
+                "type": .string("model_step_completed"),
+                "sessionId": .string("chat-1"),
+                "turnId": .string("turn-1"),
+                "modelStepId": .string("step-1"),
+                "stepIndex": .number(0),
+                "startedAtMs": .number(100),
+                "completedAtMs": .number(200),
+                "outcome": .object(["status": .string("failed")]),
+            ]))
         model.gateway.handle(.agentEvent(sessionID: "chat-1", record: toolEnd))
         model.gateway.handle(.agentEvent(sessionID: "chat-1", record: failed))
         model.gateway.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
@@ -866,20 +959,23 @@ extension AppModelTests {
         guard case .getSessionHistory(let firstID, _, 7) = try XCTUnwrap(firstHistory) else {
             return XCTFail("Expected first history page")
         }
-        let partial = recorded(6, .object([
-            "type": .string("assistant_content_delta"),
-            "sessionId": .string("chat-1"),
-            "turnId": .string("turn-1"),
-            "modelStepId": .string("step-1"),
-            "phase": .string("reasoning"),
-            "delta": .string("Partial reasoning"),
-        ]))
-        model.gateway.handle(.sessionHistory(
-            requestID: firstID,
-            sessionID: "chat-1",
-            records: [partial],
-            nextBeforeSequence: 6
-        ))
+        let partial = recorded(
+            6,
+            .object([
+                "type": .string("assistant_content_delta"),
+                "sessionId": .string("chat-1"),
+                "turnId": .string("turn-1"),
+                "modelStepId": .string("step-1"),
+                "phase": .string("reasoning"),
+                "delta": .string("Partial reasoning"),
+            ]))
+        model.gateway.handle(
+            .sessionHistory(
+                requestID: firstID,
+                sessionID: "chat-1",
+                records: [partial],
+                nextBeforeSequence: 6
+            ))
         XCTAssertEqual(model.chat.transcript.map(\.text), ["Partial reasoning", "\nOutput"])
         XCTAssertFalse(try XCTUnwrap(model.chat.transcript.first).pending)
 
@@ -892,33 +988,42 @@ extension AppModelTests {
         guard case .getSessionHistory(let secondID, _, 6) = try XCTUnwrap(secondHistory) else {
             return XCTFail("Expected second history page")
         }
-        let toolBegin = recorded(5, .object([
-            "type": .string("tool_call_begin"),
-            "turnId": .string("turn-1"),
-            "callId": .string("call-1"),
-            "name": .string("shell"),
-            "arguments": .object(["cmd": .string("pwd")]),
-        ]), blocks: [RenderedBlock(capability: "tools", block: FrontendBlock(
-            id: "turn-1/call-1",
-            group: nil,
-            update: .replace,
-            state: .pending,
-            role: .tool,
-            title: "Run command",
-            text: "Arguments",
-            symbol: nil,
-            format: "plain_text",
-            tone: "neutral",
-            files: []
-        ))])
-        model.gateway.handle(.sessionHistory(
-            requestID: secondID,
-            sessionID: "chat-1",
-            records: [toolBegin],
-            nextBeforeSequence: nil
-        ))
+        let toolBegin = recorded(
+            5,
+            .object([
+                "type": .string("tool_call_begin"),
+                "turnId": .string("turn-1"),
+                "callId": .string("call-1"),
+                "name": .string("shell"),
+                "arguments": .object(["cmd": .string("pwd")]),
+            ]),
+            blocks: [
+                RenderedBlock(
+                    capability: "tools",
+                    block: FrontendBlock(
+                        id: "turn-1/call-1",
+                        group: nil,
+                        update: .replace,
+                        state: .pending,
+                        role: .tool,
+                        title: "Run command",
+                        text: "Arguments",
+                        symbol: nil,
+                        format: "plain_text",
+                        tone: "neutral",
+                        files: []
+                    ))
+            ])
+        model.gateway.handle(
+            .sessionHistory(
+                requestID: secondID,
+                sessionID: "chat-1",
+                records: [toolBegin],
+                nextBeforeSequence: nil
+            ))
 
-        XCTAssertEqual(model.chat.transcript.map(\.text), ["Arguments\nOutput", "Partial reasoning"])
+        XCTAssertEqual(
+            model.chat.transcript.map(\.text), ["Arguments\nOutput", "Partial reasoning"])
         XCTAssertEqual(model.chat.transcript.map(\.role), [.tool, nil])
         XCTAssertTrue(model.chat.transcript.allSatisfy { !$0.pending })
     }
@@ -940,13 +1045,15 @@ extension AppModelTests {
                 accountID: account.id,
                 sessionID: chat.sessionId,
                 sequence: UInt64(index + 7),
-                transcript: [TranscriptEntry(
-                    id: chat.sessionId,
-                    text: "Cached \(chat.sessionId)",
-                    kind: .assistant,
-                    format: "plain_text",
-                    pending: false
-                )],
+                transcript: [
+                    TranscriptEntry(
+                        id: chat.sessionId,
+                        text: "Cached \(chat.sessionId)",
+                        kind: .assistant,
+                        format: "plain_text",
+                        pending: false
+                    )
+                ],
                 currentUsage: TokenUsage(),
                 lastUsage: TokenUsage()
             )
@@ -974,22 +1081,26 @@ extension AppModelTests {
         let draft = await model.store.loadComposerDraft(accountID: account.id, sessionID: "chat-1")
         XCTAssertEqual(draft.text, "Keep this draft")
 
-        model.gateway.handle(.ready(ready(
-            botDefaults: VersionedAgentConfig(revision: 1, config: composition()),
-            sessions: chats
-        )))
+        model.gateway.handle(
+            .ready(
+                ready(
+                    botDefaults: VersionedAgentConfig(revision: 1, config: composition()),
+                    sessions: chats
+                )))
         let request = await recorder.firstRequest(after: 0) {
             if case .openSession = $0 { return true }
             return false
         }
         guard case .openSession(let requestID, "chat-2", 8) = try XCTUnwrap(request) else {
-            return XCTFail("Only the currently visible chat should synchronize from its cache cursor")
+            return XCTFail(
+                "Only the currently visible chat should synchronize from its cache cursor")
         }
         XCTAssertEqual(model.chat.displayedTranscript.map(\.text), ["Cached chat-2"])
-        model.gateway.handle(.sessionOpened(
-            requestID: requestID,
-            payload: sessionReady(latestSequence: 8, sessionID: "chat-2")
-        ))
+        model.gateway.handle(
+            .sessionOpened(
+                requestID: requestID,
+                payload: sessionReady(latestSequence: 8, sessionID: "chat-2")
+            ))
         model.gateway.handle(.sessionReplayComplete(requestID: requestID, sessionID: "chat-2"))
         XCTAssertEqual(model.chat.displayedTranscript.map(\.text), ["Cached chat-2"])
         XCTAssertTrue(model.gateway.connectionState.isReady)
@@ -1009,9 +1120,11 @@ extension AppModelTests {
         let cacheRead = model.chat.transcriptIOTask
         XCTAssertTrue(model.chat.isLoadingTranscript)
         XCTAssertTrue(model.chat.displayedTranscript.isEmpty)
-        model.gateway.handle(.ready(ready(
-            botDefaults: VersionedAgentConfig(revision: 1, config: composition())
-        )))
+        model.gateway.handle(
+            .ready(
+                ready(
+                    botDefaults: VersionedAgentConfig(revision: 1, config: composition())
+                )))
         let request = await recorder.firstRequest(after: 0) {
             if case .openSession = $0 { return true }
             return false
@@ -1019,24 +1132,33 @@ extension AppModelTests {
         guard case .openSession(let requestID, "chat-1", nil) = try XCTUnwrap(request) else {
             return XCTFail("An uncached chat should open after Ready")
         }
-        model.gateway.handle(.sessionOpened(requestID: requestID, payload: sessionReady(latestSequence: 1)))
-        model.gateway.handle(.agentEvent(
-            sessionID: "chat-1",
-            record: recorded(1, testAssistantMessage(
-                turnID: "turn-1", modelStepID: "answer", text: "Fresh from replay"
+        model.gateway.handle(
+            .sessionOpened(requestID: requestID, payload: sessionReady(latestSequence: 1)))
+        model.gateway.handle(
+            .agentEvent(
+                sessionID: "chat-1",
+                record: recorded(
+                    1,
+                    testAssistantMessage(
+                        turnID: "turn-1", modelStepID: "answer", text: "Fresh from replay"
+                    ))
             ))
-        ))
-        XCTAssertEqual(model.chat.transcript.map(\.text), ["Fresh from replay"], "Replay must populate the live transcript")
+        XCTAssertEqual(
+            model.chat.transcript.map(\.text), ["Fresh from replay"],
+            "Replay must populate the live transcript")
         model.gateway.handle(.sessionReplayComplete(requestID: requestID, sessionID: "chat-1"))
-        XCTAssertEqual(model.chat.displayedTranscript.map(\.text), ["Fresh from replay"], "Completed replay must be visible before the cache read resumes")
+        XCTAssertEqual(
+            model.chat.displayedTranscript.map(\.text), ["Fresh from replay"],
+            "Completed replay must be visible before the cache read resumes")
         await gate.open()
         await cacheRead?.value
         XCTAssertEqual(model.chat.displayedTranscript.map(\.text), ["Fresh from replay"])
         let requests = await recorder.requests()
-        XCTAssertEqual(requests.filter {
-            if case .openSession = $0 { return true }
-            return false
-        }.count, 1)
+        XCTAssertEqual(
+            requests.filter {
+                if case .openSession = $0 { return true }
+                return false
+            }.count, 1)
     }
 
     func testOfflineChatSelectionSupersedesEarlierCacheReads() async throws {
@@ -1064,16 +1186,21 @@ extension AppModelTests {
         model.gateway.accounts = [account]
         model.gateway.selectedAccountID = account.id
         model.chat.botSessionsBotID = "bot-1"
-        model.chat.botSessions = [session(state: .idle), session(sessionID: "chat-2", state: .idle)]
+        model.chat.botSessions = [
+            session(state: .idle), session(sessionID: "chat-2", state: .idle),
+        ]
         model.destination = .bots
         model.navigationPath = [.botSessions("bot-1")]
         model.openBotSession("chat-1")
         await model.chat.transcriptIOTask?.value
         XCTAssertEqual(model.presentedChatSessionID, "chat-1")
         XCTAssertTrue(model.isPresentingChat)
-        model.gateway.handle(.ready(ready(
-            botDefaults: VersionedAgentConfig(revision: 1, config: composition()), sessions: []
-        )))
+        model.gateway.handle(
+            .ready(
+                ready(
+                    botDefaults: VersionedAgentConfig(revision: 1, config: composition()),
+                    sessions: []
+                )))
         let request = await recorder.firstRequest(after: 0) {
             if case .openSession = $0 { return true }
             return false

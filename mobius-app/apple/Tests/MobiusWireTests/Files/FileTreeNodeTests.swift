@@ -8,7 +8,7 @@ final class FileTreeNodeTests: XCTestCase {
             WorkspaceFileRecord(path: "src/main.rs", size: 10),
             WorkspaceFileRecord(path: "src/lib/mod.rs", size: 20),
             WorkspaceFileRecord(path: "README.md", size: 30),
-            WorkspaceFileRecord(path: "Cargo.toml", size: 40)
+            WorkspaceFileRecord(path: "Cargo.toml", size: 40),
         ])
 
         XCTAssertEqual(tree.map(\.name), ["src", "Cargo.toml", "README.md"])

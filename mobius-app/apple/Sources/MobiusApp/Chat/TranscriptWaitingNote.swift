@@ -59,7 +59,7 @@ enum TranscriptWaitingNote {
         "stacking exposures for a fainter signal",
         "accounting for redshift in the estimate",
         "clearing the neighbourhood of its orbit",
-        "triangulating from two good stars"
+        "triangulating from two good stars",
     ]
 
     /// Whether the transcript should show a waiting note at all.

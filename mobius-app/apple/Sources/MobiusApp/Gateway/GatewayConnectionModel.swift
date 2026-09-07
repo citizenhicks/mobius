@@ -52,16 +52,18 @@ final class GatewayConnectionModel {
         self.client = client
         self.store = store
         self.requestSender = requestSender ?? { request in try await client.send(request) }
-        self.connectionOpener = connectionOpener ?? { endpoint in
-            try await client.connect(to: endpoint)
-        }
-        self.reconnectDelay = reconnectDelay ?? { attempt in
-            let seconds = min(
-                8,
-                0.5 * pow(2, Double(min(attempt, 4))) * Double.random(in: 0.75...1.25)
-            )
-            return .milliseconds(Int64(seconds * 1_000))
-        }
+        self.connectionOpener =
+            connectionOpener ?? { endpoint in
+                try await client.connect(to: endpoint)
+            }
+        self.reconnectDelay =
+            reconnectDelay ?? { attempt in
+                let seconds = min(
+                    8,
+                    0.5 * pow(2, Double(min(attempt, 4))) * Double.random(in: 0.75...1.25)
+                )
+                return .milliseconds(Int64(seconds * 1_000))
+            }
         accounts = store.loadAccounts()
         selectedAccountID = store.selectedAccountID()
         if selectedAccountID == nil { selectedAccountID = accounts.first?.id }
@@ -106,10 +108,11 @@ final class GatewayConnectionModel {
                 let token = try self.store.token(for: account)
                 self.beginConnection(to: account.endpoint, generation: generation) { [weak self] in
                     guard let self, self.connectionGeneration == generation else { return }
-                    try await self.requestSender(.authenticate(
-                        token: token,
-                        clientKind: .currentApplePlatform
-                    ))
+                    try await self.requestSender(
+                        .authenticate(
+                            token: token,
+                            clientKind: .currentApplePlatform
+                        ))
                 }
             } catch {
                 self.blockAutomaticReconnect()
@@ -135,7 +138,8 @@ final class GatewayConnectionModel {
             let setup = try GatewayPairingSetup(endpoint: pairingEndpoint, code: code)
             let endpoint = setup.endpoint
             let endpointName = endpoint.displayName(locale: locale)
-            let account = accounts.first(where: { $0.endpoint == endpoint })
+            let account =
+                accounts.first(where: { $0.endpoint == endpoint })
                 ?? GatewayAccount(
                     endpoint: endpoint,
                     displayName: endpointName,
@@ -153,11 +157,12 @@ final class GatewayConnectionModel {
             let generation = connectionGeneration
             beginConnection(to: endpoint, generation: generation) { [weak self] in
                 guard let self, self.connectionGeneration == generation else { return }
-                try await self.requestSender(.pair(
-                    code: setup.code,
-                    clientLabel: "möbius Apple",
-                    clientKind: .currentApplePlatform
-                ))
+                try await self.requestSender(
+                    .pair(
+                        code: setup.code,
+                        clientLabel: "möbius Apple",
+                        clientKind: .currentApplePlatform
+                    ))
             }
         } catch {
             pairingError = localizedErrorDescription(error)
@@ -240,7 +245,7 @@ final class GatewayConnectionModel {
             return
         }
         guard reconnectWhenActive, reconnectsOnActivation,
-              pendingPairingAccount == nil, !automaticReconnectBlocked
+            pendingPairingAccount == nil, !automaticReconnectBlocked
         else { return }
         guard let account = selectedAccount else { return }
         connect(to: account, reconnectsUntilReady: reconnectsUntilReady)
@@ -363,7 +368,7 @@ final class GatewayConnectionModel {
             do {
                 let stream = try await connectionOpener(endpoint)
                 guard let self, !Task.isCancelled,
-                      generation == self.connectionGeneration
+                    generation == self.connectionGeneration
                 else { return }
                 self.connectionState = .authenticating
                 self.eventTask = Task { [weak self] in
@@ -400,7 +405,8 @@ final class GatewayConnectionModel {
     func connectionEnded(generation: UUID, error: Error) {
         guard generation == connectionGeneration else { return }
         if case .unsupportedVersion(let version) = error as? GatewayWireError,
-           version > gatewayProtocolVersion {
+            version > gatewayProtocolVersion
+        {
             automaticReconnectBlocked = true
             onUpdateRequired?()
             connectionEnded(
@@ -424,9 +430,9 @@ final class GatewayConnectionModel {
 
     private func scheduleReconnect() {
         guard reconnectTask == nil,
-              !automaticReconnectBlocked,
-              pendingPairingAccount == nil,
-              let account = selectedAccount
+            !automaticReconnectBlocked,
+            pendingPairingAccount == nil,
+            let account = selectedAccount
         else { return }
         guard !appIsInBackground else {
             reconnectsOnActivation = true
@@ -443,8 +449,8 @@ final class GatewayConnectionModel {
                 return
             }
             guard let self, !Task.isCancelled,
-                  generation == connectionGeneration,
-                  selectedAccountID == account.id
+                generation == connectionGeneration,
+                selectedAccountID == account.id
             else { return }
             reconnectTask = nil
             connect(to: account, retrying: true)
@@ -466,8 +472,8 @@ final class GatewayConnectionModel {
     func updateMachineName(_ machineName: String) {
         gatewayMachineName = machineName
         guard let account = selectedAccount,
-              account.machineName != machineName,
-              let index = accounts.firstIndex(where: { $0.id == account.id })
+            account.machineName != machineName,
+            let index = accounts.firstIndex(where: { $0.id == account.id })
         else { return }
         accounts[index].machineName = machineName
         try? store.recordMachineName(machineName, for: account)

@@ -46,8 +46,12 @@ extension ComposerDictationTests {
                 stopping.fulfill()
             }
         }
-        let first = Task { await dictation.cancel(); returned += 1 }
-        let second = Task { await dictation.discard(); returned += 1 }
+        let first = Task {
+            await dictation.cancel(); returned += 1
+        }
+        let second = Task {
+            await dictation.discard(); returned += 1
+        }
         await fulfillment(of: [stopping], timeout: 1)
         XCTAssertEqual(returned, 0)
         resume?.resume()

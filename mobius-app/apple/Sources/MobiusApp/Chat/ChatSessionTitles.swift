@@ -10,14 +10,15 @@ extension ChatSessionModel {
     ) {
         let prompt = submittedPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let previewTitle = ChatTitleWriter.preview(for: prompt),
-              titleEligibleSessionIDs.contains(sessionID)
-                  || (pendingChatTitles[sessionID] == nil && sessions.contains(where: {
-                      $0.sessionId == sessionID
-                          && $0.explicitTitle == nil
-                          && ($0.firstUserMessage ?? "")
-                              .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                  })),
-              let accountID = gateway.selectedAccountID
+            titleEligibleSessionIDs.contains(sessionID)
+                || (pendingChatTitles[sessionID] == nil
+                    && sessions.contains(where: {
+                        $0.sessionId == sessionID
+                            && $0.explicitTitle == nil
+                            && ($0.firstUserMessage ?? "")
+                                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    })),
+            let accountID = gateway.selectedAccountID
         else { return }
         guard sessions.first(where: { $0.sessionId == sessionID })?.explicitTitle == nil
         else {
@@ -41,7 +42,8 @@ extension ChatSessionModel {
         let titleWriter = titleWriter
         let locale = locale
         chatTitleTasks[sessionID] = Task { [weak self] in
-            let outcome = await titleWriter.title(for: prompt, locale: locale) { [weak self] message in
+            let outcome = await titleWriter.title(for: prompt, locale: locale) {
+                [weak self] message in
                 self?.showToast(verbatim: message, tone: .warning)
             }
             guard let self else { return }
@@ -51,14 +53,16 @@ extension ChatSessionModel {
 
     func reconcileChatTitleAfterReplay() {
         guard let sessionID = selectedSessionID,
-              let pending = pendingChatTitles[sessionID],
-              !pending.submissionConfirmed
+            let pending = pendingChatTitles[sessionID],
+            !pending.submissionConfirmed
         else { return }
-        let promptWasReplayed = replayCompletionSubmissionIDs.contains(
-            pending.attempt.submissionID
-        ) || replayUserMessages.contains {
-            $0.text.trimmingCharacters(in: .whitespacesAndNewlines) == pending.attempt.prompt
-        }
+        let promptWasReplayed =
+            replayCompletionSubmissionIDs.contains(
+                pending.attempt.submissionID
+            )
+            || replayUserMessages.contains {
+                $0.text.trimmingCharacters(in: .whitespacesAndNewlines) == pending.attempt.prompt
+            }
         if promptWasReplayed {
             confirmChatTitle(sessionID: sessionID)
         } else {
@@ -86,9 +90,11 @@ extension ChatSessionModel {
     }
 
     func confirmChatTitle(submissionID: String) {
-        guard let sessionID = pendingChatTitles.first(where: {
-            $0.value.attempt.submissionID == submissionID
-        })?.key else { return }
+        guard
+            let sessionID = pendingChatTitles.first(where: {
+                $0.value.attempt.submissionID == submissionID
+            })?.key
+        else { return }
         confirmChatTitle(sessionID: sessionID)
     }
 
@@ -134,7 +140,8 @@ extension ChatSessionModel {
                     completeChatTitle(sessionID)
                 }
             } else if let requestID = pending.renameRequestID,
-                      requestID != sessionMutationRequestID {
+                requestID != sessionMutationRequestID
+            {
                 // The mutation slot cleared without the generated title reaching the catalog.
                 cancelChatTitle(sessionID)
             }
@@ -144,26 +151,28 @@ extension ChatSessionModel {
 
     func persistGeneratedChatTitles() {
         guard gateway.connectionState.isReady,
-              sessionMutationRequestID == nil,
-              let accountID = gateway.selectedAccountID
+            sessionMutationRequestID == nil,
+            let accountID = gateway.selectedAccountID
         else { return }
 
         for sessionID in pendingChatTitles.keys.sorted() {
             guard var pending = pendingChatTitles[sessionID],
-                  pending.attempt.accountID == accountID,
-                  let title = pending.generatedTitle,
-                  pending.submissionConfirmed,
-                  pending.renameRequestID == nil
+                pending.attempt.accountID == accountID,
+                let title = pending.generatedTitle,
+                pending.submissionConfirmed,
+                pending.renameRequestID == nil
             else { continue }
             if sessions.first(where: { $0.sessionId == sessionID })?.explicitTitle != nil {
                 cancelChatTitle(sessionID)
                 continue
             }
-            guard let requestID = requestSessionRename(
-                sessionID: sessionID,
-                title: title,
-                generatedTitleSessionID: sessionID
-            ) else { return }
+            guard
+                let requestID = requestSessionRename(
+                    sessionID: sessionID,
+                    title: title,
+                    generatedTitleSessionID: sessionID
+                )
+            else { return }
             pending.renameRequestID = requestID
             pendingChatTitles[sessionID] = pending
             return
@@ -177,9 +186,11 @@ extension ChatSessionModel {
     }
 
     func cancelChatTitle(submissionID: String, rearm: Bool) {
-        guard let sessionID = pendingChatTitles.first(where: {
-            $0.value.attempt.submissionID == submissionID
-        })?.key else { return }
+        guard
+            let sessionID = pendingChatTitles.first(where: {
+                $0.value.attempt.submissionID == submissionID
+            })?.key
+        else { return }
         cancelChatTitle(sessionID, rearm: rearm)
     }
 

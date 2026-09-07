@@ -22,11 +22,14 @@ final class ChatTitleWriterTests: XCTestCase {
     }
 
     func testStripsTheDressingSmallModelsAddToTitles() {
-        XCTAssertEqual(ChatTitleWriter.cleaned("\"Fix the retry backoff\""), "Fix the retry backoff")
+        XCTAssertEqual(
+            ChatTitleWriter.cleaned("\"Fix the retry backoff\""), "Fix the retry backoff")
         XCTAssertEqual(ChatTitleWriter.cleaned("Title: Rename the gateway"), "Rename the gateway")
         XCTAssertEqual(ChatTitleWriter.cleaned("Title:\nUseful title"), "Useful title")
-        XCTAssertEqual(ChatTitleWriter.cleaned("Audit the sandbox policy."), "Audit the sandbox policy")
-        XCTAssertEqual(ChatTitleWriter.cleaned("  Trim whitespace \n and drop the rest"), "Trim whitespace")
+        XCTAssertEqual(
+            ChatTitleWriter.cleaned("Audit the sandbox policy."), "Audit the sandbox policy")
+        XCTAssertEqual(
+            ChatTitleWriter.cleaned("  Trim whitespace \n and drop the rest"), "Trim whitespace")
     }
 
     func testRejectsOnlyEmptyOutputAndFitsVerboseTitles() {
@@ -85,11 +88,13 @@ final class ChatTitleWriterTests: XCTestCase {
     @MainActor
     func testSettledTitlePreservesNativeTextSpacingAndTruncation() throws {
         func pixels(_ view: some View) throws -> Data {
-            let renderer = ImageRenderer(content: view
-                .font(.headline)
-                .lineLimit(1)
-                .foregroundStyle(.black)
-                .frame(width: 180, height: 44, alignment: .leading))
+            let renderer = ImageRenderer(
+                content:
+                    view
+                    .font(.headline)
+                    .lineLimit(1)
+                    .foregroundStyle(.black)
+                    .frame(width: 180, height: 44, alignment: .leading))
             renderer.scale = 2
             let image = try XCTUnwrap(renderer.cgImage)
             let pixels = try XCTUnwrap(image.dataProvider?.data) as Data

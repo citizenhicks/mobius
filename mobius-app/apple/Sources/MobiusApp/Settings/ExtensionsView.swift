@@ -27,7 +27,8 @@ struct ExtensionsView: View {
                         statusLabel: status.label,
                         statusDetail: status.detail,
                         statusColor: status.color,
-                        isLoading: model.gateway.connectionState.isLoading || model.extensionAction != nil
+                        isLoading: model.gateway.connectionState.isLoading
+                            || model.extensionAction != nil
                     )
                     .groupedHeaderAction()
                 }
@@ -64,7 +65,8 @@ struct ExtensionsView: View {
                         Text("Discovered")
                         SettingsInfoButton(
                             title: "Discovered",
-                            detail: "Skills found in the gateway and workspace skill directories. They are always available and are not managed here.",
+                            detail:
+                                "Skills found in the gateway and workspace skill directories. They are always available and are not managed here.",
                             compact: true
                         )
                     }
@@ -85,7 +87,9 @@ struct ExtensionsView: View {
             }
             Button("Cancel", role: .cancel) { uninstalling = nil }
         } message: {
-            Text("The gateway will uninstall it without changing saved chat selections. Chats that reference it continue with the extension disabled. Per-workspace .mobius/extensions data is retained.")
+            Text(
+                "The gateway will uninstall it without changing saved chat selections. Chats that reference it continue with the extension disabled. Per-workspace .mobius/extensions data is retained."
+            )
         }
         .task(id: model.cloud.cloudSession?.userID) {
             await model.cloud.refreshExtensionCatalog()
@@ -182,22 +186,40 @@ struct ExtensionsView: View {
         if let action = model.extensionAction {
             return switch action {
             case .installing:
-                (.localized("Installing extension"), .localized("The gateway is adding the package to its catalog."), palette.accent)
+                (
+                    .localized("Installing extension"),
+                    .localized("The gateway is adding the package to its catalog."), palette.accent
+                )
             case .updating(let name):
-                (.localized("Updating \(name)"), .localized("The gateway is replacing the installed snapshot."), palette.accent)
+                (
+                    .localized("Updating \(name)"),
+                    .localized("The gateway is replacing the installed snapshot."), palette.accent
+                )
             case .uninstalling(let name):
-                (.localized("Uninstalling \(name)"), .localized("The gateway is removing the package from its catalog."), palette.accent)
+                (
+                    .localized("Uninstalling \(name)"),
+                    .localized("The gateway is removing the package from its catalog."),
+                    palette.accent
+                )
             case .trusting(let name):
-                (.localized("Trusting \(name) hooks"), .localized("Trust is bound to the reviewed package digest."), palette.accent)
+                (
+                    .localized("Trusting \(name) hooks"),
+                    .localized("Trust is bound to the reviewed package digest."), palette.accent
+                )
             case .untrusting(let name):
-                (.localized("Disabling \(name) hooks"), .localized("The gateway is revoking executable-hook trust."), palette.accent)
+                (
+                    .localized("Disabling \(name) hooks"),
+                    .localized("The gateway is revoking executable-hook trust."), palette.accent
+                )
             }
         }
         switch model.gateway.connectionState {
         case .ready:
             return (
                 .localized("Catalog up to date"),
-                .localized("\(model.extensions.count) installed · \(model.extensionSkillReferences.count) discovered"),
+                .localized(
+                    "\(model.extensions.count) installed · \(model.extensionSkillReferences.count) discovered"
+                ),
                 palette.signal
             )
         case .failed(let message):
@@ -217,8 +239,10 @@ struct ExtensionsView: View {
             open: { model.navigationPath = [.settings(.extensionPackage(record.id))] },
             marks: {
                 if record.needsHookTrust {
-                    MobiusIcon(.shieldAlert, size: MobiusStyle.glyphMark, foreground: palette.warning)
-                        .accessibilityLabel("\(record.name) has disabled hooks")
+                    MobiusIcon(
+                        .shieldAlert, size: MobiusStyle.glyphMark, foreground: palette.warning
+                    )
+                    .accessibilityLabel("\(record.name) has disabled hooks")
                 }
             }
         ) {
@@ -261,16 +285,21 @@ private struct InstallExtensionSheet: View {
         NavigationStack {
             Form {
                 Section {
-                    TextField("https://github.com/owner/repository.git", text: $model.extensionInstallSource)
-                        .textContentType(.URL)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .submitLabel(.go)
-                        .onSubmit(install)
+                    TextField(
+                        "https://github.com/owner/repository.git",
+                        text: $model.extensionInstallSource
+                    )
+                    .textContentType(.URL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .submitLabel(.go)
+                    .onSubmit(install)
                 } header: {
                     Text("Git URL")
                 } footer: {
-                    Text("An HTTPS Git URL, or a GitHub tree URL pointing at a branch and subdirectory. The gateway clones it, pins an immutable snapshot, and reads its package manifest.")
+                    Text(
+                        "An HTTPS Git URL, or a GitHub tree URL pointing at a branch and subdirectory. The gateway clones it, pins an immutable snapshot, and reads its package manifest."
+                    )
                 }
             }
             .formStyle(.grouped)
@@ -370,8 +399,7 @@ struct ExtensionDetailView: View {
 
             Section("Package") {
                 LabeledContent("Kind") {
-                    if record.kind == .plugin { Text("Plugin") }
-                    else { Text("Skill") }
+                    if record.kind == .plugin { Text("Plugin") } else { Text("Skill") }
                 }
                 if let version = record.version {
                     LabeledContent("Version") { Text(verbatim: version) }
@@ -410,7 +438,9 @@ struct ExtensionDetailView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("The gateway will uninstall it without changing saved chat selections. Chats that reference it continue with the extension disabled. Per-workspace .mobius/extensions data is retained.")
+            Text(
+                "The gateway will uninstall it without changing saved chat selections. Chats that reference it continue with the extension disabled. Per-workspace .mobius/extensions data is retained."
+            )
         }
     }
 }

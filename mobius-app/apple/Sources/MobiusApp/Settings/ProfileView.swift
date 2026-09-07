@@ -72,7 +72,8 @@ private struct CloudAgentUsageLimit: View {
         let percentage = (limit?.remainingFraction ?? 0).formatted(
             .percent.precision(.fractionLength(0))
         )
-        let remaining = limit == nil
+        let remaining =
+            limit == nil
             ? Text("Unavailable")
             : Text("\(percentage) remaining")
         VStack(alignment: .leading, spacing: MobiusSpace.s) {
@@ -161,7 +162,8 @@ private struct SettingsInformationButton: View {
     }
 
     private var versionDescription: LocalizedStringResource {
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
+        let version =
+            Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
             as? String ?? "—"
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—"
         return "möbius v\(version) (\(build))"
@@ -216,11 +218,12 @@ private struct CloudAccountSettings: View {
                     )
                 }
                 LabeledContent("Subscriber since") { Text("August 2026") }
-                CloudAgentUsageLimit(limit: MobiusCloudUsageLimit(
-                    creditMicrousd: 1,
-                    remainingMicrousd: 1,
-                    resetsAt: Date(timeIntervalSince1970: 0)
-                ))
+                CloudAgentUsageLimit(
+                    limit: MobiusCloudUsageLimit(
+                        creditMicrousd: 1,
+                        remainingMicrousd: 1,
+                        resetsAt: Date(timeIntervalSince1970: 0)
+                    ))
                 VStack(spacing: MobiusSpace.s) {
                     ForEach(0..<(model.cloud.cloudGateway == nil ? 5 : 4), id: \.self) { _ in
                         Button("Manage subscription", glyph: .sealCheck) {}
@@ -243,7 +246,9 @@ private struct CloudAccountSettings: View {
                     tone: .error,
                     title: .localized("Cloud account unavailable"),
                     detail: .verbatim(cloudError),
-                    action: (.localized("Retry"), { Task { await model.cloud.refreshCloudAccount() } })
+                    action: (
+                        .localized("Retry"), { Task { await model.cloud.refreshCloudAccount() } }
+                    )
                 )
             }
             if !subscriptionExpired || model.cloud.cloudAccount != nil {
@@ -257,14 +262,20 @@ private struct CloudAccountSettings: View {
                 // The info button sits beside the toggle rather than inside its label,
                 // which would hand its taps to the switch.
                 HStack(spacing: MobiusSpace.xs) {
-                    Toggle("Help improve möbius", isOn: Binding(
-                        get: { model.cloud.cloudAccount?.sharesDiagnostics ?? false },
-                        set: { sharesDiagnostics in
-                            Task { await model.cloud.setCloudSharesDiagnostics(sharesDiagnostics) }
-                        }
-                    ))
+                    Toggle(
+                        "Help improve möbius",
+                        isOn: Binding(
+                            get: { model.cloud.cloudAccount?.sharesDiagnostics ?? false },
+                            set: { sharesDiagnostics in
+                                Task {
+                                    await model.cloud.setCloudSharesDiagnostics(sharesDiagnostics)
+                                }
+                            }
+                        )
+                    )
                     .toggleStyle(.switch)
-                    .disabled(model.cloud.isUpdatingCloudDiagnostics || model.cloud.cloudAccount == nil)
+                    .disabled(
+                        model.cloud.isUpdatingCloudDiagnostics || model.cloud.cloudAccount == nil)
                     SettingsInfoButton(
                         title: "Help improve möbius",
                         detail: "Off by default. Saved to your Cloud account."
@@ -282,7 +293,9 @@ private struct CloudAccountSettings: View {
                 CloudAgentUsageLimit(limit: model.cloud.cloudAccount?.luna)
             }
             VStack(spacing: MobiusSpace.s) {
-                if subscriptionExpired || (model.cloud.cloudAccount != nil && model.cloud.cloudGateway == nil) {
+                if subscriptionExpired
+                    || (model.cloud.cloudAccount != nil && model.cloud.cloudGateway == nil)
+                {
                     MobiusCloudOfferButton()
                 }
                 Button("Manage subscription", glyph: .sealCheck) {
@@ -290,9 +303,11 @@ private struct CloudAccountSettings: View {
                 }
                 .buttonStyle(.mobiusGlass)
                 .tint(palette.accent)
-                .accessibilityHint("Opens App Store subscription management, where you can unsubscribe")
+                .accessibilityHint(
+                    "Opens App Store subscription management, where you can unsubscribe")
                 Button(
-                    model.cloud.cloudAction == .restoring ? "Restoring purchases…" : "Restore purchases",
+                    model.cloud.cloudAction == .restoring
+                        ? "Restoring purchases…" : "Restore purchases",
                     glyph: .arrowClockwise
                 ) {
                     Task { _ = await model.cloud.restoreCloudPurchases() }
@@ -326,7 +341,9 @@ private struct CloudAccountSettings: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("This device forgets the Cloud sign-in and removes its paired gateway. Your subscription is unaffected.")
+                Text(
+                    "This device forgets the Cloud sign-in and removes its paired gateway. Your subscription is unaffected."
+                )
             }
             .alert("Delete your möbius Cloud account?", isPresented: $confirmsAccountDeletion) {
                 Button("Delete now", role: .destructive) {
@@ -337,17 +354,21 @@ private struct CloudAccountSettings: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("This permanently deletes your Cloud account, gateway, chats, credentials, and other Cloud data. Access ends immediately; Cloud resources may take a short time to erase. App Store billing is separate and may continue until you cancel the subscription.")
+                Text(
+                    "This permanently deletes your Cloud account, gateway, chats, credentials, and other Cloud data. Access ends immediately; Cloud resources may take a short time to erase. App Store billing is separate and may continue until you cancel the subscription."
+                )
             }
             .sheet(isPresented: $showsAccountDeletionAuthentication) {
                 MobiusCloudAccountDeletionSheet()
                     .mobiusSheet(detents: [.large])
             }
         } else {
-            Text("möbius works on its own with a gateway you run. Connect möbius Cloud to have one provisioned and managed for you.")
-                .font(MobiusStyle.bodyFont)
-                .foregroundStyle(palette.muted)
-                .fixedSize(horizontal: false, vertical: true)
+            Text(
+                "möbius works on its own with a gateway you run. Connect möbius Cloud to have one provisioned and managed for you."
+            )
+            .font(MobiusStyle.bodyFont)
+            .foregroundStyle(palette.muted)
+            .fixedSize(horizontal: false, vertical: true)
             MobiusCloudOfferButton()
         }
     }
@@ -375,10 +396,12 @@ private struct MobiusCloudAccountDeletionSheet: View {
                         Text("Confirm with Apple")
                             .font(.title.bold())
                             .frame(maxWidth: .infinity, alignment: .center)
-                        Text("Sign in again to confirm permanent account deletion. This verifies that the request belongs to you.")
-                            .font(MobiusStyle.bodyFont)
-                            .foregroundStyle(palette.muted)
-                            .fixedSize(horizontal: false, vertical: true)
+                        Text(
+                            "Sign in again to confirm permanent account deletion. This verifies that the request belongs to you."
+                        )
+                        .font(MobiusStyle.bodyFont)
+                        .foregroundStyle(palette.muted)
+                        .fixedSize(horizontal: false, vertical: true)
                         if didAttemptDeletion, let cloudError = model.cloud.cloudError {
                             Text(cloudError)
                                 .font(MobiusStyle.captionFont)
@@ -596,10 +619,10 @@ private struct UsageHeatmap: View {
         )
         Canvas { context, size in
             let gapRatio: CGFloat = 0.28
-            let cell = size.width / (
-                CGFloat(profileUsageWeekCount)
-                    + gapRatio * CGFloat(profileUsageWeekCount - 1)
-            )
+            let cell =
+                size.width
+                / (CGFloat(profileUsageWeekCount)
+                    + gapRatio * CGFloat(profileUsageWeekCount - 1))
             let spacing = cell * gapRatio
 
             for index in chart.values.indices {
@@ -628,10 +651,9 @@ private struct UsageHeatmap: View {
 
     private var heatmapAspectRatio: CGFloat {
         let gapRatio: CGFloat = 0.28
-        return (
-            CGFloat(profileUsageWeekCount)
-                + gapRatio * CGFloat(profileUsageWeekCount - 1)
-        ) / (7 + gapRatio * 6)
+        return
+            (CGFloat(profileUsageWeekCount)
+            + gapRatio * CGFloat(profileUsageWeekCount - 1)) / (7 + gapRatio * 6)
     }
 
     private func heatColor(level: Int) -> Color {
@@ -649,25 +671,32 @@ private struct AppearanceSettings: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        Picker("Theme", selection: Binding(
-            get: { model.theme },
-            set: { model.setTheme($0) }
-        )) {
+        Picker(
+            "Theme",
+            selection: Binding(
+                get: { model.theme },
+                set: { model.setTheme($0) }
+            )
+        ) {
             ForEach(ThemePreference.allCases) { Text($0.label).tag($0) }
         }
         .pickerStyle(.segmented)
         .padding(.vertical, MobiusSpace.xs)
         .sensoryFeedback(.selection, trigger: model.theme)
 
-        AccentTintPicker(selection: Binding(
-            get: { model.accentTint },
-            set: { model.setAccentTint($0) }
-        ))
+        AccentTintPicker(
+            selection: Binding(
+                get: { model.accentTint },
+                set: { model.setAccentTint($0) }
+            ))
 
-        Picker("Language", selection: Binding(
-            get: { model.language },
-            set: { model.setLanguage($0) }
-        )) {
+        Picker(
+            "Language",
+            selection: Binding(
+                get: { model.language },
+                set: { model.setLanguage($0) }
+            )
+        ) {
             ForEach(AppLanguage.allCases) { Text($0.label).tag($0) }
         }
         .settingsPickerStyle()
@@ -681,12 +710,15 @@ private struct AppLockSettings: View {
 
     var body: some View {
         HStack(spacing: MobiusSpace.xs) {
-            Toggle(model.appLockAuthenticationMethod.settingTitle, isOn: Binding(
-                get: { model.appLockEnabled },
-                set: { enabled in
-                    Task { await model.setAppLockEnabled(enabled) }
-                }
-            ))
+            Toggle(
+                model.appLockAuthenticationMethod.settingTitle,
+                isOn: Binding(
+                    get: { model.appLockEnabled },
+                    set: { enabled in
+                        Task { await model.setAppLockEnabled(enabled) }
+                    }
+                )
+            )
             .toggleStyle(.switch)
             .disabled(
                 model.isAppLockAuthenticating
@@ -722,17 +754,21 @@ private struct RemoteNotificationSettings: View {
 
     var body: some View {
         HStack(spacing: MobiusSpace.xs) {
-            Toggle("Notifications", isOn: Binding(
-                get: { model.cloud.notificationsEnabled },
-                set: { enabled in
-                    Task { await model.cloud.setNotificationsEnabled(enabled) }
-                }
-            ))
+            Toggle(
+                "Notifications",
+                isOn: Binding(
+                    get: { model.cloud.notificationsEnabled },
+                    set: { enabled in
+                        Task { await model.cloud.setNotificationsEnabled(enabled) }
+                    }
+                )
+            )
             .toggleStyle(.switch)
             .disabled(model.cloud.isUpdatingNotifications)
             SettingsInfoButton(
                 title: "Notifications",
-                detail: "Alerts you on this device when a Cloud chat needs approval or finishes, or a Swarm needs attention."
+                detail:
+                    "Alerts you on this device when a Cloud chat needs approval or finishes, or a Swarm needs attention."
             )
         }
         if model.cloud.isUpdatingNotifications {
@@ -796,5 +832,5 @@ private struct LocalDataSettings: View {
 }
 
 private func compact(_ value: Int) -> String {
-    value.formatted(.number.notation(.compactName).precision(.fractionLength(0 ... 1)))
+    value.formatted(.number.notation(.compactName).precision(.fractionLength(0...1)))
 }

@@ -63,7 +63,9 @@ struct ModelRoutePicker: View {
                         )
                         .tag(Optional(choice.route))
                     }
-                } label: { label.text }
+                } label: {
+                    label.text
+                }
                 .labelsHidden()
             } label: {
                 menuLabel(selectedModelLabel, glyph: selectedGlyph)
@@ -119,9 +121,14 @@ struct ModelRoutePicker: View {
     @ViewBuilder
     private func optionLabel(_ title: String, symbol: String?, tint: AccentTint) -> some View {
         if let symbol,
-           let glyph = MobiusSymbol.knownGlyph(for: symbol),
-           let image = glyph.menuImage(tint.color) {
-            Label { Text(verbatim: title) } icon: { image }
+            let glyph = MobiusSymbol.knownGlyph(for: symbol),
+            let image = glyph.menuImage(tint.color)
+        {
+            Label {
+                Text(verbatim: title)
+            } icon: {
+                image
+            }
         } else {
             Text(verbatim: title)
         }
@@ -174,13 +181,18 @@ struct ModelRoutePicker: View {
                 return
             }
             let effort = selected?.reasoningEffort
-            route = choices.first {
-                model.sameModel($0, choice) && $0.reasoningEffort == effort
-            }?.route ?? choice.route
+            route =
+                choices.first {
+                    model.sameModel($0, choice) && $0.reasoningEffort == effort
+                }?.route ?? choice.route
         }
     }
 
     private var reasoningSelection: Binding<String> {
-        Binding { route ?? "" } set: { route = $0 }
+        Binding {
+            route ?? ""
+        } set: {
+            route = $0
+        }
     }
 }

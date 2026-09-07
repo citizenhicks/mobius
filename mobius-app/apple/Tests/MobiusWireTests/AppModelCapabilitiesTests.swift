@@ -9,18 +9,26 @@ extension AppModelTests {
         let model = try model { await recorder.record($0) }
         model.gateway.connectionState = .ready
         model.chat.selectedSessionID = "chat-1"
-        model.chat.contributions = [FrontendContribution(
-            capability: "notes",
-            acceptsFileAttachments: false,
-            count: nil,
-            commands: [
-                FrontendCommand(name: "inspect_all", arguments: "", description: "Inspect all notes", requiresIdle: true),
-                FrontendCommand(name: "inspect", arguments: "<id>", description: "Inspect a note", requiresIdle: true),
-                FrontendCommand(name: "status", arguments: "", description: "Show status", requiresIdle: false)
-            ],
-            widgets: [],
-            references: []
-        )]
+        model.chat.contributions = [
+            FrontendContribution(
+                capability: "notes",
+                acceptsFileAttachments: false,
+                count: nil,
+                commands: [
+                    FrontendCommand(
+                        name: "inspect_all", arguments: "", description: "Inspect all notes",
+                        requiresIdle: true),
+                    FrontendCommand(
+                        name: "inspect", arguments: "<id>", description: "Inspect a note",
+                        requiresIdle: true),
+                    FrontendCommand(
+                        name: "status", arguments: "", description: "Show status",
+                        requiresIdle: false),
+                ],
+                widgets: [],
+                references: []
+            )
+        ]
 
         let suggestions = try XCTUnwrap(model.commandSuggestions(in: "/inspect", cursorOffset: 8))
         XCTAssertEqual(suggestions.matches.first?.replacement, "/inspect ")
@@ -39,7 +47,8 @@ extension AppModelTests {
             if case .submit = $0 { true } else { false }
         }
         guard case .submit("chat-1", let submission) = try XCTUnwrap(request),
-              case .capabilityCommand(let capability, let command, let arguments, let input, let target) = submission.op
+            case .capabilityCommand(
+                let capability, let command, let arguments, let input, let target) = submission.op
         else { return XCTFail("Expected a capability command, not a model message") }
         XCTAssertEqual(capability, "notes")
         XCTAssertEqual(command, "inspect")
@@ -110,12 +119,14 @@ extension AppModelTests {
         let requestsArrived = await eventually { await recorder.requestCount() == 6 }
         XCTAssertTrue(requestsArrived)
         let readRequests = await recorder.requests()
-        XCTAssertTrue(readRequests.contains {
-            if case .listRoutines(_, nil) = $0 { true } else { false }
-        })
-        XCTAssertTrue(readRequests.contains {
-            if case .listRoutineHistory = $0 { true } else { false }
-        })
+        XCTAssertTrue(
+            readRequests.contains {
+                if case .listRoutines(_, nil) = $0 { true } else { false }
+            })
+        XCTAssertTrue(
+            readRequests.contains {
+                if case .listRoutineHistory = $0 { true } else { false }
+            })
     }
 
     func testCompletedRoutineRunCanBeDeleted() async throws {
@@ -141,7 +152,7 @@ extension AppModelTests {
         XCTAssertTrue(requestArrived)
         let requests = await recorder.requests()
         guard let request = requests.first,
-              case .deleteRoutineRun(_, "run-1") = request
+            case .deleteRoutineRun(_, "run-1") = request
         else {
             return XCTFail("Expected routine run deletion")
         }
@@ -150,13 +161,15 @@ extension AppModelTests {
     func testRoutineRunPreviewDoesNotMutateSelectedTranscript() throws {
         let model = try model()
         model.chat.selectedSessionID = "chat-1"
-        model.chat.transcript = [TranscriptEntry(
-            id: "selected",
-            text: "Selected chat",
-            kind: .user,
-            format: "plain_text",
-            pending: false
-        )]
+        model.chat.transcript = [
+            TranscriptEntry(
+                id: "selected",
+                text: "Selected chat",
+                kind: .user,
+                format: "plain_text",
+                pending: false
+            )
+        ]
         let routine = Routine(
             id: "routine-1",
             botId: "bot-1",
@@ -179,23 +192,27 @@ extension AppModelTests {
             message: nil
         )
         model.routineRunPreviewRequestID = "preview-1"
-        model.gateway.handle(.routineRunPreview(RoutineRunPreview(
-            requestID: "preview-1",
-            routine: routine,
-            run: run,
-            records: [RecordedEvent(
-                sequence: 1,
-                recordedAtMs: 1_000,
-                event: AgentEventRecord(
-                    submissionId: nil,
-                    msg: testMessageEvent(text: "Routine transcript")
-                ),
-                streamMetrics: [],
-                blocks: [],
-                preview: nil
-            )],
-            nextBeforeSequence: nil
-        )))
+        model.gateway.handle(
+            .routineRunPreview(
+                RoutineRunPreview(
+                    requestID: "preview-1",
+                    routine: routine,
+                    run: run,
+                    records: [
+                        RecordedEvent(
+                            sequence: 1,
+                            recordedAtMs: 1_000,
+                            event: AgentEventRecord(
+                                submissionId: nil,
+                                msg: testMessageEvent(text: "Routine transcript")
+                            ),
+                            streamMetrics: [],
+                            blocks: [],
+                            preview: nil
+                        )
+                    ],
+                    nextBeforeSequence: nil
+                )))
 
         XCTAssertEqual(model.chat.transcript.map(\.text), ["Selected chat"])
         XCTAssertEqual(model.routineRunPreviewEntries.map(\.text), ["Routine transcript"])
@@ -209,13 +226,15 @@ extension AppModelTests {
         })
         model.chat.selectedSessionID = "chat-1"
         model.gateway.connectionState = .ready
-        model.middlewareFeatures = [MiddlewareFeature(
-            id: "scratchpad",
-            label: "Scratchpad",
-            description: "Durable notes",
-            required: false,
-            settings: []
-        )]
+        model.middlewareFeatures = [
+            MiddlewareFeature(
+                id: "scratchpad",
+                label: "Scratchpad",
+                description: "Durable notes",
+                required: false,
+                settings: []
+            )
+        ]
         var config = composition()
         model.agentSnapshot = VersionedAgentConfig(revision: 1, config: config)
         let forget = AgentOperation.capabilityCommand(
@@ -253,23 +272,26 @@ extension AppModelTests {
             acceptsFileAttachments: false,
             count: 1,
             commands: [],
-            widgets: [FrontendWidget(
-                id: "navigation",
-                slot: .navigation,
-                text: "Scratchpad",
-                tone: "neutral",
-                symbol: "brain",
-                iconOnly: false,
-                progress: nil,
-                content: .actionList(title: "Global Scratchpad", items: []),
-                action: nil
-            )],
+            widgets: [
+                FrontendWidget(
+                    id: "navigation",
+                    slot: .navigation,
+                    text: "Scratchpad",
+                    tone: "neutral",
+                    symbol: "brain",
+                    iconOnly: false,
+                    progress: nil,
+                    content: .actionList(title: "Global Scratchpad", items: []),
+                    action: nil
+                )
+            ],
             references: []
         )
-        model.applyGatewayCatalog(ready(
-            botDefaults: VersionedAgentConfig(revision: 1, config: composition()),
-            contributions: [contribution]
-        ))
+        model.applyGatewayCatalog(
+            ready(
+                botDefaults: VersionedAgentConfig(revision: 1, config: composition()),
+                contributions: [contribution]
+            ))
         model.gateway.connectionState = .ready
 
         XCTAssertNil(model.chat.selectedSessionID)
@@ -316,27 +338,31 @@ extension AppModelTests {
             acceptsFileAttachments: false,
             count: 1,
             commands: [],
-            widgets: [FrontendWidget(
-                id: "swarm",
-                slot: .navigation,
-                text: "Scratchpad",
-                tone: "neutral",
-                symbol: "brain",
-                iconOnly: false,
-                progress: nil,
-                content: .actionList(title: "Swarm Scratchpad", items: []),
-                action: nil
-            )],
+            widgets: [
+                FrontendWidget(
+                    id: "swarm",
+                    slot: .navigation,
+                    text: "Scratchpad",
+                    tone: "neutral",
+                    symbol: "brain",
+                    iconOnly: false,
+                    progress: nil,
+                    content: .actionList(title: "Swarm Scratchpad", items: []),
+                    action: nil
+                )
+            ],
             references: []
         )
-        model.gateway.handle(.contributionsChanged(
-            requestID: "scratchpad-1",
-            scope: .swarm(id: swarm.id),
-            contributions: [contribution]
-        ))
+        model.gateway.handle(
+            .contributionsChanged(
+                requestID: "scratchpad-1",
+                scope: .swarm(id: swarm.id),
+                contributions: [contribution]
+            ))
 
         XCTAssertEqual(model.swarmContributions[swarm.id]?.first?.count, 1)
-        XCTAssertEqual(model.navigationWidgets(in: .swarm(id: swarm.id)).first?.title, "Swarm Scratchpad")
+        XCTAssertEqual(
+            model.navigationWidgets(in: .swarm(id: swarm.id)).first?.title, "Swarm Scratchpad")
         XCTAssertNil(model.navigationWidgets(in: .global).first)
     }
 
@@ -353,65 +379,70 @@ extension AppModelTests {
 
     func testContributionCatalogReferencesAndWidgetsAreGeneric() throws {
         let model = try model()
-        model.chat.contributions = [FrontendContribution(
-            capability: "tasks",
-            acceptsFileAttachments: false,
-            count: 3,
-            commands: [],
-            widgets: [
-                FrontendWidget(
-                    id: "count",
-                    slot: .header,
-                    text: "3 tasks",
-                    tone: "success",
-                    symbol: nil,
-                    iconOnly: false,
-                    progress: nil,
-                    content: nil,
-                    action: nil
-                ),
-                FrontendWidget(
-                    id: "fork",
-                    slot: .messageActions,
-                    text: "Fork chat",
-                    tone: "neutral",
-                    symbol: "branch",
-                    iconOnly: true,
-                    progress: nil,
-                    content: nil,
-                    action: .capabilityCommand(
-                        capability: "sessions",
-                        command: "fork",
-                        arguments: "",
-                        input: nil,
-                        target: nil
-                    )
-                ),
-                FrontendWidget(
-                    id: "journal",
-                    slot: .navigation,
-                    text: "Journal",
-                    tone: "neutral",
-                    symbol: "brain",
-                    iconOnly: false,
-                    progress: nil,
-                    content: nil,
-                    action: nil
-                ),
-                FrontendWidget(
-                    id: "journal-menu",
-                    slot: .chatMenu,
-                    text: "Open journal",
-                    tone: "neutral",
-                    symbol: "brain",
-                    iconOnly: false,
-                    progress: nil,
-                    content: nil,
-                    action: nil
-                )
-            ],
-            references: [FrontendReference(trigger: "$", value: "planning", description: "Planning skill")]
-        )]
+        model.chat.contributions = [
+            FrontendContribution(
+                capability: "tasks",
+                acceptsFileAttachments: false,
+                count: 3,
+                commands: [],
+                widgets: [
+                    FrontendWidget(
+                        id: "count",
+                        slot: .header,
+                        text: "3 tasks",
+                        tone: "success",
+                        symbol: nil,
+                        iconOnly: false,
+                        progress: nil,
+                        content: nil,
+                        action: nil
+                    ),
+                    FrontendWidget(
+                        id: "fork",
+                        slot: .messageActions,
+                        text: "Fork chat",
+                        tone: "neutral",
+                        symbol: "branch",
+                        iconOnly: true,
+                        progress: nil,
+                        content: nil,
+                        action: .capabilityCommand(
+                            capability: "sessions",
+                            command: "fork",
+                            arguments: "",
+                            input: nil,
+                            target: nil
+                        )
+                    ),
+                    FrontendWidget(
+                        id: "journal",
+                        slot: .navigation,
+                        text: "Journal",
+                        tone: "neutral",
+                        symbol: "brain",
+                        iconOnly: false,
+                        progress: nil,
+                        content: nil,
+                        action: nil
+                    ),
+                    FrontendWidget(
+                        id: "journal-menu",
+                        slot: .chatMenu,
+                        text: "Open journal",
+                        tone: "neutral",
+                        symbol: "brain",
+                        iconOnly: false,
+                        progress: nil,
+                        content: nil,
+                        action: nil
+                    ),
+                ],
+                references: [
+                    FrontendReference(
+                        trigger: "$", value: "planning", description: "Planning skill")
+                ]
+            )
+        ]
         model.chat.mountedWidgets = model.chat.contributions.flatMap { contribution in
             contribution.widgets.map {
                 MountedWidget(capability: contribution.capability, widget: $0)
@@ -432,34 +463,40 @@ extension AppModelTests {
         let model = try model()
         var config = composition()
         config.extensions.insert("plugin:ponytail")
-        model.applyGatewayCatalog(ready(
-            botDefaults: VersionedAgentConfig(revision: 1, config: config),
-            extensions: [extensionRecord()],
-            contributions: [FrontendContribution(
-                capability: "gateway-skills",
+        model.applyGatewayCatalog(
+            ready(
+                botDefaults: VersionedAgentConfig(revision: 1, config: config),
+                extensions: [extensionRecord()],
+                contributions: [
+                    FrontendContribution(
+                        capability: "gateway-skills",
+                        acceptsFileAttachments: false,
+                        count: 2,
+                        commands: [],
+                        widgets: [],
+                        references: [
+                            FrontendReference(trigger: "$", value: "global", description: "Global"),
+                            FrontendReference(
+                                trigger: "$", value: "workspace", description: "Duplicate"),
+                        ]
+                    )
+                ]
+            ))
+        model.agentSnapshot = VersionedAgentConfig(revision: 1, config: config)
+        model.chat.contributions = [
+            FrontendContribution(
+                capability: "session-skills",
                 acceptsFileAttachments: false,
-                count: 2,
+                count: 3,
                 commands: [],
                 widgets: [],
                 references: [
-                    FrontendReference(trigger: "$", value: "global", description: "Global"),
-                    FrontendReference(trigger: "$", value: "workspace", description: "Duplicate")
+                    FrontendReference(trigger: "$", value: "ponytail", description: "Managed"),
+                    FrontendReference(trigger: "$", value: "workspace", description: "Workspace"),
+                    FrontendReference(trigger: "$", value: "project", description: "Project"),
                 ]
-            )]
-        ))
-        model.agentSnapshot = VersionedAgentConfig(revision: 1, config: config)
-        model.chat.contributions = [FrontendContribution(
-            capability: "session-skills",
-            acceptsFileAttachments: false,
-            count: 3,
-            commands: [],
-            widgets: [],
-            references: [
-                FrontendReference(trigger: "$", value: "ponytail", description: "Managed"),
-                FrontendReference(trigger: "$", value: "workspace", description: "Workspace"),
-                FrontendReference(trigger: "$", value: "project", description: "Project")
-            ]
-        )]
+            )
+        ]
 
         XCTAssertEqual(
             model.extensionSkillReferences.map(\.value),
@@ -516,11 +553,13 @@ extension AppModelTests {
             references: []
         )
 
-        model.gateway.handle(.sessionChanged(sessionReady(
-            latestSequence: 1,
-            contributions: [contribution],
-            widgets: [SessionWidget(capability: "tasks", item: dynamicStatus)]
-        )))
+        model.gateway.handle(
+            .sessionChanged(
+                sessionReady(
+                    latestSequence: 1,
+                    contributions: [contribution],
+                    widgets: [SessionWidget(capability: "tasks", item: dynamicStatus)]
+                )))
 
         XCTAssertEqual(model.chat.mountedWidgets.count, 2)
         XCTAssertEqual(model.chat.composerFooterWidgets.first?.widget.text, "Running")
@@ -576,13 +615,13 @@ extension AppModelTests {
         }
         let requests = await recorder.requests()
         guard case .submit(let sessionID, let submission) = try XCTUnwrap(request),
-              case .capabilityCommand(
-                  let capability,
-                  let command,
-                  let arguments,
-                  let input,
-                  let submittedTarget
-              ) = submission.op
+            case .capabilityCommand(
+                let capability,
+                let command,
+                let arguments,
+                let input,
+                let submittedTarget
+            ) = submission.op
         else { return XCTFail("Expected a targeted capability command") }
         XCTAssertEqual(requests.count, 1)
         XCTAssertEqual(sessionID, "chat-1")
@@ -602,21 +641,25 @@ extension AppModelTests {
                     "sessionId": .string("chat-1"),
                     "turnId": .string("turn-1"),
                     "modelStepId": .string("step-1"),
-                    "callId": .string("search-1")
+                    "callId": .string("search-1"),
                 ]),
-                [RenderedBlock(capability: "web_search", block: FrontendBlock(
-                    id: "step-1/search-1",
-                    group: "turn-1",
-                    update: .replace,
-                    state: .pending,
-                    role: .webSearch,
-                    title: "Searching the web",
-                    text: "",
-                    symbol: "search",
-                    format: "plain_text",
-                    tone: "neutral",
-                    files: []
-                ))]
+                [
+                    RenderedBlock(
+                        capability: "web_search",
+                        block: FrontendBlock(
+                            id: "step-1/search-1",
+                            group: "turn-1",
+                            update: .replace,
+                            state: .pending,
+                            role: .webSearch,
+                            title: "Searching the web",
+                            text: "",
+                            symbol: "search",
+                            format: "plain_text",
+                            tone: "neutral",
+                            files: []
+                        ))
+                ]
             ),
             (
                 .object([
@@ -627,42 +670,50 @@ extension AppModelTests {
                     "callId": .string("search-1"),
                     "action": .object([
                         "type": .string("search"),
-                        "query": .string("möbius")
-                    ])
+                        "query": .string("möbius"),
+                    ]),
                 ]),
-                [RenderedBlock(capability: "web_search", block: FrontendBlock(
-                    id: "step-1/search-1",
-                    group: "turn-1",
-                    update: .replace,
-                    state: .complete,
-                    role: .webSearch,
-                    title: "Searched the web",
-                    text: "möbius",
-                    symbol: "search",
-                    format: "plain_text",
-                    tone: "success",
-                    files: []
-                ))]
+                [
+                    RenderedBlock(
+                        capability: "web_search",
+                        block: FrontendBlock(
+                            id: "step-1/search-1",
+                            group: "turn-1",
+                            update: .replace,
+                            state: .complete,
+                            role: .webSearch,
+                            title: "Searched the web",
+                            text: "möbius",
+                            symbol: "search",
+                            format: "plain_text",
+                            tone: "success",
+                            files: []
+                        ))
+                ]
             ),
             (
                 .object([
                     "type": .string("turn_aborted"),
                     "turnId": .string("turn-1"),
-                    "reason": .string("Stopped")
+                    "reason": .string("Stopped"),
                 ]),
-                [RenderedBlock(capability: "agent", block: FrontendBlock(
-                    id: nil,
-                    group: "turn-1",
-                    update: .replace,
-                    state: .complete,
-                    role: .notice,
-                    title: "Turn aborted",
-                    text: "Stopped",
-                    symbol: nil,
-                    format: "plain_text",
-                    tone: "warning",
-                    files: []
-                ))]
+                [
+                    RenderedBlock(
+                        capability: "agent",
+                        block: FrontendBlock(
+                            id: nil,
+                            group: "turn-1",
+                            update: .replace,
+                            state: .complete,
+                            role: .notice,
+                            title: "Turn aborted",
+                            text: "Stopped",
+                            symbol: nil,
+                            format: "plain_text",
+                            tone: "warning",
+                            files: []
+                        ))
+                ]
             ),
             (
                 .object([
@@ -674,7 +725,7 @@ extension AppModelTests {
                             "cacheWriteInputTokens": .number(25),
                             "outputTokens": .number(100),
                             "reasoningOutputTokens": .number(50),
-                            "totalTokens": .number(1_100)
+                            "totalTokens": .number(1_100),
                         ]),
                         "lastTokenUsage": .object([
                             "inputTokens": .number(40),
@@ -682,23 +733,24 @@ extension AppModelTests {
                             "cacheWriteInputTokens": .number(5),
                             "outputTokens": .number(10),
                             "reasoningOutputTokens": .number(3),
-                            "totalTokens": .number(99)
+                            "totalTokens": .number(99),
                         ]),
-                        "modelContextWindow": .number(200)
-                    ])
+                        "modelContextWindow": .number(200),
+                    ]),
                 ]),
                 []
             ),
         ]
         for (offset, item) in events.enumerated() {
-            model.chat.reduce(record: RecordedEvent(
-                sequence: UInt64(offset + 1),
-                recordedAtMs: Int64(1_000 + offset),
-                event: AgentEventRecord(submissionId: nil, msg: item.0),
-                streamMetrics: [],
-                blocks: item.1,
-                preview: nil
-            ))
+            model.chat.reduce(
+                record: RecordedEvent(
+                    sequence: UInt64(offset + 1),
+                    recordedAtMs: Int64(1_000 + offset),
+                    event: AgentEventRecord(submissionId: nil, msg: item.0),
+                    streamMetrics: [],
+                    blocks: item.1,
+                    preview: nil
+                ))
         }
 
         XCTAssertEqual(model.chat.transcript.map(\.title), ["Searched the web", "Turn aborted"])
@@ -759,47 +811,52 @@ extension AppModelTests {
             ),
         ]
 
-        model.chat.reduce(record: RecordedEvent(
-            sequence: 1,
-            recordedAtMs: 1_200,
-            event: AgentEventRecord(
-                submissionId: nil,
-                msg: testAssistantMessage(
-                    turnID: "turn-live",
-                    modelStepID: "step-live",
-                    text: "Answer"
-                )
-            ),
-            streamMetrics: [],
-            blocks: [],
-            preview: nil
-        ))
-        model.chat.reduce(record: RecordedEvent(
-            sequence: 2,
-            recordedAtMs: 1_250,
-            event: AgentEventRecord(
-                submissionId: nil,
-                msg: testAssistantMessage(
-                    turnID: "turn-live",
-                    modelStepID: "step-live",
-                    text: "Answer"
-                )
-            ),
-            streamMetrics: [],
-            blocks: [],
-            preview: nil
-        ))
-        model.chat.reduce(record: RecordedEvent(
-            sequence: 3,
-            recordedAtMs: 1_300,
-            event: AgentEventRecord(submissionId: nil, msg: .object([
-                "type": .string("turn_complete"),
-                "turnId": .string("turn-live")
-            ])),
-            streamMetrics: [],
-            blocks: [],
-            preview: nil
-        ))
+        model.chat.reduce(
+            record: RecordedEvent(
+                sequence: 1,
+                recordedAtMs: 1_200,
+                event: AgentEventRecord(
+                    submissionId: nil,
+                    msg: testAssistantMessage(
+                        turnID: "turn-live",
+                        modelStepID: "step-live",
+                        text: "Answer"
+                    )
+                ),
+                streamMetrics: [],
+                blocks: [],
+                preview: nil
+            ))
+        model.chat.reduce(
+            record: RecordedEvent(
+                sequence: 2,
+                recordedAtMs: 1_250,
+                event: AgentEventRecord(
+                    submissionId: nil,
+                    msg: testAssistantMessage(
+                        turnID: "turn-live",
+                        modelStepID: "step-live",
+                        text: "Answer"
+                    )
+                ),
+                streamMetrics: [],
+                blocks: [],
+                preview: nil
+            ))
+        model.chat.reduce(
+            record: RecordedEvent(
+                sequence: 3,
+                recordedAtMs: 1_300,
+                event: AgentEventRecord(
+                    submissionId: nil,
+                    msg: .object([
+                        "type": .string("turn_complete"),
+                        "turnId": .string("turn-live"),
+                    ])),
+                streamMetrics: [],
+                blocks: [],
+                preview: nil
+            ))
 
         XCTAssertEqual(model.chat.transcript.last?.turnID, "turn-live")
         XCTAssertEqual(model.chat.transcript.last?.turnTerminal, true)
@@ -821,11 +878,13 @@ extension AppModelTests {
         XCTAssertTrue(model.runningSessionIDs.contains("chat-1"))
         XCTAssertEqual(model.attentionSessionIDs, ["chat-1"])
 
-        model.applySessions([session(
-            state: .awaitingApproval,
-            turnID: "turn-1",
-            approvalRequestID: "approval-1"
-        )])
+        model.applySessions([
+            session(
+                state: .awaitingApproval,
+                turnID: "turn-1",
+                approvalRequestID: "approval-1"
+            )
+        ])
         XCTAssertEqual(model.toast?.tone, .warning)
         XCTAssertEqual(model.toast?.target, .session("chat-1"))
         XCTAssertEqual(model.attentionSessionIDs, ["chat-1"])
@@ -867,39 +926,50 @@ extension AppModelTests {
         model.setChatVisible(false, windowToken: firstWindow)
         XCTAssertTrue(model.isChatVisible)
         model.applySessions([session(state: .running, turnID: "turn-1")])
-        model.applySessions([session(
-            state: .idle, outcome: .completed, executionStats: ExecutionStats(runCount: 1)
-        )])
+        model.applySessions([
+            session(
+                state: .idle, outcome: .completed, executionStats: ExecutionStats(runCount: 1)
+            )
+        ])
         XCTAssertFalse(model.chat.unreadSessionIDs.contains("chat-1"))
         XCTAssertNil(model.toast)
 
         model.setChatVisible(false, windowToken: secondWindow)
         XCTAssertFalse(model.isChatVisible)
-        model.applySessions([session(
-            state: .running, turnID: "turn-2", executionStats: ExecutionStats(runCount: 1)
-        )])
-        model.applySessions([session(
-            state: .idle, outcome: .completed, executionStats: ExecutionStats(runCount: 2), sequence: 2
-        )])
+        model.applySessions([
+            session(
+                state: .running, turnID: "turn-2", executionStats: ExecutionStats(runCount: 1)
+            )
+        ])
+        model.applySessions([
+            session(
+                state: .idle, outcome: .completed, executionStats: ExecutionStats(runCount: 2),
+                sequence: 2
+            )
+        ])
         XCTAssertTrue(model.chat.unreadSessionIDs.contains("chat-1"))
         XCTAssertNotNil(model.toast)
     }
 
     func testCompletedSessionNotificationUsesGatewayFinalAnswerPreviewAndBotIdentity() throws {
         let model = try model()
-        model.applySessions([session(
-            state: .running,
-            turnID: "turn-1",
-            title: "Do not use this title"
-        )])
+        model.applySessions([
+            session(
+                state: .running,
+                turnID: "turn-1",
+                title: "Do not use this title"
+            )
+        ])
 
-        model.applySessions([session(
-            state: .idle,
-            outcome: .completed,
-            message: "  Fixed the parser.\n\nAll focused tests pass.  ",
-            sequence: 2,
-            title: "Do not use this title"
-        )])
+        model.applySessions([
+            session(
+                state: .idle,
+                outcome: .completed,
+                message: "  Fixed the parser.\n\nAll focused tests pass.  ",
+                sequence: 2,
+                title: "Do not use this title"
+            )
+        ])
 
         XCTAssertEqual(model.toast?.tone, .success)
         XCTAssertEqual(model.toast?.target, .session("chat-1"))
@@ -911,30 +981,36 @@ extension AppModelTests {
         let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
         model.gateway.accounts = [account]
         model.gateway.selectedAccountID = account.id
-        model.applySessions([session(
-            state: .idle,
-            outcome: .failed,
-            message: "Initial failure",
-            sequence: 1
-        )])
+        model.applySessions([
+            session(
+                state: .idle,
+                outcome: .failed,
+                message: "Initial failure",
+                sequence: 1
+            )
+        ])
         model.markSessionRead("chat-1")
 
-        model.applySessions([session(
-            state: .idle,
-            outcome: .failed,
-            message: "Refined failure",
-            sequence: 1
-        )])
+        model.applySessions([
+            session(
+                state: .idle,
+                outcome: .failed,
+                message: "Refined failure",
+                sequence: 1
+            )
+        ])
 
         XCTAssertFalse(model.chat.unreadSessionIDs.contains("chat-1"))
         XCTAssertNil(model.toast)
 
-        model.applySessions([session(
-            state: .idle,
-            outcome: .failed,
-            message: "New failure",
-            sequence: 2
-        )])
+        model.applySessions([
+            session(
+                state: .idle,
+                outcome: .failed,
+                message: "New failure",
+                sequence: 2
+            )
+        ])
 
         XCTAssertTrue(model.chat.unreadSessionIDs.contains("chat-1"))
         XCTAssertEqual(model.toast?.message, "Review failed: New failure.")
@@ -982,12 +1058,14 @@ extension AppModelTests {
         model.setChatVisible(false, windowToken: chatWindowToken)
 
         model.applySessions([session(state: .running, turnID: "turn-1", title: "Review")])
-        model.applySessions([session(
-            state: .idle,
-            outcome: .failed,
-            message: "Provider failed",
-            title: "Review"
-        )])
+        model.applySessions([
+            session(
+                state: .idle,
+                outcome: .failed,
+                message: "Provider failed",
+                title: "Review"
+            )
+        ])
 
         XCTAssertEqual(model.toast?.message, "Review failed: Provider failed.")
         XCTAssertEqual(model.toast?.tone, .error)
@@ -1005,18 +1083,22 @@ extension AppModelTests {
         model.chat.selectedSessionID = "chat-1"
 
         model.chat.reduce(
-            event: AgentEventRecord(submissionId: nil, msg: .object([
-                "type": .string("turn_started"),
-                "turnId": .string("turn-1")
-            ])),
+            event: AgentEventRecord(
+                submissionId: nil,
+                msg: .object([
+                    "type": .string("turn_started"),
+                    "turnId": .string("turn-1"),
+                ])),
             blocks: [],
             preview: nil
         )
         model.chat.reduce(
-            event: AgentEventRecord(submissionId: nil, msg: .object([
-                "type": .string("error"),
-                "message": .string("Provider failed")
-            ])),
+            event: AgentEventRecord(
+                submissionId: nil,
+                msg: .object([
+                    "type": .string("error"),
+                    "message": .string("Provider failed"),
+                ])),
             blocks: [],
             preview: nil
         )
@@ -1047,7 +1129,8 @@ extension AppModelTests {
         model.dismissToast()
         model.saveProviderCredential()
 
-        XCTAssertEqual(model.toast?.message, "Enter an API key. It will be sent once and never read back.")
+        XCTAssertEqual(
+            model.toast?.message, "Enter an API key. It will be sent once and never read back.")
         XCTAssertEqual(model.toast?.tone, .error)
     }
 

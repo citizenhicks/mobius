@@ -3,10 +3,11 @@ import Foundation
 extension ChatSessionModel {
     func beginReplying(to entry: TranscriptEntry) {
         guard canBeginReply,
-              !entry.pending,
-              let target = entry.messageTarget
+            !entry.pending,
+            let target = entry.messageTarget
         else { return }
-        let text = entry.text.isEmpty
+        let text =
+            entry.text.isEmpty
             ? entry.files.map(\.name).joined(separator: ", ")
             : entry.text
         guard !text.isEmpty else { return }
@@ -36,7 +37,9 @@ extension ChatSessionModel {
         ) {
             return
         }
-        if handleTurnEvent(type, event: event, record: record, turnID: turnID, wasRendered: wasRendered) {
+        if handleTurnEvent(
+            type, event: event, record: record, turnID: turnID, wasRendered: wasRendered)
+        {
             return
         }
         _ = handleTranscriptStateEvent(type, event: event)
@@ -47,7 +50,8 @@ extension ChatSessionModel {
         type: String,
         message: MessageEventPayload?
     ) {
-        let confirmsSteeringDelivery = replayRequestID == nil
+        let confirmsSteeringDelivery =
+            replayRequestID == nil
             && message?.author == .user
             && message?.delivery == .steer
             && event.submissionId != nil
@@ -59,13 +63,16 @@ extension ChatSessionModel {
             flushStreamDeltas()
         }
         if message?.delivery == .turn,
-           message?.author == .user,
-           let submissionID = event.submissionId {
+            message?.author == .user,
+            let submissionID = event.submissionId
+        {
             confirmChatTitle(submissionID: submissionID)
         }
         if let submissionID = event.submissionId {
             if type == "warning" || type == "error" || type == "submission_rejected" {
-                if let draft = pendingDrafts.removeValue(forKey: submissionID) { restoreDraft(draft) }
+                if let draft = pendingDrafts.removeValue(forKey: submissionID) {
+                    restoreDraft(draft)
+                }
                 previewSelections.removeValue(forKey: submissionID)
                 if previewWidgetRequestID == submissionID { previewWidgetRequestID = nil }
                 if previewPageRequestID == submissionID {
@@ -77,7 +84,8 @@ extension ChatSessionModel {
                 pendingDrafts.removeValue(forKey: submissionID)
                 if message?.author == .user
                     || (type == "frontend"
-                        && event.msg["frontendType"]?.stringValue == "widget") {
+                        && event.msg["frontendType"]?.stringValue == "widget")
+                {
                     completeSubmittedComposerEdit(requestID: submissionID)
                 }
                 flushComposerDraft()
@@ -99,7 +107,8 @@ extension ChatSessionModel {
             )
         }
         if let preview = record.preview {
-            let opensWidget = event.submissionId != nil && event.submissionId == previewWidgetRequestID
+            let opensWidget =
+                event.submissionId != nil && event.submissionId == previewWidgetRequestID
             if opensWidget { previewWidgetRequestID = nil }
             let completesPageLoad = event.submissionId == previewPageRequestID
             if completesPageLoad {
@@ -140,11 +149,12 @@ extension ChatSessionModel {
         case "assistant_content_delta":
             let phase = event.msg["phase"]?.stringValue
             guard let modelStepID = event.msg["modelStepId"]?.stringValue else { return true }
-            let kind: TranscriptEntry.Kind = switch phase {
-            case "reasoning": .reasoning
-            case "commentary": .commentary
-            default: .assistant
-            }
+            let kind: TranscriptEntry.Kind =
+                switch phase {
+                case "reasoning": .reasoning
+                case "commentary": .commentary
+                default: .assistant
+                }
             appendStream(
                 id: streamID(modelStepID: modelStepID, phase: phase ?? "final_answer"),
                 delta: event.msg["delta"]?.stringValue ?? "",
@@ -185,8 +195,9 @@ extension ChatSessionModel {
             activeTurnID = event.msg["turnId"]?.stringValue
             awaitingInitialMessageTurnID = activeTurnID
             if replayRequestID == nil,
-               let turnID = activeTurnID,
-               runStats.active?.turnId != turnID {
+                let turnID = activeTurnID,
+                runStats.active?.turnId != turnID
+            {
                 runStats.active = RunSummary(
                     sessionId: selectedSessionID ?? "",
                     submissionId: event.submissionId ?? "",
@@ -264,11 +275,13 @@ extension ChatSessionModel {
             pendingApproval = decodeApproval(event.msg)
         case "token_count":
             if let usage = event.msg["info"]?["totalTokenUsage"],
-               let decoded = TokenUsage(json: usage) {
+                let decoded = TokenUsage(json: usage)
+            {
                 currentUsage = decoded
             }
             if let usage = event.msg["info"]?["lastTokenUsage"],
-               let latest = TokenUsage(json: usage) {
+                let latest = TokenUsage(json: usage)
+            {
                 lastUsage = latest
                 updateContextTokens()
             }
@@ -289,8 +302,8 @@ extension ChatSessionModel {
             break
         case "widget":
             guard let capability = event["capability"]?.stringValue,
-                  let item = event["item"],
-                  let widget = try? FrontendWidget(json: item)
+                let item = event["item"],
+                let widget = try? FrontendWidget(json: item)
             else { return }
             upsertWidget(MountedWidget(capability: capability, widget: widget))
             acknowledgeWidgetEdit(
@@ -300,7 +313,7 @@ extension ChatSessionModel {
             )
         case "remove_widget":
             guard let capability = event["capability"]?.stringValue,
-                  let id = event["id"]?.stringValue
+                let id = event["id"]?.stringValue
             else { return }
             mountedWidgets.removeAll { $0.capability == capability && $0.widget.id == id }
             acknowledgeWidgetEdit(
@@ -310,9 +323,10 @@ extension ChatSessionModel {
             )
         case "picker":
             guard let title = event["title"]?.stringValue else { return }
-            let options = event["options"]?.arrayValue?.compactMap {
-                try? FrontendPickerOption(json: $0)
-            } ?? []
+            let options =
+                event["options"]?.arrayValue?.compactMap {
+                    try? FrontendPickerOption(json: $0)
+                } ?? []
             guard !options.isEmpty else { return }
             pendingPicker = FrontendPickerPrompt(title: title, options: options)
         default:
@@ -326,10 +340,10 @@ extension ChatSessionModel {
         widgetID: String
     ) {
         guard var pending = pendingWidgetEdit,
-              pending.recovery.phase == .removingQueuedInput,
-              pending.recovery.requestID == submissionID,
-              pending.recovery.capability == capability,
-              pending.recovery.widgetID == widgetID
+            pending.recovery.phase == .removingQueuedInput,
+            pending.recovery.requestID == submissionID,
+            pending.recovery.capability == capability,
+            pending.recovery.widgetID == widgetID
         else { return }
         pending.recovery.phase = .editing
         pendingWidgetEdit = pending
@@ -386,7 +400,8 @@ extension ChatSessionModel {
         to entries: inout [TranscriptEntry]
     ) {
         let block = rendered.block
-        let sourceID = block.id
+        let sourceID =
+            block.id
             ?? recordID.map { "record:\($0):\(blockIndex)" }
             ?? "record:\(sequence):\(blockIndex)"
         let id = scopedBlockID(capability: rendered.capability, sourceID: sourceID)
@@ -400,7 +415,8 @@ extension ChatSessionModel {
             if entries[index].kind != kind || entries[index].role != block.role {
                 invalidateTranscriptProjection()
             }
-            entries[index].text = appending ? appendingBlockText(block.text, to: entries[index].text) : block.text
+            entries[index].text =
+                appending ? appendingBlockText(block.text, to: entries[index].text) : block.text
             entries[index].kind = kind
             entries[index].capability = rendered.capability
             entries[index].role = block.role
@@ -425,25 +441,26 @@ extension ChatSessionModel {
                 appending: appending
             )
         } else {
-            entries.append(TranscriptEntry(
-                id: id,
-                text: block.text,
-                kind: kind,
-                capability: rendered.capability,
-                role: block.role,
-                update: block.update,
-                title: block.title,
-                symbol: block.symbol,
-                group: block.group,
-                format: block.format,
-                tone: block.tone,
-                pending: block.pending,
-                modelStepID: modelStepID,
-                turnID: turnID,
-                sourceSequence: sequence,
-                recordedAtMs: recordedAtMs,
-                files: block.files
-            ))
+            entries.append(
+                TranscriptEntry(
+                    id: id,
+                    text: block.text,
+                    kind: kind,
+                    capability: rendered.capability,
+                    role: block.role,
+                    update: block.update,
+                    title: block.title,
+                    symbol: block.symbol,
+                    group: block.group,
+                    format: block.format,
+                    tone: block.tone,
+                    pending: block.pending,
+                    modelStepID: modelStepID,
+                    turnID: turnID,
+                    sourceSequence: sequence,
+                    recordedAtMs: recordedAtMs,
+                    files: block.files
+                ))
         }
     }
 
@@ -468,7 +485,8 @@ extension ChatSessionModel {
         return result
     }
 
-    func apply(_ preview: RenderedPreview, selection: FrontendPickerOption?, present: Bool = false) {
+    func apply(_ preview: RenderedPreview, selection: FrontendPickerOption?, present: Bool = false)
+    {
         var pageEntries: [TranscriptEntry] = []
         var turnState = TranscriptHistoryTurnState()
         for (index, rendered) in preview.events.enumerated() {
@@ -476,7 +494,8 @@ extension ChatSessionModel {
                 RecordedEvent(
                     sequence: UInt64(index + 1),
                     recordedAtMs: rendered.recordedAtMs,
-                    event: AgentEventRecord(submissionId: rendered.submissionId, msg: rendered.event),
+                    event: AgentEventRecord(
+                        submissionId: rendered.submissionId, msg: rendered.event),
                     streamMetrics: [],
                     blocks: rendered.blocks,
                     preview: nil
@@ -489,19 +508,22 @@ extension ChatSessionModel {
         let existing = previews.first { $0.id == preview.id }
         var retained: [TranscriptEntry] = []
         if preview.update == .replace, !present, selection == nil,
-           presentedPreview?.id == preview.id, let existing {
+            presentedPreview?.id == preview.id, let existing
+        {
             let ids = Set(pageEntries.map(\.id))
             let steps = Set(pageEntries.compactMap(\.modelStepID))
-            retained = Array(existing.entries.prefix {
-                !ids.contains($0.id) && $0.modelStepID.map(steps.contains) != true
-            })
+            retained = Array(
+                existing.entries.prefix {
+                    !ids.contains($0.id) && $0.modelStepID.map(steps.contains) != true
+                })
         }
-        let visibleEntries = switch preview.update {
-        case .replace:
-            retained + pageEntries
-        case .prepend:
-            mergePreviewPages(older: pageEntries, newer: existing?.entries ?? [])
-        }
+        let visibleEntries =
+            switch preview.update {
+            case .replace:
+                retained + pageEntries
+            case .prepend:
+                mergePreviewPages(older: pageEntries, newer: existing?.entries ?? [])
+            }
         let record = TranscriptPreview(
             id: preview.id,
             title: preview.title,
@@ -516,7 +538,9 @@ extension ChatSessionModel {
         } else {
             previews.append(record)
         }
-        if present || selection != nil || presentedPreview?.id == preview.id { presentedPreview = record }
+        if present || selection != nil || presentedPreview?.id == preview.id {
+            presentedPreview = record
+        }
     }
 
     func mergePreviewPages(
@@ -619,7 +643,8 @@ extension ChatSessionModel {
 
     func appendMessageDelta(_ record: RecordedEvent, to entries: inout [TranscriptEntry]) {
         guard let submissionID = record.event.submissionId,
-              let delta = record.event.msg["text"]?.stringValue, !delta.isEmpty else { return }
+            let delta = record.event.msg["text"]?.stringValue, !delta.isEmpty
+        else { return }
         let id = submittedMessageID(submissionID)
         if let entry = entries.last(where: { $0.id == id }) {
             guard entry.pending else { return }
@@ -627,10 +652,11 @@ extension ChatSessionModel {
             entry.sourceSequence = record.sequence
             entry.recordedAtMs = record.recordedAtMs
         } else {
-            entries.append(TranscriptEntry(
-                id: id, text: delta, kind: .user, format: "plain_text", pending: true,
-                sourceSequence: record.sequence, recordedAtMs: record.recordedAtMs
-            ))
+            entries.append(
+                TranscriptEntry(
+                    id: id, text: delta, kind: .user, format: "plain_text", pending: true,
+                    sourceSequence: record.sequence, recordedAtMs: record.recordedAtMs
+                ))
         }
     }
 
@@ -665,15 +691,16 @@ extension ChatSessionModel {
             bufferedDeltas[last].sourceSequence = record.sequence
             bufferedDeltas[last].recordedAtMs = record.recordedAtMs
         } else {
-            bufferedDeltas.append((
-                id: id,
-                delta: delta,
-                kind: kind,
-                modelStepID: modelStepID,
-                turnID: turnID,
-                sourceSequence: record.sequence,
-                recordedAtMs: record.recordedAtMs
-            ))
+            bufferedDeltas.append(
+                (
+                    id: id,
+                    delta: delta,
+                    kind: kind,
+                    modelStepID: modelStepID,
+                    turnID: turnID,
+                    sourceSequence: record.sequence,
+                    recordedAtMs: record.recordedAtMs
+                ))
         }
         guard deltaFlushTask == nil else { return }
         deltaFlushTask = Task { [weak self] in
@@ -701,25 +728,26 @@ extension ChatSessionModel {
                 transcript[index].recordedAtMs = buffered.recordedAtMs
             } else {
                 mutateTranscriptPreservingPrefix { entries in
-                    entries.append(TranscriptEntry(
-                        id: buffered.id,
-                        presentationID: buffered.kind.narrativePhase.map {
-                            TranscriptEntry.narrativePresentationID(
-                                modelStepID: buffered.modelStepID,
-                                phase: $0,
-                                ordinal: 0
-                            )
-                        },
-                        text: buffered.delta,
-                        kind: buffered.kind,
-                        format: "plain_text",
-                        tone: "neutral",
-                        pending: true,
-                        modelStepID: buffered.modelStepID,
-                        turnID: buffered.turnID,
-                        sourceSequence: buffered.sourceSequence,
-                        recordedAtMs: buffered.recordedAtMs
-                    ))
+                    entries.append(
+                        TranscriptEntry(
+                            id: buffered.id,
+                            presentationID: buffered.kind.narrativePhase.map {
+                                TranscriptEntry.narrativePresentationID(
+                                    modelStepID: buffered.modelStepID,
+                                    phase: $0,
+                                    ordinal: 0
+                                )
+                            },
+                            text: buffered.delta,
+                            kind: buffered.kind,
+                            format: "plain_text",
+                            tone: "neutral",
+                            pending: true,
+                            modelStepID: buffered.modelStepID,
+                            turnID: buffered.turnID,
+                            sourceSequence: buffered.sourceSequence,
+                            recordedAtMs: buffered.recordedAtMs
+                        ))
                 }
             }
         }
@@ -741,8 +769,8 @@ extension ChatSessionModel {
         to entries: inout [TranscriptEntry]
     ) {
         guard let modelStepID = event["modelStepId"]?.stringValue,
-              let outcome = event["outcome"],
-              let status = outcome["status"]?.stringValue
+            let outcome = event["outcome"],
+            let status = outcome["status"]?.stringValue
         else { return }
         guard status != "completed" else { return }
         // Block source ids are namespaced by model step, so a step that ends without
@@ -787,7 +815,7 @@ extension ChatSessionModel {
         to entries: inout [TranscriptEntry]
     ) {
         guard let modelStepID = event["modelStepId"]?.stringValue,
-              let content = event["content"]?.arrayValue
+            let content = event["content"]?.arrayValue
         else { return }
         let previousSnapshotIndex = entries.firstIndex(where: {
             $0.modelStepID == modelStepID && !$0.pending
@@ -804,10 +832,10 @@ extension ChatSessionModel {
         var nextPresentationOrdinal: [String: Int] = [:]
         let snapshotEntries = content.enumerated().compactMap { index, item -> TranscriptEntry? in
             guard let outputIndex = item["outputIndex"]?.intValue,
-                  let partIndex = item["partIndex"]?.intValue,
-                  let phase = item["phase"]?.stringValue,
-                  let text = item["text"]?.stringValue,
-                  !text.isEmpty
+                let partIndex = item["partIndex"]?.intValue,
+                let phase = item["phase"]?.stringValue,
+                let text = item["text"]?.stringValue,
+                !text.isEmpty
             else { return nil }
             let kind: TranscriptEntry.Kind
             switch phase {
@@ -848,9 +876,10 @@ extension ChatSessionModel {
         entries.insert(contentsOf: snapshotEntries, at: insertionIndex)
         let annotations = snapshotEntries.flatMap(\.annotations)
         if !annotations.isEmpty,
-           let searchIndex = entries.lastIndex(where: {
-               $0.isWebSearch && $0.modelStepID == modelStepID
-           }) {
+            let searchIndex = entries.lastIndex(where: {
+                $0.isWebSearch && $0.modelStepID == modelStepID
+            })
+        {
             entries[searchIndex].annotations = annotations
         }
     }
@@ -875,14 +904,18 @@ extension ChatSessionModel {
     ) {
         let terminalEntries: [TranscriptEntry]
         if let terminalSourceSequence {
-            guard let terminal = entries.last(where: {
-                $0.turnID == turnID && $0.sourceSequence == terminalSourceSequence
-            }) else { return }
+            guard
+                let terminal = entries.last(where: {
+                    $0.turnID == turnID && $0.sourceSequence == terminalSourceSequence
+                })
+            else { return }
             terminalEntries = [terminal]
         } else {
-            guard let final = entries.last(where: {
-                $0.turnID == turnID && $0.kind == .assistant
-            }) else { return }
+            guard
+                let final = entries.last(where: {
+                    $0.turnID == turnID && $0.kind == .assistant
+                })
+            else { return }
             let finalModelStepID = final.modelStepID
             let finalSourceSequence = final.sourceSequence
             terminalEntries = entries.filter { entry in
@@ -893,11 +926,13 @@ extension ChatSessionModel {
                             || finalSourceSequence.map { entry.sourceSequence == $0 } == true))
             }
         }
-        let startedAtMs = entries
+        let startedAtMs =
+            entries
             .filter { $0.turnID == turnID }
             .compactMap(\.recordedAtMs)
             .min()
-        let terminalAtMs = finishedAtMs
+        let terminalAtMs =
+            finishedAtMs
             ?? terminalEntries.compactMap(\.recordedAtMs).max()
         let elapsedMs = startedAtMs.flatMap { startedAtMs in
             terminalAtMs.map { UInt64(max(0, $0 - startedAtMs)) }
@@ -931,11 +966,12 @@ extension AppModel {
         for record in preview.records {
             chat.reduceHistory(record, into: &pageEntries, turnState: &turnState)
         }
-        routineRunPreviewEntries = if routineRunPreviewRequestBeforeSequence == nil {
-            pageEntries
-        } else {
-            chat.mergePreviewPages(older: pageEntries, newer: routineRunPreviewEntries)
-        }
+        routineRunPreviewEntries =
+            if routineRunPreviewRequestBeforeSequence == nil {
+                pageEntries
+            } else {
+                chat.mergePreviewPages(older: pageEntries, newer: routineRunPreviewEntries)
+            }
         routineRunPreview = preview
         presentedRoutineRun = preview.run
         routineRunPreviewNextBeforeSequence = preview.nextBeforeSequence

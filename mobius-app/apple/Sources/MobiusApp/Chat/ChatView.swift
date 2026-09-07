@@ -192,19 +192,23 @@ private struct ChatOptionsMenu: View {
     var body: some View {
         HeaderOptionsMenu(label: "Chat options") {
             Section("Details") {
-                Button {} label: {
+                Button {
+                } label: {
                     Text(verbatim: model.workspace?.path ?? "No chat selected")
                 }
                 .disabled(true)
                 if let session = model.selectedSession,
-                   let bot = model.bot(for: session) {
-                    Button {} label: {
+                    let bot = model.bot(for: session)
+                {
+                    Button {
+                    } label: {
                         botIdentityLabel(bot)
                     }
                     .disabled(true)
                 }
                 if let swarm = model.selectedBotSwarm {
-                    Button {} label: {
+                    Button {
+                    } label: {
                         MobiusLabel(verbatim: swarm.title, glyph: .swarm)
                     }
                     .disabled(true)
@@ -232,13 +236,16 @@ private struct ChatOptionsMenu: View {
                     }
                     .disabled(model.isSwitchingGitBranch || !model.canModifySelectedSession)
                 }
-                Button { model.showFiles() } label: {
+                Button {
+                    model.showFiles()
+                } label: {
                     MobiusLabel(
                         title: "Files",
                         glyph: .fileMagnifyingGlass
                     )
                 }
-                .disabled(model.chat.selectedSessionID == nil || !model.gateway.connectionState.isReady)
+                .disabled(
+                    model.chat.selectedSessionID == nil || !model.gateway.connectionState.isReady)
                 Button {
                     model.loadDirectory(
                         model.workspace?.path ?? (model.selectedGatewayIsMobiusCloud ? "." : "/")
@@ -249,7 +256,9 @@ private struct ChatOptionsMenu: View {
                 }
                 .disabled(!model.canModifySelectedSession)
                 if let path = model.workspace?.path {
-                    Button { copyToPasteboard(path) } label: {
+                    Button {
+                        copyToPasteboard(path)
+                    } label: {
                         MobiusLabel(
                             title: "Copy workspace path",
                             glyph: .copy
@@ -320,7 +329,11 @@ private struct ChatOptionsMenu: View {
     private func botIdentityLabel(_ bot: BotRecord) -> some View {
         let title = "\(bot.name) (@\(bot.handle))"
         if let image = MobiusGlyph.aiScan.menuImage(bot.tint.color) {
-            Label { Text(verbatim: title) } icon: { image }
+            Label {
+                Text(verbatim: title)
+            } icon: {
+                image
+            }
         } else {
             MobiusLabel(
                 verbatim: title,

@@ -135,7 +135,8 @@ enum MobiusCloudError: LocalizedError {
         case .keychain: "The Cloud sign-in could not be saved securely."
         case .oversizedResponse: "möbius Cloud returned too much data."
         case .provisioningFailed: "möbius Cloud could not provision your gateway."
-        case .provisioningTimedOut: "Gateway setup is taking longer than expected. Try again shortly."
+        case .provisioningTimedOut:
+            "Gateway setup is taking longer than expected. Try again shortly."
         case .secureRandomUnavailable: "A secure Apple sign-in could not be started."
         case .server(let status):
             status == 401
@@ -176,13 +177,14 @@ private struct MobiusCloudCredential: Codable {
     }
 
     var hasValidToken: Bool {
-        token.utf8.count == 43 && token.utf8.allSatisfy {
-            ($0 >= 0x30 && $0 <= 0x39)
-                || ($0 >= 0x41 && $0 <= 0x5a)
-                || ($0 >= 0x61 && $0 <= 0x7a)
-                || $0 == 0x2d
-                || $0 == 0x5f
-        }
+        token.utf8.count == 43
+            && token.utf8.allSatisfy {
+                ($0 >= 0x30 && $0 <= 0x39)
+                    || ($0 >= 0x41 && $0 <= 0x5a)
+                    || ($0 >= 0x61 && $0 <= 0x7a)
+                    || $0 == 0x2d
+                    || $0 == 0x5f
+            }
     }
 }
 
@@ -214,10 +216,10 @@ final class MobiusCloudSessionStore {
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         guard status != errSecItemNotFound else { return nil }
         guard status == errSecSuccess,
-              let data = result as? Data,
-              data.count <= 8 * 1024,
-              let credential = try? decoder.decode(MobiusCloudCredential.self, from: data),
-              credential.hasValidToken
+            let data = result as? Data,
+            data.count <= 8 * 1024,
+            let credential = try? decoder.decode(MobiusCloudCredential.self, from: data),
+            credential.hasValidToken
         else {
             if status == errSecSuccess { try? remove() }
             throw status == errSecSuccess
@@ -422,7 +424,7 @@ final class MobiusCloudClient {
             throw MobiusCloudError.invalidAuthenticationResponse
         }
         guard let userID = UUID(uuidString: response.userId),
-              response.expiresAt > .now
+            response.expiresAt > .now
         else { throw MobiusCloudError.invalidAuthenticationResponse }
 
         let credential = MobiusCloudCredential(
@@ -472,13 +474,12 @@ final class MobiusCloudClient {
             throw MobiusCloudError.invalidAccountResponse
         }
         guard let userID = UUID(uuidString: response.userId),
-              (response.subscriptionStartedAt != nil) == response.subscribed,
-              response.email.map(Self.isValidEmail) ?? true,
-              response.luna.map({
-                  response.subscribed &&
-                      $0.creditMicrousd > 0 &&
-                      (0 ... $0.creditMicrousd).contains($0.remainingMicrousd)
-              }) ?? true
+            (response.subscriptionStartedAt != nil) == response.subscribed,
+            response.email.map(Self.isValidEmail) ?? true,
+            response.luna.map({
+                response.subscribed && $0.creditMicrousd > 0
+                    && (0...$0.creditMicrousd).contains($0.remainingMicrousd)
+            }) ?? true
         else {
             throw MobiusCloudError.invalidAccountResponse
         }
@@ -501,9 +502,10 @@ final class MobiusCloudClient {
         _ = try await send(
             url: Self.accountURL,
             method: "PUT",
-            body: try encoder.encode(AccountUpdateRequest(
-                sharesDiagnostics: sharesDiagnostics
-            )),
+            body: try encoder.encode(
+                AccountUpdateRequest(
+                    sharesDiagnostics: sharesDiagnostics
+                )),
             authenticated: true
         )
     }
@@ -514,10 +516,11 @@ final class MobiusCloudClient {
         _ = try await send(
             url: Self.subscriptionURL,
             method: "PUT",
-            body: try encoder.encode(SubscriptionRequest(
-                jws: jws,
-                appTransactionJws: appTransactionJWS
-            )),
+            body: try encoder.encode(
+                SubscriptionRequest(
+                    jws: jws,
+                    appTransactionJws: appTransactionJWS
+                )),
             authenticated: true
         )
     }
@@ -528,20 +531,21 @@ final class MobiusCloudClient {
         environment: APNsEnvironment
     ) async throws {
         guard !token.isEmpty,
-              token.utf8.count <= 2_048,
-              token.utf8.count.isMultiple(of: 2),
-              token.utf8.allSatisfy({ byte in
-                  (byte >= 0x30 && byte <= 0x39) || (byte >= 0x61 && byte <= 0x66)
-              })
+            token.utf8.count <= 2_048,
+            token.utf8.count.isMultiple(of: 2),
+            token.utf8.allSatisfy({ byte in
+                (byte >= 0x30 && byte <= 0x39) || (byte >= 0x61 && byte <= 0x66)
+            })
         else { throw MobiusCloudError.invalidPushToken }
         _ = try await send(
             url: Self.pushTokenURL,
             method: "PUT",
-            body: try encoder.encode(PushTokenRequest(
-                installationId: installationID,
-                token: token,
-                environment: environment
-            )),
+            body: try encoder.encode(
+                PushTokenRequest(
+                    installationId: installationID,
+                    token: token,
+                    environment: environment
+                )),
             authenticated: true
         )
     }
@@ -550,9 +554,10 @@ final class MobiusCloudClient {
         _ = try await send(
             url: Self.pushTokenURL,
             method: "DELETE",
-            body: try encoder.encode(PushTokenRemovalRequest(
-                installationId: installationID
-            )),
+            body: try encoder.encode(
+                PushTokenRemovalRequest(
+                    installationId: installationID
+                )),
             authenticated: true
         )
     }
@@ -611,17 +616,19 @@ final class MobiusCloudClient {
         guard items.count <= 100 else { throw MobiusCloudError.invalidExtensionCatalog }
 
         var ids = Set<String>()
-        guard items.allSatisfy({ item in
-            ids.insert(item.id).inserted
-                && item.id.range(
-                    of: #"^[a-z0-9][a-z0-9._-]{0,127}$"#,
-                    options: .regularExpression
-                ) != nil
-                && !item.name.isEmpty
-                && item.name.utf8.count <= 100
-                && item.description.utf8.count <= 1_000
-                && Self.isValidExtensionSource(item.source)
-        }) else {
+        guard
+            items.allSatisfy({ item in
+                ids.insert(item.id).inserted
+                    && item.id.range(
+                        of: #"^[a-z0-9][a-z0-9._-]{0,127}$"#,
+                        options: .regularExpression
+                    ) != nil
+                    && !item.name.isEmpty
+                    && item.name.utf8.count <= 100
+                    && item.description.utf8.count <= 1_000
+                    && Self.isValidExtensionSource(item.source)
+            })
+        else {
             throw MobiusCloudError.invalidExtensionCatalog
         }
         return items
@@ -663,7 +670,9 @@ final class MobiusCloudClient {
         } catch let error as URLError where error.code == .cancelled {
             throw CancellationError()
         }
-        guard data.count <= Self.maximumResponseBytes else { throw MobiusCloudError.oversizedResponse }
+        guard data.count <= Self.maximumResponseBytes else {
+            throw MobiusCloudError.oversizedResponse
+        }
         guard (200..<300).contains(response.statusCode) else {
             if response.statusCode == 401, let bearer {
                 do {
@@ -676,7 +685,8 @@ final class MobiusCloudClient {
                 }
             }
             if response.statusCode == 409,
-               let error = try? decoder.decode(ErrorResponse.self, from: data).error {
+                let error = try? decoder.decode(ErrorResponse.self, from: data).error
+            {
                 if error == "subscription_account_conflict" {
                     throw MobiusCloudError.subscriptionAccountConflict
                 }
@@ -700,14 +710,16 @@ final class MobiusCloudClient {
         nonce: String
     ) throws -> Data {
         guard !authorizationCode.isEmpty,
-              authorizationCode.utf8.count <= 2_048,
-              !authorizationCode.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
-              nonce.range(of: #"^[A-Za-z0-9_-]{43}$"#, options: .regularExpression) != nil
+            authorizationCode.utf8.count <= 2_048,
+            !authorizationCode.unicodeScalars.contains(
+                where: CharacterSet.controlCharacters.contains),
+            nonce.range(of: #"^[A-Za-z0-9_-]{43}$"#, options: .regularExpression) != nil
         else { throw MobiusCloudError.invalidAuthorization }
-        return try encoder.encode(AppleAuthenticationRequest(
-            authorizationCode: authorizationCode,
-            nonce: nonce
-        ))
+        return try encoder.encode(
+            AppleAuthenticationRequest(
+                authorizationCode: authorizationCode,
+                nonce: nonce
+            ))
     }
 
     private static func cloudURL(_ path: String) -> URL {
@@ -730,25 +742,26 @@ final class MobiusCloudClient {
         return jws.utf8.count <= maximumPurchaseJWSBytes
             && parts.count == 3
             && parts.allSatisfy { part in
-                !part.isEmpty && part.utf8.allSatisfy {
-                    ($0 >= 0x30 && $0 <= 0x39)
-                        || ($0 >= 0x41 && $0 <= 0x5a)
-                        || ($0 >= 0x61 && $0 <= 0x7a)
-                        || $0 == 0x2d
-                        || $0 == 0x5f
-                }
+                !part.isEmpty
+                    && part.utf8.allSatisfy {
+                        ($0 >= 0x30 && $0 <= 0x39)
+                            || ($0 >= 0x41 && $0 <= 0x5a)
+                            || ($0 >= 0x61 && $0 <= 0x7a)
+                            || $0 == 0x2d
+                            || $0 == 0x5f
+                    }
             }
     }
 
     private static func isValidExtensionSource(_ source: MobiusCloudExtensionSource) -> Bool {
         guard source.url.utf8.count <= 2_048,
-              let url = URL(string: source.url),
-              url.scheme?.lowercased() == "https",
-              url.host != nil,
-              url.user == nil,
-              url.password == nil,
-              source.reference.map({ !$0.isEmpty && $0.utf8.count <= 256 }) ?? true,
-              source.subdirectory.map({ !$0.isEmpty && $0.utf8.count <= 1_024 }) ?? true
+            let url = URL(string: source.url),
+            url.scheme?.lowercased() == "https",
+            url.host != nil,
+            url.user == nil,
+            url.password == nil,
+            source.reference.map({ !$0.isEmpty && $0.utf8.count <= 256 }) ?? true,
+            source.subdirectory.map({ !$0.isEmpty && $0.utf8.count <= 1_024 }) ?? true
         else { return false }
         return true
     }

@@ -118,7 +118,7 @@ extension MiddlewareConfig {
         for feature in features where feature.required || enabled.contains(feature.id) {
             for setting in feature.settings {
                 guard case .select(let options, _) = setting.kind,
-                      case .string(let value) = settings[feature.id]?[setting.id]
+                    case .string(let value) = settings[feature.id]?[setting.id]
                 else { continue }
                 if let option = options.first(where: {
                     $0.value == value && $0.disables.contains(middleware)
@@ -510,9 +510,9 @@ struct SimpleRoutineSchedule: Equatable {
 func simpleRoutineSchedule(_ expression: String) -> SimpleRoutineSchedule? {
     let fields = expression.split(whereSeparator: \.isWhitespace)
     guard fields.count == 5,
-          fields[2] == "*", fields[3] == "*",
-          let minute = Int(fields[0]), (0..<60).contains(minute),
-          let hour = Int(fields[1]), (0..<24).contains(hour)
+        fields[2] == "*", fields[3] == "*",
+        let minute = Int(fields[0]), (0..<60).contains(minute),
+        let hour = Int(fields[1]), (0..<24).contains(hour)
     else { return nil }
     if fields[4] == "*" { return SimpleRoutineSchedule(minute: minute, hour: hour, weekday: nil) }
     guard let weekday = Int(fields[4]), (0...7).contains(weekday) else { return nil }

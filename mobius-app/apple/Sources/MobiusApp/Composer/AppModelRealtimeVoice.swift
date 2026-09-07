@@ -14,14 +14,15 @@ struct RealtimeVoiceCall: Equatable {
 
 extension AppModel {
     var selectedRouteSupportsRealtimeVoice: Bool {
-        let route = chat.selectedSessionID == nil
+        let route =
+            chat.selectedSessionID == nil
             ? modelRoute(for: selectedBot?.config.config ?? botDefaultsSnapshot?.config)
             : chat.selectedModelRoute
         guard let route,
-              modelChoices.first(where: { $0.route == route })?.supportsRealtimeVoice == true,
-              let instanceID = modelProviders[route],
-              let instance = providerInstances.first(where: { $0.instance == instanceID }),
-              instance.configured
+            modelChoices.first(where: { $0.route == route })?.supportsRealtimeVoice == true,
+            let instanceID = modelProviders[route],
+            let instance = providerInstances.first(where: { $0.instance == instanceID }),
+            instance.configured
         else { return false }
         return providerStatus(forInstance: instanceID)?.realtimeVoices.isEmpty == false
     }
@@ -48,7 +49,9 @@ extension AppModel {
             showToast("Voice is not available for this Bot's provider.", tone: .warning)
             return
         }
-        if let requestID = createPendingSession() { newVoiceChatIntent = .openingSession(requestID) }
+        if let requestID = createPendingSession() {
+            newVoiceChatIntent = .openingSession(requestID)
+        }
     }
 
     func completePendingVoiceChat(requestID: String?) {
@@ -92,14 +95,16 @@ extension ChatSessionModel {
                 guard self?.realtimeVoiceCall?.requestID == requestID else { return }
                 let offer = try await voice.offer()
                 guard self?.realtimeVoiceCall?.requestID == requestID else { return }
-                try await self?.gateway.send(.startRealtimeVoice(
-                    requestID: requestID, sessionID: sessionID, offerSDP: offer
-                ))
+                try await self?.gateway.send(
+                    .startRealtimeVoice(
+                        requestID: requestID, sessionID: sessionID, offerSDP: offer
+                    ))
                 // A canceled request may still receive an answer; the response handler ends it.
                 try await Task.sleep(for: .seconds(45))
                 guard let self,
-                      self.realtimeVoiceCall?.requestID == requestID,
-                      self.realtimeVoiceCall?.voiceID == nil else { return }
+                    self.realtimeVoiceCall?.requestID == requestID,
+                    self.realtimeVoiceCall?.voiceID == nil
+                else { return }
                 self.stopRealtimeVoice()
                 self.showToast("Voice could not connect. Try again.", tone: .error)
             } catch is CancellationError {
@@ -119,9 +124,10 @@ extension ChatSessionModel {
         realtimeVoiceTask = nil
         realtimeVoice.close()
         if notifyGateway, let call {
-            gateway.transmit(.endRealtimeVoice(
-                sessionID: call.sessionID, voiceID: call.voiceID ?? call.requestID
-            ))
+            gateway.transmit(
+                .endRealtimeVoice(
+                    sessionID: call.sessionID, voiceID: call.voiceID ?? call.requestID
+                ))
         }
     }
 
@@ -129,9 +135,9 @@ extension ChatSessionModel {
         switch envelope {
         case .realtimeVoiceStarted(let requestID, let sessionID, let voiceID, let answerSDP):
             guard realtimeVoiceCall?.requestID == requestID,
-                  realtimeVoiceCall?.sessionID == sessionID,
-                  selectedSessionID == sessionID,
-                  eligible
+                realtimeVoiceCall?.sessionID == sessionID,
+                selectedSessionID == sessionID,
+                eligible
             else {
                 gateway.transmit(.endRealtimeVoice(sessionID: sessionID, voiceID: voiceID))
                 return
@@ -151,12 +157,14 @@ extension ChatSessionModel {
             }
         case .realtimeVoiceEnded(let sessionID, let voiceID, let reason):
             guard realtimeVoiceCall?.sessionID == sessionID,
-                  realtimeVoiceCall?.voiceID == voiceID else { return }
+                realtimeVoiceCall?.voiceID == voiceID
+            else { return }
             stopRealtimeVoice(notifyGateway: false)
             if let reason { showToast(verbatim: reason, tone: .warning) }
         case .realtimeVoiceFailed(let requestID, let sessionID, let message):
             guard realtimeVoiceCall?.requestID == requestID,
-                  realtimeVoiceCall?.sessionID == sessionID else { return }
+                realtimeVoiceCall?.sessionID == sessionID
+            else { return }
             stopRealtimeVoice(notifyGateway: false)
             showToast(verbatim: message, tone: .error)
         default:

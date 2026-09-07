@@ -21,13 +21,13 @@ struct SessionFileReference: Identifiable, Codable, Hashable, Sendable {
 
     init(json: JSONValue) throws {
         guard let id = json["id"]?.stringValue,
-              !id.isEmpty,
-              let name = json["name"]?.stringValue,
-              !name.isEmpty,
-              let size = json["size"]?.intValue,
-              size >= 0,
-              let mediaType = json["mediaType"]?.stringValue,
-              !mediaType.isEmpty
+            !id.isEmpty,
+            let name = json["name"]?.stringValue,
+            !name.isEmpty,
+            let size = json["size"]?.intValue,
+            size >= 0,
+            let mediaType = json["mediaType"]?.stringValue,
+            !mediaType.isEmpty
         else {
             throw GatewayWireError.invalidFrame("session file is missing a required field")
         }
@@ -70,8 +70,8 @@ struct MessageTarget: Codable, Hashable, Sendable {
 
     init?(json: JSONValue) {
         guard let checkpointSequence = json["checkpointSequence"]?.uintValue,
-              let batchItemCount = json["batchItemCount"]?.intValue,
-              batchItemCount > 0
+            let batchItemCount = json["batchItemCount"]?.intValue,
+            batchItemCount > 0
         else { return nil }
         self.init(checkpointSequence: checkpointSequence, batchItemCount: batchItemCount)
     }
@@ -88,10 +88,10 @@ struct MessageReply: Codable, Hashable, Sendable {
 
     init(json: JSONValue) throws {
         guard let targetValue = json["target"],
-              let target = MessageTarget(json: targetValue),
-              let text = json["text"]?.stringValue,
-              !text.isEmpty,
-              text.utf8.count <= maximumComposerBytes
+            let target = MessageTarget(json: targetValue),
+            let text = json["text"]?.stringValue,
+            !text.isEmpty,
+            text.utf8.count <= maximumComposerBytes
         else {
             throw GatewayWireError.invalidFrame("message reply is invalid")
         }
@@ -129,11 +129,11 @@ enum MessageAuthor: Codable, Hashable, Sendable {
             self = .user
         case "peer":
             guard let messageID = json["messageId"]?.stringValue,
-                  !messageID.isEmpty,
-                  let sessionID = json["sessionId"]?.stringValue,
-                  !sessionID.isEmpty,
-                  let handle = json["handle"]?.stringValue,
-                  !handle.isEmpty
+                !messageID.isEmpty,
+                let sessionID = json["sessionId"]?.stringValue,
+                !sessionID.isEmpty,
+                let handle = json["handle"]?.stringValue,
+                !handle.isEmpty
             else {
                 throw GatewayWireError.invalidFrame("peer message author is incomplete")
             }
@@ -142,7 +142,9 @@ enum MessageAuthor: Codable, Hashable, Sendable {
                 throw GatewayWireError.invalidFrame("peer message author has an invalid symbol")
             }
             if let value = symbol?.stringValue,
-               value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || value.utf8.count > 256 {
+                value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || value.utf8.count > 256
+            {
                 throw GatewayWireError.invalidFrame("peer message author has an invalid symbol")
             }
             self = .peer(
@@ -171,7 +173,9 @@ enum MessageAuthor: Codable, Hashable, Sendable {
 
 extension MessageAuthor {
     var peerFields: (messageID: String, sessionID: String, handle: String, symbol: String?)? {
-        guard case .peer(let messageID, let sessionID, let handle, let symbol) = self else { return nil }
+        guard case .peer(let messageID, let sessionID, let handle, let symbol) = self else {
+            return nil
+        }
         return (messageID, sessionID, handle, symbol)
     }
 }
@@ -206,19 +210,19 @@ struct MessageSubmission: Codable, Hashable, Sendable {
 
     init(json: JSONValue) throws {
         guard let author = json["author"],
-              let text = json["text"]?.stringValue,
-              let attachmentValues = json["attachments"]?.arrayValue,
-              attachmentValues.count <= maximumWireSessionFileReferences,
-              let replyValue = json["reply"],
-              let requestedDeliveryValue = json["requestedDelivery"],
-              let targetTurnValue = json["targetTurnId"]
+            let text = json["text"]?.stringValue,
+            let attachmentValues = json["attachments"]?.arrayValue,
+            attachmentValues.count <= maximumWireSessionFileReferences,
+            let replyValue = json["reply"],
+            let requestedDeliveryValue = json["requestedDelivery"],
+            let targetTurnValue = json["targetTurnId"]
         else {
             throw GatewayWireError.invalidFrame("message submission is incomplete")
         }
         let requestedDelivery: ActiveMessageDelivery?
         if requestedDeliveryValue != .null {
             guard let rawValue = requestedDeliveryValue.stringValue,
-                  let decoded = ActiveMessageDelivery(rawValue: rawValue)
+                let decoded = ActiveMessageDelivery(rawValue: rawValue)
             else {
                 throw GatewayWireError.invalidFrame("message submission has invalid delivery")
             }
@@ -235,11 +239,12 @@ struct MessageSubmission: Codable, Hashable, Sendable {
         } else {
             targetTurnId = nil
         }
-        let reply: MessageReply? = if replyValue == .null {
-            nil
-        } else {
-            try MessageReply(json: replyValue)
-        }
+        let reply: MessageReply? =
+            if replyValue == .null {
+                nil
+            } else {
+                try MessageReply(json: replyValue)
+            }
         self.init(
             author: try MessageAuthor(json: author),
             text: text,
@@ -274,12 +279,12 @@ struct MessageEventPayload: Hashable, Sendable {
 
     init(json: JSONValue) throws {
         guard let author = json["author"],
-              let deliveryValue = json["delivery"]?.stringValue,
-              let delivery = MessageDelivery(rawValue: deliveryValue),
-              let text = json["text"]?.stringValue,
-              let attachmentValues = json["attachments"]?.arrayValue,
-              attachmentValues.count <= maximumWireSessionFileReferences,
-              let targetValue = json["messageTarget"]
+            let deliveryValue = json["delivery"]?.stringValue,
+            let delivery = MessageDelivery(rawValue: deliveryValue),
+            let text = json["text"]?.stringValue,
+            let attachmentValues = json["attachments"]?.arrayValue,
+            attachmentValues.count <= maximumWireSessionFileReferences,
+            let targetValue = json["messageTarget"]
         else {
             throw GatewayWireError.invalidFrame("message event is incomplete")
         }
@@ -421,13 +426,15 @@ extension AgentOperation {
     }
 
     func replacingCapabilityInput(with input: String) -> Self {
-        guard case .capabilityCommand(
-            let capability,
-            let command,
-            let arguments,
-            _,
-            let target
-        ) = self else { return self }
+        guard
+            case .capabilityCommand(
+                let capability,
+                let command,
+                let arguments,
+                _,
+                let target
+            ) = self
+        else { return self }
         return .capabilityCommand(
             capability: capability,
             command: command,

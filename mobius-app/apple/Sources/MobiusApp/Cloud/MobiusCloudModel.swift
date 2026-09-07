@@ -41,8 +41,7 @@ final class MobiusCloudModel {
     @ObservationIgnored var cloudPairingContinuation: CheckedContinuation<Void, Error>?
     @ObservationIgnored var cloudPurchaseUpdateTask: Task<Void, Never>?
     @ObservationIgnored var cloudPurchaseTasks: [String: Task<Void, Error>] = [:]
-    @ObservationIgnored var cloudAuthenticationRequestTask:
-        Task<MobiusCloudSession, Error>?
+    @ObservationIgnored var cloudAuthenticationRequestTask: Task<MobiusCloudSession, Error>?
     @ObservationIgnored var cloudAuthenticationTask: Task<Void, Never>?
     @ObservationIgnored private(set) var operationGeneration = UUID()
     @ObservationIgnored var remoteNotificationRegistrationTask: Task<Void, Never>?
@@ -64,7 +63,8 @@ final class MobiusCloudModel {
         self.cloudClient = cloudClient
         self.cloudPurchases = cloudPurchases
         cloudSession = try? cloudClient.loadSession()
-        let pushInstallationID = settingsDefaults.string(forKey: pushInstallationIDKey)
+        let pushInstallationID =
+            settingsDefaults.string(forKey: pushInstallationIDKey)
             .flatMap(UUID.init(uuidString:)) ?? UUID()
         settingsDefaults.set(pushInstallationID.uuidString, forKey: pushInstallationIDKey)
         self.pushInstallationID = pushInstallationID
@@ -121,7 +121,8 @@ final class MobiusCloudModel {
             return localizedString(error.localizedDescriptionResource)
         }
         if let error = error as? MobiusCloudPurchaseError,
-           let resource = error.localizedDescriptionResource {
+            let resource = error.localizedDescriptionResource
+        {
             return localizedString(resource)
         }
         return error.localizedDescription

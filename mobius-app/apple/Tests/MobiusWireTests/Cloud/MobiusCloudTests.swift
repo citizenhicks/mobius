@@ -19,12 +19,12 @@ private final class OversizedCloudResponseProtocol: URLProtocol {
 
     override func startLoading() {
         guard let url = request.url,
-              let response = HTTPURLResponse(
-                  url: url,
-                  statusCode: 200,
-                  httpVersion: nil,
-                  headerFields: nil
-              )
+            let response = HTTPURLResponse(
+                url: url,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )
         else {
             client?.urlProtocol(self, didFailWithError: URLError(.badURL))
             return
@@ -132,7 +132,8 @@ final class MobiusCloudTests: XCTestCase {
             if request.url?.path == "/api/mobile/auth/apple" {
                 return try self.response(
                     for: request,
-                    json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
+                    json:
+                        #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
                 )
             }
             registration.count += 1
@@ -290,15 +291,17 @@ final class MobiusCloudTests: XCTestCase {
         XCTAssertEqual(status, .ready)
         XCTAssertEqual(grant.setup.endpoint.rawValue, "wss://gateway.example")
         XCTAssertEqual(grant.setup.code, "0123456789abcdef")
-        XCTAssertEqual(requests.map { $0.url?.path }, [
-            "/api/mobile/auth/apple",
-            "/api/mobile/account",
-            "/api/mobile/account",
-            "/api/mobile/subscription",
-            "/api/mobile/gateway",
-            "/api/mobile/gateway",
-            "/api/mobile/account",
-        ])
+        XCTAssertEqual(
+            requests.map { $0.url?.path },
+            [
+                "/api/mobile/auth/apple",
+                "/api/mobile/account",
+                "/api/mobile/account",
+                "/api/mobile/subscription",
+                "/api/mobile/gateway",
+                "/api/mobile/gateway",
+                "/api/mobile/account",
+            ])
         XCTAssertEqual(
             requests.map(\.httpMethod),
             ["POST", "GET", "PUT", "PUT", "GET", "POST", "DELETE"]
@@ -311,18 +314,22 @@ final class MobiusCloudTests: XCTestCase {
         let authJSON = try XCTUnwrap(
             JSONSerialization.jsonObject(with: authBody) as? [String: String]
         )
-        XCTAssertEqual(authJSON, [
-            "authorizationCode": "apple-code",
-            "nonce": String(repeating: "n", count: 43),
-        ])
+        XCTAssertEqual(
+            authJSON,
+            [
+                "authorizationCode": "apple-code",
+                "nonce": String(repeating: "n", count: 43),
+            ])
         let deletionBody = try XCTUnwrap(requests[6].httpBody)
         let deletionJSON = try XCTUnwrap(
             JSONSerialization.jsonObject(with: deletionBody) as? [String: String]
         )
-        XCTAssertEqual(deletionJSON, [
-            "authorizationCode": "delete-code",
-            "nonce": String(repeating: "d", count: 43),
-        ])
+        XCTAssertEqual(
+            deletionJSON,
+            [
+                "authorizationCode": "delete-code",
+                "nonce": String(repeating: "d", count: 43),
+            ])
         XCTAssertNil(try client.loadSession())
         let accountUpdateBody = try XCTUnwrap(requests[2].httpBody)
         let accountUpdateJSON = try XCTUnwrap(
@@ -333,10 +340,12 @@ final class MobiusCloudTests: XCTestCase {
         let subscriptionJSON = try XCTUnwrap(
             JSONSerialization.jsonObject(with: subscriptionBody) as? [String: String]
         )
-        XCTAssertEqual(subscriptionJSON, [
-            "jws": "header.payload.signature",
-            "appTransactionJws": "app.header.signature",
-        ])
+        XCTAssertEqual(
+            subscriptionJSON,
+            [
+                "jws": "header.payload.signature",
+                "appTransactionJws": "app.header.signature",
+            ])
 
     }
 
@@ -348,7 +357,8 @@ final class MobiusCloudTests: XCTestCase {
             if request.url?.path == "/api/mobile/auth/apple" {
                 return try self.response(
                     for: request,
-                    json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
+                    json:
+                        #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
                 )
             }
             let body = request.httpBody.flatMap { String(data: $0, encoding: .utf8) } ?? ""
@@ -443,7 +453,8 @@ final class MobiusCloudTests: XCTestCase {
             if request.url?.path == "/api/mobile/auth/apple" {
                 return try self.response(
                     for: request,
-                    json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
+                    json:
+                        #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
                 )
             }
             let body = request.httpBody.flatMap { String(data: $0, encoding: .utf8) } ?? ""
@@ -486,9 +497,10 @@ final class MobiusCloudTests: XCTestCase {
     }
 
     func testUnauthorizedAccountDeletionClearsCloudSession() async throws {
-        let userID = try XCTUnwrap(UUID(
-            uuidString: "00000000-0000-0000-0000-000000000001"
-        ))
+        let userID = try XCTUnwrap(
+            UUID(
+                uuidString: "00000000-0000-0000-0000-000000000001"
+            ))
         let service = "app.mobius.cloud.tests.\(UUID())"
         let store = MobiusCloudSessionStore(service: service)
         defer { try? store.remove() }
@@ -497,12 +509,14 @@ final class MobiusCloudTests: XCTestCase {
             case ("/api/mobile/auth/apple", "POST"):
                 return try self.response(
                     for: request,
-                    json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                    json:
+                        #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
                 )
             case ("/api/mobile/account", "GET"):
                 return try self.response(
                     for: request,
-                    json: #"{"userId":"\#(userID.uuidString)","email":null,"subscribed":false,"sharesDiagnostics":false}"#
+                    json:
+                        #"{"userId":"\#(userID.uuidString)","email":null,"subscribed":false,"sharesDiagnostics":false}"#
                 )
             default:
                 return try self.response(for: request, status: 401, json: #"{}"#)
@@ -547,9 +561,10 @@ final class MobiusCloudTests: XCTestCase {
     }
 
     func testAcceptedAccountDeletionClearsLocalCloudState() async throws {
-        let currentUserID = try XCTUnwrap(UUID(
-            uuidString: "00000000-0000-0000-0000-000000000001"
-        ))
+        let currentUserID = try XCTUnwrap(
+            UUID(
+                uuidString: "00000000-0000-0000-0000-000000000001"
+            ))
         let service = "app.mobius.cloud.tests.\(UUID())"
         let store = MobiusCloudSessionStore(service: service)
         defer { try? store.remove() }
@@ -559,13 +574,15 @@ final class MobiusCloudTests: XCTestCase {
             if request.url?.path == "/api/mobile/auth/apple" {
                 return try self.response(
                     for: request,
-                    json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"\#(currentUserID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                    json:
+                        #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"\#(currentUserID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
                 )
             }
             if request.httpMethod == "GET" {
                 return try self.response(
                     for: request,
-                    json: #"{"userId":"\#(currentUserID.uuidString)","email":"private@privaterelay.appleid.com","subscribed":false,"sharesDiagnostics":false}"#
+                    json:
+                        #"{"userId":"\#(currentUserID.uuidString)","email":"private@privaterelay.appleid.com","subscribed":false,"sharesDiagnostics":false}"#
                 )
             }
             return try self.response(for: request, status: 202, json: "")
@@ -658,7 +675,8 @@ final class MobiusCloudTests: XCTestCase {
             case ("/api/mobile/auth/apple", "POST"):
                 return try self.response(
                     for: request,
-                    json: #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                    json:
+                        #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
                 )
             case ("/api/mobile/account", "DELETE"):
                 return try self.response(for: request, json: #"{}"#)
@@ -706,10 +724,12 @@ final class MobiusCloudTests: XCTestCase {
         XCTAssertNil(model.cloud.cloudSession)
         XCTAssertNil(model.cloud.cloudAccount)
         XCTAssertNil(try client.loadSession())
-        XCTAssertEqual(requests.map { ($0.url?.path ?? "") + ":" + ($0.httpMethod ?? "") }, [
-            "/api/mobile/auth/apple:POST",
-            "/api/mobile/account:DELETE",
-        ])
+        XCTAssertEqual(
+            requests.map { ($0.url?.path ?? "") + ":" + ($0.httpMethod ?? "") },
+            [
+                "/api/mobile/auth/apple:POST",
+                "/api/mobile/account:DELETE",
+            ])
     }
 
     func testCloudAccountRejectsInvalidEmail() async throws {
@@ -718,7 +738,8 @@ final class MobiusCloudTests: XCTestCase {
         var requestCount = 0
         let client = MobiusCloudClient(store: store) { request in
             requestCount += 1
-            let json = requestCount == 1
+            let json =
+                requestCount == 1
                 ? #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
                 : #"{"userId":"00000000-0000-0000-0000-000000000001","email":"not-an-email","subscribed":true,"sharesDiagnostics":false,"subscriptionStartedAt":"2026-08-24T00:00:00Z"}"#
             return try self.response(for: request, json: json)
@@ -744,7 +765,8 @@ final class MobiusCloudTests: XCTestCase {
         var requestCount = 0
         let client = MobiusCloudClient(store: store) { request in
             requestCount += 1
-            let json = requestCount == 1
+            let json =
+                requestCount == 1
                 ? #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
                 : #"{"userId":"00000000-0000-0000-0000-000000000001","email":null,"subscribed":true,"sharesDiagnostics":false,"subscriptionStartedAt":"2026-08-24T00:00:00Z","luna":{"creditMicrousd":2400000,"remainingMicrousd":2400001,"resetsAt":"2099-02-01T00:00:00Z"}}"#
             return try self.response(for: request, json: json)
@@ -777,7 +799,8 @@ final class MobiusCloudTests: XCTestCase {
             var requestCount = 0
             let client = MobiusCloudClient(store: store) { request in
                 requestCount += 1
-                let json = requestCount == 1
+                let json =
+                    requestCount == 1
                     ? #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"\#(userID)","expiresAt":"2099-01-01T00:00:00Z"}"#
                     : accountResponse
                 return try self.response(for: request, json: json)
@@ -843,7 +866,8 @@ final class MobiusCloudTests: XCTestCase {
             case 1:
                 return try self.response(
                     for: request,
-                    json: #"{"token":"\#(firstToken)","userId":"\#(firstUserID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                    json:
+                        #"{"token":"\#(firstToken)","userId":"\#(firstUserID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
                 )
             case 2:
                 staleResponse = try self.response(for: request, status: 401, json: "{}")
@@ -854,7 +878,8 @@ final class MobiusCloudTests: XCTestCase {
             case 3:
                 return try self.response(
                     for: request,
-                    json: #"{"token":"\#(secondToken)","userId":"\#(secondUserID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                    json:
+                        #"{"token":"\#(secondToken)","userId":"\#(secondUserID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
                 )
             default:
                 return try self.response(for: request, status: 500, json: "{}")
@@ -891,12 +916,14 @@ final class MobiusCloudTests: XCTestCase {
     }
 
     func testAccountRefreshRejectsServerUserIDChangeWithoutRetaggingGateway() async throws {
-        let sessionUserID = try XCTUnwrap(UUID(
-            uuidString: "00000000-0000-0000-0000-000000000001"
-        ))
-        let otherUserID = try XCTUnwrap(UUID(
-            uuidString: "00000000-0000-0000-0000-000000000002"
-        ))
+        let sessionUserID = try XCTUnwrap(
+            UUID(
+                uuidString: "00000000-0000-0000-0000-000000000001"
+            ))
+        let otherUserID = try XCTUnwrap(
+            UUID(
+                uuidString: "00000000-0000-0000-0000-000000000002"
+            ))
         let token = String(repeating: "t", count: 43)
         let service = "app.mobius.cloud.tests.\(UUID())"
         let sessionStore = MobiusCloudSessionStore(service: service)
@@ -938,18 +965,22 @@ final class MobiusCloudTests: XCTestCase {
         XCTAssertNil(model.cloud.cloudAccount)
         XCTAssertEqual(model.gateway.accounts.first?.cloudUserID, sessionUserID)
         XCTAssertEqual(gatewayStore.loadAccounts().first?.cloudUserID, sessionUserID)
-        XCTAssertEqual(model.cloud.cloudError, MobiusCloudError.accountIdentityMismatch.localizedDescription)
-        XCTAssertEqual(requests.map { $0.url?.path }, [
-            "/api/mobile/auth/apple",
-            "/api/mobile/account",
-        ])
+        XCTAssertEqual(
+            model.cloud.cloudError, MobiusCloudError.accountIdentityMismatch.localizedDescription)
+        XCTAssertEqual(
+            requests.map { $0.url?.path },
+            [
+                "/api/mobile/auth/apple",
+                "/api/mobile/account",
+            ])
         try await gatewayStore.remove(try XCTUnwrap(model.gateway.accounts.first))
     }
 
     func testTransactionUpdateSubmitsBeforeFinishing() async throws {
-        let userID = try XCTUnwrap(UUID(
-            uuidString: "00000000-0000-0000-0000-000000000001"
-        ))
+        let userID = try XCTUnwrap(
+            UUID(
+                uuidString: "00000000-0000-0000-0000-000000000001"
+            ))
         let token = String(repeating: "t", count: 43)
         let service = "app.mobius.cloud.tests.\(UUID())"
         let sessionStore = MobiusCloudSessionStore(service: service)
@@ -964,17 +995,20 @@ final class MobiusCloudTests: XCTestCase {
             case "/api/mobile/auth/apple":
                 return try self.response(
                     for: request,
-                    json: #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                    json:
+                        #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
                 )
             case "/api/mobile/account":
                 accountRequests += 1
                 let subscribed = accountRequests > 1
-                let startedAt = subscribed
+                let startedAt =
+                    subscribed
                     ? #", "subscriptionStartedAt":"2026-08-24T00:00:00Z""#
                     : ""
                 return try self.response(
                     for: request,
-                    json: #"{"userId":"\#(userID.uuidString)","email":null,"subscribed":\#(subscribed),"sharesDiagnostics":false\#(startedAt)}"#
+                    json:
+                        #"{"userId":"\#(userID.uuidString)","email":null,"subscribed":\#(subscribed),"sharesDiagnostics":false\#(startedAt)}"#
                 )
             case "/api/mobile/subscription":
                 XCTAssertFalse(finished)
@@ -1023,12 +1057,14 @@ final class MobiusCloudTests: XCTestCase {
         XCTAssertTrue(accountUpdated)
         XCTAssertTrue(finished)
         XCTAssertEqual(model.cloud.cloudSession?.userID, userID)
-        XCTAssertEqual(requests.map { $0.url?.path }, [
-            "/api/mobile/auth/apple",
-            "/api/mobile/account",
-            "/api/mobile/subscription",
-            "/api/mobile/account",
-        ])
+        XCTAssertEqual(
+            requests.map { $0.url?.path },
+            [
+                "/api/mobile/auth/apple",
+                "/api/mobile/account",
+                "/api/mobile/subscription",
+                "/api/mobile/account",
+            ])
     }
 
     func testStaleTransactionUpdateCannotUseOrClearNewSession() async throws {
@@ -1052,12 +1088,14 @@ final class MobiusCloudTests: XCTestCase {
                 let token = authenticationCount == 1 ? firstToken : secondToken
                 return try self.response(
                     for: request,
-                    json: #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                    json:
+                        #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
                 )
             case "/api/mobile/account":
                 return try self.response(
                     for: request,
-                    json: #"{"userId":"\#(firstUserID.uuidString)","email":null,"subscribed":false,"sharesDiagnostics":false}"#
+                    json:
+                        #"{"userId":"\#(firstUserID.uuidString)","email":null,"subscribed":false,"sharesDiagnostics":false}"#
                 )
             case "/api/mobile/subscription":
                 subscriptionBearer = request.value(forHTTPHeaderField: "Authorization")
@@ -1096,12 +1134,13 @@ final class MobiusCloudTests: XCTestCase {
             cloudPurchases: purchases
         )
 
-        stream.continuation.yield(MobiusCloudPurchase(
-            jws: "header.payload.signature",
-            appTransactionJWS: "app.header.signature"
-        ) {
-            finished = true
-        })
+        stream.continuation.yield(
+            MobiusCloudPurchase(
+                jws: "header.payload.signature",
+                appTransactionJWS: "app.header.signature"
+            ) {
+                finished = true
+            })
         await fulfillment(of: [subscriptionStarted], timeout: 1)
         let secondSession = try await client.authenticate(
             authorizationCode: "second-code",
@@ -1177,12 +1216,14 @@ final class MobiusCloudTests: XCTestCase {
 
         XCTAssertTrue(finished)
         XCTAssertEqual(model.cloud.cloudAccount?.subscribed, true)
-        XCTAssertEqual(requests.map { $0.url?.path }, [
-            "/api/mobile/auth/apple",
-            "/api/mobile/account",
-            "/api/mobile/subscription",
-            "/api/mobile/account",
-        ])
+        XCTAssertEqual(
+            requests.map { $0.url?.path },
+            [
+                "/api/mobile/auth/apple",
+                "/api/mobile/account",
+                "/api/mobile/subscription",
+                "/api/mobile/account",
+            ])
     }
 
     func testRejectedPurchaseDoesNotStarveLaterVerifiedEntitlement() async throws {
@@ -1198,17 +1239,20 @@ final class MobiusCloudTests: XCTestCase {
             case "/api/mobile/auth/apple":
                 return try self.response(
                     for: request,
-                    json: #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                    json:
+                        #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
                 )
             case "/api/mobile/account":
                 accountRequests += 1
                 let subscribed = accountRequests > 1
-                let startedAt = subscribed
+                let startedAt =
+                    subscribed
                     ? #", "subscriptionStartedAt":"2026-08-24T00:00:00Z""#
                     : ""
                 return try self.response(
                     for: request,
-                    json: #"{"userId":"\#(userID.uuidString)","email":null,"subscribed":\#(subscribed),"sharesDiagnostics":false\#(startedAt)}"#
+                    json:
+                        #"{"userId":"\#(userID.uuidString)","email":null,"subscribed":\#(subscribed),"sharesDiagnostics":false\#(startedAt)}"#
                 )
             case "/api/mobile/subscription":
                 let body = try XCTUnwrap(request.httpBody)
@@ -1289,12 +1333,14 @@ final class MobiusCloudTests: XCTestCase {
             case "/api/mobile/auth/apple":
                 return try self.response(
                     for: request,
-                    json: #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                    json:
+                        #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
                 )
             case "/api/mobile/account":
                 return try self.response(
                     for: request,
-                    json: #"{"userId":"\#(userID.uuidString)","email":null,"subscribed":false,"sharesDiagnostics":false}"#
+                    json:
+                        #"{"userId":"\#(userID.uuidString)","email":null,"subscribed":false,"sharesDiagnostics":false}"#
                 )
             case "/api/mobile/subscription":
                 return try self.response(
@@ -1353,12 +1399,14 @@ final class MobiusCloudTests: XCTestCase {
         let retried = await model.cloud.purchaseCloud()
         XCTAssertFalse(retried)
         XCTAssertEqual(purchaseAttempts, 0)
-        XCTAssertEqual(requests.map { $0.url?.path }, [
-            "/api/mobile/auth/apple",
-            "/api/mobile/account",
-            "/api/mobile/subscription",
-            "/api/mobile/account",
-        ])
+        XCTAssertEqual(
+            requests.map { $0.url?.path },
+            [
+                "/api/mobile/auth/apple",
+                "/api/mobile/account",
+                "/api/mobile/subscription",
+                "/api/mobile/account",
+            ])
     }
 
     func testConcurrentAccountRefreshesSubmitAndFinishPurchaseOnce() async throws {
@@ -1372,12 +1420,14 @@ final class MobiusCloudTests: XCTestCase {
             let json: String
             switch request.url?.path {
             case "/api/mobile/auth/apple":
-                json = #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                json =
+                    #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
             case "/api/mobile/subscription":
                 subscriptionRequests += 1
                 json = #"{}"#
             case "/api/mobile/account":
-                json = #"{"userId":"\#(userID.uuidString)","email":null,"subscribed":true,"sharesDiagnostics":false,"subscriptionStartedAt":"2026-08-24T00:00:00Z"}"#
+                json =
+                    #"{"userId":"\#(userID.uuidString)","email":null,"subscribed":true,"sharesDiagnostics":false,"subscriptionStartedAt":"2026-08-24T00:00:00Z"}"#
             default:
                 return try self.response(for: request, status: 500, json: #"{}"#)
             }
@@ -1509,12 +1559,14 @@ final class MobiusCloudTests: XCTestCase {
             model.cloud.cloudError,
             MobiusCloudError.subscriptionRequired.localizedDescription
         )
-        XCTAssertEqual(requests.map { $0.url?.path }, [
-            "/api/mobile/auth/apple",
-            "/api/mobile/account",
-            "/api/mobile/subscription",
-            "/api/mobile/account",
-        ])
+        XCTAssertEqual(
+            requests.map { $0.url?.path },
+            [
+                "/api/mobile/auth/apple",
+                "/api/mobile/account",
+                "/api/mobile/subscription",
+                "/api/mobile/account",
+            ])
         XCTAssertEqual(requests.map(\.httpMethod), ["POST", "GET", "PUT", "GET"])
         XCTAssertEqual(
             try JSONSerialization.jsonObject(with: try XCTUnwrap(requests[2].httpBody))
@@ -1539,12 +1591,14 @@ final class MobiusCloudTests: XCTestCase {
             case "/api/mobile/auth/apple":
                 return try self.response(
                     for: request,
-                    json: #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                    json:
+                        #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
                 )
             case "/api/mobile/account":
                 return try self.response(
                     for: request,
-                    json: #"{"userId":"\#(userID.uuidString)","email":null,"subscribed":false,"sharesDiagnostics":false}"#
+                    json:
+                        #"{"userId":"\#(userID.uuidString)","email":null,"subscribed":false,"sharesDiagnostics":false}"#
                 )
             case "/api/mobile/subscription":
                 XCTFail("A cancelled purchase has no transaction to submit")
@@ -1575,10 +1629,12 @@ final class MobiusCloudTests: XCTestCase {
 
         XCTAssertFalse(connected)
         XCTAssertNil(model.cloud.cloudError)
-        XCTAssertEqual(requests.map { $0.url?.path }, [
-            "/api/mobile/auth/apple",
-            "/api/mobile/account",
-        ])
+        XCTAssertEqual(
+            requests.map { $0.url?.path },
+            [
+                "/api/mobile/auth/apple",
+                "/api/mobile/account",
+            ])
         XCTAssertEqual(requests.map(\.httpMethod), ["POST", "GET"])
     }
 
@@ -1595,13 +1651,15 @@ final class MobiusCloudTests: XCTestCase {
                 if request.url?.path == "/api/mobile/auth/apple" {
                     return try self.response(
                         for: request,
-                        json: #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                        json:
+                            #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
                     )
                 }
                 if request.url?.path == "/api/mobile/account" {
                     return try self.response(
                         for: request,
-                        json: #"{"userId":"\#(userID.uuidString)","email":null,"subscribed":false,"sharesDiagnostics":false}"#
+                        json:
+                            #"{"userId":"\#(userID.uuidString)","email":null,"subscribed":false,"sharesDiagnostics":false}"#
                     )
                 }
                 return try self.response(for: request, status: 500, json: "")
@@ -1643,12 +1701,14 @@ final class MobiusCloudTests: XCTestCase {
             case ("/api/mobile/auth/apple", "POST"):
                 return try self.response(
                     for: request,
-                    json: #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                    json:
+                        #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
                 )
             case ("/api/mobile/account", "GET"):
                 return try self.response(
                     for: request,
-                    json: #"{"userId":"\#(userID.uuidString)","email":null,"subscribed":false,"sharesDiagnostics":false}"#
+                    json:
+                        #"{"userId":"\#(userID.uuidString)","email":null,"subscribed":false,"sharesDiagnostics":false}"#
                 )
             case ("/api/mobile/account", "DELETE"):
                 return try self.response(for: request, status: 202, json: "")
@@ -1767,14 +1827,16 @@ final class MobiusCloudTests: XCTestCase {
         let connected = await connection.value
         XCTAssertTrue(connected)
         XCTAssertTrue(finished)
-        XCTAssertEqual(requests.map { $0.url?.path }, [
-            "/api/mobile/auth/apple",
-            "/api/mobile/account",
-            "/api/mobile/subscription",
-            "/api/mobile/account",
-            "/api/mobile/gateway",
-            "/api/mobile/gateway",
-        ])
+        XCTAssertEqual(
+            requests.map { $0.url?.path },
+            [
+                "/api/mobile/auth/apple",
+                "/api/mobile/account",
+                "/api/mobile/subscription",
+                "/api/mobile/account",
+                "/api/mobile/gateway",
+                "/api/mobile/gateway",
+            ])
         XCTAssertEqual(model.cloud.cloudAccount?.subscribed, true)
         XCTAssertTrue(model.selectedGatewayIsMobiusCloud)
         XCTAssertEqual(model.gateway.selectedAccount?.displayName, "möbius Cloud")
@@ -1809,7 +1871,8 @@ final class MobiusCloudTests: XCTestCase {
         let client = MobiusCloudClient(store: sessionStore) { request in
             return try self.response(
                 for: request,
-                json: #"{"token":"\#(token)","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
+                json:
+                    #"{"token":"\#(token)","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
             )
         }
         _ = try await client.authenticate(
@@ -1848,9 +1911,10 @@ final class MobiusCloudTests: XCTestCase {
             endpoint: try GatewayEndpoint("wss://gateway.example"),
             displayName: "Renamed Cloud gateway",
             machineName: cloudGatewayDisplayName,
-            cloudUserID: try XCTUnwrap(UUID(
-                uuidString: "00000000-0000-0000-0000-000000000001"
-            ))
+            cloudUserID: try XCTUnwrap(
+                UUID(
+                    uuidString: "00000000-0000-0000-0000-000000000001"
+                ))
         )
         try gatewayStore.save(gateway, token: "gateway-token")
 
@@ -1865,7 +1929,8 @@ final class MobiusCloudTests: XCTestCase {
             }
             return try self.response(
                 for: request,
-                json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
+                json:
+                    #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
             )
         }
         _ = try await client.authenticate(
@@ -1889,9 +1954,10 @@ final class MobiusCloudTests: XCTestCase {
             cloudClient: client
         )
         model.cloud.cloudAccount = MobiusCloudAccount(
-            userID: try XCTUnwrap(UUID(
-                uuidString: "00000000-0000-0000-0000-000000000001"
-            )),
+            userID: try XCTUnwrap(
+                UUID(
+                    uuidString: "00000000-0000-0000-0000-000000000001"
+                )),
             email: "private@privaterelay.appleid.com",
             subscribed: true,
             sharesDiagnostics: false
@@ -1930,9 +1996,10 @@ final class MobiusCloudTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suiteName) }
         defaults.set(true, forKey: notificationsEnabledKey)
         let gatewayStore = GatewayStore(defaults: defaults)
-        let cloudUserID = try XCTUnwrap(UUID(
-            uuidString: "00000000-0000-0000-0000-000000000001"
-        ))
+        let cloudUserID = try XCTUnwrap(
+            UUID(
+                uuidString: "00000000-0000-0000-0000-000000000001"
+            ))
         let gateway = GatewayAccount(
             endpoint: try GatewayEndpoint("wss://gateway.example"),
             displayName: "möbius Cloud",
@@ -1962,7 +2029,8 @@ final class MobiusCloudTests: XCTestCase {
             }
             return try self.response(
                 for: request,
-                json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
+                json:
+                    #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
             )
         }
         _ = try await client.authenticate(
@@ -2059,7 +2127,8 @@ final class MobiusCloudTests: XCTestCase {
         let gateway = GatewayAccount(endpoint: try GatewayEndpoint("wss://gateway.example"))
         try gatewayStore.save(gateway, token: "gateway-token")
         addTeardownBlock { try? await gatewayStore.remove(gateway) }
-        try FileManager.default.createDirectory(at: draftDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: draftDirectory, withIntermediateDirectories: true)
         let privateDraft = draftDirectory.appendingPathComponent("private.txt")
         try Data("private draft".utf8).write(to: privateDraft)
         failNextDelete = true
@@ -2290,14 +2359,16 @@ final class MobiusCloudTests: XCTestCase {
         XCTAssertTrue(synchronized)
         XCTAssertTrue(finished)
         XCTAssertEqual(model.gateway.accounts.first?.cloudUserID, userID)
-        XCTAssertEqual(requests.map { $0.url?.path }, [
-            "/api/mobile/auth/apple",
-            "/api/mobile/account",
-            "/api/mobile/subscription",
-            "/api/mobile/account",
-            "/api/mobile/gateway",
-            "/api/mobile/gateway",
-        ])
+        XCTAssertEqual(
+            requests.map { $0.url?.path },
+            [
+                "/api/mobile/auth/apple",
+                "/api/mobile/account",
+                "/api/mobile/subscription",
+                "/api/mobile/account",
+                "/api/mobile/gateway",
+                "/api/mobile/gateway",
+            ])
         XCTAssertEqual(
             requests.map(\.httpMethod),
             ["POST", "GET", "PUT", "GET", "GET", "POST"]
@@ -2347,12 +2418,15 @@ final class MobiusCloudTests: XCTestCase {
 
         XCTAssertFalse(connected)
         XCTAssertEqual(model.cloud.cloudAction, .idle)
-        XCTAssertEqual(model.cloud.cloudError, MobiusCloudError.subscriptionRequired.localizedDescription)
-        XCTAssertEqual(requests.map { $0.url?.path }, [
-            "/api/mobile/auth/apple",
-            "/api/mobile/account",
-            "/api/mobile/gateway",
-        ])
+        XCTAssertEqual(
+            model.cloud.cloudError, MobiusCloudError.subscriptionRequired.localizedDescription)
+        XCTAssertEqual(
+            requests.map { $0.url?.path },
+            [
+                "/api/mobile/auth/apple",
+                "/api/mobile/account",
+                "/api/mobile/gateway",
+            ])
     }
 
     func testCloudPairingRetriesWithFreshGrantAfterFailureResetOrCancellation() async throws {
@@ -2428,11 +2502,13 @@ final class MobiusCloudTests: XCTestCase {
         XCTAssertFalse(model.showsPairing)
         XCTAssertEqual(model.cloud.cloudAction, .connecting)
 
-        model.gateway.handle(.error(GatewayFailure(
-            code: "unauthorized",
-            message: "pairing failed",
-            fatal: true
-        )))
+        model.gateway.handle(
+            .error(
+                GatewayFailure(
+                    code: "unauthorized",
+                    message: "pairing failed",
+                    fatal: true
+                )))
         let failed = await failedConnection.value
         XCTAssertFalse(failed)
         XCTAssertEqual(model.gateway.pairingEndpoint, "wss://")
@@ -2520,7 +2596,9 @@ final class MobiusCloudTests: XCTestCase {
         try await gatewayStore.remove(try XCTUnwrap(model.gateway.accounts.first))
     }
 
-    func testActivationChecksCloudExpiryBeforeReconnectingAndRecoversStoreKitEntitlement() async throws {
+    func testActivationChecksCloudExpiryBeforeReconnectingAndRecoversStoreKitEntitlement()
+        async throws
+    {
         let userID = UUID()
         let token = String(repeating: "t", count: 43)
         let service = "app.mobius.cloud.tests.\(UUID())"
@@ -2535,17 +2613,20 @@ final class MobiusCloudTests: XCTestCase {
             case "/api/mobile/auth/apple":
                 return try self.response(
                     for: request,
-                    json: #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                    json:
+                        #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
                 )
             case "/api/mobile/account":
                 accountRequests += 1
                 let subscribed = accountRequests > 2
-                let startedAt = subscribed
+                let startedAt =
+                    subscribed
                     ? #", "subscriptionStartedAt":"2026-08-24T00:00:00Z""#
                     : ""
                 return try self.response(
                     for: request,
-                    json: #"{"userId":"\#(userID.uuidString)","email":null,"subscribed":\#(subscribed),"sharesDiagnostics":false\#(startedAt)}"#
+                    json:
+                        #"{"userId":"\#(userID.uuidString)","email":null,"subscribed":\#(subscribed),"sharesDiagnostics":false\#(startedAt)}"#
                 )
             case "/api/mobile/subscription":
                 subscriptionSubmitted = true
@@ -2660,7 +2741,8 @@ final class MobiusCloudTests: XCTestCase {
         var requests = 0
         let client = MobiusCloudClient(store: sessionStore) { request in
             requests += 1
-            let json = requests == 1
+            let json =
+                requests == 1
                 ? #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
                 : #"{"userId":"\#(userID.uuidString)","email":null,"subscribed":false,"sharesDiagnostics":false}"#
             return try self.response(for: request, json: json)
@@ -2709,9 +2791,15 @@ final class MobiusCloudTests: XCTestCase {
         defer { try? sessionStore.remove() }
         var requests: [URLRequest] = []
         let responses = [
-            (200, #"{"token":"\#(token)","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#),
+            (
+                200,
+                #"{"token":"\#(token)","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
+            ),
             (503, #"{}"#),
-            (200, #"{"userId":"00000000-0000-0000-0000-000000000001","email":"private@privaterelay.appleid.com","subscribed":false,"sharesDiagnostics":false}"#),
+            (
+                200,
+                #"{"userId":"00000000-0000-0000-0000-000000000001","email":"private@privaterelay.appleid.com","subscribed":false,"sharesDiagnostics":false}"#
+            ),
         ]
         let client = MobiusCloudClient(store: sessionStore) { request in
             requests.append(request)
@@ -2743,20 +2831,23 @@ final class MobiusCloudTests: XCTestCase {
         XCTAssertEqual(
             model.cloud.cloudAccount,
             MobiusCloudAccount(
-                userID: try XCTUnwrap(UUID(
-                    uuidString: "00000000-0000-0000-0000-000000000001"
-                )),
+                userID: try XCTUnwrap(
+                    UUID(
+                        uuidString: "00000000-0000-0000-0000-000000000001"
+                    )),
                 email: "private@privaterelay.appleid.com",
                 subscribed: false,
                 sharesDiagnostics: false
             )
         )
         XCTAssertNil(model.cloud.cloudError)
-        XCTAssertEqual(requests.map { $0.url?.path }, [
-            "/api/mobile/auth/apple",
-            "/api/mobile/account",
-            "/api/mobile/account",
-        ])
+        XCTAssertEqual(
+            requests.map { $0.url?.path },
+            [
+                "/api/mobile/auth/apple",
+                "/api/mobile/account",
+                "/api/mobile/account",
+            ])
     }
 
     func testCancelledCloudAccountRefreshIsSilentAndCanRetry() async throws {
@@ -2772,14 +2863,16 @@ final class MobiusCloudTests: XCTestCase {
             case 1:
                 return try self.response(
                     for: request,
-                    json: #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                    json:
+                        #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
                 )
             case 2:
                 throw URLError(.cancelled)
             default:
                 return try self.response(
                     for: request,
-                    json: #"{"userId":"\#(userID.uuidString)","email":null,"subscribed":false,"sharesDiagnostics":false}"#
+                    json:
+                        #"{"userId":"\#(userID.uuidString)","email":null,"subscribed":false,"sharesDiagnostics":false}"#
                 )
             }
         }
@@ -2808,11 +2901,13 @@ final class MobiusCloudTests: XCTestCase {
 
         XCTAssertEqual(model.cloud.cloudAccount?.userID, userID)
         XCTAssertNil(model.cloud.cloudError)
-        XCTAssertEqual(requests.map { $0.url?.path }, [
-            "/api/mobile/auth/apple",
-            "/api/mobile/account",
-            "/api/mobile/account",
-        ])
+        XCTAssertEqual(
+            requests.map { $0.url?.path },
+            [
+                "/api/mobile/auth/apple",
+                "/api/mobile/account",
+                "/api/mobile/account",
+            ])
     }
 
     func testCloudDiagnosticsChangesOnlyAfterServerAcceptsUpdate() async throws {
@@ -2822,8 +2917,14 @@ final class MobiusCloudTests: XCTestCase {
         defer { try? sessionStore.remove() }
         var requests: [URLRequest] = []
         let responses = [
-            (200, #"{"token":"\#(token)","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#),
-            (200, #"{"userId":"00000000-0000-0000-0000-000000000001","email":"private@privaterelay.appleid.com","subscribed":true,"sharesDiagnostics":false,"subscriptionStartedAt":"2026-08-24T00:00:00Z","luna":{"creditMicrousd":2400000,"remainingMicrousd":1992000,"resetsAt":"2099-02-01T00:00:00Z"}}"#),
+            (
+                200,
+                #"{"token":"\#(token)","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
+            ),
+            (
+                200,
+                #"{"userId":"00000000-0000-0000-0000-000000000001","email":"private@privaterelay.appleid.com","subscribed":true,"sharesDiagnostics":false,"subscriptionStartedAt":"2026-08-24T00:00:00Z","luna":{"creditMicrousd":2400000,"remainingMicrousd":1992000,"resetsAt":"2099-02-01T00:00:00Z"}}"#
+            ),
             (503, #"{}"#),
             (204, #"{}"#),
         ]
@@ -2901,16 +3002,20 @@ final class MobiusCloudTests: XCTestCase {
 
         let catalog = try await client.extensionCatalog()
 
-        XCTAssertEqual(catalog, [MobiusCloudExtensionCatalogItem(
-            id: "ponytail",
-            name: "Ponytail",
-            description: "Prefer the smallest correct implementation.",
-            source: MobiusCloudExtensionSource(
-                url: "https://github.com/DietrichGebert/ponytail.git",
-                reference: "v4.9.0",
-                subdirectory: nil
-            )
-        )])
+        XCTAssertEqual(
+            catalog,
+            [
+                MobiusCloudExtensionCatalogItem(
+                    id: "ponytail",
+                    name: "Ponytail",
+                    description: "Prefer the smallest correct implementation.",
+                    source: MobiusCloudExtensionSource(
+                        url: "https://github.com/DietrichGebert/ponytail.git",
+                        reference: "v4.9.0",
+                        subdirectory: nil
+                    )
+                )
+            ])
         XCTAssertEqual(requests.last?.url?.path, "/api/mobile/extensions/catalog")
         XCTAssertEqual(requests.last?.httpMethod, "GET")
         XCTAssertEqual(
@@ -2925,7 +3030,8 @@ final class MobiusCloudTests: XCTestCase {
         var requestCount = 0
         let client = MobiusCloudClient(store: store) { request in
             requestCount += 1
-            let json = requestCount == 1
+            let json =
+                requestCount == 1
                 ? #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
                 : #"{"endpoint":"tcp://gateway.example:8741","pairingCode":"code","expiresAt":"2099-01-01T00:00:00Z"}"#
             return try self.response(for: request, json: json)
@@ -2952,7 +3058,8 @@ final class MobiusCloudTests: XCTestCase {
         var requests: [URLRequest] = []
         let client = MobiusCloudClient(store: store) { request in
             requests.append(request)
-            let json = requests.count == 1
+            let json =
+                requests.count == 1
                 ? #"{"token":"\#(bearer)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
                 : "{}"
             return try self.response(
@@ -2973,11 +3080,13 @@ final class MobiusCloudTests: XCTestCase {
         )
         try await client.unregisterPushToken(installationID: installationID)
 
-        XCTAssertEqual(requests.map { $0.url?.path }, [
-            "/api/mobile/auth/apple",
-            "/api/mobile/push-token",
-            "/api/mobile/push-token",
-        ])
+        XCTAssertEqual(
+            requests.map { $0.url?.path },
+            [
+                "/api/mobile/auth/apple",
+                "/api/mobile/push-token",
+                "/api/mobile/push-token",
+            ])
         XCTAssertEqual(requests.map(\.httpMethod), ["POST", "PUT", "DELETE"])
         XCTAssertNil(requests[0].value(forHTTPHeaderField: "Authorization"))
         XCTAssertEqual(
@@ -3040,7 +3149,8 @@ final class MobiusCloudTests: XCTestCase {
             if request.url?.path == "/api/mobile/auth/apple" {
                 return try self.response(
                     for: request,
-                    json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
+                    json:
+                        #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
                 )
             }
             return try self.response(for: request, status: 500, json: "{}")
@@ -3084,7 +3194,8 @@ final class MobiusCloudTests: XCTestCase {
         )
         XCTAssertEqual(relaunched.cloud.cloudSession, model.cloud.cloudSession)
         XCTAssertEqual(model.toast?.tone, .error)
-        XCTAssertTrue(model.toast?.message.hasPrefix("Local data could not be fully cleared.") == true)
+        XCTAssertTrue(
+            model.toast?.message.hasPrefix("Local data could not be fully cleared.") == true)
     }
 
     func testAcceptedAccountDeletionReportsLocalCredentialCleanupFailure() async throws {
@@ -3106,7 +3217,8 @@ final class MobiusCloudTests: XCTestCase {
             if request.url?.path == "/api/mobile/auth/apple" {
                 return try self.response(
                     for: request,
-                    json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
+                    json:
+                        #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
                 )
             }
             return try self.response(for: request, status: 202, json: "{}")
@@ -3171,7 +3283,8 @@ final class MobiusCloudTests: XCTestCase {
             case 1:
                 return try self.response(
                     for: request,
-                    json: #"{"token":"\#(firstToken)","userId":"\#(firstUserID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                    json:
+                        #"{"token":"\#(firstToken)","userId":"\#(firstUserID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
                 )
             case 2:
                 deleteResponse = try self.response(for: request, status: 202, json: "{}")
@@ -3182,7 +3295,8 @@ final class MobiusCloudTests: XCTestCase {
             case 3:
                 return try self.response(
                     for: request,
-                    json: #"{"token":"\#(secondToken)","userId":"\#(secondUserID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                    json:
+                        #"{"token":"\#(secondToken)","userId":"\#(secondUserID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
                 )
             default:
                 return try self.response(for: request, status: 500, json: "{}")
@@ -3241,7 +3355,8 @@ final class MobiusCloudTests: XCTestCase {
             case 1:
                 return try self.response(
                     for: request,
-                    json: #"{"token":"\#(firstToken)","userId":"\#(firstUserID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                    json:
+                        #"{"token":"\#(firstToken)","userId":"\#(firstUserID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
                 )
             case 2:
                 deleteResponse = try self.response(for: request, status: 202, json: "{}")
@@ -3252,7 +3367,8 @@ final class MobiusCloudTests: XCTestCase {
             case 3:
                 return try self.response(
                     for: request,
-                    json: #"{"token":"\#(secondToken)","userId":"\#(secondUserID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                    json:
+                        #"{"token":"\#(secondToken)","userId":"\#(secondUserID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
                 )
             default:
                 return try self.response(for: request, status: 500, json: "{}")
@@ -3343,12 +3459,14 @@ final class MobiusCloudTests: XCTestCase {
             if request.url?.path == "/api/mobile/auth/apple" {
                 return try self.response(
                     for: request,
-                    json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"\#(firstUserID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                    json:
+                        #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"\#(firstUserID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
                 )
             }
             return try self.response(
                 for: request,
-                json: #"{"userId":"\#(firstUserID.uuidString)","email":"first@example.com","subscribed":false,"sharesDiagnostics":false}"#
+                json:
+                    #"{"userId":"\#(firstUserID.uuidString)","email":"first@example.com","subscribed":false,"sharesDiagnostics":false}"#
             )
         }
         _ = try await client.authenticate(
@@ -3419,7 +3537,8 @@ final class MobiusCloudTests: XCTestCase {
             if requestCount == 1 {
                 return try self.response(
                     for: request,
-                    json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
+                    json:
+                        #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
                 )
             }
             return try self.response(for: request, status: 401, json: "{}")
@@ -3493,7 +3612,8 @@ final class MobiusCloudTests: XCTestCase {
             if request.url?.path == "/api/mobile/auth/apple" {
                 return try self.response(
                     for: request,
-                    json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                    json:
+                        #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
                 )
             }
             if request.url?.path == "/api/mobile/push-token" {
@@ -3507,7 +3627,8 @@ final class MobiusCloudTests: XCTestCase {
             await accountGate.wait()
             return try self.response(
                 for: request,
-                json: #"{"userId":"\#(userID.uuidString)","email":"cloud@example.com","subscribed":true,"sharesDiagnostics":false,"subscriptionStartedAt":"2023-11-14T22:13:20Z"}"#
+                json:
+                    #"{"userId":"\#(userID.uuidString)","email":"cloud@example.com","subscribed":true,"sharesDiagnostics":false,"subscriptionStartedAt":"2023-11-14T22:13:20Z"}"#
             )
         }
         let session = try await client.authenticate(
@@ -3620,12 +3741,14 @@ final class MobiusCloudTests: XCTestCase {
             case ("POST", "/api/mobile/auth/apple"):
                 return try self.response(
                     for: request,
-                    json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                    json:
+                        #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
                 )
             case ("GET", "/api/mobile/account"):
                 return try self.response(
                     for: request,
-                    json: #"{"userId":"\#(userID.uuidString)","email":"cloud@example.com","subscribed":true,"sharesDiagnostics":false,"subscriptionStartedAt":"2023-11-14T22:13:20Z"}"#
+                    json:
+                        #"{"userId":"\#(userID.uuidString)","email":"cloud@example.com","subscribed":true,"sharesDiagnostics":false,"subscriptionStartedAt":"2023-11-14T22:13:20Z"}"#
                 )
             case ("PUT", "/api/mobile/subscription"), ("DELETE", "/api/mobile/push-token"):
                 return try self.response(for: request, status: 204, json: "{}")
@@ -3636,10 +3759,13 @@ final class MobiusCloudTests: XCTestCase {
                 await grantGate.wait()
                 return try self.response(
                     for: request,
-                    json: #"{"endpoint":"wss://cloud.example","pairingCode":"cloud-code","expiresAt":"2099-01-01T00:00:00Z"}"#
+                    json:
+                        #"{"endpoint":"wss://cloud.example","pairingCode":"cloud-code","expiresAt":"2099-01-01T00:00:00Z"}"#
                 )
             default:
-                XCTFail("Unexpected Cloud request: \(request.httpMethod ?? "nil") \(request.url?.path ?? "nil")")
+                XCTFail(
+                    "Unexpected Cloud request: \(request.httpMethod ?? "nil") \(request.url?.path ?? "nil")"
+                )
                 return try self.response(for: request, status: 500, json: "{}")
             }
         }
@@ -3683,14 +3809,15 @@ final class MobiusCloudTests: XCTestCase {
             recoveryCallbacks += 1
             reconnectRecoveredGateway?()
         }
-        updateContinuation.yield(MobiusCloudPurchase(
-            jws: "header.payload.signature",
-            appTransactionJWS: "app.header.signature",
-            finish: {
-                purchaseStarted.count += 1
-                await purchaseFinishGate.wait()
-            }
-        ))
+        updateContinuation.yield(
+            MobiusCloudPurchase(
+                jws: "header.payload.signature",
+                appTransactionJWS: "app.header.signature",
+                finish: {
+                    purchaseStarted.count += 1
+                    await purchaseFinishGate.wait()
+                }
+            ))
         let purchaseUpdateStarted = await eventually { purchaseStarted.count > 0 }
         XCTAssertTrue(purchaseUpdateStarted)
         let provisioning = Task { await model.cloud.connectCloudGateway() }
@@ -3761,7 +3888,8 @@ final class MobiusCloudTests: XCTestCase {
             await authGate.wait()
             return try self.response(
                 for: request,
-                json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
+                json:
+                    #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#
             )
         }
         let model = AppModel(
@@ -3805,12 +3933,13 @@ final class MobiusCloudTests: XCTestCase {
         json: String
     ) throws -> (Data, HTTPURLResponse) {
         let url = try XCTUnwrap(request.url)
-        let response = try XCTUnwrap(HTTPURLResponse(
-            url: url,
-            statusCode: status,
-            httpVersion: "HTTP/1.1",
-            headerFields: ["Content-Type": "application/json"]
-        ))
+        let response = try XCTUnwrap(
+            HTTPURLResponse(
+                url: url,
+                statusCode: status,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            ))
         return (Data(json.utf8), response)
     }
 

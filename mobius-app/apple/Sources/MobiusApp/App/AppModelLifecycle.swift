@@ -176,9 +176,10 @@ extension AppModel {
         } else if pendingProviderCredential != nil {
             // A write may have reached the gateway without its response reaching us.
             // Keep the key available for an explicit retry; never resend it automatically.
-            providerActionState = .failed(localizedString(
-                "The gateway disconnected. Send the key again to confirm it was saved."
-            ))
+            providerActionState = .failed(
+                localizedString(
+                    "The gateway disconnected. Send the key again to confirm it was saved."
+                ))
         }
         pendingProviderCredential = nil
         providerRegistrationRequestID = nil

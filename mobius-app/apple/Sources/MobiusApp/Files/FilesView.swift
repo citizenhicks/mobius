@@ -76,7 +76,8 @@ private struct FilesNavigationTitle: View {
                 Text(model.filesInspectorTab.title)
                     .font(MobiusStyle.titleFont)
                 if model.filesInspectorTab == .allFiles && model.isLoadingWorkspaceFiles
-                    || model.filesInspectorTab == .chatFiles && model.chat.isLoadingSessionFiles {
+                    || model.filesInspectorTab == .chatFiles && model.chat.isLoadingSessionFiles
+                {
                     MobiusSpinner(size: MobiusStyle.glyphMark)
                 }
             }
@@ -195,7 +196,8 @@ extension String {
         case "rs": .rust
         case "go": .go
         case "md", "mdx", "markdown": .markdown
-        case "swift", "c", "h", "cpp", "hpp", "java", "kt", "kts", "rb", "php", "sh", "zsh": .fileScript
+        case "swift", "c", "h", "cpp", "hpp", "java", "kt", "kts", "rb", "php", "sh", "zsh":
+            .fileScript
         case "doc", "docx", "odt", "pages", "rtf": .doc
         case "png", "jpg", "jpeg", "gif", "heic", "webp", "svg": .image01
         case "json", "yaml", "yml", "toml", "xml", "ini", "plist": .gear
@@ -244,9 +246,11 @@ private struct WorkspaceFileList: View {
                         size: MobiusStyle.glyphInline,
                         foreground: palette.warning
                     )
-                    Text("Some workspace files are not shown. Ignore generated folders to keep the catalog focused.")
-                        .font(MobiusStyle.metadataFont)
-                        .foregroundStyle(palette.muted)
+                    Text(
+                        "Some workspace files are not shown. Ignore generated folders to keep the catalog focused."
+                    )
+                    .font(MobiusStyle.metadataFont)
+                    .foregroundStyle(palette.muted)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, MobiusSpace.m)
@@ -256,32 +260,32 @@ private struct WorkspaceFileList: View {
             }
             content
         }
-            .searchable(text: $query, placement: .toolbar, prompt: "Search files")
-            .task(id: model.workspaceFilesRevision) {
-                let files = model.workspaceFiles
-                async let builtTree = FileTreeNode.tree(from: files)
-                let result = await builtTree
-                guard !Task.isCancelled else { return }
-                tree = result
+        .searchable(text: $query, placement: .toolbar, prompt: "Search files")
+        .task(id: model.workspaceFilesRevision) {
+            let files = model.workspaceFiles
+            async let builtTree = FileTreeNode.tree(from: files)
+            let result = await builtTree
+            guard !Task.isCancelled else { return }
+            tree = result
+        }
+        .task(id: searchRequest) {
+            guard !query.isEmpty else {
+                matches = []
+                matchedQuery = ""
+                return
             }
-            .task(id: searchRequest) {
-                guard !query.isEmpty else {
-                    matches = []
-                    matchedQuery = ""
-                    return
-                }
-                try? await Task.sleep(for: .milliseconds(120))
-                guard !Task.isCancelled else { return }
-                let files = model.workspaceFiles
-                let query = query
-                let searchTask = Task.detached(priority: .userInitiated) {
-                    files.filter { $0.path.localizedCaseInsensitiveContains(query) }
-                }
-                let result = await searchTask.value
-                guard !Task.isCancelled else { return }
-                matches = result
-                matchedQuery = query
+            try? await Task.sleep(for: .milliseconds(120))
+            guard !Task.isCancelled else { return }
+            let files = model.workspaceFiles
+            let query = query
+            let searchTask = Task.detached(priority: .userInitiated) {
+                files.filter { $0.path.localizedCaseInsensitiveContains(query) }
             }
+            let result = await searchTask.value
+            guard !Task.isCancelled else { return }
+            matches = result
+            matchedQuery = query
+        }
     }
 
     @ViewBuilder
@@ -520,7 +524,8 @@ private struct InspectorFileLoadingRows: View {
                         showsDisclosure: false
                     )
                     Color.clear
-                        .frame(width: MobiusStyle.iconButtonSize, height: MobiusStyle.iconButtonSize)
+                        .frame(
+                            width: MobiusStyle.iconButtonSize, height: MobiusStyle.iconButtonSize)
                 }
             }
         }

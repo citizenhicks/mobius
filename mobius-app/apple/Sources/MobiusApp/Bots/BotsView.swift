@@ -27,17 +27,18 @@ struct BotsView: View {
                 } else {
                     ForEach(orderedBots) { bot in
                         botRow(bot)
-                        .mobiusSwipeActions {
-                            if bot.handle != "mobius" {
-                                MobiusSwipeAction(title: "Delete", glyph: .trash, tone: "error") {
-                                    botToDelete = bot
+                            .mobiusSwipeActions {
+                                if bot.handle != "mobius" {
+                                    MobiusSwipeAction(title: "Delete", glyph: .trash, tone: "error")
+                                    {
+                                        botToDelete = bot
+                                    }
+                                }
+                                MobiusSwipeAction(title: "Rename", glyph: .pencilSimple) {
+                                    botRenameDraft = bot.name
+                                    botToRename = bot
                                 }
                             }
-                            MobiusSwipeAction(title: "Rename", glyph: .pencilSimple) {
-                                botRenameDraft = bot.name
-                                botToRename = bot
-                            }
-                        }
                     }
                 }
             }
@@ -49,15 +50,15 @@ struct BotsView: View {
                 } else {
                     ForEach(orderedSwarms) { swarm in
                         swarmRow(swarm)
-                        .mobiusSwipeActions {
-                            MobiusSwipeAction(title: "Delete", glyph: .trash, tone: "error") {
-                                swarmToDelete = swarm
+                            .mobiusSwipeActions {
+                                MobiusSwipeAction(title: "Delete", glyph: .trash, tone: "error") {
+                                    swarmToDelete = swarm
+                                }
+                                MobiusSwipeAction(title: "Rename", glyph: .pencilSimple) {
+                                    swarmRenameDraft = swarm.title
+                                    swarmToRename = swarm
+                                }
                             }
-                            MobiusSwipeAction(title: "Rename", glyph: .pencilSimple) {
-                                swarmRenameDraft = swarm.title
-                                swarmToRename = swarm
-                            }
-                        }
                     }
                 }
             }
@@ -196,7 +197,8 @@ struct BotsView: View {
     }
 
     private func swarmRow(_ swarm: SwarmRecord) -> some View {
-        let detail: LocalizedStringResource = swarm.members.count == 1
+        let detail: LocalizedStringResource =
+            swarm.members.count == 1
             ? "1 Bot · led by \(leaderHandle(for: swarm))"
             : "\(swarm.members.count) Bots · led by \(leaderHandle(for: swarm))"
 
@@ -412,7 +414,9 @@ private struct NewSwarmSheet: View {
                 } header: {
                     Text("Coworkers")
                 } footer: {
-                    Text("Enable Swarm collaboration in Bot capabilities to make a Bot available here. Each Bot can belong to one swarm.")
+                    Text(
+                        "Enable Swarm collaboration in Bot capabilities to make a Bot available here. Each Bot can belong to one swarm."
+                    )
                 }
             }
             .scrollContentBackground(.hidden)
@@ -662,7 +666,7 @@ struct BotDetailView: View {
         var seen = Set<String>()
         return model.chat.sessions.compactMap { session in
             guard let path = session.sessionContext.workspaceLabel,
-                  seen.insert(path).inserted
+                seen.insert(path).inserted
             else { return nil }
             let component = URL(fileURLWithPath: path).lastPathComponent
             return RoutineWorkspace(path: path, name: component.isEmpty ? path : component)

@@ -9,15 +9,16 @@ extension AppModelTests {
     func testLoadingStatusChangesItsMarkWithoutMovingTheLabel() throws {
         var images: [UIImage] = []
         for isLoading in [false, true] {
-            let renderer = ImageRenderer(content:
-                HStack {
-                    Mobius.MobiusStatusIndicator(color: .black, isLoading: isLoading)
-                    Text(verbatim: "Gateway")
-                }
-                .foregroundStyle(.black)
-                .padding()
-                .background(.white)
-                .environment(\.scenePhase, .inactive)
+            let renderer = ImageRenderer(
+                content:
+                    HStack {
+                        Mobius.MobiusStatusIndicator(color: .black, isLoading: isLoading)
+                        Text(verbatim: "Gateway")
+                    }
+                    .foregroundStyle(.black)
+                    .padding()
+                    .background(.white)
+                    .environment(\.scenePhase, .inactive)
             )
             let image = try XCTUnwrap(renderer.uiImage)
             images.append(image)
@@ -49,7 +50,8 @@ extension AppModelTests {
         let previous = scene.keyWindow
         let window = UIWindow(windowScene: scene)
         window.frame = CGRect(x: 0, y: 0, width: 390, height: 740)
-        let host = UIHostingController(rootView: LockSheetTestPresenter(state: state).environment(app))
+        let host = UIHostingController(
+            rootView: LockSheetTestPresenter(state: state).environment(app))
         window.rootViewController = host
         previous?.isHidden = true
         window.makeKeyAndVisible()
@@ -105,7 +107,8 @@ extension AppModelTests {
         XCTAssertTrue(host.presentedViewController === sheet)
         XCTAssertEqual(field.text, "Unsaved setup credential")
 
-        let alert = UIAlertController(title: "Private setup code", message: "ABCD-1234", preferredStyle: .alert)
+        let alert = UIAlertController(
+            title: "Private setup code", message: "ABCD-1234", preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Continue", style: .default))
         sheet.present(alert, animated: false)
         let alertAppeared = await eventually { alert.viewIfLoaded?.window != nil }
@@ -123,7 +126,8 @@ extension AppModelTests {
         await withCheckedContinuation { continuation in
             alert.dismiss(animated: false) { continuation.resume() }
         }
-        let share = UIActivityViewController(activityItems: ["ABCD-1234"], applicationActivities: nil)
+        let share = UIActivityViewController(
+            activityItems: ["ABCD-1234"], applicationActivities: nil)
         share.popoverPresentationController?.sourceView = sheet.view
         share.popoverPresentationController?.sourceRect = sheet.view.bounds
         sheet.present(share, animated: false)
@@ -193,7 +197,8 @@ extension AppModelTests {
             session(sessionID: "chat-c", state: .idle, botID: "bot-c"),
         ]
 
-        XCTAssertEqual(model.chat.chatCatalogSessions.map(\.sessionId), ["chat-a", "chat-b", "chat-c"])
+        XCTAssertEqual(
+            model.chat.chatCatalogSessions.map(\.sessionId), ["chat-a", "chat-b", "chat-c"])
 
         model.chat.chatBotFilterIDs = ["bot-a", "bot-c"]
         XCTAssertEqual(model.chat.chatCatalogSessions.map(\.sessionId), ["chat-a", "chat-c"])
@@ -231,34 +236,41 @@ extension AppModelTests {
 
     func testToolLoadUsesTheStandardToolTranscriptPresentation() throws {
         let app = try model()
-        let event = AgentEventRecord(submissionId: "input-1", msg: .object([
-            "type": .string("tool_load"),
-            "turnId": .string("turn-1"),
-            "loadId": .string("step-1"),
-            "catalogRevision": .string("catalog-1"),
-            "tools": .array([.string("swarm_post"), .string("swarm_read")])
-        ]))
+        let event = AgentEventRecord(
+            submissionId: "input-1",
+            msg: .object([
+                "type": .string("tool_load"),
+                "turnId": .string("turn-1"),
+                "loadId": .string("step-1"),
+                "catalogRevision": .string("catalog-1"),
+                "tools": .array([.string("swarm_post"), .string("swarm_read")]),
+            ]))
         try AgentEventRecord.validate(event.msg)
-        app.chat.reduce(record: RecordedEvent(
-            sequence: 1,
-            recordedAtMs: 1_000,
-            event: event,
-            streamMetrics: [],
-            blocks: [RenderedBlock(capability: "tools", block: FrontendBlock(
-                id: "turn-1/step-1/load",
-                group: nil,
-                update: .replace,
-                state: .complete,
-                role: .tool,
-                title: "Loaded tools",
-                text: "swarm_post\nswarm_read",
-                symbol: nil,
-                format: "plain_text",
-                tone: "success",
-                files: []
-            ))],
-            preview: nil
-        ))
+        app.chat.reduce(
+            record: RecordedEvent(
+                sequence: 1,
+                recordedAtMs: 1_000,
+                event: event,
+                streamMetrics: [],
+                blocks: [
+                    RenderedBlock(
+                        capability: "tools",
+                        block: FrontendBlock(
+                            id: "turn-1/step-1/load",
+                            group: nil,
+                            update: .replace,
+                            state: .complete,
+                            role: .tool,
+                            title: "Loaded tools",
+                            text: "swarm_post\nswarm_read",
+                            symbol: nil,
+                            format: "plain_text",
+                            tone: "success",
+                            files: []
+                        ))
+                ],
+                preview: nil
+            ))
 
         let entry = try XCTUnwrap(app.chat.transcript.first)
         XCTAssertEqual(entry.role, .tool)
@@ -275,38 +287,47 @@ extension AppModelTests {
             text: "Original decision"
         )
         let records = [
-            recorded(1, .object([
-                "type": .string("turn_started"),
-                "turnId": .string("peer-turn")
-            ])),
+            recorded(
+                1,
+                .object([
+                    "type": .string("turn_started"),
+                    "turnId": .string("peer-turn"),
+                ])),
             recordedPeerMessage(2, text: text, reply: reply, messageTarget: target),
-            recorded(3, testAssistantMessage(
-                turnID: "peer-turn", modelStepID: "step-1", phase: "commentary", text: "Checking"
-            )),
-            recorded(4, testAssistantMessage(
-                turnID: "peer-turn", modelStepID: "step-2", text: "Done"
-            )),
-            recorded(5, .object(["type": .string("turn_complete"), "turnId": .string("peer-turn")]))
+            recorded(
+                3,
+                testAssistantMessage(
+                    turnID: "peer-turn", modelStepID: "step-1", phase: "commentary",
+                    text: "Checking"
+                )),
+            recorded(
+                4,
+                testAssistantMessage(
+                    turnID: "peer-turn", modelStepID: "step-2", text: "Done"
+                )),
+            recorded(
+                5, .object(["type": .string("turn_complete"), "turnId": .string("peer-turn")])),
         ]
         let live = try model()
         for record in records { live.chat.reduce(record: record) }
         let replay = try model()
         replay.chat.mergeHistory(records)
-        replay.chat.apply(RenderedPreview(
-            id: "reviewer",
-            title: "reviewer",
-            subtitle: "",
-            pageId: "latest",
-            update: .replace,
-            events: records.map { record in
-                RenderedEventRecord(
-                    event: record.event.msg,
-                    blocks: record.blocks,
-                    recordedAtMs: record.recordedAtMs
-                )
-            },
-            next: nil
-        ), selection: nil)
+        replay.chat.apply(
+            RenderedPreview(
+                id: "reviewer",
+                title: "reviewer",
+                subtitle: "",
+                pageId: "latest",
+                update: .replace,
+                events: records.map { record in
+                    RenderedEventRecord(
+                        event: record.event.msg,
+                        blocks: record.blocks,
+                        recordedAtMs: record.recordedAtMs
+                    )
+                },
+                next: nil
+            ), selection: nil)
         let preview = try XCTUnwrap(replay.chat.previews.first)
         let cached = CachedTranscript(
             sequence: 5,
@@ -335,7 +356,8 @@ extension AppModelTests {
             XCTAssertEqual(entry.messageMetadata?.delivery, .turn)
             XCTAssertEqual(entry.messageTarget, target)
             XCTAssertEqual(entry.reply, reply)
-            XCTAssertEqual(TranscriptProjection(entries: entries).rows.map(\.kind), [.workedGroup, .narrative])
+            XCTAssertEqual(
+                TranscriptProjection(entries: entries).rows.map(\.kind), [.workedGroup, .narrative])
         }
     }
 
@@ -356,10 +378,12 @@ extension AppModelTests {
             MobiusText.localized(frontendPresentationText(value)).resolved(locale: french)
         }
 
-        XCTAssertEqual(values, [
-            "Bloc-notes", "Bloc-notes global", "Bloc-notes de la conversation",
-            "Promouvoir", "Modifier", "Supprimer", "Plugin title outside the app catalog",
-        ])
+        XCTAssertEqual(
+            values,
+            [
+                "Bloc-notes", "Bloc-notes global", "Bloc-notes de la conversation",
+                "Promouvoir", "Modifier", "Supprimer", "Plugin title outside the app catalog",
+            ])
     }
 
     func testCanonicalFrontendRenderIsCapabilityScopedAndAppliedOnce() throws {
@@ -369,38 +393,42 @@ extension AppModelTests {
             text: "Started",
             tone: "warning"
         )
-        let started = RenderedBlock(capability: "tools", block: FrontendBlock(
-            id: "result",
-            group: "turn",
-            update: .replace,
-            state: .pending,
-            role: .tool,
-            title: "Tool",
-            text: "Started",
-            symbol: nil,
-            format: "plain_text",
-            tone: "warning",
-            files: []
-        ))
+        let started = RenderedBlock(
+            capability: "tools",
+            block: FrontendBlock(
+                id: "result",
+                group: "turn",
+                update: .replace,
+                state: .pending,
+                role: .tool,
+                title: "Tool",
+                text: "Started",
+                symbol: nil,
+                format: "plain_text",
+                tone: "warning",
+                files: []
+            ))
         let finishedEvent = renderEvent(
             group: nil,
             append: true,
             text: " and finished",
             tone: "success"
         )
-        let finished = RenderedBlock(capability: "tools", block: FrontendBlock(
-            id: "result",
-            group: nil,
-            update: .append,
-            state: .complete,
-            role: .tool,
-            title: "Tool",
-            text: " and finished",
-            symbol: nil,
-            format: "plain_text",
-            tone: "success",
-            files: []
-        ))
+        let finished = RenderedBlock(
+            capability: "tools",
+            block: FrontendBlock(
+                id: "result",
+                group: nil,
+                update: .append,
+                state: .complete,
+                role: .tool,
+                title: "Tool",
+                text: " and finished",
+                symbol: nil,
+                format: "plain_text",
+                tone: "success",
+                files: []
+            ))
         let firstRecord = RecordedEvent(
             sequence: 1,
             recordedAtMs: 1_000,
@@ -410,14 +438,15 @@ extension AppModelTests {
             preview: nil
         )
         app.chat.reduce(record: firstRecord)
-        app.chat.reduce(record: RecordedEvent(
-            sequence: 2,
-            recordedAtMs: 1_001,
-            event: finishedEvent,
-            streamMetrics: [],
-            blocks: [finished],
-            preview: nil
-        ))
+        app.chat.reduce(
+            record: RecordedEvent(
+                sequence: 2,
+                recordedAtMs: 1_001,
+                event: finishedEvent,
+                streamMetrics: [],
+                blocks: [finished],
+                preview: nil
+            ))
 
         let entry = try XCTUnwrap(app.chat.transcript.first)
         XCTAssertEqual(app.chat.transcript.count, 1)
@@ -436,26 +465,31 @@ extension AppModelTests {
     func testRenderedBlocksPreserveCapabilityAndGroup() throws {
         let app = try model()
         for (sequence, capability) in [(UInt64(1), "tools"), (UInt64(2), "review")] {
-            app.chat.reduce(record: RecordedEvent(
-                sequence: sequence,
-                recordedAtMs: Int64(sequence),
-                event: renderEvent(group: "turn", text: capability),
-                streamMetrics: [],
-                blocks: [RenderedBlock(capability: capability, block: FrontendBlock(
-                    id: "result",
-                    group: "turn",
-                    update: .replace,
-                    state: .complete,
-                    role: .tool,
-                    title: capability,
-                    text: capability,
-                    symbol: nil,
-                    format: "plain_text",
-                    tone: "neutral",
-                    files: []
-                ))],
-                preview: nil
-            ))
+            app.chat.reduce(
+                record: RecordedEvent(
+                    sequence: sequence,
+                    recordedAtMs: Int64(sequence),
+                    event: renderEvent(group: "turn", text: capability),
+                    streamMetrics: [],
+                    blocks: [
+                        RenderedBlock(
+                            capability: capability,
+                            block: FrontendBlock(
+                                id: "result",
+                                group: "turn",
+                                update: .replace,
+                                state: .complete,
+                                role: .tool,
+                                title: capability,
+                                text: capability,
+                                symbol: nil,
+                                format: "plain_text",
+                                tone: "neutral",
+                                files: []
+                            ))
+                    ],
+                    preview: nil
+                ))
         }
 
         XCTAssertEqual(app.chat.transcript.map(\.group), ["turn", "turn"])
@@ -505,9 +539,11 @@ extension AppModelTests {
             size: 4,
             mediaType: "text/plain"
         )
-        let phrase = TranscriptWaitingPhrase(startedAt: Date(timeIntervalSince1970: 1), order: [
-            "Waiting"
-        ])
+        let phrase = TranscriptWaitingPhrase(
+            startedAt: Date(timeIntervalSince1970: 1),
+            order: [
+                "Waiting"
+            ])
 
         model.chat.reduce(
             event: renderEvent(title: "", text: "", files: [file]),
@@ -564,37 +600,43 @@ extension AppModelTests {
             pageId: "latest",
             update: .replace,
             events: [
-            RenderedEventRecord(
-                event: .object(["type": .string("tool_call_end")]),
-                blocks: [RenderedBlock(capability: "tools", block: outer)]
-            ),
-            RenderedEventRecord(
-                event: rendered.msg,
-                blocks: [RenderedBlock(capability: "reviewer", block: FrontendBlock(
-                    id: "change",
-                    group: "work",
-                    update: .replace,
-                    state: .complete,
-                    role: .artifact,
-                    title: "Code change",
-                    text: "@@ -1 +1 @@",
-                    symbol: nil,
-                    format: "unified_diff",
-                    tone: "success",
-                    files: []
-                ))]
-            )
+                RenderedEventRecord(
+                    event: .object(["type": .string("tool_call_end")]),
+                    blocks: [RenderedBlock(capability: "tools", block: outer)]
+                ),
+                RenderedEventRecord(
+                    event: rendered.msg,
+                    blocks: [
+                        RenderedBlock(
+                            capability: "reviewer",
+                            block: FrontendBlock(
+                                id: "change",
+                                group: "work",
+                                update: .replace,
+                                state: .complete,
+                                role: .artifact,
+                                title: "Code change",
+                                text: "@@ -1 +1 @@",
+                                symbol: nil,
+                                format: "unified_diff",
+                                tone: "success",
+                                files: []
+                            ))
+                    ]
+                ),
             ],
             next: nil
         )
 
         model.chat.reduce(
-            event: AgentEventRecord(submissionId: nil, msg: .object([
-                "type": .string("frontend"),
-                "frontendType": .string("preview"),
-                "title": .string("worker"),
-                "events": .array([])
-            ])),
+            event: AgentEventRecord(
+                submissionId: nil,
+                msg: .object([
+                    "type": .string("frontend"),
+                    "frontendType": .string("preview"),
+                    "title": .string("worker"),
+                    "events": .array([]),
+                ])),
             blocks: [],
             preview: preview
         )
@@ -613,19 +655,21 @@ extension AppModelTests {
     func testSubagentPreviewProjectsOneCompleteWorkedTurn() throws {
         let model = try model()
         let turnID = "turn-1"
-        let compacted = RenderedBlock(capability: "agent", block: FrontendBlock(
-            id: nil,
-            group: turnID,
-            update: .replace,
-            state: .complete,
-            role: .notice,
-            title: "Context compacted",
-            text: "",
-            symbol: nil,
-            format: "plain_text",
-            tone: "neutral",
-            files: []
-        ))
+        let compacted = RenderedBlock(
+            capability: "agent",
+            block: FrontendBlock(
+                id: nil,
+                group: turnID,
+                update: .replace,
+                state: .complete,
+                role: .notice,
+                title: "Context compacted",
+                text: "",
+                symbol: nil,
+                format: "plain_text",
+                tone: "neutral",
+                files: []
+            ))
         let events = [
             RenderedEventRecord(
                 event: .object([
@@ -683,10 +727,12 @@ extension AppModelTests {
         ]
 
         model.chat.reduce(
-            event: AgentEventRecord(submissionId: nil, msg: .object([
-                "type": .string("frontend"),
-                "frontendType": .string("preview"),
-            ])),
+            event: AgentEventRecord(
+                submissionId: nil,
+                msg: .object([
+                    "type": .string("frontend"),
+                    "frontendType": .string("preview"),
+                ])),
             blocks: [],
             preview: RenderedPreview(
                 id: "/root/reviewer",
@@ -718,21 +764,23 @@ extension AppModelTests {
         model.chat.selectedSessionID = "chat-1"
         model.gateway.connectionState = .ready
         let requestCount = await recorder.requestCount()
-        model.submitPickerOption(try FrontendPickerOption(json: .object([
-            "label": .string("reviewer"),
-            "description": .string("running"),
-            "detail": .string("gpt-5.6-sol"),
-            "symbol": .string("agent"),
-            "showsDetail": .bool(false),
-            "op": .object([
-                "type": .string("capability_command"),
-                "capability": .string("subagents"),
-                "command": .string("subagents"),
-                "arguments": .string("reviewer"),
-                "input": .null,
-                "target": .null
-            ])
-        ])))
+        model.submitPickerOption(
+            try FrontendPickerOption(
+                json: .object([
+                    "label": .string("reviewer"),
+                    "description": .string("running"),
+                    "detail": .string("gpt-5.6-sol"),
+                    "symbol": .string("agent"),
+                    "showsDetail": .bool(false),
+                    "op": .object([
+                        "type": .string("capability_command"),
+                        "capability": .string("subagents"),
+                        "command": .string("subagents"),
+                        "arguments": .string("reviewer"),
+                        "input": .null,
+                        "target": .null,
+                    ]),
+                ])))
         let request = await recorder.firstRequest(after: requestCount) { request in
             guard case .submit("chat-1", _) = request else { return false }
             return true
@@ -754,12 +802,14 @@ extension AppModelTests {
             files: []
         )
         model.chat.reduce(
-            event: AgentEventRecord(submissionId: submission.id, msg: .object([
-                "type": .string("frontend"),
-                "frontendType": .string("preview"),
-                "title": .string("reviewer"),
-                "events": .array([])
-            ])),
+            event: AgentEventRecord(
+                submissionId: submission.id,
+                msg: .object([
+                    "type": .string("frontend"),
+                    "frontendType": .string("preview"),
+                    "title": .string("reviewer"),
+                    "events": .array([]),
+                ])),
             blocks: [],
             preview: RenderedPreview(
                 id: "/root/reviewer",
@@ -804,19 +854,21 @@ extension AppModelTests {
             target: nil
         )
         func block(_ text: String) -> RenderedBlock {
-            RenderedBlock(capability: "agent", block: FrontendBlock(
-                id: nil,
-                group: nil,
-                update: .replace,
-                state: .complete,
-                role: .notice,
-                title: "möbius",
-                text: text,
-                symbol: nil,
-                format: "plain_text",
-                tone: "neutral",
-                files: []
-            ))
+            RenderedBlock(
+                capability: "agent",
+                block: FrontendBlock(
+                    id: nil,
+                    group: nil,
+                    update: .replace,
+                    state: .complete,
+                    role: .notice,
+                    title: "möbius",
+                    text: text,
+                    symbol: nil,
+                    format: "plain_text",
+                    tone: "neutral",
+                    files: []
+                ))
         }
         model.chat.reduce(
             event: AgentEventRecord(submissionId: nil, msg: .object(["type": .string("frontend")])),
@@ -827,14 +879,16 @@ extension AppModelTests {
                 subtitle: "full",
                 pageId: "latest",
                 update: .replace,
-                events: [RenderedEventRecord(
-                    event: testAssistantMessage(
-                        turnID: "turn-1",
-                        modelStepID: "worker-step",
-                        text: ""
-                    ),
-                    blocks: [block("new")]
-                )],
+                events: [
+                    RenderedEventRecord(
+                        event: testAssistantMessage(
+                            turnID: "turn-1",
+                            modelStepID: "worker-step",
+                            text: ""
+                        ),
+                        blocks: [block("new")]
+                    )
+                ],
                 next: next
             )
         )
@@ -862,10 +916,12 @@ extension AppModelTests {
                 subtitle: "full",
                 pageId: "before-12",
                 update: .prepend,
-                events: [RenderedEventRecord(
-                    event: testMessageEvent(text: ""),
-                    blocks: [block("old")]
-                )],
+                events: [
+                    RenderedEventRecord(
+                        event: testMessageEvent(text: ""),
+                        blocks: [block("old")]
+                    )
+                ],
                 next: nil
             )
         )
@@ -892,19 +948,23 @@ extension AppModelTests {
         func event(text: String, update: FrontendBlockUpdate) -> RenderedEventRecord {
             RenderedEventRecord(
                 event: .object(["type": .string("tool_call_end")]),
-                blocks: [RenderedBlock(capability: "tools", block: FrontendBlock(
-                    id: "call-1",
-                    group: "turn-1",
-                    update: update,
-                    state: .complete,
-                    role: .tool,
-                    title: "Read file",
-                    text: text,
-                    symbol: "task",
-                    format: "plain_text",
-                    tone: "neutral",
-                    files: []
-                ))]
+                blocks: [
+                    RenderedBlock(
+                        capability: "tools",
+                        block: FrontendBlock(
+                            id: "call-1",
+                            group: "turn-1",
+                            update: update,
+                            state: .complete,
+                            role: .tool,
+                            title: "Read file",
+                            text: text,
+                            symbol: "task",
+                            format: "plain_text",
+                            tone: "neutral",
+                            files: []
+                        ))
+                ]
             )
         }
         model.chat.reduce(
@@ -918,7 +978,7 @@ extension AppModelTests {
                 update: .replace,
                 events: [
                     event(text: "new", update: .append),
-                    event(text: "er", update: .append)
+                    event(text: "er", update: .append),
                 ],
                 next: next
             )
@@ -949,9 +1009,11 @@ extension AppModelTests {
             return XCTFail("Expected preview page submission")
         }
         model.chat.reduce(
-            event: AgentEventRecord(submissionId: submission.id, msg: .object([
-                "type": .string("frontend")
-            ])),
+            event: AgentEventRecord(
+                submissionId: submission.id,
+                msg: .object([
+                    "type": .string("frontend")
+                ])),
             blocks: [],
             preview: RenderedPreview(
                 id: "/root/reviewer",
@@ -984,16 +1046,19 @@ extension AppModelTests {
                     subtitle: "No context",
                     pageId: "\(path):latest",
                     update: .replace,
-                    events: [RenderedEventRecord(
-                        event: testMessageEvent(text: path),
-                        blocks: []
-                    )],
+                    events: [
+                        RenderedEventRecord(
+                            event: testMessageEvent(text: path),
+                            blocks: []
+                        )
+                    ],
                     next: nil
                 )
             )
         }
 
-        XCTAssertEqual(Set(model.chat.previews.map(\.id)), ["/root/a/reviewer", "/root/b/reviewer"])
+        XCTAssertEqual(
+            Set(model.chat.previews.map(\.id)), ["/root/a/reviewer", "/root/b/reviewer"])
         XCTAssertEqual(model.chat.previews.map(\.title), ["reviewer", "reviewer"])
     }
 
@@ -1021,12 +1086,14 @@ extension AppModelTests {
             return XCTFail("Expected preview page submission")
         }
 
-        model.gateway.handle(.rejected(GatewayRejection(
-            requestId: submission.id,
-            code: "invalid_request",
-            message: "Page unavailable",
-            fatal: false
-        )))
+        model.gateway.handle(
+            .rejected(
+                GatewayRejection(
+                    requestId: submission.id,
+                    code: "invalid_request",
+                    message: "Page unavailable",
+                    fatal: false
+                )))
 
         XCTAssertFalse(model.chat.isLoadingPreviewPage)
     }
@@ -1035,26 +1102,30 @@ extension AppModelTests {
         let model = try model()
 
         model.chat.reduce(
-            event: AgentEventRecord(submissionId: nil, msg: .object([
-                "type": .string("frontend"),
-                "frontendType": .string("picker"),
-                "title": .string("Choose a review action"),
-                "options": .array([.object([
-                    "label": .string("Accept"),
-                    "description": .string("Accept the review result."),
-                    "detail": .string("reviewer-v1"),
-                    "symbol": .null,
-                    "showsDetail": .bool(true),
-                    "op": .object([
-                        "type": .string("capability_command"),
-                        "capability": .string("reviewer"),
-                        "command": .string("accept"),
-                        "arguments": .string(""),
-                        "input": .null,
-                        "target": .null
-                    ])
-                ])])
-            ])),
+            event: AgentEventRecord(
+                submissionId: nil,
+                msg: .object([
+                    "type": .string("frontend"),
+                    "frontendType": .string("picker"),
+                    "title": .string("Choose a review action"),
+                    "options": .array([
+                        .object([
+                            "label": .string("Accept"),
+                            "description": .string("Accept the review result."),
+                            "detail": .string("reviewer-v1"),
+                            "symbol": .null,
+                            "showsDetail": .bool(true),
+                            "op": .object([
+                                "type": .string("capability_command"),
+                                "capability": .string("reviewer"),
+                                "command": .string("accept"),
+                                "arguments": .string(""),
+                                "input": .null,
+                                "target": .null,
+                            ]),
+                        ])
+                    ]),
+                ])),
             blocks: [],
             preview: nil
         )
@@ -1074,24 +1145,25 @@ extension AppModelTests {
         model.chat.selectedSessionID = "chat-1"
         model.gateway.connectionState = .ready
 
-        model.submitFrontendOperation(.capabilityCommand(
-            capability: "notes",
-            command: "edit",
-            arguments: "note-1",
-            input: "Use one row.",
-            target: nil
-        ))
+        model.submitFrontendOperation(
+            .capabilityCommand(
+                capability: "notes",
+                command: "edit",
+                arguments: "note-1",
+                input: "Use one row.",
+                target: nil
+            ))
         await fulfillment(of: [operationSent], timeout: 1)
 
         let requests = await recorder.requests()
         guard case .submit(let sessionID, let submission) = try XCTUnwrap(requests.first),
-              case .capabilityCommand(
-                  let capability,
-                  let command,
-                  let arguments,
-                  let input,
-                  let target
-              ) = submission.op
+            case .capabilityCommand(
+                let capability,
+                let command,
+                let arguments,
+                let input,
+                let target
+            ) = submission.op
         else { return XCTFail("Expected edited capability command") }
         XCTAssertEqual(sessionID, "chat-1")
         XCTAssertEqual(capability, "notes")
@@ -1109,12 +1181,12 @@ extension AppModelTests {
         model.chat.selectedSessionID = "chat-1"
         model.gateway.connectionState = .ready
         let patch = """
-        --- note.txt
-        +++ note.txt
-        @@ -1 +1 @@
-        -old
-        +new
-        """
+            --- note.txt
+            +++ note.txt
+            @@ -1 +1 @@
+            -old
+            +new
+            """
 
         let requestCount = await recorder.requestCount()
         model.chat.reduce(
@@ -1156,10 +1228,11 @@ extension AppModelTests {
         model.bots = [helper]
         model.chat.sessions = [original]
 
-        model.gateway.handle(.sessions(
-            requestID: nil,
-            sessions: [session(state: .running, botID: "missing-bot")]
-        ))
+        model.gateway.handle(
+            .sessions(
+                requestID: nil,
+                sessions: [session(state: .running, botID: "missing-bot")]
+            ))
 
         XCTAssertEqual(model.chat.sessions, [original])
         XCTAssertEqual(model.toast?.message, "The gateway returned a chat with an unknown Bot.")
@@ -1168,12 +1241,14 @@ extension AppModelTests {
     func testAssistantAttributionResolvesCurrentBotCatalogIdentity() throws {
         let model = try model()
         model.chat.sessions = [session(state: .idle, botID: "bot-1")]
-        model.bots = [bot(
-            id: "bot-1",
-            handle: "reviewer",
-            name: "Current Reviewer",
-            tint: .purple
-        )]
+        model.bots = [
+            bot(
+                id: "bot-1",
+                handle: "reviewer",
+                name: "Current Reviewer",
+                tint: .purple
+            )
+        ]
 
         let bot = try XCTUnwrap(model.bot(forSessionID: "chat-1"))
         XCTAssertEqual(bot.name, "Current Reviewer")
@@ -1217,7 +1292,9 @@ private struct LockSheetTestPresenter: View {
                 LockSheetTestForm().presentationDetents([.large])
             }
             .background {
-                Mobius.MobiusAppLockPresenter(isCovered: app.isAppLocked || app.appLockEnabled && state.phase != .active) {
+                Mobius.MobiusAppLockPresenter(
+                    isCovered: app.isAppLocked || app.appLockEnabled && state.phase != .active
+                ) {
                     Mobius.AppLockView().environment(app)
                 }
             }

@@ -34,10 +34,11 @@ struct TextFilePreviewView: View {
                     )
                 }
             }
-                .navigationTitle(navigationTitle)
+            .navigationTitle(navigationTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: isWorkspaceFile ? .cancellationAction : .confirmationAction) {
+                ToolbarItem(placement: isWorkspaceFile ? .cancellationAction : .confirmationAction)
+                {
                     Button(isWorkspaceFile ? "Cancel" : "Done", action: dismiss.callAsFunction)
                         .disabled(model.isSavingWorkspaceFile)
                 }
@@ -68,11 +69,11 @@ struct TextFilePreviewView: View {
 
     private var canSave: Bool {
         guard isWorkspaceFile,
-              model.canModifySelectedSession,
-              !model.isSavingWorkspaceFile,
-              !draftPath.isEmpty,
-              draftPath.utf8.count <= 4_096,
-              draftContents.utf8.count <= maximumWorkspaceTextFileBytes
+            model.canModifySelectedSession,
+            !model.isSavingWorkspaceFile,
+            !draftPath.isEmpty,
+            draftPath.utf8.count <= 4_096,
+            draftContents.utf8.count <= maximumWorkspaceTextFileBytes
         else { return false }
         return isNewFile || draftContents != draft.originalContents
     }
@@ -91,11 +92,11 @@ struct TextFilePreviewView: View {
                 source: contentsBinding,
                 language: draftPath.sourceHighlightLanguage
             )
-                .font(MobiusStyle.bodyFont.monospaced())
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-                .padding(MobiusSpace.s)
-                .privacySensitive()
+            .font(MobiusStyle.bodyFont.monospaced())
+            .autocorrectionDisabled()
+            .textInputAutocapitalization(.never)
+            .padding(MobiusSpace.s)
+            .privacySensitive()
         }
     }
 
@@ -193,10 +194,10 @@ private struct HighlightedSourceEditor: View {
             highlightTask.cancel()
         }
         guard let highlighted,
-              !Task.isCancelled,
-              source == request.source,
-              String(attributedSource.characters) == request.source,
-              attributedSource != highlighted
+            !Task.isCancelled,
+            source == request.source,
+            String(attributedSource.characters) == request.source,
+            attributedSource != highlighted
         else { return }
         attributedSource.transform(updating: &selection) { $0 = highlighted }
     }
@@ -229,7 +230,7 @@ private extension SourceHighlightRequest {
         let colors: HighlightColors = isDark ? .dark(.xcode) : .light(.xcode)
         let mode = language.map(HighlightMode.language) ?? .automatic
         guard let result = try? await Highlight().request(source, mode: mode, colors: colors),
-              !Task.isCancelled
+            !Task.isCancelled
         else { return nil }
         return NumberedSourceText.restoringWhitespace(result.attributedText, in: source)
     }
@@ -315,8 +316,8 @@ struct NumberedSourceText: View {
     ) -> AttributedString {
         let trimmed = source.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
-              String(highlighted.characters) == trimmed,
-              let range = source.range(of: trimmed)
+            String(highlighted.characters) == trimmed,
+            let range = source.range(of: trimmed)
         else { return AttributedString(source) }
         var result = AttributedString(String(source[..<range.lowerBound]))
         result.append(highlighted)
@@ -539,7 +540,9 @@ struct PreviewTranscriptSheet: View {
     }
 
     private var currentPreview: TranscriptPreview {
-        if model.chat.presentedPreview?.id == preview.id, let presented = model.chat.presentedPreview {
+        if model.chat.presentedPreview?.id == preview.id,
+            let presented = model.chat.presentedPreview
+        {
             return presented
         }
         return model.chat.previews.first(where: { $0.id == preview.id }) ?? preview
@@ -570,12 +573,14 @@ struct PreviewTranscriptSheet: View {
     private var spawnContextDetail: LocalizedStringResource {
         let context = currentPreview.context.lowercased()
         if context.hasPrefix("no ") || context == "none" {
-            return "This agent started fresh with only its assigned task. It inherited none of the parent conversation."
+            return
+                "This agent started fresh with only its assigned task. It inherited none of the parent conversation."
         }
         if context.hasPrefix("full") {
             return "This agent inherited the full parent conversation as its starting context."
         }
-        return "This agent inherited \(currentPreview.context.lowercased()) from the parent conversation."
+        return
+            "This agent inherited \(currentPreview.context.lowercased()) from the parent conversation."
     }
 }
 

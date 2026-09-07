@@ -11,19 +11,21 @@ extension AppModel {
     ) {
         let instructions = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
         guard gateway.connectionState.isReady, !botID.isEmpty, !workspace.isEmpty,
-              !instructions.isEmpty
+            !instructions.isEmpty
         else { return }
         let id = requestID("routine-create")
         routineRequestIDs.insert(id)
         routineError = nil
-        gateway.transmit(.createRoutine(
-            requestID: id,
-            botID: botID,
-            workspace: workspace,
-            instructions: instructions,
-            schedule: schedule,
-            endsAt: endsAt
-        )) { [weak self] message in
+        gateway.transmit(
+            .createRoutine(
+                requestID: id,
+                botID: botID,
+                workspace: workspace,
+                instructions: instructions,
+                schedule: schedule,
+                endsAt: endsAt
+            )
+        ) { [weak self] message in
             self?.routineRequestIDs.remove(id)
             self?.routineError = message
         }
@@ -40,21 +42,23 @@ extension AppModel {
     ) {
         let instructions = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
         guard gateway.connectionState.isReady, !botID.isEmpty, !workspace.isEmpty,
-              !instructions.isEmpty
+            !instructions.isEmpty
         else { return }
         let id = requestID("routine-update")
         routineRequestIDs.insert(id)
         routineError = nil
-        gateway.transmit(.updateRoutine(
-            requestID: id,
-            id: routine.id,
-            botID: botID,
-            workspace: workspace,
-            instructions: instructions,
-            schedule: schedule,
-            endsAt: endsAt,
-            enabled: enabled
-        )) { [weak self] message in
+        gateway.transmit(
+            .updateRoutine(
+                requestID: id,
+                id: routine.id,
+                botID: botID,
+                workspace: workspace,
+                instructions: instructions,
+                schedule: schedule,
+                endsAt: endsAt,
+                enabled: enabled
+            )
+        ) { [weak self] message in
             self?.routineRequestIDs.remove(id)
             self?.routineError = message
         }
@@ -111,7 +115,7 @@ extension AppModel {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(2))
                 guard !Task.isCancelled, let self,
-                      self.presentedRoutineRun?.id == run.id
+                    self.presentedRoutineRun?.id == run.id
                 else { return }
                 guard (self.routineRunPreview?.run.status ?? run.status) == .running else { return }
                 self.loadRoutineRunPreview(runID: run.id)
@@ -135,7 +139,7 @@ extension AppModel {
 
     func loadEarlierRoutineRunPreview() {
         guard let runID = presentedRoutineRun?.id,
-              let beforeSequence = routineRunPreviewNextBeforeSequence
+            let beforeSequence = routineRunPreviewNextBeforeSequence
         else { return }
         loadRoutineRunPreview(runID: runID, beforeSequence: beforeSequence)
     }
@@ -155,11 +159,13 @@ extension AppModel {
         routineRunPreviewRequestID = id
         routineRunPreviewRequestBeforeSequence = beforeSequence
         isLoadingRoutineRunPreview = routineRunPreview == nil || beforeSequence != nil
-        gateway.transmit(.getRoutineRunPreview(
-            requestID: id,
-            id: runID,
-            beforeSequence: beforeSequence
-        )) { [weak self] message in
+        gateway.transmit(
+            .getRoutineRunPreview(
+                requestID: id,
+                id: runID,
+                beforeSequence: beforeSequence
+            )
+        ) { [weak self] message in
             guard let self, self.routineRunPreviewRequestID == id else { return }
             self.routineRunPreviewRequestID = nil
             self.routineRunPreviewRequestBeforeSequence = nil

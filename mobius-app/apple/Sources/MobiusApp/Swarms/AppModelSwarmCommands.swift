@@ -43,9 +43,9 @@ extension AppModel {
         guard canMutateSwarm, !title.isEmpty else { return }
         let allowed = Set(availableBotsForSwarm().map(\.id))
         guard allowed.contains(leaderBotID),
-              !memberBotIDs.isEmpty,
-              !memberBotIDs.contains(leaderBotID),
-              memberBotIDs.isSubset(of: allowed)
+            !memberBotIDs.isEmpty,
+            !memberBotIDs.contains(leaderBotID),
+            memberBotIDs.isSubset(of: allowed)
         else {
             showToast("Choose available Bots with Swarm collaboration enabled.", tone: .warning)
             return
@@ -79,7 +79,7 @@ extension AppModel {
 
     func leaveSwarm(_ swarm: SwarmRecord, botID: String) {
         guard swarm.leaderBotId != botID,
-              self.swarm(containingBot: botID)?.id == swarm.id
+            self.swarm(containingBot: botID)?.id == swarm.id
         else { return }
         sendSwarmMutation("swarm-leave") { requestID in
             .leaveSwarm(requestID: requestID, swarmID: swarm.id, botID: botID)
@@ -107,16 +107,18 @@ extension AppModel {
     ) -> String? {
         let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canPostSwarmMessage,
-              !text.isEmpty,
-              swarms.contains(where: { $0.id == swarmID })
+            !text.isEmpty,
+            swarms.contains(where: { $0.id == swarmID })
         else { return nil }
         let id = requestID("swarm-message")
         swarmMessageRequestID = id
-        gateway.transmit(.postSwarmMessage(
-            requestID: id,
-            swarmID: swarmID,
-            text: text
-        )) { [weak self] _ in
+        gateway.transmit(
+            .postSwarmMessage(
+                requestID: id,
+                swarmID: swarmID,
+                text: text
+            )
+        ) { [weak self] _ in
             if self?.swarmMessageRequestID == id { self?.swarmMessageRequestID = nil }
         }
         return id

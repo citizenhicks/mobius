@@ -80,7 +80,8 @@ struct AgentSettingsView: View {
                         }
                         SettingsInfoButton(
                             title: "Maximum model steps",
-                            detail: "Maximum primary model rounds allowed in one run before möbius stops it."
+                            detail:
+                                "Maximum primary model rounds allowed in one run before möbius stops it."
                         )
                     }
                     .sensoryFeedback(.selection, trigger: maxModelSteps.wrappedValue)
@@ -210,7 +211,8 @@ struct AgentSettingsView: View {
             .localized("The gateway is validating this revision.")
         case .restarting:
             .localized("The gateway accepted the configuration and is reopening the session.")
-        case .busy(let message), .conflict(let message), .invalid(let message), .failed(let message):
+        case .busy(let message), .conflict(let message), .invalid(let message),
+            .failed(let message):
             .verbatim(message)
         }
     }
@@ -247,9 +249,9 @@ struct AgentSettingsView: View {
                 Toggle(isOn: middleware(feature)) {
                     Text(verbatim: feature.label)
                 }
-                    .labelsHidden()
-                    .disabled(feature.required || unavailable != nil)
-                    .accessibilityHint(Text(verbatim: unavailable ?? feature.description))
+                .labelsHidden()
+                .disabled(feature.required || unavailable != nil)
+                .accessibilityHint(Text(verbatim: unavailable ?? feature.description))
             }
         } else {
             Toggle(isOn: middleware(feature)) {
@@ -258,9 +260,9 @@ struct AgentSettingsView: View {
                     detail: .verbatim(unavailable ?? "")
                 )
             }
-                .disabled(feature.required || unavailable != nil)
-                .accessibilityHint(Text(verbatim: unavailable ?? feature.description))
-                .help(Text(verbatim: unavailable ?? feature.description))
+            .disabled(feature.required || unavailable != nil)
+            .accessibilityHint(Text(verbatim: unavailable ?? feature.description))
+            .help(Text(verbatim: unavailable ?? feature.description))
         }
     }
 
@@ -315,7 +317,8 @@ struct AgentSettingsView: View {
         let availableExtensions = extensions(for: feature)
         guard !availableExtensions.isEmpty else { return joined(settings) }
         let active = availableExtensions.filter { draft?.extensions.contains($0.id) == true }
-        let extensionSummary: MobiusText = active.isEmpty
+        let extensionSummary: MobiusText =
+            active.isEmpty
             ? .localized("No extensions active")
             : .verbatim(active.map(\.name).joined(separator: ", "))
         return joined(settings + [extensionSummary])
@@ -387,9 +390,9 @@ struct AgentSettingsView: View {
             Toggle(isOn: selection) {
                 Text(verbatim: extensionRecord.name)
             }
-                .labelsHidden()
-                .accessibilityHint(extensionMetadata(extensionRecord).text)
-                .disabled(!middlewareEnabled(feature) && !selection.wrappedValue)
+            .labelsHidden()
+            .accessibilityHint(extensionMetadata(extensionRecord).text)
+            .disabled(!middlewareEnabled(feature) && !selection.wrappedValue)
         }
     }
 
@@ -398,8 +401,11 @@ struct AgentSettingsView: View {
             get: { draft?.extensions.contains(extensionRecord.id) ?? false },
             set: { isEnabled in
                 updateDraft { draft in
-                    if isEnabled { draft.extensions.insert(extensionRecord.id) }
-                    else { draft.extensions.remove(extensionRecord.id) }
+                    if isEnabled {
+                        draft.extensions.insert(extensionRecord.id)
+                    } else {
+                        draft.extensions.remove(extensionRecord.id)
+                    }
                 }
             }
         )
@@ -425,7 +431,9 @@ struct AgentSettingsView: View {
         guard !extensionRecord.hooksTrusted else {
             return .verbatim(extensionRecord.description)
         }
-        return .localized("\(extensionRecord.description) Its skills can be active now; executable hooks remain disabled until trusted on the Extensions page.")
+        return .localized(
+            "\(extensionRecord.description) Its skills can be active now; executable hooks remain disabled until trusted on the Extensions page."
+        )
     }
 
     @ViewBuilder
@@ -465,9 +473,9 @@ struct AgentSettingsView: View {
             }
             .sensoryFeedback(.selection, trigger: value.wrappedValue)
         case .select(let options, let unsetLabel)
-            where options.allSatisfy({ option in
-                model.modelChoices.contains { $0.route == option.value }
-            }) && !options.isEmpty:
+        where options.allSatisfy({ option in
+            model.modelChoices.contains { $0.route == option.value }
+        }) && !options.isEmpty:
             ModelRoutePicker(
                 verbatimLabel: setting.label,
                 detail: setting.description,
@@ -483,9 +491,10 @@ struct AgentSettingsView: View {
             let selectedDescription = selection.wrappedValue.flatMap { selected in
                 options.first { $0.value == selected }?.description
             }
-            let selectedLabel: MobiusText = selection.wrappedValue.map { selected in
-                .verbatim(options.first { $0.value == selected }?.label ?? selected)
-            } ?? unsetLabel.map(MobiusText.verbatim) ?? .localized("Select")
+            let selectedLabel: MobiusText =
+                selection.wrappedValue.map { selected in
+                    .verbatim(options.first { $0.value == selected }?.label ?? selected)
+                } ?? unsetLabel.map(MobiusText.verbatim) ?? .localized("Select")
             LabeledContent {
                 Menu {
                     Picker(selection: selection) {
@@ -495,7 +504,9 @@ struct AgentSettingsView: View {
                         ForEach(options) { option in
                             Text(verbatim: option.label).tag(Optional(option.value))
                         }
-                    } label: { Text(verbatim: setting.label) }
+                    } label: {
+                        Text(verbatim: setting.label)
+                    }
                     .labelsHidden()
                 } label: {
                     HStack(spacing: MobiusSpace.xs) {
@@ -535,10 +546,13 @@ struct AgentSettingsView: View {
         let selected = draft?.realtimeVoice ?? voices.first ?? ""
         return LabeledContent("Voice") {
             Menu {
-                Picker("Voice", selection: Binding(
-                    get: { selected },
-                    set: { voice in updateDraft { $0.realtimeVoice = voice } }
-                )) {
+                Picker(
+                    "Voice",
+                    selection: Binding(
+                        get: { selected },
+                        set: { voice in updateDraft { $0.realtimeVoice = voice } }
+                    )
+                ) {
                     ForEach(voices, id: \.self) { voice in
                         Text(verbatim: voice.capitalized).tag(voice)
                     }
@@ -572,10 +586,9 @@ struct AgentSettingsView: View {
             get: { middlewareEnabled(feature) },
             set: { isEnabled in
                 guard !feature.required, var enabled = draft?.middleware.enabled,
-                      !isEnabled || middlewareUnavailable(feature) == nil
+                    !isEnabled || middlewareUnavailable(feature) == nil
                 else { return }
-                if isEnabled { enabled.insert(feature.id) }
-                else { enabled.remove(feature.id) }
+                if isEnabled { enabled.insert(feature.id) } else { enabled.remove(feature.id) }
                 updateDraft { $0.middleware.enabled = enabled }
             }
         )
@@ -586,10 +599,12 @@ struct AgentSettingsView: View {
     }
 
     private func middlewareUnavailable(_ feature: MiddlewareFeature) -> String? {
-        guard let label = draft?.middleware.disabledBy(
-            features: model.middlewareFeatures,
-            middleware: feature.id
-        ) else { return nil }
+        guard
+            let label = draft?.middleware.disabledBy(
+                features: model.middlewareFeatures,
+                middleware: feature.id
+            )
+        else { return nil }
         return String(localized: "Unavailable while \(label) is selected.")
     }
 
@@ -601,14 +616,16 @@ struct AgentSettingsView: View {
     ) -> Binding<Int64> {
         Binding(
             get: {
-                guard let configured = draft?
-                    .middleware.settings[feature.id]?[setting.id],
+                guard
+                    let configured = draft?
+                        .middleware.settings[feature.id]?[setting.id],
                     case .integer(let value) = configured
                 else { return minimum }
                 return value
             },
             set: { value in
-                let bounded = maximum.map { Swift.min(Swift.max(value, minimum), $0) }
+                let bounded =
+                    maximum.map { Swift.min(Swift.max(value, minimum), $0) }
                     ?? Swift.max(value, minimum)
                 updateDraft {
                     $0.middleware.setSetting(
@@ -627,8 +644,9 @@ struct AgentSettingsView: View {
     ) -> Binding<String?> {
         Binding(
             get: {
-                guard let configured = draft?
-                    .middleware.settings[feature.id]?[setting.id],
+                guard
+                    let configured = draft?
+                        .middleware.settings[feature.id]?[setting.id],
                     case .string(let value) = configured
                 else { return nil }
                 return value
@@ -676,12 +694,14 @@ struct AgentSettingsView: View {
     private var hasChanges: Bool {
         guard let snapshot, let draft else { return false }
         if case .bot(let id) = scope,
-           let bot = model.bots.first(where: { $0.id == id }),
-           bot.name != model.botNameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-            || bot.description != model.botDescriptionDraft.trimmingCharacters(
-                in: .whitespacesAndNewlines
-            )
-            || bot.tint != model.botTintDraft {
+            let bot = model.bots.first(where: { $0.id == id }),
+            bot.name != model.botNameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                || bot.description
+                    != model.botDescriptionDraft.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    )
+                || bot.tint != model.botTintDraft
+        {
             return true
         }
         return snapshot.config != draft

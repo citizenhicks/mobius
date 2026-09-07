@@ -13,7 +13,8 @@ extension ChatSessionModel {
         let records = transcriptRecords.values.sorted { $0.sequence < $1.sequence }
         for record in records {
             if let baseSequence = transcriptRecordBaseSequence,
-               record.sequence <= baseSequence {
+                record.sequence <= baseSequence
+            {
                 reduceHistory(
                     record,
                     into: &earlier,
@@ -87,8 +88,9 @@ extension ChatSessionModel {
         let entryStart = entries.count
         defer {
             if turnID == nil,
-               entries.count > entryStart,
-               turnState.unassignedEntryStart == nil {
+                entries.count > entryStart,
+                turnState.unassignedEntryStart == nil
+            {
                 turnState.unassignedEntryStart = entryStart
             }
         }
@@ -110,7 +112,8 @@ extension ChatSessionModel {
             appendMessageDelta(record, to: &entries)
         case "message":
             guard let message = try? MessageEventPayload(json: event) else { break }
-            let startsTurn = message.delivery.startsTurn
+            let startsTurn =
+                message.delivery.startsTurn
                 && turnID != nil
                 && turnState.awaitingInitialMessageTurnID == turnID
             if startsTurn { turnState.awaitingInitialMessageTurnID = nil }
@@ -158,8 +161,9 @@ extension ChatSessionModel {
             )
         } else if let explicitTurnID {
             if turnState.turnID == nil,
-               let start = turnState.unassignedEntryStart,
-               start < entries.count {
+                let start = turnState.unassignedEntryStart,
+                start < entries.count
+            {
                 for index in start..<entries.count where entries[index].turnID == nil {
                     entries[index].turnID = explicitTurnID
                 }
@@ -185,11 +189,12 @@ extension ChatSessionModel {
         guard let modelStepID = event["modelStepId"]?.stringValue else { return }
         let phase = event["phase"]?.stringValue ?? "final_answer"
         let id = streamID(modelStepID: modelStepID, phase: phase)
-        let kind: TranscriptEntry.Kind = switch phase {
-        case "reasoning": .reasoning
-        case "commentary": .commentary
-        default: .assistant
-        }
+        let kind: TranscriptEntry.Kind =
+            switch phase {
+            case "reasoning": .reasoning
+            case "commentary": .commentary
+            default: .assistant
+            }
         let delta = event["delta"]?.stringValue ?? ""
         guard !delta.isEmpty else { return }
         if let index = entries.lastIndex(where: { $0.id == id }) {
@@ -198,23 +203,24 @@ extension ChatSessionModel {
             entries[index].sourceSequence = record.sequence
             entries[index].recordedAtMs = record.recordedAtMs
         } else {
-            entries.append(TranscriptEntry(
-                id: id,
-                presentationID: TranscriptEntry.narrativePresentationID(
+            entries.append(
+                TranscriptEntry(
+                    id: id,
+                    presentationID: TranscriptEntry.narrativePresentationID(
+                        modelStepID: modelStepID,
+                        phase: phase,
+                        ordinal: 0
+                    ),
+                    text: delta,
+                    kind: kind,
+                    format: "plain_text",
+                    tone: "neutral",
+                    pending: true,
                     modelStepID: modelStepID,
-                    phase: phase,
-                    ordinal: 0
-                ),
-                text: delta,
-                kind: kind,
-                format: "plain_text",
-                tone: "neutral",
-                pending: true,
-                modelStepID: modelStepID,
-                turnID: turnID,
-                sourceSequence: record.sequence,
-                recordedAtMs: record.recordedAtMs
-            ))
+                    turnID: turnID,
+                    sourceSequence: record.sequence,
+                    recordedAtMs: record.recordedAtMs
+                ))
         }
     }
 
@@ -255,8 +261,8 @@ extension AppModel {
         pairingCodeExpiryTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(max(0, expiresAt.timeIntervalSinceNow)))
             guard !Task.isCancelled,
-                  let self,
-                  self.pairingCodeInfo?.expiresAt == expiresAt
+                let self,
+                self.pairingCodeInfo?.expiresAt == expiresAt
             else { return }
             self.pairingCodeInfo = nil
             self.pairingCodeExpiryTask = nil

@@ -22,18 +22,21 @@ extension AppModelTests {
         )
 
         model.chat.activeTurnID = "turn-active"
-        model.chat.composerAttachments = [ComposerAttachment(
-            id: UUID(),
-            name: "context.txt",
-            size: 7,
-            mediaType: "text/plain",
-            state: .uploaded(SessionFileReference(
-                id: "file-1",
+        model.chat.composerAttachments = [
+            ComposerAttachment(
+                id: UUID(),
                 name: "context.txt",
                 size: 7,
-                mediaType: "text/plain"
-            ))
-        )]
+                mediaType: "text/plain",
+                state: .uploaded(
+                    SessionFileReference(
+                        id: "file-1",
+                        name: "context.txt",
+                        size: 7,
+                        mediaType: "text/plain"
+                    ))
+            )
+        ]
         model.chat.beginReplying(to: try XCTUnwrap(model.chat.transcript.first))
         let reply = try XCTUnwrap(model.chat.composerReply)
         model.chat.composerAttachments = []
@@ -45,7 +48,7 @@ extension AppModelTests {
             return false
         }
         guard case .submit(_, let submission) = try XCTUnwrap(request),
-              case .message(let message) = submission.op
+            case .message(let message) = submission.op
         else { return XCTFail("Expected reply message submission") }
         XCTAssertEqual(message.reply, reply)
         XCTAssertNil(model.chat.composerReply)
@@ -61,12 +64,14 @@ extension AppModelTests {
             target: MessageTarget(checkpointSequence: 9, batchItemCount: 1),
             text: "Different original"
         )
-        model.gateway.handle(.rejected(GatewayRejection(
-            requestId: submission.id,
-            code: "submission_rejected",
-            message: "Try again",
-            fatal: false
-        )))
+        model.gateway.handle(
+            .rejected(
+                GatewayRejection(
+                    requestId: submission.id,
+                    code: "submission_rejected",
+                    message: "Try again",
+                    fatal: false
+                )))
         XCTAssertEqual(model.chat.composer, "Focused response\n\nNew draft")
         XCTAssertNil(model.chat.composerReply)
 
@@ -101,43 +106,48 @@ extension AppModelTests {
             if case .submit = request { return true }
             return false
         }
-        let first = try XCTUnwrap(firstRequest.flatMap { request -> Submission? in
-            guard case .submit(_, let submission) = request else { return nil }
-            return submission
-        })
+        let first = try XCTUnwrap(
+            firstRequest.flatMap { request -> Submission? in
+                guard case .submit(_, let submission) = request else { return nil }
+                return submission
+            })
         model.chat.reduce(
-            event: AgentEventRecord(submissionId: first.id, msg: .object([
-                "type": .string("frontend"),
-                "frontendType": .string("widget"),
-                "capability": .string("messages"),
-                "item": .object([
-                    "id": .string(first.id),
-                    "slot": .string("transcript_tail"),
-                    "text": .string("Use the smaller patch"),
-                    "tone": .string("neutral"),
-                    "symbol": .null,
-                    "iconOnly": .bool(false),
-                    "progress": .null,
-                    "content": .null,
-                    "action": .object([
-                        "type": .string("capability_command"),
-                        "capability": .string("messages"),
-                        "command": .string("edit"),
-                        "arguments": .string(first.id),
-                        "input": .string("Use the smaller patch"),
-                        "target": .null
-                    ])
-                ])
-            ])),
+            event: AgentEventRecord(
+                submissionId: first.id,
+                msg: .object([
+                    "type": .string("frontend"),
+                    "frontendType": .string("widget"),
+                    "capability": .string("messages"),
+                    "item": .object([
+                        "id": .string(first.id),
+                        "slot": .string("transcript_tail"),
+                        "text": .string("Use the smaller patch"),
+                        "tone": .string("neutral"),
+                        "symbol": .null,
+                        "iconOnly": .bool(false),
+                        "progress": .null,
+                        "content": .null,
+                        "action": .object([
+                            "type": .string("capability_command"),
+                            "capability": .string("messages"),
+                            "command": .string("edit"),
+                            "arguments": .string(first.id),
+                            "input": .string("Use the smaller patch"),
+                            "target": .null,
+                        ]),
+                    ]),
+                ])),
             blocks: [],
             preview: nil
         )
-        model.gateway.handle(.rejected(GatewayRejection(
-            requestId: "unrelated",
-            code: "connection_failed",
-            message: "Disconnected",
-            fatal: true
-        )))
+        model.gateway.handle(
+            .rejected(
+                GatewayRejection(
+                    requestId: "unrelated",
+                    code: "connection_failed",
+                    message: "Disconnected",
+                    fatal: true
+                )))
 
         XCTAssertEqual(model.chat.composer, "")
         XCTAssertEqual(model.chat.transcriptTailWidgets.first?.widget.text, "Use the smaller patch")
@@ -154,15 +164,18 @@ extension AppModelTests {
             if case .submit = request { return true }
             return false
         }
-        let second = try XCTUnwrap(secondRequest.flatMap { request -> Submission? in
-            guard case .submit(_, let submission) = request else { return nil }
-            return submission
-        })
+        let second = try XCTUnwrap(
+            secondRequest.flatMap { request -> Submission? in
+                guard case .submit(_, let submission) = request else { return nil }
+                return submission
+            })
         model.chat.reduce(
-            event: AgentEventRecord(submissionId: second.id, msg: .object([
-                "type": .string("submission_rejected"),
-                "message": .string("Steering queue is full")
-            ])),
+            event: AgentEventRecord(
+                submissionId: second.id,
+                msg: .object([
+                    "type": .string("submission_rejected"),
+                    "message": .string("Steering queue is full"),
+                ])),
             blocks: [],
             preview: nil
         )
@@ -174,22 +187,24 @@ extension AppModelTests {
         let model = try model()
         for (id, text) in [("steer-1", "First"), ("steer-2", "Second")] {
             model.chat.reduce(
-                event: AgentEventRecord(submissionId: id, msg: .object([
-                    "type": .string("frontend"),
-                    "frontendType": .string("widget"),
-                    "capability": .string("messages"),
-                    "item": .object([
-                        "id": .string(id),
-                        "slot": .string("transcript_tail"),
-                        "text": .string(text),
-                        "tone": .string("neutral"),
-                        "symbol": .null,
-                        "iconOnly": .bool(false),
-                        "progress": .null,
-                        "content": .null,
-                        "action": .null
-                    ])
-                ])),
+                event: AgentEventRecord(
+                    submissionId: id,
+                    msg: .object([
+                        "type": .string("frontend"),
+                        "frontendType": .string("widget"),
+                        "capability": .string("messages"),
+                        "item": .object([
+                            "id": .string(id),
+                            "slot": .string("transcript_tail"),
+                            "text": .string(text),
+                            "tone": .string("neutral"),
+                            "symbol": .null,
+                            "iconOnly": .bool(false),
+                            "progress": .null,
+                            "content": .null,
+                            "action": .null,
+                        ]),
+                    ])),
                 blocks: [],
                 preview: nil
             )
@@ -198,12 +213,14 @@ extension AppModelTests {
         XCTAssertEqual(model.chat.transcriptTailWidgets.map(\.widget.text), ["First", "Second"])
 
         model.chat.reduce(
-            event: AgentEventRecord(submissionId: "input-1", msg: .object([
-                "type": .string("frontend"),
-                "frontendType": .string("remove_widget"),
-                "capability": .string("messages"),
-                "id": .string("steer-1")
-            ])),
+            event: AgentEventRecord(
+                submissionId: "input-1",
+                msg: .object([
+                    "type": .string("frontend"),
+                    "frontendType": .string("remove_widget"),
+                    "capability": .string("messages"),
+                    "id": .string("steer-1"),
+                ])),
             blocks: [],
             preview: nil
         )
@@ -211,12 +228,14 @@ extension AppModelTests {
         XCTAssertEqual(model.chat.transcriptTailWidgets.map(\.widget.text), ["Second"])
 
         model.chat.reduce(
-            event: AgentEventRecord(submissionId: "input-1", msg: .object([
-                "type": .string("frontend"),
-                "frontendType": .string("remove_widget"),
-                "capability": .string("messages"),
-                "id": .string("steer-2")
-            ])),
+            event: AgentEventRecord(
+                submissionId: "input-1",
+                msg: .object([
+                    "type": .string("frontend"),
+                    "frontendType": .string("remove_widget"),
+                    "capability": .string("messages"),
+                    "id": .string("steer-2"),
+                ])),
             blocks: [],
             preview: nil
         )
@@ -248,11 +267,12 @@ extension AppModelTests {
         XCTAssertEqual(queuedPeerEntry.text, peer.widget.text)
 
         let model = try model()
-        model.chat.reduce(record: recordedPeerMessage(
-            1,
-            delivery: .steer,
-            text: "Review this"
-        ))
+        model.chat.reduce(
+            record: recordedPeerMessage(
+                1,
+                delivery: .steer,
+                text: "Review this"
+            ))
         let peerEntry = try XCTUnwrap(model.chat.transcript.first)
         XCTAssertEqual(peerEntry.kind, .event)
         XCTAssertEqual(peerEntry.messageMetadata?.delivery, .steer)
@@ -276,10 +296,12 @@ extension AppModelTests {
     func testSteeringFeedbackFiresWhenTheMessageReachesModelInput() throws {
         let model = try model()
         model.chat.reduce(
-            event: AgentEventRecord(submissionId: "input-1", msg: .object([
-                "type": .string("turn_started"),
-                "turnId": .string("turn-1")
-            ])),
+            event: AgentEventRecord(
+                submissionId: "input-1",
+                msg: .object([
+                    "type": .string("turn_started"),
+                    "turnId": .string("turn-1"),
+                ])),
             blocks: [],
             preview: nil
         )
@@ -295,12 +317,14 @@ extension AppModelTests {
             preview: nil
         )
         model.chat.reduce(
-            event: AgentEventRecord(submissionId: "input-1", msg: .object([
-                "type": .string("frontend"),
-                "frontendType": .string("remove_widget"),
-                "capability": .string("messages"),
-                "id": .string("steering-1")
-            ])),
+            event: AgentEventRecord(
+                submissionId: "input-1",
+                msg: .object([
+                    "type": .string("frontend"),
+                    "frontendType": .string("remove_widget"),
+                    "capability": .string("messages"),
+                    "id": .string("steering-1"),
+                ])),
             blocks: [],
             preview: nil
         )
@@ -343,7 +367,7 @@ extension AppModelTests {
             return false
         }
         guard case .submit(_, let queuedSubmission) = try XCTUnwrap(queuedRequest),
-              case .message(let queuedMessage) = queuedSubmission.op
+            case .message(let queuedMessage) = queuedSubmission.op
         else {
             return XCTFail("Expected a queued message submission")
         }
@@ -359,7 +383,7 @@ extension AppModelTests {
             return false
         }
         guard case .submit(_, let steeringSubmission) = try XCTUnwrap(steeringRequest),
-              case .message(let steeringMessage) = steeringSubmission.op
+            case .message(let steeringMessage) = steeringSubmission.op
         else {
             return XCTFail("Expected a steering message submission")
         }
@@ -375,7 +399,7 @@ extension AppModelTests {
             return false
         }
         guard case .submit(_, let turnSubmission) = try XCTUnwrap(turnRequest),
-              case .message(let turnMessage) = turnSubmission.op
+            case .message(let turnMessage) = turnSubmission.op
         else {
             return XCTFail("Expected a new-turn message submission")
         }
@@ -388,30 +412,35 @@ extension AppModelTests {
         var composition = composition()
         composition.middleware.settings["messages"] = ["delivery": .string("queue")]
         model.agentDraft = composition
-        model.middlewareFeatures = [MiddlewareFeature(
-            id: "messages",
-            label: "Messages",
-            description: "Message delivery",
-            required: true,
-            settings: [FrontendSetting(
-                id: "delivery",
-                label: "Delivery",
-                description: "Active turn delivery",
-                composer: false,
-                kind: .select(options: [
-                    FrontendSettingOption(
-                        value: "steer",
-                        label: "Steer",
-                        description: "Steer now"
-                    ),
-                    FrontendSettingOption(
-                        value: "queue",
-                        label: "Queue",
-                        description: "Run next"
-                    ),
-                ], unsetLabel: nil)
-            )]
-        )]
+        model.middlewareFeatures = [
+            MiddlewareFeature(
+                id: "messages",
+                label: "Messages",
+                description: "Message delivery",
+                required: true,
+                settings: [
+                    FrontendSetting(
+                        id: "delivery",
+                        label: "Delivery",
+                        description: "Active turn delivery",
+                        composer: false,
+                        kind: .select(
+                            options: [
+                                FrontendSettingOption(
+                                    value: "steer",
+                                    label: "Steer",
+                                    description: "Steer now"
+                                ),
+                                FrontendSettingOption(
+                                    value: "queue",
+                                    label: "Queue",
+                                    description: "Run next"
+                                ),
+                            ], unsetLabel: nil)
+                    )
+                ]
+            )
+        ]
 
         XCTAssertEqual(model.activeMessageDelivery, .queue)
     }

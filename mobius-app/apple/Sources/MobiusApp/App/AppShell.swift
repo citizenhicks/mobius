@@ -4,9 +4,9 @@ import QuickLook
 
 private let debugStartsOnDetail: Bool = {
     #if DEBUG
-    return ProcessInfo.processInfo.environment["MOBIUS_PAGE"] != nil
+        return ProcessInfo.processInfo.environment["MOBIUS_PAGE"] != nil
     #else
-    return false
+        return false
     #endif
 }()
 
@@ -17,7 +17,8 @@ struct AppShell: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.openURL) private var openURL
     @State private var columnVisibility = NavigationSplitViewVisibility.all
-    @State private var compactColumn = debugStartsOnDetail ? NavigationSplitViewColumn.detail : .sidebar
+    @State private var compactColumn =
+        debugStartsOnDetail ? NavigationSplitViewColumn.detail : .sidebar
     @State private var sidebarIsOpen = !debugStartsOnDetail
     @State private var chatWindowToken = UUID()
 
@@ -51,7 +52,9 @@ struct AppShell: View {
         // Reconnecting to this gateway preserves local forms; changing gateways discards them.
         .id(model.gateway.selectedAccountID)
         .background {
-            MobiusAppLockPresenter(isCovered: model.isAppLocked || model.appLockEnabled && scenePhase != .active) {
+            MobiusAppLockPresenter(
+                isCovered: model.isAppLocked || model.appLockEnabled && scenePhase != .active
+            ) {
                 AppLockView()
                     .environment(model)
                     .environment(\.mobiusPalette, palette)
@@ -69,12 +72,13 @@ struct AppShell: View {
             Button("Cancel", role: .cancel) { model.chat.sessionToRename = nil }
             Button("Rename") {
                 guard let session = model.chat.sessionToRename,
-                      model.renameSession(session, title: model.chat.sessionRenameDraft) != nil
+                    model.renameSession(session, title: model.chat.sessionRenameDraft) != nil
                 else { return }
                 model.chat.sessionToRename = nil
             }
             .disabled(
-                model.chat.sessionRenameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                model.chat.sessionRenameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .isEmpty
                     || !model.canRenameSession
             )
         }
@@ -104,26 +108,32 @@ struct AppShell: View {
                     }
                     openURL(url) { accepted in
                         if !accepted {
-                            model.showToast("The App Store update page is unavailable.", tone: .warning)
+                            model.showToast(
+                                "The App Store update page is unavailable.", tone: .warning)
                         }
                     }
                 }
             }
             Button("Not now", role: .cancel) {}
         } message: {
-            Text("Update the app to connect to this gateway. Install the latest version from the App Store, then reopen the app.")
+            Text(
+                "Update the app to connect to this gateway. Install the latest version from the App Store, then reopen the app."
+            )
         }
         .quickLookPreview($model.previewURL)
         .sheet(isPresented: $model.showsCloudOffer) {
             MobiusCloudOfferSheet()
                 .mobiusSheet(detents: [.large])
         }
-        .sheet(item: presentedTextFilePreview, onDismiss: {
-            // App lock hides the sheet through the presentation binding while retaining its
-            // in-memory workspace draft. A user dismissal clears the bound item first.
-            guard model.textFilePreview == nil else { return }
-            model.closeFilePresentation()
-        }) { preview in
+        .sheet(
+            item: presentedTextFilePreview,
+            onDismiss: {
+                // App lock hides the sheet through the presentation binding while retaining its
+                // in-memory workspace draft. A user dismissal clears the bound item first.
+                guard model.textFilePreview == nil else { return }
+                model.closeFilePresentation()
+            }
+        ) { preview in
             TextFilePreviewView(preview: preview)
         }
         .sheet(item: $model.sessionFileShareItem, onDismiss: model.closeFilePresentation) { file in
@@ -278,8 +288,9 @@ struct AppShell: View {
                         }
                     }
                     if !usesIPadLayout,
-                       horizontalSizeClass == .compact,
-                       model.navigationPath.isEmpty {
+                        horizontalSizeClass == .compact,
+                        model.navigationPath.isEmpty
+                    {
                         ToolbarItem(placement: .topBarLeading) {
                             MobiusToolbarIconButton(
                                 glyph: .menu,
@@ -389,10 +400,13 @@ struct AppShell: View {
 
     private func gatewayPicker(_ account: GatewayAccount) -> some View {
         Menu {
-            Picker("Gateway", selection: Binding(
-                get: { model.gateway.selectedAccountID },
-                set: { model.selectAccount($0) }
-            )) {
+            Picker(
+                "Gateway",
+                selection: Binding(
+                    get: { model.gateway.selectedAccountID },
+                    set: { model.selectAccount($0) }
+                )
+            ) {
                 ForEach(model.gateway.accounts) { account in
                     Text(verbatim: account.machineName)
                         .tag(Optional(account.id))
@@ -460,13 +474,13 @@ struct AppShell: View {
 
     private var chatIsVisible: Bool {
         guard !model.gateway.accounts.isEmpty,
-              model.destination == .chats,
-              !model.navigationPath.isEmpty,
-              scenePhase == .active,
-              !model.isAppLocked,
-              !model.showsPairing,
-              !model.showsWorkspaceBrowser,
-              !model.showsInspector
+            model.destination == .chats,
+            !model.navigationPath.isEmpty,
+            scenePhase == .active,
+            !model.isAppLocked,
+            !model.showsPairing,
+            !model.showsWorkspaceBrowser,
+            !model.showsInspector
         else { return false }
         guard case .chat = model.navigationPath.last else { return false }
         // The drawer, not the split view's column, decides whether the chat is on screen in

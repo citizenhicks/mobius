@@ -50,7 +50,9 @@ extension GatewayWireTests {
         XCTAssertEqual(payload.providerInstances.first?.tint, .blue)
         XCTAssertEqual(payload.providerInstances.first?.credentialHint, "a8f2")
         XCTAssertEqual(payload.providerInstances.first?.reasoningEfforts, [])
-        XCTAssertEqual(payload.providers.first?.models.first?.reasoning.first?.description, "Balanced reasoning and latency")
+        XCTAssertEqual(
+            payload.providers.first?.models.first?.reasoning.first?.description,
+            "Balanced reasoning and latency")
         XCTAssertEqual(payload.providers.first?.webSearch.map(\.value), ["off", "cached", "live"])
         XCTAssertEqual(
             payload.providers.first?.webSearch.first?.description,
@@ -104,7 +106,8 @@ extension GatewayWireTests {
     func testReadyCarriesBackgroundApprovals() throws {
         let payload = readyPayloadJSON.replacingOccurrences(
             of: #""background_approvals":[]"#,
-            with: #""background_approvals":[{"session_id":"work-1","bot_id":"bot-1","turn_id":"turn-1","request_id":"approval-1"}]"#
+            with:
+                #""background_approvals":[{"session_id":"work-1","bot_id":"bot-1","turn_id":"turn-1","request_id":"approval-1"}]"#
         )
         let envelope = try decodeEnvelope(
             #"{"version":64,"type":"ready","payload":\#(payload)}"#
@@ -120,7 +123,8 @@ extension GatewayWireTests {
     func testReadyCarriesSwarmAttentionBaseline() throws {
         let payload = readyPayloadJSON.replacingOccurrences(
             of: #""swarm_attentions":[]"#,
-            with: #""swarm_attentions":[{"swarm_id":"swarm-1","swarm_title":"Quiet Foxes","message_id":"message-1","bot_id":"bot-1","text":"Choose a migration path."}]"#
+            with:
+                #""swarm_attentions":[{"swarm_id":"swarm-1","swarm_title":"Quiet Foxes","message_id":"message-1","bot_id":"bot-1","text":"Choose a migration path."}]"#
         )
         let envelope = try decodeEnvelope(
             #"{"version":64,"type":"ready","payload":\#(payload)}"#
@@ -138,9 +142,10 @@ extension GatewayWireTests {
             of: "snowwhite.local",
             with: #"snowwhite\nlocal"#
         )
-        XCTAssertThrowsError(try decodeEnvelope(
-            #"{"version":28,"type":"ready","payload":\#(payload)}"#
-        ))
+        XCTAssertThrowsError(
+            try decodeEnvelope(
+                #"{"version":28,"type":"ready","payload":\#(payload)}"#
+            ))
     }
 
     func testReadyRejectsInvalidSearchOptionsAndSessionFileLimits() {
@@ -148,34 +153,40 @@ extension GatewayWireTests {
             of: #""value":"off""#,
             with: #""value":"unknown""#
         )
-        XCTAssertThrowsError(try decodeEnvelope(
-            #"{"version":28,"type":"ready","payload":\#(invalidSearch)}"#
-        ))
+        XCTAssertThrowsError(
+            try decodeEnvelope(
+                #"{"version":28,"type":"ready","payload":\#(invalidSearch)}"#
+            ))
 
         let invalidLimits = readyPayloadJSON.replacingOccurrences(
             of: #""max_upload_chunk_bytes":262144"#,
             with: #""max_upload_chunk_bytes":0"#
         )
-        XCTAssertThrowsError(try decodeEnvelope(
-            #"{"version":28,"type":"ready","payload":\#(invalidLimits)}"#
-        ))
+        XCTAssertThrowsError(
+            try decodeEnvelope(
+                #"{"version":28,"type":"ready","payload":\#(invalidLimits)}"#
+            ))
 
         let invalidToolDiscovery = readyPayloadJSON.replacingOccurrences(
             of: #""tool_discovery":"native""#,
             with: #""tool_discovery":"unknown""#
         )
-        XCTAssertThrowsError(try decodeEnvelope(
-            #"{"version":28,"type":"ready","payload":\#(invalidToolDiscovery)}"#
-        ))
+        XCTAssertThrowsError(
+            try decodeEnvelope(
+                #"{"version":28,"type":"ready","payload":\#(invalidToolDiscovery)}"#
+            ))
     }
 
     func testV28RejectsLegacyProviderMetadata() {
-        let legacyProvider = #"{"provider":"openai_socket","label":"OpenAI","configured":true,"auth":"api_key","default_model":"gpt-5.6-sol","default_base_url":null,"default_api_key_env":"OPENAI_API_KEY","default_reasoning_effort":"medium","default_web_search":"off"}"#
-        let payload = #"{"sessions":[],"providers":[\#(legacyProvider)],"bot_defaults":\#(configJSON),"models":[],"middleware_features":[],"max_active_sessions":4}"#
+        let legacyProvider =
+            #"{"provider":"openai_socket","label":"OpenAI","configured":true,"auth":"api_key","default_model":"gpt-5.6-sol","default_base_url":null,"default_api_key_env":"OPENAI_API_KEY","default_reasoning_effort":"medium","default_web_search":"off"}"#
+        let payload =
+            #"{"sessions":[],"providers":[\#(legacyProvider)],"bot_defaults":\#(configJSON),"models":[],"middleware_features":[],"max_active_sessions":4}"#
 
-        XCTAssertThrowsError(try decodeEnvelope(
-            #"{"version":28,"type":"ready","payload":\#(payload)}"#
-        ))
+        XCTAssertThrowsError(
+            try decodeEnvelope(
+                #"{"version":28,"type":"ready","payload":\#(payload)}"#
+            ))
     }
 
     func testV39RequiresProviderInstanceReasoningCatalogMetadata() {
@@ -184,9 +195,10 @@ extension GatewayWireTests {
             with: ""
         )
 
-        XCTAssertThrowsError(try decodeEnvelope(
-            #"{"version":28,"type":"ready","payload":\#(payload)}"#
-        ))
+        XCTAssertThrowsError(
+            try decodeEnvelope(
+                #"{"version":28,"type":"ready","payload":\#(payload)}"#
+            ))
     }
 
     func testSessionOpenedAndChangedDecodeSessionReadyPayload() throws {
@@ -214,10 +226,11 @@ extension GatewayWireTests {
         XCTAssertEqual(payload.contributions.first?.count, 2)
         XCTAssertEqual(payload.contributions.first?.acceptsFileAttachments, false)
         guard let widget = payload.contributions.first?.widgets.first,
-              case .picker(let title, let options) = widget.content,
-              let option = options.first,
-              case .capabilityCommand(let capability, let command, let arguments, let input, let target) =
-                  option.op
+            case .picker(let title, let options) = widget.content,
+            let option = options.first,
+            case .capabilityCommand(
+                let capability, let command, let arguments, let input, let target) =
+                option.op
         else { return XCTFail("Expected widget picker") }
         XCTAssertEqual(title, "Subagents")
         XCTAssertTrue(widget.iconOnly)
@@ -241,7 +254,8 @@ extension GatewayWireTests {
         let replayComplete = try decodeEnvelope(
             #"{"version":28,"type":"session_replay_complete","request_id":"open-1","session_id":"chat-1"}"#
         )
-        guard case .sessionReplayComplete(let completedRequestID, let sessionID) = replayComplete else {
+        guard case .sessionReplayComplete(let completedRequestID, let sessionID) = replayComplete
+        else {
             return XCTFail("Expected session replay completion envelope")
         }
         XCTAssertEqual(completedRequestID, "open-1")
@@ -250,12 +264,14 @@ extension GatewayWireTests {
         let history = try decodeEnvelope(
             #"{"version":28,"type":"session_history","request_id":"history-1","session_id":"chat-1","records":[{"sequence":3,"recorded_at_ms":1000,"event":{"submission_id":null,"msg":{"type":"context_compacted"}},"stream_metrics":[],"blocks":[],"preview":null}],"next_before_sequence":4}"#
         )
-        guard case .sessionHistory(
-            let historyRequestID,
-            let historySessionID,
-            let records,
-            let nextBeforeSequence
-        ) = history else { return XCTFail("Expected session history page") }
+        guard
+            case .sessionHistory(
+                let historyRequestID,
+                let historySessionID,
+                let records,
+                let nextBeforeSequence
+            ) = history
+        else { return XCTFail("Expected session history page") }
         XCTAssertEqual(historyRequestID, "history-1")
         XCTAssertEqual(historySessionID, "chat-1")
         XCTAssertEqual(records.first?.sequence, 3)
@@ -265,46 +281,52 @@ extension GatewayWireTests {
     }
 
     func testV28RequiresSessionActivityAndToolCount() {
-        let sessionWithoutActivity = #"{"version":28,"type":"sessions","sessions":[{"session_id":"chat-1","session_context":{},"parent_session_id":null,"parent_sequence":null,"sequence":0,"first_user_message":null,"created_at":100,"updated_at":100,"title":null,"pinned":false}]}"#
+        let sessionWithoutActivity =
+            #"{"version":28,"type":"sessions","sessions":[{"session_id":"chat-1","session_context":{},"parent_session_id":null,"parent_sequence":null,"sequence":0,"first_user_message":null,"created_at":100,"updated_at":100,"title":null,"pinned":false}]}"#
         XCTAssertThrowsError(try decodeEnvelope(sessionWithoutActivity))
 
         let payloadWithoutToolCount = sessionReadyPayloadJSON.replacingOccurrences(
             of: #","tool_count":7"#,
             with: ""
         )
-        XCTAssertThrowsError(try decodeEnvelope(
-            #"{"version":28,"type":"session_opened","request_id":"open-1","payload":\#(payloadWithoutToolCount)}"#
-        ))
+        XCTAssertThrowsError(
+            try decodeEnvelope(
+                #"{"version":28,"type":"session_opened","request_id":"open-1","payload":\#(payloadWithoutToolCount)}"#
+            ))
 
         let payloadWithoutCompactionCount = sessionReadyPayloadJSON.replacingOccurrences(
             of: #","compaction_count":2"#,
             with: ""
         )
-        XCTAssertThrowsError(try decodeEnvelope(
-            #"{"version":28,"type":"session_opened","request_id":"open-1","payload":\#(payloadWithoutCompactionCount)}"#
-        ))
+        XCTAssertThrowsError(
+            try decodeEnvelope(
+                #"{"version":28,"type":"session_opened","request_id":"open-1","payload":\#(payloadWithoutCompactionCount)}"#
+            ))
 
         let payloadWithoutContributionCount = sessionReadyPayloadJSON.replacingOccurrences(
             of: #""count":2,"#,
             with: ""
         )
-        XCTAssertThrowsError(try decodeEnvelope(
-            #"{"version":28,"type":"session_opened","request_id":"open-1","payload":\#(payloadWithoutContributionCount)}"#
-        ))
+        XCTAssertThrowsError(
+            try decodeEnvelope(
+                #"{"version":28,"type":"session_opened","request_id":"open-1","payload":\#(payloadWithoutContributionCount)}"#
+            ))
     }
 
     func testV28RequiresGenericSettingsAndScalarValues() {
         let withoutSettings = configJSON.replacingOccurrences(
-            of: #","settings":{"context_offloading":{"stale_after_tokens":50000},"subagents":{"model_route":"openai_socket/gpt-5.6-sol"}}"#,
+            of:
+                #","settings":{"context_offloading":{"stale_after_tokens":50000},"subagents":{"model_route":"openai_socket/gpt-5.6-sol"}}"#,
             with: ""
         )
         let payloadWithoutSettings = readyPayloadJSON.replacingOccurrences(
             of: configJSON,
             with: withoutSettings
         )
-        XCTAssertThrowsError(try decodeEnvelope(
-            #"{"version":28,"type":"ready","payload":\#(payloadWithoutSettings)}"#
-        ))
+        XCTAssertThrowsError(
+            try decodeEnvelope(
+                #"{"version":28,"type":"ready","payload":\#(payloadWithoutSettings)}"#
+            ))
 
         let invalidScalar = configJSON.replacingOccurrences(
             of: #""stale_after_tokens":50000"#,
@@ -314,9 +336,10 @@ extension GatewayWireTests {
             of: configJSON,
             with: invalidScalar
         )
-        XCTAssertThrowsError(try decodeEnvelope(
-            #"{"version":28,"type":"ready","payload":\#(payloadWithInvalidScalar)}"#
-        ))
+        XCTAssertThrowsError(
+            try decodeEnvelope(
+                #"{"version":28,"type":"ready","payload":\#(payloadWithInvalidScalar)}"#
+            ))
     }
 
     func testV28RequiresTheModelStepLimit() {
@@ -329,9 +352,10 @@ extension GatewayWireTests {
             with: withoutLimit
         )
 
-        XCTAssertThrowsError(try decodeEnvelope(
-            #"{"version":28,"type":"ready","payload":\#(payload)}"#
-        ))
+        XCTAssertThrowsError(
+            try decodeEnvelope(
+                #"{"version":28,"type":"ready","payload":\#(payload)}"#
+            ))
     }
 
     func testV39RequiresAnExplicitExtensionSelection() {
@@ -344,20 +368,23 @@ extension GatewayWireTests {
             with: withoutExtensions
         )
 
-        XCTAssertThrowsError(try decodeEnvelope(
-            #"{"version":39,"type":"ready","payload":\#(payload)}"#
-        ))
+        XCTAssertThrowsError(
+            try decodeEnvelope(
+                #"{"version":39,"type":"ready","payload":\#(payload)}"#
+            ))
     }
 
     func testV39RequiresGatewayContributions() {
         let payload = readyPayloadJSON.replacingOccurrences(
-            of: #","contributions":[{"capability":"extensions","accepts_file_attachments":false,"count":1,"commands":[],"widgets":[],"references":[{"trigger":"$","value":"planning","description":"Planning skill"}]}]"#,
+            of:
+                #","contributions":[{"capability":"extensions","accepts_file_attachments":false,"count":1,"commands":[],"widgets":[],"references":[{"trigger":"$","value":"planning","description":"Planning skill"}]}]"#,
             with: ""
         )
 
-        XCTAssertThrowsError(try decodeEnvelope(
-            #"{"version":39,"type":"ready","payload":\#(payload)}"#
-        ))
+        XCTAssertThrowsError(
+            try decodeEnvelope(
+                #"{"version":39,"type":"ready","payload":\#(payload)}"#
+            ))
     }
 
     func testV28RequiresAPositiveModelStepLimitWithoutAnUpperPolicyBound() throws {
@@ -369,9 +396,10 @@ extension GatewayWireTests {
             of: configJSON,
             with: zeroLimit
         )
-        XCTAssertThrowsError(try decodeEnvelope(
-            #"{"version":28,"type":"ready","payload":\#(zeroPayload)}"#
-        ))
+        XCTAssertThrowsError(
+            try decodeEnvelope(
+                #"{"version":28,"type":"ready","payload":\#(zeroPayload)}"#
+            ))
 
         let maximumLimit = configJSON.replacingOccurrences(
             of: #""max_model_steps":256"#,
@@ -381,9 +409,11 @@ extension GatewayWireTests {
             of: configJSON,
             with: maximumLimit
         )
-        guard case .ready(let payload) = try decodeEnvelope(
-            #"{"version":28,"type":"ready","payload":\#(maximumPayload)}"#
-        ) else { return XCTFail("Expected ready envelope") }
+        guard
+            case .ready(let payload) = try decodeEnvelope(
+                #"{"version":28,"type":"ready","payload":\#(maximumPayload)}"#
+            )
+        else { return XCTFail("Expected ready envelope") }
         XCTAssertEqual(payload.botDefaults?.config.maxModelSteps, UInt64.max)
     }
 
@@ -413,7 +443,8 @@ extension GatewayWireTests {
     }
 
     func testFrontendSelectSettingsRejectDuplicateOptionValues() {
-        let fixture = #"{"id":"route","label":"Route","description":"Default route","composer":false,"type":"select","options":[{"value":"route-a","label":"Route A","description":"First route","symbol":null,"tone":"neutral","disables":[]},{"value":"route-a","label":"Route A again","description":"Duplicate route","symbol":null,"tone":"neutral","disables":[]}]}"#
+        let fixture =
+            #"{"id":"route","label":"Route","description":"Default route","composer":false,"type":"select","options":[{"value":"route-a","label":"Route A","description":"First route","symbol":null,"tone":"neutral","disables":[]},{"value":"route-a","label":"Route A again","description":"Duplicate route","symbol":null,"tone":"neutral","disables":[]}]}"#
 
         XCTAssertThrowsError(
             try decoder().decode(FrontendSetting.self, from: Data(fixture.utf8))
@@ -426,7 +457,8 @@ extension GatewayWireTests {
     }
 
     func testFrontendComposerSettingDecodesSemanticOptions() throws {
-        let fixture = #"{"id":"policy","label":"Access","description":"Execution access","composer":true,"type":"select","options":[{"value":"safe","label":"Safe","description":"Use bounded access","symbol":"shield_check","tone":"neutral","disables":[]},{"value":"full","label":"Full access","description":"Use host access","symbol":"shield_off","tone":"error","disables":["example"]}]}"#
+        let fixture =
+            #"{"id":"policy","label":"Access","description":"Execution access","composer":true,"type":"select","options":[{"value":"safe","label":"Safe","description":"Use bounded access","symbol":"shield_check","tone":"neutral","disables":[]},{"value":"full","label":"Full access","description":"Use host access","symbol":"shield_off","tone":"error","disables":["example"]}]}"#
 
         let setting = try decoder().decode(FrontendSetting.self, from: Data(fixture.utf8))
 
@@ -440,7 +472,8 @@ extension GatewayWireTests {
     }
 
     func testFrontendSettingOptionRejectsUnknownTone() {
-        let fixture = #"{"id":"policy","label":"Access","description":"Execution access","composer":true,"type":"select","options":[{"value":"safe","label":"Safe","description":"Use bounded access","symbol":"shield_check","tone":"loud","disables":[]}]}"#
+        let fixture =
+            #"{"id":"policy","label":"Access","description":"Execution access","composer":true,"type":"select","options":[{"value":"safe","label":"Safe","description":"Use bounded access","symbol":"shield_check","tone":"loud","disables":[]}]}"#
 
         XCTAssertThrowsError(
             try decoder().decode(FrontendSetting.self, from: Data(fixture.utf8))
@@ -453,8 +486,10 @@ extension GatewayWireTests {
     }
 
     func testV28RequiresCacheWriteInputTokens() {
-        let usage = #"{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0,"total_tokens":2}"#
-        let fixture = #"{"version":28,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"token_count","info":{"total_token_usage":\#(usage),"last_token_usage":\#(usage),"model_context_window":200}}},"stream_metrics":[],"blocks":[],"preview":null}}"#
+        let usage =
+            #"{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0,"total_tokens":2}"#
+        let fixture =
+            #"{"version":28,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"token_count","info":{"total_token_usage":\#(usage),"last_token_usage":\#(usage),"model_context_window":200}}},"stream_metrics":[],"blocks":[],"preview":null}}"#
 
         XCTAssertThrowsError(try decodeEnvelope(fixture))
     }

@@ -62,13 +62,13 @@ extension AppModelTests {
             return false
         }
         guard case .submit(let sessionID, let editSubmission) = try XCTUnwrap(editRequest),
-              case .capabilityCommand(
-                  let capability,
-                  let command,
-                  let arguments,
-                  let input,
-                  let submittedTarget
-              ) = editSubmission.op
+            case .capabilityCommand(
+                let capability,
+                let command,
+                let arguments,
+                let input,
+                let submittedTarget
+            ) = editSubmission.op
         else { return XCTFail("Expected the queued capability operation") }
         XCTAssertEqual(sessionID, "chat-1")
         XCTAssertEqual(capability, "notes")
@@ -84,12 +84,14 @@ extension AppModelTests {
         XCTAssertEqual(model.chat.transcriptTailWidgets.map(\.id), [queued.id, sibling.id])
 
         model.chat.reduce(
-            event: AgentEventRecord(submissionId: editSubmission.id, msg: .object([
-                "type": .string("frontend"),
-                "frontendType": .string("remove_widget"),
-                "capability": .string("notes"),
-                "id": .string("queued")
-            ])),
+            event: AgentEventRecord(
+                submissionId: editSubmission.id,
+                msg: .object([
+                    "type": .string("frontend"),
+                    "frontendType": .string("remove_widget"),
+                    "capability": .string("notes"),
+                    "id": .string("queued"),
+                ])),
             blocks: [],
             preview: nil
         )
@@ -105,10 +107,11 @@ extension AppModelTests {
             if case .submit = request { return true }
             return false
         }
-        let editedSubmission = try XCTUnwrap(editedRequest.flatMap { request -> Submission? in
-            guard case .submit(_, let submission) = request else { return nil }
-            return submission
-        })
+        let editedSubmission = try XCTUnwrap(
+            editedRequest.flatMap { request -> Submission? in
+                guard case .submit(_, let submission) = request else { return nil }
+                return submission
+            })
         guard case .message(let message) = editedSubmission.op
         else { return XCTFail("Expected fresh active message") }
         XCTAssertEqual(message.author, .user)
@@ -118,20 +121,24 @@ extension AppModelTests {
         XCTAssertEqual(model.chat.composer, "Keep this draft")
 
         model.chat.reduce(
-            event: AgentEventRecord(submissionId: editedSubmission.id, msg: .object([
-                "type": .string("turn_started"),
-                "turnId": .string("turn-1")
-            ])),
+            event: AgentEventRecord(
+                submissionId: editedSubmission.id,
+                msg: .object([
+                    "type": .string("turn_started"),
+                    "turnId": .string("turn-1"),
+                ])),
             blocks: [],
             preview: nil
         )
         XCTAssertFalse(model.canSendComposer)
-        model.gateway.handle(.rejected(GatewayRejection(
-            requestId: editedSubmission.id,
-            code: "queue_full",
-            message: "Try again",
-            fatal: false
-        )))
+        model.gateway.handle(
+            .rejected(
+                GatewayRejection(
+                    requestId: editedSubmission.id,
+                    code: "queue_full",
+                    message: "Try again",
+                    fatal: false
+                )))
         XCTAssertEqual(model.chat.composer, "Edited input")
         XCTAssertTrue(model.canSendComposer)
     }
@@ -188,10 +195,11 @@ extension AppModelTests {
         guard case .openSession(let openID, _, _) = openRequest else {
             return XCTFail("Expected session open")
         }
-        model.gateway.handle(.sessionOpened(
-            requestID: openID,
-            payload: sessionReady(latestSequence: 0, sessionID: "chat-1")
-        ))
+        model.gateway.handle(
+            .sessionOpened(
+                requestID: openID,
+                payload: sessionReady(latestSequence: 0, sessionID: "chat-1")
+            ))
         model.gateway.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
         try await Task.sleep(for: .milliseconds(100))
 
@@ -266,29 +274,32 @@ extension AppModelTests {
             return XCTFail("Expected session open")
         }
 
-        model.gateway.handle(.sessionOpened(
-            requestID: openID,
-            payload: sessionReady(latestSequence: 11, sessionID: "chat-1")
-        ))
-        model.gateway.handle(.agentEvent(
-            sessionID: "chat-1",
-            sequence: 11,
-            event: AgentEventRecord(
-                submissionId: nil,
-                msg: testMessageEvent(
-                    text: "Edited input",
-                    messageTarget: MessageTarget(checkpointSequence: 11, batchItemCount: 1)
-                )
-            ),
-            blocks: [],
-            history: nil,
-            preview: nil
-        ))
+        model.gateway.handle(
+            .sessionOpened(
+                requestID: openID,
+                payload: sessionReady(latestSequence: 11, sessionID: "chat-1")
+            ))
+        model.gateway.handle(
+            .agentEvent(
+                sessionID: "chat-1",
+                sequence: 11,
+                event: AgentEventRecord(
+                    submissionId: nil,
+                    msg: testMessageEvent(
+                        text: "Edited input",
+                        messageTarget: MessageTarget(checkpointSequence: 11, batchItemCount: 1)
+                    )
+                ),
+                blocks: [],
+                history: nil,
+                preview: nil
+            ))
         model.gateway.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
         try await Task.sleep(for: .milliseconds(150))
 
         XCTAssertEqual(model.chat.composer, "Displaced draft")
-        XCTAssertEqual(model.chat.transcript.filter { $0.kind == .user }.map(\.text), ["Edited input"])
+        XCTAssertEqual(
+            model.chat.transcript.filter { $0.kind == .user }.map(\.text), ["Edited input"])
         XCTAssertTrue(model.canSendComposer)
         let replayedRecovery = await store.loadComposerEditRecovery(
             accountID: account.id,
@@ -372,8 +383,9 @@ extension AppModelTests {
             requestSender: { request in
                 await recorder.record(request)
                 if case .submit(_, let submission) = request,
-                   case .message(let message) = submission.op,
-                   message.text == "New gateway message" {
+                    case .message(let message) = submission.op,
+                    message.text == "New gateway message"
+                {
                     ordinaryMessageSent.fulfill()
                 }
             }
@@ -415,9 +427,11 @@ extension AppModelTests {
         model.deleteSession(selected)
         try await Task.sleep(for: .milliseconds(30))
         let requests = await recorder.requests()
-        guard case .deleteSessions(let deleteID, let ids) = try XCTUnwrap(
-            requests.last(where: { if case .deleteSessions = $0 { true } else { false } })
-        ), ids == ["chat-1"] else { return XCTFail("Expected session deletion") }
+        guard
+            case .deleteSessions(let deleteID, let ids) = try XCTUnwrap(
+                requests.last(where: { if case .deleteSessions = $0 { true } else { false } })
+            ), ids == ["chat-1"]
+        else { return XCTFail("Expected session deletion") }
         model.gateway.handle(.accepted(requestID: deleteID))
         model.gateway.handle(.sessions(requestID: deleteID, sessions: []))
 
@@ -473,10 +487,11 @@ extension AppModelTests {
         guard case .openSession(let openID, _, _) = try XCTUnwrap(openRequest) else {
             return XCTFail("Expected session open")
         }
-        model.gateway.handle(.sessionOpened(
-            requestID: openID,
-            payload: sessionReady(latestSequence: 0, sessionID: "chat-1")
-        ))
+        model.gateway.handle(
+            .sessionOpened(
+                requestID: openID,
+                payload: sessionReady(latestSequence: 0, sessionID: "chat-1")
+            ))
         model.gateway.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
         let sessionReady = await eventually { model.canCreateSession }
         XCTAssertTrue(sessionReady)
@@ -529,7 +544,7 @@ extension AppModelTests {
         model.sendMessage()
         let request = await recorder.firstRequest(after: requestCount) { request in
             guard case .submit(_, let submission) = request,
-                  case .capabilityCommand = submission.op
+                case .capabilityCommand = submission.op
             else { return false }
             return true
         }
@@ -537,7 +552,7 @@ extension AppModelTests {
         let requests = await recorder.requests()
         XCTAssertEqual(requests.count, requestCount + 1)
         guard case .submit(_, let submission) = try XCTUnwrap(request),
-              case .capabilityCommand = submission.op
+            case .capabilityCommand = submission.op
         else { return XCTFail("Expected only the edit-removal command") }
         XCTAssertEqual(model.chat.composer, "Do not lose this")
     }

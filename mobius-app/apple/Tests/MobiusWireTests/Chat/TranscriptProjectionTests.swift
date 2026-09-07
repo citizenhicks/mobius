@@ -92,12 +92,14 @@ final class TranscriptProjectionTests: XCTestCase {
     func testFileOnlyActivityRowOwnsTheWaitingPhrase() {
         let event = entry("event:1")
         event.text = ""
-        event.files = [SessionFileReference(
-            id: "file:1",
-            name: "result.txt",
-            size: 1,
-            mediaType: "text/plain"
-        )]
+        event.files = [
+            SessionFileReference(
+                id: "file:1",
+                name: "result.txt",
+                size: 1,
+                mediaType: "text/plain"
+            )
+        ]
 
         let projection = TranscriptProjection(entries: [event], waitingPhrase: phrase)
 
@@ -165,9 +167,11 @@ final class TranscriptProjectionTests: XCTestCase {
         let projection = TranscriptProjection(entries: [earlier, message, work, answer])
 
         XCTAssertEqual(projection.rows.map(\.kind), [.activityGroup, .workedGroup, .narrative])
-        XCTAssertEqual(projection.rows.map { $0.records.map(\.id) }, [
-            ["earlier"], ["received", "work"], ["answer"]
-        ])
+        XCTAssertEqual(
+            projection.rows.map { $0.records.map(\.id) },
+            [
+                ["earlier"], ["received", "work"], ["answer"],
+            ])
     }
 
     func testCompletedTurnCollapsesMixedChildActivityIntoWorkedGroup() {
@@ -216,7 +220,8 @@ final class TranscriptProjectionTests: XCTestCase {
         let user = entry("user:1", kind: .user)
         let settled = TranscriptProjection(entries: [firstEvent, user])
         let nextEvent = entry("event:2")
-        let running = TranscriptProjection(entries: [firstEvent, user, nextEvent], previous: settled)
+        let running = TranscriptProjection(
+            entries: [firstEvent, user, nextEvent], previous: settled)
 
         XCTAssertEqual(running.rows.map(\.id), ["event:1", "user:1", "event:2"])
         XCTAssertEqual(running.structuralRevision, settled.structuralRevision + 1)
@@ -258,18 +263,22 @@ final class TranscriptProjectionTests: XCTestCase {
             breakBefore: secondEvent.presentationID
         )
 
-        XCTAssertEqual(projection.rows.map(\.id), [
-            "event:first",
-            "event:second",
-            "user:first",
-            "step:final_answer:0",
-        ])
-        XCTAssertEqual(projection.rows.map(\.sizing), [
-            .fixedSummary,
-            .fixedSummary,
-            .intrinsic,
-            .intrinsic,
-        ])
+        XCTAssertEqual(
+            projection.rows.map(\.id),
+            [
+                "event:first",
+                "event:second",
+                "user:first",
+                "step:final_answer:0",
+            ])
+        XCTAssertEqual(
+            projection.rows.map(\.sizing),
+            [
+                .fixedSummary,
+                .fixedSummary,
+                .intrinsic,
+                .intrinsic,
+            ])
     }
 
     func testCompletedTurnCollapsesWorkOnlyAfterTheFinalMessageFinishes() {
@@ -310,13 +319,15 @@ final class TranscriptProjectionTests: XCTestCase {
         let running = TranscriptProjection(
             entries: [user, commentary, event, steering, final]
         )
-        XCTAssertEqual(running.rows.map(\.kind), [
-            .user,
-            .narrative,
-            .activityGroup,
-            .user,
-            .narrative,
-        ])
+        XCTAssertEqual(
+            running.rows.map(\.kind),
+            [
+                .user,
+                .narrative,
+                .activityGroup,
+                .user,
+                .narrative,
+            ])
 
         final.pending = false
         let completed = TranscriptProjection(
@@ -330,9 +341,10 @@ final class TranscriptProjectionTests: XCTestCase {
             ["commentary", "event", "steering"]
         )
         XCTAssertEqual(completed.rows[1].elapsedMs, 3_200)
-        XCTAssertEqual(TranscriptProjection.turnCount(
-            in: [user, commentary, event, steering, final]
-        ), 1)
+        XCTAssertEqual(
+            TranscriptProjection.turnCount(
+                in: [user, commentary, event, steering, final]
+            ), 1)
     }
 
     func testTurnWindowKeepsSteeringInsideCompletedTurn() {

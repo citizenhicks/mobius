@@ -5,8 +5,9 @@ func frontendPresentationText(_ value: String) -> LocalizedStringResource {
 }
 
 func appendingBlockText(_ text: String, to previous: String) -> String {
-    let separator = !previous.isEmpty && !text.isEmpty
-        && !previous.hasSuffix("\n") && !text.hasPrefix("\n") ? "\n" : ""
+    let separator =
+        !previous.isEmpty && !text.isEmpty
+            && !previous.hasSuffix("\n") && !text.hasPrefix("\n") ? "\n" : ""
     return previous + separator + text
 }
 
@@ -90,17 +91,19 @@ struct FrontendActionListItem: Identifiable, Sendable {
 
     init(json: JSONValue) throws {
         guard let id = json["id"]?.stringValue,
-              !id.isEmpty,
-              let text = json["text"]?.stringValue,
-              !text.isEmpty,
-              let state = json["state"]?.stringValue.flatMap(FrontendListItemState.init(rawValue:)),
-              let values = json["actions"]?.arrayValue
+            !id.isEmpty,
+            let text = json["text"]?.stringValue,
+            !text.isEmpty,
+            let state = json["state"]?.stringValue.flatMap(FrontendListItemState.init(rawValue:)),
+            let values = json["actions"]?.arrayValue
         else {
-            throw GatewayWireError.invalidFrame("frontend action list item is missing a required field")
+            throw GatewayWireError.invalidFrame(
+                "frontend action list item is missing a required field")
         }
         let actions = try values.map(FrontendAction.init(json:))
         guard Set(actions.map(\.id)).count == actions.count else {
-            throw GatewayWireError.invalidFrame("frontend action list item has duplicate action IDs")
+            throw GatewayWireError.invalidFrame(
+                "frontend action list item has duplicate action IDs")
         }
         self.id = id
         self.text = text
@@ -133,16 +136,17 @@ struct FrontendAction: Identifiable, Sendable {
 
     init(json: JSONValue) throws {
         guard let id = json["id"]?.stringValue,
-              !id.isEmpty,
-              let label = json["label"]?.stringValue,
-              !label.isEmpty,
-              let symbol = json["symbol"]?.stringValue,
-              !symbol.isEmpty,
-              let tone = json["tone"]?.stringValue,
-              ["neutral", "success", "warning", "error"].contains(tone),
-              let op = json["op"]
+            !id.isEmpty,
+            let label = json["label"]?.stringValue,
+            !label.isEmpty,
+            let symbol = json["symbol"]?.stringValue,
+            !symbol.isEmpty,
+            let tone = json["tone"]?.stringValue,
+            ["neutral", "success", "warning", "error"].contains(tone),
+            let op = json["op"]
         else {
-            throw GatewayWireError.invalidFrame("frontend action list action is missing a required field")
+            throw GatewayWireError.invalidFrame(
+                "frontend action list action is missing a required field")
         }
         self.id = id
         self.label = label
@@ -151,9 +155,9 @@ struct FrontendAction: Identifiable, Sendable {
         self.op = try AgentOperation(json: op)
         if let value = json["editor"], value != .null {
             guard let title = value["title"]?.stringValue,
-                  let label = value["label"]?.stringValue,
-                  let description = value["description"]?.stringValue,
-                  let submitLabel = value["submitLabel"]?.stringValue
+                let label = value["label"]?.stringValue,
+                let description = value["description"]?.stringValue,
+                let submitLabel = value["submitLabel"]?.stringValue
             else { throw GatewayWireError.invalidFrame("frontend action has an invalid editor") }
             self.editor = FrontendEditor(
                 title: title, label: label, description: description, submitLabel: submitLabel
@@ -193,19 +197,19 @@ extension FrontendWidget {
 
     init(json: JSONValue) throws {
         guard let id = json["id"]?.stringValue,
-              let slot = json["slot"]?.stringValue,
-              let text = json["text"]?.stringValue,
-              let tone = json["tone"]?.stringValue,
-              let iconOnly = json["iconOnly"]?.boolValue,
-              json["symbol"] != nil,
-              json["progress"] != nil,
-              json["content"] != nil,
-              json["action"] != nil
+            let slot = json["slot"]?.stringValue,
+            let text = json["text"]?.stringValue,
+            let tone = json["tone"]?.stringValue,
+            let iconOnly = json["iconOnly"]?.boolValue,
+            json["symbol"] != nil,
+            json["progress"] != nil,
+            json["content"] != nil,
+            json["action"] != nil
         else {
             throw GatewayWireError.invalidFrame("frontend widget is missing a required field")
         }
         guard let slot = FrontendSlot(rawValue: slot),
-              ["neutral", "success", "warning", "error"].contains(tone)
+            ["neutral", "success", "warning", "error"].contains(tone)
         else {
             throw GatewayWireError.invalidFrame("frontend widget has an unknown slot or tone")
         }
@@ -222,10 +226,10 @@ extension FrontendWidget {
         switch json["progress"] {
         case .some(.object(let value)):
             guard let completed = value["completed"]?.intValue,
-                  let total = value["total"]?.intValue,
-                  total > 0,
-                  completed >= 0,
-                  completed <= total
+                let total = value["total"]?.intValue,
+                total > 0,
+                completed >= 0,
+                completed <= total
             else {
                 throw GatewayWireError.invalidFrame("frontend widget has invalid progress")
             }
@@ -236,9 +240,10 @@ extension FrontendWidget {
         switch json["content"] {
         case .some(.object(let value)):
             guard let type = value["type"]?.stringValue,
-                  let title = value["title"]?.stringValue
+                let title = value["title"]?.stringValue
             else {
-                throw GatewayWireError.invalidFrame("frontend widget content is missing a required field")
+                throw GatewayWireError.invalidFrame(
+                    "frontend widget content is missing a required field")
             }
             switch type {
             case "blocks":
@@ -255,19 +260,24 @@ extension FrontendWidget {
                 guard let values = value["options"]?.arrayValue else {
                     throw GatewayWireError.invalidFrame("frontend widget options are missing")
                 }
-                content = .picker(title: title, options: try values.map(FrontendPickerOption.init(json:)))
+                content = .picker(
+                    title: title, options: try values.map(FrontendPickerOption.init(json:)))
             case "action_list":
                 guard let itemValues = value["items"]?.arrayValue,
-                      let actionValues = value["actions"]?.arrayValue else {
-                    throw GatewayWireError.invalidFrame("frontend widget action list items or actions are missing")
+                    let actionValues = value["actions"]?.arrayValue
+                else {
+                    throw GatewayWireError.invalidFrame(
+                        "frontend widget action list items or actions are missing")
                 }
                 let items = try itemValues.map(FrontendActionListItem.init(json:))
                 guard Set(items.map(\.id)).count == items.count else {
-                    throw GatewayWireError.invalidFrame("frontend widget action list has duplicate item IDs")
+                    throw GatewayWireError.invalidFrame(
+                        "frontend widget action list has duplicate item IDs")
                 }
                 let actions = try actionValues.map(FrontendAction.init(json:))
                 guard Set(actions.map(\.id)).count == actions.count else {
-                    throw GatewayWireError.invalidFrame("frontend action list has duplicate action IDs")
+                    throw GatewayWireError.invalidFrame(
+                        "frontend action list has duplicate action IDs")
                 }
                 content = .actionList(title: title, items: items, actions: actions)
             default:
@@ -370,19 +380,19 @@ extension FrontendBlock {
         }
 
         guard let encodedUpdate = json["update"]?.stringValue,
-              let update = FrontendBlockUpdate(rawValue: encodedUpdate),
-              let encodedState = json["state"]?.stringValue,
-              let state = FrontendBlockState(rawValue: encodedState),
-              let encodedRole = json["role"]?.stringValue,
-              let role = FrontendBlockRole(rawValue: encodedRole),
-              let title = json["title"]?.stringValue,
-              let text = json["text"]?.stringValue,
-              let format = json["format"]?.stringValue,
-              ["plain_text", "unified_diff"].contains(format),
-              let tone = json["tone"]?.stringValue,
-              ["neutral", "success", "warning", "error"].contains(tone),
-              let files = json["files"]?.arrayValue,
-              files.count <= maximumWireSessionFileReferences
+            let update = FrontendBlockUpdate(rawValue: encodedUpdate),
+            let encodedState = json["state"]?.stringValue,
+            let state = FrontendBlockState(rawValue: encodedState),
+            let encodedRole = json["role"]?.stringValue,
+            let role = FrontendBlockRole(rawValue: encodedRole),
+            let title = json["title"]?.stringValue,
+            let text = json["text"]?.stringValue,
+            let format = json["format"]?.stringValue,
+            ["plain_text", "unified_diff"].contains(format),
+            let tone = json["tone"]?.stringValue,
+            ["neutral", "success", "warning", "error"].contains(tone),
+            let files = json["files"]?.arrayValue,
+            files.count <= maximumWireSessionFileReferences
         else {
             throw GatewayWireError.invalidFrame("frontend block is missing a required field")
         }
@@ -428,7 +438,10 @@ struct RenderedEventRecord: Decodable, Sendable {
 }
 
 extension RenderedEventRecord {
-    init(event: JSONValue, blocks: [RenderedBlock], recordedAtMs: Int64 = 0, submissionId: String? = nil) {
+    init(
+        event: JSONValue, blocks: [RenderedBlock], recordedAtMs: Int64 = 0,
+        submissionId: String? = nil
+    ) {
         self.recordedAtMs = recordedAtMs
         self.submissionId = submissionId
         self.event = event
@@ -481,13 +494,14 @@ struct FrontendPickerOption: Identifiable, Sendable {
 
     init(json: JSONValue) throws {
         guard let label = json["label"]?.stringValue,
-              let description = json["description"]?.stringValue,
-              let detail = json["detail"]?.stringValue,
-              let symbolValue = json["symbol"],
-              let showsDetail = json["showsDetail"]?.boolValue,
-              let op = json["op"]
+            let description = json["description"]?.stringValue,
+            let detail = json["detail"]?.stringValue,
+            let symbolValue = json["symbol"],
+            let showsDetail = json["showsDetail"]?.boolValue,
+            let op = json["op"]
         else {
-            throw GatewayWireError.invalidFrame("frontend picker option is missing a required field")
+            throw GatewayWireError.invalidFrame(
+                "frontend picker option is missing a required field")
         }
         let symbol: String?
         switch symbolValue {

@@ -20,7 +20,8 @@ private final class PushTokenRaceHarness {
             return try response(
                 for: request,
                 status: 200,
-                json: #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
+                json:
+                    #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
             )
         case "PUT":
             await withCheckedContinuation { pendingRegistration = $0 }
@@ -46,12 +47,13 @@ private final class PushTokenRaceHarness {
         json: String = ""
     ) throws -> (Data, HTTPURLResponse) {
         let url = try XCTUnwrap(request.url)
-        let response = try XCTUnwrap(HTTPURLResponse(
-            url: url,
-            statusCode: status,
-            httpVersion: "HTTP/1.1",
-            headerFields: ["Content-Type": "application/json"]
-        ))
+        let response = try XCTUnwrap(
+            HTTPURLResponse(
+                url: url,
+                statusCode: status,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            ))
         return (Data(json.utf8), response)
     }
 }
@@ -137,12 +139,14 @@ extension AppModelTests {
         let model = AppModel(
             store: GatewayStore(defaults: defaults),
             settingsDefaults: defaults,
-            appLockAuthenticator: AppLockAuthenticator(method: { .faceID }, authenticate: { _ in
-                attempts += 1
-                guard attempts == 1 else { return false }
-                await gate.wait()
-                return true
-            })
+            appLockAuthenticator: AppLockAuthenticator(
+                method: { .faceID },
+                authenticate: { _ in
+                    attempts += 1
+                    guard attempts == 1 else { return false }
+                    await gate.wait()
+                    return true
+                })
         )
         model.appIsInBackground = false
         let manualUnlock = Task { await model.unlockApp() }
@@ -566,31 +570,36 @@ extension AppModelTests {
         model.cloud.cloudSession = MobiusCloudSession(userID: UUID(), expiresAt: .distantFuture)
         model.cloud.notificationsEnabled = true
         model.bots = []
-        model.chat.sessions = [session(
-            state: .running,
-            turnID: "turn-1",
-            executionStats: ExecutionStats(runCount: 0),
-            title: "Deploy"
-        )]
-        model.receivedForegroundRemoteNotification(RemoteNotification.session(
-            eventID: "event-1",
-            kind: .completed,
-            sessionID: "chat-1",
-            runCount: 1,
-            approvalRequestID: nil
-        ), agentName: "Luna", detail: "You are right.\nThis was a mistake.")
+        model.chat.sessions = [
+            session(
+                state: .running,
+                turnID: "turn-1",
+                executionStats: ExecutionStats(runCount: 0),
+                title: "Deploy"
+            )
+        ]
+        model.receivedForegroundRemoteNotification(
+            RemoteNotification.session(
+                eventID: "event-1",
+                kind: .completed,
+                sessionID: "chat-1",
+                runCount: 1,
+                approvalRequestID: nil
+            ), agentName: "Luna", detail: "You are right.\nThis was a mistake.")
         let remoteToastID = try XCTUnwrap(model.toast?.id)
         XCTAssertEqual(model.toast?.message, "Luna: You are right. This was a mistake.")
 
         model.bots = [bot()]
-        model.applySessions([session(
-            state: .idle,
-            outcome: .completed,
-            message: "The corrected canonical answer.",
-            executionStats: ExecutionStats(runCount: 1),
-            sequence: 2,
-            title: "Deploy"
-        )])
+        model.applySessions([
+            session(
+                state: .idle,
+                outcome: .completed,
+                message: "The corrected canonical answer.",
+                executionStats: ExecutionStats(runCount: 1),
+                sequence: 2,
+                title: "Deploy"
+            )
+        ])
 
         XCTAssertNotEqual(model.toast?.id, remoteToastID)
         XCTAssertEqual(model.toast?.message, "Helper: The corrected canonical answer.")
@@ -601,27 +610,31 @@ extension AppModelTests {
         model.cloud.cloudSession = MobiusCloudSession(userID: UUID(), expiresAt: .distantFuture)
         model.cloud.notificationsEnabled = true
         model.bots = []
-        model.chat.sessions = [session(
-            state: .running,
-            turnID: "turn-1",
-            executionStats: ExecutionStats(runCount: 0)
-        )]
-        model.receivedForegroundRemoteNotification(RemoteNotification.session(
-            eventID: "event-1",
-            kind: .completed,
-            sessionID: "chat-1",
-            runCount: 1,
-            approvalRequestID: nil
-        ), agentName: "Luna", detail: "First answer.")
+        model.chat.sessions = [
+            session(
+                state: .running,
+                turnID: "turn-1",
+                executionStats: ExecutionStats(runCount: 0)
+            )
+        ]
+        model.receivedForegroundRemoteNotification(
+            RemoteNotification.session(
+                eventID: "event-1",
+                kind: .completed,
+                sessionID: "chat-1",
+                runCount: 1,
+                approvalRequestID: nil
+            ), agentName: "Luna", detail: "First answer.")
         let firstToastID = try XCTUnwrap(model.toast?.id)
 
-        model.receivedForegroundRemoteNotification(RemoteNotification.session(
-            eventID: "event-2",
-            kind: .completed,
-            sessionID: "chat-1",
-            runCount: 1,
-            approvalRequestID: nil
-        ), agentName: "Luna", detail: "Second answer.")
+        model.receivedForegroundRemoteNotification(
+            RemoteNotification.session(
+                eventID: "event-2",
+                kind: .completed,
+                sessionID: "chat-1",
+                runCount: 1,
+                approvalRequestID: nil
+            ), agentName: "Luna", detail: "Second answer.")
 
         XCTAssertEqual(model.toast?.id, firstToastID)
         XCTAssertEqual(model.toast?.message, "Luna: First answer.")
@@ -633,19 +646,21 @@ extension AppModelTests {
         model.chat.sessions = [session(state: .idle)]
 
         XCTAssertEqual(
-            model.accessibilityMessage(for: AppToast(
-                message: "Deploy needs approval.",
-                tone: .warning,
-                target: .session("chat-1")
-            )),
+            model.accessibilityMessage(
+                for: AppToast(
+                    message: "Deploy needs approval.",
+                    tone: .warning,
+                    target: .session("chat-1")
+                )),
             "Helper: Deploy needs approval."
         )
         XCTAssertEqual(
-            model.accessibilityMessage(for: AppToast(
-                message: "Helper: Deployment succeeded.",
-                tone: .success,
-                target: .session("chat-1")
-            )),
+            model.accessibilityMessage(
+                for: AppToast(
+                    message: "Helper: Deployment succeeded.",
+                    tone: .success,
+                    target: .session("chat-1")
+                )),
             "Helper: Deployment succeeded."
         )
     }
@@ -655,29 +670,34 @@ extension AppModelTests {
         model.cloud.cloudSession = MobiusCloudSession(userID: UUID(), expiresAt: .distantFuture)
         model.cloud.notificationsEnabled = true
         model.bots = []
-        model.chat.sessions = [session(
-            state: .running,
-            turnID: "turn-1",
-            executionStats: ExecutionStats(runCount: 0)
-        )]
-        model.receivedForegroundRemoteNotification(RemoteNotification.session(
-            eventID: "event-1",
-            kind: .completed,
-            sessionID: "chat-1",
-            runCount: 1,
-            approvalRequestID: nil
-        ))
+        model.chat.sessions = [
+            session(
+                state: .running,
+                turnID: "turn-1",
+                executionStats: ExecutionStats(runCount: 0)
+            )
+        ]
+        model.receivedForegroundRemoteNotification(
+            RemoteNotification.session(
+                eventID: "event-1",
+                kind: .completed,
+                sessionID: "chat-1",
+                runCount: 1,
+                approvalRequestID: nil
+            ))
         let remoteToastID = try XCTUnwrap(model.toast?.id)
         XCTAssertEqual(model.toast?.message, "Bot: Finished.")
 
         model.bots = [bot()]
-        model.applySessions([session(
-            state: .idle,
-            outcome: .completed,
-            message: "  Deployment succeeded.\nAll checks passed. ",
-            executionStats: ExecutionStats(runCount: 1),
-            sequence: 2
-        )])
+        model.applySessions([
+            session(
+                state: .idle,
+                outcome: .completed,
+                message: "  Deployment succeeded.\nAll checks passed. ",
+                executionStats: ExecutionStats(runCount: 1),
+                sequence: 2
+            )
+        ])
 
         XCTAssertNotEqual(model.toast?.id, remoteToastID)
         XCTAssertEqual(model.toast?.message, "Helper: Deployment succeeded. All checks passed.")
@@ -687,27 +707,32 @@ extension AppModelTests {
         let model = try model()
         model.cloud.cloudSession = MobiusCloudSession(userID: UUID(), expiresAt: .distantFuture)
         model.cloud.notificationsEnabled = true
-        model.chat.sessions = [session(
-            state: .running,
-            turnID: "turn-1",
-            executionStats: ExecutionStats(runCount: 0)
-        )]
-        model.applySessions([session(
-            state: .idle,
-            outcome: .completed,
-            message: "Deployment succeeded.",
-            executionStats: ExecutionStats(runCount: 1),
-            sequence: 2
-        )])
+        model.chat.sessions = [
+            session(
+                state: .running,
+                turnID: "turn-1",
+                executionStats: ExecutionStats(runCount: 0)
+            )
+        ]
+        model.applySessions([
+            session(
+                state: .idle,
+                outcome: .completed,
+                message: "Deployment succeeded.",
+                executionStats: ExecutionStats(runCount: 1),
+                sequence: 2
+            )
+        ])
         let gatewayToastID = try XCTUnwrap(model.toast?.id)
 
-        model.receivedForegroundRemoteNotification(RemoteNotification.session(
-            eventID: "event-1",
-            kind: .completed,
-            sessionID: "chat-1",
-            runCount: 1,
-            approvalRequestID: nil
-        ))
+        model.receivedForegroundRemoteNotification(
+            RemoteNotification.session(
+                eventID: "event-1",
+                kind: .completed,
+                sessionID: "chat-1",
+                runCount: 1,
+                approvalRequestID: nil
+            ))
 
         XCTAssertEqual(model.toast?.id, gatewayToastID)
         XCTAssertEqual(model.toast?.message, "Helper: Deployment succeeded.")
@@ -718,23 +743,26 @@ extension AppModelTests {
         model.cloud.cloudSession = MobiusCloudSession(userID: UUID(), expiresAt: .distantFuture)
         model.cloud.notificationsEnabled = true
         model.chat.sessions = [session(state: .running, turnID: "turn-1", title: "Deploy")]
-        model.applySessions([session(
-            state: .awaitingApproval,
-            turnID: "turn-1",
-            approvalRequestID: "approval-1",
-            sequence: 2,
-            title: "Deploy"
-        )])
+        model.applySessions([
+            session(
+                state: .awaitingApproval,
+                turnID: "turn-1",
+                approvalRequestID: "approval-1",
+                sequence: 2,
+                title: "Deploy"
+            )
+        ])
         let gatewayToastID = try XCTUnwrap(model.toast?.id)
         XCTAssertEqual(model.toast?.message, "Deploy needs approval.")
 
-        model.receivedForegroundRemoteNotification(RemoteNotification.session(
-            eventID: "event-approval",
-            kind: .awaitingApproval,
-            sessionID: "chat-1",
-            runCount: nil,
-            approvalRequestID: "approval-1"
-        ))
+        model.receivedForegroundRemoteNotification(
+            RemoteNotification.session(
+                eventID: "event-approval",
+                kind: .awaitingApproval,
+                sessionID: "chat-1",
+                runCount: nil,
+                approvalRequestID: "approval-1"
+            ))
 
         XCTAssertEqual(model.toast?.id, gatewayToastID)
         XCTAssertEqual(model.toast?.message, "Deploy needs approval.")
@@ -745,13 +773,14 @@ extension AppModelTests {
         model.cloud.cloudSession = MobiusCloudSession(userID: UUID(), expiresAt: .distantFuture)
         model.cloud.notificationsEnabled = true
 
-        model.receivedForegroundRemoteNotification(RemoteNotification.session(
-            eventID: "event-approval",
-            kind: .awaitingApproval,
-            sessionID: "work-1",
-            runCount: nil,
-            approvalRequestID: "approval-1"
-        ), agentName: "Helper")
+        model.receivedForegroundRemoteNotification(
+            RemoteNotification.session(
+                eventID: "event-approval",
+                kind: .awaitingApproval,
+                sessionID: "work-1",
+                runCount: nil,
+                approvalRequestID: "approval-1"
+            ), agentName: "Helper")
 
         XCTAssertEqual(model.toast?.message, "Helper needs approval.")
     }
@@ -890,13 +919,14 @@ extension AppModelTests {
         model.gateway.connectionState = .ready
         XCTAssertTrue(model.applyBackgroundApprovals([approval], notifyingNew: false))
 
-        model.cloud.openRemoteNotification(RemoteNotification.session(
-            eventID: "event-approval",
-            kind: .awaitingApproval,
-            sessionID: approval.sessionId,
-            runCount: nil,
-            approvalRequestID: approval.requestId
-        ))
+        model.cloud.openRemoteNotification(
+            RemoteNotification.session(
+                eventID: "event-approval",
+                kind: .awaitingApproval,
+                sessionID: approval.sessionId,
+                runCount: nil,
+                approvalRequestID: approval.requestId
+            ))
 
         let listing = await recorder.firstRequest(after: 0) { request in
             if case .listBotSessions = request { return true }
@@ -916,11 +946,12 @@ extension AppModelTests {
             originLabel: "routine",
             botID: approval.botId
         )
-        model.gateway.handle(.botSessions(
-            requestID: requestID,
-            botID: approval.botId,
-            sessions: [hidden]
-        ))
+        model.gateway.handle(
+            .botSessions(
+                requestID: requestID,
+                botID: approval.botId,
+                sessions: [hidden]
+            ))
         let opening = await recorder.firstRequest(after: 1) { request in
             guard case .openSession(_, approval.sessionId, _) = request else { return false }
             return true
@@ -992,16 +1023,18 @@ extension AppModelTests {
                 approvalRequestID: nil
             )
         )
-        XCTAssertNil(RemoteNotification(userInfo: [
-            "eventId": "event-2",
-            "kind": "session.completed",
-            "sessionId": "chat-1",
-        ]))
-        XCTAssertNil(RemoteNotification(userInfo: [
-            "eventId": "event-3",
-            "kind": "session.awaiting_approval",
-            "sessionId": "chat-1",
-        ]))
+        XCTAssertNil(
+            RemoteNotification(userInfo: [
+                "eventId": "event-2",
+                "kind": "session.completed",
+                "sessionId": "chat-1",
+            ]))
+        XCTAssertNil(
+            RemoteNotification(userInfo: [
+                "eventId": "event-3",
+                "kind": "session.awaiting_approval",
+                "sessionId": "chat-1",
+            ]))
         XCTAssertEqual(
             RemoteNotification(userInfo: [
                 "eventId": "event-4",
@@ -1030,11 +1063,12 @@ extension AppModelTests {
                 messageID: "message-1"
             )
         )
-        XCTAssertNil(RemoteNotification(userInfo: [
-            "eventId": "event-6",
-            "kind": "swarm.attention",
-            "swarmId": "swarm-1",
-        ]))
+        XCTAssertNil(
+            RemoteNotification(userInfo: [
+                "eventId": "event-6",
+                "kind": "swarm.attention",
+                "swarmId": "swarm-1",
+            ]))
     }
 
     func testLanguageLocalesPreserveTheSystemChoice() {
@@ -1121,20 +1155,28 @@ extension AppModelTests {
             light.accentSoft,
             light.panel.mix(with: tint.color, by: 0.18, in: .device)
         )
-        XCTAssertTrue(zip(
-            [dark.canvas, dark.recessed, dark.panel, dark.raised, dark.line, dark.sidebarScrim],
-            [
-                defaultDark.canvas, defaultDark.recessed, defaultDark.panel,
-                defaultDark.raised, defaultDark.line, defaultDark.sidebarScrim,
-            ]
-        ).allSatisfy { $0.0 != $0.1 })
-        XCTAssertTrue(zip(
-            [light.canvas, light.recessed, light.panel, light.raised, light.line, light.sidebarScrim],
-            [
-                defaultLight.canvas, defaultLight.recessed, defaultLight.panel,
-                defaultLight.raised, defaultLight.line, defaultLight.sidebarScrim,
-            ]
-        ).allSatisfy { $0.0 != $0.1 })
+        XCTAssertTrue(
+            zip(
+                [
+                    dark.canvas, dark.recessed, dark.panel, dark.raised, dark.line,
+                    dark.sidebarScrim,
+                ],
+                [
+                    defaultDark.canvas, defaultDark.recessed, defaultDark.panel,
+                    defaultDark.raised, defaultDark.line, defaultDark.sidebarScrim,
+                ]
+            ).allSatisfy { $0.0 != $0.1 })
+        XCTAssertTrue(
+            zip(
+                [
+                    light.canvas, light.recessed, light.panel, light.raised, light.line,
+                    light.sidebarScrim,
+                ],
+                [
+                    defaultLight.canvas, defaultLight.recessed, defaultLight.panel,
+                    defaultLight.raised, defaultLight.line, defaultLight.sidebarScrim,
+                ]
+            ).allSatisfy { $0.0 != $0.1 })
     }
 
     func testAccentTintsMeetTextContrastInEveryAppearance() {

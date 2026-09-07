@@ -5,8 +5,8 @@ extension AppModel {
     /// Starts a new setup of `provider` with the identity used by credentials and registration.
     func addProviderInstance(_ provider: String) {
         guard let status = providerStatuses.first(where: { $0.provider == provider }),
-              let search = status.webSearch.first,
-              let webSearch = HostedWebSearch(rawValue: search.value)
+            let search = status.webSearch.first,
+            let webSearch = HostedWebSearch(rawValue: search.value)
         else { return }
         let selectedModel = status.models.first
         providerLabelDraft = status.label
@@ -113,7 +113,7 @@ extension AppModel {
 
     func registerProvider() {
         guard var config = providerDraft,
-              let status = providerStatuses.first(where: { $0.provider == config.provider })
+            let status = providerStatuses.first(where: { $0.provider == config.provider })
         else { return }
         let modelIDs = status.modelIdsConfigurable ? providerModelIDs : []
         let reasoningEfforts = status.modelIdsConfigurable ? providerReasoningEfforts : []
@@ -124,14 +124,16 @@ extension AppModel {
         }
         let id = requestID("provider")
         providerRegistrationRequestID = id
-        gateway.transmit(.registerProvider(
-            requestID: id,
-            config: config,
-            label: providerLabelDraft.trimmingCharacters(in: .whitespacesAndNewlines),
-            tint: providerTintDraft,
-            modelIds: modelIDs,
-            reasoningEfforts: reasoningEfforts
-        )) { [weak self] message in
+        gateway.transmit(
+            .registerProvider(
+                requestID: id,
+                config: config,
+                label: providerLabelDraft.trimmingCharacters(in: .whitespacesAndNewlines),
+                tint: providerTintDraft,
+                modelIds: modelIDs,
+                reasoningEfforts: reasoningEfforts
+            )
+        ) { [weak self] message in
             guard self?.providerRegistrationRequestID == id else { return }
             self?.providerRegistrationRequestID = nil
             self?.providerActionState = .failed(message)
@@ -140,13 +142,14 @@ extension AppModel {
 
     func removeProvider(_ instance: String) {
         guard !isApplyingConfiguration,
-              gateway.connectionState.isReady,
-              providerInstances.contains(where: { $0.instance == instance })
+            gateway.connectionState.isReady,
+            providerInstances.contains(where: { $0.instance == instance })
         else { return }
         let id = requestID("provider-remove")
         pendingProviderRemoval = (requestID: id, instance: instance)
         providerActionState = .idle
-        gateway.transmit(.removeProvider(requestID: id, instance: instance)) { [weak self] message in
+        gateway.transmit(.removeProvider(requestID: id, instance: instance)) {
+            [weak self] message in
             guard self?.pendingProviderRemoval?.requestID == id else { return }
             self?.pendingProviderRemoval = nil
             self?.providerActionState = .failed(message)
@@ -155,8 +158,8 @@ extension AppModel {
 
     func startProviderLogin() {
         guard gateway.connectionState.isReady,
-              pendingProviderLogin == nil,
-              let provider = providerDraft?.provider
+            pendingProviderLogin == nil,
+            let provider = providerDraft?.provider
         else { return }
         pendingProviderLogin = (requestID("login"), provider)
         providerActionState = .startingLogin(provider)
@@ -193,7 +196,8 @@ extension AppModel {
         gitCredentialRequestID = id
         isApprovingGitCredential = false
         isCheckingGitCredential = true
-        gateway.transmit(.probeGitCredential(requestID: id, target: target)) { [weak self] message in
+        gateway.transmit(.probeGitCredential(requestID: id, target: target)) {
+            [weak self] message in
             guard self?.gitCredentialRequestID == id else { return }
             self?.gitCredentialRequestID = nil
             self?.isCheckingGitCredential = false
@@ -216,12 +220,14 @@ extension AppModel {
         gitCredentialRequestID = id
         isApprovingGitCredential = true
         isCheckingGitCredential = true
-        gateway.transmit(.approveGitCredential(
-            requestID: id,
-            target: target,
-            username: username,
-            token: token
-        )) { [weak self] message in
+        gateway.transmit(
+            .approveGitCredential(
+                requestID: id,
+                target: target,
+                username: username,
+                token: token
+            )
+        ) { [weak self] message in
             guard self?.gitCredentialRequestID == id else { return }
             self?.gitCredentialRequestID = nil
             self?.isApprovingGitCredential = false
@@ -246,8 +252,8 @@ extension AppModel {
 
     func generateSshIdentity() {
         guard gateway.connectionState.isReady,
-              sshIdentityRequestID == nil,
-              sshIdentities?.isEmpty == true
+            sshIdentityRequestID == nil,
+            sshIdentities?.isEmpty == true
         else { return }
         let id = requestID("ssh-generate")
         sshIdentityRequestID = id

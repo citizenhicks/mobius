@@ -21,18 +21,21 @@ extension AppModelTests {
         XCTAssertEqual(model.currentSessionTitle, "new conversation")
 
         try await submitMessage("Review the gateway", in: model, recorder: recorder)
-        model.applySessions([session(
-            state: .running,
-            firstUserMessage: "Review the gateway",
-            title: "Manual title"
-        )])
+        model.applySessions([
+            session(
+                state: .running,
+                firstUserMessage: "Review the gateway",
+                title: "Manual title"
+            )
+        ])
         try await Task.sleep(for: .milliseconds(150))
 
         let requests = await recorder.requests()
-        XCTAssertFalse(requests.contains {
-            if case .renameSession = $0 { return true }
-            return false
-        })
+        XCTAssertFalse(
+            requests.contains {
+                if case .renameSession = $0 { return true }
+                return false
+            })
     }
 
     func testGeneratedTitleAppearsAndPersistsAfterTheDurableUserMessage() async throws {
@@ -53,10 +56,11 @@ extension AppModelTests {
 
         XCTAssertEqual(model.currentSessionTitle, "Generated title")
         let earlyRequests = await recorder.requests()
-        XCTAssertFalse(earlyRequests.contains {
-            if case .renameSession = $0 { return true }
-            return false
-        })
+        XCTAssertFalse(
+            earlyRequests.contains {
+                if case .renameSession = $0 { return true }
+                return false
+            })
 
         model.chat.reduce(
             event: AgentEventRecord(
@@ -76,11 +80,13 @@ extension AppModelTests {
         }
         XCTAssertNotNil(rename)
 
-        model.applySessions([session(
-            state: .running,
-            firstUserMessage: "Review the gateway",
-            title: "Generated title"
-        )])
+        model.applySessions([
+            session(
+                state: .running,
+                firstUserMessage: "Review the gateway",
+                title: "Generated title"
+            )
+        ])
 
         XCTAssertEqual(model.currentSessionTitle, "Generated title")
     }
@@ -128,10 +134,12 @@ extension AppModelTests {
         let prompt = String(repeating: "review this code carefully ", count: 30)
 
         try await submitMessage(prompt, in: model, recorder: recorder)
-        model.applySessions([session(
-            state: .running,
-            firstUserMessage: String(decoding: prompt.utf8.prefix(512), as: UTF8.self)
-        )])
+        model.applySessions([
+            session(
+                state: .running,
+                firstUserMessage: String(decoding: prompt.utf8.prefix(512), as: UTF8.self)
+            )
+        ])
         try await Task.sleep(for: .milliseconds(30))
 
         let rename = await recorder.requests().first { request in
@@ -169,10 +177,11 @@ extension AppModelTests {
         )
         try await Task.sleep(for: .milliseconds(30))
         let requestsAfterWrongMessage = await recorder.requests()
-        XCTAssertFalse(requestsAfterWrongMessage.contains {
-            if case .renameSession = $0 { return true }
-            return false
-        })
+        XCTAssertFalse(
+            requestsAfterWrongMessage.contains {
+                if case .renameSession = $0 { return true }
+                return false
+            })
 
         model.chat.reduce(
             event: AgentEventRecord(
@@ -185,12 +194,13 @@ extension AppModelTests {
         try await Task.sleep(for: .milliseconds(30))
 
         let requestsAfterMatchingMessage = await recorder.requests()
-        XCTAssertTrue(requestsAfterMatchingMessage.contains {
-            guard case .renameSession(_, "chat-1", "Generated title") = $0 else {
-                return false
-            }
-            return true
-        })
+        XCTAssertTrue(
+            requestsAfterMatchingMessage.contains {
+                guard case .renameSession(_, "chat-1", "Generated title") = $0 else {
+                    return false
+                }
+                return true
+            })
     }
 
     func testGeneratedTitlePersistsWhenUserMessageArrivesBeforeGeneration() async throws {
@@ -272,24 +282,26 @@ extension AppModelTests {
         guard case .openSession(let requestID, _, _) = try XCTUnwrap(open) else {
             return XCTFail("Expected the selected chat to reopen")
         }
-        model.gateway.handle(.sessionOpened(
-            requestID: requestID,
-            payload: sessionReady(latestSequence: 1)
-        ))
-        model.gateway.handle(.agentEvent(
-            sessionID: "chat-1",
-            sequence: 1,
-            event: AgentEventRecord(
-                submissionId: nil,
-                msg: testMessageEvent(
-                    text: "Review the gateway",
-                    messageTarget: MessageTarget(checkpointSequence: 1, batchItemCount: 1)
-                )
-            ),
-            blocks: [],
-            history: nil,
-            preview: nil
-        ))
+        model.gateway.handle(
+            .sessionOpened(
+                requestID: requestID,
+                payload: sessionReady(latestSequence: 1)
+            ))
+        model.gateway.handle(
+            .agentEvent(
+                sessionID: "chat-1",
+                sequence: 1,
+                event: AgentEventRecord(
+                    submissionId: nil,
+                    msg: testMessageEvent(
+                        text: "Review the gateway",
+                        messageTarget: MessageTarget(checkpointSequence: 1, batchItemCount: 1)
+                    )
+                ),
+                blocks: [],
+                history: nil,
+                preview: nil
+            ))
         let replayRequestCount = await recorder.requestCount()
         model.gateway.handle(.sessionReplayComplete(requestID: requestID, sessionID: "chat-1"))
 
@@ -345,10 +357,12 @@ extension AppModelTests {
         let initialConnectionOpened = await eventually { await harness.attemptCount() >= 2 }
         XCTAssertTrue(initialConnectionOpened)
         await harness.yield(.authenticated)
-        await harness.yield(.ready(ready(
-            botDefaults: VersionedAgentConfig(revision: 1, config: composition()),
-            sessions: []
-        )))
+        await harness.yield(
+            .ready(
+                ready(
+                    botDefaults: VersionedAgentConfig(revision: 1, config: composition()),
+                    sessions: []
+                )))
         let gatewayReady = await eventually { model.gateway.connectionState.isReady }
         XCTAssertTrue(gatewayReady)
         try await openNewSession(in: model, recorder: recorder, account: account)
@@ -363,10 +377,12 @@ extension AppModelTests {
         let attemptCount = await harness.attemptCount()
         XCTAssertGreaterThanOrEqual(attemptCount, 3)
         await harness.yield(.authenticated)
-        await harness.yield(.ready(ready(
-            botDefaults: VersionedAgentConfig(revision: 1, config: composition()),
-            sessions: [session(state: .idle, firstUserMessage: nil)]
-        )))
+        await harness.yield(
+            .ready(
+                ready(
+                    botDefaults: VersionedAgentConfig(revision: 1, config: composition()),
+                    sessions: [session(state: .idle, firstUserMessage: nil)]
+                )))
         let reconnectRequest = await recorder.firstRequest(
             after: reconnectRequestCount
         ) { request in
@@ -377,10 +393,11 @@ extension AppModelTests {
         guard case .openSession(let requestID, _, _) = reconnectOpen else {
             return XCTFail("Expected the selected chat to reopen")
         }
-        await harness.yield(.sessionOpened(
-            requestID: requestID,
-            payload: sessionReady(latestSequence: 0)
-        ))
+        await harness.yield(
+            .sessionOpened(
+                requestID: requestID,
+                payload: sessionReady(latestSequence: 0)
+            ))
         await harness.yield(.sessionReplayComplete(requestID: requestID, sessionID: "chat-1"))
         let replayFinished = await eventually { model.canCreateSession }
         XCTAssertTrue(replayFinished)
@@ -413,12 +430,14 @@ extension AppModelTests {
         )
         XCTAssertEqual(model.currentSessionTitle, "Generated title")
 
-        model.gateway.handle(.rejected(GatewayRejection(
-            requestId: firstSubmission.id,
-            code: "rejected",
-            message: "Try again",
-            fatal: false
-        )))
+        model.gateway.handle(
+            .rejected(
+                GatewayRejection(
+                    requestId: firstSubmission.id,
+                    code: "rejected",
+                    message: "Try again",
+                    fatal: false
+                )))
         XCTAssertEqual(model.currentSessionTitle, "new conversation")
         XCTAssertEqual(model.chat.composer, "Review the gateway")
 
@@ -455,12 +474,14 @@ extension AppModelTests {
         )
         await fulfillment(of: [firstTitleFinished], timeout: 1)
 
-        model.gateway.handle(.rejected(GatewayRejection(
-            requestId: firstSubmission.id,
-            code: "rejected",
-            message: "Try again",
-            fatal: false
-        )))
+        model.gateway.handle(
+            .rejected(
+                GatewayRejection(
+                    requestId: firstSubmission.id,
+                    code: "rejected",
+                    message: "Try again",
+                    fatal: false
+                )))
         let secondTitleFinished = expectation(description: "Second title generation finished")
         withObservationTracking {
             _ = model.toast
@@ -500,17 +521,20 @@ extension AppModelTests {
             blocks: [],
             preview: nil
         )
-        model.applySessions([session(
-            state: .running,
-            firstUserMessage: "Review the gateway retry behavior"
-        )])
+        model.applySessions([
+            session(
+                state: .running,
+                firstUserMessage: "Review the gateway retry behavior"
+            )
+        ])
 
         XCTAssertEqual(model.currentSessionTitle, "Review the gateway retry behavior")
         let requests = await recorder.requests()
-        XCTAssertFalse(requests.contains {
-            if case .renameSession = $0 { return true }
-            return false
-        })
+        XCTAssertFalse(
+            requests.contains {
+                if case .renameSession = $0 { return true }
+                return false
+            })
     }
 
     func testAcceptedDeleteCancelsPendingTitleGeneration() async throws {
@@ -544,7 +568,7 @@ extension AppModelTests {
         await fulfillment(of: [deleteSent], timeout: 1)
         let deleteIDs = await recorder.requests().compactMap { request -> String? in
             guard case .deleteSessions(let requestID, let ids) = request,
-                  ids == ["chat-1"]
+                ids == ["chat-1"]
             else { return nil }
             return requestID
         }
@@ -554,10 +578,11 @@ extension AppModelTests {
         await fulfillment(of: [titleCancelled], timeout: 1)
 
         let requests = await recorder.requests()
-        XCTAssertFalse(requests.contains {
-            if case .renameSession = $0 { return true }
-            return false
-        })
+        XCTAssertFalse(
+            requests.contains {
+                if case .renameSession = $0 { return true }
+                return false
+            })
     }
 
     func testOpeningAnotherNewChatDoesNotCancelTheFirstTitle() async throws {
@@ -639,11 +664,12 @@ extension AppModelTests {
         XCTAssertNotNil(firstRename)
 
         XCTAssertEqual(
-            model.displayedTitle(for: session(
-                sessionID: "chat-1",
-                state: .running,
-                firstUserMessage: "First prompt"
-            )),
+            model.displayedTitle(
+                for: session(
+                    sessionID: "chat-1",
+                    state: .running,
+                    firstUserMessage: "First prompt"
+                )),
             "First title"
         )
     }

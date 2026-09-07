@@ -1,0 +1,9 @@
+{
+    "version": 1,
+    "indentation": { "spaces": 4 },
+    "respectsExistingLineBreaks": true,
+    "rules": {
+        "OnlyOneTrailingClosureArgument": false,
+        "ReplaceForEachWithForLoop": false
+    }
+}

@@ -30,11 +30,12 @@ struct UnifiedDiffDocument: Equatable, Sendable {
                 )
             } else {
                 indices[file.path] = changes.count
-                changes.append(UnifiedDiffFileChange(
-                    path: file.path,
-                    added: file.added,
-                    removed: file.removed
-                ))
+                changes.append(
+                    UnifiedDiffFileChange(
+                        path: file.path,
+                        added: file.added,
+                        removed: file.removed
+                    ))
             }
         }
         return changes
@@ -247,12 +248,13 @@ private struct UnifiedDiffParser {
         file?.added += hunk.added
         file?.removed += hunk.removed
         appendRow(
-            kind: .hunk(UnifiedDiffHunk(
-                oldRange: hunk.oldRange,
-                newRange: hunk.newRange,
-                added: hunk.added,
-                removed: hunk.removed
-            )),
+            kind: .hunk(
+                UnifiedDiffHunk(
+                    oldRange: hunk.oldRange,
+                    newRange: hunk.newRange,
+                    added: hunk.added,
+                    removed: hunk.removed
+                )),
             text: hunk.header
         )
         for line in hunk.lines {
@@ -271,13 +273,14 @@ private struct UnifiedDiffParser {
         guard var pending = file else { return }
         if !pending.hasHunks {
             for text in pending.metadata {
-                pending.rows.append(UnifiedDiffRow(
-                    id: nextRowID,
-                    kind: .metadata,
-                    oldNumber: nil,
-                    newNumber: nil,
-                    text: text
-                ))
+                pending.rows.append(
+                    UnifiedDiffRow(
+                        id: nextRowID,
+                        kind: .metadata,
+                        oldNumber: nil,
+                        newNumber: nil,
+                        text: text
+                    ))
                 nextRowID += 1
             }
         }
@@ -307,13 +310,14 @@ private struct UnifiedDiffParser {
             )
         } else {
             fileIndices[path] = files.count
-            files.append(UnifiedDiffFile(
-                id: nextFileID,
-                path: path,
-                rows: pending.rows,
-                added: pending.added,
-                removed: pending.removed
-            ))
+            files.append(
+                UnifiedDiffFile(
+                    id: nextFileID,
+                    path: path,
+                    rows: pending.rows,
+                    added: pending.added,
+                    removed: pending.removed
+                ))
             nextFileID += 1
         }
         self.file = nil
@@ -325,13 +329,14 @@ private struct UnifiedDiffParser {
         newNumber: Int? = nil,
         text: String
     ) {
-        file?.rows.append(UnifiedDiffRow(
-            id: nextRowID,
-            kind: kind,
-            oldNumber: oldNumber,
-            newNumber: newNumber,
-            text: text
-        ))
+        file?.rows.append(
+            UnifiedDiffRow(
+                id: nextRowID,
+                kind: kind,
+                oldNumber: oldNumber,
+                newNumber: newNumber,
+                text: text
+            ))
         nextRowID += 1
     }
 

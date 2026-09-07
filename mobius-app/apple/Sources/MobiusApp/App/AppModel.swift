@@ -49,9 +49,11 @@ final class AppModel {
     var filesInspectorTab: FilesInspectorTab = .modified
     var modifiedFilesScope: ModifiedFilesScope = .unstaged
     var lastTurnDiff: String {
-        guard let final = chat.transcript.last(where: {
-            $0.turnTerminal && $0.kind == .assistant
-        })?.turnID else { return "" }
+        guard
+            let final = chat.transcript.last(where: {
+                $0.turnTerminal && $0.kind == .assistant
+            })?.turnID
+        else { return "" }
         return transcriptTurnDiff(forTurn: final, in: chat.transcript)
     }
     var lastTurnDiffRevision: Int {
@@ -79,7 +81,9 @@ final class AppModel {
     var isChangingWorkspace = false
     var showsWorkspaceBrowser = false {
         didSet {
-            if !showsWorkspaceBrowser, newVoiceChatIntent == .selectingWorkspace { cancelVoiceChatIntent() }
+            if !showsWorkspaceBrowser, newVoiceChatIntent == .selectingWorkspace {
+                cancelVoiceChatIntent()
+            }
         }
     }
     var directoryListing: DirectoryListing?
@@ -164,12 +168,13 @@ final class AppModel {
     @ObservationIgnored var filePresentationGeneration = UUID()
     @ObservationIgnored var previewTemporaryDirectory: URL?
     var gitBranchRequestID: String?
-    @ObservationIgnored var pendingProviderCredential: (
-        requestID: String,
-        instance: String,
-        provider: String,
-        credentialHint: String?
-    )?
+    @ObservationIgnored var pendingProviderCredential:
+        (
+            requestID: String,
+            instance: String,
+            provider: String,
+            credentialHint: String?
+        )?
     @ObservationIgnored var pairingCodeRequestID: String?
     @ObservationIgnored var pairingCodeExpiryTask: Task<Void, Never>?
     var pendingProviderLogin: (requestID: String, provider: String)?
@@ -204,9 +209,10 @@ final class AppModel {
         let cloudClient = cloudClient ?? MobiusCloudClient()
         let appLockAuthenticator = appLockAuthenticator ?? AppLockAuthenticator()
         let appLockEnabled = settingsDefaults.bool(forKey: appLockEnabledKey)
-        let language = AppLanguage(
-            rawValue: settingsDefaults.string(forKey: "language") ?? ""
-        ) ?? .system
+        let language =
+            AppLanguage(
+                rawValue: settingsDefaults.string(forKey: "language") ?? ""
+            ) ?? .system
         self.gateway = GatewayConnectionModel(
             client: client,
             store: store,
@@ -224,7 +230,8 @@ final class AppModel {
             cloudClient: cloudClient,
             cloudPurchases: cloudPurchases ?? .live()
         )
-        self.theme = ThemePreference(rawValue: settingsDefaults.string(forKey: "theme") ?? "") ?? .system
+        self.theme =
+            ThemePreference(rawValue: settingsDefaults.string(forKey: "theme") ?? "") ?? .system
         self.language = language
         let titleWriter = titleWriter ?? ChatTitleWriter()
         self.chat = ChatSessionModel(
@@ -235,9 +242,10 @@ final class AppModel {
             messageSpeaker: messageSpeaker,
             locale: language.locale
         )
-        self.accentTint = AccentTint(
-            rawValue: settingsDefaults.string(forKey: "accent-tint") ?? ""
-        ) ?? .appDefault
+        self.accentTint =
+            AccentTint(
+                rawValue: settingsDefaults.string(forKey: "accent-tint") ?? ""
+            ) ?? .appDefault
         self.appLockEnabled = appLockEnabled
         self.isAppLocked = appLockEnabled
         self.appLockAuthenticationMethod = appLockAuthenticator.method
@@ -245,22 +253,23 @@ final class AppModel {
         restoreSessionReadState(for: gateway.selectedAccountID)
         showsPairing = gateway.accounts.isEmpty
         #if DEBUG
-        let environment = ProcessInfo.processInfo.environment
-        if gateway.accounts.isEmpty,
-           let endpoint = environment["MOBIUS_PAIR_ENDPOINT"],
-           let code = environment["MOBIUS_PAIR_CODE"] {
-            gateway.pairingEndpoint = endpoint
-            gateway.pairingCode = code
-        }
-        switch ProcessInfo.processInfo.environment["MOBIUS_PAGE"] {
-        case "gateway": destination = .gateway
-        case "providers": destination = .providers
-        case "bot-defaults": destination = .botDefaults
-        case "extensions": destination = .extensions
-        case "bots": destination = .bots
-        case "profile": destination = .profile
-        default: break
-        }
+            let environment = ProcessInfo.processInfo.environment
+            if gateway.accounts.isEmpty,
+                let endpoint = environment["MOBIUS_PAIR_ENDPOINT"],
+                let code = environment["MOBIUS_PAIR_CODE"]
+            {
+                gateway.pairingEndpoint = endpoint
+                gateway.pairingCode = code
+            }
+            switch ProcessInfo.processInfo.environment["MOBIUS_PAGE"] {
+            case "gateway": destination = .gateway
+            case "providers": destination = .providers
+            case "bot-defaults": destination = .botDefaults
+            case "extensions": destination = .extensions
+            case "bots": destination = .bots
+            case "profile": destination = .profile
+            default: break
+            }
         #endif
         gateway.onConnectionReplacement = { [weak self] account, preserving in
             guard let self else { return }
@@ -309,9 +318,9 @@ final class AppModel {
             },
             reconnectRecoveredGateway: { [weak self] in
                 guard let self,
-                      !self.isClearingLocalData,
-                      self.selectedGatewayIsMobiusCloud,
-                      !self.gateway.connectionState.isReady
+                    !self.isClearingLocalData,
+                    self.selectedGatewayIsMobiusCloud,
+                    !self.gateway.connectionState.isReady
                 else { return }
                 if self.appIsInBackground {
                     self.gateway.setSceneActive(false)
@@ -394,13 +403,13 @@ final class AppModel {
     }
 
     var canCreateSession: Bool {
-        gateway.connectionState.isReady && canChangeSession && (chat.composerAttachments.isEmpty || (
-            chat.selectedSessionID == nil
-                && chat.pendingNewChatWorkspace != nil
-                && chat.composerAttachments.allSatisfy {
-                    if case .queued = $0.state { true } else { false }
-                }
-        ))
+        gateway.connectionState.isReady && canChangeSession
+            && (chat.composerAttachments.isEmpty
+                || (chat.selectedSessionID == nil
+                    && chat.pendingNewChatWorkspace != nil
+                    && chat.composerAttachments.allSatisfy {
+                        if case .queued = $0.state { true } else { false }
+                    }))
     }
 
     var canRenameSession: Bool {
@@ -438,7 +447,8 @@ final class AppModel {
     }
 
     var selectedRouteSupportsImageInput: Bool {
-        let route = chat.selectedSessionID == nil
+        let route =
+            chat.selectedSessionID == nil
             ? modelRoute(for: selectedBot?.config.config)
             : chat.selectedModelRoute
         return modelChoices.first(where: { $0.route == route })?
@@ -447,9 +457,10 @@ final class AppModel {
 
     var canSubmitAttachments: Bool {
         attachmentsEnabled
-            && (selectedRouteSupportsImageInput || !chat.composerAttachments.contains {
-                $0.mediaType.hasPrefix("image/")
-            })
+            && (selectedRouteSupportsImageInput
+                || !chat.composerAttachments.contains {
+                    $0.mediaType.hasPrefix("image/")
+                })
     }
 
     var attachmentSubmissionUnavailableMessage: LocalizedStringResource {
@@ -475,17 +486,19 @@ final class AppModel {
     }
 
     var attachmentFileByteLimit: Int {
-        Int(min(
-            chat.sessionFileLimits?.maxFileBytes ?? 0,
-            UInt64(maximumClientAttachmentBytes)
-        ))
+        Int(
+            min(
+                chat.sessionFileLimits?.maxFileBytes ?? 0,
+                UInt64(maximumClientAttachmentBytes)
+            ))
     }
 
     var attachmentDraftByteLimit: Int64 {
-        Int64(min(
-            chat.sessionFileLimits?.maxSessionBytes ?? 0,
-            UInt64(maximumClientComposerAttachmentBytes)
-        ))
+        Int64(
+            min(
+                chat.sessionFileLimits?.maxSessionBytes ?? 0,
+                UInt64(maximumClientComposerAttachmentBytes)
+            ))
     }
 
     var uploadChunkByteLimit: Int {
@@ -497,29 +510,31 @@ final class AppModel {
 
     var canSendComposer: Bool {
         guard gateway.connectionState.isReady,
-              chat.sessionRequestID == nil,
-              !chat.isLoadingComposerDraft,
-              !chat.isLoadingComposerEditRecovery
+            chat.sessionRequestID == nil,
+            !chat.isLoadingComposerDraft,
+            !chat.isLoadingComposerEditRecovery
         else { return false }
         let sessionID = chat.selectedSessionID
-        let hasPendingSession = sessionID == nil
+        let hasPendingSession =
+            sessionID == nil
             && chat.pendingNewChatWorkspace != nil
             && chat.pendingNewChatBotID.map { botID in bots.contains { $0.id == botID } } == true
         guard sessionID != nil || hasPendingSession else { return false }
         guard sessionID == nil || chat.pendingNewChatBotID == nil else { return false }
-        guard chat.composerAttachments.allSatisfy({ attachment in
-                  switch attachment.state {
-                  case .uploaded: true
-                  case .queued: sessionID == nil
-                  case .preparing, .uploading, .failed: false
-                  }
-              })
+        guard
+            chat.composerAttachments.allSatisfy({ attachment in
+                switch attachment.state {
+                case .uploaded: true
+                case .queued: sessionID == nil
+                case .preparing, .uploading, .failed: false
+                }
+            })
         else { return false }
         if let pending = chat.pendingWidgetEdit {
             guard let sessionID,
-                  let accountID = gateway.selectedAccountID,
-                  pending.owner == ComposerDraftOwner(accountID: accountID, sessionID: sessionID),
-                  pending.recovery.phase == .editing
+                let accountID = gateway.selectedAccountID,
+                pending.owner == ComposerDraftOwner(accountID: accountID, sessionID: sessionID),
+                pending.recovery.phase == .editing
             else { return false }
         }
         let hasText = !chat.composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -589,7 +604,9 @@ final class AppModel {
     }
 
     var contextFillFraction: Double {
-        guard let contextLimitTokens = chat.contextLimitTokens, contextLimitTokens > 0 else { return 0 }
+        guard let contextLimitTokens = chat.contextLimitTokens, contextLimitTokens > 0 else {
+            return 0
+        }
         return min(max(Double(chat.contextTokens) / Double(contextLimitTokens), 0), 1)
     }
 
@@ -608,15 +625,19 @@ final class AppModel {
             return completed + max(0, live)
         }
         guard let session = chat.sessions.first(where: { $0.sessionId == chat.selectedSessionID }),
-              session.activity.state != .idle
+            session.activity.state != .idle
         else { return completed }
         guard let startedAt = session.activity.startedAt else { return completed }
         return completed + max(0, date.timeIntervalSince1970 - TimeInterval(startedAt))
     }
 
     var sessionRunCount: UInt64 { chat.runStats.runCount + (chat.runStats.active == nil ? 0 : 1) }
-    var sessionModelCalls: UInt64 { chat.runStats.modelCalls + (chat.runStats.active?.modelCalls ?? 0) }
-    var sessionToolCalls: UInt64 { chat.runStats.toolCalls + (chat.runStats.active?.toolCalls ?? 0) }
+    var sessionModelCalls: UInt64 {
+        chat.runStats.modelCalls + (chat.runStats.active?.modelCalls ?? 0)
+    }
+    var sessionToolCalls: UInt64 {
+        chat.runStats.toolCalls + (chat.runStats.active?.toolCalls ?? 0)
+    }
     var sessionFailedToolCalls: UInt64 {
         chat.runStats.failedToolCalls + (chat.runStats.active?.failedToolCalls ?? 0)
     }
@@ -673,7 +694,7 @@ final class AppModel {
 
     func accessibilityMessage(for toast: AppToast) -> String {
         guard let bot = bot(for: toast.target),
-              !toast.message.hasPrefix("\(bot.name):")
+            !toast.message.hasPrefix("\(bot.name):")
         else { return toast.message }
         return "\(bot.name): \(toast.message)"
     }
@@ -719,9 +740,10 @@ final class AppModel {
 
     private func saveSessionReadCursor(_ sessionID: String, unread: Bool) {
         guard let accountID = gateway.selectedAccountID,
-              let session = chat.sessions.first(where: { $0.sessionId == sessionID })
+            let session = chat.sessions.first(where: { $0.sessionId == sessionID })
         else { return }
-        let cursor = unread
+        let cursor =
+            unread
             ? SessionReadCursor(sequence: nil, wasActive: session.activity.state != .idle)
             : sessionReadCursor(for: session)
         guard chat.sessionReadCursors?[sessionID] != cursor else { return }
@@ -749,7 +771,8 @@ final class AppModel {
     func commandSuggestions(in text: String, cursorOffset: Int) -> ReferenceSuggestions? {
         guard text.hasPrefix("/"), chat.pendingWidgetEdit == nil else { return nil }
         let end = text.firstIndex(where: \.isWhitespace) ?? text.endIndex
-        guard cursorOffset >= 0, cursorOffset <= text.distance(from: text.startIndex, to: end) else {
+        guard cursorOffset >= 0, cursorOffset <= text.distance(from: text.startIndex, to: end)
+        else {
             return nil
         }
         let query = text[text.index(after: text.startIndex)..<end].lowercased()
@@ -759,7 +782,8 @@ final class AppModel {
                     capability: contribution.capability,
                     reference: FrontendReference(
                         trigger: "/",
-                        value: command.name + (command.arguments.isEmpty ? "" : " \(command.arguments)"),
+                        value: command.name
+                            + (command.arguments.isEmpty ? "" : " \(command.arguments)"),
                         description: command.description
                     ),
                     replacement: "/\(command.name) "
@@ -768,18 +792,21 @@ final class AppModel {
         }
         guard !matches.isEmpty else { return nil }
         let exact = "/\(query) "
-        let ordered = matches.filter { $0.replacement == exact }
+        let ordered =
+            matches.filter { $0.replacement == exact }
             + matches.filter { $0.replacement != exact }
         return ReferenceSuggestions(source: text, range: text.startIndex..<end, matches: ordered)
     }
 
     var extensionSkillReferences: [FrontendReference] {
-        let selected = agentSnapshot?.config.extensions
+        let selected =
+            agentSnapshot?.config.extensions
             ?? botDefaultsSnapshot?.config.extensions
             ?? []
-        var seen = Set(extensions
-            .filter { selected.contains($0.id) }
-            .flatMap(\.skills))
+        var seen = Set(
+            extensions
+                .filter { selected.contains($0.id) }
+                .flatMap(\.skills))
         let references = (gatewayContributions + chat.contributions)
             .flatMap(\.references)
             .filter { $0.trigger == "$" }
@@ -800,11 +827,12 @@ final class AppModel {
 
     var selectedSessionIsHidden: Bool {
         if let selectedSessionID = chat.selectedSessionID,
-           chat.botSessions.contains(where: { $0.sessionId == selectedSessionID }) {
+            chat.botSessions.contains(where: { $0.sessionId == selectedSessionID })
+        {
             return true
         }
         guard let route = navigationPath.last,
-              case .chat(.session) = route
+            case .chat(.session) = route
         else { return false }
         return navigationPath.dropLast().contains { route in
             if case .botSessions = route { return true }
@@ -826,7 +854,8 @@ final class AppModel {
     func bot(forSessionID sessionID: String?) -> BotRecord? {
         guard let sessionID else { return nil }
         if let session = chat.sessions.first(where: { $0.sessionId == sessionID })
-            ?? chat.botSessions.first(where: { $0.sessionId == sessionID }) {
+            ?? chat.botSessions.first(where: { $0.sessionId == sessionID })
+        {
             return bot(for: session)
         }
         guard let approval = backgroundApproval(forSessionID: sessionID) else { return nil }
@@ -881,7 +910,8 @@ final class AppModel {
     func displayedTitle(for session: SessionRecord) -> String {
         if let title = chat.pendingChatTitles[session.sessionId]?.displayTitle
             ?? session.explicitTitle
-            ?? ChatTitleWriter.preview(for: session.firstUserMessage) {
+            ?? ChatTitleWriter.preview(for: session.firstUserMessage)
+        {
             return title
         }
         return localizedString("new conversation")
@@ -891,7 +921,8 @@ final class AppModel {
         if let pendingTitle = chat.pendingChatTitles[sessionID]?.displayTitle {
             return pendingTitle
         }
-        let session = chat.sessions.first(where: { $0.sessionId == sessionID })
+        let session =
+            chat.sessions.first(where: { $0.sessionId == sessionID })
             ?? chat.botSessions.first(where: { $0.sessionId == sessionID })
         return session.map { String(displayedTitle(for: $0).prefix(72)) }
             ?? localizedString("new conversation")
@@ -930,7 +961,8 @@ final class AppModel {
     ) -> ReferenceSuggestions? {
         guard cursorOffset >= 0, cursorOffset <= text.count else { return nil }
         let cursor = text.index(text.startIndex, offsetBy: cursorOffset)
-        let start = text[..<cursor].lastIndex(where: { $0.isWhitespace })
+        let start =
+            text[..<cursor].lastIndex(where: { $0.isWhitespace })
             .map { text.index(after: $0) } ?? text.startIndex
         guard start < cursor, let trigger = text[start..<cursor].first else { return nil }
         let end = text[cursor...].firstIndex(where: { $0.isWhitespace }) ?? text.endIndex
@@ -942,9 +974,10 @@ final class AppModel {
         if query.isEmpty {
             matches = Array(capabilityMatches.prefix(8))
             if trigger == "@", matches.count < 8 {
-                matches.append(contentsOf: workspaceFiles.prefix(8 - matches.count).map {
-                    Self.workspaceReference($0)
-                })
+                matches.append(
+                    contentsOf: workspaceFiles.prefix(8 - matches.count).map {
+                        Self.workspaceReference($0)
+                    })
             }
         } else {
             var ranked: [(score: ReferenceMatchScore, reference: MountedReference)] = []
@@ -952,11 +985,12 @@ final class AppModel {
                 guard let score = referenceScore(reference.reference.value, query: query) else {
                     return
                 }
-                let index = ranked.firstIndex {
-                    score < $0.score
-                        || (score == $0.score
-                            && reference.reference.value < $0.reference.reference.value)
-                } ?? ranked.endIndex
+                let index =
+                    ranked.firstIndex {
+                        score < $0.score
+                            || (score == $0.score
+                                && reference.reference.value < $0.reference.reference.value)
+                    } ?? ranked.endIndex
                 guard index < 8 else { return }
                 ranked.insert((score, reference), at: index)
                 if ranked.count > 8 { ranked.removeLast() }
@@ -1036,11 +1070,11 @@ final class AppModel {
 extension TokenUsage {
     init?(json: JSONValue) {
         guard let inputTokens = json["inputTokens"]?.intValue,
-              let cachedInputTokens = json["cachedInputTokens"]?.intValue,
-              let cacheWriteInputTokens = json["cacheWriteInputTokens"]?.intValue,
-              let outputTokens = json["outputTokens"]?.intValue,
-              let reasoningOutputTokens = json["reasoningOutputTokens"]?.intValue,
-              let totalTokens = json["totalTokens"]?.intValue
+            let cachedInputTokens = json["cachedInputTokens"]?.intValue,
+            let cacheWriteInputTokens = json["cacheWriteInputTokens"]?.intValue,
+            let outputTokens = json["outputTokens"]?.intValue,
+            let reasoningOutputTokens = json["reasoningOutputTokens"]?.intValue,
+            let totalTokens = json["totalTokens"]?.intValue
         else { return nil }
         self.inputTokens = inputTokens
         self.cachedInputTokens = cachedInputTokens
@@ -1054,9 +1088,10 @@ extension TokenUsage {
 extension JSONValue {
     var prettyPrinted: String {
         guard let data = try? JSONEncoder().encode(self),
-              let object = try? JSONSerialization.jsonObject(with: data),
-              let pretty = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]),
-              let text = String(data: pretty, encoding: .utf8)
+            let object = try? JSONSerialization.jsonObject(with: data),
+            let pretty = try? JSONSerialization.data(
+                withJSONObject: object, options: [.prettyPrinted, .sortedKeys]),
+            let text = String(data: pretty, encoding: .utf8)
         else { return "{}" }
         return text
     }

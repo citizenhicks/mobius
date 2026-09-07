@@ -22,14 +22,14 @@ extension AppModel {
             return
         }
         guard var download = chat.sessionFileDownload,
-              download.requestID == requestID
+            download.requestID == requestID
         else { return }
         chat.sessionFileDownload = nil
         guard download.sessionID == sessionID,
-              download.file.id == fileID,
-              offset == Int64(download.data.count),
-              data.count <= 256 * 1024,
-              Int64(download.data.count + data.count) <= download.file.size
+            download.file.id == fileID,
+            offset == Int64(download.data.count),
+            data.count <= 256 * 1024,
+            Int64(download.data.count + data.count) <= download.file.size
         else {
             isLoadingFilePresentation = false
             showToast("The gateway returned an invalid session file.", tone: .error)
@@ -45,13 +45,15 @@ extension AppModel {
             let id = self.requestID("session-file-read")
             download.requestID = id
             chat.sessionFileDownload = download
-            gateway.transmit(.readSessionFile(
-                requestID: id,
-                sessionID: sessionID,
-                fileID: fileID,
-                offset: nextOffset,
-                maxBytes: 256 * 1024
-            )) { [weak self] message in
+            gateway.transmit(
+                .readSessionFile(
+                    requestID: id,
+                    sessionID: sessionID,
+                    fileID: fileID,
+                    offset: nextOffset,
+                    maxBytes: 256 * 1024
+                )
+            ) { [weak self] message in
                 guard self?.chat.sessionFileDownload?.requestID == id else { return }
                 self?.chat.sessionFileDownload = nil
                 self?.isLoadingFilePresentation = false
@@ -83,15 +85,15 @@ extension AppModel {
         nextOffset: UInt64?
     ) {
         guard var download = workspaceFilePreviewDownload,
-              download.requestID == requestID
+            download.requestID == requestID
         else { return }
         workspaceFilePreviewDownload = nil
         guard download.sessionID == sessionID,
-              download.file.path == path,
-              offset == UInt64(download.data.count),
-              data.count <= 256 * 1024,
-              offset <= download.file.size,
-              UInt64(data.count) <= download.file.size - offset
+            download.file.path == path,
+            offset == UInt64(download.data.count),
+            data.count <= 256 * 1024,
+            offset <= download.file.size,
+            UInt64(data.count) <= download.file.size - offset
         else {
             isLoadingFilePresentation = false
             showToast("The gateway returned an invalid workspace file.", tone: .error)
@@ -107,13 +109,15 @@ extension AppModel {
             let id = self.requestID("workspace-file-read")
             download.requestID = id
             workspaceFilePreviewDownload = download
-            gateway.transmit(.readWorkspaceFile(
-                requestID: id,
-                sessionID: sessionID,
-                path: path,
-                offset: nextOffset,
-                maxBytes: 256 * 1024
-            )) { [weak self] message in
+            gateway.transmit(
+                .readWorkspaceFile(
+                    requestID: id,
+                    sessionID: sessionID,
+                    path: path,
+                    offset: nextOffset,
+                    maxBytes: 256 * 1024
+                )
+            ) { [weak self] message in
                 guard self?.workspaceFilePreviewDownload?.requestID == id else { return }
                 self?.workspaceFilePreviewDownload = nil
                 self?.isLoadingFilePresentation = false
@@ -203,9 +207,11 @@ extension AppModel {
         return await Task.detached(priority: .userInitiated) {
             guard let text = String(data: data, encoding: .utf8) else { return nil }
             let allowedControls: Set<Unicode.Scalar> = ["\t", "\n", "\r"]
-            guard !text.unicodeScalars.contains(where: {
-                CharacterSet.controlCharacters.contains($0) && !allowedControls.contains($0)
-            }) else { return nil }
+            guard
+                !text.unicodeScalars.contains(where: {
+                    CharacterSet.controlCharacters.contains($0) && !allowedControls.contains($0)
+                })
+            else { return nil }
             return text
         }.value
     }
@@ -215,20 +221,26 @@ extension AppModel {
         name: String
     ) async throws -> TemporarySessionFile {
         try await Task.detached(priority: .userInitiated) {
-            let directory = URL.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let directory = URL.temporaryDirectory.appending(
+                path: UUID().uuidString, directoryHint: .isDirectory)
+            try FileManager.default.createDirectory(
+                at: directory, withIntermediateDirectories: true)
             let candidateExtension = URL(fileURLWithPath: name).pathExtension
-            let safeExtension = candidateExtension.utf8.count <= 16
-                && candidateExtension.unicodeScalars.allSatisfy(CharacterSet.alphanumerics.contains)
+            let safeExtension =
+                candidateExtension.utf8.count <= 16
+                    && candidateExtension.unicodeScalars.allSatisfy(
+                        CharacterSet.alphanumerics.contains)
                 ? candidateExtension
                 : ""
             let candidateName = URL(fileURLWithPath: name).lastPathComponent
-            let safeName = candidateName.utf8.count <= 255
-                && candidateName != "."
-                && candidateName != ".."
-                && !candidateName.unicodeScalars.contains(where: {
-                    CharacterSet.controlCharacters.contains($0) || $0 == "/" || $0 == "\\" || $0 == ":"
-                })
+            let safeName =
+                candidateName.utf8.count <= 255
+                    && candidateName != "."
+                    && candidateName != ".."
+                    && !candidateName.unicodeScalars.contains(where: {
+                        CharacterSet.controlCharacters.contains($0) || $0 == "/" || $0 == "\\"
+                            || $0 == ":"
+                    })
                 ? candidateName
                 : ""
             let url: URL

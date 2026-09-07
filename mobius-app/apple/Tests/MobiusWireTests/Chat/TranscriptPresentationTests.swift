@@ -7,7 +7,8 @@ final class TranscriptMarkdownSelectionTests: XCTestCase {
     func testFlattensEveryBlockKindIntoOneSelectableValue() {
         let markerColor = UIColor.systemPurple
         let quoteColor = UIColor.systemGray
-        let selectable = selectableMarkdown("""
+        let selectable = selectableMarkdown(
+            """
             # Heading
 
             A **bold** line.
@@ -28,7 +29,9 @@ final class TranscriptMarkdownSelectionTests: XCTestCase {
             Last.
             """, markerColor: markerColor, quoteColor: quoteColor)
 
-        XCTAssertEqual(selectable.string, """
+        XCTAssertEqual(
+            selectable.string,
+            """
             Heading
 
             A bold line.
@@ -222,7 +225,7 @@ final class TranscriptEventLineTests: XCTestCase {
             entry(id: "b", text: "", role: .tool),
             entry(id: "c", text: "", role: .activity),
             entry(id: "d", text: "", role: .webSearch),
-            entry(id: "e", text: "", kind: .error, tone: "error", role: .tool)
+            entry(id: "e", text: "", kind: .error, tone: "error", role: .tool),
         ]
 
         XCTAssertEqual(
@@ -294,7 +297,9 @@ final class TranscriptEventLineTests: XCTestCase {
         let answer = entry(id: "answer", text: "Done", kind: .assistant)
 
         let rows = TranscriptProjection(
-            entries: [question, thinking, tool, approval, artifact, commentary, notice, untyped, answer]
+            entries: [
+                question, thinking, tool, approval, artifact, commentary, notice, untyped, answer,
+            ]
         ).rows
         XCTAssertEqual(
             rows.map { $0.records.map(\.id) },
@@ -303,7 +308,7 @@ final class TranscriptEventLineTests: XCTestCase {
                 ["thinking", "tool", "approval", "artifact"],
                 ["commentary"],
                 ["notice", "untyped"],
-                ["answer"]
+                ["answer"],
             ]
         )
         XCTAssertEqual(
@@ -314,12 +319,13 @@ final class TranscriptEventLineTests: XCTestCase {
 
     func testWebSearchUsesOnlyTheTypedRole() {
         XCTAssertTrue(entry(id: "anything", text: "not search prose", role: .webSearch).isWebSearch)
-        XCTAssertFalse(entry(
-            id: "web_search/deceptive",
-            text: "Search the web",
-            capability: "web_search",
-            role: .tool
-        ).isWebSearch)
+        XCTAssertFalse(
+            entry(
+                id: "web_search/deceptive",
+                text: "Search the web",
+                capability: "web_search",
+                role: .tool
+            ).isWebSearch)
     }
 
     private func resolvedSummary(for entries: [TranscriptEntry]) -> String {
@@ -377,12 +383,13 @@ final class TranscriptRunArrivalTests: XCTestCase {
                 previous: previous
             )
             previous = projection
-            out.append((
-                step.label,
-                projection.structuralRevision,
-                projection.rows.map(\.id),
-                projection.waiting
-            ))
+            out.append(
+                (
+                    step.label,
+                    projection.structuralRevision,
+                    projection.rows.map(\.id),
+                    projection.waiting
+                ))
         }
         return out
     }
@@ -398,7 +405,9 @@ final class TranscriptRunArrivalTests: XCTestCase {
             case .standaloneLine: waiting = "STANDALONE LINE (own row)"
             case .row(let id, _): waiting = "in row \(id)"
             }
-            lines.append("  \(step.revision)  \(step.label.padding(toLength: 26, withPad: " ", startingAt: 0)) rows=\(step.rows) \(waiting)")
+            lines.append(
+                "  \(step.revision)  \(step.label.padding(toLength: 26, withPad: " ", startingAt: 0)) rows=\(step.rows) \(waiting)"
+            )
         }
         let url = URL(fileURLWithPath: "/tmp/mobius-trace.txt")
         let text = lines.joined(separator: "\n") + "\n\n"

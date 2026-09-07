@@ -21,8 +21,8 @@ final class MessageSpeaker {
             guard !Task.isCancelled else { return }
             let text = await markdown.markdownToPlainText()
             guard let self,
-                  !Task.isCancelled,
-                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                !Task.isCancelled,
+                !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             else { return }
             synthesizer.speak(AVSpeechUtterance(string: text))
         }

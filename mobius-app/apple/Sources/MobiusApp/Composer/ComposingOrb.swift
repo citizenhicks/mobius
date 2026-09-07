@@ -11,12 +11,15 @@ struct MobiusComposingOrb: View {
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        TimelineView(.animation(
-            minimumInterval: 1.0 / 30.0,
-            paused: reduceMotion || scenePhase != .active
-        )) { _ in
+        TimelineView(
+            .animation(
+                minimumInterval: 1.0 / 30.0,
+                paused: reduceMotion || scenePhase != .active
+            )
+        ) { _ in
             let seconds = ProcessInfo.processInfo.systemUptime
-            let time = reduceMotion || scenePhase != .active
+            let time =
+                reduceMotion || scenePhase != .active
                 ? 0.6
                 : seconds * MobiusComposingOrbRenderer.speed
             Canvas(rendersAsynchronously: true) { [colorScheme, time] context, size in
@@ -82,14 +85,15 @@ enum MobiusComposingOrbRenderer {
                 center: center
             )
             let depth = (projected.z / sphereRadius + 1) / 2
-            dots.append(Dot(
-                x: projected.x,
-                y: projected.y,
-                z: projected.z,
-                radius: 0.8 * radiusScale,
-                white: 0.78,
-                opacity: 0.1 + 0.22 * depth
-            ))
+            dots.append(
+                Dot(
+                    x: projected.x,
+                    y: projected.y,
+                    z: projected.z,
+                    radius: 0.8 * radiusScale,
+                    white: 0.78,
+                    opacity: 0.1 + 0.22 * depth
+                ))
         }
 
         let tilt = 0.55
@@ -99,12 +103,14 @@ enum MobiusComposingOrbRenderer {
         let segmentCount = 44
         for lane in 0..<laneCount {
             let laneOffset = (Double(lane) - Double(laneCount - 1) / 2) * 0.075
-            let edge = abs(Double(lane) - Double(laneCount - 1) / 2)
+            let edge =
+                abs(Double(lane) - Double(laneCount - 1) / 2)
                 / max(1, Double(laneCount - 1) / 2)
 
             for segment in 0..<segmentCount {
                 let angle = Double(segment) / Double(segmentCount) * 2 * .pi
-                let wobble = 0.16 * sin(angle * 3 - time * 1.7 + Double(lane) * 0.22)
+                let wobble =
+                    0.16 * sin(angle * 3 - time * 1.7 + Double(lane) * 0.22)
                     + 0.07 * sin(angle * 5 + time * 1.1)
                 let offset = laneOffset + wobble
                 let x = cos(angle)
@@ -118,14 +124,15 @@ enum MobiusComposingOrbRenderer {
                     center: center
                 )
                 let depth = (projected.z / sphereRadius + 1) / 2
-                dots.append(Dot(
-                    x: projected.x,
-                    y: projected.y,
-                    z: projected.z,
-                    radius: (0.935 + 1.445 * depth) * (1 - 0.25 * edge) * radiusScale,
-                    white: 0.52 - 0.44 * depth + 0.18 * edge,
-                    opacity: 0.4 + 0.6 * depth
-                ))
+                dots.append(
+                    Dot(
+                        x: projected.x,
+                        y: projected.y,
+                        z: projected.z,
+                        radius: (0.935 + 1.445 * depth) * (1 - 0.25 * edge) * radiusScale,
+                        white: 0.52 - 0.44 * depth + 0.18 * edge,
+                        opacity: 0.4 + 0.6 * depth
+                    ))
             }
         }
 

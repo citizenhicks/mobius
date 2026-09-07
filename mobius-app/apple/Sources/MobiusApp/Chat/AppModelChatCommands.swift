@@ -4,9 +4,9 @@ import Observation
 extension AppModel {
     func selectBotForNewChat(_ bot: BotRecord) {
         guard canCreateSession,
-              bots.contains(where: { $0.id == bot.id }),
-              chat.pendingNewChatWorkspace != nil,
-              case .chat(.new)? = navigationPath.last
+            bots.contains(where: { $0.id == bot.id }),
+            chat.pendingNewChatWorkspace != nil,
+            case .chat(.new)? = navigationPath.last
         else { return }
         chat.pendingNewChatBotID = bot.id
         workspaceError = nil
@@ -16,10 +16,10 @@ extension AppModel {
     @discardableResult
     func createPendingSession() -> String? {
         guard canCreateSession,
-              let path = chat.pendingNewChatWorkspace,
-              let botID = chat.pendingNewChatBotID,
-              bots.contains(where: { $0.id == botID }),
-              case .chat(.new)? = navigationPath.last
+            let path = chat.pendingNewChatWorkspace,
+            let botID = chat.pendingNewChatBotID,
+            bots.contains(where: { $0.id == botID }),
+            case .chat(.new)? = navigationPath.last
         else { return nil }
         let id = requestID("create")
         chat.sessionRequestID = id
@@ -50,8 +50,8 @@ extension AppModel {
 
     func openNewSessionInCurrentWorkspace() {
         guard let path = workspace?.path,
-              let selectedSession,
-              let bot = bots.first(where: { $0.id == selectedSession.sessionContext.botId })
+            let selectedSession,
+            let bot = bots.first(where: { $0.id == selectedSession.sessionContext.botId })
         else { return }
         chooseWorkspace(path)
         selectBotForNewChat(bot)
@@ -91,8 +91,8 @@ extension AppModel {
 
     func refreshBotSessions(_ botID: String) {
         guard gateway.connectionState.isReady,
-              chat.botSessionsRequestID == nil,
-              bots.contains(where: { $0.id == botID })
+            chat.botSessionsRequestID == nil,
+            bots.contains(where: { $0.id == botID })
         else { return }
         if chat.botSessionsBotID != botID { chat.botSessions = [] }
         chat.botSessionsBotID = botID
@@ -108,7 +108,7 @@ extension AppModel {
 
     func openBotSession(_ sessionID: String) {
         guard canBrowseSessions || sessionID == chat.selectedSessionID,
-              chat.botSessions.contains(where: { $0.sessionId == sessionID })
+            chat.botSessions.contains(where: { $0.sessionId == sessionID })
         else { return }
         cancelVoiceChatIntent()
         chat.chatPresentationRevision &+= 1
@@ -155,18 +155,22 @@ extension AppModel {
     func attachFolder(_ selectedPath: String) {
         let path = selectedPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canModifySelectedSession,
-              let sessionID = chat.selectedSessionID,
-              chat.sessionMutationRequestID == nil,
-              !path.isEmpty
+            let sessionID = chat.selectedSessionID,
+            chat.sessionMutationRequestID == nil,
+            !path.isEmpty
         else { return }
         let id = requestID("session-attach-folder")
         chat.sessionMutationRequestID = id
-        gateway.transmit(.attachSessionFolder(
-            requestID: id,
-            sessionID: sessionID,
-            folder: path
-        )) { [weak self] _ in
-            if self?.chat.sessionMutationRequestID == id { self?.chat.sessionMutationRequestID = nil }
+        gateway.transmit(
+            .attachSessionFolder(
+                requestID: id,
+                sessionID: sessionID,
+                folder: path
+            )
+        ) { [weak self] _ in
+            if self?.chat.sessionMutationRequestID == id {
+                self?.chat.sessionMutationRequestID = nil
+            }
         }
     }
 
@@ -194,10 +198,12 @@ extension AppModel {
         chat.sessionMutationRequestID = id
         chat.pendingDeletedSessionIDs = sessionIDs
         chat.pendingDeletedPresentedSessionID = deletedPresentedSessionID
-        gateway.transmit(.deleteSessions(
-            requestID: id,
-            sessionIDs: sessionIDs
-        )) { [weak self] _ in
+        gateway.transmit(
+            .deleteSessions(
+                requestID: id,
+                sessionIDs: sessionIDs
+            )
+        ) { [weak self] _ in
             guard let self, self.chat.sessionMutationRequestID == id else { return }
             let sessionID = self.chat.pendingDeletedPresentedSessionID
             self.chat.sessionMutationRequestID = nil
@@ -210,38 +216,43 @@ extension AppModel {
 
     func restoreDeletedPresentedSession(_ sessionID: String?) {
         guard let sessionID,
-              destination == .chats,
-              navigationPath.isEmpty
+            destination == .chats,
+            navigationPath.isEmpty
         else { return }
         navigationPath = [.chat(.session(sessionID))]
         chat.restoreSession(sessionID)
     }
 
     func interrupt() {
-        guard let sessionID = chat.selectedSessionID, let activeTurnID = chat.activeTurnID else { return }
-        gateway.transmit(.submit(
-            sessionID: sessionID,
-            submission: Submission(
-                id: requestID("interrupt"),
-                op: .interrupt(turnID: activeTurnID)
-            )
-        ))
+        guard let sessionID = chat.selectedSessionID, let activeTurnID = chat.activeTurnID else {
+            return
+        }
+        gateway.transmit(
+            .submit(
+                sessionID: sessionID,
+                submission: Submission(
+                    id: requestID("interrupt"),
+                    op: .interrupt(turnID: activeTurnID)
+                )
+            ))
     }
 
     func resolveApproval(_ decision: ReviewDecision) {
         guard let sessionID = chat.selectedSessionID,
-              let approval = chat.pendingApproval,
-              chat.approvalRequestID == nil
+            let approval = chat.pendingApproval,
+            chat.approvalRequestID == nil
         else { return }
         let id = requestID("approval")
         chat.approvalRequestID = id
-        gateway.transmit(.submit(
-            sessionID: sessionID,
-            submission: Submission(
-                id: id,
-                op: .execApproval(id: approval.id, decision: decision)
+        gateway.transmit(
+            .submit(
+                sessionID: sessionID,
+                submission: Submission(
+                    id: id,
+                    op: .execApproval(id: approval.id, decision: decision)
+                )
             )
-        )) { [weak self] _ in
+        ) { [weak self] _ in
             guard self?.chat.approvalRequestID == id else { return }
             self?.chat.approvalRequestID = nil
         }

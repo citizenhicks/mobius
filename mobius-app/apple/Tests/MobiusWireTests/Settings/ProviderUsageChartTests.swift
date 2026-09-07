@@ -17,8 +17,11 @@ final class ProviderUsageChartTests: XCTestCase {
             weekCount: 2
         )
 
-        XCTAssertEqual(totals.map(\.provider), [
-            "anthropic", "openai", "google"])
+        XCTAssertEqual(
+            totals.map(\.provider),
+            [
+                "anthropic", "openai", "google",
+            ])
         XCTAssertEqual(totals.map(\.totalTokens), [30, 25, 10])
     }
 
@@ -57,7 +60,8 @@ final class ProviderUsageChartTests: XCTestCase {
             weekCount: 4,
             aggregation: .weekly
         )
-        XCTAssertEqual(weekly.values,
+        XCTAssertEqual(
+            weekly.values,
             [
                 0, 0, 0, 0, 0, 0, 10,
                 0, 0, 0, 0, 0, 25, 25,
@@ -76,7 +80,9 @@ final class ProviderUsageChartTests: XCTestCase {
             weekCount: 4,
             aggregation: .cumulative
         )
-        XCTAssertEqual(cumulative.values, [
+        XCTAssertEqual(
+            cumulative.values,
+            [
                 0, 0, 0, 0, 0, 0, 10,
                 0, 0, 0, 0, 0, 35, 35,
                 0, 0, 0, 85, 85, 85, 85,

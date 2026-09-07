@@ -88,9 +88,12 @@ struct MobiusBadge: View {
         }
         .font(MobiusStyle.badgeFont)
         .foregroundStyle(foreground)
-        .padding(.horizontal, text.isEmpty && progress == nil && glyph != nil
-            ? (MobiusStyle.badgeHeight - MobiusStyle.glyphInline) / 2
-            : MobiusSpace.m)
+        .padding(
+            .horizontal,
+            text.isEmpty && progress == nil && glyph != nil
+                ? (MobiusStyle.badgeHeight - MobiusStyle.glyphInline) / 2
+                : MobiusSpace.m
+        )
         .frame(height: MobiusStyle.badgeHeight)
         .mobiusGlass(in: Capsule(), interactive: interactive, prominent: selected)
     }
@@ -173,7 +176,9 @@ struct MobiusMenuLabel: View {
                     .lineLimit(1)
             }
             if showsDisclosure {
-                MobiusIcon(.caretUpDown, size: MobiusStyle.glyphMark, foreground: palette.muted, gutter: false)
+                MobiusIcon(
+                    .caretUpDown, size: MobiusStyle.glyphMark, foreground: palette.muted,
+                    gutter: false)
             }
         }
         .frame(minHeight: MobiusStyle.controlHeight)
@@ -246,7 +251,8 @@ struct MobiusIconButtonStyle: ButtonStyle {
         let bare: Bool
 
         var body: some View {
-            let base = label
+            let base =
+                label
                 .font(MobiusStyle.controlFont)
                 .foregroundStyle(foreground)
                 .frame(width: MobiusStyle.iconButtonSize, height: MobiusStyle.iconButtonSize)
@@ -351,7 +357,9 @@ struct HeaderOptionsMenu<Content: View>: View {
         // draws as a wide pill rather than the circle a lone action should be. Inside a
         // `HeaderActionGroup` the call site adds `groupedHeaderAction()` for the target it
         // needs to fill its half of the shared surface.
-        Menu { content } label: {
+        Menu {
+            content
+        } label: {
             MobiusIcon(.dotsThree, foreground: .primary)
         }
         .labelStyle(.titleAndIcon)
@@ -540,7 +548,9 @@ final class MobiusAppLockAnchor: UIView {
         }
         protectedWindow = window
         previousKeyWindow = scene.keyWindow
-        previousAppearance = (window.alpha, window.isUserInteractionEnabled, window.accessibilityElementsHidden)
+        previousAppearance = (
+            window.alpha, window.isUserInteractionEnabled, window.accessibilityElementsHidden
+        )
         window.endEditing(true)
         let cover = UIWindow(windowScene: scene)
         cover.frame = scene.effectiveGeometry.coordinateSpace.bounds
@@ -586,7 +596,8 @@ private struct MobiusGlassModifier<S: Shape>: ViewModifier {
     let clear: Bool
 
     func body(content: Content) -> some View {
-        let glass = prominent ? Glass.regular.tint(palette.accentFill) : clear ? Glass.clear : Glass.regular
+        let glass =
+            prominent ? Glass.regular.tint(palette.accentFill) : clear ? Glass.clear : Glass.regular
         if interactive {
             content.glassEffect(glass.interactive(), in: shape)
         } else {

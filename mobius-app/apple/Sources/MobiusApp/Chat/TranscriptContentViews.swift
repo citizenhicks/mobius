@@ -106,7 +106,7 @@ struct TranscriptFileCards: View {
         VStack(alignment: alignsTrailing ? .trailing : .leading, spacing: MobiusSpace.s) {
             ForEach(Array(stride(from: 0, to: files.count, by: columnCount)), id: \.self) { start in
                 HStack(alignment: .top, spacing: MobiusSpace.s) {
-                    ForEach(files[start ..< min(start + columnCount, files.count)]) { file in
+                    ForEach(files[start..<min(start + columnCount, files.count)]) { file in
                         SessionFileCard(file: file, sessionID: sessionID)
                             .frame(
                                 width: 136,
@@ -193,8 +193,10 @@ struct TurnDiffCard: View {
                     Text("−\(document.removed)")
                         .foregroundStyle(palette.danger)
                     Spacer(minLength: MobiusSpace.s)
-                    MobiusIcon(.caretRight, size: MobiusStyle.glyphInline, foreground: palette.muted)
-                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    MobiusIcon(
+                        .caretRight, size: MobiusStyle.glyphInline, foreground: palette.muted
+                    )
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
                 }
                 .font(MobiusStyle.badgeFont)
                 .padding(.horizontal, MobiusSpace.l)
@@ -267,10 +269,12 @@ private func changedFileCount(_ count: Int) -> LocalizedStringResource {
 
 private func turnDiffAccessibilityLabel(_ document: UnifiedDiffDocument) -> Text {
     let files = changedFileCount(document.fileChanges.count)
-    let additions: LocalizedStringResource = document.added == 1
+    let additions: LocalizedStringResource =
+        document.added == 1
         ? "1 addition"
         : "\(document.added) additions"
-    let removals: LocalizedStringResource = document.removed == 1
+    let removals: LocalizedStringResource =
+        document.removed == 1
         ? "1 removal"
         : "\(document.removed) removals"
     return Text("\(files), \(additions), \(removals)")
@@ -312,7 +316,7 @@ struct SessionFileCard: View {
 
     private var thumbnailTaskID: FileThumbnailKey? {
         guard model.gateway.connectionState.isReady,
-              let sessionID
+            let sessionID
         else { return nil }
         return .session(sessionID: sessionID, fileID: file.id)
     }
@@ -421,22 +425,23 @@ struct FileCard<Trailing: View>: View {
 
     var body: some View {
         content
-        .frame(width: size.width, height: size.height)
-        .background(palette.raised)
-        .compositingGroup()
-        .clipShape(MobiusStyle.tileShape)
-        .overlay(alignment: .topTrailing) {
-            trailing
-                .foregroundStyle(thumbnail == nil ? Color.primary : palette.onMedia)
-                .shadow(
-                    color: thumbnail == nil ? .clear : palette.shadow.opacity(0.85),
-                    radius: 1,
-                    y: 1
-                )
-                .padding(MobiusSpace.xs)
-        }
-        .contentShape(MobiusStyle.tileShape)
-        .animation(reduceMotion ? nil : .spring(duration: 0.4, bounce: 0.18), value: thumbnail != nil)
+            .frame(width: size.width, height: size.height)
+            .background(palette.raised)
+            .compositingGroup()
+            .clipShape(MobiusStyle.tileShape)
+            .overlay(alignment: .topTrailing) {
+                trailing
+                    .foregroundStyle(thumbnail == nil ? Color.primary : palette.onMedia)
+                    .shadow(
+                        color: thumbnail == nil ? .clear : palette.shadow.opacity(0.85),
+                        radius: 1,
+                        y: 1
+                    )
+                    .padding(MobiusSpace.xs)
+            }
+            .contentShape(MobiusStyle.tileShape)
+            .animation(
+                reduceMotion ? nil : .spring(duration: 0.4, bounce: 0.18), value: thumbnail != nil)
     }
 
     private var content: some View {

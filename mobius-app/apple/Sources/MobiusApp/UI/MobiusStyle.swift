@@ -345,7 +345,8 @@ private struct MobiusRunningShimmer: ViewModifier {
         let paused = reduceMotion || scenePhase != .active
         if active, !paused {
             TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: false)) { _ in
-                let phase = ProcessInfo.processInfo.systemUptime
+                let phase =
+                    ProcessInfo.processInfo.systemUptime
                     .truncatingRemainder(dividingBy: Self.period) / Self.period
                 // The row is dimmed and a full-strength copy of itself is revealed through a
                 // travelling band. Painting light *over* the row instead does nothing here:
@@ -358,7 +359,9 @@ private struct MobiusRunningShimmer: ViewModifier {
                                 GeometryReader { proxy in
                                     let travel = proxy.size.width + 200
                                     LinearGradient(
-                                        colors: [.clear, palette.onAccent, palette.onAccent, .clear],
+                                        colors: [
+                                            .clear, palette.onAccent, palette.onAccent, .clear,
+                                        ],
                                         startPoint: .leading,
                                         endPoint: .trailing
                                     )
@@ -419,7 +422,8 @@ struct MobiusSpinner: View {
         let paused = reduceMotion || scenePhase != .active
         let tint = foreground ?? palette.accent
         TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: paused)) { _ in
-            let turn = paused
+            let turn =
+                paused
                 ? 0
                 : ProcessInfo.processInfo.systemUptime
                     .truncatingRemainder(dividingBy: 0.9) / 0.9
@@ -538,11 +542,13 @@ struct MobiusTitleText: View {
     var body: some View {
         let resolvedTitle = title.resolved(locale: locale)
         Text(verbatim: displayedTitle ?? resolvedTitle)
-            .textRenderer(MobiusTitleTypingRenderer(
-                progress: progress,
-                showsCursor: phase != .settled,
-                cursorColor: cursorColor
-            ))
+            .textRenderer(
+                MobiusTitleTypingRenderer(
+                    progress: progress,
+                    showsCursor: phase != .settled,
+                    cursorColor: cursorColor
+                )
+            )
             .task(id: MobiusTitleTypingRequest(title: resolvedTitle, reduceMotion: reduceMotion)) {
                 await animateTitleChange(to: resolvedTitle)
             }

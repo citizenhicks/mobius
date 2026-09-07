@@ -201,13 +201,16 @@ private struct UnifiedDiffView: View {
 }
 
 private func diffAccessibilityLabel(_ document: UnifiedDiffDocument) -> Text {
-    let files: LocalizedStringResource = document.files.count == 1
+    let files: LocalizedStringResource =
+        document.files.count == 1
         ? "1 file"
         : "\(document.files.count) files"
-    let additions: LocalizedStringResource = document.added == 1
+    let additions: LocalizedStringResource =
+        document.added == 1
         ? "1 addition"
         : "\(document.added) additions"
-    let removals: LocalizedStringResource = document.removed == 1
+    let removals: LocalizedStringResource =
+        document.removed == 1
         ? "1 removal"
         : "\(document.removed) removals"
     return Text("Code diff, \(files), \(additions) and \(removals)")

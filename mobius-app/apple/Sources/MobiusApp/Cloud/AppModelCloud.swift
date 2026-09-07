@@ -34,23 +34,24 @@ extension MobiusCloudModel {
                         generation: generation
                     )
                     guard operationGeneration == generation,
-                          let repairedSession = cloudSession
+                        let repairedSession = cloudSession
                     else { continue }
                     activeSession = repairedSession
                     try await acknowledge(purchase)
                     guard operationGeneration == generation,
-                          cloudSession == activeSession
+                        cloudSession == activeSession
                     else { continue }
                     let account = try await authoritativeCloudAccount(
                         requestedSession: activeSession,
                         generation: generation
                     )
                     guard operationGeneration == generation,
-                          cloudSession == activeSession
+                        cloudSession == activeSession
                     else { continue }
                     if applyCloudSubscriptionState(account),
-                       operationGeneration == generation,
-                       cloudSession == activeSession {
+                        operationGeneration == generation,
+                        cloudSession == activeSession
+                    {
                         callbacks.reconnectRecoveredGateway?()
                     }
                     clearCloudError()
@@ -58,7 +59,7 @@ extension MobiusCloudModel {
                     continue
                 } catch {
                     guard operationGeneration == generation,
-                          cloudSession == activeSession
+                        cloudSession == activeSession
                     else { continue }
                     reportCloud(error)
                 }
@@ -78,7 +79,7 @@ extension MobiusCloudModel {
         do {
             let account = try await authoritativeCloudAccount()
             guard operationGeneration == generation,
-                  let repairedSession = cloudSession
+                let repairedSession = cloudSession
             else { return }
             activeSession = repairedSession
             let reconciled = try await reconcileActivePurchases(
@@ -97,7 +98,7 @@ extension MobiusCloudModel {
         } catch {
             guard cloudSession == activeSession else { return }
             guard operationGeneration == generation,
-                  cloudIssue != .subscriptionExpired
+                cloudIssue != .subscriptionExpired
             else { return }
             reportCloud(error)
         }
@@ -113,14 +114,16 @@ extension MobiusCloudModel {
                 sharesDiagnostics: account.sharesDiagnostics
             )
         }
-        let message = localizedString(MobiusCloudError.subscriptionRequired.localizedDescriptionResource)
+        let message = localizedString(
+            MobiusCloudError.subscriptionRequired.localizedDescriptionResource)
         cloudIssue = .subscriptionExpired
         cloudError = message
 
         if isSelectedCloudGateway,
-           !wasAlreadyExpired
+            !wasAlreadyExpired
                 || !gateway.automaticReconnectBlocked
-                || gateway.connectionState != .failed(message) {
+                || gateway.connectionState != .failed(message)
+        {
             gateway.blockAutomaticReconnect()
             gateway.reset(preservingDrafts: true)
             callbacks.resetGatewayDependentState?(true, true)
@@ -133,9 +136,9 @@ extension MobiusCloudModel {
 
     func setCloudSharesDiagnostics(_ sharesDiagnostics: Bool) async {
         guard let userID = cloudSession?.userID,
-              let account = cloudAccount,
-              account.sharesDiagnostics != sharesDiagnostics,
-              !isUpdatingCloudDiagnostics
+            let account = cloudAccount,
+            account.sharesDiagnostics != sharesDiagnostics,
+            !isUpdatingCloudDiagnostics
         else { return }
         isUpdatingCloudDiagnostics = true
         clearCloudError()
@@ -336,27 +339,29 @@ extension MobiusCloudModel {
             throw MobiusCloudError.authenticationRequired
         }
         let unfinished = try await cloudPurchases.unfinishedPurchases()
-        let current = account.subscribed && !synchronize
+        let current =
+            account.subscribed && !synchronize
             ? MobiusCloudPurchaseScan()
             : try await cloudPurchases.currentEntitlements(synchronize: synchronize)
         guard cloudSession == requestedSession,
-              operationGeneration == generation
+            operationGeneration == generation
         else { throw CancellationError() }
         var seenJWS: Set<String> = []
         let purchases = (unfinished.purchases + current.purchases).filter {
             seenJWS.insert($0.jws).inserted
         }
-        var firstError: Error? = unfinished.hasUnverifiedPurchase || current.hasUnverifiedPurchase
+        var firstError: Error? =
+            unfinished.hasUnverifiedPurchase || current.hasUnverifiedPurchase
             ? MobiusCloudPurchaseError.unavailable
             : nil
         for purchase in purchases {
             guard cloudSession == requestedSession,
-                  operationGeneration == generation
+                operationGeneration == generation
             else { throw CancellationError() }
             do {
                 try await acknowledge(purchase)
                 guard cloudSession == requestedSession,
-                      operationGeneration == generation
+                    operationGeneration == generation
                 else { throw CancellationError() }
             } catch is CancellationError {
                 throw CancellationError()
@@ -365,14 +370,15 @@ extension MobiusCloudModel {
                 if firstError == nil { firstError = error }
             }
         }
-        let refreshed = purchases.isEmpty
+        let refreshed =
+            purchases.isEmpty
             ? account
             : try await authoritativeCloudAccount(
                 requestedSession: requestedSession,
                 generation: generation
             )
         guard cloudSession == requestedSession,
-              operationGeneration == generation
+            operationGeneration == generation
         else { throw CancellationError() }
         if refreshed.subscribed { return refreshed }
         if let firstError { throw firstError }
@@ -411,7 +417,7 @@ extension MobiusCloudModel {
         let requestGeneration = generation ?? operationGeneration
         let account = try await cloudClient.account()
         guard cloudSession == requestedSession,
-              operationGeneration == requestGeneration
+            operationGeneration == requestGeneration
         else { throw CancellationError() }
         guard account.userID == requestedSession.userID else {
             try cloudClient.invalidateSession(requestedSession)
@@ -513,11 +519,12 @@ extension MobiusCloudModel {
             pushTokenRemovalPending = true
             settingsDefaults.set(true, forKey: pushTokenRemovalPendingKey)
         }
-        let removedGateway = if let selectedCloudGateway {
-            await callbacks.removeGateway?(selectedCloudGateway) ?? false
-        } else {
-            true
-        }
+        let removedGateway =
+            if let selectedCloudGateway {
+                await callbacks.removeGateway?(selectedCloudGateway) ?? false
+            } else {
+                true
+            }
         guard removedGateway else { return }
         if pushRemovalFailed {
             toast(
@@ -547,11 +554,12 @@ extension MobiusCloudModel {
             )
             guard cloudSession == requestedSession else { return true }
             clearCloudAccountState()
-            let gatewayRemoved = if let selectedCloudGateway {
-                await callbacks.removeGateway?(selectedCloudGateway) ?? false
-            } else {
-                true
-            }
+            let gatewayRemoved =
+                if let selectedCloudGateway {
+                    await callbacks.removeGateway?(selectedCloudGateway) ?? false
+                } else {
+                    true
+                }
             guard cloudSession == nil || cloudSession == requestedSession else { return true }
             switch (cleanupError != nil, gatewayRemoved) {
             case (false, true):
@@ -608,7 +616,8 @@ extension MobiusCloudModel {
                 "Your Cloud sign-in expired, but this device could not forget the saved sign-in."
             )
         } else if let resource = (error as? MobiusCloudPurchaseError)?
-            .localizedDescriptionResource {
+            .localizedDescriptionResource
+        {
             message = localizedString(resource)
         } else {
             message = localizedString("Couldn’t connect to möbius Cloud. Try again.")
@@ -648,11 +657,11 @@ extension MobiusCloudModel {
                     break
                 }
             }
-            extensionCatalogError = (error as? MobiusCloudError).map {
-                localizedString($0.localizedDescriptionResource)
-            } ?? localizedString("The extension catalog is temporarily unavailable.")
+            extensionCatalogError =
+                (error as? MobiusCloudError).map {
+                    localizedString($0.localizedDescriptionResource)
+                } ?? localizedString("The extension catalog is temporarily unavailable.")
         }
     }
-
 
 }

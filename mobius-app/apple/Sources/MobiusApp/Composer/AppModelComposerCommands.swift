@@ -33,29 +33,32 @@ extension AppModel {
             return nil
         }
         let id = UUID()
-        chat.composerAttachments.append(ComposerAttachment(
-            id: id,
-            name: name,
-            size: 0,
-            mediaType: "application/octet-stream",
-            state: .preparing
-        ))
+        chat.composerAttachments.append(
+            ComposerAttachment(
+                id: id,
+                name: name,
+                size: 0,
+                mediaType: "application/octet-stream",
+                state: .preparing
+            ))
         return id
     }
 
     func completeComposerAttachmentImport(_ url: URL, reservedID: UUID) async {
-        guard chat.composerAttachments.contains(where: {
-            $0.id == reservedID && $0.state == .preparing
-        }) else { return }
+        guard
+            chat.composerAttachments.contains(where: {
+                $0.id == reservedID && $0.state == .preparing
+            })
+        else { return }
         do {
             let imported = try await ChatSessionModel.loadImportedAttachment(
                 url,
                 maximumBytes: attachmentFileByteLimit
             )
             guard canImportAttachments,
-                  let index = chat.composerAttachments.firstIndex(where: {
-                      $0.id == reservedID && $0.state == .preparing
-                  })
+                let index = chat.composerAttachments.firstIndex(where: {
+                    $0.id == reservedID && $0.state == .preparing
+                })
             else {
                 cancelComposerAttachmentImport(reservedID)
                 return
@@ -94,15 +97,19 @@ extension AppModel {
 
     @discardableResult
     func cancelComposerAttachmentImport(_ id: UUID) -> Bool {
-        guard let index = chat.composerAttachments.firstIndex(where: {
-            $0.id == id && $0.state == .preparing
-        }) else { return false }
+        guard
+            let index = chat.composerAttachments.firstIndex(where: {
+                $0.id == id && $0.state == .preparing
+            })
+        else { return false }
         chat.composerAttachments.remove(at: index)
         return true
     }
 
     func removeComposerAttachment(_ id: UUID) {
-        guard let attachment = chat.composerAttachments.first(where: { $0.id == id }) else { return }
+        guard let attachment = chat.composerAttachments.first(where: { $0.id == id }) else {
+            return
+        }
         chat.discardComposerAttachment(attachment)
         chat.startNextSessionFileUpload()
         if chat.pendingNewChatBotID != nil, chat.pendingDrafts.count == 1 {
@@ -112,8 +119,8 @@ extension AppModel {
 
     func retryComposerAttachment(_ id: UUID) {
         guard chat.sessionFileData[id] != nil,
-              let index = chat.composerAttachments.firstIndex(where: { $0.id == id }),
-              case .failed = chat.composerAttachments[index].state
+            let index = chat.composerAttachments.firstIndex(where: { $0.id == id }),
+            case .failed = chat.composerAttachments[index].state
         else { return }
         chat.composerAttachments[index].state = .queued
         chat.startNextSessionFileUpload()
@@ -122,7 +129,7 @@ extension AppModel {
     @discardableResult
     func sendMessage(delivery requestedDelivery: ActiveMessageDelivery? = nil) -> Bool {
         guard gateway.connectionState.isReady,
-              chat.sessionRequestID == nil
+            chat.sessionRequestID == nil
         else { return false }
         let text = chat.composer.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = uploadedComposerAttachments
@@ -176,9 +183,11 @@ extension AppModel {
     private func sendComposerCommand(_ text: String) -> Bool {
         let parts = text.dropFirst().split(maxSplits: 1, whereSeparator: \.isWhitespace)
         guard let name = parts.first, !name.isEmpty else { return false }
-        guard let contribution = chat.contributions.first(where: {
-            $0.commands.contains { $0.name == name }
-        }), let command = contribution.commands.first(where: { $0.name == name }) else {
+        guard
+            let contribution = chat.contributions.first(where: {
+                $0.commands.contains { $0.name == name }
+            }), let command = contribution.commands.first(where: { $0.name == name })
+        else {
             showToast("Unknown command /\(name).", tone: .warning)
             return false
         }
@@ -187,7 +196,8 @@ extension AppModel {
             return false
         }
         guard chat.composerAttachments.isEmpty, chat.composerReply == nil else {
-            showToast("Send attachments and replies as a message before using a command.", tone: .warning)
+            showToast(
+                "Send attachments and replies as a message before using a command.", tone: .warning)
             return false
         }
         guard let sessionID = chat.selectedSessionID else { return false }
@@ -195,17 +205,21 @@ extension AppModel {
         chat.pendingDrafts[id] = PendingComposerDraft(text: chat.composer, attachments: [])
         chat.composer = ""
         chat.dismissComposerFocus()
-        gateway.transmit(.submit(sessionID: sessionID, submission: Submission(
-            id: id,
-            op: .capabilityCommand(
-                capability: contribution.capability,
-                command: command.name,
-                arguments: parts.count == 2
-                    ? parts[1].trimmingCharacters(in: .whitespacesAndNewlines) : "",
-                input: nil,
-                target: nil
-            )
-        ))) { [weak self] _ in
+        gateway.transmit(
+            .submit(
+                sessionID: sessionID,
+                submission: Submission(
+                    id: id,
+                    op: .capabilityCommand(
+                        capability: contribution.capability,
+                        command: command.name,
+                        arguments: parts.count == 2
+                            ? parts[1].trimmingCharacters(in: .whitespacesAndNewlines) : "",
+                        input: nil,
+                        target: nil
+                    )
+                ))
+        ) { [weak self] _ in
             self?.chat.restoreDraft(id: id)
         }
         return true
@@ -215,11 +229,11 @@ extension AppModel {
         for feature in middlewareFeatures {
             for setting in feature.settings {
                 guard case .select(let options, _) = setting.kind,
-                      Set(options.compactMap { ActiveMessageDelivery(rawValue: $0.value) })
+                    Set(options.compactMap { ActiveMessageDelivery(rawValue: $0.value) })
                         == Set(ActiveMessageDelivery.allCases),
-                      let value = agentDraft?.middleware.settings[feature.id]?[setting.id],
-                      case .string(let rawValue) = value,
-                      let delivery = ActiveMessageDelivery(rawValue: rawValue)
+                    let value = agentDraft?.middleware.settings[feature.id]?[setting.id],
+                    case .string(let rawValue) = value,
+                    let delivery = ActiveMessageDelivery(rawValue: rawValue)
                 else { continue }
                 return delivery
             }
@@ -229,15 +243,16 @@ extension AppModel {
 
     func editWidgetInputInComposer(_ mounted: MountedWidget) {
         guard gateway.connectionState.isReady,
-              !chat.isLoadingComposerDraft,
-              !chat.isLoadingComposerEditRecovery,
-              let sessionID = chat.selectedSessionID,
-              let accountID = gateway.selectedAccountID,
-              let operation = mounted.widget.action,
-              let input = operation.capabilityInput
+            !chat.isLoadingComposerDraft,
+            !chat.isLoadingComposerEditRecovery,
+            let sessionID = chat.selectedSessionID,
+            let accountID = gateway.selectedAccountID,
+            let operation = mounted.widget.action,
+            let input = operation.capabilityInput
         else { return }
         guard chat.composerAttachments.isEmpty else {
-            showToast("Finish the attachment draft before editing a queued message.", tone: .warning)
+            showToast(
+                "Finish the attachment draft before editing a queued message.", tone: .warning)
             return
         }
         guard chat.composerReply == nil else {
@@ -261,20 +276,22 @@ extension AppModel {
         chat.pendingWidgetEdit = PendingWidgetEdit(owner: owner, recovery: recovery)
         chat.enqueueComposerEditRecoverySave(recovery, owner: owner) { [weak self] result in
             guard let self,
-                  self.chat.pendingWidgetEdit?.owner == owner,
-                  self.chat.pendingWidgetEdit?.recovery.requestID == requestID
+                self.chat.pendingWidgetEdit?.owner == owner,
+                self.chat.pendingWidgetEdit?.recovery.requestID == requestID
             else { return }
             if case .failure(let error) = result {
                 self.chat.pendingWidgetEdit = nil
                 self.showToast(verbatim: self.localizedErrorDescription(error), tone: .error)
                 return
             }
-            guard self.gateway.connectionState.isReady, self.chat.selectedSessionID == sessionID else { return }
+            guard self.gateway.connectionState.isReady, self.chat.selectedSessionID == sessionID
+            else { return }
             guard self.gateway.selectedAccountID == accountID else { return }
-            self.gateway.transmit(.submit(
-                sessionID: sessionID,
-                submission: Submission(id: requestID, op: operation)
-            ))
+            self.gateway.transmit(
+                .submit(
+                    sessionID: sessionID,
+                    submission: Submission(id: requestID, op: operation)
+                ))
         }
     }
 }

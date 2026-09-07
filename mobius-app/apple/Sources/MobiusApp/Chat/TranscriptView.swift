@@ -78,7 +78,9 @@ struct TranscriptRowsView: View {
                     turnDiff: turnDiff(entry)
                 )
                 .task(id: revealMessageTarget) {
-                    guard let target = revealMessageTarget, entry.messageTarget == target else { return }
+                    guard let target = revealMessageTarget, entry.messageTarget == target else {
+                        return
+                    }
                     await Task.yield()
                     guard !Task.isCancelled else { return }
                     onRevealMessage(target, row.id)
@@ -206,13 +208,16 @@ private struct TranscriptScrollBehavior: ViewModifier {
                 scroll.mode = .followingTail
                 scroll.position.scrollTo(edge: .bottom)
             }
-            .onScrollGeometryChange(for: Bool.self) { Self.atBottom($0) } action: {
+            .onScrollGeometryChange(for: Bool.self) {
+                Self.atBottom($0)
+            } action: {
                 _, atBottom in
                 isAtBottom?.wrappedValue = atBottom
             }
             .onScrollPhaseChange { _, phase, context in
                 guard scroll.mode != .restoringHistory, phase != .animating else { return }
-                scroll.mode = phase == .idle && Self.atBottom(context.geometry)
+                scroll.mode =
+                    phase == .idle && Self.atBottom(context.geometry)
                     ? .followingTail
                     : .freeScrolling
             }
@@ -244,15 +249,16 @@ extension View {
         isAtBottom: Binding<Bool>? = nil,
         loadEarlierHistory: @escaping () async -> Void
     ) -> some View {
-        modifier(TranscriptScrollBehavior(
-            scroll: scroll,
-            projection: projection,
-            historyLoadCompletionRevision: historyLoadCompletionRevision,
-            conversationID: conversationID,
-            scrollToBottomRequest: scrollToBottomRequest,
-            isAtBottom: isAtBottom,
-            loadEarlierHistory: loadEarlierHistory
-        ))
+        modifier(
+            TranscriptScrollBehavior(
+                scroll: scroll,
+                projection: projection,
+                historyLoadCompletionRevision: historyLoadCompletionRevision,
+                conversationID: conversationID,
+                scrollToBottomRequest: scrollToBottomRequest,
+                isAtBottom: isAtBottom,
+                loadEarlierHistory: loadEarlierHistory
+            ))
     }
 }
 
@@ -662,7 +668,11 @@ private struct TranscriptRow: View {
         } else if let bot = displayedBot {
             if let image = MobiusGlyph.aiScan.menuImage(bot.tint.color) {
                 Button(action: {}) {
-                    Label { Text(verbatim: bot.name) } icon: { image }
+                    Label {
+                        Text(verbatim: bot.name)
+                    } icon: {
+                        image
+                    }
                 }
                 .disabled(true)
             } else {
@@ -742,10 +752,10 @@ private struct MessageTimestamp {
             from: value
         )
         guard let year = components.year,
-              let month = components.month,
-              let day = components.day,
-              let hour = components.hour,
-              let minute = components.minute
+            let month = components.month,
+            let day = components.day,
+            let hour = components.hour,
+            let minute = components.minute
         else { return nil }
         combined = String(
             format: "%02d:%02d • %02d/%02d/%02d",

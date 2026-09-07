@@ -43,11 +43,13 @@ extension AppModelTests {
         XCTAssertEqual(model.chat.pendingNewChatWorkspace, "/work")
         XCTAssertEqual(model.gateway.pairingCode, "unsaved-pairing-code")
 
-        model.gateway.handle(.ready(ready(
-            botDefaults: snapshot,
-            bots: [bot(name: "Synced Bot name")],
-            sessions: [session(sessionID: "chat-2", state: .idle)]
-        )))
+        model.gateway.handle(
+            .ready(
+                ready(
+                    botDefaults: snapshot,
+                    bots: [bot(name: "Synced Bot name")],
+                    sessions: [session(sessionID: "chat-2", state: .idle)]
+                )))
 
         XCTAssertEqual(model.bots.first?.name, "Synced Bot name")
         XCTAssertEqual(model.chat.sessions.map(\.sessionId), ["chat-2"])
@@ -134,10 +136,11 @@ extension AppModelTests {
             let provider = try XCTUnwrap(model.providerDraft?.provider)
             model.startProviderLogin()
             let id = try XCTUnwrap(model.pendingProviderLogin?.requestID)
-            model.gateway.handle(.providerLoginStarted(
-                requestID: id, loginID: "attempt", provider: provider,
-                verificationURL: "https://example.com/device", userCode: "ABCD-EFGH"
-            ))
+            model.gateway.handle(
+                .providerLoginStarted(
+                    requestID: id, loginID: "attempt", provider: provider,
+                    verificationURL: "https://example.com/device", userCode: "ABCD-EFGH"
+                ))
             let code = model.providerActionState
             model.startProviderLogin()
             XCTAssertEqual(model.pendingProviderLogin?.requestID, id)
@@ -149,14 +152,18 @@ extension AppModelTests {
             XCTAssertEqual(model.providerActionState, code)
 
             if succeeds {
-                model.gateway.handle(.providerLoginFinished(
-                    requestID: id, loginID: "attempt", provider: provider
-                ))
+                model.gateway.handle(
+                    .providerLoginFinished(
+                        requestID: id, loginID: "attempt", provider: provider
+                    ))
                 XCTAssertEqual(model.providerActionState, .loginFinished(provider))
             } else {
-                model.gateway.handle(.rejected(GatewayRejection(
-                    requestId: id, code: "provider_error", message: "The code expired.", fatal: false
-                )))
+                model.gateway.handle(
+                    .rejected(
+                        GatewayRejection(
+                            requestId: id, code: "provider_error", message: "The code expired.",
+                            fatal: false
+                        )))
                 XCTAssertEqual(model.providerActionState, .failed("The code expired."))
             }
             XCTAssertNil(model.pendingProviderLogin?.requestID)
@@ -183,9 +190,11 @@ extension AppModelTests {
         model.providerDraft = nil
         model.gateway.reset(preservingDrafts: true)
         model.resetGatewayDependentState(preservingDrafts: true)
-        model.gateway.handle(.ready(ready(
-            botDefaults: VersionedAgentConfig(revision: 1, config: composition())
-        )))
+        model.gateway.handle(
+            .ready(
+                ready(
+                    botDefaults: VersionedAgentConfig(revision: 1, config: composition())
+                )))
         let retried = await eventually {
             await recorder.requests().filter {
                 if case .startProviderLogin = $0 { return true }
@@ -256,49 +265,56 @@ extension AppModelTests {
     func testEmptyGatewayCanRegisterItsFirstProviderWithoutAChat() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
-        model.applyGatewayCatalog(ReadyPayload(
-            machineName: "snowwhite.local",
-            bots: [],
-            sessions: [],
-            backgroundApprovals: [],
-            swarmAttentions: [],
-            swarms: [],
-            providers: [ProviderStatus(
-                provider: "openai_socket",
-                label: "OpenAI",
-                symbol: "chat_gpt",
-                description: "Persistent Responses API",
-                auth: .apiKey,
-                defaultBaseUrl: nil,
-                defaultApiKeyEnv: "OPENAI_API_KEY",
-                models: [ProviderModel(
-                    id: "gpt-5.6-sol",
-                    label: "Sol",
-                    description: "Frontier capability",
-                    contextWindow: 1_050_000,
-                    reasoning: [ReasoningChoice(
-                        id: "high",
-                        label: "High",
-                        description: "Deep reasoning"
-                    )],
-                    defaultReasoning: "high",
-                    toolDiscovery: .native
-                )],
-                modelIdsConfigurable: false,
-                webSearch: webSearchOptions(.off, .cached, .live),
-                toolDiscovery: .native,
-                customEndpointToolDiscovery: nil
-            )],
-            providerInstances: [],
-            botDefaults: nil,
-            models: [],
-            modelProviders: [:],
-            middlewareFeatures: [],
-            extensions: [],
-            contributions: [],
-            maxActiveSessions: 4,
-            sessionFileLimits: testSessionFileLimits()
-        ))
+        model.applyGatewayCatalog(
+            ReadyPayload(
+                machineName: "snowwhite.local",
+                bots: [],
+                sessions: [],
+                backgroundApprovals: [],
+                swarmAttentions: [],
+                swarms: [],
+                providers: [
+                    ProviderStatus(
+                        provider: "openai_socket",
+                        label: "OpenAI",
+                        symbol: "chat_gpt",
+                        description: "Persistent Responses API",
+                        auth: .apiKey,
+                        defaultBaseUrl: nil,
+                        defaultApiKeyEnv: "OPENAI_API_KEY",
+                        models: [
+                            ProviderModel(
+                                id: "gpt-5.6-sol",
+                                label: "Sol",
+                                description: "Frontier capability",
+                                contextWindow: 1_050_000,
+                                reasoning: [
+                                    ReasoningChoice(
+                                        id: "high",
+                                        label: "High",
+                                        description: "Deep reasoning"
+                                    )
+                                ],
+                                defaultReasoning: "high",
+                                toolDiscovery: .native
+                            )
+                        ],
+                        modelIdsConfigurable: false,
+                        webSearch: webSearchOptions(.off, .cached, .live),
+                        toolDiscovery: .native,
+                        customEndpointToolDiscovery: nil
+                    )
+                ],
+                providerInstances: [],
+                botDefaults: nil,
+                models: [],
+                modelProviders: [:],
+                middlewareFeatures: [],
+                extensions: [],
+                contributions: [],
+                maxActiveSessions: 4,
+                sessionFileLimits: testSessionFileLimits()
+            ))
 
         XCTAssertNil(model.chat.selectedSessionID)
         XCTAssertNil(model.agentDraft)
@@ -313,20 +329,24 @@ extension AppModelTests {
         try await Task.sleep(for: .milliseconds(20))
 
         let requests = await recorder.requests()
-        guard case .setProviderCredential(_, let credentialInstance, _, _) = try XCTUnwrap(
-            requests.first
-        ) else {
+        guard
+            case .setProviderCredential(_, let credentialInstance, _, _) = try XCTUnwrap(
+                requests.first
+            )
+        else {
             return XCTFail("Expected first-provider credential")
         }
         XCTAssertEqual(credentialInstance, instance)
-        guard case .registerProvider(
-            _,
-            let provider,
-            _,
-            _,
-            let modelIDs,
-            let reasoningEfforts
-        ) = try XCTUnwrap(requests.last) else {
+        guard
+            case .registerProvider(
+                _,
+                let provider,
+                _,
+                _,
+                let modelIDs,
+                let reasoningEfforts
+            ) = try XCTUnwrap(requests.last)
+        else {
             return XCTFail("Expected first-provider registration")
         }
         XCTAssertEqual(provider.instance, instance)
@@ -385,31 +405,35 @@ extension AppModelTests {
         guard case .setProviderCredential(let requestID, _, _, _) = try XCTUnwrap(request)
         else { return XCTFail("Expected provider credential request") }
 
-        model.gateway.handle(.providerCredentialSaved(
-            requestID: "stale",
-            instance: sibling.instance,
-            provider: sibling.provider
-        ))
-        model.gateway.handle(.providerCredentialSaved(
-            requestID: requestID,
-            instance: sibling.instance,
-            provider: sibling.provider
-        ))
-        model.gateway.handle(.providerCredentialSaved(
-            requestID: requestID,
-            instance: target.instance,
-            provider: "kimi"
-        ))
+        model.gateway.handle(
+            .providerCredentialSaved(
+                requestID: "stale",
+                instance: sibling.instance,
+                provider: sibling.provider
+            ))
+        model.gateway.handle(
+            .providerCredentialSaved(
+                requestID: requestID,
+                instance: sibling.instance,
+                provider: sibling.provider
+            ))
+        model.gateway.handle(
+            .providerCredentialSaved(
+                requestID: requestID,
+                instance: target.instance,
+                provider: "kimi"
+            ))
 
         XCTAssertEqual(model.providerInstances.map(\.configured), [false, false])
         XCTAssertEqual(model.providerAPIKey, "secret")
         XCTAssertEqual(model.providerActionState, .savingCredential(target.instance))
 
-        model.gateway.handle(.providerCredentialSaved(
-            requestID: requestID,
-            instance: target.instance,
-            provider: target.provider
-        ))
+        model.gateway.handle(
+            .providerCredentialSaved(
+                requestID: requestID,
+                instance: target.instance,
+                provider: target.provider
+            ))
 
         XCTAssertEqual(model.providerInstances.map(\.configured), [true, false])
         XCTAssertEqual(model.providerInstances.map(\.credentialHint), ["cret", "old1"])
@@ -454,12 +478,14 @@ extension AppModelTests {
         XCTAssertEqual(model.navigationPath, [.settings(.provider(record.instance))])
         XCTAssertTrue(model.isApplyingConfiguration)
 
-        model.gateway.handle(.rejected(GatewayRejection(
-            requestId: firstRequestID,
-            code: "provider_in_use",
-            message: "Provider is still in use",
-            fatal: false
-        )))
+        model.gateway.handle(
+            .rejected(
+                GatewayRejection(
+                    requestId: firstRequestID,
+                    code: "provider_in_use",
+                    message: "Provider is still in use",
+                    fatal: false
+                )))
 
         XCTAssertEqual(model.navigationPath, [.settings(.provider(record.instance))])
         XCTAssertEqual(model.providerActionState, .failed("Provider is still in use"))
@@ -475,27 +501,28 @@ extension AppModelTests {
         guard case .removeProvider(let retryRequestID, _) = try XCTUnwrap(retry)
         else { return XCTFail("Expected provider removal retry") }
 
-        model.gateway.handle(.gatewayConfigured(
-            requestID: retryRequestID,
-            payload: ReadyPayload(
-                machineName: "snowwhite.local",
-                bots: [],
-                sessions: [],
-                backgroundApprovals: [],
-                swarmAttentions: [],
-                swarms: [],
-                providers: [providerStatus(for: selection)],
-                providerInstances: [],
-                botDefaults: nil,
-                models: [],
-                modelProviders: [:],
-                middlewareFeatures: [],
-                extensions: [],
-                contributions: [],
-                maxActiveSessions: 4,
-                sessionFileLimits: testSessionFileLimits()
-            )
-        ))
+        model.gateway.handle(
+            .gatewayConfigured(
+                requestID: retryRequestID,
+                payload: ReadyPayload(
+                    machineName: "snowwhite.local",
+                    bots: [],
+                    sessions: [],
+                    backgroundApprovals: [],
+                    swarmAttentions: [],
+                    swarms: [],
+                    providers: [providerStatus(for: selection)],
+                    providerInstances: [],
+                    botDefaults: nil,
+                    models: [],
+                    modelProviders: [:],
+                    middlewareFeatures: [],
+                    extensions: [],
+                    contributions: [],
+                    maxActiveSessions: 4,
+                    sessionFileLimits: testSessionFileLimits()
+                )
+            ))
 
         XCTAssertTrue(model.navigationPath.isEmpty)
         XCTAssertTrue(model.providerInstances.isEmpty)
@@ -525,43 +552,47 @@ extension AppModelTests {
             systemPrompt: "Test",
             maxModelSteps: 256
         )
-        model.providerStatuses = [ProviderStatus(
-            provider: "kimi",
-            label: "Kimi",
-            symbol: "kimi",
-            description: "Kimi Chat Completions API",
+        model.providerStatuses = [
+            ProviderStatus(
+                provider: "kimi",
+                label: "Kimi",
+                symbol: "kimi",
+                description: "Kimi Chat Completions API",
                 auth: .apiKey,
-            defaultBaseUrl: nil,
-            defaultApiKeyEnv: "MOONSHOT_API_KEY",
-            models: [
-                ProviderModel(
-                    id: "kimi-k3",
-                    label: "Kimi K3",
-                    description: "Agentic coding model",
-                    contextWindow: 1_048_576,
-                    reasoning: [ReasoningChoice(
-                        id: "max",
-                        label: "Maximum",
-                        description: "Maximum reasoning"
-                    )],
-                    defaultReasoning: "max",
-                    toolDiscovery: .rebuild
-                ),
-                ProviderModel(
-                    id: "kimi-k2.7-code",
-                    label: "Kimi K2.7 Code",
-                    description: "Coding model",
-                    contextWindow: 262_144,
-                    reasoning: [],
-                    defaultReasoning: nil,
-                    toolDiscovery: .rebuild
-                )
-            ],
-            modelIdsConfigurable: false,
-            webSearch: webSearchOptions(.off),
-            toolDiscovery: .rebuild,
-            customEndpointToolDiscovery: nil
-        )]
+                defaultBaseUrl: nil,
+                defaultApiKeyEnv: "MOONSHOT_API_KEY",
+                models: [
+                    ProviderModel(
+                        id: "kimi-k3",
+                        label: "Kimi K3",
+                        description: "Agentic coding model",
+                        contextWindow: 1_048_576,
+                        reasoning: [
+                            ReasoningChoice(
+                                id: "max",
+                                label: "Maximum",
+                                description: "Maximum reasoning"
+                            )
+                        ],
+                        defaultReasoning: "max",
+                        toolDiscovery: .rebuild
+                    ),
+                    ProviderModel(
+                        id: "kimi-k2.7-code",
+                        label: "Kimi K2.7 Code",
+                        description: "Coding model",
+                        contextWindow: 262_144,
+                        reasoning: [],
+                        defaultReasoning: nil,
+                        toolDiscovery: .rebuild
+                    ),
+                ],
+                modelIdsConfigurable: false,
+                webSearch: webSearchOptions(.off),
+                toolDiscovery: .rebuild,
+                customEndpointToolDiscovery: nil
+            )
+        ]
 
         model.addProviderInstance("kimi")
 
@@ -580,15 +611,17 @@ extension AppModelTests {
         )
         let status = providerStatus(
             for: config,
-            models: [ProviderModel(
-                id: config.model,
-                label: "Luna",
-                description: "Test model",
-                contextWindow: 200_000,
-                reasoning: [],
-                defaultReasoning: nil,
-                toolDiscovery: .native
-            )],
+            models: [
+                ProviderModel(
+                    id: config.model,
+                    label: "Luna",
+                    description: "Test model",
+                    contextWindow: 200_000,
+                    reasoning: [],
+                    defaultReasoning: nil,
+                    toolDiscovery: .native
+                )
+            ],
             toolDiscovery: .rebuild,
             customEndpointToolDiscovery: .rebuild
         )
@@ -618,20 +651,22 @@ extension AppModelTests {
             reasoningEffort: nil,
             webSearch: .off
         )
-        model.providerStatuses = [ProviderStatus(
-            provider: selection.provider,
-            label: "Local",
-            symbol: "storage",
-            description: "OpenAI-compatible endpoint",
-            auth: .apiKey,
-            defaultBaseUrl: "http://localhost:8080/v1",
-            defaultApiKeyEnv: nil,
-            models: [],
-            modelIdsConfigurable: true,
-            webSearch: webSearchOptions(.off),
-            toolDiscovery: .rebuild,
-            customEndpointToolDiscovery: nil
-        )]
+        model.providerStatuses = [
+            ProviderStatus(
+                provider: selection.provider,
+                label: "Local",
+                symbol: "storage",
+                description: "OpenAI-compatible endpoint",
+                auth: .apiKey,
+                defaultBaseUrl: "http://localhost:8080/v1",
+                defaultApiKeyEnv: nil,
+                models: [],
+                modelIdsConfigurable: true,
+                webSearch: webSearchOptions(.off),
+                toolDiscovery: .rebuild,
+                customEndpointToolDiscovery: nil
+            )
+        ]
         model.providerDraft = selection
         model.providerLabelDraft = "Local"
         model.updateProviderModelIDs(" model-a, model-b, , model-a ")
@@ -644,14 +679,16 @@ extension AppModelTests {
 
         let requests = await recorder.requests()
         let request = try XCTUnwrap(requests.first)
-        guard case .registerProvider(
-            _,
-            let config,
-            _,
-            _,
-            let modelIDs,
-            let reasoningEfforts
-        ) = request else {
+        guard
+            case .registerProvider(
+                _,
+                let config,
+                _,
+                _,
+                let modelIDs,
+                let reasoningEfforts
+            ) = request
+        else {
             return XCTFail("Expected provider registration")
         }
         XCTAssertEqual(modelIDs, ["model-a", "model-b"])
@@ -686,14 +723,16 @@ extension AppModelTests {
         model.modelChoices = [choice]
         model.modelProviders = [choice.route: target.instance]
         model.providerStatuses = [providerStatus(for: target)]
-        model.providerInstances = [ProviderInstance(
-            label: "Work",
-            tint: .blue,
-            configured: true,
-            selection: target,
-            modelIds: [],
-            reasoningEfforts: []
-        )]
+        model.providerInstances = [
+            ProviderInstance(
+                label: "Work",
+                tint: .blue,
+                configured: true,
+                selection: target,
+                modelIds: [],
+                reasoningEfforts: []
+            )
+        ]
 
         model.selectBotDraftModel(choice.route)
 
@@ -811,31 +850,40 @@ extension AppModelTests {
             choice.route: config.instance,
             canonicalChoice.route: config.instance,
         ]
-        model.providerStatuses = [providerStatus(for: config, models: [ProviderModel(
-            id: config.model,
-            label: "Sol",
-            description: "Coding model",
-            contextWindow: 128_000,
-            reasoning: [],
-            defaultReasoning: "high",
-            toolDiscovery: .native
-        ), ProviderModel(
-            id: "gpt-5.6-luna",
-            label: "Luna",
-            description: "Fast coding model",
-            contextWindow: 128_000,
-            reasoning: [],
-            defaultReasoning: "high",
-            toolDiscovery: .native
-        )])]
-        model.providerInstances = [ProviderInstance(
-            label: "Work",
-            tint: .teal,
-            configured: true,
-            selection: config,
-            modelIds: [],
-            reasoningEfforts: []
-        )]
+        model.providerStatuses = [
+            providerStatus(
+                for: config,
+                models: [
+                    ProviderModel(
+                        id: config.model,
+                        label: "Sol",
+                        description: "Coding model",
+                        contextWindow: 128_000,
+                        reasoning: [],
+                        defaultReasoning: "high",
+                        toolDiscovery: .native
+                    ),
+                    ProviderModel(
+                        id: "gpt-5.6-luna",
+                        label: "Luna",
+                        description: "Fast coding model",
+                        contextWindow: 128_000,
+                        reasoning: [],
+                        defaultReasoning: "high",
+                        toolDiscovery: .native
+                    ),
+                ])
+        ]
+        model.providerInstances = [
+            ProviderInstance(
+                label: "Work",
+                tint: .teal,
+                configured: true,
+                selection: config,
+                modelIds: [],
+                reasoningEfforts: []
+            )
+        ]
 
         XCTAssertEqual(model.modelLabel(for: choice), "Sol")
         XCTAssertEqual(model.modelLabel(for: canonicalChoice), "Luna")
@@ -845,17 +893,18 @@ extension AppModelTests {
             model.modelLabel(provider: config.instance, modelID: "acme/custom-model"),
             "acme/custom-model"
         )
-        XCTAssertEqual(model.modelLabel(
-            for: ModelChoice(
-                route: "custom-route",
-                group: "Custom",
-                model: "custom-model",
-                reasoningEffort: nil,
-                contextWindow: nil,
-                supportsImageInput: false,
-                toolDiscovery: .rebuild
-            )
-        ), "custom-model")
+        XCTAssertEqual(
+            model.modelLabel(
+                for: ModelChoice(
+                    route: "custom-route",
+                    group: "Custom",
+                    model: "custom-model",
+                    reasoningEffort: nil,
+                    contextWindow: nil,
+                    supportsImageInput: false,
+                    toolDiscovery: .rebuild
+                )
+            ), "custom-model")
     }
 
     func testProviderLabelsUseAdvertisedNames() throws {
@@ -869,20 +918,22 @@ extension AppModelTests {
         )
         model.providerStatuses = [
             providerStatus(for: codex, label: "Codex"),
-            providerStatus(for: ProviderConfig(
-                provider: "openai_socket",
-                model: "gpt-5.6-sol",
-                baseUrl: nil,
-                reasoningEffort: "high",
-                webSearch: .cached
-            ), label: "OpenAI"),
-            providerStatus(for: ProviderConfig(
-                provider: "responses",
-                model: "local-model",
-                baseUrl: "http://localhost:8080/v1",
-                reasoningEffort: nil,
-                webSearch: .off
-            ), label: "Local")
+            providerStatus(
+                for: ProviderConfig(
+                    provider: "openai_socket",
+                    model: "gpt-5.6-sol",
+                    baseUrl: nil,
+                    reasoningEffort: "high",
+                    webSearch: .cached
+                ), label: "OpenAI"),
+            providerStatus(
+                for: ProviderConfig(
+                    provider: "responses",
+                    model: "local-model",
+                    baseUrl: "http://localhost:8080/v1",
+                    reasoningEffort: nil,
+                    webSearch: .off
+                ), label: "Local"),
         ]
 
         XCTAssertEqual(model.providerLabel(for: "openai_codex"), "Codex")
@@ -908,19 +959,29 @@ extension AppModelTests {
     }
 
     func testMiddlewareExclusionsFollowEnabledOwnersAndSelectedOptions() {
-        let features = [MiddlewareFeature(
-            id: "owner", label: "Owner", description: "An optional owner", required: false,
-            settings: [FrontendSetting(
-                id: "policy", label: "Policy", description: "Choose a policy",
-                kind: .select(options: [FrontendSettingOption(
-                    value: "choice-a", label: "Choice A", description: "Excludes another feature",
-                    disables: ["excluded"]
-                )], unsetLabel: "Inherit")
-            )]
-        )]
-        var middleware = MiddlewareConfig(enabled: ["owner", "excluded", "unrelated"], settings: [:])
+        let features = [
+            MiddlewareFeature(
+                id: "owner", label: "Owner", description: "An optional owner", required: false,
+                settings: [
+                    FrontendSetting(
+                        id: "policy", label: "Policy", description: "Choose a policy",
+                        kind: .select(
+                            options: [
+                                FrontendSettingOption(
+                                    value: "choice-a", label: "Choice A",
+                                    description: "Excludes another feature",
+                                    disables: ["excluded"]
+                                )
+                            ], unsetLabel: "Inherit")
+                    )
+                ]
+            )
+        ]
+        var middleware = MiddlewareConfig(
+            enabled: ["owner", "excluded", "unrelated"], settings: [:])
         middleware.setSetting(.string("choice-a"), middleware: "owner", setting: "policy")
-        XCTAssertEqual(middleware.disabledBy(features: features, middleware: "excluded"), "Choice A")
+        XCTAssertEqual(
+            middleware.disabledBy(features: features, middleware: "excluded"), "Choice A")
         middleware.reconcile(features: features)
         XCTAssertEqual(middleware.enabled, ["owner", "unrelated"])
 
@@ -967,24 +1028,25 @@ extension AppModelTests {
         model.botDefaultsSnapshot = VersionedAgentConfig(revision: 7, config: active)
         model.botDefaultsDraft = active
 
-        model.applyGatewayCatalog(ReadyPayload(
-            machineName: "snowwhite.local",
-            bots: [],
-            sessions: [],
-            backgroundApprovals: [],
-            swarmAttentions: [],
-            swarms: [],
-            providers: [],
-            providerInstances: [],
-            botDefaults: VersionedAgentConfig(revision: 8, config: botDefaults),
-            models: [],
-            modelProviders: [:],
-            middlewareFeatures: [],
-            extensions: [],
-            contributions: [],
-            maxActiveSessions: 4,
-            sessionFileLimits: testSessionFileLimits()
-        ))
+        model.applyGatewayCatalog(
+            ReadyPayload(
+                machineName: "snowwhite.local",
+                bots: [],
+                sessions: [],
+                backgroundApprovals: [],
+                swarmAttentions: [],
+                swarms: [],
+                providers: [],
+                providerInstances: [],
+                botDefaults: VersionedAgentConfig(revision: 8, config: botDefaults),
+                models: [],
+                modelProviders: [:],
+                middlewareFeatures: [],
+                extensions: [],
+                contributions: [],
+                maxActiveSessions: 4,
+                sessionFileLimits: testSessionFileLimits()
+            ))
 
         XCTAssertEqual(model.agentSnapshot, VersionedAgentConfig(revision: 3, config: active))
         XCTAssertEqual(model.agentDraft, edited)
@@ -1044,15 +1106,17 @@ extension AppModelTests {
             if case .updateBot = $0 { return true }
             return false
         }
-        guard case .updateBot(
-            let requestID,
-            let id,
-            let expectedRevision,
-            let name,
-            let description,
-            let tint,
-            let config
-        ) = try XCTUnwrap(request) else {
+        guard
+            case .updateBot(
+                let requestID,
+                let id,
+                let expectedRevision,
+                let name,
+                let description,
+                let tint,
+                let config
+            ) = try XCTUnwrap(request)
+        else {
             return XCTFail("Expected the Bot draft to be saved")
         }
         XCTAssertEqual(id, "bot-1")
@@ -1129,12 +1193,14 @@ extension AppModelTests {
             model.botMutationRequestID = "bot-update"
             model.botApplyState = .applying
 
-            model.gateway.handle(.rejected(GatewayRejection(
-                requestId: "bot-update",
-                code: code,
-                message: "Rejected",
-                fatal: false
-            )))
+            model.gateway.handle(
+                .rejected(
+                    GatewayRejection(
+                        requestId: "bot-update",
+                        code: code,
+                        message: "Rejected",
+                        fatal: false
+                    )))
 
             XCTAssertEqual(model.botApplyState, expected)
         }
@@ -1150,16 +1216,25 @@ extension AppModelTests {
         model.bots = [helper]
         model.chat.sessions = [session(state: .idle)]
         model.chat.selectedSessionID = "chat-1"
-        model.middlewareFeatures = [MiddlewareFeature(
-            id: "owner", label: "Owner", description: "Required capability", required: true,
-            settings: [FrontendSetting(
-                id: "policy", label: "Policy", description: "Choose a policy", composer: true,
-                kind: .select(options: [FrontendSettingOption(
-                    value: "choice-a", label: "Choice A", description: "Excludes another feature",
-                    disables: ["excluded"]
-                )], unsetLabel: nil)
-            )]
-        )]
+        model.middlewareFeatures = [
+            MiddlewareFeature(
+                id: "owner", label: "Owner", description: "Required capability", required: true,
+                settings: [
+                    FrontendSetting(
+                        id: "policy", label: "Policy", description: "Choose a policy",
+                        composer: true,
+                        kind: .select(
+                            options: [
+                                FrontendSettingOption(
+                                    value: "choice-a", label: "Choice A",
+                                    description: "Excludes another feature",
+                                    disables: ["excluded"]
+                                )
+                            ], unsetLabel: nil)
+                    )
+                ]
+            )
+        ]
 
         model.setSelectedBotSetting(
             .string("choice-a"),
@@ -1171,15 +1246,17 @@ extension AppModelTests {
             if case .updateBot = $0 { return true }
             return false
         }
-        guard case .updateBot(
-            _,
-            let id,
-            let expectedRevision,
-            let name,
-            let description,
-            let tint,
-            let config
-        ) = try XCTUnwrap(request) else {
+        guard
+            case .updateBot(
+                _,
+                let id,
+                let expectedRevision,
+                let name,
+                let description,
+                let tint,
+                let config
+            ) = try XCTUnwrap(request)
+        else {
             return XCTFail("Expected a durable Bot update")
         }
         XCTAssertEqual(id, helper.id)
@@ -1243,10 +1320,11 @@ extension AppModelTests {
         try await Task.sleep(for: .milliseconds(20))
 
         let requests = await recorder.requests()
-        XCTAssertFalse(requests.contains { request in
-            if case .deleteBot = request { return true }
-            return false
-        })
+        XCTAssertFalse(
+            requests.contains { request in
+                if case .deleteBot = request { return true }
+                return false
+            })
     }
 
     func testDeletingBotDropsItsRoutineStateWhenTheCatalogConfirms() async throws {
@@ -1273,16 +1351,18 @@ extension AppModelTests {
         model.gateway.connectionState = .ready
         model.bots = [mobius, helper]
         model.routines = [helperRoutine]
-        model.routineRuns = [RoutineRun(
-            id: "run-1",
-            routineId: helperRoutine.id,
-            botId: helper.id,
-            startedAt: 100,
-            finishedAt: 101,
-            status: .succeeded,
-            sessionId: nil,
-            message: nil
-        )]
+        model.routineRuns = [
+            RoutineRun(
+                id: "run-1",
+                routineId: helperRoutine.id,
+                botId: helper.id,
+                startedAt: 100,
+                finishedAt: 101,
+                status: .succeeded,
+                sessionId: nil,
+                message: nil
+            )
+        ]
         model.chat.botSessionsBotID = helper.id
         model.chat.selectedSessionID = "work-1"
         model.destination = .bots
@@ -1346,18 +1426,20 @@ extension AppModelTests {
                 return requestID
             }.first
         )
-        let response = ready(botDefaults: VersionedAgentConfig(
-            revision: 8,
-            config: previousBotDefaults
-        ))
+        let response = ready(
+            botDefaults: VersionedAgentConfig(
+                revision: 8,
+                config: previousBotDefaults
+            ))
         model.applyGatewayConfigurationResponse(requestID: registration, payload: response)
         try await Task.sleep(for: .milliseconds(20))
 
         let requests = await recorder.requests()
-        XCTAssertFalse(requests.contains {
-            if case .configureBotDefaults = $0 { return true }
-            return false
-        })
+        XCTAssertFalse(
+            requests.contains {
+                if case .configureBotDefaults = $0 { return true }
+                return false
+            })
         XCTAssertEqual(model.botDefaultsDraft, previousBotDefaults)
         XCTAssertEqual(model.agentDraft?.systemPrompt, "Active chat")
     }
@@ -1393,7 +1475,8 @@ extension AppModelTests {
                 return false
             }
         )
-        guard case .configureBotDefaults(let requestID, _, let savedDraft) = botDefaultsRequest else {
+        guard case .configureBotDefaults(let requestID, _, let savedDraft) = botDefaultsRequest
+        else {
             return XCTFail("Expected Bot defaults configuration")
         }
         XCTAssertEqual(savedDraft, draft)
@@ -1433,10 +1516,11 @@ extension AppModelTests {
         model.saveBotDefaults()
         await fulfillment(of: [botDefaultsSaved], timeout: 1)
         let requests = await recorder.requests()
-        let requestID = try XCTUnwrap(requests.lazy.compactMap { request -> String? in
-            guard case .configureBotDefaults(let requestID, _, _) = request else { return nil }
-            return requestID
-        }.first)
+        let requestID = try XCTUnwrap(
+            requests.lazy.compactMap { request -> String? in
+                guard case .configureBotDefaults(let requestID, _, _) = request else { return nil }
+                return requestID
+            }.first)
 
         var laterBotDefaultsDraft = draft
         laterBotDefaultsDraft.middleware.setSetting(
@@ -1469,12 +1553,14 @@ extension AppModelTests {
             if case .installExtension = $0 { return true }
             return false
         }
-        guard case .installExtension(
-            let requestID,
-            let source,
-            let reference,
-            let subdirectory
-        ) = try XCTUnwrap(request) else {
+        guard
+            case .installExtension(
+                let requestID,
+                let source,
+                let reference,
+                let subdirectory
+            ) = try XCTUnwrap(request)
+        else {
             return XCTFail("Expected an extension install request")
         }
         XCTAssertEqual(source, "https://github.com/DietrichGebert/ponytail.git")
@@ -1517,12 +1603,14 @@ extension AppModelTests {
             if case .installExtension = $0 { return true }
             return false
         }
-        guard case .installExtension(
-            _,
-            let source,
-            let reference,
-            let subdirectory
-        ) = try XCTUnwrap(request) else {
+        guard
+            case .installExtension(
+                _,
+                let source,
+                let reference,
+                let subdirectory
+            ) = try XCTUnwrap(request)
+        else {
             return XCTFail("Expected a catalog extension install request")
         }
         XCTAssertEqual(source, item.source.url)
@@ -1542,11 +1630,13 @@ extension AppModelTests {
             if case .trustExtensionHooks = $0 { return true }
             return false
         }
-        guard case .trustExtensionHooks(
-            let trustRequestID,
-            let trustID,
-            let trustDigest
-        ) = try XCTUnwrap(trust) else {
+        guard
+            case .trustExtensionHooks(
+                let trustRequestID,
+                let trustID,
+                let trustDigest
+            ) = try XCTUnwrap(trust)
+        else {
             return XCTFail("Expected a hook trust request")
         }
         XCTAssertEqual(trustID, untrusted.id)
@@ -1562,11 +1652,13 @@ extension AppModelTests {
             if case .revokeExtensionHooksTrust = $0 { return true }
             return false
         }
-        guard case .revokeExtensionHooksTrust(
-            _,
-            let untrustID,
-            let untrustDigest
-        ) = try XCTUnwrap(untrust) else {
+        guard
+            case .revokeExtensionHooksTrust(
+                _,
+                let untrustID,
+                let untrustDigest
+            ) = try XCTUnwrap(untrust)
+        else {
             return XCTFail("Expected a hook trust revocation request")
         }
         XCTAssertEqual(untrustID, trusted.id)
@@ -1598,11 +1690,13 @@ extension AppModelTests {
         model.installExtension()
         XCTAssertEqual(model.extensionAction, .installing)
 
-        model.gateway.handle(.error(GatewayFailure(
-            code: "internal",
-            message: "Gateway failed.",
-            fatal: true
-        )))
+        model.gateway.handle(
+            .error(
+                GatewayFailure(
+                    code: "internal",
+                    message: "Gateway failed.",
+                    fatal: true
+                )))
 
         XCTAssertNil(model.extensionAction)
         XCTAssertNil(model.extensionRequestID)

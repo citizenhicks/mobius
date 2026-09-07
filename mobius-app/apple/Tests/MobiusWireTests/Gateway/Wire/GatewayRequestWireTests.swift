@@ -4,17 +4,18 @@ import XCTest
 
 extension GatewayWireTests {
     func testScratchpadRequestAndResponseCarryTheirManagementScope() throws {
-        let request = try requestObject(.submitContribution(
-            requestID: "scratchpad-1",
-            scope: .swarm(id: "swarm-1"),
-            operation: .capabilityCommand(
-                capability: "scratchpad",
-                command: "scratchpad",
-                arguments: "refresh",
-                input: nil,
-                target: nil
-            )
-        ))
+        let request = try requestObject(
+            .submitContribution(
+                requestID: "scratchpad-1",
+                scope: .swarm(id: "swarm-1"),
+                operation: .capabilityCommand(
+                    capability: "scratchpad",
+                    command: "scratchpad",
+                    arguments: "refresh",
+                    input: nil,
+                    target: nil
+                )
+            ))
         XCTAssertEqual(request["type"] as? String, "submit_contribution")
         XCTAssertNil(request["session_id"])
         XCTAssertEqual(
@@ -29,7 +30,8 @@ extension GatewayWireTests {
         let response = try decodeEnvelope(
             #"{"version":58,"type":"contributions","request_id":"scratchpad-1","scope":{"type":"global"},"contributions":[{"capability":"scratchpad","accepts_file_attachments":false,"count":0,"commands":[],"widgets":[],"references":[]}] }"#
         )
-        guard case .contributionsChanged(let requestID, let scope, let contribution) = response else {
+        guard case .contributionsChanged(let requestID, let scope, let contribution) = response
+        else {
             return XCTFail("Expected a scoped scratchpad response")
         }
         XCTAssertEqual(requestID, "scratchpad-1")
@@ -42,50 +44,55 @@ extension GatewayWireTests {
         XCTAssertEqual(list["type"] as? String, "list_sessions")
         XCTAssertEqual(list["request_id"] as? String, "list-1")
 
-        let create = try requestObject(.createSession(
-            requestID: "create-1",
-            workspace: "/srv/mobius",
-            botID: "bot-1"
-        ))
+        let create = try requestObject(
+            .createSession(
+                requestID: "create-1",
+                workspace: "/srv/mobius",
+                botID: "bot-1"
+            ))
         XCTAssertEqual(create["type"] as? String, "create_session")
         XCTAssertEqual(create["workspace"] as? String, "/srv/mobius")
         XCTAssertEqual(create["bot_id"] as? String, "bot-1")
 
-        let attach = try requestObject(.attachSessionFolder(
-            requestID: "attach-1",
-            sessionID: "chat-1",
-            folder: "/srv/api"
-        ))
+        let attach = try requestObject(
+            .attachSessionFolder(
+                requestID: "attach-1",
+                sessionID: "chat-1",
+                folder: "/srv/api"
+            ))
         XCTAssertEqual(attach["type"] as? String, "attach_session_folder")
         XCTAssertEqual(attach["request_id"] as? String, "attach-1")
         XCTAssertEqual(attach["session_id"] as? String, "chat-1")
         XCTAssertEqual(attach["folder"] as? String, "/srv/api")
 
-        let open = try requestObject(.openSession(
-            requestID: "open-1",
-            sessionID: "chat-1",
-            lastSequence: 41
-        ))
+        let open = try requestObject(
+            .openSession(
+                requestID: "open-1",
+                sessionID: "chat-1",
+                lastSequence: 41
+            ))
         XCTAssertEqual(open["type"] as? String, "open_session")
         XCTAssertEqual(open["session_id"] as? String, "chat-1")
         XCTAssertEqual(open["last_sequence"] as? Int, 41)
         XCTAssertNil(open["replay_epoch"])
 
-        let freshOpen = try requestObject(.openSession(
-            requestID: "open-2",
-            sessionID: "chat-1",
-            lastSequence: nil
-        ))
+        let freshOpen = try requestObject(
+            .openSession(
+                requestID: "open-2",
+                sessionID: "chat-1",
+                lastSequence: nil
+            ))
         XCTAssertTrue(freshOpen["last_sequence"] is NSNull)
         XCTAssertNil(freshOpen["replay_epoch"])
     }
 
     func testBotMutationRequestsUseDerivedIdentityAndRevision() throws {
-        let create = try requestObject(.createBot(
-            requestID: "bot-create-1",
-            name: "Reviewer",
-            description: "Reviews focused changes."
-        ))
+        let create = try requestObject(
+            .createBot(
+                requestID: "bot-create-1",
+                name: "Reviewer",
+                description: "Reviews focused changes."
+            ))
         XCTAssertEqual(create["type"] as? String, "create_bot")
         XCTAssertEqual(create["name"] as? String, "Reviewer")
         XCTAssertEqual(create["description"] as? String, "Reviews focused changes.")
@@ -93,23 +100,25 @@ extension GatewayWireTests {
         XCTAssertNil(create["tint"])
         XCTAssertNil(create["config"])
 
-        let delete = try requestObject(.deleteBot(
-            requestID: "bot-delete-1",
-            id: "bot-1",
-            expectedRevision: 7
-        ))
+        let delete = try requestObject(
+            .deleteBot(
+                requestID: "bot-delete-1",
+                id: "bot-1",
+                expectedRevision: 7
+            ))
         XCTAssertEqual(delete["type"] as? String, "delete_bot")
         XCTAssertEqual(delete["id"] as? String, "bot-1")
         XCTAssertEqual(delete["expected_revision"] as? Int, 7)
     }
 
     func testSwarmManagementRequestsEncodeBotOwnedIdentityInputs() throws {
-        let create = try requestObject(.createSwarm(
-            requestID: "swarm-create-1",
-            title: "Quiet Foxes",
-            leaderBotID: "bot-1",
-            memberBotIDs: ["bot-2", "bot-3"]
-        ))
+        let create = try requestObject(
+            .createSwarm(
+                requestID: "swarm-create-1",
+                title: "Quiet Foxes",
+                leaderBotID: "bot-1",
+                memberBotIDs: ["bot-2", "bot-3"]
+            ))
         XCTAssertEqual(create["type"] as? String, "create_swarm")
         XCTAssertEqual(create["request_id"] as? String, "swarm-create-1")
         XCTAssertEqual(create["title"] as? String, "Quiet Foxes")
@@ -119,55 +128,61 @@ extension GatewayWireTests {
             ["bot-2", "bot-3"]
         )
 
-        let add = try requestObject(.addSwarmMember(
-            requestID: "swarm-add-1",
-            swarmID: "swarm-1",
-            botID: "bot-4"
-        ))
+        let add = try requestObject(
+            .addSwarmMember(
+                requestID: "swarm-add-1",
+                swarmID: "swarm-1",
+                botID: "bot-4"
+            ))
         XCTAssertEqual(add["type"] as? String, "add_swarm_member")
         XCTAssertEqual(add["swarm_id"] as? String, "swarm-1")
         XCTAssertEqual(add["bot_id"] as? String, "bot-4")
 
-        let leave = try requestObject(.leaveSwarm(
-            requestID: "swarm-leave-1",
-            swarmID: "swarm-1",
-            botID: "bot-4"
-        ))
+        let leave = try requestObject(
+            .leaveSwarm(
+                requestID: "swarm-leave-1",
+                swarmID: "swarm-1",
+                botID: "bot-4"
+            ))
         XCTAssertEqual(leave["type"] as? String, "leave_swarm")
         XCTAssertEqual(leave["bot_id"] as? String, "bot-4")
 
-        let rename = try requestObject(.renameSwarm(
-            requestID: "swarm-rename-1",
-            swarmID: "swarm-1",
-            title: "Night Shift"
-        ))
+        let rename = try requestObject(
+            .renameSwarm(
+                requestID: "swarm-rename-1",
+                swarmID: "swarm-1",
+                title: "Night Shift"
+            ))
         XCTAssertEqual(rename["type"] as? String, "rename_swarm")
         XCTAssertEqual(rename["swarm_id"] as? String, "swarm-1")
         XCTAssertEqual(rename["title"] as? String, "Night Shift")
 
-        let disband = try requestObject(.disbandSwarm(
-            requestID: "swarm-disband-1",
-            swarmID: "swarm-1"
-        ))
+        let disband = try requestObject(
+            .disbandSwarm(
+                requestID: "swarm-disband-1",
+                swarmID: "swarm-1"
+            ))
         XCTAssertEqual(disband["type"] as? String, "disband_swarm")
         XCTAssertEqual(disband["swarm_id"] as? String, "swarm-1")
         XCTAssertNil(disband["session_id"])
 
-        let post = try requestObject(.postSwarmMessage(
-            requestID: "swarm-message-1",
-            swarmID: "swarm-1",
-            text: "@builder review this"
-        ))
+        let post = try requestObject(
+            .postSwarmMessage(
+                requestID: "swarm-message-1",
+                swarmID: "swarm-1",
+                text: "@builder review this"
+            ))
         XCTAssertEqual(post["type"] as? String, "post_swarm_message")
         XCTAssertEqual(post["request_id"] as? String, "swarm-message-1")
         XCTAssertEqual(post["swarm_id"] as? String, "swarm-1")
         XCTAssertNil(post["workspace"])
         XCTAssertEqual(post["text"] as? String, "@builder review this")
 
-        let sessions = try requestObject(.listBotSessions(
-            requestID: "bot-sessions-1",
-            botID: "bot-2"
-        ))
+        let sessions = try requestObject(
+            .listBotSessions(
+                requestID: "bot-sessions-1",
+                botID: "bot-2"
+            ))
         XCTAssertEqual(sessions["type"] as? String, "list_bot_sessions")
         XCTAssertEqual(sessions["request_id"] as? String, "bot-sessions-1")
         XCTAssertEqual(sessions["bot_id"] as? String, "bot-2")
@@ -176,29 +191,43 @@ extension GatewayWireTests {
     func testSessionScopedRequestsEncodeSessionID() throws {
         let submission = Submission(
             id: "input-1",
-            op: .message(MessageSubmission(
-                author: .user,
-                text: "Hello",
-                attachments: [],
-                requestedDelivery: nil,
-                targetTurnId: nil
-            ))
+            op: .message(
+                MessageSubmission(
+                    author: .user,
+                    text: "Hello",
+                    attachments: [],
+                    requestedDelivery: nil,
+                    targetTurnId: nil
+                ))
         )
         let requests: [(GatewayRequest, String)] = [
-            (.renameSession(requestID: "rename-1", sessionID: "chat-1", title: "Review"), "rename_session"),
-            (.setSessionPinned(requestID: "pin-1", sessionID: "chat-1", pinned: true), "set_session_pinned"),
+            (
+                .renameSession(requestID: "rename-1", sessionID: "chat-1", title: "Review"),
+                "rename_session"
+            ),
+            (
+                .setSessionPinned(requestID: "pin-1", sessionID: "chat-1", pinned: true),
+                "set_session_pinned"
+            ),
             (.submit(sessionID: "chat-1", submission: submission), "submit"),
-            (.getGitDiff(
-                requestID: "diff-1",
-                sessionID: "chat-1",
-                scope: .unstaged
-            ), "get_git_diff"),
-            (.switchGitBranch(requestID: "branch-1", sessionID: "chat-1", branch: "feature"), "switch_git_branch"),
-            (.getSessionHistory(
-                requestID: "history-1",
-                sessionID: "chat-1",
-                beforeSequence: 40
-            ), "get_session_history"),
+            (
+                .getGitDiff(
+                    requestID: "diff-1",
+                    sessionID: "chat-1",
+                    scope: .unstaged
+                ), "get_git_diff"
+            ),
+            (
+                .switchGitBranch(requestID: "branch-1", sessionID: "chat-1", branch: "feature"),
+                "switch_git_branch"
+            ),
+            (
+                .getSessionHistory(
+                    requestID: "history-1",
+                    sessionID: "chat-1",
+                    beforeSequence: 40
+                ), "get_session_history"
+            ),
 
         ]
 
@@ -208,22 +237,24 @@ extension GatewayWireTests {
             XCTAssertEqual(object["session_id"] as? String, "chat-1")
         }
 
-        let delete = try requestObject(.deleteSessions(
-            requestID: "delete-1",
-            sessionIDs: ["chat-1", "chat-2"]
-        ))
+        let delete = try requestObject(
+            .deleteSessions(
+                requestID: "delete-1",
+                sessionIDs: ["chat-1", "chat-2"]
+            ))
         XCTAssertEqual(delete["type"] as? String, "delete_sessions")
         XCTAssertEqual(delete["session_ids"] as? [String], ["chat-1", "chat-2"])
 
-        let configure = try requestObject(.updateBot(
-            requestID: "bot-config-1",
-            id: "bot-1",
-            expectedRevision: 4,
-            name: "Helper",
-            description: "Reviews focused changes.",
-            tint: .purple,
-            config: composition
-        ))
+        let configure = try requestObject(
+            .updateBot(
+                requestID: "bot-config-1",
+                id: "bot-1",
+                expectedRevision: 4,
+                name: "Helper",
+                description: "Reviews focused changes.",
+                tint: .purple,
+                config: composition
+            ))
         XCTAssertEqual(configure["type"] as? String, "update_bot")
         XCTAssertEqual(configure["id"] as? String, "bot-1")
         XCTAssertEqual(configure["name"] as? String, "Helper")
@@ -240,22 +271,24 @@ extension GatewayWireTests {
         let subagents = try XCTUnwrap(settings["subagents"] as? [String: Any])
         XCTAssertEqual(subagents["model_route"] as? String, "openai_socket/gpt-5.6-sol")
 
-        let branch = try requestObject(.switchGitBranch(
-            requestID: "branch-2",
-            sessionID: "chat-1",
-            branch: "feature"
-        ))
+        let branch = try requestObject(
+            .switchGitBranch(
+                requestID: "branch-2",
+                sessionID: "chat-1",
+                branch: "feature"
+            ))
         XCTAssertEqual(branch["branch"] as? String, "feature")
 
         let schedule = RoutineSchedule.interval(seconds: 3_700)
-        let create = try requestObject(.createRoutine(
-            requestID: "routine-1",
-            botID: "bot-1",
-            workspace: "/srv/mobius",
-            instructions: "Review nightly",
-            schedule: schedule,
-            endsAt: nil
-        ))
+        let create = try requestObject(
+            .createRoutine(
+                requestID: "routine-1",
+                botID: "bot-1",
+                workspace: "/srv/mobius",
+                instructions: "Review nightly",
+                schedule: schedule,
+                endsAt: nil
+            ))
         XCTAssertEqual(create["type"] as? String, "create_routine")
         XCTAssertEqual(create["bot_id"] as? String, "bot-1")
         XCTAssertEqual(create["workspace"] as? String, "/srv/mobius")
@@ -263,16 +296,17 @@ extension GatewayWireTests {
         XCTAssertEqual((create["schedule"] as? [String: Any])?["kind"] as? String, "interval")
         XCTAssertEqual((create["schedule"] as? [String: Any])?["every_seconds"] as? Int, 3_700)
 
-        let update = try requestObject(.updateRoutine(
-            requestID: "routine-2",
-            id: "routine-1",
-            botID: "bot-1",
-            workspace: "/srv/mobius",
-            instructions: "Review nightly",
-            schedule: .cron("0 9 * * *", timeZone: "America/New_York"),
-            endsAt: 500,
-            enabled: false
-        ))
+        let update = try requestObject(
+            .updateRoutine(
+                requestID: "routine-2",
+                id: "routine-1",
+                botID: "bot-1",
+                workspace: "/srv/mobius",
+                instructions: "Review nightly",
+                schedule: .cron("0 9 * * *", timeZone: "America/New_York"),
+                endsAt: 500,
+                enabled: false
+            ))
         XCTAssertEqual(update["type"] as? String, "update_routine")
         XCTAssertEqual(update["id"] as? String, "routine-1")
         XCTAssertEqual(update["enabled"] as? Bool, false)
@@ -286,18 +320,20 @@ extension GatewayWireTests {
         let history = try requestObject(.listRoutineHistory(requestID: "routine-4", id: nil))
         XCTAssertTrue(history["id"] is NSNull)
 
-        let deleteRun = try requestObject(.deleteRoutineRun(
-            requestID: "routine-delete-run",
-            id: "run-1"
-        ))
+        let deleteRun = try requestObject(
+            .deleteRoutineRun(
+                requestID: "routine-delete-run",
+                id: "run-1"
+            ))
         XCTAssertEqual(deleteRun["type"] as? String, "delete_routine_run")
         XCTAssertEqual(deleteRun["id"] as? String, "run-1")
 
-        let preview = try requestObject(.getRoutineRunPreview(
-            requestID: "routine-5",
-            id: "run-1",
-            beforeSequence: 12
-        ))
+        let preview = try requestObject(
+            .getRoutineRunPreview(
+                requestID: "routine-5",
+                id: "run-1",
+                beforeSequence: 12
+            ))
         XCTAssertEqual(preview["type"] as? String, "get_routine_run_preview")
         XCTAssertEqual(preview["before_sequence"] as? Int, 12)
     }
@@ -309,19 +345,21 @@ extension GatewayWireTests {
             size: 3,
             mediaType: "image/png"
         )
-        let submit = try requestObject(.submit(
-            sessionID: "chat-1",
-            submission: Submission(
-                id: "input-1",
-                op: .message(MessageSubmission(
-                    author: .user,
-                    text: "Review this",
-                    attachments: [file],
-                    requestedDelivery: nil,
-                    targetTurnId: nil
-                ))
-            )
-        ))
+        let submit = try requestObject(
+            .submit(
+                sessionID: "chat-1",
+                submission: Submission(
+                    id: "input-1",
+                    op: .message(
+                        MessageSubmission(
+                            author: .user,
+                            text: "Review this",
+                            attachments: [file],
+                            requestedDelivery: nil,
+                            targetTurnId: nil
+                        ))
+                )
+            ))
         let submission = try XCTUnwrap(submit["submission"] as? [String: Any])
         let operation = try XCTUnwrap(submission["op"] as? [String: Any])
         XCTAssertEqual(operation["type"] as? String, "message")
@@ -329,74 +367,82 @@ extension GatewayWireTests {
         let attachments = try XCTUnwrap(message["attachments"] as? [[String: Any]])
         XCTAssertEqual(attachments.first?["media_type"] as? String, "image/png")
 
-        let begin = try requestObject(.beginSessionFileUpload(
-            requestID: "begin-1",
-            sessionID: "chat-1",
-            name: "scan.png",
-            size: 3,
-            mediaType: "image/png"
-        ))
+        let begin = try requestObject(
+            .beginSessionFileUpload(
+                requestID: "begin-1",
+                sessionID: "chat-1",
+                name: "scan.png",
+                size: 3,
+                mediaType: "image/png"
+            ))
         XCTAssertEqual(begin["type"] as? String, "begin_session_file_upload")
         XCTAssertEqual(begin["media_type"] as? String, "image/png")
 
-        let append = try requestObject(.uploadSessionFileChunk(
-            requestID: "chunk-1",
-            sessionID: "chat-1",
-            uploadID: "upload-1",
-            offset: 0,
-            data: Data([1, 2, 3])
-        ))
+        let append = try requestObject(
+            .uploadSessionFileChunk(
+                requestID: "chunk-1",
+                sessionID: "chat-1",
+                uploadID: "upload-1",
+                offset: 0,
+                data: Data([1, 2, 3])
+            ))
         XCTAssertEqual(append["type"] as? String, "upload_session_file_chunk")
         XCTAssertEqual(append["data"] as? String, "AQID")
 
-        let finish = try requestObject(.finishSessionFileUpload(
-            requestID: "finish-1",
-            sessionID: "chat-1",
-            uploadID: "upload-1"
-        ))
+        let finish = try requestObject(
+            .finishSessionFileUpload(
+                requestID: "finish-1",
+                sessionID: "chat-1",
+                uploadID: "upload-1"
+            ))
         XCTAssertEqual(finish["type"] as? String, "finish_session_file_upload")
 
-        let delete = try requestObject(.deleteSessionFile(
-            requestID: "delete-1",
-            sessionID: "chat-1",
-            fileID: "file-1"
-        ))
+        let delete = try requestObject(
+            .deleteSessionFile(
+                requestID: "delete-1",
+                sessionID: "chat-1",
+                fileID: "file-1"
+            ))
         XCTAssertEqual(delete["type"] as? String, "delete_session_file")
         XCTAssertEqual(delete["session_id"] as? String, "chat-1")
         XCTAssertEqual(delete["file_id"] as? String, "file-1")
 
-        let list = try requestObject(.listSessionFiles(
-            requestID: "list-1",
-            sessionID: "chat-1"
-        ))
+        let list = try requestObject(
+            .listSessionFiles(
+                requestID: "list-1",
+                sessionID: "chat-1"
+            ))
         XCTAssertEqual(list["type"] as? String, "list_session_files")
 
-        let read = try requestObject(.readSessionFile(
-            requestID: "read-1",
-            sessionID: "chat-1",
-            fileID: "file-1",
-            offset: 2,
-            maxBytes: 262_144
-        ))
+        let read = try requestObject(
+            .readSessionFile(
+                requestID: "read-1",
+                sessionID: "chat-1",
+                fileID: "file-1",
+                offset: 2,
+                maxBytes: 262_144
+            ))
         XCTAssertEqual(read["type"] as? String, "read_session_file")
         XCTAssertEqual(read["file_id"] as? String, "file-1")
         XCTAssertEqual(read["max_bytes"] as? Int, 262_144)
     }
 
     func testMessageOperationEncodesOneTypedPayload() throws {
-        let request = try requestObject(.submit(
-            sessionID: "chat-1",
-            submission: Submission(
-                id: "input-1",
-                op: .message(MessageSubmission(
-                    author: .user,
-                    text: "Use the smaller patch",
-                    attachments: [],
-                    requestedDelivery: .queue,
-                    targetTurnId: "turn-1"
-                ))
-            )
-        ))
+        let request = try requestObject(
+            .submit(
+                sessionID: "chat-1",
+                submission: Submission(
+                    id: "input-1",
+                    op: .message(
+                        MessageSubmission(
+                            author: .user,
+                            text: "Use the smaller patch",
+                            attachments: [],
+                            requestedDelivery: .queue,
+                            targetTurnId: "turn-1"
+                        ))
+                )
+            ))
 
         let submission = try XCTUnwrap(request["submission"] as? [String: Any])
         let operation = try XCTUnwrap(submission["op"] as? [String: Any])
@@ -411,17 +457,19 @@ extension GatewayWireTests {
 
         let decoded = try decoder().decode(
             AgentOperation.self,
-            from: try encoder().encode(AgentOperation.message(MessageSubmission(
-                author: .user,
-                text: "Use the smaller patch",
-                attachments: [],
-                reply: MessageReply(
-                    target: MessageTarget(checkpointSequence: 7, batchItemCount: 2),
-                    text: "The larger proposal"
-                ),
-                requestedDelivery: .queue,
-                targetTurnId: "turn-1"
-            )))
+            from: try encoder().encode(
+                AgentOperation.message(
+                    MessageSubmission(
+                        author: .user,
+                        text: "Use the smaller patch",
+                        attachments: [],
+                        reply: MessageReply(
+                            target: MessageTarget(checkpointSequence: 7, batchItemCount: 2),
+                            text: "The larger proposal"
+                        ),
+                        requestedDelivery: .queue,
+                        targetTurnId: "turn-1"
+                    )))
         )
         guard case .message(let payload) = decoded else {
             return XCTFail("Expected a message operation")
@@ -451,38 +499,42 @@ extension GatewayWireTests {
     }
 
     func testWorkspaceViewerRequestsMatchV28() throws {
-        let diff = try requestObject(.getGitDiff(
-            requestID: "diff-1",
-            sessionID: "chat-1",
-            scope: .committed
-        ))
+        let diff = try requestObject(
+            .getGitDiff(
+                requestID: "diff-1",
+                sessionID: "chat-1",
+                scope: .committed
+            ))
         XCTAssertEqual(diff["scope"] as? String, "committed")
 
-        let list = try requestObject(.listWorkspaceFiles(
-            requestID: "files-1",
-            sessionID: "chat-1",
-            scope: .modified
-        ))
+        let list = try requestObject(
+            .listWorkspaceFiles(
+                requestID: "files-1",
+                sessionID: "chat-1",
+                scope: .modified
+            ))
         XCTAssertEqual(list["type"] as? String, "list_workspace_files")
         XCTAssertEqual(list["scope"] as? String, "modified")
 
-        let read = try requestObject(.readWorkspaceFile(
-            requestID: "read-1",
-            sessionID: "chat-1",
-            path: "Sources/App.swift",
-            offset: 4,
-            maxBytes: 262_144
-        ))
+        let read = try requestObject(
+            .readWorkspaceFile(
+                requestID: "read-1",
+                sessionID: "chat-1",
+                path: "Sources/App.swift",
+                offset: 4,
+                maxBytes: 262_144
+            ))
         XCTAssertEqual(read["type"] as? String, "read_workspace_file")
         XCTAssertEqual(read["path"] as? String, "Sources/App.swift")
         XCTAssertEqual(read["offset"] as? Int, 4)
 
-        let write = try requestObject(.writeWorkspaceFile(
-            requestID: "write-1",
-            sessionID: "chat-1",
-            path: ".env",
-            content: "TOKEN=secret\n"
-        ))
+        let write = try requestObject(
+            .writeWorkspaceFile(
+                requestID: "write-1",
+                sessionID: "chat-1",
+                path: ".env",
+                content: "TOKEN=secret\n"
+            ))
         XCTAssertEqual(write["type"] as? String, "write_workspace_file")
         XCTAssertEqual(write["session_id"] as? String, "chat-1")
         XCTAssertEqual(write["path"] as? String, ".env")
@@ -493,9 +545,10 @@ extension GatewayWireTests {
 
 extension GatewayWireTests {
     func testRealtimeSignalingUsesGatewayWireKeys() throws {
-        let request = try requestObject(.startRealtimeVoice(
-            requestID: "voice-1", sessionID: "chat-1", offerSDP: "v=0\r\n"
-        ))
+        let request = try requestObject(
+            .startRealtimeVoice(
+                requestID: "voice-1", sessionID: "chat-1", offerSDP: "v=0\r\n"
+            ))
         XCTAssertEqual(request["type"] as? String, "start_realtime_voice")
         XCTAssertEqual(request["request_id"] as? String, "voice-1")
         XCTAssertEqual(request["session_id"] as? String, "chat-1")
@@ -503,25 +556,35 @@ extension GatewayWireTests {
         let end = try requestObject(.endRealtimeVoice(sessionID: "chat-1", voiceID: "voice-1"))
         XCTAssertEqual(end["type"] as? String, "end_realtime_voice")
         XCTAssertEqual(end["voice_id"] as? String, "voice-1")
-        guard case .realtimeVoiceStarted("voice-1", "chat-1", "voice-1", "answer") = try decodeEnvelope(
-            #"{"version":68,"type":"realtime_voice_started","request_id":"voice-1","session_id":"chat-1","voice_id":"voice-1","answer_sdp":"answer"}"#
-        ) else { return XCTFail("Expected gateway answer") }
-        guard case .realtimeVoiceEnded("chat-1", "voice-1", nil) = try decodeEnvelope(
-            #"{"version":68,"type":"realtime_voice_ended","session_id":"chat-1","voice_id":"voice-1","reason":null}"#
-        ) else { return XCTFail("Expected gateway end") }
-        guard case .realtimeVoiceFailed("voice-1", "chat-1", "unavailable") = try decodeEnvelope(
-            #"{"version":68,"type":"realtime_voice_failed","request_id":"voice-1","session_id":"chat-1","message":"unavailable"}"#
-        ) else { return XCTFail("Expected correlated gateway failure") }
+        guard
+            case .realtimeVoiceStarted("voice-1", "chat-1", "voice-1", "answer") =
+                try decodeEnvelope(
+                    #"{"version":68,"type":"realtime_voice_started","request_id":"voice-1","session_id":"chat-1","voice_id":"voice-1","answer_sdp":"answer"}"#
+                )
+        else { return XCTFail("Expected gateway answer") }
+        guard
+            case .realtimeVoiceEnded("chat-1", "voice-1", nil) = try decodeEnvelope(
+                #"{"version":68,"type":"realtime_voice_ended","session_id":"chat-1","voice_id":"voice-1","reason":null}"#
+            )
+        else { return XCTFail("Expected gateway end") }
+        guard
+            case .realtimeVoiceFailed("voice-1", "chat-1", "unavailable") = try decodeEnvelope(
+                #"{"version":68,"type":"realtime_voice_failed","request_id":"voice-1","session_id":"chat-1","message":"unavailable"}"#
+            )
+        else { return XCTFail("Expected correlated gateway failure") }
     }
 
     func testRealtimeAvailabilityDecodesFromOwnedCatalog() throws {
         let ready = readyPayloadJSON.replacingOccurrences(
             of: #""supports_realtime_voice":false"#,
             with: #""supports_realtime_voice":true"#
-        ).replacingOccurrences(of: #""realtime_voices":[]"#, with: #""realtime_voices":["marin","cedar"]"#)
-        guard case .ready(let payload) = try decodeEnvelope(
-            "{\"version\":68,\"type\":\"ready\",\"payload\":\(ready)}"
-        ) else { return XCTFail("Expected ready") }
+        ).replacingOccurrences(
+            of: #""realtime_voices":[]"#, with: #""realtime_voices":["marin","cedar"]"#)
+        guard
+            case .ready(let payload) = try decodeEnvelope(
+                "{\"version\":68,\"type\":\"ready\",\"payload\":\(ready)}"
+            )
+        else { return XCTFail("Expected ready") }
         XCTAssertEqual(payload.providers.first?.realtimeVoices, ["marin", "cedar"])
         XCTAssertEqual(payload.models.first?.supportsRealtimeVoice, true)
     }

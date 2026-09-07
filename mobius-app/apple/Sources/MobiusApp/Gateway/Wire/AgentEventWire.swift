@@ -128,8 +128,8 @@ private struct AgentEventValidator {
         case "tool_load":
             try requireStrings(["turnId", "loadId", "catalogRevision"])
             guard let tools = msg["tools"]?.arrayValue,
-                  !tools.isEmpty,
-                  tools.allSatisfy({ $0.stringValue?.isEmpty == false })
+                !tools.isEmpty,
+                tools.allSatisfy({ $0.stringValue?.isEmpty == false })
             else {
                 throw GatewayWireError.invalidFrame("tool_load has invalid tools")
             }

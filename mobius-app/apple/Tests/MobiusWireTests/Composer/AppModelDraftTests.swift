@@ -53,10 +53,11 @@ extension AppModelTests {
         guard case .openSession(let firstID, "chat-1", _) = try XCTUnwrap(firstRequest)
         else { return XCTFail("Expected first session open") }
         model.chat.composer = "Typed while opening"
-        model.gateway.handle(.sessionOpened(
-            requestID: firstID,
-            payload: sessionReady(latestSequence: 1, sessionID: "chat-1")
-        ))
+        model.gateway.handle(
+            .sessionOpened(
+                requestID: firstID,
+                payload: sessionReady(latestSequence: 1, sessionID: "chat-1")
+            ))
         model.gateway.handle(.sessionReplayComplete(requestID: firstID, sessionID: "chat-1"))
         let firstSessionReady = await eventually { model.canCreateSession }
         XCTAssertTrue(firstSessionReady)
@@ -74,10 +75,11 @@ extension AppModelTests {
         guard case .openSession(let secondID, _, _) = secondOpen else {
             return XCTFail("Expected second session open")
         }
-        model.gateway.handle(.sessionOpened(
-            requestID: secondID,
-            payload: sessionReady(latestSequence: 1, sessionID: "chat-2")
-        ))
+        model.gateway.handle(
+            .sessionOpened(
+                requestID: secondID,
+                payload: sessionReady(latestSequence: 1, sessionID: "chat-2")
+            ))
         model.gateway.handle(.sessionReplayComplete(requestID: secondID, sessionID: "chat-2"))
         let secondSessionReady = await eventually {
             model.canCreateSession
@@ -137,7 +139,7 @@ extension AppModelTests {
             return ids == ["chat-2"]
         }
         guard case .deleteSessions(let deleteID, let ids) = try XCTUnwrap(deleteRequest),
-              ids == ["chat-2"]
+            ids == ["chat-2"]
         else { return XCTFail("Expected session delete") }
         model.gateway.handle(.accepted(requestID: deleteID))
         model.gateway.handle(.sessions(requestID: deleteID, sessions: []))
@@ -237,7 +239,8 @@ extension AppModelTests {
             sessionID: "corrupt"
         )
         let corruptFilename = Data("corrupt".utf8).base64EncodedString()
-        let corruptURL = draftDirectory
+        let corruptURL =
+            draftDirectory
             .appendingPathComponent(firstAccount.id.uuidString, isDirectory: true)
             .appendingPathComponent(corruptFilename)
             .appendingPathExtension("txt")
@@ -283,13 +286,15 @@ extension AppModelTests {
             accountID: account.id,
             sessionID: "chat-1",
             sequence: 7,
-            transcript: [TranscriptEntry(
-                id: "answer-1",
-                text: "Cached",
-                kind: .assistant,
-                format: "plain_text",
-                pending: false
-            )],
+            transcript: [
+                TranscriptEntry(
+                    id: "answer-1",
+                    text: "Cached",
+                    kind: .assistant,
+                    format: "plain_text",
+                    pending: false
+                )
+            ],
             currentUsage: TokenUsage(),
             lastUsage: TokenUsage()
         )
@@ -315,12 +320,14 @@ extension AppModelTests {
             return XCTFail("Expected the cached cursor")
         }
         let requestCount = await recorder.requestCount()
-        model.gateway.handle(.rejected(GatewayRejection(
-            requestId: requestID,
-            code: "replay_unavailable",
-            message: "Reload",
-            fatal: false
-        )))
+        model.gateway.handle(
+            .rejected(
+                GatewayRejection(
+                    requestId: requestID,
+                    code: "replay_unavailable",
+                    message: "Reload",
+                    fatal: false
+                )))
         let retryRequest = await recorder.firstRequest(after: requestCount) { request in
             guard case .openSession(_, "chat-1", nil) = request else { return false }
             return true

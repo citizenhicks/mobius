@@ -22,7 +22,8 @@ enum GatewayWireError: LocalizedError, Equatable {
             "Use a complete möbius pairing setup from the gateway."
         case .insecureRemoteEndpoint:
             "Plaintext gateway connections are allowed only on this device. Use tls:// or wss:// for remote gateways."
-        case .unsupportedVersion(let version): "Gateway protocol version \(version) is not supported."
+        case .unsupportedVersion(let version):
+            "Gateway protocol version \(version) is not supported."
         case .oversizedFrame(let size): "Gateway frame is too large (\(size) bytes)."
         case .invalidFrame(let message): "Invalid gateway frame: \(message)"
         case .disconnected: "The gateway disconnected."
@@ -48,8 +49,8 @@ struct GatewayPairingSetup: Equatable, Sendable {
 
     init(endpoint: String, code: String) throws {
         guard !code.isEmpty,
-              code.utf8.count <= Self.maximumCodeBytes,
-              code.utf8.allSatisfy({ $0 >= 0x21 && $0 <= 0x7e })
+            code.utf8.count <= Self.maximumCodeBytes,
+            code.utf8.allSatisfy({ $0 >= 0x21 && $0 <= 0x7e })
         else {
             throw GatewayWireError.invalidPairingSetup
         }
@@ -64,13 +65,13 @@ struct GatewayEndpoint: Hashable, Codable, Sendable {
     init(_ rawValue: String) throws {
         let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let components = URLComponents(string: trimmed),
-              let scheme = components.scheme?.lowercased(),
-              let parsedHost = components.host,
-              components.user == nil,
-              components.password == nil,
-              components.query == nil,
-              components.fragment == nil,
-              components.path.isEmpty || components.path == "/"
+            let scheme = components.scheme?.lowercased(),
+            let parsedHost = components.host,
+            components.user == nil,
+            components.password == nil,
+            components.query == nil,
+            components.fragment == nil,
+            components.path.isEmpty || components.path == "/"
         else {
             throw GatewayWireError.invalidEndpoint(
                 "Use tcp://host:port, tls://host:port, or wss://host."
@@ -82,7 +83,7 @@ struct GatewayEndpoint: Hashable, Codable, Sendable {
             )
         }
         guard let port = components.port ?? (scheme == "wss" ? 443 : nil),
-              (1...65_535).contains(port)
+            (1...65_535).contains(port)
         else {
             throw GatewayWireError.invalidEndpoint(
                 "Use tcp://host:port, tls://host:port, or wss://host."
@@ -132,7 +133,8 @@ struct GatewayEndpoint: Hashable, Codable, Sendable {
         let quickSuffix = ".trycloudflare.com"
         if host.hasSuffix(quickSuffix) {
             let words = host.dropLast(quickSuffix.count).split(separator: "-")
-            let tunnel = words.count > 1
+            let tunnel =
+                words.count > 1
                 ? "\(words[0])…\(words[words.count - 1])"
                 : words.first.map(String.init) ?? resolve("Tunnel")
             return resolve("Cloudflare · \(tunnel)")

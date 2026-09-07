@@ -25,7 +25,9 @@ struct WorkspaceBrowserView: View {
                     )
                     List {
                         ForEach(listing.entries) { entry in
-                            Button { model.loadDirectory(entry.path) } label: {
+                            Button {
+                                model.loadDirectory(entry.path)
+                            } label: {
                                 MobiusLabel(verbatim: entry.name, glyph: .folder)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .contentShape(Rectangle())
@@ -38,14 +40,16 @@ struct WorkspaceBrowserView: View {
                                 .foregroundStyle(palette.muted)
                                 .listRowSeparator(.hidden)
                         }
-                        if let error = model.directoryError ?? (onChoose == nil ? model.workspaceError : nil) {
+                        if let error = model.directoryError
+                            ?? (onChoose == nil ? model.workspaceError : nil)
+                        {
                             MobiusLabel(
                                 verbatim: error,
                                 glyph: .warning,
                                 iconColor: palette.danger
                             )
-                                .foregroundStyle(palette.danger)
-                                .listRowSeparator(.hidden)
+                            .foregroundStyle(palette.danger)
+                            .listRowSeparator(.hidden)
                         }
                     }
                     .listStyle(.plain)
@@ -143,7 +147,8 @@ struct FrontendContributionPage: View {
                 let name = frontendPresentationText(widget.widget.text)
                 DisabledCapabilityNotice(
                     title: "\(name) is off",
-                    detail: "Saved content remains visible. Enable \(name) in this chat to make changes."
+                    detail:
+                        "Saved content remains visible. Enable \(name) in this chat to make changes."
                 )
             }
             if let content = widget.widget.content {
@@ -185,9 +190,10 @@ struct GlobalContributionsView: View {
 
     var body: some View {
         let widgets = model.navigationWidgets(in: .global)
-        let title: MobiusText = widgets.first.map {
-            .localized(frontendPresentationText($0.title))
-        } ?? .localized("Scratchpad")
+        let title: MobiusText =
+            widgets.first.map {
+                .localized(frontendPresentationText($0.title))
+            } ?? .localized("Scratchpad")
         PageScaffold(title: title, detail: .verbatim("")) {
             if !widgets.isEmpty {
                 ForEach(widgets) { widget in

@@ -17,7 +17,8 @@ extension GatewayWireTests {
         XCTAssertThrowsError(try GatewayEndpoint("tcp://example.com:9191")) { error in
             XCTAssertEqual(error as? GatewayWireError, .insecureRemoteEndpoint)
         }
-        XCTAssertEqual(try GatewayEndpoint("tls://example.com:443").rawValue, "tls://example.com:443")
+        XCTAssertEqual(
+            try GatewayEndpoint("tls://example.com:443").rawValue, "tls://example.com:443")
     }
 
     func testSecureWebSocketEndpointUsesImplicitPort443() throws {
@@ -37,9 +38,10 @@ extension GatewayWireTests {
     }
 
     func testGatewayAccountsGetFriendlyDefaultNames() throws {
-        let quick = GatewayAccount(endpoint: try GatewayEndpoint(
-            "wss://pupils-convention-ban-format.trycloudflare.com"
-        ))
+        let quick = GatewayAccount(
+            endpoint: try GatewayEndpoint(
+                "wss://pupils-convention-ban-format.trycloudflare.com"
+            ))
         let named = GatewayAccount(endpoint: try GatewayEndpoint("wss://gateway.example"))
 
         XCTAssertEqual(quick.displayName, "Cloudflare · pupils…format")

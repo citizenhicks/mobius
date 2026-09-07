@@ -259,7 +259,8 @@ struct ChatsView: View {
                 ? Text("\(organization.title), all Bots")
                 : model.chat.chatBotFilterIDs.count == 1
                     ? Text("\(organization.title), 1 Bot selected")
-                    : Text("\(organization.title), \(model.chat.chatBotFilterIDs.count) Bots selected")
+                    : Text(
+                        "\(organization.title), \(model.chat.chatBotFilterIDs.count) Bots selected")
         )
     }
 
@@ -431,7 +432,11 @@ struct ChatsView: View {
         let color = selected ? palette.accent : bot.tint.color
         let title = "\(bot.name) (@\(bot.handle))"
         if let image = glyph.menuImage(color) {
-            Label { Text(verbatim: title) } icon: { image }
+            Label {
+                Text(verbatim: title)
+            } icon: {
+                image
+            }
         } else {
             MobiusLabel(verbatim: title, glyph: glyph, iconColor: color)
         }
@@ -484,8 +489,11 @@ struct WorkspaceSessionCatalog: View {
         Binding(
             get: { !collapsedWorkspaces.contains(id) },
             set: { expanded in
-                if expanded { collapsedWorkspaces.remove(id) }
-                else { collapsedWorkspaces.insert(id) }
+                if expanded {
+                    collapsedWorkspaces.remove(id)
+                } else {
+                    collapsedWorkspaces.insert(id)
+                }
             }
         )
     }
@@ -613,7 +621,8 @@ struct SessionCatalogRow: View {
     @ViewBuilder
     var body: some View {
         let isSelecting = selectedSessionIDs != nil
-        let isSelected = selectedSessionIDs?.wrappedValue.contains(session.sessionId)
+        let isSelected =
+            selectedSessionIDs?.wrappedValue.contains(session.sessionId)
             ?? (session.sessionId == model.chat.selectedSessionID)
         let isUnread = model.chat.unreadSessionIDs.contains(session.sessionId)
         let row = HStack(spacing: MobiusSpace.xs) {
@@ -751,15 +760,20 @@ struct SessionCatalogRow: View {
     }
 
     private func accessibilityValue(isUnread: Bool, selection: Bool?) -> Text {
-        let state: String? = switch session.activity.state {
-        case .running: "In progress"
-        case .awaitingApproval: "Awaiting approval"
-        case .idle: isUnread ? "Finished, unread" : nil
-        }
+        let state: String? =
+            switch session.activity.state {
+            case .running: "In progress"
+            case .awaitingApproval: "Awaiting approval"
+            case .idle: isUnread ? "Finished, unread" : nil
+            }
         let selectionState = selection.map {
             model.localizedString($0 ? "Selected" : "Not selected")
         }
-        return Text(verbatim: [selectionState, ownershipDescription, supportingText, session.pinned ? "Pinned" : nil, state]
+        return Text(
+            verbatim: [
+                selectionState, ownershipDescription, supportingText,
+                session.pinned ? "Pinned" : nil, state,
+            ]
             .compactMap { $0 }
             .joined(separator: ", "))
     }

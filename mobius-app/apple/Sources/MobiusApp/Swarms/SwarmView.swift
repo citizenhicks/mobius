@@ -146,7 +146,8 @@ struct SwarmView: View {
             let widgets = model.navigationWidgets(in: .swarm(id: swarm.id))
             if widgets.isEmpty {
                 Section("Scratchpad") {
-                    Button {} label: {
+                    Button {
+                    } label: {
                         MobiusLabel(title: "Add Collective Note", glyph: .plus)
                     }
                     .disabled(true)
@@ -157,9 +158,11 @@ struct SwarmView: View {
                     Section {
                         ForEach(actions) { action in
                             Button {
-                                if action.editor != nil { pendingContributionAction = action }
-                                else {
-                                    model.submitContributionOperation(action.op, scope: .swarm(id: swarm.id))
+                                if action.editor != nil {
+                                    pendingContributionAction = action
+                                } else {
+                                    model.submitContributionOperation(
+                                        action.op, scope: .swarm(id: swarm.id))
                                 }
                             } label: {
                                 MobiusLabel(
@@ -285,10 +288,17 @@ struct SwarmView: View {
     private func contributionSection(_ widget: MountedWidget?, swarm: SwarmRecord) -> some View {
         let scope = ContributionScope.swarm(id: swarm.id)
         let id = widget?.id ?? "loading"
-        let count = model.contributions(in: scope).first { $0.capability == widget?.capability }?.count
+        let count = model.contributions(in: scope).first { $0.capability == widget?.capability }?
+            .count
         let isExpanded = Binding(
             get: { !collapsedContributionIDs.contains(id) },
-            set: { if $0 { collapsedContributionIDs.remove(id) } else { collapsedContributionIDs.insert(id) } }
+            set: {
+                if $0 {
+                    collapsedContributionIDs.remove(id)
+                } else {
+                    collapsedContributionIDs.insert(id)
+                }
+            }
         )
         return Section {
             if isExpanded.wrappedValue {
@@ -323,7 +333,8 @@ struct SwarmView: View {
         _ member: SwarmMemberRecord,
         swarm: SwarmRecord
     ) -> some View {
-        let status: LocalizedStringResource = member.botId == swarm.leaderBotId
+        let status: LocalizedStringResource =
+            member.botId == swarm.leaderBotId
             ? "Leader, unavailable"
             : "Unavailable"
 
@@ -547,10 +558,10 @@ struct SwarmChatView: View {
     private func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canSend,
-              let requestID = model.postSwarmMessage(
+            let requestID = model.postSwarmMessage(
                 to: swarmID,
                 text: text
-              )
+            )
         else { return }
         pendingRequestID = requestID
         pendingText = text
@@ -559,7 +570,8 @@ struct SwarmChatView: View {
 
 private func swarmTranscriptEntry(_ message: SwarmMessageRecord) -> TranscriptEntry {
     let isUser = message.authorBotId == "user"
-    let author: MessageAuthor = isUser
+    let author: MessageAuthor =
+        isUser
         ? .user
         : .peer(
             messageID: message.id,

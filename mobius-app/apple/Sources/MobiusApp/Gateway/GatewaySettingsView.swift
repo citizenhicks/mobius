@@ -72,7 +72,8 @@ struct GatewayView: View {
         case .ready:
             let detail: MobiusText
             if let machineName = model.gateway.selectedAccount?.machineName {
-                detail = .localized("\(model.gateway.accounts.count) paired · \(machineName) selected")
+                detail = .localized(
+                    "\(model.gateway.accounts.count) paired · \(machineName) selected")
             } else {
                 detail = .localized("\(model.gateway.accounts.count) paired · no gateway selected")
             }
@@ -170,7 +171,7 @@ struct GatewayDetailView: View {
                 }
                 .task(id: model.gateway.connectionState.isReady) {
                     guard account.id == model.gateway.selectedAccountID,
-                          model.gateway.connectionState.isReady
+                        model.gateway.connectionState.isReady
                     else { return }
                     model.probeGitCredential(githubCredentialTarget)
                     model.listSshIdentities()
@@ -245,7 +246,9 @@ struct GatewayDetailView: View {
 
             if isActive {
                 Section("Pair another device") {
-                    SettingsCaption("Ask this gateway for a short-lived code, then enter it with the same gateway address on the other device.")
+                    SettingsCaption(
+                        "Ask this gateway for a short-lived code, then enter it with the same gateway address on the other device."
+                    )
                     if let pairing = model.pairingCodeInfo {
                         Text(verbatim: pairing.code)
                             .font(MobiusStyle.codeFont)
@@ -361,7 +364,9 @@ struct GatewayDetailView: View {
     }
 
     private var sshCredentialSummary: MobiusText {
-        if !model.gateway.connectionState.isReady { return .localized("Connect to check this host.") }
+        if !model.gateway.connectionState.isReady {
+            return .localized("Connect to check this host.")
+        }
         if model.isLoadingSshIdentities { return .localized("Checking this host…") }
         if model.isGeneratingSshIdentity {
             return .localized("Generating an Ed25519 key on this host…")
@@ -418,7 +423,9 @@ private struct GitCredentialSheet: View {
                     } header: {
                         Text("Credential")
                     } footer: {
-                        Text("Sent once to the host's configured Git helper. Möbius does not store or read it back.")
+                        Text(
+                            "Sent once to the host's configured Git helper. Möbius does not store or read it back."
+                        )
                     }
                 }
 
@@ -510,7 +517,9 @@ private struct SshCredentialSheet: View {
                     }
                 } else {
                     Section {
-                        Text("Create an Ed25519 key pair on this gateway host. The private key never leaves the host.")
+                        Text(
+                            "Create an Ed25519 key pair on this gateway host. The private key never leaves the host."
+                        )
                     } footer: {
                         Text("After creation, add the public key to GitHub or another SSH remote.")
                     }
@@ -526,7 +535,9 @@ private struct SshCredentialSheet: View {
                     } header: {
                         Text("Public key")
                     } footer: {
-                        Text("Creating it does not grant access by itself. The private key stays on the gateway host.")
+                        Text(
+                            "Creating it does not grant access by itself. The private key stays on the gateway host."
+                        )
                     }
 
                     MobiusActionRow {
@@ -555,14 +566,16 @@ private struct SshCredentialSheet: View {
                         } label: {
                             Text(checkActionTitle)
                         }
-                        .disabled(!model.gateway.connectionState.isReady || model.isLoadingSshIdentities)
+                        .disabled(
+                            !model.gateway.connectionState.isReady || model.isLoadingSshIdentities)
                     } else if model.sshIdentities?.isEmpty == true {
                         Button {
                             model.generateSshIdentity()
                         } label: {
                             Text(generateActionTitle)
                         }
-                        .disabled(!model.gateway.connectionState.isReady || model.isGeneratingSshIdentity)
+                        .disabled(
+                            !model.gateway.connectionState.isReady || model.isGeneratingSshIdentity)
                     } else {
                         Button("Done", action: dismiss.callAsFunction)
                     }

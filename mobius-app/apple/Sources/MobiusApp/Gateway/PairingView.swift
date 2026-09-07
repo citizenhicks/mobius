@@ -67,12 +67,14 @@ struct PairingView: View {
                         }
                     }
 
-                    Text("Cloud gateways use wss://. tcp:// is accepted only for localhost; direct remote gateways can use tls://.")
-                        .font(MobiusStyle.bodyFont)
-                        .foregroundStyle(palette.muted)
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.horizontal, MobiusSpace.s)
+                    Text(
+                        "Cloud gateways use wss://. tcp:// is accepted only for localhost; direct remote gateways can use tls://."
+                    )
+                    .font(MobiusStyle.bodyFont)
+                    .foregroundStyle(palette.muted)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, MobiusSpace.s)
 
                     if let error = model.gateway.pairingError {
                         MobiusLabel(
@@ -80,8 +82,8 @@ struct PairingView: View {
                             glyph: .warning,
                             iconColor: palette.danger
                         )
-                            .foregroundStyle(palette.danger)
-                            .multilineTextAlignment(.center)
+                        .foregroundStyle(palette.danger)
+                        .multilineTextAlignment(.center)
                     }
                 }
                 .frame(maxWidth: .infinity)
@@ -101,7 +103,9 @@ struct PairingView: View {
     /// put the most technical line on the screen above the decision it belongs under.
     private var pairAction: some View {
         VStack(spacing: MobiusSpace.m) {
-            if model.gateway.connectionState == .connecting || model.gateway.connectionState == .authenticating {
+            if model.gateway.connectionState == .connecting
+                || model.gateway.connectionState == .authenticating
+            {
                 HStack {
                     MobiusSpinner(size: MobiusStyle.glyphLead, foreground: palette.accent)
                 }
@@ -119,7 +123,8 @@ struct PairingView: View {
                 .buttonSizing(.flexible)
             if !model.cloud.hasCloudAccount {
                 MobiusCloudOfferButton()
-            } else if model.cloud.cloudAccount?.subscribed == true, model.cloud.cloudGateway == nil {
+            } else if model.cloud.cloudAccount?.subscribed == true, model.cloud.cloudGateway == nil
+            {
                 Button("Connect Cloud gateway", glyph: .cloudServer) {
                     Task { _ = await model.cloud.connectCloudGateway() }
                 }
@@ -130,7 +135,10 @@ struct PairingView: View {
                 .tint(palette.accent)
                 .disabled(model.cloud.cloudAction.isRunning)
             } else if model.cloud.cloudAccount == nil {
-                Button(model.cloud.cloudError == nil ? "Checking Cloud account…" : "Retry Cloud account") {
+                Button(
+                    model.cloud.cloudError == nil
+                        ? "Checking Cloud account…" : "Retry Cloud account"
+                ) {
                     Task { await model.cloud.refreshCloudAccount() }
                 }
                 .buttonStyle(.mobiusGlass)
@@ -146,9 +154,9 @@ struct PairingView: View {
                 glyph: .shieldCheck,
                 iconColor: palette.muted
             )
-                .font(MobiusStyle.metadataFont)
-                .foregroundStyle(palette.muted)
-                .padding(.top, MobiusSpace.xxs)
+            .font(MobiusStyle.metadataFont)
+            .foregroundStyle(palette.muted)
+            .padding(.top, MobiusSpace.xxs)
         }
         .frame(maxWidth: .infinity)
         .padding(.top, MobiusSpace.l)

@@ -13,14 +13,15 @@ extension ChatSessionModel {
 
     func scheduleComposerDraftSave() {
         guard !suppressesComposerDraftSave,
-              !isLoadingComposerDraft,
-              !isLoadingComposerEditRecovery,
-              let owner = composerDraftOwner
+            !isLoadingComposerDraft,
+            !isLoadingComposerEditRecovery,
+            let owner = composerDraftOwner
         else { return }
         composerDraftSaveTask?.cancel()
         if var pending = pendingWidgetEdit,
-           pending.owner == owner,
-           pending.recovery.phase == .editing {
+            pending.owner == owner,
+            pending.recovery.phase == .editing
+        {
             guard composer.utf8.count <= maximumComposerBytes else { return }
             pending.recovery.editedInput = composer
             pendingWidgetEdit = pending
@@ -32,9 +33,9 @@ extension ChatSessionModel {
                     return
                 }
                 guard let self,
-                      self.pendingWidgetEdit?.owner == owner,
-                      self.pendingWidgetEdit?.recovery.phase == .editing,
-                      self.pendingWidgetEdit?.recovery.editedInput == recovery.editedInput
+                    self.pendingWidgetEdit?.owner == owner,
+                    self.pendingWidgetEdit?.recovery.phase == .editing,
+                    self.pendingWidgetEdit?.recovery.editedInput == recovery.editedInput
                 else { return }
                 self.composerDraftSaveTask = nil
                 self.enqueueComposerEditRecoverySave(recovery, owner: owner)
@@ -141,8 +142,8 @@ extension ChatSessionModel {
                 sessionID: owner.sessionID
             )
             guard let self,
-                  self.composerEditRecoveryGeneration == generation,
-                  self.composerDraftOwner == owner
+                self.composerEditRecoveryGeneration == generation,
+                self.composerDraftOwner == owner
             else { return }
             self.isLoadingComposerEditRecovery = false
             self.pendingWidgetEdit = recovery.map {
@@ -158,17 +159,19 @@ extension ChatSessionModel {
         let type = event.msg["type"]?.stringValue
         let message = type == "message" ? try? MessageEventPayload(json: event.msg) : nil
         if let submissionID = event.submissionId,
-           message?.author == .user
-               || (type == "frontend"
-                   && event.msg["frontendType"]?.stringValue == "widget"),
-           replayCompletionSubmissionIDs.count < maximumObservedReplaySubmissions
-               || replayCompletionSubmissionIDs.contains(submissionID) {
+            message?.author == .user
+                || (type == "frontend"
+                    && event.msg["frontendType"]?.stringValue == "widget"),
+            replayCompletionSubmissionIDs.count < maximumObservedReplaySubmissions
+                || replayCompletionSubmissionIDs.contains(submissionID)
+        {
             replayCompletionSubmissionIDs.insert(submissionID)
         }
 
         var messages: [ReplayUserMessage] = []
         if let message, message.author == .user {
-            let sequence = message.messageTarget?.checkpointSequence
+            let sequence =
+                message.messageTarget?.checkpointSequence
                 ?? buffered.record.sequence
             messages.append(ReplayUserMessage(sequence: sequence, text: message.text))
         }
@@ -183,7 +186,7 @@ extension ChatSessionModel {
 
     func reconcileComposerEditRecovery() {
         guard replayRequestID == nil,
-              !isLoadingComposerEditRecovery
+            !isLoadingComposerEditRecovery
         else { return }
         defer {
             replayCompletionSubmissionIDs.removeAll(keepingCapacity: true)
@@ -191,27 +194,30 @@ extension ChatSessionModel {
             completedComposerEditReplay = false
         }
         guard let pending = pendingWidgetEdit,
-              pending.owner == composerDraftOwner
+            pending.owner == composerDraftOwner
         else { return }
         let matchingWidgetInput = mountedWidgets.first(where: {
             $0.capability == pending.recovery.capability
                 && $0.widget.id == pending.recovery.widgetID
         })?.widget.action?.capabilityInput
-        let renderedEditedInput: Bool = if let baseline = pending.recovery.submissionBaselineSequence {
-            transcript.contains {
-                $0.kind == .user
-                    && $0.text == pending.recovery.editedInput
-                    && ($0.messageTarget?.checkpointSequence ?? 0) > baseline
-            } || replayUserMessages.contains {
-                $0.sequence > baseline && $0.text == pending.recovery.editedInput
+        let renderedEditedInput: Bool =
+            if let baseline = pending.recovery.submissionBaselineSequence {
+                transcript.contains {
+                    $0.kind == .user
+                        && $0.text == pending.recovery.editedInput
+                        && ($0.messageTarget?.checkpointSequence ?? 0) > baseline
+                }
+                    || replayUserMessages.contains {
+                        $0.sequence > baseline && $0.text == pending.recovery.editedInput
+                    }
+            } else {
+                false
             }
-        } else {
-            false
-        }
         switch pending.recovery.phase {
         case .removingQueuedInput where matchingWidgetInput == pending.recovery.originalInput:
             completeComposerEditRecovery(pending)
-        case .submitting where matchingWidgetInput == pending.recovery.editedInput
+        case .submitting
+        where matchingWidgetInput == pending.recovery.editedInput
             || replayCompletionSubmissionIDs.contains(pending.recovery.requestID)
             || renderedEditedInput:
             completeComposerEditRecovery(pending)
@@ -228,8 +234,8 @@ extension ChatSessionModel {
 
     func restoreComposerEditMode(requestID: String) {
         guard let pending = pendingWidgetEdit,
-              pending.recovery.requestID == requestID,
-              pending.recovery.phase == .submitting
+            pending.recovery.requestID == requestID,
+            pending.recovery.phase == .submitting
         else { return }
         restoreComposerEditMode(pending)
     }
@@ -248,7 +254,7 @@ extension ChatSessionModel {
 
     func rejectComposerEdit(requestID: String) {
         guard let pending = pendingWidgetEdit,
-              pending.recovery.requestID == requestID
+            pending.recovery.requestID == requestID
         else { return }
         switch pending.recovery.phase {
         case .removingQueuedInput:
@@ -262,25 +268,26 @@ extension ChatSessionModel {
 
     func completeSubmittedComposerEdit(requestID: String) {
         guard let pending = pendingWidgetEdit,
-              pending.recovery.requestID == requestID,
-              pending.recovery.phase == .submitting
+            pending.recovery.requestID == requestID,
+            pending.recovery.phase == .submitting
         else { return }
         completeComposerEditRecovery(pending)
     }
 
     private func completeComposerEditRecovery(_ current: PendingWidgetEdit) {
         guard let pending = pendingWidgetEdit,
-              pending.owner == current.owner,
-              pending.recovery.requestID == current.recovery.requestID
+            pending.owner == current.owner,
+            pending.recovery.requestID == current.recovery.requestID
         else { return }
         var completed = pending
         completed.recovery.phase = .completed
         pendingWidgetEdit = completed
-        enqueueComposerEditRecoverySave(completed.recovery, owner: completed.owner) { [weak self] result in
+        enqueueComposerEditRecoverySave(completed.recovery, owner: completed.owner) {
+            [weak self] result in
             guard let self,
-                  self.pendingWidgetEdit?.owner == completed.owner,
-                  self.pendingWidgetEdit?.recovery.requestID == completed.recovery.requestID,
-                  self.pendingWidgetEdit?.recovery.phase == .completed
+                self.pendingWidgetEdit?.owner == completed.owner,
+                self.pendingWidgetEdit?.recovery.requestID == completed.recovery.requestID,
+                self.pendingWidgetEdit?.recovery.phase == .completed
             else { return }
             switch result {
             case .success:
@@ -299,9 +306,10 @@ extension ChatSessionModel {
         composerDraftSaveTask = nil
         let previousOwner = composerDraftOwner
         if var pending = pendingWidgetEdit,
-           pending.owner == previousOwner,
-           pending.recovery.phase == .editing,
-           composer.utf8.count <= maximumComposerBytes {
+            pending.owner == previousOwner,
+            pending.recovery.phase == .editing,
+            composer.utf8.count <= maximumComposerBytes
+        {
             pending.recovery.editedInput = composer
             pendingWidgetEdit = pending
             enqueueComposerEditRecoverySave(pending.recovery, owner: pending.owner)
@@ -339,8 +347,8 @@ extension ChatSessionModel {
                 sessionID: owner.sessionID
             )
             guard let self,
-                  composerDraftGeneration == generation,
-                  composerDraftOwner == owner
+                composerDraftGeneration == generation,
+                composerDraftOwner == owner
             else { return }
             let current = ComposerDraft(text: composer, reply: composerReply)
             let merged = restored.appending(current)
@@ -392,23 +400,25 @@ extension ChatSessionModel {
         composerReply = restored.reply
         suppressesComposerDraftSave = false
         scheduleComposerDraftSave()
-        let currentIDs = Set(composerAttachments.compactMap { item -> String? in
-            guard case .uploaded(let attachment) = item.state else { return nil }
-            return attachment.id
-        })
+        let currentIDs = Set(
+            composerAttachments.compactMap { item -> String? in
+                guard case .uploaded(let attachment) = item.state else { return nil }
+                return attachment.id
+            })
         let available = max(0, attachmentReferenceLimit - composerAttachments.count)
-        composerAttachments.insert(contentsOf: draft.attachments
-            .filter { !currentIDs.contains($0.id) }
-            .prefix(available)
-            .map { attachment in
-                ComposerAttachment(
-                    id: UUID(),
-                    name: attachment.name,
-                    size: attachment.size,
-                    mediaType: attachment.mediaType,
-                    state: .uploaded(attachment)
-                )
-            }, at: 0)
+        composerAttachments.insert(
+            contentsOf: draft.attachments
+                .filter { !currentIDs.contains($0.id) }
+                .prefix(available)
+                .map { attachment in
+                    ComposerAttachment(
+                        id: UUID(),
+                        name: attachment.name,
+                        size: attachment.size,
+                        mediaType: attachment.mediaType,
+                        state: .uploaded(attachment)
+                    )
+                }, at: 0)
     }
 
     func restorePendingDrafts() {

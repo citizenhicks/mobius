@@ -27,18 +27,21 @@ extension AppModelTests {
         try await Task.sleep(for: .milliseconds(30))
 
         let requests = await recorder.requests()
-        XCTAssertFalse(requests.contains { request in
-            if case .switchGitBranch = request { return true }
-            return false
-        })
-        XCTAssertFalse(requests.contains { request in
-            if case .attachSessionFolder = request { return true }
-            return false
-        })
-        XCTAssertTrue(requests.contains { request in
-            guard case .openSession(_, "chat-2", _) = request else { return false }
-            return true
-        })
+        XCTAssertFalse(
+            requests.contains { request in
+                if case .switchGitBranch = request { return true }
+                return false
+            })
+        XCTAssertFalse(
+            requests.contains { request in
+                if case .attachSessionFolder = request { return true }
+                return false
+            })
+        XCTAssertTrue(
+            requests.contains { request in
+                guard case .openSession(_, "chat-2", _) = request else { return false }
+                return true
+            })
     }
 
     func testAttachingFolderUsesSelectedSessionMutation() async throws {
@@ -53,11 +56,13 @@ extension AppModelTests {
             if case .attachSessionFolder = request { return true }
             return false
         }
-        guard case .attachSessionFolder(
-            let requestID,
-            let sessionID,
-            let folder
-        ) = try XCTUnwrap(request) else {
+        guard
+            case .attachSessionFolder(
+                let requestID,
+                let sessionID,
+                let folder
+            ) = try XCTUnwrap(request)
+        else {
             return XCTFail("Expected folder attachment")
         }
         XCTAssertEqual(sessionID, "chat-1")
@@ -86,19 +91,21 @@ extension AppModelTests {
         XCTAssertNil(model.gitStatus)
         XCTAssertEqual(model.gitDiffs[.unstaged]?.text, "")
         let stagedRequests = await recorder.requests()
-        XCTAssertFalse(stagedRequests.contains { request in
-            if case .createSession = request { return true }
-            return false
-        })
+        XCTAssertFalse(
+            stagedRequests.contains { request in
+                if case .createSession = request { return true }
+                return false
+            })
 
         model.selectBotForNewChat(helper)
         model.selectBotForNewChat(reviewer)
         XCTAssertEqual(model.chat.pendingNewChatBotID, reviewer.id)
         let selectedRequests = await recorder.requests()
-        XCTAssertFalse(selectedRequests.contains { request in
-            if case .createSession = request { return true }
-            return false
-        })
+        XCTAssertFalse(
+            selectedRequests.contains { request in
+                if case .createSession = request { return true }
+                return false
+            })
 
         model.chat.composer = "Start here"
         XCTAssertTrue(model.sendMessage())
@@ -121,13 +128,15 @@ extension AppModelTests {
         )
         let helper = bot()
         model.bots = [helper]
-        model.chat.sessions = [session(
-            sessionID: "chat-current",
-            state: .idle,
-            workspaceID: "workspace-1",
-            workspaceLabel: "/srv/current-project",
-            botID: helper.id
-        )]
+        model.chat.sessions = [
+            session(
+                sessionID: "chat-current",
+                state: .idle,
+                workspaceID: "workspace-1",
+                workspaceLabel: "/srv/current-project",
+                botID: helper.id
+            )
+        ]
         model.chat.selectedSessionID = "chat-current"
         model.navigationPath = [.chat(.session("chat-current"))]
 
@@ -155,8 +164,10 @@ extension AppModelTests {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
         let leader = bot(id: "bot-1", handle: "leader", name: "Leader", collaborationEnabled: true)
-        let coworker = bot(id: "bot-2", handle: "builder", name: "Builder", collaborationEnabled: true)
-        let reviewer = bot(id: "bot-3", handle: "reviewer", name: "Reviewer", collaborationEnabled: true)
+        let coworker = bot(
+            id: "bot-2", handle: "builder", name: "Builder", collaborationEnabled: true)
+        let reviewer = bot(
+            id: "bot-3", handle: "reviewer", name: "Reviewer", collaborationEnabled: true)
         let independent = bot(id: "bot-4", handle: "independent", name: "Independent")
         model.bots = [leader, coworker, reviewer, independent]
         model.gateway.connectionState = .ready
@@ -176,12 +187,14 @@ extension AppModelTests {
             if case .createSwarm = request { return true }
             return false
         }
-        guard case .createSwarm(
-            let requestID,
-            let title,
-            let leaderBotID,
-            let memberBotIDs
-        ) = try XCTUnwrap(request) else {
+        guard
+            case .createSwarm(
+                let requestID,
+                let title,
+                let leaderBotID,
+                let memberBotIDs
+            ) = try XCTUnwrap(request)
+        else {
             return XCTFail("Expected swarm creation")
         }
         XCTAssertEqual(title, "Quiet Foxes")
@@ -219,13 +232,15 @@ extension AppModelTests {
         model.bots = [leader, coworker]
         model.gateway.connectionState = .ready
 
-        model.gateway.handle(.bots(requestID: nil, bots: [bot(id: leader.id, handle: leader.handle), coworker]))
+        model.gateway.handle(
+            .bots(requestID: nil, bots: [bot(id: leader.id, handle: leader.handle), coworker]))
         XCTAssertEqual(model.availableBotsForSwarm().map(\.id), [coworker.id])
         model.createSwarm(title: "Team", leaderBotID: leader.id, memberBotIDs: [coworker.id])
         XCTAssertNil(model.swarmMutationRequestID)
         XCTAssertEqual(model.toast?.tone, .warning)
 
-        model.gateway.handle(.bots(requestID: nil, bots: [leader, bot(id: coworker.id, handle: coworker.handle)]))
+        model.gateway.handle(
+            .bots(requestID: nil, bots: [leader, bot(id: coworker.id, handle: coworker.handle)]))
         model.createSwarm(title: "Team", leaderBotID: leader.id, memberBotIDs: [coworker.id])
         XCTAssertNil(model.swarmMutationRequestID)
         let swarm = SwarmRecord(
@@ -252,29 +267,34 @@ extension AppModelTests {
         let model = try model { request in await recorder.record(request) }
         let leader = bot(id: "bot-1", handle: "leader", name: "Leader")
         model.bots = [leader]
-        model.swarms = [SwarmRecord(
-            id: "swarm-1",
-            title: "Quiet Foxes",
-            leaderBotId: leader.id,
-            members: [SwarmMemberRecord(botId: leader.id, handle: leader.handle)],
-            messages: [],
-            updatedAtMs: 1
-        )]
+        model.swarms = [
+            SwarmRecord(
+                id: "swarm-1",
+                title: "Quiet Foxes",
+                leaderBotId: leader.id,
+                members: [SwarmMemberRecord(botId: leader.id, handle: leader.handle)],
+                messages: [],
+                updatedAtMs: 1
+            )
+        ]
         model.gateway.connectionState = .ready
 
-        let requestID = try XCTUnwrap(model.postSwarmMessage(
-            to: "swarm-1",
-            text: "  @leader check this  "
-        ))
+        let requestID = try XCTUnwrap(
+            model.postSwarmMessage(
+                to: "swarm-1",
+                text: "  @leader check this  "
+            ))
         let request = await recorder.firstRequest(after: 0) { request in
             if case .postSwarmMessage = request { return true }
             return false
         }
-        guard case .postSwarmMessage(
-            let sentID,
-            let swarmID,
-            let text
-        ) = try XCTUnwrap(request) else {
+        guard
+            case .postSwarmMessage(
+                let sentID,
+                let swarmID,
+                let text
+            ) = try XCTUnwrap(request)
+        else {
             return XCTFail("Expected Swarm post")
         }
         XCTAssertEqual(sentID, requestID)
@@ -318,11 +338,12 @@ extension AppModelTests {
         XCTAssertEqual(botID, helper.id)
         XCTAssertEqual(model.navigationPath, [.botSessions(helper.id)])
 
-        model.gateway.handle(.botSessions(
-            requestID: requestID,
-            botID: helper.id,
-            sessions: [hidden]
-        ))
+        model.gateway.handle(
+            .botSessions(
+                requestID: requestID,
+                botID: helper.id,
+                sessions: [hidden]
+            ))
         XCTAssertEqual(model.chat.botSessions, [hidden])
         XCTAssertEqual(model.chat.sessions, [visible])
         XCTAssertEqual(model.chat.chatCatalogSessions, [visible])
@@ -337,14 +358,16 @@ extension AppModelTests {
         model.navigationPath.append(.chat(.session(hidden.sessionId)))
         model.chat.botSessions = []
         XCTAssertTrue(model.selectedSessionIsHidden)
-        model.chat.transcript = [TranscriptEntry(
-            id: "hidden-message",
-            text: "Hidden message",
-            kind: .assistant,
-            format: "plain_text",
-            pending: false,
-            messageTarget: MessageTarget(checkpointSequence: 1, batchItemCount: 1)
-        )]
+        model.chat.transcript = [
+            TranscriptEntry(
+                id: "hidden-message",
+                text: "Hidden message",
+                kind: .assistant,
+                format: "plain_text",
+                pending: false,
+                messageTarget: MessageTarget(checkpointSequence: 1, batchItemCount: 1)
+            )
+        ]
         XCTAssertFalse(model.canBeginReply)
         model.beginReplying(to: model.chat.transcript[0])
         XCTAssertNil(model.chat.composerReply)
@@ -378,14 +401,16 @@ extension AppModelTests {
         model.gateway.handle(.backgroundApprovals([second]))
         XCTAssertNotEqual(model.toast?.id, firstToastID)
 
-        XCTAssertFalse(model.applyBackgroundApprovals([
-            BackgroundApproval(
-                sessionId: "work-2",
-                botId: "missing-bot",
-                turnId: "turn-2",
-                requestId: "approval-3"
-            )
-        ], notifyingNew: true))
+        XCTAssertFalse(
+            model.applyBackgroundApprovals(
+                [
+                    BackgroundApproval(
+                        sessionId: "work-2",
+                        botId: "missing-bot",
+                        turnId: "turn-2",
+                        requestId: "approval-3"
+                    )
+                ], notifyingNew: true))
         XCTAssertEqual(model.backgroundApprovals, [second])
     }
 
@@ -435,15 +460,17 @@ extension AppModelTests {
 
         XCTAssertTrue(model.applySwarmAttentions([baseline, live], notifyingNew: true))
         XCTAssertEqual(model.toast?.id, toastID)
-        XCTAssertFalse(model.applySwarmAttentions([
-            SwarmAttention(
-                swarmId: swarm.id,
-                swarmTitle: swarm.title,
-                messageId: "message-3",
-                botId: "missing-bot",
-                text: "Invalid"
-            )
-        ], notifyingNew: true))
+        XCTAssertFalse(
+            model.applySwarmAttentions(
+                [
+                    SwarmAttention(
+                        swarmId: swarm.id,
+                        swarmTitle: swarm.title,
+                        messageId: "message-3",
+                        botId: "missing-bot",
+                        text: "Invalid"
+                    )
+                ], notifyingNew: true))
         XCTAssertEqual(model.swarmAttentions, [baseline, live])
 
         XCTAssertTrue(model.applySwarmAttentions([], notifyingNew: false))
@@ -453,12 +480,14 @@ extension AppModelTests {
     func testStaleBackgroundApprovalToastCannotOpenHiddenWorkAsAChat() throws {
         let model = try model()
         model.gateway.connectionState = .ready
-        model.backgroundApprovals = [BackgroundApproval(
-            sessionId: "work-1",
-            botId: "bot-1",
-            turnId: "turn-1",
-            requestId: "approval-1"
-        )]
+        model.backgroundApprovals = [
+            BackgroundApproval(
+                sessionId: "work-1",
+                botId: "bot-1",
+                turnId: "turn-1",
+                requestId: "approval-1"
+            )
+        ]
         model.applyBackgroundApprovals([], notifyingNew: false)
 
         model.openNotificationTarget(.session("work-1"))
@@ -495,16 +524,18 @@ extension AppModelTests {
         }
         XCTAssertEqual(botID, helper.id)
         let requestsBeforeValidation = await recorder.requests()
-        XCTAssertFalse(requestsBeforeValidation.contains { request in
-            if case .openSession = request { return true }
-            return false
-        })
+        XCTAssertFalse(
+            requestsBeforeValidation.contains { request in
+                if case .openSession = request { return true }
+                return false
+            })
 
-        model.gateway.handle(.botSessions(
-            requestID: requestID,
-            botID: helper.id,
-            sessions: [hidden]
-        ))
+        model.gateway.handle(
+            .botSessions(
+                requestID: requestID,
+                botID: helper.id,
+                sessions: [hidden]
+            ))
         let opening = await recorder.firstRequest(after: 1) { request in
             guard case .openSession(_, hidden.sessionId, _) = request else { return false }
             return true
@@ -552,18 +583,20 @@ extension AppModelTests {
             return XCTFail("Expected hidden Bot session discovery")
         }
 
-        model.gateway.handle(.botSessions(
-            requestID: "stale-request",
-            botID: helper.id,
-            sessions: [target]
-        ))
+        model.gateway.handle(
+            .botSessions(
+                requestID: "stale-request",
+                botID: helper.id,
+                sessions: [target]
+            ))
         XCTAssertEqual(model.chat.pendingBotSessionResume?.sessionID, target.sessionId)
 
-        model.gateway.handle(.botSessions(
-            requestID: requestID,
-            botID: helper.id,
-            sessions: [other]
-        ))
+        model.gateway.handle(
+            .botSessions(
+                requestID: requestID,
+                botID: helper.id,
+                sessions: [other]
+            ))
 
         XCTAssertNil(model.chat.pendingBotSessionResume)
         XCTAssertEqual(model.chat.botSessions, [other])
@@ -594,10 +627,11 @@ extension AppModelTests {
         XCTAssertEqual(model.destination, .chats)
         XCTAssertEqual(model.navigationPath, [.chat(.session(source.sessionId))])
         let requests = await recorder.requests()
-        XCTAssertFalse(requests.contains { request in
-            if case .listBotSessions = request { return true }
-            return false
-        })
+        XCTAssertFalse(
+            requests.contains { request in
+                if case .listBotSessions = request { return true }
+                return false
+            })
     }
 
     func testApplyingSwarmsRejectsMissingLeadersAndUnorderedMessages() throws {
@@ -627,24 +661,28 @@ extension AppModelTests {
         )
         model.applySwarms([valid])
 
-        model.applySwarms([SwarmRecord(
-            id: "swarm-1",
-            title: valid.title,
-            leaderBotId: leader.botId,
-            members: [],
-            messages: [],
-            updatedAtMs: 3
-        )])
+        model.applySwarms([
+            SwarmRecord(
+                id: "swarm-1",
+                title: valid.title,
+                leaderBotId: leader.botId,
+                members: [],
+                messages: [],
+                updatedAtMs: 3
+            )
+        ])
         XCTAssertEqual(model.swarms, [valid])
 
-        model.applySwarms([SwarmRecord(
-            id: "swarm-1",
-            title: valid.title,
-            leaderBotId: leader.botId,
-            members: [leader],
-            messages: [message("two", 2), message("one", 1)],
-            updatedAtMs: 3
-        )])
+        model.applySwarms([
+            SwarmRecord(
+                id: "swarm-1",
+                title: valid.title,
+                leaderBotId: leader.botId,
+                members: [leader],
+                messages: [message("two", 2), message("one", 1)],
+                updatedAtMs: 3
+            )
+        ])
         XCTAssertEqual(model.swarms, [valid])
         XCTAssertEqual(model.toast?.message, "The gateway returned invalid swarm state.")
     }
@@ -700,7 +738,10 @@ extension AppModelTests {
             if case .createWorkspaceDirectory = request { return true }
             return false
         }
-        guard case .createWorkspaceDirectory(let requestID, let parent, let name) = try XCTUnwrap(request) else {
+        guard
+            case .createWorkspaceDirectory(let requestID, let parent, let name) = try XCTUnwrap(
+                request)
+        else {
             return XCTFail("Expected a create-workspace-directory request")
         }
         XCTAssertEqual(parent, "/srv")
@@ -718,10 +759,11 @@ extension AppModelTests {
         XCTAssertFalse(model.isLoadingDirectories)
         XCTAssertNil(model.directoryError)
         let requests = await recorder.requests()
-        XCTAssertFalse(requests.contains { request in
-            if case .createSession = request { return true }
-            return false
-        })
+        XCTAssertFalse(
+            requests.contains { request in
+                if case .createSession = request { return true }
+                return false
+            })
     }
 
     func testCreatingWorkspaceDirectoryRejectsNestedNameBeforeSending() async throws {
@@ -739,33 +781,37 @@ extension AppModelTests {
 
         XCTAssertEqual(model.directoryError, "Enter a single folder name.")
         let requests = await recorder.requests()
-        XCTAssertFalse(requests.contains { request in
-            if case .createWorkspaceDirectory = request { return true }
-            return false
-        })
+        XCTAssertFalse(
+            requests.contains { request in
+                if case .createWorkspaceDirectory = request { return true }
+                return false
+            })
     }
 
     func testGatewayReadyPopulatesChatCatalogWithoutOpeningSession() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
 
-        model.gateway.handle(.ready(ready(
-            botDefaults: VersionedAgentConfig(revision: 1, config: composition()),
-            sessions: [
-                session(sessionID: "chat-1", state: .idle),
-                session(sessionID: "chat-2", state: .idle),
-            ]
-        )))
+        model.gateway.handle(
+            .ready(
+                ready(
+                    botDefaults: VersionedAgentConfig(revision: 1, config: composition()),
+                    sessions: [
+                        session(sessionID: "chat-1", state: .idle),
+                        session(sessionID: "chat-2", state: .idle),
+                    ]
+                )))
         try await Task.sleep(for: .milliseconds(30))
 
         XCTAssertEqual(model.chat.sessions.map(\.sessionId), ["chat-1", "chat-2"])
         XCTAssertNil(model.chat.selectedSessionID)
         XCTAssertTrue(model.navigationPath.isEmpty)
         let requests = await recorder.requests()
-        XCTAssertFalse(requests.contains { request in
-            if case .openSession = request { return true }
-            return false
-        })
+        XCTAssertFalse(
+            requests.contains { request in
+                if case .openSession = request { return true }
+                return false
+            })
     }
 
     func testOpenChatSetsRouteAndRequestsSessionOnce() async throws {
@@ -788,10 +834,11 @@ extension AppModelTests {
         guard case .openSession(let requestID, _, _) = try XCTUnwrap(request) else {
             return XCTFail("Expected the chat to open")
         }
-        model.gateway.handle(.sessionOpened(
-            requestID: requestID,
-            payload: sessionReady(latestSequence: 0, sessionID: "chat-2")
-        ))
+        model.gateway.handle(
+            .sessionOpened(
+                requestID: requestID,
+                payload: sessionReady(latestSequence: 0, sessionID: "chat-2")
+            ))
         XCTAssertEqual(model.navigationPath, [.chat(.session("chat-2"))])
         model.navigationPath = []
         model.openChat("chat-2")
@@ -859,25 +906,28 @@ extension AppModelTests {
             if case .createSession = request { return true }
             return false
         }
-        guard case .createSession(let requestID, let path, let botID) = try XCTUnwrap(request) else {
+        guard case .createSession(let requestID, let path, let botID) = try XCTUnwrap(request)
+        else {
             return XCTFail("Expected a create-session request")
         }
         XCTAssertEqual(path, "/srv/mobius")
         XCTAssertEqual(botID, "bot-1")
         XCTAssertEqual(model.navigationPath, [.chat(.new)])
 
-        model.gateway.handle(.sessionOpened(
-            requestID: requestID,
-            payload: sessionReady(latestSequence: 0, sessionID: "chat-created")
-        ))
-        model.gateway.handle(.sessionReplayComplete(
-            requestID: requestID,
-            sessionID: "chat-created"
-        ))
+        model.gateway.handle(
+            .sessionOpened(
+                requestID: requestID,
+                payload: sessionReady(latestSequence: 0, sessionID: "chat-created")
+            ))
+        model.gateway.handle(
+            .sessionReplayComplete(
+                requestID: requestID,
+                sessionID: "chat-created"
+            ))
 
         let submission = await recorder.firstRequest(after: requestCount) { request in
             guard case .submit("chat-created", let submission) = request,
-                  case .message(let message) = submission.op
+                case .message(let message) = submission.op
             else { return false }
             return message.text == "Inspect the project"
         }
@@ -912,12 +962,14 @@ extension AppModelTests {
             return XCTFail("Expected a create-session request")
         }
 
-        model.gateway.handle(.rejected(GatewayRejection(
-            requestId: requestID,
-            code: "create_failed",
-            message: "Chat could not be created",
-            fatal: false
-        )))
+        model.gateway.handle(
+            .rejected(
+                GatewayRejection(
+                    requestId: requestID,
+                    code: "create_failed",
+                    message: "Chat could not be created",
+                    fatal: false
+                )))
 
         XCTAssertEqual(model.gateway.connectionState, .ready)
         XCTAssertEqual(model.chat.pendingNewChatBotID, helper.id)
@@ -978,10 +1030,11 @@ extension AppModelTests {
 
         XCTAssertEqual(model.chat.sessions.map(\.sessionId), ["chat-2"])
         let requests = await recorder.requests()
-        XCTAssertFalse(requests.dropFirst(requestCount).contains { request in
-            if case .openSession = request { return true }
-            return false
-        })
+        XCTAssertFalse(
+            requests.dropFirst(requestCount).contains { request in
+                if case .openSession = request { return true }
+                return false
+            })
     }
 
     func testRejectedDeleteRestoresPresentedChat() async throws {
@@ -1004,12 +1057,14 @@ extension AppModelTests {
         }
         let requestCount = await recorder.requestCount()
 
-        model.gateway.handle(.rejected(GatewayRejection(
-            requestId: requestID,
-            code: "delete_failed",
-            message: "Chat could not be deleted",
-            fatal: false
-        )))
+        model.gateway.handle(
+            .rejected(
+                GatewayRejection(
+                    requestId: requestID,
+                    code: "delete_failed",
+                    message: "Chat could not be deleted",
+                    fatal: false
+                )))
 
         XCTAssertEqual(model.destination, .chats)
         XCTAssertEqual(model.navigationPath, [.chat(.session("chat-1"))])
@@ -1055,10 +1110,11 @@ extension AppModelTests {
         XCTAssertTrue(disconnected)
 
         let requests = await recorder.requests()
-        XCTAssertFalse(requests.dropFirst(requestCount).contains { request in
-            if case .openSession(_, "chat-1", _) = request { return true }
-            return false
-        })
+        XCTAssertFalse(
+            requests.dropFirst(requestCount).contains { request in
+                if case .openSession(_, "chat-1", _) = request { return true }
+                return false
+            })
         XCTAssertEqual(model.destination, .chats)
         XCTAssertEqual(model.navigationPath, [.chat(.session("chat-1"))])
     }
@@ -1068,14 +1124,16 @@ extension AppModelTests {
 
         for delta in ["think", "ing"] {
             model.chat.reduce(
-                event: AgentEventRecord(submissionId: nil, msg: .object([
-                    "type": .string("assistant_content_delta"),
-                    "sessionId": .string("chat-1"),
-                    "turnId": .string("turn-1"),
-                    "modelStepId": .string("reasoning-1"),
-                    "phase": .string("reasoning"),
-                    "delta": .string(delta)
-                ])),
+                event: AgentEventRecord(
+                    submissionId: nil,
+                    msg: .object([
+                        "type": .string("assistant_content_delta"),
+                        "sessionId": .string("chat-1"),
+                        "turnId": .string("turn-1"),
+                        "modelStepId": .string("reasoning-1"),
+                        "phase": .string("reasoning"),
+                        "delta": .string(delta),
+                    ])),
                 blocks: [],
                 preview: nil
             )
@@ -1083,9 +1141,11 @@ extension AppModelTests {
         XCTAssertTrue(model.chat.transcript.isEmpty)
 
         model.chat.reduce(
-            event: AgentEventRecord(submissionId: nil, msg: .object([
-                "type": .string("turn_complete")
-            ])),
+            event: AgentEventRecord(
+                submissionId: nil,
+                msg: .object([
+                    "type": .string("turn_complete")
+                ])),
             blocks: [],
             preview: nil
         )
@@ -1097,55 +1157,80 @@ extension AppModelTests {
     func testTurnCompleteCollapsesCompactionAndSteeringIntoFinishedTurnWork() throws {
         let model = try model()
         let turnID = "turn-1"
-        model.chat.reduce(record: recorded(1, .object([
-            "type": .string("turn_started"),
-            "turnId": .string(turnID),
-        ])))
+        model.chat.reduce(
+            record: recorded(
+                1,
+                .object([
+                    "type": .string("turn_started"),
+                    "turnId": .string(turnID),
+                ])))
         model.chat.reduce(record: recorded(2, testMessageEvent(text: "Start")))
-        model.chat.reduce(record: recorded(3, testAssistantMessage(
-            turnID: turnID,
-            modelStepID: "step-1",
-            phase: "commentary",
-            text: "Checking"
-        )))
-        model.chat.reduce(record: recorded(4, .object([
-            "type": .string("context_compacted"),
-        ]), blocks: [RenderedBlock(capability: "compaction", block: FrontendBlock(
-            id: nil,
-            group: nil,
-            update: .replace,
-            state: .complete,
-            role: .notice,
-            title: "context compacted",
-            text: "",
-            symbol: nil,
-            format: "plain_text",
-            tone: "neutral",
-            files: []
-        ))]))
-        model.chat.reduce(record: recorded(5, testMessageEvent(
-            delivery: .steer,
-            text: "Also check tests"
-        )))
-        model.chat.reduce(record: recordedPeerMessage(6,
-            delivery: .steer,
-            text: "The parser boundary is covered."
-        ))
-        model.chat.reduce(record: recorded(7, testAssistantMessage(
-            turnID: turnID,
-            modelStepID: "step-2",
-            text: "Done"
-        )))
+        model.chat.reduce(
+            record: recorded(
+                3,
+                testAssistantMessage(
+                    turnID: turnID,
+                    modelStepID: "step-1",
+                    phase: "commentary",
+                    text: "Checking"
+                )))
+        model.chat.reduce(
+            record: recorded(
+                4,
+                .object([
+                    "type": .string("context_compacted")
+                ]),
+                blocks: [
+                    RenderedBlock(
+                        capability: "compaction",
+                        block: FrontendBlock(
+                            id: nil,
+                            group: nil,
+                            update: .replace,
+                            state: .complete,
+                            role: .notice,
+                            title: "context compacted",
+                            text: "",
+                            symbol: nil,
+                            format: "plain_text",
+                            tone: "neutral",
+                            files: []
+                        ))
+                ]))
+        model.chat.reduce(
+            record: recorded(
+                5,
+                testMessageEvent(
+                    delivery: .steer,
+                    text: "Also check tests"
+                )))
+        model.chat.reduce(
+            record: recordedPeerMessage(
+                6,
+                delivery: .steer,
+                text: "The parser boundary is covered."
+            ))
+        model.chat.reduce(
+            record: recorded(
+                7,
+                testAssistantMessage(
+                    turnID: turnID,
+                    modelStepID: "step-2",
+                    text: "Done"
+                )))
 
         XCTAssertEqual(
             model.chat.transcriptProjection(breakBefore: nil).rows.map(\.kind),
             [.user, .narrative, .activityGroup, .user, .activityGroup, .narrative]
         )
 
-        model.chat.reduce(record: recorded(8, .object([
-            "type": .string("turn_complete"),
-            "turnId": .string(turnID),
-        ])))
+        model.chat.reduce(
+            record: recorded(
+                8,
+                .object([
+                    "type": .string("turn_complete"),
+                    "turnId": .string(turnID),
+                ])))
 
         let projection = model.chat.transcriptProjection(breakBefore: nil)
         XCTAssertEqual(projection.rows.map(\.kind), [.user, .workedGroup, .narrative])
@@ -1177,26 +1262,34 @@ extension AppModelTests {
             (UInt64(1), "turn-1", MessageDelivery.turn, "Start"),
             (UInt64(5), "turn-2", MessageDelivery.queue, "Follow up"),
         ] {
-            model.chat.reduce(record: recorded(sequence, .object([
-                "type": .string("turn_started"),
-                "turnId": .string(turnID),
-            ])))
-            model.chat.reduce(record: recorded(
-                sequence + 1,
-                testMessageEvent(delivery: delivery, text: text)
-            ))
-            model.chat.reduce(record: recorded(
-                sequence + 2,
-                testAssistantMessage(
-                    turnID: turnID,
-                    modelStepID: "step-\(turnID)",
-                    text: "Done \(turnID)"
-                )
-            ))
-            model.chat.reduce(record: recorded(sequence + 3, .object([
-                "type": .string("turn_complete"),
-                "turnId": .string(turnID),
-            ])))
+            model.chat.reduce(
+                record: recorded(
+                    sequence,
+                    .object([
+                        "type": .string("turn_started"),
+                        "turnId": .string(turnID),
+                    ])))
+            model.chat.reduce(
+                record: recorded(
+                    sequence + 1,
+                    testMessageEvent(delivery: delivery, text: text)
+                ))
+            model.chat.reduce(
+                record: recorded(
+                    sequence + 2,
+                    testAssistantMessage(
+                        turnID: turnID,
+                        modelStepID: "step-\(turnID)",
+                        text: "Done \(turnID)"
+                    )
+                ))
+            model.chat.reduce(
+                record: recorded(
+                    sequence + 3,
+                    .object([
+                        "type": .string("turn_complete"),
+                        "turnId": .string(turnID),
+                    ])))
         }
 
         XCTAssertEqual(
@@ -1243,13 +1336,14 @@ extension AppModelTests {
 
         XCTAssertEqual(model.chat.activeTranscriptStepID, "tools/turn-1/call-2")
 
-        model.chat.transcript.append(TranscriptEntry(
-            id: "answer-1",
-            text: "Here is the answer",
-            kind: .assistant,
-            format: "plain_text",
-            pending: true
-        ))
+        model.chat.transcript.append(
+            TranscriptEntry(
+                id: "answer-1",
+                text: "Here is the answer",
+                kind: .assistant,
+                format: "plain_text",
+                pending: true
+            ))
         XCTAssertNil(model.chat.activeTranscriptStepID)
 
         model.chat.transcript.removeLast()

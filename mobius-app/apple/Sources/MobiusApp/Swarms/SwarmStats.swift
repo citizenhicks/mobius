@@ -20,7 +20,7 @@ func swarmMentionedHandles(in text: String) -> Set<String> {
     var index = 0
     while index < characters.count {
         guard characters[index] == "@",
-              index == 0 || !isSwarmMentionScalar(characters[index - 1])
+            index == 0 || !isSwarmMentionScalar(characters[index - 1])
         else {
             index += 1
             continue

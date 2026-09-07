@@ -132,24 +132,24 @@ struct CachedTranscript: Codable, Sendable {
         }
         for entry in entries {
             guard consume(entry.id),
-                  consume(entry.presentationID),
-                  consume(entry.text),
-                  consume(entry.capability),
-                  consume(entry.title),
-                  consume(entry.symbol),
-                  consume(entry.group),
-                  consume(entry.turnID),
-                  consume(entry.format),
-                  consume(entry.tone),
-                  consume(entry.messageMetadata?.author.peerFields?.messageID),
-                  consume(entry.messageMetadata?.author.peerFields?.sessionID),
-                  consume(entry.messageMetadata?.author.peerFields?.handle),
-                  consume(entry.reply?.text),
-                  entry.files.allSatisfy({ file in
-                      consume(file.id)
-                          && consume(file.name)
-                          && consume(file.mediaType)
-                  })
+                consume(entry.presentationID),
+                consume(entry.text),
+                consume(entry.capability),
+                consume(entry.title),
+                consume(entry.symbol),
+                consume(entry.group),
+                consume(entry.turnID),
+                consume(entry.format),
+                consume(entry.tone),
+                consume(entry.messageMetadata?.author.peerFields?.messageID),
+                consume(entry.messageMetadata?.author.peerFields?.sessionID),
+                consume(entry.messageMetadata?.author.peerFields?.handle),
+                consume(entry.reply?.text),
+                entry.files.allSatisfy({ file in
+                    consume(file.id)
+                        && consume(file.name)
+                        && consume(file.mediaType)
+                })
             else { return false }
         }
         return true
@@ -339,12 +339,12 @@ private actor GatewayDiskStore {
     func loadTranscript(accountID: UUID, sessionID: String) -> CachedTranscript? {
         let url = transcriptURL(accountID: accountID, sessionID: sessionID)
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let size = (attributes[.size] as? NSNumber)?.intValue
+            let size = (attributes[.size] as? NSNumber)?.intValue
         else { return nil }
         guard size <= maximumCachedTranscriptBytes,
-              let data = try? Data(contentsOf: url),
-              let cached = try? decoder.decode(CachedTranscript.self, from: data),
-              cached.schemaVersion == CachedTranscript.currentSchemaVersion
+            let data = try? Data(contentsOf: url),
+            let cached = try? decoder.decode(CachedTranscript.self, from: data),
+            cached.schemaVersion == CachedTranscript.currentSchemaVersion
         else {
             try? FileManager.default.removeItem(at: url)
             return nil
@@ -358,10 +358,12 @@ private actor GatewayDiskStore {
         sessionID: String
     ) {
         let url = transcriptURL(accountID: accountID, sessionID: sessionID)
-        guard transcript.fitsCache(
-            maximumEntries: maximumCachedTranscriptEntries,
-            maximumContentBytes: maximumCachedTranscriptContentBytes
-        ) else {
+        guard
+            transcript.fitsCache(
+                maximumEntries: maximumCachedTranscriptEntries,
+                maximumContentBytes: maximumCachedTranscriptContentBytes
+            )
+        else {
             try? FileManager.default.removeItem(at: url)
             return
         }
@@ -424,12 +426,12 @@ private actor GatewayDiskStore {
     func loadComposerDraft(accountID: UUID, sessionID: String) -> ComposerDraft {
         let url = draftURL(accountID: accountID, sessionID: sessionID)
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let size = (attributes[.size] as? NSNumber)?.intValue
+            let size = (attributes[.size] as? NSNumber)?.intValue
         else { return .empty }
         guard size <= maximumComposerBytes * 8 + 16_384,
-              let data = try? Data(contentsOf: url),
-              let draft = try? JSONDecoder().decode(ComposerDraft.self, from: data),
-              isValid(draft)
+            let data = try? Data(contentsOf: url),
+            let draft = try? JSONDecoder().decode(ComposerDraft.self, from: data),
+            isValid(draft)
         else {
             try? FileManager.default.removeItem(at: url)
             return .empty
@@ -444,7 +446,7 @@ private actor GatewayDiskStore {
             return
         }
         guard let data = try? JSONEncoder().encode(draft),
-              data.count <= maximumComposerBytes * 8 + 16_384
+            data.count <= maximumComposerBytes * 8 + 16_384
         else {
             try? FileManager.default.removeItem(at: url)
             return
@@ -470,12 +472,12 @@ private actor GatewayDiskStore {
     ) -> ComposerEditRecovery? {
         let url = editRecoveryURL(accountID: accountID, sessionID: sessionID)
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let size = (attributes[.size] as? NSNumber)?.intValue
+            let size = (attributes[.size] as? NSNumber)?.intValue
         else { return nil }
         guard size <= maximumComposerBytes * 3 + 16_384,
-              let data = try? Data(contentsOf: url),
-              let recovery = try? decoder.decode(ComposerEditRecovery.self, from: data),
-              recovery.fitsRecoveryBounds
+            let data = try? Data(contentsOf: url),
+            let recovery = try? decoder.decode(ComposerEditRecovery.self, from: data),
+            recovery.fitsRecoveryBounds
         else {
             try? FileManager.default.removeItem(at: url)
             return nil
@@ -602,16 +604,18 @@ private actor GatewayDiskStore {
     }
 
     private func trimTranscriptCache(in directory: URL) {
-        let cached = ((try? FileManager.default.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: [.contentModificationDateKey],
-            options: [.skipsHiddenFiles]
-        )) ?? [])
+        let cached =
+            ((try? FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: [.contentModificationDateKey],
+                options: [.skipsHiddenFiles]
+            )) ?? [])
             .filter { $0.pathExtension == "json" }
             .map { candidate in
-                let date = (try? candidate.resourceValues(
-                    forKeys: [.contentModificationDateKey]
-                ).contentModificationDate) ?? .distantPast
+                let date =
+                    (try? candidate.resourceValues(
+                        forKeys: [.contentModificationDateKey]
+                    ).contentModificationDate) ?? .distantPast
                 return (url: candidate, date: date)
             }
             .sorted { $0.date > $1.date }
@@ -683,14 +687,14 @@ final class GatewayStore {
                 ?? cacheDirectory.appendingPathComponent("Thumbnails", isDirectory: true),
             draftDirectory: draftDirectory
                 ?? URL.applicationSupportDirectory
-                    .appendingPathComponent("mobius", isDirectory: true)
-                    .appendingPathComponent("Drafts", isDirectory: true)
+                .appendingPathComponent("mobius", isDirectory: true)
+                .appendingPathComponent("Drafts", isDirectory: true)
         )
     }
 
     func loadAccounts() -> [GatewayAccount] {
         guard let data = defaults.data(forKey: accountsKey),
-              let accounts = try? decoder.decode([GatewayAccount].self, from: data)
+            let accounts = try? decoder.decode([GatewayAccount].self, from: data)
         else { return [] }
         return accounts
     }
@@ -741,8 +745,8 @@ final class GatewayStore {
     func rename(_ account: GatewayAccount, to rawName: String) throws -> GatewayAccount {
         let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty,
-              name.utf8.count <= 128,
-              !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+            name.utf8.count <= 128,
+            !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
         else { throw StoreError.invalidDisplayName }
 
         var accounts = loadAccounts()
@@ -768,8 +772,8 @@ final class GatewayStore {
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         guard status != errSecItemNotFound else { throw StoreError.missingToken }
         guard status == errSecSuccess,
-              let data = result as? Data,
-              let token = String(data: data, encoding: .utf8)
+            let data = result as? Data,
+            let token = String(data: data, encoding: .utf8)
         else {
             throw StoreError.keychain(status)
         }
@@ -831,13 +835,14 @@ final class GatewayStore {
         lastUsage: TokenUsage
     ) async {
         guard !transcript.isEmpty else { return }
-        await saveTranscript(CachedTranscript(
-            sequence: sequence,
-            nextBeforeSequence: nextBeforeSequence,
-            transcript: transcript,
-            currentUsage: currentUsage,
-            lastUsage: lastUsage
-        ), accountID: accountID, sessionID: sessionID)
+        await saveTranscript(
+            CachedTranscript(
+                sequence: sequence,
+                nextBeforeSequence: nextBeforeSequence,
+                transcript: transcript,
+                currentUsage: currentUsage,
+                lastUsage: lastUsage
+            ), accountID: accountID, sessionID: sessionID)
     }
 
     func removeTranscript(accountID: UUID, sessionID: String) async {
@@ -926,7 +931,8 @@ final class GatewayStore {
             kSecAttrService: keychainService,
         ]
         let status = keychainDelete(query as CFDictionary)
-        var localError: Error? = status == errSecSuccess || status == errSecItemNotFound
+        var localError: Error? =
+            status == errSecSuccess || status == errSecItemNotFound
             ? nil
             : StoreError.keychain(status)
         for key in defaults.dictionaryRepresentation().keys

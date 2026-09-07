@@ -156,13 +156,15 @@ struct ProviderMark: View {
     let tint: AccentTint
 
     private var glyph: MobiusGlyph {
-        guard let symbol, let known = MobiusSymbol.knownGlyph(for: symbol) else { return .hardDrives }
+        guard let symbol, let known = MobiusSymbol.knownGlyph(for: symbol) else {
+            return .hardDrives
+        }
         return known
     }
 
     var body: some View {
         MobiusIcon(glyph, size: MobiusStyle.glyphLead, foreground: tint.color)
-        .accessibilityHidden(true)
+            .accessibilityHidden(true)
     }
 }
 
@@ -186,7 +188,8 @@ private struct AddProviderSheet: View {
                             Text("Subscription providers")
                             SettingsInfoButton(
                                 title: "Provider setups",
-                                detail: "Pick a service, then name this setup. Adding a second setup of the same service keeps both, each with its own credential.",
+                                detail:
+                                    "Pick a service, then name this setup. Adding a second setup of the same service keeps both, each with its own credential.",
                                 compact: true
                             )
                         }
@@ -205,13 +208,15 @@ private struct AddProviderSheet: View {
                 if provider != nil {
                     ToolbarItem(placement: .confirmationAction) {
                         Button("Save", action: model.registerProvider)
-                            .disabled(model.isApplyingConfiguration || !model.gateway.connectionState.isReady)
+                            .disabled(
+                                model.isApplyingConfiguration
+                                    || !model.gateway.connectionState.isReady)
                     }
                 }
             }
             .onChange(of: model.providerInstances.map(\.instance)) { _, instances in
                 guard let instance = model.providerDraft?.instance,
-                      instances.contains(instance)
+                    instances.contains(instance)
                 else { return }
                 dismiss()
             }
@@ -259,7 +264,9 @@ struct ProviderDetailView: View {
                             MobiusIcon(.floppyDisk, gutter: false)
                         }
                         .groupedHeaderAction(prominent: true)
-                        .disabled(model.isApplyingConfiguration || !model.gateway.connectionState.isReady)
+                        .disabled(
+                            model.isApplyingConfiguration || !model.gateway.connectionState.isReady
+                        )
                         .accessibilityLabel("Save to gateway")
                         .help("Save to gateway")
                         Button {
@@ -324,7 +331,8 @@ private struct ProviderFormSections: View {
                         Text("Name")
                         SettingsInfoButton(
                             title: "Name",
-                            detail: "Shown in model pickers and usage. Name setups for what they are, like Work or Personal."
+                            detail:
+                                "Shown in model pickers and usage. Name setups for what they are, like Work or Personal."
                         )
                     }
                 }
@@ -394,12 +402,14 @@ private struct ProviderFormSections: View {
 
                 SettingsStackedField(
                     title: "Tool discovery",
-                    info: "Native discovery keeps the cached context. Rebuild mode supports the same tools but starts a new cache prefix when the tool set changes."
+                    info:
+                        "Native discovery keeps the cached context. Rebuild mode supports the same tools but starts a new cache prefix when the tool set changes."
                 ) {
-                    Text(status.resolvedToolDiscovery(
-                        model: model.providerDraft?.model,
-                        baseURL: model.providerDraft?.baseUrl
-                    ).label)
+                    Text(
+                        status.resolvedToolDiscovery(
+                            model: model.providerDraft?.model,
+                            baseURL: model.providerDraft?.baseUrl
+                        ).label)
                 }
 
                 Picker("Hosted web search", selection: providerWebSearch) {
@@ -465,7 +475,9 @@ private struct ProviderFormSections: View {
         }
         if status.auth == .apiKey {
             if let instance = model.providerDraft?.instance,
-               let hint = model.providerInstances.first(where: { $0.instance == instance })?.credentialHint {
+                let hint = model.providerInstances.first(where: { $0.instance == instance })?
+                    .credentialHint
+            {
                 LabeledContent("Saved key") {
                     Text("••••\(hint)")
                         .foregroundStyle(palette.muted)
@@ -474,7 +486,8 @@ private struct ProviderFormSections: View {
             }
             SettingsStackedField(
                 title: "API key",
-                info: "Sent once to the gateway and never returned to this app. Sending a new one replaces the stored key for this setup."
+                info:
+                    "Sent once to the gateway and never returned to this app. Sending a new one replaces the stored key for this setup."
             ) {
                 SecureField("API key", text: $model.providerAPIKey)
                     .textContentType(.password)
@@ -505,7 +518,8 @@ private struct ProviderFormSections: View {
                     model.startProviderLogin()
                 }
                 .mobiusProminentButton()
-                .disabled(model.pendingProviderLogin != nil || !model.gateway.connectionState.isReady)
+                .disabled(
+                    model.pendingProviderLogin != nil || !model.gateway.connectionState.isReady)
             }
             .settingsStandaloneRow()
         }
@@ -522,11 +536,17 @@ private struct ProviderFormSections: View {
         case .idle:
             EmptyView()
         case .savingCredential:
-            StatusBanner(tone: .neutral, title: "Sending credential", detail: "The value is not persisted by this app.", progress: true)
+            StatusBanner(
+                tone: .neutral, title: "Sending credential",
+                detail: "The value is not persisted by this app.", progress: true)
         case .credentialSaved(let provider):
-            StatusBanner(tone: .success, title: "Credential updated", detail: "\(model.providerLabel(for: provider)) is configured on the gateway.")
+            StatusBanner(
+                tone: .success, title: "Credential updated",
+                detail: "\(model.providerLabel(for: provider)) is configured on the gateway.")
         case .startingLogin(let provider):
-            StatusBanner(tone: .neutral, title: "Starting \(model.providerLabel(for: provider)) sign-in", detail: "Waiting for a device code.", progress: true)
+            StatusBanner(
+                tone: .neutral, title: "Starting \(model.providerLabel(for: provider)) sign-in",
+                detail: "Waiting for a device code.", progress: true)
         case .deviceCode(let provider, let url, let code):
             VStack(alignment: .leading, spacing: MobiusSpace.m) {
                 Text("Finish \(model.providerLabel(for: provider)) sign-in")
@@ -548,7 +568,9 @@ private struct ProviderFormSections: View {
                 }
             }
         case .loginFinished(let provider):
-            StatusBanner(tone: .success, title: "Sign-in complete", detail: "\(model.providerLabel(for: provider)) is ready on the gateway.")
+            StatusBanner(
+                tone: .success, title: "Sign-in complete",
+                detail: "\(model.providerLabel(for: provider)) is ready on the gateway.")
         case .failed(let message):
             StatusBanner(
                 tone: .error,

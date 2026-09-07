@@ -21,7 +21,9 @@ actor GatewayClient {
         self.decoder = decoder
     }
 
-    func connect(to endpoint: GatewayEndpoint) async throws -> AsyncThrowingStream<GatewayEnvelope, Error> {
+    func connect(to endpoint: GatewayEndpoint) async throws -> AsyncThrowingStream<
+        GatewayEnvelope, Error
+    > {
         disconnect()
         if endpoint.usesWebSocket {
             return try await connectWebSocket(to: endpoint)
@@ -142,7 +144,8 @@ actor GatewayClient {
     }
 
     private func start(_ connection: NWConnection) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+        try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<Void, Error>) in
             let gate = ConnectionStartGate(continuation)
             connection.stateUpdateHandler = { state in
                 switch state {
@@ -166,11 +169,17 @@ actor GatewayClient {
     }
 
     private func send(_ data: Data, over connection: NWConnection) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            connection.send(content: data, completion: .contentProcessed { error in
-                if let error { continuation.resume(throwing: error) }
-                else { continuation.resume() }
-            })
+        try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<Void, Error>) in
+            connection.send(
+                content: data,
+                completion: .contentProcessed { error in
+                    if let error {
+                        continuation.resume(throwing: error)
+                    } else {
+                        continuation.resume()
+                    }
+                })
         }
     }
 
@@ -236,10 +245,15 @@ actor GatewayClient {
                 minimumIncompleteLength: 1,
                 maximumLength: maximumLength
             ) { data, _, isComplete, error in
-                if let error { continuation.resume(throwing: error) }
-                else if let data, !data.isEmpty { continuation.resume(returning: data) }
-                else if isComplete { continuation.resume(throwing: GatewayWireError.disconnected) }
-                else { continuation.resume(returning: Data()) }
+                if let error {
+                    continuation.resume(throwing: error)
+                } else if let data, !data.isEmpty {
+                    continuation.resume(returning: data)
+                } else if isComplete {
+                    continuation.resume(throwing: GatewayWireError.disconnected)
+                } else {
+                    continuation.resume(returning: Data())
+                }
             }
         }
     }
@@ -251,7 +265,8 @@ actor GatewayClient {
 }
 
 private final class WebSocketStartDelegate: NSObject, URLSessionWebSocketDelegate,
-    @unchecked Sendable {
+    @unchecked Sendable
+{
     private let gate: ConnectionStartGate
 
     init(_ continuation: CheckedContinuation<Void, Error>) {

@@ -34,19 +34,21 @@ extension ChatSessionModel {
             if let size = values.fileSize, size != data.count {
                 throw AttachmentImportError.changedWhileReading
             }
-            let mediaType = values.contentType?.preferredMIMEType
+            let mediaType =
+                values.contentType?.preferredMIMEType
                 ?? UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
                 ?? "application/octet-stream"
-            let thumbnail: CGImage? = if mediaType.lowercased().hasPrefix("video/") {
-                await Self.videoFileThumbnail(from: url)
-            } else if Self.isFileThumbnailCandidate(
-                mediaType: mediaType,
-                size: Int64(data.count)
-            ) {
-                await Self.downsampledFileThumbnail(from: data)
-            } else {
-                nil
-            }
+            let thumbnail: CGImage? =
+                if mediaType.lowercased().hasPrefix("video/") {
+                    await Self.videoFileThumbnail(from: url)
+                } else if Self.isFileThumbnailCandidate(
+                    mediaType: mediaType,
+                    size: Int64(data.count)
+                ) {
+                    await Self.downsampledFileThumbnail(from: data)
+                } else {
+                    nil
+                }
             return ImportedAttachmentData(
                 name: url.lastPathComponent,
                 mediaType: mediaType,
@@ -131,7 +133,8 @@ extension ChatSessionModel {
     func cacheFileThumbnail(_ thumbnail: CGImage, for key: FileThumbnailKey) {
         if fileThumbnails[key] == nil {
             while fileThumbnailOrder.count >= maximumCachedFileThumbnails,
-                  let oldest = fileThumbnailOrder.first {
+                let oldest = fileThumbnailOrder.first
+            {
                 removeFileThumbnail(for: oldest)
             }
             fileThumbnailOrder.append(key)
@@ -174,9 +177,9 @@ extension ChatSessionModel {
 
     func requestSessionFileThumbnail(_ file: SessionFileReference, sessionID: String?) {
         guard !isClearingLocalData,
-              let sessionID,
-              Self.supportsFileThumbnail(mediaType: file.mediaType),
-              fileThumbnails[.session(sessionID: sessionID, fileID: file.id)] == nil
+            let sessionID,
+            Self.supportsFileThumbnail(mediaType: file.mediaType),
+            fileThumbnails[.session(sessionID: sessionID, fileID: file.id)] == nil
         else { return }
         let key = FileThumbnailKey.session(sessionID: sessionID, fileID: file.id)
         let canDownloadSource = Self.isFileThumbnailCandidate(
@@ -205,8 +208,8 @@ extension ChatSessionModel {
                     nil
                 }
             guard let self,
-                  self.gateway.selectedAccountID == accountID,
-                  self.requestedSessionFileThumbnailKeys.contains(key)
+                self.gateway.selectedAccountID == accountID,
+                self.requestedSessionFileThumbnailKeys.contains(key)
             else { return }
             if let thumbnail {
                 self.requestedSessionFileThumbnailKeys.remove(key)
@@ -242,7 +245,7 @@ extension ChatSessionModel {
 
     func startNextSessionFileThumbnailDownload() {
         guard gateway.connectionState.isReady,
-              sessionFileThumbnailDownload == nil
+            sessionFileThumbnailDownload == nil
         else { return }
 
         while !queuedSessionFileThumbnails.isEmpty {
@@ -259,16 +262,18 @@ extension ChatSessionModel {
                 data: Data(),
                 requestID: id
             )
-            gateway.transmit(.readSessionFile(
-                requestID: id,
-                sessionID: sessionID,
-                fileID: file.id,
-                offset: 0,
-                maxBytes: 256 * 1024
-            )) { [weak self] _ in
+            gateway.transmit(
+                .readSessionFile(
+                    requestID: id,
+                    sessionID: sessionID,
+                    fileID: file.id,
+                    offset: 0,
+                    maxBytes: 256 * 1024
+                )
+            ) { [weak self] _ in
                 guard let self,
-                      let download = self.sessionFileThumbnailDownload,
-                      download.requestID == id
+                    let download = self.sessionFileThumbnailDownload,
+                    download.requestID == id
                 else { return }
                 self.finishSessionFileThumbnailAttempt(download, startsNext: false)
             }
@@ -289,10 +294,11 @@ extension ChatSessionModel {
         _ download: SessionFileThumbnailDownload,
         startsNext: Bool = true
     ) {
-        requestedSessionFileThumbnailKeys.remove(.session(
-            sessionID: download.sessionID,
-            fileID: download.file.id
-        ))
+        requestedSessionFileThumbnailKeys.remove(
+            .session(
+                sessionID: download.sessionID,
+                fileID: download.file.id
+            ))
         if sessionFileThumbnailDownload?.requestID == download.requestID {
             sessionFileThumbnailDownload = nil
         }
@@ -301,7 +307,8 @@ extension ChatSessionModel {
 
     func rememberDiscardedSessionFileThumbnailRequest(_ requestID: String) {
         if discardedSessionFileThumbnailRequestIDs.count >= maximumDiscardedFileThumbnailRequestIDs,
-           let requestID = discardedSessionFileThumbnailRequestIDs.first {
+            let requestID = discardedSessionFileThumbnailRequestIDs.first
+        {
             discardedSessionFileThumbnailRequestIDs.remove(requestID)
         }
         discardedSessionFileThumbnailRequestIDs.insert(requestID)
@@ -315,28 +322,30 @@ extension ChatSessionModel {
 
     func startNextSessionFileUpload() {
         guard gateway.connectionState.isReady,
-              activeSessionFileUpload == nil,
-              sessionFileUploadRequests.isEmpty,
-              abandonedSessionFileUploadRequests.isEmpty,
-              let sessionID = selectedSessionID,
-              let index = composerAttachments.firstIndex(where: {
-                  if case .queued = $0.state { return true }
-                  return false
-              }),
-              sessionFileData[composerAttachments[index].id] != nil
+            activeSessionFileUpload == nil,
+            sessionFileUploadRequests.isEmpty,
+            abandonedSessionFileUploadRequests.isEmpty,
+            let sessionID = selectedSessionID,
+            let index = composerAttachments.firstIndex(where: {
+                if case .queued = $0.state { return true }
+                return false
+            }),
+            sessionFileData[composerAttachments[index].id] != nil
         else { return }
 
         let item = composerAttachments[index]
         composerAttachments[index].state = .uploading(0)
         let id = requestID("session-file-begin")
         sessionFileUploadRequests[id] = .begin(localID: item.id, sessionID: sessionID)
-        gateway.transmit(.beginSessionFileUpload(
-            requestID: id,
-            sessionID: sessionID,
-            name: item.name,
-            size: item.size,
-            mediaType: item.mediaType
-        )) { [weak self] message in
+        gateway.transmit(
+            .beginSessionFileUpload(
+                requestID: id,
+                sessionID: sessionID,
+                name: item.name,
+                size: item.size,
+                mediaType: item.mediaType
+            )
+        ) { [weak self] message in
             self?.failSessionFileUploadRequest(id, message: message, showsToast: false)
         }
     }
@@ -359,13 +368,14 @@ extension ChatSessionModel {
         }
         guard let request = sessionFileUploadRequests[requestID] else { return }
         guard case .begin(let localID, let expectedSessionID) = request else {
-            return failAttachment(request.localID, message: "The gateway returned an invalid upload.")
+            return failAttachment(
+                request.localID, message: "The gateway returned an invalid upload.")
         }
         guard sessionID == expectedSessionID,
-              sessionID == selectedSessionID,
-              !uploadID.isEmpty,
-              maxChunkBytes > 0,
-              maxChunkBytes <= (sessionFileLimits?.maxUploadChunkBytes ?? 0)
+            sessionID == selectedSessionID,
+            !uploadID.isEmpty,
+            maxChunkBytes > 0,
+            maxChunkBytes <= (sessionFileLimits?.maxUploadChunkBytes ?? 0)
         else { return failAttachment(localID, message: "The gateway returned an invalid upload.") }
         sessionFileUploadRequests.removeValue(forKey: requestID)
         activeSessionFileUpload = ActiveSessionFileUpload(
@@ -385,17 +395,19 @@ extension ChatSessionModel {
     ) {
         guard let request = sessionFileUploadRequests[requestID] else { return }
         guard case .chunk(let localID, let expectedNextOffset) = request else {
-            return failAttachment(request.localID, message: "The gateway returned an invalid upload.")
+            return failAttachment(
+                request.localID, message: "The gateway returned an invalid upload.")
         }
         guard let upload = activeSessionFileUpload,
-              upload.localID == localID,
-              upload.sessionID == sessionID,
-              upload.uploadID == uploadID
+            upload.localID == localID,
+            upload.sessionID == sessionID,
+            upload.uploadID == uploadID
         else {
             return failAttachment(localID, message: "The gateway returned an invalid upload.")
         }
         guard nextOffset == expectedNextOffset else {
-            return failAttachment(localID, message: "The gateway returned an invalid upload offset.")
+            return failAttachment(
+                localID, message: "The gateway returned an invalid upload offset.")
         }
         sessionFileUploadRequests.removeValue(forKey: requestID)
         if let index = composerAttachments.firstIndex(where: { $0.id == localID }) {
@@ -406,11 +418,11 @@ extension ChatSessionModel {
 
     private func sendNextSessionFileChunk(localID: UUID, offset: Int64) {
         guard let upload = activeSessionFileUpload,
-              upload.localID == localID,
-              let data = sessionFileData[localID],
-              offset >= 0,
-              let start = Int(exactly: offset),
-              start <= data.count
+            upload.localID == localID,
+            let data = sessionFileData[localID],
+            offset >= 0,
+            let start = Int(exactly: offset),
+            start <= data.count
         else {
             failAttachment(localID, message: "The gateway returned an invalid upload offset.")
             return
@@ -418,11 +430,13 @@ extension ChatSessionModel {
         guard start < data.count else {
             let id = requestID("session-file-finish")
             sessionFileUploadRequests[id] = .finish(localID: localID)
-            gateway.transmit(.finishSessionFileUpload(
-                requestID: id,
-                sessionID: upload.sessionID,
-                uploadID: upload.uploadID
-            )) { [weak self] message in
+            gateway.transmit(
+                .finishSessionFileUpload(
+                    requestID: id,
+                    sessionID: upload.sessionID,
+                    uploadID: upload.uploadID
+                )
+            ) { [weak self] message in
                 self?.failSessionFileUploadRequest(id, message: message, showsToast: false)
             }
             return
@@ -434,13 +448,15 @@ extension ChatSessionModel {
             localID: localID,
             expectedNextOffset: Int64(end)
         )
-        gateway.transmit(.uploadSessionFileChunk(
-            requestID: id,
-            sessionID: upload.sessionID,
-            uploadID: upload.uploadID,
-            offset: offset,
-            data: Data(data[start..<end])
-        )) { [weak self] message in
+        gateway.transmit(
+            .uploadSessionFileChunk(
+                requestID: id,
+                sessionID: upload.sessionID,
+                uploadID: upload.uploadID,
+                offset: offset,
+                data: Data(data[start..<end])
+            )
+        ) { [weak self] message in
             self?.failSessionFileUploadRequest(id, message: message, showsToast: false)
         }
     }
@@ -455,12 +471,12 @@ extension ChatSessionModel {
             return failAttachment(request.localID, message: "The gateway returned an invalid file.")
         }
         guard sessionID == selectedSessionID,
-              activeSessionFileUpload?.localID == localID,
-              activeSessionFileUpload?.sessionID == sessionID,
-              let index = composerAttachments.firstIndex(where: { $0.id == localID }),
-              composerAttachments[index].name == file.name,
-              composerAttachments[index].size == file.size,
-              composerAttachments[index].mediaType == file.mediaType
+            activeSessionFileUpload?.localID == localID,
+            activeSessionFileUpload?.sessionID == sessionID,
+            let index = composerAttachments.firstIndex(where: { $0.id == localID }),
+            composerAttachments[index].name == file.name,
+            composerAttachments[index].size == file.size,
+            composerAttachments[index].mediaType == file.mediaType
         else {
             return failAttachment(localID, message: "The gateway returned an invalid file.")
         }
@@ -544,7 +560,8 @@ extension ChatSessionModel {
                 fileID: activeUpload.uploadID
             )
         } else if case .uploaded(let file) = attachment.state,
-                  let sessionID = selectedSessionID {
+            let sessionID = selectedSessionID
+        {
             requestSessionFileDeletion(
                 RemovedComposerAttachment(sessionID: sessionID, attachment: attachment),
                 fileID: file.id
@@ -560,11 +577,12 @@ extension ChatSessionModel {
         sessionFileDeleteRequests[id] = removed
         sessionFiles.removeAll { $0.id == fileID }
         removeFileThumbnail(for: .session(sessionID: removed.sessionID, fileID: fileID))
-        gateway.transmit(.deleteSessionFile(
-            requestID: id,
-            sessionID: removed.sessionID,
-            fileID: fileID
-        ))
+        gateway.transmit(
+            .deleteSessionFile(
+                requestID: id,
+                sessionID: removed.sessionID,
+                fileID: fileID
+            ))
     }
 
     @discardableResult
@@ -578,8 +596,9 @@ extension ChatSessionModel {
             return false
         }
         if case .uploaded = removed.attachment.state,
-           selectedSessionID == removed.sessionID,
-           !composerAttachments.contains(where: { $0.id == removed.attachment.id }) {
+            selectedSessionID == removed.sessionID,
+            !composerAttachments.contains(where: { $0.id == removed.attachment.id })
+        {
             composerAttachments.append(removed.attachment)
         }
         if refreshesFiles, selectedSessionID == removed.sessionID { refreshSessionFiles() }
@@ -627,15 +646,15 @@ extension ChatSessionModel {
         nextOffset: Int64?
     ) {
         guard var download = sessionFileThumbnailDownload,
-              download.requestID == requestID
+            download.requestID == requestID
         else { return }
         sessionFileThumbnailDownload = nil
         guard download.sessionID == sessionID,
-              download.file.id == fileID,
-              offset == Int64(download.data.count),
-              data.count <= 256 * 1024,
-              Int64(download.data.count + data.count) <= download.file.size,
-              Int64(download.data.count + data.count) <= maximumFileThumbnailSourceBytes
+            download.file.id == fileID,
+            offset == Int64(download.data.count),
+            data.count <= 256 * 1024,
+            Int64(download.data.count + data.count) <= download.file.size,
+            Int64(download.data.count + data.count) <= maximumFileThumbnailSourceBytes
         else {
             finishSessionFileThumbnailAttempt(download)
             return
@@ -649,16 +668,18 @@ extension ChatSessionModel {
             let id = self.requestID("session-file-thumbnail")
             download.requestID = id
             sessionFileThumbnailDownload = download
-            gateway.transmit(.readSessionFile(
-                requestID: id,
-                sessionID: sessionID,
-                fileID: fileID,
-                offset: nextOffset,
-                maxBytes: 256 * 1024
-            )) { [weak self] _ in
+            gateway.transmit(
+                .readSessionFile(
+                    requestID: id,
+                    sessionID: sessionID,
+                    fileID: fileID,
+                    offset: nextOffset,
+                    maxBytes: 256 * 1024
+                )
+            ) { [weak self] _ in
                 guard let self,
-                      let download = self.sessionFileThumbnailDownload,
-                      download.requestID == id
+                    let download = self.sessionFileThumbnailDownload,
+                    download.requestID == id
                 else { return }
                 self.finishSessionFileThumbnailAttempt(download, startsNext: false)
             }
@@ -673,7 +694,7 @@ extension ChatSessionModel {
         Task { [weak self] in
             let thumbnail = await Self.downsampledFileThumbnail(from: download.data)
             guard let self,
-                  self.sessionFileThumbnailDownload?.requestID == download.requestID
+                self.sessionFileThumbnailDownload?.requestID == download.requestID
             else { return }
             self.sessionFileThumbnailDownload = nil
             if let thumbnail {

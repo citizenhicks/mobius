@@ -316,29 +316,32 @@ struct RoutineEditorSheet: View {
 
         let schedule = routine?.schedule
         let parsedCron = schedule?.expression.flatMap(simpleRoutineSchedule)
-        let initialMode: RoutineScheduleMode = switch schedule?.kind {
-        case .once: .once
-        case .interval: .interval
-        case .cron: parsedCron.map { $0.weekday == nil ? .daily : .weekly } ?? .advanced
-        case nil: .once
-        }
+        let initialMode: RoutineScheduleMode =
+            switch schedule?.kind {
+            case .once: .once
+            case .interval: .interval
+            case .cron: parsedCron.map { $0.weekday == nil ? .daily : .weekly } ?? .advanced
+            case nil: .once
+            }
         let initialDate = Date(
             timeIntervalSince1970: TimeInterval(
                 schedule?.at ?? Int64(Date.now.timeIntervalSince1970 + 3_600)
             )
         )
         let scheduleTimeZone = TimeZone(identifier: schedule?.timeZone ?? "") ?? .current
-        let initialCronDate = parsedCron.map {
-            routineDate(for: $0, timeZone: scheduleTimeZone)
-        } ?? initialDate
+        let initialCronDate =
+            parsedCron.map {
+                routineDate(for: $0, timeZone: scheduleTimeZone)
+            } ?? initialDate
         let seconds = schedule?.everySeconds ?? 600
-        let initialUnit: RoutineIntervalUnit = if seconds.isMultiple(of: 3_600) {
-            .hours
-        } else if seconds.isMultiple(of: 60) {
-            .minutes
-        } else {
-            .seconds
-        }
+        let initialUnit: RoutineIntervalUnit =
+            if seconds.isMultiple(of: 3_600) {
+                .hours
+            } else if seconds.isMultiple(of: 60) {
+                .minutes
+            } else {
+                .seconds
+            }
 
         _workspace = State(initialValue: routine?.workspace ?? workspaces.first?.path ?? "")
         _instructions = State(initialValue: routine?.instructions ?? "")
@@ -354,11 +357,12 @@ struct RoutineEditorSheet: View {
         _endMode = State(initialValue: routine?.endsAt == nil ? .never : .date)
         _durationValue = State(initialValue: 1)
         _durationUnit = State(initialValue: .hours)
-        _endDate = State(initialValue: Date(
-            timeIntervalSince1970: TimeInterval(
-                routine?.endsAt ?? Int64(Date.now.timeIntervalSince1970 + 86_400)
-            )
-        ))
+        _endDate = State(
+            initialValue: Date(
+                timeIntervalSince1970: TimeInterval(
+                    routine?.endsAt ?? Int64(Date.now.timeIntervalSince1970 + 86_400)
+                )
+            ))
         _enabled = State(initialValue: routine?.enabled ?? true)
     }
 
@@ -373,7 +377,8 @@ struct RoutineEditorSheet: View {
                     StatusBanner(
                         tone: .warning,
                         title: "Routine may pause",
-                        detail: "This Bot uses Ask. Approval-required actions will wait for you before the routine can continue."
+                        detail:
+                            "This Bot uses Ask. Approval-required actions will wait for you before the routine can continue."
                     )
                     .settingsStandaloneRow()
                 }

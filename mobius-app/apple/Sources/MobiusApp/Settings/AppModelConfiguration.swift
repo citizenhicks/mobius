@@ -32,11 +32,12 @@ extension AppModel {
         selectingModelRoute route: String
     ) -> AgentComposition? {
         guard let choice = modelChoices.first(where: { $0.route == route }),
-              let instance = modelProviders[choice.route],
-              var provider = providerInstances
-                  .first(where: { $0.instance == instance })?
-                  .selection,
-              var draft = currentDraft
+            let instance = modelProviders[choice.route],
+            var provider =
+                providerInstances
+                .first(where: { $0.instance == instance })?
+                .selection,
+            var draft = currentDraft
         else { return currentDraft }
         provider.model = choice.model
         provider.reasoningEffort = choice.reasoningEffort
@@ -49,7 +50,7 @@ extension AppModel {
 
     func realtimeVoices(for draft: AgentComposition?) -> [String] {
         guard let draft, let route = modelRoute(for: draft),
-              modelChoices.first(where: { $0.route == route })?.supportsRealtimeVoice == true
+            modelChoices.first(where: { $0.route == route })?.supportsRealtimeVoice == true
         else { return [] }
         return providerStatus(forInstance: draft.provider.instance)?.realtimeVoices ?? []
     }
@@ -60,8 +61,9 @@ extension AppModel {
 
     func modelLabel(provider: String?, modelID: String) -> String {
         if let instance = provider,
-           let model = providerStatus(forInstance: instance)?
-            .models.first(where: { $0.id == modelID }) {
+            let model = providerStatus(forInstance: instance)?
+                .models.first(where: { $0.id == modelID })
+        {
             return model.label
         }
         guard let separator = modelID.lastIndex(of: "/") else { return modelID }
@@ -131,7 +133,7 @@ extension AppModel {
 
     func sameModel(_ lhs: ModelChoice, _ rhs: ModelChoice) -> Bool {
         guard let lhsInstance = modelProviders[lhs.route],
-              let rhsInstance = modelProviders[rhs.route]
+            let rhsInstance = modelProviders[rhs.route]
         else { return lhs.route == rhs.route }
         return lhsInstance == rhsInstance && lhs.model == rhs.model
     }
@@ -164,9 +166,11 @@ extension AppModel {
             settingsDefaults.set(false, forKey: appLockEnabledKey)
             return
         }
-        guard await authenticateForAppLock(
-            reason: "Authenticate to enable app lock in möbius."
-        ) else { return }
+        guard
+            await authenticateForAppLock(
+                reason: "Authenticate to enable app lock in möbius."
+            )
+        else { return }
         appLockEnabled = true
         isAppLocked = appIsInBackground
         settingsDefaults.set(true, forKey: appLockEnabledKey)
@@ -223,7 +227,8 @@ extension AppModel {
             guard !Task.isCancelled, !appIsInBackground else { return }
             if gateway.reconnectsOnActivation {
                 if selectedGatewayIsMobiusCloud,
-                   cloud.cloudIssue != .subscriptionExpired {
+                    cloud.cloudIssue != .subscriptionExpired
+                {
                     reconnect()
                 }
             }
@@ -251,9 +256,11 @@ extension AppModel {
             guard !Task.isCancelled else { return }
         }
         guard !Task.isCancelled, appLockEnabled, isAppLocked else { return }
-        guard await authenticateForAppLock(
-            reason: localizedString("Authenticate to unlock möbius.")
-        ) else {
+        guard
+            await authenticateForAppLock(
+                reason: localizedString("Authenticate to unlock möbius.")
+            )
+        else {
             return
         }
         isAppLocked = appIsInBackground

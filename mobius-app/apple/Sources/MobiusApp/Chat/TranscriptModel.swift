@@ -13,13 +13,15 @@ func selectableMarkdown(
     markerColor: UIColor,
     quoteColor: UIColor
 ) -> NSAttributedString {
-    guard let parsed = try? AttributedString(
-        markdown: source,
-        options: .init(
-            interpretedSyntax: .full,
-            failurePolicy: .returnPartiallyParsedIfPossible
+    guard
+        let parsed = try? AttributedString(
+            markdown: source,
+            options: .init(
+                interpretedSyntax: .full,
+                failurePolicy: .returnPartiallyParsedIfPossible
+            )
         )
-    ) else { return NSAttributedString(string: source) }
+    else { return NSAttributedString(string: source) }
 
     let result = NSMutableAttributedString()
     var blockID: Int?
@@ -45,7 +47,7 @@ func selectableMarkdown(
         if inline.contains(.emphasized) { traits.insert(.traitItalic) }
         var attributes: [NSAttributedString.Key: Any] = [
             .font: inline.contains(.code) ? .mobiusCode : blocks.font.withTraits(traits),
-            .foregroundColor: blocks.isQuoted ? quoteColor : UIColor.label
+            .foregroundColor: blocks.isQuoted ? quoteColor : UIColor.label,
         ]
         if inline.contains(.strikethrough) {
             attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
@@ -77,10 +79,11 @@ private func appendBlockStart(
         result.append(NSAttributedString(string: list != nil && list == listID ? "\n" : "\n\n"))
     }
     if let marker = blocks.listMarker {
-        result.append(NSAttributedString(
-            string: marker,
-            attributes: [.font: blocks.font, .foregroundColor: markerColor]
-        ))
+        result.append(
+            NSAttributedString(
+                string: marker,
+                attributes: [.font: blocks.font, .foregroundColor: markerColor]
+            ))
     }
     blockID = id
     listID = list
@@ -100,7 +103,8 @@ private extension [PresentationIntent.IntentType] {
 
     var listMarker: String? {
         guard let item = first(where: { if case .listItem = $0.kind { true } else { false } }),
-              case .listItem(let ordinal) = item.kind else { return nil }
+            case .listItem(let ordinal) = item.kind
+        else { return nil }
         let indent = String(repeating: "    ", count: Swift.max(0, count(where: isList) - 1))
         if let list = first(where: isList), case .orderedList = list.kind {
             return "\(indent)\(ordinal). "
@@ -120,8 +124,12 @@ private extension [PresentationIntent.IntentType] {
         for component in self {
             switch component.kind {
             case .header(let level):
-                let style: UIFont.TextStyle = level == 1 ? .title3 : level == 2 ? .headline
-                    : .subheadline
+                let style: UIFont.TextStyle =
+                    level == 1
+                    ? .title3
+                    : level == 2
+                        ? .headline
+                        : .subheadline
                 return UIFont.preferredFont(forTextStyle: style).withTraits(.traitBold)
             case .codeBlock:
                 return .mobiusCode
@@ -142,9 +150,11 @@ extension UIFont {
     }
 
     func withTraits(_ traits: UIFontDescriptor.SymbolicTraits) -> UIFont {
-        guard !traits.isEmpty, let descriptor = fontDescriptor.withSymbolicTraits(
-            fontDescriptor.symbolicTraits.union(traits)
-        ) else { return self }
+        guard !traits.isEmpty,
+            let descriptor = fontDescriptor.withSymbolicTraits(
+                fontDescriptor.symbolicTraits.union(traits)
+            )
+        else { return self }
         return UIFont(descriptor: descriptor, size: 0)
     }
 }
@@ -379,7 +389,8 @@ struct TranscriptProjection {
         )
         let structuralRevision: UInt64
         if let previous {
-            structuralRevision = previous.structure == structure
+            structuralRevision =
+                previous.structure == structure
                 ? previous.structuralRevision
                 : previous.structuralRevision &+ 1
         } else {
@@ -405,9 +416,11 @@ struct TranscriptProjection {
         if !turnStarts.isEmpty {
             let includedMarkedTurns = min(maximumTurns, turnStarts.count)
             let firstIncludedTurn = turnStarts.count - includedMarkedTurns
-            let includesLeadingTurn = turnStarts[0] > entries.startIndex
+            let includesLeadingTurn =
+                turnStarts[0] > entries.startIndex
                 && maximumTurns > includedMarkedTurns
-            let start = includesLeadingTurn
+            let start =
+                includesLeadingTurn
                 ? entries.startIndex
                 : turnStarts[firstIncludedTurn]
             return (
@@ -437,7 +450,7 @@ struct TranscriptProjection {
         }
         var count = 1
         for index in entries.indices.dropFirst()
-            where entries[index].turnID != entries[index - 1].turnID {
+        where entries[index].turnID != entries[index - 1].turnID {
             count += 1
         }
         return count
@@ -474,18 +487,22 @@ struct TranscriptProjection {
         // ponytail: O(n²) over the bounded visible transcript; index only if profiling asks.
         for (index, row) in rows.enumerated() where row.kind == .activityGroup {
             let recordIDs = Set(row.records.map(\.presentationID))
-            guard let match = previousActivityRows.firstIndex(where: { previousRow in
-                previousRow.records.contains { $0.presentationID == previousRow.id }
-                    && recordIDs.contains(previousRow.id)
-            }) else { continue }
+            guard
+                let match = previousActivityRows.firstIndex(where: { previousRow in
+                    previousRow.records.contains { $0.presentationID == previousRow.id }
+                        && recordIDs.contains(previousRow.id)
+                })
+            else { continue }
             reusedIDs[index] = previousActivityRows.remove(at: match).id
         }
         for (index, row) in rows.enumerated()
-            where row.kind == .activityGroup && reusedIDs[index] == nil {
+        where row.kind == .activityGroup && reusedIDs[index] == nil {
             let recordIDs = Set(row.records.map(\.presentationID))
-            guard let match = previousActivityRows.firstIndex(where: { previousRow in
-                previousRow.records.contains { recordIDs.contains($0.presentationID) }
-            }) else { continue }
+            guard
+                let match = previousActivityRows.firstIndex(where: { previousRow in
+                    previousRow.records.contains { recordIDs.contains($0.presentationID) }
+                })
+            else { continue }
             reusedIDs[index] = previousActivityRows.remove(at: match).id
         }
 
@@ -495,8 +512,9 @@ struct TranscriptProjection {
         let stableRows = rows.enumerated().map { index, row in
             var id = reusedIDs[index] ?? row.id
             if row.kind == .activityGroup,
-               reusedIDs[index] == nil,
-               reservedIDs.contains(id) || claimedIDs.contains(id) {
+                reusedIDs[index] == nil,
+                reservedIDs.contains(id) || claimedIDs.contains(id)
+            {
                 var suffix = 1
                 repeat {
                     id = "\(row.id):activity-group:\(suffix)"
@@ -527,12 +545,13 @@ struct TranscriptProjection {
 
         func appendActivity() {
             guard let first = activity.first else { return }
-            rows.append(TranscriptPresentationRow(
-                id: first.presentationID,
-                records: activity,
-                sizing: .fixedSummary,
-                kind: .activityGroup
-            ))
+            rows.append(
+                TranscriptPresentationRow(
+                    id: first.presentationID,
+                    records: activity,
+                    sizing: .fixedSummary,
+                    kind: .activityGroup
+                ))
             activity = []
         }
 
@@ -545,16 +564,18 @@ struct TranscriptProjection {
                 continue
             }
             appendActivity()
-            let rowKind: TranscriptPresentationRow.Kind = switch entry.kind {
-            case .user: .user
-            default: .narrative
-            }
-            rows.append(TranscriptPresentationRow(
-                id: entry.presentationID,
-                records: [entry],
-                sizing: .intrinsic,
-                kind: rowKind
-            ))
+            let rowKind: TranscriptPresentationRow.Kind =
+                switch entry.kind {
+                case .user: .user
+                default: .narrative
+                }
+            rows.append(
+                TranscriptPresentationRow(
+                    id: entry.presentationID,
+                    records: [entry],
+                    sizing: .intrinsic,
+                    kind: rowKind
+                ))
         }
         appendActivity()
         return rows
@@ -590,10 +611,11 @@ struct TranscriptProjection {
             }
             var end = start + 1
             while end < rows.count, sharedTurnID(for: rows[end]) == turnID { end += 1 }
-            collapsed.append(contentsOf: collapsedTurn(
-                Array(rows[start..<end]),
-                turnID: turnID
-            ))
+            collapsed.append(
+                contentsOf: collapsedTurn(
+                    Array(rows[start..<end]),
+                    turnID: turnID
+                ))
             start = end
         }
         return collapsed
@@ -602,10 +624,12 @@ struct TranscriptProjection {
     private static func collapseTurnSegment(
         _ rows: [TranscriptPresentationRow]
     ) -> [TranscriptPresentationRow] {
-        guard let terminalID = rows
-            .flatMap(\.records)
-            .first(where: \.turnTerminal)?
-            .turnID
+        guard
+            let terminalID =
+                rows
+                .flatMap(\.records)
+                .first(where: \.turnTerminal)?
+                .turnID
         else { return rows }
         return collapsedTurn(rows, turnID: terminalID)
     }
@@ -622,7 +646,7 @@ struct TranscriptProjection {
             row.records.contains(where: \.turnTerminal)
         }
         guard !terminalRows.isEmpty,
-              terminalRows.allSatisfy({ row in row.records.allSatisfy { !$0.pending } })
+            terminalRows.allSatisfy({ row in row.records.allSatisfy { !$0.pending } })
         else { return rows }
 
         let primaryInputIndex = rows.firstIndex { row in
@@ -631,19 +655,22 @@ struct TranscriptProjection {
         let workRows: [TranscriptPresentationRow] = rows.enumerated().compactMap {
             index, row -> TranscriptPresentationRow? in
             guard index != primaryInputIndex,
-                  !terminalRows.contains(where: { $0.id == row.id })
+                !terminalRows.contains(where: { $0.id == row.id })
             else { return nil }
             return row
         }
         guard !workRows.isEmpty else { return rows }
 
         let records = workRows.flatMap(\.records)
-        let elapsedMs = terminalRows
+        let elapsedMs =
+            terminalRows
             .flatMap(\.records)
             .compactMap(\.turnElapsedMs)
-            .max() ?? {
+            .max()
+            ?? {
                 let startedAtMs = rows.flatMap(\.records).compactMap(\.recordedAtMs).min()
-                let completedAtMs = terminalRows
+                let completedAtMs =
+                    terminalRows
                     .flatMap(\.records)
                     .compactMap(\.recordedAtMs)
                     .max()
@@ -653,20 +680,21 @@ struct TranscriptProjection {
             }()
         var result: [TranscriptPresentationRow] = []
         if let primaryInputIndex { result.append(rows[primaryInputIndex]) }
-        result.append(TranscriptPresentationRow(
-            id: "turn-work:\(turnID.utf8.count):\(turnID)",
-            records: records,
-            sizing: .fixedSummary,
-            kind: .workedGroup,
-            elapsedMs: elapsedMs
-        ))
+        result.append(
+            TranscriptPresentationRow(
+                id: "turn-work:\(turnID.utf8.count):\(turnID)",
+                records: records,
+                sizing: .fixedSummary,
+                kind: .workedGroup,
+                elapsedMs: elapsedMs
+            ))
         result.append(contentsOf: terminalRows)
         return result
     }
 
     private static func sharedTurnID(for row: TranscriptPresentationRow) -> String? {
         guard let turnID = row.records.first?.turnID,
-              row.records.allSatisfy({ $0.turnID == turnID })
+            row.records.allSatisfy({ $0.turnID == turnID })
         else { return nil }
         return turnID
     }
@@ -718,10 +746,10 @@ extension TranscriptEntry {
                 return nil
             }
             guard let rawURL,
-                  let url = URL(string: rawURL),
-                  ["http", "https"].contains(url.scheme?.lowercased()),
-                  url.host?.isEmpty == false,
-                  seen.insert(url).inserted
+                let url = URL(string: rawURL),
+                ["http", "https"].contains(url.scheme?.lowercased()),
+                url.host?.isEmpty == false,
+                seen.insert(url).inserted
             else { return nil }
             let title = rawTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
             let excerpt = rawExcerpt?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -796,20 +824,20 @@ extension TranscriptEntry {
 /// Bot routine all resolve these against their own transcript rather than the selected chat's.
 func activeStepID(in entries: [TranscriptEntry], isRunning: Bool) -> String? {
     guard isRunning,
-          let latest = entries.last,
-          latest.pending,
-          [.reasoning, .event, .error].contains(latest.kind)
+        let latest = entries.last,
+        latest.pending,
+        [.reasoning, .event, .error].contains(latest.kind)
     else { return nil }
     return latest.presentationID
 }
 
 func transcriptTurnDiff(for entry: TranscriptEntry, in entries: [TranscriptEntry]) -> String {
     guard entry.kind == .assistant,
-          entry.turnTerminal,
-          let turnID = entry.turnID,
-          entries.last(where: {
-              $0.turnID == turnID && $0.turnTerminal && $0.kind == .assistant
-          })?.id == entry.id
+        entry.turnTerminal,
+        let turnID = entry.turnID,
+        entries.last(where: {
+            $0.turnID == turnID && $0.turnTerminal && $0.kind == .assistant
+        })?.id == entry.id
     else { return "" }
     return transcriptTurnDiff(forTurn: turnID, in: entries)
 }

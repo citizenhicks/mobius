@@ -13,18 +13,20 @@ extension ChatSessionModel {
             return
         }
         guard let sessionID = selectedSessionID,
-              let beforeSequence = nextHistoryBeforeSequence
+            let beforeSequence = nextHistoryBeforeSequence
         else { return }
         let id = requestID("history")
         historyRequestID = id
         isLoadingEarlierHistory = true
         transcriptWindowAnchor = .visibleTurns(window.turnCount)
         transcriptWindowCache = window
-        gateway.transmit(.getSessionHistory(
-            requestID: id,
-            sessionID: sessionID,
-            beforeSequence: beforeSequence
-        )) { [weak self] _ in
+        gateway.transmit(
+            .getSessionHistory(
+                requestID: id,
+                sessionID: sessionID,
+                beforeSequence: beforeSequence
+            )
+        ) { [weak self] _ in
             guard self?.historyRequestID == id else { return }
             self?.finishHistoryLoad()
         }
@@ -35,7 +37,7 @@ extension ChatSessionModel {
         let initialRevision = historyLoadCompletionRevision
         requestEarlierHistory()
         guard historyLoadCompletionRevision == initialRevision,
-              historyRequestID != nil
+            historyRequestID != nil
         else { return }
         for await revision in Observations({ self.historyLoadCompletionRevision }) {
             if revision != initialRevision { return }

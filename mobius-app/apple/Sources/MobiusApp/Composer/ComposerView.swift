@@ -109,11 +109,14 @@ private struct AudioLevelEqualizer: View {
     @AnimatableIgnored var playbackColor: Color?
 
     var body: some View {
-        TimelineView(.animation(
-            minimumInterval: 1.0 / 60.0,
-            paused: reduceMotion || scenePhase != .active || amplitude == 0
-        )) { _ in
-            let time = reduceMotion || scenePhase != .active ? 0 : ProcessInfo.processInfo.systemUptime
+        TimelineView(
+            .animation(
+                minimumInterval: 1.0 / 60.0,
+                paused: reduceMotion || scenePhase != .active || amplitude == 0
+            )
+        ) { _ in
+            let time =
+                reduceMotion || scenePhase != .active ? 0 : ProcessInfo.processInfo.systemUptime
             particles(at: time)
         }
     }
@@ -135,14 +138,17 @@ private struct AudioLevelEqualizer: View {
                 let hump = exp(-centered * centered / (2 * variance))
                 // Stable phases and speeds let each needle jitter without frame-to-frame randomness.
                 let phase = Double(column) * 2.39996
-                let needle = 0.15 + 0.85 * pow(abs(sin(time * (2.1 + 0.9 * sin(phase)) + phase)), 1.6)
+                let needle =
+                    0.15 + 0.85 * pow(abs(sin(time * (2.1 + 0.9 * sin(phase)) + phase)), 1.6)
                 let dots = Int(min(1, amplitude * 1.45) * hump * needle * ceiling / step)
                 for dot in -Int(Double(dots) * reflection)...dots {
                     let fade = dots == 0 ? 0 : abs(Double(dot)) / Double(dots)
-                    let ink = playbackColor ?? MobiusPalette.composingOrbInk(
-                        white: 0.08 + 0.44 * fade,
-                        scheme: colorScheme
-                    )
+                    let ink =
+                        playbackColor
+                        ?? MobiusPalette.composingOrbInk(
+                            white: 0.08 + 0.44 * fade,
+                            scheme: colorScheme
+                        )
                     let radius = 0.95 - 0.4 * fade
                     let sway = sin(time * 1.3 + phase) * 1.6 * fade
                     let rect = CGRect(
@@ -304,9 +310,10 @@ private struct ComposerSurface: View {
         .onReceive(
             NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)
         ) { notification in
-            guard let rawValue = notification.userInfo?[AVAudioSessionInterruptionTypeKey]
-                as? UInt,
-                  AVAudioSession.InterruptionType(rawValue: rawValue) == .began
+            guard
+                let rawValue = notification.userInfo?[AVAudioSessionInterruptionTypeKey]
+                    as? UInt,
+                AVAudioSession.InterruptionType(rawValue: rawValue) == .began
             else { return }
             model.chat.stopRealtimeVoice()
             Task { await dictation.cancel() }
@@ -331,9 +338,9 @@ private struct ComposerSurface: View {
         let text = model.chat.composer
         let cursor: String.Index
         if let selection,
-           case .selection(let range) = selection.indices,
-           range.isEmpty,
-           text.indices.contains(range.lowerBound) || range.lowerBound == text.endIndex
+            case .selection(let range) = selection.indices,
+            range.isEmpty,
+            text.indices.contains(range.lowerBound) || range.lowerBound == text.endIndex
         {
             cursor = range.lowerBound
         } else {
@@ -354,10 +361,11 @@ private struct ComposerSurface: View {
         let offset = text.distance(from: text.startIndex, to: suggestions.range.lowerBound)
         text.replaceSubrange(suggestions.range, with: mounted.replacement)
         model.chat.composer = text
-        selection = TextSelection(insertionPoint: text.index(
-            text.startIndex,
-            offsetBy: offset + mounted.replacement.count
-        ))
+        selection = TextSelection(
+            insertionPoint: text.index(
+                text.startIndex,
+                offsetBy: offset + mounted.replacement.count
+            ))
     }
 
     private func insertLineBreak() {
@@ -442,8 +450,8 @@ private struct ExpandedComposerSheet: View {
                 selection: $selection,
                 send: submitAndDismiss
             )
-                .padding(.horizontal, MobiusStyle.iconRowPadding)
-                .padding(.bottom, MobiusStyle.iconRowPadding)
+            .padding(.horizontal, MobiusStyle.iconRowPadding)
+            .padding(.bottom, MobiusStyle.iconRowPadding)
         }
         .frame(maxWidth: MobiusStyle.transcriptWidth, maxHeight: .infinity)
         .padding(.horizontal, MobiusSpace.l)
@@ -505,7 +513,9 @@ private struct ReferenceSuggestionsPopup: View {
         ScrollView {
             VStack(spacing: 0) {
                 ForEach(suggestions.matches) { mounted in
-                    Button { select(mounted) } label: {
+                    Button {
+                        select(mounted)
+                    } label: {
                         HStack(spacing: MobiusSpace.m) {
                             Text(verbatim: String(mounted.reference.trigger))
                                 .font(MobiusStyle.controlFont.monospaced().weight(.semibold))
@@ -564,7 +574,9 @@ private struct ComposerActivityView: View {
                         FrontendWidgetView(widget: widget)
                     }
                     if totals.added > 0 || totals.removed > 0 {
-                        Button { model.showFiles(.unstaged) } label: {
+                        Button {
+                            model.showFiles(.unstaged)
+                        } label: {
                             HStack(spacing: MobiusSpace.s) {
                                 Text("+\(totals.added)").foregroundStyle(palette.signal)
                                 Text("−\(totals.removed)").foregroundStyle(palette.danger)
@@ -581,7 +593,9 @@ private struct ComposerActivityView: View {
                         }
                         .buttonStyle(.mobiusPlain)
                         .accessibilityLabel("Code changes")
-                        .accessibilityValue("\(totals.added) additions, \(totals.removed) deletions")
+                        .accessibilityValue(
+                            "\(totals.added) additions, \(totals.removed) deletions"
+                        )
                         .accessibilityHint("Opens modified files")
                     }
 
@@ -671,7 +685,9 @@ private struct SessionStatsBadge: View {
         if model.chat.selectedSessionID != nil {
             TimelineView(.periodic(from: .now, by: 1)) { timeline in
                 let elapsed = model.sessionElapsed(at: timeline.date)
-                Button { showsDetail = true } label: {
+                Button {
+                    showsDetail = true
+                } label: {
                     MobiusBadge(
                         text: .verbatim(
                             "\(model.contextFillPercent)% · \(formatCompactDuration(elapsed, locale: locale))"
@@ -695,7 +711,8 @@ private struct SessionStatsBadge: View {
                     BadgePopover(localizedTitle: "Session") {
                         BadgeStat(
                             label: "Context",
-                            value: "\(model.contextFillPercent)% · \(model.chat.contextTokens.formatted()) / \(model.chat.contextLimitTokens?.formatted() ?? "—")"
+                            value:
+                                "\(model.contextFillPercent)% · \(model.chat.contextTokens.formatted()) / \(model.chat.contextLimitTokens?.formatted() ?? "—")"
                         )
                         BadgeStat(
                             label: "Compactions",
@@ -711,10 +728,8 @@ private struct SessionStatsBadge: View {
                         )
                         BadgeStat(
                             label: "Run tokens",
-                            value: (
-                                model.chat.runStats.usage.totalTokens
-                                    + (model.chat.runStats.active?.usage.totalTokens ?? 0)
-                            ).formatted()
+                            value: (model.chat.runStats.usage.totalTokens
+                                + (model.chat.runStats.active?.usage.totalTokens ?? 0)).formatted()
                         )
                         BadgeStat(label: "Cache hit", value: cacheHit(model.chat.lastUsage))
                     }
@@ -771,7 +786,6 @@ private struct BadgeStat: View {
         .accessibilityElement(children: .combine)
     }
 }
-
 
 private struct ComposerAttachmentsView: View {
     @Environment(AppModel.self) private var model
@@ -911,8 +925,8 @@ struct ApprovalView: View {
                 glyph: .shieldCheck,
                 iconColor: palette.warning
             )
-                .font(MobiusStyle.titleFont)
-                .foregroundStyle(palette.warning)
+            .font(MobiusStyle.titleFont)
+            .foregroundStyle(palette.warning)
             Text(verbatim: approval.reason).font(MobiusStyle.bodyFont)
             ScrollView([.horizontal, .vertical]) {
                 LazyVStack(alignment: .leading, spacing: MobiusSpace.s) {

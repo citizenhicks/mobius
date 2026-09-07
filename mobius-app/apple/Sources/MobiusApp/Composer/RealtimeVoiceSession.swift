@@ -14,8 +14,9 @@ struct RealtimeAudioLevels: Equatable, Sendable {
 
     mutating func include(type: String, values: [String: NSObject]) {
         guard values["kind"] as? String == "audio",
-              let value = (values["audioLevel"] as? NSNumber)?.doubleValue,
-              value.isFinite else { return }
+            let value = (values["audioLevel"] as? NSNumber)?.doubleValue,
+            value.isFinite
+        else { return }
         let level = min(max(value, 0), 1)
         switch type {
         case "media-source": microphone = max(microphone, level)
@@ -71,9 +72,11 @@ final class RealtimeVoiceSession: NSObject {
         let configuration = RTCConfiguration()
         configuration.sdpSemantics = .unifiedPlan
         let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
-        guard let factory = Self.factory, let peer = factory.peerConnection(
-            with: configuration, constraints: constraints, delegate: self
-        ) else { throw VoiceError.connection }
+        guard let factory = Self.factory,
+            let peer = factory.peerConnection(
+                with: configuration, constraints: constraints, delegate: self
+            )
+        else { throw VoiceError.connection }
         self.peer = peer
         let track = factory.audioTrack(
             with: factory.audioSource(with: constraints), trackId: "voice"
@@ -82,7 +85,8 @@ final class RealtimeVoiceSession: NSObject {
         track.isEnabled = !isMuted
         peer.add(track, streamIds: ["voice"])
         // Establish SCTP, but all provider events/control stay on the gateway sideband.
-        dataChannel = peer.dataChannel(forLabel: "oai-events", configuration: RTCDataChannelConfiguration())
+        dataChannel = peer.dataChannel(
+            forLabel: "oai-events", configuration: RTCDataChannelConfiguration())
         let offer = try await peer.offer(for: constraints)
         try Task.checkCancellation()
         guard self.generation == generation else { throw CancellationError() }
@@ -141,7 +145,8 @@ final class RealtimeVoiceSession: NSObject {
             while !Task.isCancelled {
                 let report = await peer.statistics()
                 guard let self, !Task.isCancelled,
-                      self.generation == generation, self.peer === peer else { return }
+                    self.generation == generation, self.peer === peer
+                else { return }
                 var levels = RealtimeAudioLevels()
                 for statistic in report.statistics.values {
                     levels.include(type: statistic.type, values: statistic.values)
@@ -182,9 +187,9 @@ final class RealtimeVoiceSession: NSObject {
         disconnectedRecoveryTask = Task { [weak self, weak peer] in
             try? await Task.sleep(for: .seconds(2))
             guard !Task.isCancelled, let self, let peer,
-                  self.generation == generation,
-                  self.peer === peer,
-                  !self.isConnected
+                self.generation == generation,
+                self.peer === peer,
+                !self.isConnected
             else { return }
             self.disconnectedRecoveryTask = nil
             self.failure?(String(localized: "The voice connection ended."))
@@ -197,7 +202,8 @@ final class RealtimeVoiceSession: NSObject {
 
         var errorDescription: String? {
             switch self {
-            case .microphonePermission: String(localized: "Allow microphone access in Settings to use voice chat.")
+            case .microphonePermission:
+                String(localized: "Allow microphone access in Settings to use voice chat.")
             case .connection: String(localized: "Voice could not connect. Try again.")
             }
         }
@@ -205,7 +211,9 @@ final class RealtimeVoiceSession: NSObject {
 }
 
 extension RealtimeVoiceSession: RTCPeerConnectionDelegate, RTCAudioSessionDelegate {
-    nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCPeerConnectionState) {
+    nonisolated func peerConnection(
+        _ peerConnection: RTCPeerConnection, didChange newState: RTCPeerConnectionState
+    ) {
         Task { @MainActor [weak self] in
             guard let self, self.peer === peerConnection else { return }
             self.isConnected = newState == .connected
@@ -231,13 +239,29 @@ extension RealtimeVoiceSession: RTCPeerConnectionDelegate, RTCAudioSessionDelega
         }
     }
 
-    nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didChange stateChanged: RTCSignalingState) {}
-    nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didAdd stream: RTCMediaStream) {}
-    nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didRemove stream: RTCMediaStream) {}
+    nonisolated func peerConnection(
+        _ peerConnection: RTCPeerConnection, didChange stateChanged: RTCSignalingState
+    ) {}
+    nonisolated func peerConnection(
+        _ peerConnection: RTCPeerConnection, didAdd stream: RTCMediaStream
+    ) {}
+    nonisolated func peerConnection(
+        _ peerConnection: RTCPeerConnection, didRemove stream: RTCMediaStream
+    ) {}
     nonisolated func peerConnectionShouldNegotiate(_ peerConnection: RTCPeerConnection) {}
-    nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCIceConnectionState) {}
-    nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCIceGatheringState) {}
-    nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didGenerate candidate: RTCIceCandidate) {}
-    nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didRemove candidates: [RTCIceCandidate]) {}
-    nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didOpen dataChannel: RTCDataChannel) {}
+    nonisolated func peerConnection(
+        _ peerConnection: RTCPeerConnection, didChange newState: RTCIceConnectionState
+    ) {}
+    nonisolated func peerConnection(
+        _ peerConnection: RTCPeerConnection, didChange newState: RTCIceGatheringState
+    ) {}
+    nonisolated func peerConnection(
+        _ peerConnection: RTCPeerConnection, didGenerate candidate: RTCIceCandidate
+    ) {}
+    nonisolated func peerConnection(
+        _ peerConnection: RTCPeerConnection, didRemove candidates: [RTCIceCandidate]
+    ) {}
+    nonisolated func peerConnection(
+        _ peerConnection: RTCPeerConnection, didOpen dataChannel: RTCDataChannel
+    ) {}
 }

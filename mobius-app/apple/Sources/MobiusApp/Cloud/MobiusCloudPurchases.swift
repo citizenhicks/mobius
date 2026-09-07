@@ -201,24 +201,26 @@ private final class StoreKitCloudBridge {
 
     func showSubscriptionManagement() async throws {
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-        guard let scene = scenes.first(where: { $0.activationState == .foregroundActive })
-            ?? scenes.first
+        guard
+            let scene = scenes.first(where: { $0.activationState == .foregroundActive })
+                ?? scenes.first
         else { throw MobiusCloudPurchaseError.unavailable }
         try await AppStore.showManageSubscriptions(in: scene)
     }
 
     func appStoreURL() async -> URL? {
         guard let verification = try? await AppTransaction.shared,
-              case .verified(let transaction) = verification,
-              let appID = transaction.appID,
-              appID > 0
+            case .verified(let transaction) = verification,
+            let appID = transaction.appID,
+            appID > 0
         else { return nil }
         return URL(string: "https://apps.apple.com/app/id\(appID)")
     }
 
     private func product() async throws -> Product {
-        guard let product = try await Product.products(for: [mobiusCloudMonthlyProductID])
-            .first(where: { $0.id == mobiusCloudMonthlyProductID && $0.type == .autoRenewable })
+        guard
+            let product = try await Product.products(for: [mobiusCloudMonthlyProductID])
+                .first(where: { $0.id == mobiusCloudMonthlyProductID && $0.type == .autoRenewable })
         else { throw MobiusCloudPurchaseError.unavailable }
         return product
     }
@@ -230,7 +232,7 @@ private final class StoreKitCloudBridge {
     ) async {
         do {
             guard let purchase = try await purchase(from: verification),
-                  seenJWS.insert(purchase.jws).inserted
+                seenJWS.insert(purchase.jws).inserted
             else { return }
             scan.purchases.append(purchase)
         } catch {

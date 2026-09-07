@@ -68,11 +68,13 @@ final class GatewayWireTests: XCTestCase {
             )
             .replacingOccurrences(
                 of: #""model_ids_configurable":false,"web_search":"#,
-                with: #""model_ids_configurable":false,"tool_discovery":"native","custom_endpoint_tool_discovery":"rebuild","realtime_voices":[],"web_search":"#
+                with:
+                    #""model_ids_configurable":false,"tool_discovery":"native","custom_endpoint_tool_discovery":"rebuild","realtime_voices":[],"web_search":"#
             )
             .replacingOccurrences(
                 of: #""supports_image_input":true}"#,
-                with: #""supports_image_input":true,"supports_realtime_voice":false,"tool_discovery":"native"}"#
+                with:
+                    #""supports_image_input":true,"supports_realtime_voice":false,"tool_discovery":"native"}"#
             )
     }
 
@@ -94,7 +96,7 @@ final class GatewayWireTests: XCTestCase {
                 enabled: ["extensions", "subagents"],
                 settings: [
                     "context_offloading": ["stale_after_tokens": .integer(50_000)],
-                    "subagents": ["model_route": .string("openai_socket/gpt-5.6-sol")]
+                    "subagents": ["model_route": .string("openai_socket/gpt-5.6-sol")],
                 ]
             ),
             extensions: ["plugin:ponytail"],

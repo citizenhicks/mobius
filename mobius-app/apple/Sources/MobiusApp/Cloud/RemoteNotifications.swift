@@ -13,7 +13,8 @@ enum APNsEnvironment: String, Encodable, Sendable {
 
     static var current: Self {
         if let value = Bundle.main.object(forInfoDictionaryKey: "MobiusAPNsEnvironment")
-            as? String {
+            as? String
+        {
             switch value {
             case "development", "sandbox": return .sandbox
             case "production": return .production
@@ -21,9 +22,9 @@ enum APNsEnvironment: String, Encodable, Sendable {
             }
         }
         #if DEBUG
-        return .sandbox
+            return .sandbox
         #else
-        return .production
+            return .production
         #endif
     }
 }
@@ -47,7 +48,8 @@ struct RemoteNotificationSystem {
         Self(
             authorization: {
                 switch await UNUserNotificationCenter.current().notificationSettings()
-                    .authorizationStatus {
+                    .authorizationStatus
+                {
                 case .notDetermined: .notDetermined
                 case .denied: .denied
                 case .authorized, .provisional, .ephemeral: .authorized
@@ -96,15 +98,15 @@ enum RemoteNotification: Equatable {
     var eventID: String {
         switch self {
         case .session(let eventID, _, _, _, _),
-             .swarmAttention(let eventID, _, _),
-             .subscriptionExpired(let eventID):
+            .swarmAttention(let eventID, _, _),
+            .subscriptionExpired(let eventID):
             eventID
         }
     }
 
     init?(userInfo: [AnyHashable: Any]) {
         guard let eventID = Self.identifier(userInfo["eventId"]),
-              let rawKind = userInfo["kind"] as? String
+            let rawKind = userInfo["kind"] as? String
         else { return nil }
         if rawKind == "subscription.expired" {
             self = .subscriptionExpired(eventID: eventID)
@@ -112,20 +114,21 @@ enum RemoteNotification: Equatable {
         }
         if rawKind == "swarm.attention" {
             guard let swarmID = Self.identifier(userInfo["swarmId"]),
-                  let messageID = Self.identifier(userInfo["messageId"])
+                let messageID = Self.identifier(userInfo["messageId"])
             else { return nil }
             self = .swarmAttention(eventID: eventID, swarmID: swarmID, messageID: messageID)
             return
         }
         guard let kind = SessionNotificationKind(rawValue: rawKind),
-              let sessionID = Self.identifier(userInfo["sessionId"])
+            let sessionID = Self.identifier(userInfo["sessionId"])
         else { return nil }
         let runCount = Self.exactUInt64(userInfo["runCount"])
         let approvalRequestID = Self.optionalIdentifier(userInfo["approvalRequestId"])
-        let hasRequiredCursor = switch kind {
-        case .awaitingApproval: approvalRequestID != nil
-        case .completed, .aborted, .failed: runCount != nil
-        }
+        let hasRequiredCursor =
+            switch kind {
+            case .awaitingApproval: approvalRequestID != nil
+            case .completed, .aborted, .failed: runCount != nil
+            }
         guard hasRequiredCursor else { return nil }
         self = .session(
             eventID: eventID,
@@ -138,9 +141,9 @@ enum RemoteNotification: Equatable {
 
     private static func identifier(_ value: Any?) -> String? {
         guard let value = value as? String,
-              !value.isEmpty,
-              value.utf8.count <= 256,
-              !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+            !value.isEmpty,
+            value.utf8.count <= 256,
+            !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
         else { return nil }
         return value
     }
@@ -152,9 +155,9 @@ enum RemoteNotification: Equatable {
 
     private static func exactUInt64(_ value: Any?) -> UInt64? {
         guard let number = value as? NSNumber,
-              CFGetTypeID(number) != CFBooleanGetTypeID(),
-              let integer = UInt64(number.stringValue),
-              NSNumber(value: integer).compare(number) == .orderedSame
+            CFGetTypeID(number) != CFBooleanGetTypeID(),
+            let integer = UInt64(number.stringValue),
+            NSNumber(value: integer).compare(number) == .orderedSame
         else { return nil }
         return integer
     }
@@ -168,14 +171,16 @@ enum AppNotificationKey: Hashable {
 
 @MainActor
 final class MobiusAppDelegate: NSObject, UIApplicationDelegate,
-    @preconcurrency UNUserNotificationCenterDelegate {
+    @preconcurrency UNUserNotificationCenterDelegate
+{
     private weak var cloud: MobiusCloudModel?
     private var pendingDeviceToken: Data?
-    private var pendingForegroundNotification: (
-        notification: RemoteNotification,
-        agentName: String,
-        detail: String
-    )?
+    private var pendingForegroundNotification:
+        (
+            notification: RemoteNotification,
+            agentName: String,
+            detail: String
+        )?
     private var pendingNotificationResponse: RemoteNotification?
 
     func application(
@@ -229,9 +234,11 @@ final class MobiusAppDelegate: NSObject, UIApplicationDelegate,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
         let content = notification.request.content
-        guard let event = RemoteNotification(
-            userInfo: content.userInfo
-        ) else { return [] }
+        guard
+            let event = RemoteNotification(
+                userInfo: content.userInfo
+            )
+        else { return [] }
         guard let cloud else {
             pendingForegroundNotification = (event, content.title, content.body)
             return []
@@ -248,9 +255,11 @@ final class MobiusAppDelegate: NSObject, UIApplicationDelegate,
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
-        guard let event = RemoteNotification(
-            userInfo: response.notification.request.content.userInfo
-        ) else { return }
+        guard
+            let event = RemoteNotification(
+                userInfo: response.notification.request.content.userInfo
+            )
+        else { return }
         guard let cloud else {
             pendingNotificationResponse = event
             return
@@ -299,8 +308,8 @@ extension MobiusCloudModel {
 
         let authorization = await remoteNotifications.authorization()
         guard !Task.isCancelled,
-              notificationsEnabled,
-              cloudSession == requestedSession
+            notificationsEnabled,
+            cloudSession == requestedSession
         else { return }
 
         switch authorization {
@@ -308,8 +317,8 @@ extension MobiusCloudModel {
             do {
                 let granted = try await remoteNotifications.requestAuthorization()
                 guard !Task.isCancelled,
-                      notificationsEnabled,
-                      cloudSession == requestedSession
+                    notificationsEnabled,
+                    cloudSession == requestedSession
                 else { return }
                 guard granted else {
                     notificationError = localizedString("Notifications are off in Settings.")
@@ -319,8 +328,8 @@ extension MobiusCloudModel {
                 remoteNotifications.register()
             } catch {
                 guard !Task.isCancelled,
-                      notificationsEnabled,
-                      cloudSession == requestedSession
+                    notificationsEnabled,
+                    cloudSession == requestedSession
                 else { return }
                 notificationError = localizedString(
                     "Notifications couldn’t be enabled. Try again."
@@ -340,8 +349,8 @@ extension MobiusCloudModel {
         guard !token.isEmpty else { return }
         remoteNotificationDeviceToken = token
         guard notificationsEnabled,
-              let cloudSession,
-              !isPushTokenRemovalPending(for: cloudSession)
+            let cloudSession,
+            !isPushTokenRemovalPending(for: cloudSession)
         else { return }
         let previousRegistration = remoteNotificationRegistrationTask
         remoteNotificationRegistrationTask = Task { [weak self] in
@@ -361,8 +370,8 @@ extension MobiusCloudModel {
         detail: String? = nil
     ) {
         guard notificationsEnabled,
-              cloudSession != nil,
-              rememberRemoteNotification(notification.eventID)
+            cloudSession != nil,
+            rememberRemoteNotification(notification.eventID)
         else { return }
         callbacks.presentRemoteNotification?(notification, agentName, detail)
     }
@@ -401,8 +410,8 @@ extension AppModel {
         detail: String? = nil
     ) {
         guard cloud.notificationsEnabled,
-              cloud.cloudSession != nil,
-              !catalogAlreadyIncludes(notification)
+            cloud.cloudSession != nil,
+            !catalogAlreadyIncludes(notification)
         else { return }
         switch notification {
         case .session(_, let kind, let sessionID, let runCount, let approvalRequestID):
@@ -458,10 +467,11 @@ extension AppModel {
         case .session(_, let kind, let sessionID, _, let requestID):
             guard canOpenSession || chat.selectedSessionID == sessionID else { return false }
             if kind == .awaitingApproval,
-               let requestID,
-               let approval = backgroundApprovals.first(where: {
-                   $0.sessionId == sessionID && $0.requestId == requestID
-               }) {
+                let requestID,
+                let approval = backgroundApprovals.first(where: {
+                    $0.sessionId == sessionID && $0.requestId == requestID
+                })
+            {
                 cloud.pendingRemoteNotification = nil
                 prepareToOpenNotification()
                 resumeBotSession(botID: approval.botId, sessionID: approval.sessionId)
@@ -504,12 +514,14 @@ extension AppModel {
         let remoteAgentName = agentName.map {
             $0.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
         }.flatMap { $0.isEmpty ? nil : $0 }
-        let botName = bot(forSessionID: sessionID)?.name
+        let botName =
+            bot(forSessionID: sessionID)?.name
             ?? remoteAgentName
             ?? localizedString("Bot")
         let finished = localizedString("Finished.")
         let completionMessage = "\(botName): \(completionPreview ?? finished)"
-        let refinesCompletedNotification = canRefineCompletion
+        let refinesCompletedNotification =
+            canRefineCompletion
             && kind == .completed
             && completionPreview != nil
             && toast?.tone == .success
@@ -523,9 +535,11 @@ extension AppModel {
         ), !cloud.rememberNotification(key), !refinesCompletedNotification {
             return
         }
-        let isHiddenApproval = kind == .awaitingApproval
+        let isHiddenApproval =
+            kind == .awaitingApproval
             && !chat.sessions.contains(where: { $0.sessionId == sessionID })
-        let title = backgroundApproval(forSessionID: sessionID) != nil || isHiddenApproval
+        let title =
+            backgroundApproval(forSessionID: sessionID) != nil || isHiddenApproval
             ? botName
             : sessionTitle(sessionID)
         let isActiveChat = chat.selectedSessionID == sessionID && isChatVisible
@@ -579,10 +593,12 @@ extension AppModel {
         text: String?
     ) {
         guard cloud.rememberNotification(.swarmAttention(messageID: messageID)) else { return }
-        let name = agentName.map(collapsedNotificationText)
+        let name =
+            agentName.map(collapsedNotificationText)
             .flatMap { $0.isEmpty ? nil : $0 }
             ?? localizedString("Bot")
-        let detail = text.map(collapsedNotificationText)
+        let detail =
+            text.map(collapsedNotificationText)
             .flatMap { $0.isEmpty ? nil : $0 }
             ?? localizedString("Needs attention")
         showToast(
@@ -644,7 +660,7 @@ extension MobiusCloudModel {
             return
         } catch {
             guard notificationsEnabled,
-                  cloudSession == requestedSession
+                cloudSession == requestedSession
             else { return }
             notificationError = localizedString(
                 "möbius Cloud couldn’t update notifications. Try again."
@@ -710,17 +726,21 @@ extension AppModel {
             if let approval = backgroundApproval(forSessionID: sessionID) {
                 return approval.requestId == requestID
             }
-            guard let session = chat.sessions.first(where: {
-                $0.sessionId == sessionID
-            }) else { return false }
+            guard
+                let session = chat.sessions.first(where: {
+                    $0.sessionId == sessionID
+                })
+            else { return false }
             return session.activity.state == .awaitingApproval
                 && session.activity.approvalRequestId == requestID
         case .session(_, .completed, let sessionID, let runCount, _),
-             .session(_, .aborted, let sessionID, let runCount, _),
-             .session(_, .failed, let sessionID, let runCount, _):
-            guard let session = chat.sessions.first(where: {
-                $0.sessionId == sessionID
-            }), let runCount else { return false }
+            .session(_, .aborted, let sessionID, let runCount, _),
+            .session(_, .failed, let sessionID, let runCount, _):
+            guard
+                let session = chat.sessions.first(where: {
+                    $0.sessionId == sessionID
+                }), let runCount
+            else { return false }
             return session.executionStats.runCount >= runCount
         }
     }

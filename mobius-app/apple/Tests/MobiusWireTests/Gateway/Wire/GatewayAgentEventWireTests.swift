@@ -4,28 +4,38 @@ import XCTest
 
 extension GatewayWireTests {
     func testMessageDeltaRequiresItsStableSubmissionIdentity() throws {
-        let fixture = #"{"version":70,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1234,"event":{"submission_id":"spoken-1","msg":{"type":"message_delta","text":"Hello"}},"stream_metrics":[],"blocks":[],"preview":null}}"#
+        let fixture =
+            #"{"version":70,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1234,"event":{"submission_id":"spoken-1","msg":{"type":"message_delta","text":"Hello"}},"stream_metrics":[],"blocks":[],"preview":null}}"#
         guard case .agentEvent(_, let record) = try decodeEnvelope(fixture) else {
             return XCTFail("Expected spoken input delta")
         }
         XCTAssertEqual(record.event.submissionId, "spoken-1")
         XCTAssertEqual(record.event.msg["text"]?.stringValue, "Hello")
-        XCTAssertThrowsError(try decodeEnvelope(fixture.replacingOccurrences(
-            of: #""submission_id":"spoken-1","#, with: ""
-        )))
-        let previewEvent = #"{"recorded_at_ms":1234,"submission_id":"spoken-1","event":{"type":"message_delta","text":"Hello"},"blocks":[]}"#
+        XCTAssertThrowsError(
+            try decodeEnvelope(
+                fixture.replacingOccurrences(
+                    of: #""submission_id":"spoken-1","#, with: ""
+                )))
+        let previewEvent =
+            #"{"recorded_at_ms":1234,"submission_id":"spoken-1","event":{"type":"message_delta","text":"Hello"},"blocks":[]}"#
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
-        XCTAssertEqual(try decoder.decode(
-            RenderedEventRecord.self, from: Data(previewEvent.utf8)
-        ).submissionId, "spoken-1")
-        XCTAssertThrowsError(try decoder.decode(RenderedEventRecord.self, from: Data(
-            previewEvent.replacingOccurrences(of: #""submission_id":"spoken-1","#, with: "").utf8
-        )))
+        XCTAssertEqual(
+            try decoder.decode(
+                RenderedEventRecord.self, from: Data(previewEvent.utf8)
+            ).submissionId, "spoken-1")
+        XCTAssertThrowsError(
+            try decoder.decode(
+                RenderedEventRecord.self,
+                from: Data(
+                    previewEvent.replacingOccurrences(of: #""submission_id":"spoken-1","#, with: "")
+                        .utf8
+                )))
     }
 
     func testSubmissionRejectedRequiresMessage() throws {
-        let fixture = #"{"version":55,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1234,"event":{"submission_id":"input-1","msg":{"type":"submission_rejected","message":"Message queue is full"}},"stream_metrics":[],"blocks":[],"preview":null}}"#
+        let fixture =
+            #"{"version":55,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1234,"event":{"submission_id":"input-1","msg":{"type":"submission_rejected","message":"Message queue is full"}},"stream_metrics":[],"blocks":[],"preview":null}}"#
         guard case .agentEvent(_, let record) = try decodeEnvelope(fixture) else {
             return XCTFail("Expected submission rejection event")
         }
@@ -44,7 +54,8 @@ extension GatewayWireTests {
     }
 
     func testAgentEventFixtureIncludesSessionScope() throws {
-        let fixture = #"{"version":28,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1234,"event":{"submission_id":"input-1","msg":{"type":"context_compacted"}},"stream_metrics":[{"phase":"reasoning","first_delta_at_ms":1000,"last_delta_at_ms":1200,"chunk_count":3,"utf8_bytes":12,"longest_gap_ms":150}],"blocks":[],"preview":null}}"#
+        let fixture =
+            #"{"version":28,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1234,"event":{"submission_id":"input-1","msg":{"type":"context_compacted"}},"stream_metrics":[{"phase":"reasoning","first_delta_at_ms":1000,"last_delta_at_ms":1200,"chunk_count":3,"utf8_bytes":12,"longest_gap_ms":150}],"blocks":[],"preview":null}}"#
         let envelope = try decodeEnvelope(fixture)
 
         guard case .agentEvent(let sessionID, let record) = envelope else {
@@ -88,7 +99,8 @@ extension GatewayWireTests {
             "Relevant excerpt."
         )
 
-        let invalidCitationContent = #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":9,"recorded_at_ms":1401,"event":{"msg":{"type":"assistant_message","session_id":"chat-1","turn_id":"turn-1","model_step_id":"step-1","content":[{"output_index":0,"part_index":0,"phase":"final_answer","text":"Done","annotations":[{"type":"url_citation","url":"https://example.com","title":"Example","content":7,"start_index":0,"end_index":4}]}],"message_target":null}},"stream_metrics":[],"blocks":[],"preview":null}}"#
+        let invalidCitationContent =
+            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":9,"recorded_at_ms":1401,"event":{"msg":{"type":"assistant_message","session_id":"chat-1","turn_id":"turn-1","model_step_id":"step-1","content":[{"output_index":0,"part_index":0,"phase":"final_answer","text":"Done","annotations":[{"type":"url_citation","url":"https://example.com","title":"Example","content":7,"start_index":0,"end_index":4}]}],"message_target":null}},"stream_metrics":[],"blocks":[],"preview":null}}"#
         XCTAssertThrowsError(try decodeEnvelope(invalidCitationContent))
 
         let retry = try decodeEnvelope(
@@ -99,7 +111,8 @@ extension GatewayWireTests {
         }
         XCTAssertEqual(retryRecord.event.msg["outcome"]?["status"]?.stringValue, "retrying")
 
-        let unknownCitation = #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1400,"event":{"msg":{"type":"assistant_message","session_id":"chat-1","turn_id":"turn-1","model_step_id":"step-1","content":[{"output_index":0,"part_index":0,"phase":"final_answer","text":"Done","annotations":[{"type":"future"}]}],"message_target":null}},"stream_metrics":[],"blocks":[],"preview":null}}"#
+        let unknownCitation =
+            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1400,"event":{"msg":{"type":"assistant_message","session_id":"chat-1","turn_id":"turn-1","model_step_id":"step-1","content":[{"output_index":0,"part_index":0,"phase":"final_answer","text":"Done","annotations":[{"type":"future"}]}],"message_target":null}},"stream_metrics":[],"blocks":[],"preview":null}}"#
         XCTAssertThrowsError(try decodeEnvelope(unknownCitation)) { error in
             XCTAssertEqual(
                 error as? GatewayWireError,
@@ -133,7 +146,7 @@ extension GatewayWireTests {
 
     func testGatewayOnlyEventInvariantsAreRejected() {
         let fixtures = [
-            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"session_history","events":[]}},"stream_metrics":[],"blocks":[],"preview":null}}"#,
+            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"session_history","events":[]}},"stream_metrics":[],"blocks":[],"preview":null}}"#
         ]
 
         for fixture in fixtures {
@@ -142,7 +155,8 @@ extension GatewayWireTests {
     }
 
     func testUnknownAgentEventIsRejected() {
-        let fixture = #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"future_event"}},"stream_metrics":[],"blocks":[],"preview":null}}"#
+        let fixture =
+            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"future_event"}},"stream_metrics":[],"blocks":[],"preview":null}}"#
         XCTAssertThrowsError(try decodeEnvelope(fixture)) { error in
             XCTAssertEqual(
                 error as? GatewayWireError,
@@ -153,8 +167,14 @@ extension GatewayWireTests {
 
     func testInvalidFrontendEventSubtypeIsRejected() {
         let fixtures = [
-            (#"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"frontend"}},"stream_metrics":[],"blocks":[],"preview":null}}"#, "frontend event has no frontend_type"),
-            (#"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"frontend","frontend_type":"future_frontend"}},"stream_metrics":[],"blocks":[],"preview":null}}"#, "unknown frontend event future_frontend")
+            (
+                #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"frontend"}},"stream_metrics":[],"blocks":[],"preview":null}}"#,
+                "frontend event has no frontend_type"
+            ),
+            (
+                #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"frontend","frontend_type":"future_frontend"}},"stream_metrics":[],"blocks":[],"preview":null}}"#,
+                "unknown frontend event future_frontend"
+            ),
         ]
 
         for (fixture, message) in fixtures {
@@ -166,8 +186,14 @@ extension GatewayWireTests {
 
     func testMalformedFrontendEventPayloadIsRejected() {
         let fixtures = [
-            (#"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"frontend","frontend_type":"render","capability":"tools"}},"stream_metrics":[],"blocks":[],"preview":null}}"#, "frontend render is missing a required field"),
-            (#"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"frontend","frontend_type":"picker","title":"Choose","options":[{"label":"One","description":"First"}]}},"stream_metrics":[],"blocks":[],"preview":null}}"#, "frontend picker option is missing a required field")
+            (
+                #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"frontend","frontend_type":"render","capability":"tools"}},"stream_metrics":[],"blocks":[],"preview":null}}"#,
+                "frontend render is missing a required field"
+            ),
+            (
+                #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"frontend","frontend_type":"picker","title":"Choose","options":[{"label":"One","description":"First"}]}},"stream_metrics":[],"blocks":[],"preview":null}}"#,
+                "frontend picker option is missing a required field"
+            ),
         ]
 
         for (fixture, message) in fixtures {
@@ -178,16 +204,18 @@ extension GatewayWireTests {
     }
 
     func testUnknownRenderedPresentationValuesAreRejected() {
-        let outerBlock = #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"turn_complete","turn_id":"turn-1"}},"stream_metrics":[],"blocks":[{"capability":"tools","block":{"id":null,"group":null,"update":"replace","state":"complete","role":"tool","title":"Done","text":"","symbol":null,"format":"future_format","tone":"neutral","files":[]}}],"preview":null}}"#
+        let outerBlock =
+            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"turn_complete","turn_id":"turn-1"}},"stream_metrics":[],"blocks":[{"capability":"tools","block":{"id":null,"group":null,"update":"replace","state":"complete","role":"tool","title":"Done","text":"","symbol":null,"format":"future_format","tone":"neutral","files":[]}}],"preview":null}}"#
         XCTAssertThrowsError(try decodeEnvelope(outerBlock))
 
         let invalidWidgetPayload = sessionReadyPayloadJSON.replacingOccurrences(
             of: #""slot":"composer_footer""#,
             with: #""slot":"future_slot""#
         )
-        XCTAssertThrowsError(try decodeEnvelope(
-            #"{"version":27,"type":"session_opened","request_id":"open-1","payload":\#(invalidWidgetPayload)}"#
-        ))
+        XCTAssertThrowsError(
+            try decodeEnvelope(
+                #"{"version":27,"type":"session_opened","request_id":"open-1","payload":\#(invalidWidgetPayload)}"#
+            ))
     }
 
     func testShellWidgetSlotsAreAccepted() throws {
@@ -195,7 +223,7 @@ extension GatewayWireTests {
             ("transcript_tail", .transcriptTail),
             ("message_actions", .messageActions),
             ("navigation", .navigation),
-            ("chat_menu", .chatMenu)
+            ("chat_menu", .chatMenu),
         ] {
             let payload = sessionReadyPayloadJSON.replacingOccurrences(
                 of: #""slot":"composer_footer""#,
@@ -213,45 +241,50 @@ extension GatewayWireTests {
     }
 
     func testActionListDecodesStableRowsActionsAndEditableInput() throws {
-        let widget = try FrontendWidget(json: .object([
-            "id": .string("notes"),
-            "slot": .string("navigation"),
-            "text": .string("Notes"),
-            "tone": .string("neutral"),
-            "symbol": .string("brain"),
-            "iconOnly": .bool(false),
-            "progress": .null,
-            "content": .object([
-                "type": .string("action_list"),
-                "actions": .array([]),
-                "title": .string("Notes"),
-                "items": .array([.object([
-                    "id": .string("note-1"),
-                    "text": .string("Prefer small native controls."),
-                    "state": .string("completed"),
-                    "actions": .array([.object([
-                        "id": .string("edit:note-1"),
-                        "label": .string("Edit"),
-                        "symbol": .string("edit"),
-                        "tone": .string("neutral"),
-                        "op": .object([
-                            "type": .string("capability_command"),
-                            "capability": .string("notes"),
-                            "command": .string("edit"),
-                            "arguments": .string("note-1"),
-                            "input": .string("Prefer small native controls."),
-                            "target": .null
+        let widget = try FrontendWidget(
+            json: .object([
+                "id": .string("notes"),
+                "slot": .string("navigation"),
+                "text": .string("Notes"),
+                "tone": .string("neutral"),
+                "symbol": .string("brain"),
+                "iconOnly": .bool(false),
+                "progress": .null,
+                "content": .object([
+                    "type": .string("action_list"),
+                    "actions": .array([]),
+                    "title": .string("Notes"),
+                    "items": .array([
+                        .object([
+                            "id": .string("note-1"),
+                            "text": .string("Prefer small native controls."),
+                            "state": .string("completed"),
+                            "actions": .array([
+                                .object([
+                                    "id": .string("edit:note-1"),
+                                    "label": .string("Edit"),
+                                    "symbol": .string("edit"),
+                                    "tone": .string("neutral"),
+                                    "op": .object([
+                                        "type": .string("capability_command"),
+                                        "capability": .string("notes"),
+                                        "command": .string("edit"),
+                                        "arguments": .string("note-1"),
+                                        "input": .string("Prefer small native controls."),
+                                        "target": .null,
+                                    ]),
+                                ])
+                            ]),
                         ])
-                    ])])
-                ])])
-            ]),
-            "action": .null
-        ]))
+                    ]),
+                ]),
+                "action": .null,
+            ]))
 
         guard case .actionList(let title, let items, _) = widget.content,
-              let item = items.first,
-              let action = item.actions.first,
-              case .capabilityCommand(_, _, _, let input, _) = action.op
+            let item = items.first,
+            let action = item.actions.first,
+            case .capabilityCommand(_, _, _, let input, _) = action.op
         else { return XCTFail("Expected action list") }
         XCTAssertEqual(title, "Notes")
         XCTAssertEqual(item.id, "note-1")
@@ -261,34 +294,35 @@ extension GatewayWireTests {
         XCTAssertEqual(action.symbol, "edit")
         XCTAssertEqual(input, "Prefer small native controls.")
 
-        guard case .capabilityCommand(_, _, _, let edited, _) =
-            action.op.replacingCapabilityInput(with: "Use one row.")
+        guard
+            case .capabilityCommand(_, _, _, let edited, _) =
+                action.op.replacingCapabilityInput(with: "Use one row.")
         else { return XCTFail("Expected edited capability command") }
         XCTAssertEqual(edited, "Use one row.")
     }
 
     func testContributionEditorCarriesExistingCollectiveNoteLabelsAndOperation() throws {
         let fixture = #"""
-        {
-          "id":"notes", "slot":"navigation", "text":"Scratchpad", "tone":"neutral",
-          "symbol":"brain", "icon_only":false, "progress":null, "action":null,
-          "content":{
-            "type":"action_list", "title":"Collective scratchpad", "items":[],
-            "actions":[{
-              "id":"add", "label":"Add Collective Note", "symbol":"plus", "tone":"neutral",
-              "editor":{
-                "title":"Add collective note", "label":"Note",
-                "description":"This note becomes durable context for every Bot in the Swarm.",
-                "submit_label":"Add"
-              },
-              "op":{
-                "type":"capability_command", "capability":"notes", "command":"append",
-                "arguments":"shared", "input":"", "target":null
+            {
+              "id":"notes", "slot":"navigation", "text":"Scratchpad", "tone":"neutral",
+              "symbol":"brain", "icon_only":false, "progress":null, "action":null,
+              "content":{
+                "type":"action_list", "title":"Collective scratchpad", "items":[],
+                "actions":[{
+                  "id":"add", "label":"Add Collective Note", "symbol":"plus", "tone":"neutral",
+                  "editor":{
+                    "title":"Add collective note", "label":"Note",
+                    "description":"This note becomes durable context for every Bot in the Swarm.",
+                    "submit_label":"Add"
+                  },
+                  "op":{
+                    "type":"capability_command", "capability":"notes", "command":"append",
+                    "arguments":"shared", "input":"", "target":null
+                  }
+                }]
               }
-            }]
-          }
-        }
-        """#
+            }
+            """#
         let widget = try decoder().decode(FrontendWidget.self, from: Data(fixture.utf8))
         guard case .actionList("Collective scratchpad", _, let actions) = widget.content else {
             return XCTFail("Expected list actions")
@@ -298,10 +332,12 @@ extension GatewayWireTests {
         XCTAssertEqual(action.label, "Add Collective Note")
         XCTAssertEqual(editor.title, "Add collective note")
         XCTAssertEqual(editor.label, "Note")
-        XCTAssertEqual(editor.description, "This note becomes durable context for every Bot in the Swarm.")
+        XCTAssertEqual(
+            editor.description, "This note becomes durable context for every Bot in the Swarm.")
         XCTAssertEqual(editor.submitLabel, "Add")
-        guard case .capabilityCommand("notes", "append", "shared", let input, nil) =
-            action.op.replacingCapabilityInput(with: "Shared context")
+        guard
+            case .capabilityCommand("notes", "append", "shared", let input, nil) =
+                action.op.replacingCapabilityInput(with: "Shared context")
         else { return XCTFail("Expected the contributed operation to survive editing") }
         XCTAssertEqual(input, "Shared context")
     }

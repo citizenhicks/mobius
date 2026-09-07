@@ -133,7 +133,8 @@ struct SidebarDrawer<Sidebar: View, Detail: View>: View {
                     drag = 0
                     return
                 }
-                let projected = (isOpen ? SidebarDrawerMetrics.width : 0)
+                let projected =
+                    (isOpen ? SidebarDrawerMetrics.width : 0)
                     + value.predictedEndTranslation.width
                 let open = projected > SidebarDrawerMetrics.width / 2
                 if open != isOpen { drawerFeedback.toggle() }
@@ -197,7 +198,9 @@ struct SidebarView: View {
                             color: model.gateway.connectionState.tone.color(in: palette),
                             isLoading: model.gateway.connectionState.isLoading
                         )
-                        .frame(width: MobiusStyle.iconButtonSize, height: MobiusStyle.iconButtonSize)
+                        .frame(
+                            width: MobiusStyle.iconButtonSize, height: MobiusStyle.iconButtonSize
+                        )
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.mobiusPlain)
@@ -221,9 +224,11 @@ struct SidebarView: View {
                             contributionNavigationButton(widget, scope: .global)
                         }
                     }
-                    ForEach(model.chat.navigationWidgets.filter { widget in
-                        !globalWidgets.contains { $0.id == widget.id }
-                    }) { widget in
+                    ForEach(
+                        model.chat.navigationWidgets.filter { widget in
+                            !globalWidgets.contains { $0.id == widget.id }
+                        }
+                    ) { widget in
                         contributionNavigationButton(widget)
                     }
 
@@ -322,10 +327,10 @@ struct SidebarView: View {
                 glyph: destination.glyph,
                 iconColor: model.destination == destination ? palette.accent : Color.primary
             )
-                .font(MobiusStyle.controlFont)
-                .foregroundStyle(model.destination == destination ? palette.accent : Color.primary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
+            .font(MobiusStyle.controlFont)
+            .foregroundStyle(model.destination == destination ? palette.accent : Color.primary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.mobiusPlain)
         .padding(.horizontal, MobiusSpace.xs)
@@ -336,12 +341,16 @@ struct SidebarView: View {
         _ widget: MountedWidget,
         scope: ContributionScope? = nil
     ) -> some View {
-        let destination = scope == .global
+        let destination =
+            scope == .global
             ? AppDestination.globalContributions : .contribution(widget.id)
         return Button {
             if let operation = widget.widget.action {
-                if let scope { model.submitContributionOperation(operation, scope: scope) }
-                else { model.submitWidget(widget) }
+                if let scope {
+                    model.submitContributionOperation(operation, scope: scope)
+                } else {
+                    model.submitWidget(widget)
+                }
             }
             showDetail(destination)
         } label: {

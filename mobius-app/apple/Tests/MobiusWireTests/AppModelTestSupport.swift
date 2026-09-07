@@ -11,41 +11,44 @@ func testMessageEvent(
     reply: MessageReply? = nil,
     messageTarget: MessageTarget? = nil
 ) -> JSONValue {
-    let author: JSONValue = switch author {
-    case .user:
-        .object(["type": .string("user")])
-    case .peer(let messageID, let sessionID, let handle, let symbol):
-        .object([
-            "type": .string("peer"),
-            "messageId": .string(messageID),
-            "sessionId": .string(sessionID),
-            "handle": .string(handle),
-            "symbol": symbol.map(JSONValue.string) ?? .null
-        ])
-    }
+    let author: JSONValue =
+        switch author {
+        case .user:
+            .object(["type": .string("user")])
+        case .peer(let messageID, let sessionID, let handle, let symbol):
+            .object([
+                "type": .string("peer"),
+                "messageId": .string(messageID),
+                "sessionId": .string(sessionID),
+                "handle": .string(handle),
+                "symbol": symbol.map(JSONValue.string) ?? .null,
+            ])
+        }
     let attachments = attachments.map { file in
         JSONValue.object([
             "id": .string(file.id),
             "name": .string(file.name),
             "size": .number(Double(file.size)),
-            "mediaType": .string(file.mediaType)
+            "mediaType": .string(file.mediaType),
         ])
     }
-    let target: JSONValue = messageTarget.map { target in
-        .object([
-            "checkpointSequence": .number(Double(target.checkpointSequence)),
-            "batchItemCount": .number(Double(target.batchItemCount))
-        ])
-    } ?? .null
-    let reply: JSONValue = reply.map { reply in
-        .object([
-            "target": .object([
-                "checkpointSequence": .number(Double(reply.target.checkpointSequence)),
-                "batchItemCount": .number(Double(reply.target.batchItemCount))
-            ]),
-            "text": .string(reply.text)
-        ])
-    } ?? .null
+    let target: JSONValue =
+        messageTarget.map { target in
+            .object([
+                "checkpointSequence": .number(Double(target.checkpointSequence)),
+                "batchItemCount": .number(Double(target.batchItemCount)),
+            ])
+        } ?? .null
+    let reply: JSONValue =
+        reply.map { reply in
+            .object([
+                "target": .object([
+                    "checkpointSequence": .number(Double(reply.target.checkpointSequence)),
+                    "batchItemCount": .number(Double(reply.target.batchItemCount)),
+                ]),
+                "text": .string(reply.text),
+            ])
+        } ?? .null
     return .object([
         "type": .string("message"),
         "author": author,
@@ -53,7 +56,7 @@ func testMessageEvent(
         "text": .string(text),
         "attachments": .array(attachments),
         "reply": reply,
-        "messageTarget": target
+        "messageTarget": target,
     ])
 }
 
@@ -69,13 +72,15 @@ func testAssistantMessage(
         "sessionId": .string("chat-1"),
         "turnId": .string(turnID),
         "modelStepId": .string(modelStepID),
-        "content": .array([.object([
-            "outputIndex": .number(0),
-            "partIndex": .number(0),
-            "phase": .string(phase),
-            "text": .string(text),
-            "annotations": .array(annotations),
-        ])]),
+        "content": .array([
+            .object([
+                "outputIndex": .number(0),
+                "partIndex": .number(0),
+                "phase": .string(phase),
+                "text": .string(text),
+                "annotations": .array(annotations),
+            ])
+        ]),
         "messageTarget": .null,
     ])
 }
@@ -167,22 +172,24 @@ extension ChatSessionModel {
         _ = history
         let renderedBlocks: [RenderedBlock]
         if blocks.isEmpty,
-           event.msg["frontendType"]?.stringValue == "render",
-           let capability = event.msg["capability"]?.stringValue,
-           let value = event.msg["block"],
-           let block = try? FrontendBlock(json: value) {
+            event.msg["frontendType"]?.stringValue == "render",
+            let capability = event.msg["capability"]?.stringValue,
+            let value = event.msg["block"],
+            let block = try? FrontendBlock(json: value)
+        {
             renderedBlocks = [RenderedBlock(capability: capability, block: block)]
         } else {
             renderedBlocks = blocks.map { RenderedBlock(capability: "test", block: $0) }
         }
-        reduce(record: RecordedEvent(
-            sequence: 1,
-            recordedAtMs: 1_000,
-            event: event,
-            streamMetrics: [],
-            blocks: renderedBlocks,
-            preview: preview
-        ))
+        reduce(
+            record: RecordedEvent(
+                sequence: 1,
+                recordedAtMs: 1_000,
+                event: event,
+                streamMetrics: [],
+                blocks: renderedBlocks,
+                preview: preview
+            ))
     }
 }
 
@@ -254,18 +261,21 @@ final class AppModelTests: XCTestCase {
     }
 
     func tinyPNGData() throws -> Data {
-        try XCTUnwrap(Data(base64Encoded:
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
-        ))
+        try XCTUnwrap(
+            Data(
+                base64Encoded:
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+            ))
     }
 
     func tinyH264MP4Data() throws -> Data {
-        try XCTUnwrap(Data(
-            base64Encoded: """
-            AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAMObW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAA+gAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAjl0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAA+gAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAABAAAAAQAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAAPoAAAAAAABAAAAAAGxbWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAABAAAAAQABVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABXG1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAARxzdGJsAAAAuHN0c2QAAAAAAAAAAQAAAKhhdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAABAAEABIAAAASAAAAAAAAAABFExhdmM2My4xLjEwMSBsaWJ4MjY0AAAAAAAAAAAAAAAAGP//AAAALmF2Y0MBQsAe/+EAFmdCwB7ZHsBEAAADAAQAAAMACDxYuSABAAVoy4PLIAAAABBwYXNwAAAAAQAAAAEAAAAUYnRydAAAAAAAABRgAAAAAAAAABhzdHRzAAAAAAAAAAEAAAABAABAAAAAABxzdHNjAAAAAAAAAAEAAAABAAAAAQAAAAEAAAAUc3RzegAAAAAAAAKMAAAAAQAAABRzdGNvAAAAAAAAAAEAAAM+AAAAYXVkdGEAAABZbWV0YQAAAAAAAAAhaGRscgAAAAAAAAAAbWRpcmFwcGwAAAAAAAAAAAAAAAAsaWxzdAAAACSpdG9vAAAAHGRhdGEAAAABAAAAAExhdmY2My4xLjEwMQAAAAhmcmVlAAAClG1kYXQAAAJwBgX//2zcRem95tlIt5Ys2CDZI+7veDI2NCAtIGNvcmUgMTY1IHIzMjIyIGIzNTYwNWEgLSBILjI2NC9NUEVHLTQgQVZDIGNvZGVjIC0gQ29weWxlZnQgMjAwMy0yMDI1IC0gaHR0cDovL3d3dy52aWRlb2xhbi5vcmcveDI2NC5odG1sIC0gb3B0aW9uczogY2FiYWM9MCByZWY9MyBkZWJsb2NrPTE6MDowIGFuYWx5c2U9MHgxOjB4MTExIG1lPWhleCBzdWJtZT03IHBzeT0xIHBzeV9yZD0xLjAwOjAuMDAgbWl4ZWRfcmVmPTEgbWVfcmFuZ2U9MTYgY2hyb21hX21lPTEgdHJlbGxpcz0xIDh4OGRjdD0wIGNxbT0wIGRlYWR6b25lPTIxLDExIGZhc3RfcHNraXA9MSBjaHJvbWFfcXBfb2Zmc2V0PS0yIHRocmVhZHM9MSBsb29rYWhlYWRfdGhyZWFkcz0xIHNsaWNlZF90aHJlYWRzPTAgbnI9MCBkZWNpbWF0ZT0xIGludGVybGFjZWQ9MCBibHVyYXlfY29tcGF0PTAgY29uc3RyYWluZWRfaW50cmE9MCBiZnJhbWVzPTAgd2VpZ2h0cD0wIGtleWludD0yNTAga2V5aW50X21pbj0xIHNjZW5lY3V0PTQwIGludHJhX3JlZnJlc2g9MCByY19sb29rYWhlYWQ9NDAgcmM9Y3JmIG1idHJlZT0xIGNyZj0yMy4wIHFjb21wPTAuNjAgcXBtaW49MCBxcG1heD02OSBxcHN0ZXA9NCBpcF9yYXRpbz0xLjQwIGFxPTE6MS4wMACAAAAAFGWIhAV8RigAC4zHAAE6GOAANg2A
-            """,
-            options: .ignoreUnknownCharacters
-        ))
+        try XCTUnwrap(
+            Data(
+                base64Encoded: """
+                    AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAMObW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAA+gAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAjl0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAA+gAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAABAAAAAQAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAAPoAAAAAAABAAAAAAGxbWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAABAAAAAQABVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABXG1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAARxzdGJsAAAAuHN0c2QAAAAAAAAAAQAAAKhhdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAABAAEABIAAAASAAAAAAAAAABFExhdmM2My4xLjEwMSBsaWJ4MjY0AAAAAAAAAAAAAAAAGP//AAAALmF2Y0MBQsAe/+EAFmdCwB7ZHsBEAAADAAQAAAMACDxYuSABAAVoy4PLIAAAABBwYXNwAAAAAQAAAAEAAAAUYnRydAAAAAAAABRgAAAAAAAAABhzdHRzAAAAAAAAAAEAAAABAABAAAAAABxzdHNjAAAAAAAAAAEAAAABAAAAAQAAAAEAAAAUc3RzegAAAAAAAAKMAAAAAQAAABRzdGNvAAAAAAAAAAEAAAM+AAAAYXVkdGEAAABZbWV0YQAAAAAAAAAhaGRscgAAAAAAAAAAbWRpcmFwcGwAAAAAAAAAAAAAAAAsaWxzdAAAACSpdG9vAAAAHGRhdGEAAAABAAAAAExhdmY2My4xLjEwMQAAAAhmcmVlAAAClG1kYXQAAAJwBgX//2zcRem95tlIt5Ys2CDZI+7veDI2NCAtIGNvcmUgMTY1IHIzMjIyIGIzNTYwNWEgLSBILjI2NC9NUEVHLTQgQVZDIGNvZGVjIC0gQ29weWxlZnQgMjAwMy0yMDI1IC0gaHR0cDovL3d3dy52aWRlb2xhbi5vcmcveDI2NC5odG1sIC0gb3B0aW9uczogY2FiYWM9MCByZWY9MyBkZWJsb2NrPTE6MDowIGFuYWx5c2U9MHgxOjB4MTExIG1lPWhleCBzdWJtZT03IHBzeT0xIHBzeV9yZD0xLjAwOjAuMDAgbWl4ZWRfcmVmPTEgbWVfcmFuZ2U9MTYgY2hyb21hX21lPTEgdHJlbGxpcz0xIDh4OGRjdD0wIGNxbT0wIGRlYWR6b25lPTIxLDExIGZhc3RfcHNraXA9MSBjaHJvbWFfcXBfb2Zmc2V0PS0yIHRocmVhZHM9MSBsb29rYWhlYWRfdGhyZWFkcz0xIHNsaWNlZF90aHJlYWRzPTAgbnI9MCBkZWNpbWF0ZT0xIGludGVybGFjZWQ9MCBibHVyYXlfY29tcGF0PTAgY29uc3RyYWluZWRfaW50cmE9MCBiZnJhbWVzPTAgd2VpZ2h0cD0wIGtleWludD0yNTAga2V5aW50X21pbj0xIHNjZW5lY3V0PTQwIGludHJhX3JlZnJlc2g9MCByY19sb29rYWhlYWQ9NDAgcmM9Y3JmIG1idHJlZT0xIGNyZj0yMy4wIHFjb21wPTAuNjAgcXBtaW49MCBxcG1heD02OSBxcHN0ZXA9NCBpcF9yYXRpbz0xLjQwIGFxPTE6MS4wMACAAAAAFGWIhAV8RigAC4zHAAE6GOAANg2A
+                    """,
+                options: .ignoreUnknownCharacters
+            ))
     }
 
     func composition(systemPrompt: String = "Test") -> AgentComposition {
@@ -284,7 +294,7 @@ final class AppModelTests: XCTestCase {
                     "context_offloading": ["stale_after_tokens": .integer(50_000)],
                     "subagents": [
                         "model_route": .string("openai_socket::gpt-5.6-sol::high")
-                    ]
+                    ],
                 ]
             ),
             extensions: [],
@@ -318,11 +328,12 @@ final class AppModelTests: XCTestCase {
 
     func webSearchOptions(_ values: HostedWebSearch...) -> [FrontendSettingOption] {
         values.map { value in
-            let metadata = switch value {
-            case .off: ("Off", "Do not use provider-hosted web search")
-            case .cached: ("Cached", "Allow cached provider-hosted search")
-            case .live: ("Live", "Allow live provider-hosted search")
-            }
+            let metadata =
+                switch value {
+                case .off: ("Off", "Do not use provider-hosted web search")
+                case .cached: ("Cached", "Allow cached provider-hosted search")
+                case .live: ("Live", "Allow live provider-hosted search")
+                }
             return FrontendSettingOption(
                 value: value.rawValue,
                 label: metadata.0,
@@ -375,7 +386,8 @@ final class AppModelTests: XCTestCase {
         id: String = "bot-1",
         handle: String = "helper",
         name: String = "Helper",
-        description: String = "You are möbius, a concise coding agent. Inspect the real code path before editing, make the smallest focused change, and preserve unrelated work.",
+        description: String =
+            "You are möbius, a concise coding agent. Inspect the real code path before editing, make the smallest focused change, and preserve unrelated work.",
         tint: AccentTint = .blue,
         config: VersionedAgentConfig? = nil,
         collaborationEnabled: Bool = false
@@ -407,12 +419,14 @@ final class AppModelTests: XCTestCase {
             resolvedRevision: "0123456789abcdef",
             digest: "abcdef0123456789",
             skills: ["ponytail"],
-            hooks: [ExtensionHookRecord(
-                event: "pre_tool_use",
-                matcher: "shell",
-                command: "bin/review",
-                timeoutSeconds: 10
-            )],
+            hooks: [
+                ExtensionHookRecord(
+                    event: "pre_tool_use",
+                    matcher: "shell",
+                    command: "bin/review",
+                    timeoutSeconds: 10
+                )
+            ],
             hooksTrusted: hooksTrusted
         )
     }
@@ -473,17 +487,20 @@ final class AppModelTests: XCTestCase {
             if case .submit = $0 { return true }
             return false
         }
-        let submission = try XCTUnwrap(request.flatMap { request -> Submission? in
-            guard case .submit(_, let submission) = request else { return nil }
-            return submission
-        })
+        let submission = try XCTUnwrap(
+            request.flatMap { request -> Submission? in
+                guard case .submit(_, let submission) = request else { return nil }
+                return submission
+            })
         model.chat.reduce(
-            event: AgentEventRecord(submissionId: submission.id, msg: .object([
-                "type": .string("frontend"),
-                "frontendType": .string("remove_widget"),
-                "capability": .string("notes"),
-                "id": .string("queued")
-            ])),
+            event: AgentEventRecord(
+                submissionId: submission.id,
+                msg: .object([
+                    "type": .string("frontend"),
+                    "frontendType": .string("remove_widget"),
+                    "capability": .string("notes"),
+                    "id": .string("queued"),
+                ])),
             blocks: [],
             preview: nil
         )
@@ -555,10 +572,11 @@ final class AppModelTests: XCTestCase {
             return XCTFail("Expected a create-session request")
         }
         XCTAssertEqual(botID, "bot-1")
-        model.gateway.handle(.sessionOpened(
-            requestID: requestID,
-            payload: sessionReady(latestSequence: 0, sessionID: sessionID)
-        ))
+        model.gateway.handle(
+            .sessionOpened(
+                requestID: requestID,
+                payload: sessionReady(latestSequence: 0, sessionID: sessionID)
+            ))
         model.gateway.handle(.sessionReplayComplete(requestID: requestID, sessionID: sessionID))
         guard !model.canCreateSession else { return }
         let ready = expectation(description: "New session finished loading")
@@ -587,10 +605,11 @@ final class AppModelTests: XCTestCase {
             guard case .submit(let submittedSessionID, _) = request else { return false }
             return submittedSessionID == sessionID
         }
-        let submission = try XCTUnwrap(request.flatMap { request -> Submission? in
-            guard case .submit(_, let submission) = request else { return nil }
-            return submission
-        })
+        let submission = try XCTUnwrap(
+            request.flatMap { request -> Submission? in
+                guard case .submit(_, let submission) = request else { return nil }
+                return submission
+            })
         try await Task.sleep(for: .milliseconds(30))
         return submission
     }
@@ -607,31 +626,34 @@ final class AppModelTests: XCTestCase {
         tone: String = "neutral",
         files: [SessionFileReference] = []
     ) -> AgentEventRecord {
-        AgentEventRecord(submissionId: nil, msg: .object([
-            "type": .string("frontend"),
-            "frontendType": .string("render"),
-            "capability": .string(capability),
-            "block": .object([
-                "id": .string(id),
-                "group": group.map(JSONValue.string) ?? .null,
-                "update": .string(append ? "append" : "replace"),
-                "state": .string(pending ? "pending" : "complete"),
-                "role": .string("tool"),
-                "title": .string(title),
-                "text": .string(text),
-                "symbol": .null,
-                "format": .string(format),
-                "tone": .string(tone),
-                "files": .array(files.map { file in
-                    .object([
-                        "id": .string(file.id),
-                        "name": .string(file.name),
-                        "size": .number(Double(file.size)),
-                        "mediaType": .string(file.mediaType)
-                    ])
-                })
-            ])
-        ]))
+        AgentEventRecord(
+            submissionId: nil,
+            msg: .object([
+                "type": .string("frontend"),
+                "frontendType": .string("render"),
+                "capability": .string(capability),
+                "block": .object([
+                    "id": .string(id),
+                    "group": group.map(JSONValue.string) ?? .null,
+                    "update": .string(append ? "append" : "replace"),
+                    "state": .string(pending ? "pending" : "complete"),
+                    "role": .string("tool"),
+                    "title": .string(title),
+                    "text": .string(text),
+                    "symbol": .null,
+                    "format": .string(format),
+                    "tone": .string(tone),
+                    "files": .array(
+                        files.map { file in
+                            .object([
+                                "id": .string(file.id),
+                                "name": .string(file.name),
+                                "size": .number(Double(file.size)),
+                                "mediaType": .string(file.mediaType),
+                            ])
+                        }),
+                ]),
+            ]))
     }
 
     func recorded(
@@ -656,30 +678,37 @@ final class AppModelTests: XCTestCase {
         reply: MessageReply? = nil,
         messageTarget: MessageTarget? = nil
     ) -> RecordedEvent {
-        recorded(sequence, testMessageEvent(
-            author: .peer(
-                messageID: "message-1",
-                sessionID: "chat-reviewer",
-                handle: "reviewer",
-                symbol: nil
+        recorded(
+            sequence,
+            testMessageEvent(
+                author: .peer(
+                    messageID: "message-1",
+                    sessionID: "chat-reviewer",
+                    handle: "reviewer",
+                    symbol: nil
+                ),
+                delivery: delivery,
+                text: text,
+                reply: reply,
+                messageTarget: messageTarget
             ),
-            delivery: delivery,
-            text: text,
-            reply: reply,
-            messageTarget: messageTarget
-        ), blocks: [RenderedBlock(capability: "messages", block: FrontendBlock(
-            id: "message_received:13:chat-reviewer:message-1",
-            group: nil,
-            update: .replace,
-            state: .complete,
-            role: .activity,
-            title: "Message received from @reviewer",
-            text: text,
-            symbol: "chat",
-            format: "plain_text",
-            tone: "neutral",
-            files: []
-        ))])
+            blocks: [
+                RenderedBlock(
+                    capability: "messages",
+                    block: FrontendBlock(
+                        id: "message_received:13:chat-reviewer:message-1",
+                        group: nil,
+                        update: .replace,
+                        state: .complete,
+                        role: .activity,
+                        title: "Message received from @reviewer",
+                        text: text,
+                        symbol: "chat",
+                        format: "plain_text",
+                        tone: "neutral",
+                        files: []
+                    ))
+            ])
     }
 
     func session(

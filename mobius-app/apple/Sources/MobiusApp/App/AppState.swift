@@ -481,7 +481,7 @@ enum ModifiedFilesScope: String, CaseIterable, Identifiable {
 extension SessionRecord {
     var explicitTitle: String? {
         guard let title = title?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !title.isEmpty
+            !title.isEmpty
         else { return nil }
         return title
     }
@@ -502,7 +502,10 @@ struct FileTreeNode: Identifiable, Hashable, Sendable {
     static func tree(from files: [WorkspaceFileRecord]) -> [FileTreeNode] {
         nodes(
             files.map {
-                (components: $0.path.split(separator: "/").map(String.init), size: Int64(clamping: $0.size))
+                (
+                    components: $0.path.split(separator: "/").map(String.init),
+                    size: Int64(clamping: $0.size)
+                )
             },
             prefix: ""
         )
@@ -517,11 +520,13 @@ struct FileTreeNode: Identifiable, Hashable, Sendable {
         }
         return groups.map { name, group -> FileTreeNode in
             let path = prefix.isEmpty ? name : "\(prefix)/\(name)"
-            let nested = group
+            let nested =
+                group
                 .filter { $0.components.count > 1 }
                 .map { (components: Array($0.components.dropFirst()), size: $0.size) }
             guard nested.isEmpty else {
-                return FileTreeNode(id: path, name: name, size: nil, children: nodes(nested, prefix: path))
+                return FileTreeNode(
+                    id: path, name: name, size: nil, children: nodes(nested, prefix: path))
             }
             return FileTreeNode(id: path, name: name, size: group[0].size, children: nil)
         }
@@ -585,10 +590,12 @@ struct AppLockAuthenticator {
         methodProvider = {
             let context = LAContext()
             var error: NSError?
-            guard context.canEvaluatePolicy(
-                .deviceOwnerAuthenticationWithBiometrics,
-                error: &error
-            ) else {
+            guard
+                context.canEvaluatePolicy(
+                    .deviceOwnerAuthenticationWithBiometrics,
+                    error: &error
+                )
+            else {
                 return .unavailable
             }
             return switch context.biometryType {
@@ -604,16 +611,19 @@ struct AppLockAuthenticator {
             context.localizedCancelTitle = cancelTitle
             context.localizedFallbackTitle = ""
             var error: NSError?
-            guard context.canEvaluatePolicy(
-                .deviceOwnerAuthenticationWithBiometrics,
-                error: &error
-            ) else {
+            guard
+                context.canEvaluatePolicy(
+                    .deviceOwnerAuthenticationWithBiometrics,
+                    error: &error
+                )
+            else {
                 return false
             }
-            return (try? await context.evaluatePolicy(
-                .deviceOwnerAuthenticationWithBiometrics,
-                localizedReason: reason
-            )) == true
+            return
+                (try? await context.evaluatePolicy(
+                    .deviceOwnerAuthenticationWithBiometrics,
+                    localizedReason: reason
+                )) == true
         }
     }
 

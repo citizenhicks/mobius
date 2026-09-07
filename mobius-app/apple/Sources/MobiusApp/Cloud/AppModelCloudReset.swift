@@ -30,7 +30,8 @@ extension AppModel {
             gateway.reloadAccounts()
             restoreSessionReadState(for: gateway.selectedAccountID)
             showsPairing = gateway.accounts.isEmpty
-            let message = "\(localizedString("Local data could not be fully cleared.")) \(localizedErrorDescription(localError))"
+            let message =
+                "\(localizedString("Local data could not be fully cleared.")) \(localizedErrorDescription(localError))"
             showToast(verbatim: message, tone: .error)
             return
         }

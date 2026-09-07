@@ -53,11 +53,13 @@ extension AppModelTests {
         let returned = await eventually { oldConnectionReturned }
         XCTAssertTrue(returned)
         await Task.yield()
-        currentStream.continuation.yield(.ready(ready(
-            botDefaults: config,
-            bots: [bot(id: "current-bot")],
-            sessions: []
-        )))
+        currentStream.continuation.yield(
+            .ready(
+                ready(
+                    botDefaults: config,
+                    bots: [bot(id: "current-bot")],
+                    sessions: []
+                )))
         let stillConnected = await eventually { model.bots.first?.id == "current-bot" }
         XCTAssertTrue(stillConnected)
         XCTAssertEqual(model.gateway.selectedAccountID, second.id)
@@ -87,13 +89,14 @@ extension AppModelTests {
         XCTAssertEqual(model.toast?.tone, .warning)
 
         model.cloud.notificationsEnabled = true
-        model.cloud.openRemoteNotification(.session(
-            eventID: "cloud-completed",
-            kind: .completed,
-            sessionID: "cloud-chat",
-            runCount: 1,
-            approvalRequestID: nil
-        ))
+        model.cloud.openRemoteNotification(
+            .session(
+                eventID: "cloud-completed",
+                kind: .completed,
+                sessionID: "cloud-chat",
+                runCount: 1,
+                approvalRequestID: nil
+            ))
 
         XCTAssertEqual(model.gateway.selectedAccountID, selfHosted.id)
         XCTAssertTrue(model.gateway.connectionState.isReady)
@@ -128,9 +131,10 @@ extension AppModelTests {
             requestSender: { _ in },
             connectionOpener: { _ in AsyncThrowingStream { _ in } }
         )
-        model.applyPairingSetup(try GatewayPairingSetup(
-            endpoint: "tcp://localhost:9191", code: "pairing-code"
-        ))
+        model.applyPairingSetup(
+            try GatewayPairingSetup(
+                endpoint: "tcp://localhost:9191", code: "pairing-code"
+            ))
         model.pair()
 
         try await withCheckedThrowingContinuation {
@@ -234,13 +238,15 @@ extension AppModelTests {
             accountID: account.id,
             sessionID: "chat-1",
             sequence: 1,
-            transcript: [TranscriptEntry(
-                id: "existing",
-                text: "Existing",
-                kind: .assistant,
-                format: "plain_text",
-                pending: false
-            )],
+            transcript: [
+                TranscriptEntry(
+                    id: "existing",
+                    text: "Existing",
+                    kind: .assistant,
+                    format: "plain_text",
+                    pending: false
+                )
+            ],
             currentUsage: TokenUsage(),
             lastUsage: TokenUsage()
         )
@@ -256,13 +262,15 @@ extension AppModelTests {
                 accountID: account.id,
                 sessionID: "chat-1",
                 sequence: 2,
-                transcript: [TranscriptEntry(
-                    id: "stale",
-                    text: "Must not resurrect",
-                    kind: .assistant,
-                    format: "plain_text",
-                    pending: false
-                )],
+                transcript: [
+                    TranscriptEntry(
+                        id: "stale",
+                        text: "Must not resurrect",
+                        kind: .assistant,
+                        format: "plain_text",
+                        pending: false
+                    )
+                ],
                 currentUsage: TokenUsage(),
                 lastUsage: TokenUsage()
             )
@@ -309,13 +317,15 @@ extension AppModelTests {
                 accountID: first.id,
                 sessionID: "chat-1",
                 sequence: 1,
-                transcript: [TranscriptEntry(
-                    id: "stale",
-                    text: "Must not resurrect",
-                    kind: .assistant,
-                    format: "plain_text",
-                    pending: false
-                )],
+                transcript: [
+                    TranscriptEntry(
+                        id: "stale",
+                        text: "Must not resurrect",
+                        kind: .assistant,
+                        format: "plain_text",
+                        pending: false
+                    )
+                ],
                 currentUsage: TokenUsage(),
                 lastUsage: TokenUsage()
             )
@@ -538,9 +548,11 @@ extension AppModelTests {
             if case .beginSessionFileUpload = request { return true }
             return false
         }
-        guard case .beginSessionFileUpload(_, let sessionID, let name, let size, _) = try XCTUnwrap(
-            request
-        ) else { return XCTFail("Expected an attachment upload during the active turn") }
+        guard
+            case .beginSessionFileUpload(_, let sessionID, let name, let size, _) = try XCTUnwrap(
+                request
+            )
+        else { return XCTFail("Expected an attachment upload during the active turn") }
         XCTAssertEqual(sessionID, "chat-1")
         XCTAssertEqual(name, "during-turn.txt")
         XCTAssertEqual(size, 20)
@@ -630,17 +642,22 @@ extension AppModelTests {
         XCTAssertFalse(model.gateway.reconnectsOnActivation)
 
         let translations: [(AppLanguage, String, String, String)] = [
-            (.french, "Ouvrir l’App Store", "Mettez l’app à jour",
-             "La page de mise à jour de l’App Store est indisponible."),
-            (.german, "App Store öffnen", "Aktualisieren Sie die App",
-             "Die Update-Seite im App Store ist nicht verfügbar.")
+            (
+                .french, "Ouvrir l’App Store", "Mettez l’app à jour",
+                "La page de mise à jour de l’App Store est indisponible."
+            ),
+            (
+                .german, "App Store öffnen", "Aktualisieren Sie die App",
+                "Die Update-Seite im App Store ist nicht verfügbar."
+            ),
         ]
         for (language, button, messagePrefix, unavailable) in translations {
             model.language = language
             XCTAssertEqual(model.localizedString("Open App Store"), button)
-            XCTAssertTrue(model.localizedString(
-                "Update the app to connect to this gateway. Install the latest version from the App Store, then reopen the app."
-            ).hasPrefix(messagePrefix))
+            XCTAssertTrue(
+                model.localizedString(
+                    "Update the app to connect to this gateway. Install the latest version from the App Store, then reopen the app."
+                ).hasPrefix(messagePrefix))
             XCTAssertEqual(
                 model.localizedString("The App Store update page is unavailable."),
                 unavailable
@@ -689,9 +706,10 @@ extension AppModelTests {
         let store = GatewayStore(defaults: defaults)
         let model = AppModel(client: GatewayClient(), store: store)
 
-        model.applyGatewayCatalog(ready(
-            botDefaults: VersionedAgentConfig(revision: 1, config: composition())
-        ))
+        model.applyGatewayCatalog(
+            ready(
+                botDefaults: VersionedAgentConfig(revision: 1, config: composition())
+            ))
 
         XCTAssertEqual(model.gateway.selectedAccount?.machineName, "snowwhite.local")
         XCTAssertEqual(store.loadAccounts().first?.machineName, "snowwhite.local")
@@ -727,11 +745,13 @@ extension AppModelTests {
         model.destination = .chats
         model.navigationPath = []
         model.gateway.connectionState = .ready
-        model.applySessions([session(
-            state: .running,
-            turnID: "turn-1",
-            sequence: 1
-        )])
+        model.applySessions([
+            session(
+                state: .running,
+                turnID: "turn-1",
+                sequence: 1
+            )
+        ])
 
         model.setSceneActive(true)
         model.setSceneActive(false)
@@ -741,12 +761,14 @@ extension AppModelTests {
         XCTAssertNil(model.chat.selectedSessionID)
         XCTAssertTrue(model.navigationPath.isEmpty)
 
-        model.applySessions([session(
-            state: .idle,
-            outcome: .failed,
-            message: "the agent stopped",
-            sequence: 1
-        )])
+        model.applySessions([
+            session(
+                state: .idle,
+                outcome: .failed,
+                message: "the agent stopped",
+                sequence: 1
+            )
+        ])
         XCTAssertTrue(model.chat.unreadSessionIDs.contains("chat-1"))
 
         model.applySessions([
@@ -756,7 +778,7 @@ extension AppModelTests {
                 message: "the agent stopped",
                 sequence: 1
             ),
-            session(sessionID: "chat-2", state: .idle, outcome: .completed, sequence: 1)
+            session(sessionID: "chat-2", state: .idle, outcome: .completed, sequence: 1),
         ])
         XCTAssertTrue(model.chat.unreadSessionIDs.contains("chat-2"))
     }
@@ -795,9 +817,11 @@ extension AppModelTests {
         let connectedAttempts = await harness.attemptCount()
         XCTAssertEqual(connectedAttempts, 2)
         await harness.yield(.authenticated)
-        await harness.yield(.ready(ready(
-            botDefaults: VersionedAgentConfig(revision: 1, config: composition())
-        )))
+        await harness.yield(
+            .ready(
+                ready(
+                    botDefaults: VersionedAgentConfig(revision: 1, config: composition())
+                )))
         let gatewayReady = await eventually { model.gateway.connectionState.isReady }
         XCTAssertTrue(gatewayReady)
         let openRequestCount = await recorder.requestCount()
@@ -812,14 +836,16 @@ extension AppModelTests {
         guard case .openSession(let openRequestID, _, _) = openRequest else {
             return XCTFail("Expected session open")
         }
-        await harness.yield(.sessionOpened(
-            requestID: openRequestID,
-            payload: sessionReady(latestSequence: 0)
-        ))
-        await harness.yield(.sessionReplayComplete(
-            requestID: openRequestID,
-            sessionID: "chat-1"
-        ))
+        await harness.yield(
+            .sessionOpened(
+                requestID: openRequestID,
+                payload: sessionReady(latestSequence: 0)
+            ))
+        await harness.yield(
+            .sessionReplayComplete(
+                requestID: openRequestID,
+                sessionID: "chat-1"
+            ))
         try await Task.sleep(for: .milliseconds(50))
         model.chat.composer = "Run this once"
         XCTAssertTrue(model.canSendComposer)
@@ -913,11 +939,12 @@ extension AppModelTests {
             algorithm: "ssh-ed25519",
             fingerprint: "SHA256:safe"
         )
-        model.gateway.handle(.sshIdentityGenerated(
-            requestID: generateID,
-            identity: identity,
-            publicKey: "ssh-ed25519 AAAA mobius"
-        ))
+        model.gateway.handle(
+            .sshIdentityGenerated(
+                requestID: generateID,
+                identity: identity,
+                publicKey: "ssh-ed25519 AAAA mobius"
+            ))
 
         XCTAssertEqual(model.sshIdentities, [identity])
         XCTAssertEqual(model.generatedSshIdentity?.publicKey, "ssh-ed25519 AAAA mobius")
@@ -958,7 +985,8 @@ extension AppModelTests {
         XCTAssertTrue(model.gateway.reconnectsOnActivation)
 
         // A failure on the replacement transport remains visible.
-        model.gateway.connectionEnded(generation: model.gateway.connectionGeneration, message: "Current transport failed")
+        model.gateway.connectionEnded(
+            generation: model.gateway.connectionGeneration, message: "Current transport failed")
         XCTAssertEqual(model.gateway.connectionState, .failed("Current transport failed"))
         XCTAssertNotNil(model.toast)
     }
@@ -974,17 +1002,20 @@ extension AppModelTests {
         model.gateway.connectionState = .connecting
         model.destination = .providers
         model.navigationPath = [.settings(.provider("my-provider"))]
-        model.gateway.handle(.ready(ready(
-            botDefaults: VersionedAgentConfig(revision: 1, config: composition())
-        )))
+        model.gateway.handle(
+            .ready(
+                ready(
+                    botDefaults: VersionedAgentConfig(revision: 1, config: composition())
+                )))
         XCTAssertEqual(model.destination, .providers)
         XCTAssertEqual(model.navigationPath, [.settings(.provider("my-provider"))])
         XCTAssertNil(model.chat.sessionToRestoreID)
         XCTAssertNil(model.chat.selectedSessionID)
         let requests = await recorder.requests()
-        XCTAssertFalse(requests.contains {
-            if case .openSession = $0 { return true }
-            return false
-        })
+        XCTAssertFalse(
+            requests.contains {
+                if case .openSession = $0 { return true }
+                return false
+            })
     }
 }

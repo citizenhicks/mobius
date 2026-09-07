@@ -104,10 +104,12 @@ struct MobiusPalette: Sendable {
             in: .device
         )
         if isDark {
-            canvas = lightsOut
+            canvas =
+                lightsOut
                 ? .black
                 : surface(Color(red: 0.141, green: 0.161, blue: 0.200))
-            recessed = lightsOut
+            recessed =
+                lightsOut
                 ? .black
                 : surface(Color(red: 0.094, green: 0.106, blue: 0.133))
             panelColor = surface(.nord0)

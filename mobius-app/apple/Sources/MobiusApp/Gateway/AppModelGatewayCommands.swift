@@ -7,10 +7,10 @@ extension AppModel {
         gateway.setAppInBackground(appIsInBackground)
         guard let account = gateway.selectedAccount else {
             #if DEBUG
-            if !gateway.pairingCode.isEmpty, !gateway.pairingEndpoint.isEmpty {
-                pair()
-                return
-            }
+                if !gateway.pairingCode.isEmpty, !gateway.pairingEndpoint.isEmpty {
+                    pair()
+                    return
+                }
             #endif
             showsPairing = true
             return
@@ -46,8 +46,8 @@ extension AppModel {
                 nil
             }
         guard !Task.isCancelled,
-              gateway.selectedAccountID == account.id,
-              gateway.connectionGeneration == generation
+            gateway.selectedAccountID == account.id,
+            gateway.connectionGeneration == generation
         else { return }
         if let catalog {
             applyBots(catalog.bots)

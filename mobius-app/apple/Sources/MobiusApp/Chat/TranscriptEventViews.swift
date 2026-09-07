@@ -63,7 +63,7 @@ struct WorkedForGroupView: View {
         }
         .onChange(of: revealMessageTarget, initial: true) {
             guard let target = revealMessageTarget, !isExpanded,
-                  entries.contains(where: { $0.messageTarget == target })
+                entries.contains(where: { $0.messageTarget == target })
             else { return }
             onExpand()
             withAnimation(reduceMotion ? nil : .easeOut(duration: 0.16)) { isExpanded = true }
@@ -138,7 +138,7 @@ struct EventGroupView: View {
         }
         .onChange(of: revealMessageTarget, initial: true) {
             guard let target = revealMessageTarget, !isExpanded,
-                  entries.contains(where: { $0.messageTarget == target })
+                entries.contains(where: { $0.messageTarget == target })
             else { return }
             onExpand()
             withAnimation(reduceMotion ? nil : .easeOut(duration: 0.16)) { isExpanded = true }
@@ -215,16 +215,16 @@ private struct ReasoningLine: View {
                         Text(summary)
                     }
                 }
-                    .font(MobiusStyle.bodyFont)
-                    .foregroundStyle(palette.muted)
-                    .multilineTextAlignment(.leading)
-                    .lineLimit(isExpanded ? nil : 1)
-                    .truncationMode(.tail)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .allowsHitTesting(false)
-                    // The transcript owns which phase is current; an older reasoning stream
-                    // can remain pending while a later tool call is already running.
-                    .mobiusRunningShimmer(active: isActive && !isExpanded)
+                .font(MobiusStyle.bodyFont)
+                .foregroundStyle(palette.muted)
+                .multilineTextAlignment(.leading)
+                .lineLimit(isExpanded ? nil : 1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .allowsHitTesting(false)
+                // The transcript owns which phase is current; an older reasoning stream
+                // can remain pending while a later tool call is already running.
+                .mobiusRunningShimmer(active: isActive && !isExpanded)
             }
             .frame(minHeight: MobiusStyle.rowCompact)
             .contentShape(Rectangle())
@@ -239,11 +239,12 @@ private struct ReasoningLine: View {
     private var summary: AttributedString {
         let lineEnd = entry.text.firstIndex(of: "\n") ?? entry.text.endIndex
         let line = entry.text[..<lineEnd]
-        let end = line.index(
-            line.startIndex,
-            offsetBy: Self.summaryCharacterLimit,
-            limitedBy: line.endIndex
-        ) ?? line.endIndex
+        let end =
+            line.index(
+                line.startIndex,
+                offsetBy: Self.summaryCharacterLimit,
+                limitedBy: line.endIndex
+            ) ?? line.endIndex
         let source = String(line[..<end])
         var summary = (try? AttributedString(markdown: source)) ?? AttributedString(source)
         if end != line.endIndex || lineEnd != entry.text.endIndex {
@@ -262,7 +263,8 @@ private struct TranscriptWaitingPhraseText: View {
     var body: some View {
         // The clock drives the rotation, so a transcript rebuild cannot restart it and the
         // message advances on its own schedule rather than on redraws.
-        TimelineView(.periodic(from: phrase.startedAt, by: TranscriptWaitingNote.rotation)) { context in
+        TimelineView(.periodic(from: phrase.startedAt, by: TranscriptWaitingNote.rotation)) {
+            context in
             let elapsed = reduceMotion ? 0 : context.date.timeIntervalSince(phrase.startedAt)
             Text(TranscriptWaitingNote.message(in: phrase.order, elapsed: elapsed))
                 .font(MobiusStyle.bodyFont)

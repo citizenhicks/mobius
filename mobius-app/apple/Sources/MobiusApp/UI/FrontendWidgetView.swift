@@ -117,7 +117,9 @@ struct FrontendWidgetContentView: View {
             }
         case .picker(_, let options):
             ForEach(options) { option in
-                Button { select(option) } label: {
+                Button {
+                    select(option)
+                } label: {
                     FrontendPickerOptionLabel(option: option)
                 }
                 .buttonStyle(.mobiusPlain)
@@ -177,7 +179,8 @@ private struct FrontendActionListRow: View {
                 .strikethrough(item.state == .completed, color: palette.muted)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
-                .frame(maxWidth: .infinity, minHeight: MobiusStyle.iconButtonSize, alignment: .leading)
+                .frame(
+                    maxWidth: .infinity, minHeight: MobiusStyle.iconButtonSize, alignment: .leading)
             if !item.actions.isEmpty, !usesSwipeActions {
                 Menu {
                     ForEach(item.actions) { action in
@@ -276,8 +279,11 @@ private struct FrontendActionListRow: View {
     }
 
     private func submit(_ operation: AgentOperation) {
-        if let submitOperation { submitOperation(operation) }
-        else { model.submitFrontendOperation(operation) }
+        if let submitOperation {
+            submitOperation(operation)
+        } else {
+            model.submitFrontendOperation(operation)
+        }
     }
 
     private var statusGlyph: MobiusGlyph? {
@@ -368,7 +374,8 @@ private struct FrontendPickerOptionLabel: View {
     var body: some View {
         HStack(spacing: MobiusSpace.s) {
             if let symbol = option.symbol,
-               let glyph = MobiusSymbol.knownGlyph(for: symbol) {
+                let glyph = MobiusSymbol.knownGlyph(for: symbol)
+            {
                 MobiusIcon(glyph, size: MobiusStyle.glyphInline, foreground: palette.accent)
             }
             Text(verbatim: option.label)
@@ -409,7 +416,8 @@ struct FrontendWidgetSheet: View {
                     )
                     DisabledCapabilityNotice(
                         title: "\(name) is off",
-                        detail: "Saved content remains visible. Enable \(name) in this chat to make changes."
+                        detail:
+                            "Saved content remains visible. Enable \(name) in this chat to make changes."
                     )
                 }
                 if let content = currentWidget?.widget.content {
@@ -451,7 +459,9 @@ struct FrontendPickerView: View {
                     Text(verbatim: picker.title)
                         .font(MobiusStyle.titleFont)
                     Spacer(minLength: MobiusSpace.s)
-                    Button { model.chat.pendingPicker = nil } label: {
+                    Button {
+                        model.chat.pendingPicker = nil
+                    } label: {
                         MobiusIcon(.x, size: MobiusStyle.glyphInline, foreground: palette.muted)
                             .frame(
                                 width: MobiusStyle.iconButtonSize,
@@ -467,7 +477,9 @@ struct FrontendPickerView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: MobiusSpace.m) {
                         ForEach(picker.options) { option in
-                            Button { model.submitPickerOption(option) } label: {
+                            Button {
+                                model.submitPickerOption(option)
+                            } label: {
                                 FrontendPickerOptionLabel(option: option)
                             }
                             .buttonStyle(.mobiusPlain)

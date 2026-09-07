@@ -41,8 +41,11 @@ struct StatusBanner: View {
 
     var body: some View {
         HStack(spacing: MobiusSpace.m) {
-            if progress { ProgressView().controlSize(.small) }
-            else { MobiusIcon(glyph, foreground: color) }
+            if progress {
+                ProgressView().controlSize(.small)
+            } else {
+                MobiusIcon(glyph, foreground: color)
+            }
             VStack(alignment: .leading, spacing: MobiusSpace.xs) {
                 title.text.font(MobiusStyle.controlFont)
                 detail.text.font(MobiusStyle.bodyFont).foregroundStyle(palette.muted)
@@ -52,8 +55,8 @@ struct StatusBanner: View {
                 Button(action: action.1) {
                     action.0.text
                 }
-                    .buttonStyle(.mobiusGlass)
-                    .buttonBorderShape(.capsule)
+                .buttonStyle(.mobiusGlass)
+                .buttonBorderShape(.capsule)
             }
         }
         .padding(MobiusSpace.m)

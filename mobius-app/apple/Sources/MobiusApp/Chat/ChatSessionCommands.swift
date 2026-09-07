@@ -12,14 +12,15 @@ extension ChatSessionModel {
         let id = requestID("input")
         let targetTurnID = activeTurnID
         let delivery = targetTurnID == nil ? nil : requestedDelivery
-        let operation = AgentOperation.message(MessageSubmission(
-            author: .user,
-            text: text,
-            attachments: attachments,
-            reply: reply,
-            requestedDelivery: delivery,
-            targetTurnId: targetTurnID
-        ))
+        let operation = AgentOperation.message(
+            MessageSubmission(
+                author: .user,
+                text: text,
+                attachments: attachments,
+                reply: reply,
+                requestedDelivery: delivery,
+                targetTurnId: targetTurnID
+            ))
         dismissComposerFocus()
         if pendingWidgetEdit?.recovery.phase == .editing {
             submitComposerEdit(
@@ -56,10 +57,12 @@ extension ChatSessionModel {
         suppressesComposerDraftSave = false
         composerReply = nil
         composerAttachments = []
-        gateway.transmit(.submit(
-            sessionID: sessionID,
-            submission: Submission(id: id, op: operation)
-        )) { [weak self] _ in
+        gateway.transmit(
+            .submit(
+                sessionID: sessionID,
+                submission: Submission(id: id, op: operation)
+            )
+        ) { [weak self] _ in
             guard let self else { return }
             self.restoreDraft(id: id)
             self.cancelChatTitle(submissionID: id, rearm: true)
@@ -75,9 +78,9 @@ extension ChatSessionModel {
         operation: AgentOperation
     ) {
         guard var pending = pendingWidgetEdit,
-              let accountID = gateway.selectedAccountID,
-              pending.owner == ComposerDraftOwner(accountID: accountID, sessionID: sessionID),
-              pending.recovery.phase == .editing
+            let accountID = gateway.selectedAccountID,
+            pending.owner == ComposerDraftOwner(accountID: accountID, sessionID: sessionID),
+            pending.recovery.phase == .editing
         else { return }
         pending.recovery.editedInput = text
         pending.recovery.requestID = requestID
@@ -86,11 +89,12 @@ extension ChatSessionModel {
         pendingWidgetEdit = pending
         composerDraftSaveTask?.cancel()
         composerDraftSaveTask = nil
-        enqueueComposerEditRecoverySave(pending.recovery, owner: pending.owner) { [weak self] result in
+        enqueueComposerEditRecoverySave(pending.recovery, owner: pending.owner) {
+            [weak self] result in
             guard let self,
-                  self.pendingWidgetEdit?.owner == pending.owner,
-                  self.pendingWidgetEdit?.recovery.requestID == requestID,
-                  self.pendingWidgetEdit?.recovery.phase == .submitting
+                self.pendingWidgetEdit?.owner == pending.owner,
+                self.pendingWidgetEdit?.recovery.requestID == requestID,
+                self.pendingWidgetEdit?.recovery.phase == .submitting
             else { return }
             if case .failure(let error) = result {
                 self.restoreComposerEditMode(requestID: requestID)
@@ -147,7 +151,8 @@ extension ChatSessionModel {
             guard let self else { return }
             if self.sessionMutationRequestID == id { self.sessionMutationRequestID = nil }
             if let generatedTitleSessionID,
-               self.pendingChatTitles[generatedTitleSessionID]?.renameRequestID == id {
+                self.pendingChatTitles[generatedTitleSessionID]?.renameRequestID == id
+            {
                 self.cancelChatTitle(generatedTitleSessionID)
             }
         }
@@ -158,20 +163,23 @@ extension ChatSessionModel {
         guard sessionMutationRequestID == nil else { return }
         let id = requestID("session-pin")
         sessionMutationRequestID = id
-        gateway.transmit(.setSessionPinned(
-            requestID: id,
-            sessionID: session.sessionId,
-            pinned: pinned
-        )) { [weak self] _ in
+        gateway.transmit(
+            .setSessionPinned(
+                requestID: id,
+                sessionID: session.sessionId,
+                pinned: pinned
+            )
+        ) { [weak self] _ in
             if self?.sessionMutationRequestID == id { self?.sessionMutationRequestID = nil }
         }
     }
 
     func openSession(_ sessionID: String) {
         guard canBrowseSessions || sessionID == selectedSessionID else { return }
-        guard gateway.connectionState.isReady || sessionID == selectedSessionID
-            || sessions.contains(where: { $0.sessionId == sessionID })
-            || botSessions.contains(where: { $0.sessionId == sessionID })
+        guard
+            gateway.connectionState.isReady || sessionID == selectedSessionID
+                || sessions.contains(where: { $0.sessionId == sessionID })
+                || botSessions.contains(where: { $0.sessionId == sessionID })
         else { return }
         markSessionRead(sessionID)
         guard sessionID != selectedSessionID else { return }
@@ -190,17 +198,18 @@ extension ChatSessionModel {
         let previous = transcriptIOTask
         transcriptIOTask = Task { [weak self, store] in
             await previous?.value
-            let cached: CachedTranscript? = if let accountID {
-                await store.loadTranscript(accountID: accountID, sessionID: sessionID)
-            } else {
-                nil
-            }
+            let cached: CachedTranscript? =
+                if let accountID {
+                    await store.loadTranscript(accountID: accountID, sessionID: sessionID)
+                } else {
+                    nil
+                }
             guard let self,
-                  generation == self.transcriptLoadGeneration,
-                  accountID == self.gateway.selectedAccountID,
-                  self.sessionOpeningID == sessionID,
-                  self.sessionRequestID == openRequestID,
-                  self.replayRequestID == nil
+                generation == self.transcriptLoadGeneration,
+                accountID == self.gateway.selectedAccountID,
+                self.sessionOpeningID == sessionID,
+                self.sessionRequestID == openRequestID,
+                self.replayRequestID == nil
             else { return }
             if wasReady {
                 self.requestSessionOpen(
@@ -222,9 +231,10 @@ extension ChatSessionModel {
     func presentCachedSession(_ sessionID: String, transcript cached: CachedTranscript?) {
         if selectedSessionID != sessionID {
             onDiscardFilePresentation?()
-            changeComposerDraftOwner(to: gateway.selectedAccountID.map {
-                ComposerDraftOwner(accountID: $0, sessionID: sessionID)
-            })
+            changeComposerDraftOwner(
+                to: gateway.selectedAccountID.map {
+                    ComposerDraftOwner(accountID: $0, sessionID: sessionID)
+                })
             resetSessionState()
         }
         selectedSessionID = sessionID
@@ -239,7 +249,7 @@ extension ChatSessionModel {
     func restoreSession(_ sessionID: String) {
         flushStreamDeltas()
         guard sessionID == selectedSessionID,
-              let sequence = latestSequence
+            let sequence = latestSequence
         else {
             requestSessionOpen(sessionID, lastSequence: nil)
             return
@@ -291,11 +301,13 @@ extension ChatSessionModel {
         let id = requestID ?? self.requestID("open")
         sessionRequestID = id
         gateway.connectionState = .loading
-        gateway.transmit(.openSession(
-            requestID: id,
-            sessionID: sessionID,
-            lastSequence: lastSequence
-        )) { [weak self] _ in
+        gateway.transmit(
+            .openSession(
+                requestID: id,
+                sessionID: sessionID,
+                lastSequence: lastSequence
+            )
+        ) { [weak self] _ in
             guard self?.sessionRequestID == id else { return }
             self?.sessionRequestID = nil
             self?.sessionOpeningID = nil

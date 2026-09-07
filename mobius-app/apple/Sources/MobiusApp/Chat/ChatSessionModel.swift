@@ -143,7 +143,8 @@ final class ChatSessionModel {
     @ObservationIgnored var approvalRequestID: String?
     @ObservationIgnored var sessionFilesRequestID: String?
     @ObservationIgnored var sessionFileUploadRequests: [String: SessionFileUploadRequest] = [:]
-    @ObservationIgnored var abandonedSessionFileUploadRequests: [String: RemovedComposerAttachment] = [:]
+    @ObservationIgnored var abandonedSessionFileUploadRequests:
+        [String: RemovedComposerAttachment] = [:]
     @ObservationIgnored var sessionFileDeleteRequests: [String: RemovedComposerAttachment] = [:]
     @ObservationIgnored var sessionFileData: [UUID: Data] = [:]
     @ObservationIgnored var activeSessionFileUpload: ActiveSessionFileUpload?
@@ -221,11 +222,11 @@ final class ChatSessionModel {
 
     func takePendingNewChatDraft(requestID: String?) async -> PendingComposerDraft? {
         guard let requestID,
-              let sessionID = selectedSessionID
+            let sessionID = selectedSessionID
         else { return nil }
         await composerDraftIOTask?.value
         guard gateway.connectionState.isReady,
-              selectedSessionID == sessionID
+            selectedSessionID == sessionID
         else { return nil }
         return pendingDrafts.removeValue(forKey: requestID)
     }
@@ -243,14 +244,15 @@ final class ChatSessionModel {
 
     var isLoadingTranscript: Bool {
         if !gateway.connectionState.isReady,
-           let selectedSessionID,
-           sessionToRestoreID == selectedSessionID,
-           latestSequence == nil,
-           transcript.isEmpty {
+            let selectedSessionID,
+            sessionToRestoreID == selectedSessionID,
+            latestSequence == nil,
+            transcript.isEmpty
+        {
             return true
         }
         guard gateway.connectionState == .loading,
-              sessionRequestID != nil || replayRequestID != nil
+            sessionRequestID != nil || replayRequestID != nil
         else { return false }
         let opensAnotherSessionWithoutCache =
             (sessionOpeningID.map { $0 != selectedSessionID } ?? false)
@@ -312,9 +314,9 @@ final class ChatSessionModel {
 
     func pinTranscriptWindowIfNeeded() {
         guard replayRequestID == nil,
-              historyRequestID == nil,
-              let cached = transcriptWindowCache,
-              cached.turnCount > 0
+            historyRequestID == nil,
+            let cached = transcriptWindowCache,
+            cached.turnCount > 0
         else { return }
         switch transcriptWindowAnchor {
         case .visibleTurns:
@@ -345,11 +347,11 @@ final class ChatSessionModel {
 
     func updateTranscriptWindow(after previous: [TranscriptEntry]) {
         guard transcriptMutationPreservesPrefix,
-              replayPresentedTranscript == nil,
-              case .visibleTurns = transcriptWindowAnchor,
-              let cached = transcriptWindowCache,
-              transcript.count > previous.count,
-              previous.isEmpty
+            replayPresentedTranscript == nil,
+            case .visibleTurns = transcriptWindowAnchor,
+            let cached = transcriptWindowCache,
+            transcript.count > previous.count,
+            previous.isEmpty
                 || (transcript.first === previous.first
                     && transcript[previous.count - 1] === previous.last)
         else {
@@ -380,10 +382,11 @@ final class ChatSessionModel {
     var transcriptWindow: TranscriptWindowCache {
         let source = pendingPresentedTranscript ?? replayPresentedTranscript ?? transcript
         if let transcriptWindowCache { return transcriptWindowCache }
-        let maximumTurns = switch transcriptWindowAnchor {
-        case .tail: transcriptTurnsPerPage
-        case .visibleTurns(let count): count
-        }
+        let maximumTurns =
+            switch transcriptWindowAnchor {
+            case .tail: transcriptTurnsPerPage
+            case .visibleTurns(let count): count
+            }
         let window = TranscriptProjection.turnWindow(from: source, maximumTurns: maximumTurns)
         let cached = TranscriptWindowCache(
             entries: window.entries,
@@ -461,12 +464,12 @@ final class ChatSessionModel {
 
     func cacheSelectedTranscript() {
         guard !isClearingLocalData,
-              let accountID = gateway.selectedAccountID,
-              let sessionID = selectedSessionID,
-              let latestSequence,
-              activeTurnID == nil,
-              pendingApproval == nil,
-              pendingWidgetEdit == nil
+            let accountID = gateway.selectedAccountID,
+            let sessionID = selectedSessionID,
+            let latestSequence,
+            activeTurnID == nil,
+            pendingApproval == nil,
+            pendingWidgetEdit == nil
         else { return }
         let snapshot = CachedTranscript(
             sequence: latestSequence,
@@ -482,16 +485,17 @@ final class ChatSessionModel {
 
     func decodeApproval(_ value: JSONValue) -> PendingApproval? {
         guard let id = value["id"]?.stringValue else { return nil }
-        let calls = value["calls"]?.arrayValue?.compactMap { call -> ApprovalCall? in
-            guard let callID = call["callId"]?.stringValue,
-                  let name = call["name"]?.stringValue
-            else { return nil }
-            return ApprovalCall(
-                id: callID,
-                name: name,
-                arguments: call["arguments"]?.prettyPrinted ?? "{}"
-            )
-        } ?? []
+        let calls =
+            value["calls"]?.arrayValue?.compactMap { call -> ApprovalCall? in
+                guard let callID = call["callId"]?.stringValue,
+                    let name = call["name"]?.stringValue
+                else { return nil }
+                return ApprovalCall(
+                    id: callID,
+                    name: name,
+                    arguments: call["arguments"]?.prettyPrinted ?? "{}"
+                )
+            } ?? []
         return PendingApproval(
             id: id,
             reason: value["reason"]?.stringValue ?? "möbius needs permission to continue.",
@@ -586,11 +590,13 @@ final class ChatSessionModel {
 
     private func saveSessionReadCursor(_ sessionID: String, unread: Bool) {
         guard let accountID = gateway.selectedAccountID,
-              let session = sessions.first(where: { $0.sessionId == sessionID })
+            let session = sessions.first(where: { $0.sessionId == sessionID })
         else { return }
-        let cursor = unread
+        let cursor =
+            unread
             ? SessionReadCursor(sequence: nil, wasActive: session.activity.state != .idle)
-            : SessionReadCursor(sequence: session.sequence, wasActive: session.activity.state != .idle)
+            : SessionReadCursor(
+                sequence: session.sequence, wasActive: session.activity.state != .idle)
         guard sessionReadCursors?[sessionID] != cursor else { return }
         var cursors = sessionReadCursors ?? [:]
         cursors[sessionID] = cursor
