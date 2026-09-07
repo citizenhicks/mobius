@@ -22,6 +22,8 @@ struct FailOnceStore {
 
 struct BlockingRetryStore {
     saves: AtomicUsize,
+    fail_at: Option<usize>,
+    block_at: Option<usize>,
     retry_started: Notify,
     release_retry: Notify,
 }
@@ -269,16 +271,17 @@ impl CheckpointStore for BlockingRetryStore {
         _value: &'a Value,
     ) -> BoxFuture<'a, Result<()>> {
         let save = self.saves.fetch_add(1, Ordering::SeqCst);
+        let fail = self.fail_at == Some(save);
+        let block = self.block_at == Some(save);
         Box::pin(async move {
-            match save {
-                1 => Err(Error::Checkpoint("forced state save failure".into())),
-                2 => {
-                    self.retry_started.notify_one();
-                    self.release_retry.notified().await;
-                    Ok(())
-                }
-                _ => Ok(()),
+            if fail {
+                return Err(Error::Checkpoint("forced state save failure".into()));
             }
+            if block {
+                self.retry_started.notify_one();
+                self.release_retry.notified().await;
+            }
+            Ok(())
         })
     }
 }
@@ -891,9 +894,186 @@ async fn remove_root_evicts_runtime_state() {
         .await
         .expect("initialize runtime");
 
-    shared.remove_root("root").await;
+    shared.remove_root("root").await.expect("remove root");
 
     assert!(shared.root("root").await.is_err());
+}
+
+#[tokio::test]
+async fn remove_root_persists_interrupted_children_before_eviction() {
+    let shared = test_shared();
+    let workspace = tempfile::tempdir().expect("workspace");
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
+        crate::backend::checkpoint::sqlite::SqliteCheckpoint::new(
+            workspace.path().join("checkpoints.sqlite3"),
+        )
+        .expect("checkpoint store"),
+    );
+    shared
+        .session_start(test_context(Arc::clone(&checkpoints), Arc::new(|_| Ok(()))))
+        .await
+        .expect("initialize runtime");
+    shared
+        .reserve(
+            "root",
+            "/root/child",
+            "/root",
+            "child".into(),
+            1,
+            test_presentation(),
+        )
+        .await
+        .expect("reserve child");
+
+    shared.remove_root("root").await.expect("remove root");
+
+    let state = checkpoints
+        .load_state("root", STATE_KEY)
+        .await
+        .expect("load persisted subagent state")
+        .expect("persisted subagent state");
+    assert_eq!(
+        state["agents"]["/root/child"]["status"],
+        serde_json::json!("interrupted")
+    );
+    assert!(state["agents"]["/root/child"]["active_turn_id"].is_null());
+    assert!(shared.root("root").await.is_err());
+}
+
+#[tokio::test]
+async fn stale_root_teardown_cannot_evict_a_reconnected_root() {
+    let shared = Arc::new(test_shared());
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(FailOnceStore {
+        fail_next_save: AtomicBool::new(false),
+        saved_state: StdMutex::new(None),
+    });
+    shared
+        .session_start(test_context(Arc::clone(&checkpoints), Arc::new(|_| Ok(()))))
+        .await
+        .expect("initialize runtime");
+    shared
+        .reserve(
+            "root",
+            "/root/child",
+            "/root",
+            "child".into(),
+            1,
+            test_presentation(),
+        )
+        .await
+        .expect("reserve child");
+
+    let old_root = shared.root("root").await.expect("old root");
+    let writer = old_root.writer.lock().await;
+    let mut removing = tokio::spawn({
+        let shared = Arc::clone(&shared);
+        async move { shared.remove_root("root").await }
+    });
+    tokio::task::yield_now().await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(10), &mut removing)
+            .await
+            .is_err(),
+        "teardown should wait for the old root writer"
+    );
+
+    assert!(shared.roots.lock().await.remove("root").is_some());
+    shared
+        .session_start(test_context(Arc::clone(&checkpoints), Arc::new(|_| Ok(()))))
+        .await
+        .expect("reinitialize runtime");
+    drop(writer);
+
+    removing
+        .await
+        .expect("teardown task")
+        .expect("remove old root");
+    assert!(shared.root("root").await.is_ok());
+}
+
+#[tokio::test]
+async fn detached_root_mutation_cannot_persist_after_root_eviction() {
+    let shared = Arc::new(test_shared());
+    let store = Arc::new(BlockingRetryStore {
+        saves: AtomicUsize::new(0),
+        fail_at: None,
+        block_at: Some(2),
+        retry_started: Notify::new(),
+        release_retry: Notify::new(),
+    });
+    let checkpoints: Arc<dyn CheckpointStore> = store.clone();
+    shared
+        .session_start(test_context(Arc::clone(&checkpoints), Arc::new(|_| Ok(()))))
+        .await
+        .expect("initialize runtime");
+    shared
+        .reserve(
+            "root",
+            "/root/child",
+            "/root",
+            "child".into(),
+            1,
+            test_presentation(),
+        )
+        .await
+        .expect("reserve child");
+
+    let old_root = shared.root("root").await.expect("old root");
+    let writer = old_root.writer.lock().await;
+    let removing = {
+        let shared = Arc::clone(&shared);
+        tokio::spawn(async move { shared.remove_root("root").await })
+    };
+    tokio::task::yield_now().await;
+    let stale_mutation = {
+        let shared = Arc::clone(&shared);
+        let old_root = Arc::clone(&old_root);
+        tokio::spawn(async move {
+            let _writer = old_root.writer.lock().await;
+            shared
+                .commit_locked_root(
+                    "root",
+                    &old_root,
+                    |root| {
+                        root.tree.agents.insert(
+                            "/root/racing".into(),
+                            AgentRecord {
+                                parent: "/root".into(),
+                                session_id: "racing".into(),
+                                depth: 1,
+                                model: "test".into(),
+                                spawn_context: String::new(),
+                                active_turn_id: None,
+                                status: AgentStatus::PendingInit,
+                                last_message: None,
+                            },
+                        );
+                        Ok(Stage::Changed(()))
+                    },
+                    OnPersistFailure::Abort,
+                )
+                .await
+        })
+    };
+    tokio::task::yield_now().await;
+    drop(writer);
+
+    removing.await.expect("teardown task").expect("remove root");
+    shared
+        .session_start(test_context(Arc::clone(&checkpoints), Arc::new(|_| Ok(()))))
+        .await
+        .expect("reinitialize runtime");
+
+    let racing = tokio::time::timeout(Duration::from_millis(100), stale_mutation).await;
+    assert!(
+        racing.is_ok(),
+        "detached mutation should not block on persistence"
+    );
+    assert!(matches!(
+        racing.expect("reserve timeout").expect("reserve task"),
+        Err(Error::Unknown(_))
+    ));
+    assert!(shared.root("root").await.is_ok());
 }
 
 #[tokio::test]
@@ -981,6 +1161,8 @@ async fn terminal_persist_failure_notifies_after_the_retry_commits() {
     let shared = Arc::new(test_shared());
     let store = Arc::new(BlockingRetryStore {
         saves: AtomicUsize::new(0),
+        fail_at: Some(1),
+        block_at: Some(2),
         retry_started: Notify::new(),
         release_retry: Notify::new(),
     });

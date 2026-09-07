@@ -50,6 +50,7 @@ struct HostState {
     terminated: Arc<AtomicBool>,
     termination: Arc<tokio::sync::Notify>,
     session_mutations: Arc<RwLock<()>>,
+    discovery_gate: Arc<Mutex<()>>,
     provider_epoch: Arc<AtomicU64>,
     activities: SessionActivities,
     running: RunningAgent,
@@ -197,6 +198,7 @@ pub(super) enum HostCommand {
     StopIfIdle {
         reply: oneshot::Sender<bool>,
     },
+    Shutdown,
 }
 
 enum Next {
@@ -237,6 +239,7 @@ impl HostHandle {
         session_files: SessionFileStore,
         swarm: Arc<SwarmStore>,
         session_mutations: Arc<RwLock<()>>,
+        discovery_gate: Arc<Mutex<()>>,
         provider_epoch: Arc<AtomicU64>,
         activities: SessionActivities,
         gateway_events: broadcast::Sender<ServerFrame>,
@@ -252,6 +255,7 @@ impl HostHandle {
             scratchpad.clone(),
             session_files.clone(),
             Arc::clone(&swarm),
+            Arc::clone(&discovery_gate),
             session_id.clone(),
             origin_label,
             true,
@@ -286,6 +290,7 @@ impl HostHandle {
             scratchpad,
             session_files,
             swarm,
+            discovery_gate,
             accepts_file_attachments: Arc::clone(&accepts_file_attachments),
             alive: Arc::clone(&alive),
             terminated: Arc::clone(&terminated),
@@ -585,6 +590,11 @@ impl HostHandle {
         stopped
     }
 
+    pub(super) async fn shutdown(&self) {
+        let _ = self.send(HostCommand::Shutdown).await;
+        self.wait_terminated().await;
+    }
+
     pub(crate) async fn wait_terminated(&self) {
         while !self.inner.terminated.load(Ordering::Acquire) {
             let terminated = self.inner.termination.notified();
@@ -678,6 +688,7 @@ async fn start_agent(
     scratchpad: ScratchpadStore,
     session_files: SessionFileStore,
     swarm: Arc<SwarmStore>,
+    discovery_gate: Arc<Mutex<()>>,
     session_id: String,
     origin_label: &str,
     override_saved_model_route: bool,
@@ -703,6 +714,7 @@ async fn start_agent(
         checkpoints,
         scratchpad,
         session_files,
+        discovery_gate,
         swarm,
         Some(session_id),
         origin_label,

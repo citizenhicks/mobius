@@ -471,6 +471,19 @@ fn retryable_response_error(code: Option<&str>, message: &str) -> bool {
         && message.contains("retry your request"))
 }
 
-fn socket_error(error: impl std::fmt::Display) -> Error {
-    Error::Provider(format!("WebSocket: {error}").into())
+fn socket_error(error: WebSocketError) -> Error {
+    let kind = match error {
+        WebSocketError::ConnectionClosed | WebSocketError::AlreadyClosed => "closed",
+        WebSocketError::Io(_) => "I/O",
+        WebSocketError::Tls(_) => "TLS",
+        WebSocketError::Capacity(_) => "capacity",
+        WebSocketError::Protocol(_) => "protocol",
+        WebSocketError::WriteBufferFull(_) => "write buffer",
+        WebSocketError::Utf8(_) => "UTF-8",
+        WebSocketError::AttackAttempt => "attack rejected",
+        WebSocketError::Url(_) => "URL",
+        WebSocketError::Http(_) => "HTTP handshake",
+        WebSocketError::HttpFormat(_) => "HTTP format",
+    };
+    Error::Provider(format!("WebSocket {kind} failure").into())
 }

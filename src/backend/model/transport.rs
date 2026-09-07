@@ -62,40 +62,59 @@ pub(super) fn account_stream_bytes(total: &mut usize, added: usize, provider: &s
     Ok(())
 }
 
-pub(super) fn push_sse_chunk(
-    buffer: &mut Vec<u8>,
-    total: &mut usize,
-    chunk: &[u8],
-    provider: &str,
-) -> Result<()> {
-    account_stream_bytes(total, chunk.len(), provider)?;
-    buffer.extend_from_slice(chunk);
-    Ok(())
+#[derive(Default)]
+pub(super) struct SseDecoder {
+    bytes: Vec<u8>,
+    frame_start: usize,
+    scan: usize,
+    total: usize,
 }
 
-pub(super) fn take_sse_frame(bytes: &mut Vec<u8>) -> Result<Option<String>> {
-    let separators = [b"\r\n\r\n".as_slice(), b"\n\n".as_slice()];
-    let Some((index, width)) = separators
-        .iter()
-        .filter_map(|separator| {
-            bytes
-                .windows(separator.len())
-                .position(|window| window == *separator)
-                .map(|index| (index, separator.len()))
-        })
-        .min_by_key(|(index, _)| *index)
-    else {
-        return Ok(None);
-    };
-    if index > MAX_SSE_FRAME_BYTES {
-        return Err(Error::Provider("SSE frame exceeded size limit".into()));
+impl SseDecoder {
+    pub(super) fn push(&mut self, chunk: &[u8], provider: &str) -> Result<()> {
+        account_stream_bytes(&mut self.total, chunk.len(), provider)?;
+        self.bytes.extend_from_slice(chunk);
+        Ok(())
     }
-    let rest = bytes.split_off(index + width);
-    let mut frame = std::mem::replace(bytes, rest);
-    frame.truncate(index);
-    String::from_utf8(frame)
-        .map(Some)
-        .map_err(|error| Error::Provider(format!("invalid SSE UTF-8: {error}").into()))
+
+    pub(super) fn next_frame(&mut self) -> Result<Option<&str>> {
+        self.compact();
+        let start = self.frame_start;
+        let mut index = self.scan.max(start);
+        while index < self.bytes.len() {
+            let width = if self.bytes[index..].starts_with(b"\r\n\r\n") {
+                4
+            } else if self.bytes[index..].starts_with(b"\n\n") {
+                2
+            } else {
+                index += 1;
+                continue;
+            };
+            if index - start > MAX_SSE_FRAME_BYTES {
+                return Err(Error::Provider("SSE frame exceeded size limit".into()));
+            }
+            self.frame_start = index + width;
+            self.scan = self.frame_start;
+            return std::str::from_utf8(&self.bytes[start..index])
+                .map(Some)
+                .map_err(|error| Error::Provider(format!("invalid SSE UTF-8: {error}").into()));
+        }
+        self.scan = self.bytes.len().saturating_sub(3).max(start);
+        if self.bytes.len() - start > MAX_SSE_FRAME_BYTES {
+            return Err(Error::Provider("SSE frame exceeded size limit".into()));
+        }
+        Ok(None)
+    }
+
+    fn compact(&mut self) {
+        let remaining = self.bytes.len() - self.frame_start;
+        if self.frame_start == 0 || self.frame_start < remaining {
+            return;
+        }
+        self.bytes.drain(..self.frame_start);
+        self.scan -= self.frame_start;
+        self.frame_start = 0;
+    }
 }
 
 pub(super) fn frame_data(frame: &str) -> Option<String> {
@@ -164,22 +183,70 @@ mod tests {
     use tokio::net::TcpListener;
 
     #[test]
-    fn sse_framing_handles_crlf_and_multiline_data_without_copying_the_remainder() {
-        let mut bytes = b"event: message\r\ndata: one\r\ndata: two\r\n\r\ndata: next\n\n".to_vec();
+    fn sse_framing_handles_crlf_and_multiline_data() {
+        let mut decoder = SseDecoder::default();
+        decoder
+            .push(
+                b"event: message\r\ndata: one\r\ndata: two\r\n\r\ndata: next\n\n",
+                "test",
+            )
+            .expect("valid chunk");
 
-        let first = take_sse_frame(&mut bytes)
+        let first = decoder
+            .next_frame()
             .expect("valid frame")
             .expect("first frame");
-        assert_eq!(frame_data(&first).as_deref(), Some("one\ntwo"));
+        assert_eq!(frame_data(first).as_deref(), Some("one\ntwo"));
         assert_eq!(
             frame_data(
-                &take_sse_frame(&mut bytes)
+                decoder
+                    .next_frame()
                     .expect("valid frame")
                     .expect("second frame")
             )
             .as_deref(),
             Some("next")
         );
+    }
+
+    #[test]
+    fn sse_framing_handles_one_byte_chunks_and_fragmented_utf8() {
+        let input = "data: héllo\r\n\r\ndata: [DONE]\n\n".as_bytes();
+        let mut decoder = SseDecoder::default();
+        for chunk in input.chunks(1) {
+            decoder.push(chunk, "test").expect("valid chunk");
+        }
+
+        assert_eq!(
+            frame_data(
+                decoder
+                    .next_frame()
+                    .expect("valid frame")
+                    .expect("UTF-8 frame")
+            )
+            .as_deref(),
+            Some("héllo")
+        );
+        assert_eq!(
+            frame_data(
+                decoder
+                    .next_frame()
+                    .expect("valid frame")
+                    .expect("DONE frame")
+            )
+            .as_deref(),
+            Some("[DONE]")
+        );
+        assert!(decoder.next_frame().expect("EOF").is_none());
+    }
+
+    #[test]
+    fn sse_framing_rejects_unterminated_frames_over_the_limit() {
+        let mut decoder = SseDecoder::default();
+        let bytes = vec![b'x'; MAX_SSE_FRAME_BYTES + 1];
+        decoder.push(&bytes, "test").expect("stream limit");
+
+        assert!(decoder.next_frame().is_err());
     }
 
     #[test]
@@ -190,11 +257,13 @@ mod tests {
 
     #[test]
     fn aggregate_stream_limit_counts_frames_without_data() {
-        let mut bytes = Vec::new();
-        let mut total = MAX_STREAM_BYTES;
+        let mut decoder = SseDecoder {
+            total: MAX_STREAM_BYTES,
+            ..SseDecoder::default()
+        };
 
-        assert!(push_sse_chunk(&mut bytes, &mut total, b": keep-alive\n\n", "test").is_err());
-        assert!(bytes.is_empty());
+        assert!(decoder.push(b": keep-alive\n\n", "test").is_err());
+        assert!(decoder.bytes.is_empty());
     }
 
     #[tokio::test]

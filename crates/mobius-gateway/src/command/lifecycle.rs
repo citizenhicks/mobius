@@ -191,7 +191,10 @@ pub async fn ensure_background_gateway(_state_dir: PathBuf) -> Result<()> {
 
 #[cfg(unix)]
 pub(super) async fn stop_background_child(child: &mut Child, process_path: &Path) {
-    let _ = child.kill().await;
+    if let Some(pid) = child.id() {
+        terminate_process_group(pid);
+    }
+    let _ = child.wait().await;
     remove_unlocked_process_record(process_path);
 }
 

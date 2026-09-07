@@ -211,6 +211,7 @@ impl GatewayServer {
             ));
         }
         let mut connections = JoinSet::new();
+        let mut routine_dispatchers = JoinSet::new();
         let connection_admission =
             ConnectionAdmission::new(MAX_PRE_AUTH_CONNECTIONS, MAX_AUTHENTICATED_CONNECTIONS);
         let client_connections = Arc::new(ClientConnections::default());
@@ -221,10 +222,11 @@ impl GatewayServer {
         let mut routine_timer = tokio::time::interval(ROUTINE_TICK);
         routine_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         tokio::pin!(shutdown);
-        loop {
+        let result = async {
+            loop {
             tokio::select! {
                 biased;
-                () = &mut shutdown => return Ok(()),
+                () = &mut shutdown => break Ok(()),
                 _ = routine_timer.tick() => {
                     let now = Utc::now().timestamp();
                     let routines_active = self.bots.has_active_routines(now)?;
@@ -235,7 +237,7 @@ impl GatewayServer {
                     let due = self.bots.take_due(now)?;
                     if !due.is_empty() {
                         let host = self.host.clone();
-                        tokio::spawn(async move {
+                        routine_dispatchers.spawn(async move {
                             for (routine_id, run) in due {
                                 if let Err(error) = host.run_due_routine(routine_id.clone(), run).await {
                                     eprintln!(
@@ -256,6 +258,7 @@ impl GatewayServer {
                         }
                     }
                 }
+                Some(_) = routine_dispatchers.join_next(), if !routine_dispatchers.is_empty() => {}
                 accepted = async {
                     let admission = connection_admission.admit().await;
                     self.listener.accept().await.map(|accepted| (accepted, admission))
@@ -278,20 +281,26 @@ impl GatewayServer {
                             client_revocations,
                             admission,
                         };
-                        if let Some(tls) = tls {
-                            if let Ok(Ok(stream)) =
-                                tokio::time::timeout_at(auth_deadline, tls.accept(stream)).await
+                        let result = if let Some(tls) = tls {
+                            let stream = match tokio::time::timeout_at(
+                                auth_deadline,
+                                tls.accept(stream),
+                            )
+                            .await
                             {
-                                let _ = serve_connection(
-                                    stream,
-                                    connection,
-                                    auth_deadline,
-                                    None,
-                                )
-                                .await;
-                            }
+                                Ok(Ok(stream)) => stream,
+                                Ok(Err(error)) => {
+                                    eprintln!("gateway TLS handshake failed: {:?}", error.kind());
+                                    return;
+                                }
+                                Err(_) => {
+                                    eprintln!("gateway TLS handshake timed out");
+                                    return;
+                                }
+                            };
+                            serve_connection(stream, connection, auth_deadline, None).await
                         } else {
-                            let _ = serve_plaintext_connection(
+                            serve_plaintext_connection(
                                 stream,
                                 connection,
                                 PlaintextHandshake {
@@ -299,18 +308,27 @@ impl GatewayServer {
                                     auth_deadline,
                                 },
                             )
-                            .await;
+                            .await
+                        };
+                        if let Err(error) = result {
+                            eprintln!("gateway connection failed: {}", connection_diagnostic(&error));
                         }
                     });
                 }
                 () = &mut inactivity, if connections.is_empty() && !has_active_routines => {
                     has_active_routines = self.bots.has_active_routines(Utc::now().timestamp())?;
                     if !has_active_routines {
-                        return Ok(());
+                        break Ok(());
                     }
                 }
             }
+            }
         }
+        .await;
+        connections.shutdown().await;
+        while routine_dispatchers.join_next().await.is_some() {}
+        self.host.shutdown().await;
+        result
     }
 
     fn configured_websocket_host(&self) -> Result<Option<String>> {

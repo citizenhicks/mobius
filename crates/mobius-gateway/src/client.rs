@@ -129,7 +129,9 @@ impl Endpoint {
         let stream = TlsConnector::from(Arc::new(config))
             .connect(name, stream)
             .await
-            .map_err(|error| Error::Protocol(format!("TLS handshake failed: {error}")))?;
+            .map_err(|error| {
+                Error::Protocol(format!("TLS handshake failed: {:?}", error.kind()))
+            })?;
         Ok(Box::new(stream))
     }
 

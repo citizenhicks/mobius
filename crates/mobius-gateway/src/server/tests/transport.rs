@@ -1,5 +1,25 @@
 use super::*;
 
+#[test]
+fn connection_diagnostics_do_not_render_peer_controlled_errors() {
+    let details = "private-peer-data";
+    let json_error = serde_json::from_value::<u64>(serde_json::json!(details))
+        .expect_err("invalid request field");
+    for (error, expected) in [
+        (Error::Protocol(details.into()), "protocol"),
+        (Error::Json(json_error), "JSON Data at 0:0"),
+        (
+            Error::Io(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                details,
+            )),
+            "I/O ConnectionReset",
+        ),
+    ] {
+        assert_eq!(connection_diagnostic(&error), expected);
+    }
+}
+
 async fn next_websocket_frame(websocket: &mut WebSocketStream<TcpStream>) -> ServerFrame {
     let Message::Binary(payload) = websocket
         .next()
@@ -188,9 +208,12 @@ async fn websocket_preserves_a_pipelined_bulk_frame_across_authentication() {
     }))
     .expect("encode pair frame");
     append_masked_binary_frame(&mut pipelined, &pairing);
-    let request_id = "x".repeat(MAX_PRE_AUTH_FRAME_BYTES + 1);
-    let post_auth = serde_json::to_vec(&ClientFrame::new(ClientMessage::ListSessions {
-        request_id: request_id.clone(),
+    let request_id = "post-auth-list";
+    let post_auth = serde_json::to_vec(&serde_json::json!({
+        "version": crate::wire::PROTOCOL_VERSION,
+        "type": "list_sessions",
+        "request_id": request_id,
+        "padding": "x".repeat(MAX_PRE_AUTH_FRAME_BYTES + 1),
     }))
     .expect("encode post-auth frame");
     assert!(post_auth.len() > MAX_PRE_AUTH_FRAME_BYTES);

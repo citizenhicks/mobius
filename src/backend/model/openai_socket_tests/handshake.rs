@@ -82,6 +82,20 @@ async fn not_found_handshake_rejection_does_not_trigger_http_fallback() {
     assert!(!error.is_stream_interrupted());
 }
 
+#[tokio::test]
+async fn malformed_socket_url_diagnostic_does_not_echo_the_url() {
+    let auth = ApiKeyAuthorization::new("test-key".into());
+    let error = match connect(&auth, "ws://secret.example/[", "session").await {
+        Ok(connection) => {
+            connection.close().await;
+            panic!("malformed URL unexpectedly connected");
+        }
+        Err(error) => error,
+    };
+
+    assert!(!error.to_string().contains("secret.example"));
+}
+
 struct RefreshingAuthorization {
     token: Mutex<String>,
     authorizations: Mutex<Vec<String>>,

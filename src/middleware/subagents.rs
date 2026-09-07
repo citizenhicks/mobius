@@ -713,7 +713,7 @@ impl Middleware for Subagents {
         Box::pin(async move {
             let identity = AgentIdentity::read(&runtime.session_id, &runtime.metadata)?;
             if matches!(runtime.role, AgentRole::Main) && identity.depth == 0 {
-                self.shared.remove_root(&identity.root_session_id).await;
+                self.shared.remove_root(&identity.root_session_id).await?;
             } else {
                 self.shared
                     .remove_sender(&identity.root_session_id, &identity.agent_path)

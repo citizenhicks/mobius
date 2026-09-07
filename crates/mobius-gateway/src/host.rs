@@ -30,6 +30,7 @@ use mobius::protocol::{
     MessageSubmission, ModelStepContentPhase, Op, RenderedBlock, ReviewDecision, Submission,
 };
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc, oneshot};
+use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::assembly::{BuiltAgent, assemble};
@@ -123,10 +124,13 @@ struct GatewayState {
     catalog_lock: Arc<Mutex<()>>,
     session_mutations: Arc<RwLock<()>>,
     extension_mutations: Arc<Mutex<()>>,
+    discovery_gate: Arc<Mutex<()>>,
     provider_epoch: Arc<AtomicU64>,
     activities: SessionActivities,
     provider_login: Arc<StdMutex<providers::ProviderLogins>>,
     sessions: HashMap<String, HostHandle>,
+    idle_cleanup_tasks: Vec<JoinHandle<()>>,
+    swarm_delivery_task: Option<JoinHandle<()>>,
 }
 
 pub(crate) struct HostSnapshot {
@@ -168,8 +172,13 @@ impl GatewayHost {
             crate::middleware_manifest::validate_choices(&bot.config.config.middleware, &models)?;
             extensions.resolve(&config, &bot.config.config.extensions)?;
         }
-        let contributions =
-            vec![mobius::middleware::extensions::Extensions::discover_installed([])?.frontend()];
+        let discovery_gate = Arc::new(Mutex::new(()));
+        let contributions = crate::assembly::run_discovery(Arc::clone(&discovery_gate), || {
+            Ok(vec![
+                mobius::middleware::extensions::Extensions::discover_installed([])?.frontend(),
+            ])
+        })
+        .await?;
         let checkpoints: Arc<dyn CheckpointStore> =
             Arc::new(SqliteCheckpoint::new(store.checkpoints_path())?);
         let scratchpad = ScratchpadStore::new(Arc::clone(&checkpoints));
@@ -197,18 +206,52 @@ impl GatewayHost {
                 catalog_lock: Arc::new(Mutex::new(())),
                 session_mutations: Arc::new(RwLock::new(())),
                 extension_mutations: Arc::new(Mutex::new(())),
+                discovery_gate,
                 provider_epoch: Arc::new(AtomicU64::new(0)),
                 activities,
                 provider_login: Arc::new(StdMutex::new(providers::ProviderLogins::default())),
                 sessions: HashMap::new(),
+                idle_cleanup_tasks: Vec::new(),
+                swarm_delivery_task: None,
             })),
             events,
         };
         host.reconcile_pending_bot_deletion()
             .await
             .map_err(|rejection| Error::Config(rejection.message))?;
-        host.spawn_swarm_deliveries(deliveries);
+        let swarm_delivery_task = host.spawn_swarm_deliveries(deliveries);
+        host.state.lock().await.swarm_delivery_task = Some(swarm_delivery_task);
         Ok(host)
+    }
+
+    pub(crate) async fn shutdown(&self) {
+        let (swarm_delivery_task, cleanup_tasks) = {
+            let mut state = self.state.lock().await;
+            (
+                state.swarm_delivery_task.take(),
+                std::mem::take(&mut state.idle_cleanup_tasks),
+            )
+        };
+        if let Some(task) = swarm_delivery_task {
+            task.abort();
+            let _ = task.await;
+        }
+        for task in cleanup_tasks {
+            task.abort();
+            let _ = task.await;
+        }
+
+        let residents = {
+            let mut state = self.state.lock().await;
+            state
+                .sessions
+                .drain()
+                .map(|(_, host)| host)
+                .collect::<Vec<_>>()
+        };
+        for host in residents {
+            host.shutdown().await;
+        }
     }
 
     pub(crate) async fn reconcile_pending_bot_deletion(
@@ -811,6 +854,7 @@ impl GatewayHost {
             state.session_files.clone(),
             state.swarm.clone(),
             Arc::clone(&state.session_mutations),
+            Arc::clone(&state.discovery_gate),
             Arc::clone(&state.provider_epoch),
             Arc::clone(&state.activities),
             self.events.clone(),
@@ -919,6 +963,7 @@ impl GatewayHost {
             state.session_files.clone(),
             state.swarm.clone(),
             Arc::clone(&state.session_mutations),
+            Arc::clone(&state.discovery_gate),
             Arc::clone(&state.provider_epoch),
             Arc::clone(&state.activities),
             self.events.clone(),
@@ -933,7 +978,10 @@ impl GatewayHost {
         Ok((host, !cache))
     }
 
-    fn spawn_swarm_deliveries(&self, mut deliveries: mpsc::UnboundedReceiver<SwarmDelivery>) {
+    fn spawn_swarm_deliveries(
+        &self,
+        mut deliveries: mpsc::UnboundedReceiver<SwarmDelivery>,
+    ) -> JoinHandle<()> {
         let state = Arc::downgrade(&self.state);
         let events = self.events.clone();
         tokio::spawn(async move {
@@ -978,7 +1026,7 @@ impl GatewayHost {
                 };
                 gateway.handle_swarm_delivery(delivery, &mut attempts).await;
             }
-        });
+        })
     }
 
     async fn handle_swarm_delivery(
@@ -1634,6 +1682,7 @@ impl GatewayHost {
             state.session_files.clone(),
             state.swarm.clone(),
             Arc::clone(&state.session_mutations),
+            Arc::clone(&state.discovery_gate),
             Arc::clone(&state.provider_epoch),
             Arc::clone(&state.activities),
             self.events.clone(),
@@ -1665,11 +1714,14 @@ impl GatewayHost {
             Ok(()) => {
                 let broadcast = self.broadcast_sessions().await;
                 let gateway = self.clone();
-                tokio::spawn(async move {
+                let cleanup = tokio::spawn(async move {
                     host.wait_idle().await;
                     gateway.state.lock().await.sessions.remove(&session_id);
                     let _ = gateway.broadcast_sessions().await;
                 });
+                let mut state = self.state.lock().await;
+                state.idle_cleanup_tasks.retain(|task| !task.is_finished());
+                state.idle_cleanup_tasks.push(cleanup);
                 broadcast
             }
             Err(rejection) => {

@@ -472,6 +472,76 @@ async fn public_and_codex_calls_use_authenticated_sideband_and_hang_up_on_drop()
 }
 
 #[tokio::test]
+async fn sideband_event_backpressure_preserves_order_and_terminal_errors() {
+    let (transport, listener) = transport(VoiceApi::OpenAi).await;
+    let (sent, sent_signal) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut http, _) = listener.accept().await.unwrap();
+        read_request(&mut http).await;
+        respond(
+            &mut http,
+            "201 Created",
+            "Location: /v1/realtime/calls/rtc_test\r\n",
+            SDP,
+        )
+        .await;
+        drop(http);
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut socket =
+            tokio_tungstenite::accept_hdr_async(socket, InspectUpgrade(VoiceApi::OpenAi))
+                .await
+                .unwrap();
+        for n in 0..17 {
+            let mut event = transcript();
+            event["item_id"] = format!("i{n}").into();
+            socket.send(Message::text(event.to_string())).await.unwrap();
+        }
+        sent.send(()).unwrap();
+        drop(socket);
+        let (mut http, _) = listener.accept().await.unwrap();
+        let (headers, body) = read_request(&mut http).await;
+        assert!(headers.starts_with("post /v1/realtime/calls/rtc_test/hangup "));
+        assert!(body.is_empty());
+        respond(&mut http, "200 OK", "", "").await;
+    });
+
+    let mut call = transport.start(request()).await.unwrap();
+    sent_signal.await.unwrap();
+    timeout(Duration::from_secs(2), async {
+        while call.events.capacity() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    for n in 0..17 {
+        assert_eq!(
+            timeout(Duration::from_secs(2), call.events.recv())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+            RealtimeVoiceEvent::Transcript {
+                id: format!("i{n}"),
+                role: crate::protocol::ConversationRole::User,
+                text: "Fix the actual bug, please.".into(),
+                complete: true,
+            }
+        );
+    }
+    let _error = timeout(Duration::from_secs(2), call.events.recv())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    drop(call);
+    timeout(Duration::from_secs(2), server)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
 async fn unauthorized_refresh_is_reused_and_access_rejection_is_preserved() {
     let (transport, listener) = transport(VoiceApi::Codex).await;
     let server = tokio::spawn(async move {

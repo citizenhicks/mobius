@@ -1,6 +1,46 @@
 //! Recorder agent runtime tests.
 
 use super::*;
+use crate::agent::recorder::{RECORDER_COMMAND_CAPACITY, RECORDER_EVENT_BYTE_BUDGET};
+use tokio::sync::Notify;
+
+struct RetainingModel {
+    sink: Arc<Mutex<Option<ModelEventSink>>>,
+}
+
+struct BlockingRetainingModel {
+    sink: Arc<Mutex<Option<ModelEventSink>>>,
+    started: Arc<Notify>,
+    release: Arc<Notify>,
+}
+
+impl Model for RetainingModel {
+    fn respond<'a>(
+        &'a self,
+        _request: ModelRequest<'a>,
+        events: ModelEventSink,
+    ) -> BoxFuture<'a, Result<ModelOutput>> {
+        *self.sink.lock().expect("retained sink lock") = Some(events);
+        Box::pin(async { Ok(scripted_message("done")) })
+    }
+}
+
+impl Model for BlockingRetainingModel {
+    fn respond<'a>(
+        &'a self,
+        _request: ModelRequest<'a>,
+        events: ModelEventSink,
+    ) -> BoxFuture<'a, Result<ModelOutput>> {
+        *self.sink.lock().expect("retained sink lock") = Some(events);
+        let started = Arc::clone(&self.started);
+        let release = Arc::clone(&self.release);
+        Box::pin(async move {
+            started.notify_one();
+            release.notified().await;
+            Ok(scripted_message("done"))
+        })
+    }
+}
 
 fn test_checkpoint(session_id: &str) -> Checkpoint {
     let mut checkpoint = Checkpoint::empty(session_id);
@@ -214,6 +254,193 @@ async fn recorder_accepts_a_synchronous_provider_burst() {
         .expect("event page");
 
     assert_eq!(page.events.len(), event_count);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn recorder_rejects_command_saturation_without_dropping_accepted_events() {
+    let directory = tempfile::tempdir().expect("checkpoint directory");
+    let checkpoints = Arc::new(
+        SqliteCheckpoint::new(directory.path().join("checkpoints.sqlite3"))
+            .expect("checkpoint store"),
+    );
+    checkpoints
+        .save(&test_checkpoint("session"), &[], None)
+        .await
+        .expect("initial checkpoint");
+    let store: Arc<dyn CheckpointStore> = checkpoints;
+    let (events, mut receiver) = EventRecorder::spawn(store, "session".into());
+    let mut accepted = 0;
+    let error = loop {
+        match try_send_event(
+            &events,
+            Event {
+                submission_id: None,
+                msg: EventMsg::Warning(WarningEvent {
+                    message: accepted.to_string(),
+                }),
+            },
+        ) {
+            Ok(()) => accepted += 1,
+            Err(error) => break error,
+        }
+    };
+
+    assert_eq!(accepted, RECORDER_COMMAND_CAPACITY);
+    assert_eq!(
+        error.to_string(),
+        "agent stopped: event recorder queue is full"
+    );
+
+    let drain = tokio::spawn(async move {
+        for _ in 0..accepted {
+            receiver.recv().await.expect("accepted event");
+        }
+    });
+    events.flush().await.expect("flush accepted events");
+    drain.await.expect("drain accepted events");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn recorder_rejects_event_byte_saturation_without_dropping_accepted_events() {
+    let directory = tempfile::tempdir().expect("checkpoint directory");
+    let checkpoints = Arc::new(
+        SqliteCheckpoint::new(directory.path().join("checkpoints.sqlite3"))
+            .expect("checkpoint store"),
+    );
+    checkpoints
+        .save(&test_checkpoint("session"), &[], None)
+        .await
+        .expect("initial checkpoint");
+    let store: Arc<dyn CheckpointStore> = checkpoints;
+    let (events, mut receiver) = EventRecorder::spawn(store, "session".into());
+    let message = "x".repeat(RECORDER_EVENT_BYTE_BUDGET / 3);
+    let mut accepted = 0;
+    let error = loop {
+        match try_send_event(
+            &events,
+            Event {
+                submission_id: None,
+                msg: EventMsg::Warning(WarningEvent {
+                    message: message.clone(),
+                }),
+            },
+        ) {
+            Ok(()) => accepted += 1,
+            Err(error) => break error,
+        }
+    };
+
+    assert_eq!(accepted, 2);
+    assert_eq!(
+        error.to_string(),
+        "agent stopped: event recorder queue is full"
+    );
+
+    let drain = tokio::spawn(async move {
+        for _ in 0..accepted {
+            receiver.recv().await.expect("accepted event");
+        }
+    });
+    events.flush().await.expect("flush accepted events");
+    drain.await.expect("drain accepted events");
+}
+
+#[tokio::test]
+async fn retained_model_sink_closes_after_response_completion() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
+        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
+            .expect("checkpoint store"),
+    );
+    let retained = Arc::new(Mutex::new(None));
+    let model = Arc::new(RetainingModel {
+        sink: Arc::clone(&retained),
+    });
+    let mut agent = create_agent(config_with_model(
+        workspace.path(),
+        checkpoints,
+        "retained-sink",
+        "test",
+        model,
+    ))
+    .await
+    .expect("agent");
+    agent.sender().submit(user_op("hello")).expect("submit");
+    while !matches!(
+        agent.next_event().await.expect("agent event").msg,
+        EventMsg::TurnComplete(_)
+    ) {}
+
+    let sink = retained
+        .lock()
+        .expect("retained sink lock")
+        .clone()
+        .expect("retained model sink");
+    let error = sink(ModelEvent::TextDelta("late".into())).expect_err("closed sink");
+
+    assert_eq!(error.to_string(), "agent stopped: model event sink closed");
+}
+
+#[tokio::test]
+async fn retained_model_sink_closes_when_response_is_cancelled() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
+        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
+            .expect("checkpoint store"),
+    );
+    let retained = Arc::new(Mutex::new(None));
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let model = Arc::new(BlockingRetainingModel {
+        sink: Arc::clone(&retained),
+        started: Arc::clone(&started),
+        release,
+    });
+    let agent = create_agent(config_with_model(
+        workspace.path(),
+        checkpoints,
+        "cancelled-sink",
+        "test",
+        model,
+    ))
+    .await
+    .expect("agent");
+    agent.sender().submit(user_op("hello")).expect("submit");
+    started.notified().await;
+    let sink = retained
+        .lock()
+        .expect("retained sink lock")
+        .clone()
+        .expect("retained model sink");
+
+    drop(agent);
+    let error = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            match sink(ModelEvent::TextDelta("late".into())) {
+                Ok(()) => tokio::task::yield_now().await,
+                Err(error) => break error,
+            }
+        }
+    })
+    .await
+    .expect("cancelled sink closes");
+
+    assert_eq!(error.to_string(), "agent stopped: model event sink closed");
+}
+
+#[tokio::test]
+async fn recorder_weak_ingress_does_not_keep_the_recorder_alive() {
+    let directory = tempfile::tempdir().expect("checkpoint directory");
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
+        SqliteCheckpoint::new(directory.path().join("checkpoints.sqlite3"))
+            .expect("checkpoint store"),
+    );
+    let (events, _receiver) = EventRecorder::spawn(checkpoints, "session".into());
+    let weak = events.downgrade();
+
+    drop(events);
+
+    assert!(weak.upgrade().is_none());
 }
 
 #[tokio::test]

@@ -32,6 +32,31 @@ impl Model for ExtractionModel {
 }
 
 #[tokio::test]
+async fn startup_cancellation_wins_before_voice_result_is_reported() {
+    let (stop, mut stopped) = oneshot::channel();
+    let task =
+        tokio::spawn(
+            async move { startup(&mut stopped, std::future::pending::<Result<()>>()).await },
+        );
+    stop.send(()).expect("stop startup");
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("startup cancellation")
+            .expect("startup task")
+            .is_none()
+    );
+
+    let (stop, mut stopped) = oneshot::channel();
+    stop.send(()).expect("stop ready startup");
+    assert!(
+        startup(&mut stopped, async { Ok::<_, Error>(()) })
+            .await
+            .is_none()
+    );
+}
+
+#[tokio::test]
 async fn queued_voice_tasks_keep_received_context_run_in_order_and_cancel_on_stop() {
     let directory = tempfile::tempdir().expect("directory");
     let checkpoints: Arc<dyn CheckpointStore> = Arc::new(

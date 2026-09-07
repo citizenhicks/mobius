@@ -320,6 +320,23 @@ impl Drop for ClientConnectionGuard {
     }
 }
 
+pub(super) fn connection_diagnostic(error: &Error) -> String {
+    match error {
+        Error::Io(error) => format!("I/O {:?}", error.kind()),
+        Error::Json(error) => format!(
+            "JSON {:?} at {}:{}",
+            error.classify(),
+            error.line(),
+            error.column()
+        ),
+        Error::Config(_) => "configuration".into(),
+        Error::Protocol(_) => "protocol".into(),
+        Error::Unauthorized => "authentication".into(),
+        Error::Mobius(_) => "agent".into(),
+        Error::Sqlite(_) => "storage".into(),
+    }
+}
+
 pub(super) async fn serve_plaintext_connection(
     stream: TcpStream,
     connection: ConnectionContext,

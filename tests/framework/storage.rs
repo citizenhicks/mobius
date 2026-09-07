@@ -1,6 +1,29 @@
 use super::*;
 
 #[tokio::test]
+async fn checkpoint_context_is_not_a_substitute_for_a_transcript_journal() {
+    let store = MemoryCheckpoints::default();
+    let mut checkpoint = Checkpoint::empty("session");
+    checkpoint.context = vec![mobius::backend::model::user_message("compacted context")];
+    store.save(&checkpoint, &[], None).await.expect("save");
+
+    let error = store
+        .transcript_page(
+            "session",
+            TranscriptPageRequest {
+                before_sequence: None,
+                max_batches: 1,
+            },
+        )
+        .await
+        .expect_err("backend must explicitly implement transcript storage");
+
+    assert!(
+        matches!(error, Error::Checkpoint(message) if message == "this checkpoint backend has no transcript journal")
+    );
+}
+
+#[tokio::test]
 async fn local_sandbox_rejects_parent_path_escape() {
     let workspace = TempDir::new().expect("create workspace");
     let sandbox = LocalSandbox::new(workspace.path()).expect("sandbox");

@@ -350,6 +350,7 @@ impl HostState {
                 let _ = reply.send(true);
                 return false;
             }
+            HostCommand::Shutdown => return false,
         }
         true
     }
@@ -611,6 +612,7 @@ impl HostState {
             self.scratchpad.clone(),
             self.session_files.clone(),
             Arc::clone(&self.swarm),
+            Arc::clone(&self.discovery_gate),
             session_id,
             "mobius-gateway",
             true,
@@ -630,6 +632,7 @@ impl HostState {
                     self.scratchpad.clone(),
                     self.session_files.clone(),
                     Arc::clone(&self.swarm),
+                    Arc::clone(&self.discovery_gate),
                     self.running.session_id.clone(),
                     "mobius-gateway-rollback",
                     true,
@@ -720,6 +723,7 @@ impl HostState {
             self.scratchpad.clone(),
             self.session_files.clone(),
             Arc::clone(&self.swarm),
+            Arc::clone(&self.discovery_gate),
             session_id,
             origin_label,
             false,

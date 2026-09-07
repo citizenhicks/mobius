@@ -9,6 +9,8 @@ use mobius::protocol::{SessionFileLimits, SessionFileReference};
 use mobius_gateway::wire::ClientMessage;
 use mobius_gateway::wire::ServerMessage;
 use tokio::io::AsyncReadExt;
+use tokio::sync::Semaphore;
+use tokio::sync::oneshot;
 use uuid::Uuid;
 
 const MAX_SAFE_ATTACHMENT_REFERENCES: usize = 16;
@@ -16,6 +18,36 @@ const MAX_SAFE_FILE_BYTES: u64 = 250 * 1024 * 1024;
 const MAX_SAFE_SESSION_FILES: usize = 128;
 const MAX_SAFE_SESSION_BYTES: u64 = 250 * 1024 * 1024;
 const MAX_SAFE_UPLOAD_CHUNK_BYTES: usize = 256 * 1024;
+const CLIPBOARD_PREPARATION_BUSY: &str = "clipboard preparation is already in progress";
+
+static CLIPBOARD_PREPARATION_GATE: Semaphore = Semaphore::const_new(1);
+
+pub(super) type ClipboardPreparation = oneshot::Receiver<Result<Vec<UploadCandidate>, String>>;
+
+pub(super) fn prepare_clipboard(
+    existing: Vec<SessionFileReference>,
+    limits: SessionFileLimits,
+) -> Result<ClipboardPreparation, String> {
+    spawn_preparation(move || read_clipboard(&existing, &limits))
+}
+
+fn spawn_preparation(
+    prepare: impl FnOnce() -> Result<Vec<UploadCandidate>, String> + Send + 'static,
+) -> Result<ClipboardPreparation, String> {
+    let permit = CLIPBOARD_PREPARATION_GATE
+        .try_acquire()
+        .map_err(|_| CLIPBOARD_PREPARATION_BUSY.to_string())?;
+    let (sender, receiver) = oneshot::channel();
+    // ponytail: native clipboard calls are not cancellable; one detached worker is enough.
+    std::thread::Builder::new()
+        .name("mobius-clipboard-preparation".into())
+        .spawn(move || {
+            let _permit = permit;
+            let _ = sender.send(prepare());
+        })
+        .map_err(|error| format!("could not start clipboard preparation: {error}"))?;
+    Ok(receiver)
+}
 
 fn client_limits(limits: &SessionFileLimits) -> SessionFileLimits {
     SessionFileLimits {
@@ -702,6 +734,42 @@ mod tests {
         });
 
         assert_eq!(limits, TEST_LIMITS);
+    }
+
+    #[tokio::test]
+    async fn canceled_preparation_keeps_the_native_clipboard_gate_until_release() {
+        let (started_sender, started_receiver) = std::sync::mpsc::channel();
+        let (release_sender, release_receiver) = std::sync::mpsc::channel();
+        let (finished_sender, finished_receiver) = std::sync::mpsc::channel();
+        let first = spawn_preparation(move || {
+            started_sender.send(()).expect("started signal");
+            release_receiver.recv().expect("release signal");
+            finished_sender.send(()).expect("finished signal");
+            Ok(Vec::new())
+        })
+        .expect("first preparation");
+        started_receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("first worker acquired the gate");
+        drop(first);
+
+        let error = match spawn_preparation(|| Ok(Vec::new())) {
+            Err(error) => error,
+            Ok(_) => panic!("second preparation unexpectedly started"),
+        };
+        assert_eq!(error, CLIPBOARD_PREPARATION_BUSY);
+
+        release_sender.send(()).expect("release first worker");
+        finished_receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("first worker finished");
+        let permit = CLIPBOARD_PREPARATION_GATE
+            .acquire()
+            .await
+            .expect("clipboard preparation gate");
+        drop(permit);
+        let third = spawn_preparation(|| Ok(Vec::new())).expect("third preparation");
+        assert!(third.await.expect("third preparation result").is_ok());
     }
 
     #[tokio::test]

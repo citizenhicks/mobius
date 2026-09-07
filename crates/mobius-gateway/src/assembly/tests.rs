@@ -7,6 +7,64 @@ use crate::provider_catalog::*;
 
 use super::*;
 
+struct PromptCaptureModel {
+    instructions: Arc<Mutex<Option<String>>>,
+}
+
+impl Model for PromptCaptureModel {
+    fn respond<'a>(
+        &'a self,
+        request: ModelRequest<'a>,
+        _events: ModelEventSink,
+    ) -> mobius::BoxFuture<'a, mobius::Result<ModelOutput>> {
+        *self.instructions.lock().expect("captured instructions") =
+            Some(request.instructions.to_owned());
+        Box::pin(async {
+            ModelOutput::from_output(
+                vec![serde_json::json!({
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "Done."}]
+                })],
+                true,
+                TokenUsage::default(),
+            )
+        })
+    }
+}
+
+#[tokio::test]
+async fn canceled_discovery_waiter_keeps_the_gate_until_the_batch_finishes() {
+    let gate = Arc::new(tokio::sync::Mutex::new(()));
+    let (first_started, first_started_receiver) = tokio::sync::oneshot::channel();
+    let (release_first, release_receiver) = std::sync::mpsc::channel();
+    let first = tokio::spawn(run_discovery(Arc::clone(&gate), move || {
+        first_started.send(()).expect("first started receiver");
+        release_receiver.recv().expect("release first discovery");
+        Ok(())
+    }));
+    first_started_receiver
+        .await
+        .expect("first discovery started");
+    first.abort();
+
+    let (second_started, mut second_started_receiver) = tokio::sync::oneshot::channel();
+    let second = tokio::spawn(run_discovery(Arc::clone(&gate), move || {
+        second_started.send(()).expect("second started receiver");
+        Ok(())
+    }));
+    tokio::select! {
+        _ = &mut second_started_receiver => panic!("second discovery bypassed the gate"),
+        () = tokio::time::sleep(Duration::from_millis(50)) => {}
+    }
+
+    release_first.send(()).expect("release first discovery");
+    second
+        .await
+        .expect("second discovery task")
+        .expect("second discovery");
+}
+
 #[test]
 fn configured_compaction_reports_the_selected_policy_threshold() {
     let mut settings = crate::middleware_manifest::default_config();
@@ -371,6 +429,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
     std::fs::create_dir(&workspace).expect("workspace");
     let skill = workspace.join(".agents/skills/fixture/SKILL.md");
     std::fs::create_dir_all(skill.parent().expect("skill directory")).expect("skill directory");
+    std::fs::write(workspace.join("AGENTS.md"), "assembly instructions").expect("instructions");
     std::fs::write(
         &skill,
         "---\nname: fixture\ndescription: Fixture skill.\n---\n",
@@ -393,10 +452,14 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
         .expect("register provider");
     let credentials =
         Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
+    credentials
+        .set("openai_socket", "openai_socket", "test-token", None)
+        .expect("test provider credential");
     let checkpoints: Arc<dyn CheckpointStore> =
         Arc::new(SqliteCheckpoint::new(store.checkpoints_path()).expect("checkpoints"));
     let mut original_config = crate::wire::AgentComposition::default();
     original_config.middleware.set_enabled("extensions", true);
+    original_config.middleware.set_enabled("instructions", true);
     let bots = Arc::new(crate::bots::BotStore::open(store.state_dir()).expect("Bots"));
     let original_bot = bots
         .create_bot("Fixture", "Own fixture work.", original_config)
@@ -414,8 +477,18 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
         .save(&checkpoint, &[], None)
         .await
         .expect("seed checkpoint");
-    let (reusable_router, _) = unavailable_models(&gateway, &original.agent.config.provider)
-        .expect("unavailable model router");
+    let captured_instructions = Arc::new(Mutex::new(None));
+    let usage_route = configured_model_providers(&gateway, &store, &credentials)
+        .expect("configured model routes")
+        .into_keys()
+        .next()
+        .expect("configured model route");
+    let reusable_router = Arc::new(ModelRouter::new(
+        usage_route,
+        Arc::new(PromptCaptureModel {
+            instructions: Arc::clone(&captured_instructions),
+        }),
+    ));
     let mut composition = original.agent.config.clone();
     composition.middleware.set_enabled("scratchpad", false);
     composition.system_prompt = "updated instructions".into();
@@ -435,7 +508,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
     let (swarm, _deliveries) = SwarmStore::new(Arc::clone(&checkpoints), Arc::clone(&bots));
     let swarm: Arc<dyn BotsBackend> = Arc::new(swarm);
 
-    let built = assemble(
+    let mut built = assemble(
         Arc::clone(&gateway),
         &updated,
         &store,
@@ -443,6 +516,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
         Arc::clone(&checkpoints),
         ScratchpadStore::new(Arc::clone(&checkpoints)),
         SessionFileStore::new(store.state_dir()),
+        Arc::new(tokio::sync::Mutex::new(())),
         swarm,
         Some("chat".into()),
         "test",
@@ -461,6 +535,39 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
         "---\nname: fixture\ndescription: Fixture skill.\n---\n"
     );
     assert!(Arc::ptr_eq(&reusable_router, &built.model_router));
+    built
+        .agent
+        .sender()
+        .submit(mobius::protocol::Op::Message {
+            message: mobius::protocol::MessageSubmission {
+                author: mobius::protocol::MessageAuthor::User,
+                text: "capture prompt".into(),
+                attachments: Vec::new(),
+                reply: None,
+                requested_delivery: None,
+                target_turn_id: None,
+            },
+        })
+        .expect("submit prompt capture");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(event) = built.agent.next_event().await {
+            if let mobius::protocol::EventMsg::Error(error) = event.msg {
+                panic!("prompt capture agent failed: {error:?}");
+            }
+            if matches!(event.msg, mobius::protocol::EventMsg::TurnComplete(_)) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("prompt capture agent completed");
+    assert!(
+        captured_instructions
+            .lock()
+            .expect("captured instructions")
+            .as_deref()
+            .is_some_and(|prompt| prompt.contains("Source: `AGENTS.md`\n\nassembly instructions"))
+    );
     let scratchpad = built
         .agent
         .frontend()
@@ -601,6 +708,7 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
         session_files.clone(),
         Arc::clone(&swarm),
         Arc::clone(&backend),
+        None,
         &active,
         Some(active_extensions),
     )
@@ -616,6 +724,7 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
         session_files,
         swarm,
         backend,
+        None,
         &inactive,
         Some(inactive_extensions),
     )

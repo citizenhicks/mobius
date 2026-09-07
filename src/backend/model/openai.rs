@@ -28,15 +28,14 @@ use super::openai_auth::ResolvedAuthorization;
 use super::provider::ProviderAuth;
 use super::provider::ProviderBuildConfig;
 use super::provider::ProviderDefinition;
+use super::provider::uses_default_endpoint;
 use super::provider::validate_base_url;
 use super::realtime::{RealtimeTransport, VoiceApi};
-use super::transport::MAX_SSE_FRAME_BYTES;
+use super::transport::SseDecoder;
 use super::transport::frame_data;
-use super::transport::push_sse_chunk;
 use super::transport::read_limited;
 use super::transport::status_error;
 use super::transport::streaming_client;
-use super::transport::take_sse_frame;
 use super::usage_i64;
 use super::{RealtimeVoiceCall, RealtimeVoiceRequest};
 use crate::BoxFuture;
@@ -148,7 +147,7 @@ impl OpenAi {
         if model.trim().is_empty() {
             return Err(Error::Config("OPENAI_MODEL is empty".into()));
         }
-        let realtime = if base_url == DEFAULT_BASE_URL {
+        let realtime = if uses_default_endpoint(Some(DEFAULT_BASE_URL), Some(&base_url)) {
             auth.as_ref()
                 .map(|auth| RealtimeTransport::new(VoiceApi::OpenAi, Arc::clone(auth)))
                 .transpose()?
@@ -266,16 +265,15 @@ impl OpenAi {
             return Err(status_error(response, "Responses").await);
         }
 
-        let mut bytes = Vec::new();
+        let mut sse = SseDecoder::default();
         let mut commentary = BTreeSet::new();
         let mut reasoning_part = None;
         let mut web_searches = BTreeSet::new();
         let mut output = BTreeMap::new();
-        let mut stream_bytes = 0;
         while let Some(chunk) = response.chunk().await? {
-            push_sse_chunk(&mut bytes, &mut stream_bytes, &chunk, "Responses")?;
-            while let Some(frame) = take_sse_frame(&mut bytes)? {
-                let Some(data) = frame_data(&frame) else {
+            sse.push(&chunk, "Responses")?;
+            while let Some(frame) = sse.next_frame()? {
+                let Some(data) = frame_data(frame) else {
                     continue;
                 };
                 if data == "[DONE]" {
@@ -296,9 +294,6 @@ impl OpenAi {
                     emit_citation_web_search(&response, &web_searches, &events)?;
                     return Ok(response);
                 }
-            }
-            if bytes.len() > MAX_SSE_FRAME_BYTES {
-                return Err(Error::Provider("SSE frame exceeded size limit".into()));
             }
         }
         Err(Error::Provider(
@@ -478,12 +473,20 @@ impl OpenAi {
             .url()
             .and_then(|url| url.host_str())
             .unwrap_or("unknown");
+        let kind = if error.is_timeout() {
+            "timeout"
+        } else if error.is_connect() {
+            "connect"
+        } else if error.is_request() {
+            "request"
+        } else {
+            "transport"
+        };
         eprintln!(
-            "model HTTP request failed: host={host} endpoint={endpoint} connect={} timeout={} request={} source={:?}",
+            "model HTTP request failed: host={host} endpoint={endpoint} connect={} timeout={} request={} kind={kind}",
             error.is_connect(),
             error.is_timeout(),
             error.is_request(),
-            std::error::Error::source(&error),
         );
         Error::Http(error)
     }
@@ -577,7 +580,7 @@ impl Model for OpenAi {
     }
 
     fn pricing(&self) -> Option<ModelPricing> {
-        (self.base_url == DEFAULT_BASE_URL)
+        uses_default_endpoint(Some(DEFAULT_BASE_URL), Some(&self.base_url))
             .then(|| openai_model_pricing(&self.model))
             .flatten()
     }

@@ -171,7 +171,27 @@ pub(crate) async fn framed_to_websocket(
 }
 
 pub(crate) fn websocket_error(error: WebSocketError) -> Error {
-    Error::Protocol(format!("WebSocket transport failed: {error}"))
+    let kind = match error {
+        WebSocketError::Io(error) => {
+            return Error::Protocol(format!("WebSocket I/O failure: {:?}", error.kind()));
+        }
+        WebSocketError::Http(response) => {
+            return Error::Protocol(format!(
+                "WebSocket handshake failed: HTTP {}",
+                response.status().as_u16()
+            ));
+        }
+        WebSocketError::ConnectionClosed | WebSocketError::AlreadyClosed => "closed",
+        WebSocketError::Tls(_) => "TLS",
+        WebSocketError::Capacity(_) => "capacity",
+        WebSocketError::Protocol(_) => "protocol",
+        WebSocketError::WriteBufferFull(_) => "write buffer",
+        WebSocketError::Utf8(_) => "UTF-8",
+        WebSocketError::AttackAttempt => "attack rejected",
+        WebSocketError::Url(_) => "URL",
+        WebSocketError::HttpFormat(_) => "HTTP format",
+    };
+    Error::Protocol(format!("WebSocket {kind} failure"))
 }
 
 /// Rejects frames from incompatible clients before interpreting their message.

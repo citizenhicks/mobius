@@ -1067,6 +1067,133 @@ async fn running_one_shot_routine_disables_inactivity_shutdown() {
     drop(active_run);
 }
 
+#[tokio::test(start_paused = true)]
+async fn shutdown_stops_a_blocked_routine_and_fails_its_durable_run() {
+    let root = tempfile::tempdir().expect("temporary directory");
+    let workspace = root.path().join("workspace");
+    fs::create_dir(&workspace).expect("workspace");
+    let model_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("model listener");
+    let model_base_url = format!(
+        "http://{}/v1",
+        model_listener.local_addr().expect("model address")
+    );
+    let (model_seen, model_request) = tokio::sync::oneshot::channel();
+    let model_server = tokio::spawn(async move {
+        let (mut stream, _) = model_listener.accept().await.expect("model request");
+        let _ = model_seen.send(());
+        let mut buffer = [0; 8 * 1024];
+        while stream.read(&mut buffer).await.expect("model connection") != 0 {}
+    });
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let listen = listener.local_addr().expect("listen address");
+    let (store, config) = ConfigStore::initialize(root.path().join("state"), listen, None)
+        .expect("initialize gateway");
+    let provider = crate::wire::ProviderConfig {
+        instance: "blocked-routine".into(),
+        provider: "responses".into(),
+        model: "local-test".into(),
+        base_url: Some(model_base_url.clone()),
+        endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
+        reasoning_effort: None,
+        web_search: mobius::backend::model::provider::HostedWebSearch::Off,
+    };
+    let composition = crate::wire::AgentComposition {
+        provider: provider.clone(),
+        ..crate::wire::AgentComposition::default()
+    };
+    let config = config
+        .registering_provider(
+            provider,
+            "Blocked routine".into(),
+            Default::default(),
+            vec!["local-test".into()],
+            Vec::new(),
+        )
+        .expect("register provider");
+    store.save(&config).expect("save provider");
+    let credentials = CredentialStore::open(store.credentials_path()).expect("credentials");
+    credentials
+        .set(
+            "blocked-routine",
+            "responses",
+            "test-key",
+            Some(&model_base_url),
+        )
+        .expect("store provider credential");
+    let (_, grant) = AuthStore::initialize(store.auth_path()).expect("authentication");
+    let server = GatewayServer::assemble(store, config, listener)
+        .await
+        .expect("gateway");
+    let bots = Arc::clone(&server.bots);
+    let host = server.host.clone();
+    let bot = bots
+        .create_bot(
+            "Blocked routine bot",
+            "A blocked routine test bot.",
+            composition,
+        )
+        .expect("Bot");
+    let now = Utc::now().timestamp();
+    let routine = bots
+        .create_routine(
+            &bot.id,
+            &workspace,
+            "wait for shutdown",
+            crate::wire::RoutineSchedule {
+                kind: crate::wire::RoutineScheduleKind::Once,
+                at: Some(now - 1),
+                every_seconds: None,
+                expression: None,
+                time_zone: None,
+            },
+            None,
+        )
+        .expect("routine");
+    let (shutdown, signal) = tokio::sync::oneshot::channel();
+    let serving = tokio::spawn(server.serve_until(async move {
+        let _ = signal.await;
+    }));
+
+    model_request.await.expect("routine reached blocked model");
+    let run = bots
+        .history(Some(&routine.id))
+        .expect("routine history")
+        .first()
+        .cloned()
+        .expect("running routine");
+    let session_id = run.session_id.clone().expect("routine session");
+    let session = host
+        .open_session(&session_id)
+        .await
+        .expect("routine session host");
+
+    shutdown.send(()).expect("shutdown gateway");
+    tokio::time::timeout(Duration::from_secs(5), serving)
+        .await
+        .expect("gateway shutdown timeout")
+        .expect("gateway task")
+        .expect("gateway shutdown");
+    tokio::time::timeout(Duration::from_secs(5), session.wait_terminated())
+        .await
+        .expect("routine session termination timeout");
+
+    let history = bots
+        .history(Some(&routine.id))
+        .expect("routine history after shutdown");
+    let run = history.first().expect("durable routine run");
+    assert_eq!(run.status, crate::wire::RoutineRunStatus::Failed);
+    assert_eq!(run.session_id.as_deref(), Some(session_id.as_str()));
+
+    tokio::time::timeout(Duration::from_secs(5), model_server)
+        .await
+        .expect("model server shutdown timeout")
+        .expect("model server task");
+    drop(grant);
+}
+
 #[tokio::test]
 async fn frontends_select_independent_chats_and_can_share_one_chat() {
     let root = tempfile::tempdir().expect("temporary directory");

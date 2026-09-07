@@ -17,12 +17,10 @@ use super::ToolDefinition;
 use super::image_data_url;
 use super::image_input;
 use super::provider::{ProviderAuth, ProviderBuildConfig, ProviderDefinition, validate_base_url};
-use super::transport::MAX_SSE_FRAME_BYTES;
+use super::transport::SseDecoder;
 use super::transport::frame_data;
-use super::transport::push_sse_chunk;
 use super::transport::status_error;
 use super::transport::streaming_client;
-use super::transport::take_sse_frame;
 use super::usage_i64;
 use crate::BoxFuture;
 use crate::Error;
@@ -107,18 +105,14 @@ impl Kimi {
     ) -> Result<ModelOutput> {
         let body = self.request_body(&request)?;
         let mut response = self.post(&body).await?;
-        let mut bytes = Vec::new();
+        let mut sse = SseDecoder::default();
         let mut stream = StreamState::default();
-        let mut stream_bytes = 0;
         while let Some(chunk) = response.chunk().await? {
-            push_sse_chunk(&mut bytes, &mut stream_bytes, &chunk, "Kimi")?;
-            while let Some(frame) = take_sse_frame(&mut bytes)? {
-                if let Some(data) = frame_data(&frame) {
+            sse.push(&chunk, "Kimi")?;
+            while let Some(frame) = sse.next_frame()? {
+                if let Some(data) = frame_data(frame) {
                     stream.apply_data(&data, &events)?;
                 }
-            }
-            if bytes.len() > MAX_SSE_FRAME_BYTES {
-                return Err(Error::Provider("Kimi SSE frame exceeded size limit".into()));
             }
         }
         stream.finish()

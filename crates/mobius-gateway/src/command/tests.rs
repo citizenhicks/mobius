@@ -950,6 +950,57 @@ fn startup_lock_allows_only_one_lifecycle_operation() {
     StartupGuard::create(directory.path()).expect("released startup lock");
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn autostart_process_group_cleanup_kills_descendants() {
+    let directory = tempfile::tempdir().expect("process group directory");
+    let descendant_pid = directory.path().join("descendant.pid");
+    let mut command = TokioCommand::new("sh");
+    command
+        .arg("-c")
+        .arg(format!(
+            "sleep 30 & echo $! > {}; wait",
+            descendant_pid.display()
+        ))
+        .process_group(0);
+    let mut child = command.spawn().expect("process group child");
+
+    for _ in 0..20 {
+        if descendant_pid.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let descendant = std::fs::read_to_string(&descendant_pid)
+        .expect("descendant PID")
+        .trim()
+        .parse::<u32>()
+        .expect("valid descendant PID");
+
+    stop_background_child(&mut child, &directory.path().join(PROCESS_FILE)).await;
+
+    for _ in 0..20 {
+        let alive = std::process::Command::new("kill")
+            .args(["-0", &descendant.to_string()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("probe descendant")
+            .success();
+        if !alive {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("process-group descendant remained alive");
+}
+
+#[cfg(unix)]
+#[test]
+fn process_group_termination_ignores_reserved_pids() {
+    terminate_process_group(0);
+    terminate_process_group(1);
+}
+
 #[test]
 fn parse_init_requires_both_tls_paths() {
     let error = parse(vec![

@@ -56,6 +56,41 @@ async fn framed_json_round_trip_preserves_the_versioned_message() {
 }
 
 #[test]
+fn client_request_ids_are_bounded_without_echoing_rejected_values() {
+    for request_id in [
+        Value::String(String::new()),
+        Value::String("x".repeat(257)),
+        Value::String("é".repeat(129)),
+        Value::Null,
+    ] {
+        let error = serde_json::from_value::<ClientFrame>(serde_json::json!({
+            "version": PROTOCOL_VERSION,
+            "type": "list_sessions",
+            "request_id": request_id,
+        }))
+        .expect_err("reject invalid request ID");
+        assert_eq!(error.to_string(), "request ID must be 1–256 bytes");
+    }
+}
+
+#[test]
+fn bounded_request_ids_still_allow_bulk_file_frames() {
+    let expected = ClientFrame::new(ClientMessage::UploadSessionFileChunk {
+        request_id: "é".repeat(128),
+        session_id: "session-a".into(),
+        upload_id: "upload-a".into(),
+        offset: 0,
+        data: vec![42; 1024 * 1024],
+    });
+    let encoded = serde_json::to_vec(&expected).expect("encode bulk frame");
+    assert!(encoded.len() < MAX_FRAME_BYTES);
+    assert_eq!(
+        serde_json::from_slice::<ClientFrame>(&encoded).expect("decode bulk frame"),
+        expected,
+    );
+}
+
+#[test]
 fn session_file_bytes_use_standard_base64_and_round_trip() {
     let expected = ClientFrame::new(ClientMessage::UploadSessionFileChunk {
         request_id: "request-upload".into(),
@@ -141,6 +176,43 @@ fn swarm_message_records_use_text_as_the_payload_name() {
             "reply_depth": 0,
         })
     );
+}
+
+#[tokio::test]
+async fn websocket_diagnostics_preserve_safe_metadata_not_peer_details() {
+    use tokio_tungstenite::tungstenite::{error::UrlError, http::Response};
+
+    let details = "private-peer-data";
+    for (error, expected) in [
+        (
+            WebSocketError::Url(UrlError::UnableToConnect(details.into())),
+            "WebSocket URL failure",
+        ),
+        (
+            WebSocketError::Io(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                details,
+            )),
+            "WebSocket I/O failure: ConnectionReset",
+        ),
+        (
+            WebSocketError::Http(Box::new(
+                Response::builder()
+                    .status(429)
+                    .header("x-peer-details", details)
+                    .body(Some(details.as_bytes().to_vec()))
+                    .expect("HTTP error response"),
+            )),
+            "WebSocket handshake failed: HTTP 429",
+        ),
+    ] {
+        let incoming = futures_util::stream::iter([Err(error)]);
+        let (writer, _reader) = duplex(64);
+        let error = websocket_to_framed(incoming, writer)
+            .await
+            .expect_err("transport error");
+        assert!(matches!(error, Error::Protocol(message) if message == expected));
+    }
 }
 
 #[tokio::test]

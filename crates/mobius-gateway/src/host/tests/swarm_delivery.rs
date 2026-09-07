@@ -233,6 +233,27 @@ async fn gateway_with_swarm(
 }
 
 #[tokio::test]
+async fn shutdown_stops_swarm_delivery_before_later_notifications() {
+    let root = tempfile::tempdir().expect("root");
+    let (gateway, _, source, source_bot, _, target_bot, _) = gateway_with_swarm(&root).await;
+    let swarm = Arc::clone(&gateway.state.lock().await.swarm);
+
+    gateway.shutdown().await;
+    swarm
+        .post(
+            &source_bot.id,
+            source.session_id(),
+            format!("@{} deliver after shutdown", target_bot.handle),
+            None,
+        )
+        .await
+        .expect("post pending delivery");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    assert!(gateway.state.lock().await.sessions.is_empty());
+}
+
+#[tokio::test]
 async fn mention_delivery_uses_the_bots_private_swarm_conversation() {
     let root = tempfile::tempdir().expect("root");
     let (gateway, _, source, source_bot, target, target_bot, swarm_id) =

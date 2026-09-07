@@ -44,6 +44,23 @@ use crate::{Error, Result};
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 
+pub(crate) async fn run_discovery<T, F>(
+    discovery_gate: Arc<tokio::sync::Mutex<()>>,
+    operation: F,
+) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T> + Send + 'static,
+{
+    let guard = discovery_gate.lock_owned().await;
+    tokio::task::spawn_blocking(move || {
+        let _guard = guard;
+        operation()
+    })
+    .await
+    .map_err(|error| Error::Config(format!("agent discovery task failed: {error}")))?
+}
+
 pub(crate) struct BuiltAgent {
     pub(crate) agent: Agent,
     pub(crate) model_router: Arc<ModelRouter>,
@@ -71,6 +88,7 @@ pub(crate) async fn assemble(
     checkpoints: Arc<dyn CheckpointStore>,
     scratchpad: ScratchpadStore,
     session_files: SessionFileStore,
+    discovery_gate: Arc<tokio::sync::Mutex<()>>,
     swarm: Arc<dyn BotsBackend>,
     session_id: Option<String>,
     origin_label: &str,
@@ -102,46 +120,6 @@ pub(crate) async fn assemble(
     } else {
         unavailable_models(&gateway_config, &chat.agent.config.provider)?
     };
-    let resolved_extensions =
-        ExtensionStore::new(store).resolve(&gateway_config, &chat.agent.config.extensions)?;
-    let extensions = (EXTENSIONS_MANIFEST.required
-        || chat.agent.config.middleware.enabled(EXTENSIONS_MANIFEST.id))
-    .then(|| {
-        Extensions::discover_installed(
-            [
-                chat.workspace.join(".agents/skills"),
-                chat.workspace.join(".codex/skills"),
-            ]
-            .into_iter()
-            .chain(resolved_extensions.skill_roots.iter().cloned()),
-        )
-    })
-    .transpose()?;
-    let mut read_roots = extensions
-        .as_ref()
-        .map_or_else(Vec::new, Extensions::resource_roots);
-    if extensions.is_some() {
-        read_roots.extend(
-            resolved_extensions
-                .plugins
-                .iter()
-                .map(|plugin| plugin.root.clone()),
-        );
-    }
-    let gateway_sandbox = Arc::new(
-        GatewaySandbox::new(
-            &chat.workspace,
-            store.state_dir(),
-            gateway_config
-                .tls
-                .as_ref()
-                .map(|tls| tls.private_key.as_path()),
-            COMMAND_TIMEOUT,
-        )?
-        .allow_attached_folders(chat.attached_folders.iter().cloned())?
-        .allow_read_roots(read_roots)?,
-    );
-    let backend: Arc<dyn SandboxBackend> = gateway_sandbox.clone();
     let model_choices = models.choices().cloned().collect::<Vec<_>>();
     crate::middleware_manifest::validate_choices(&chat.agent.config.middleware, &model_choices)?;
     let approval_policy = crate::middleware_manifest::string_setting(
@@ -151,30 +129,90 @@ pub(crate) async fn assemble(
     )?
     .ok_or_else(|| Error::Config("missing middleware setting `sandbox.approval_policy`".into()))?
     .parse::<ApprovalPolicy>()?;
-    let sandbox = Sandbox::new(Arc::clone(&backend), approval_policy);
-    let sandbox = if chat.attached_folders.is_empty() {
-        sandbox
-    } else {
-        sandbox.attached_folders(chat.workspace.clone(), chat.attached_folders.clone())
-    };
-    let sandbox = Arc::new(sandbox);
-    let BuiltMiddleware {
-        stack: middleware,
-        subagent_template: template,
-        subagents,
-    } = build_middleware(
-        &chat.agent.config.middleware,
-        &chat.workspace,
-        &chat.bot_id,
-        chat.catalog_visible,
-        Arc::clone(&gateway),
-        scratchpad,
-        session_files,
-        swarm,
-        backend,
-        &resolved_extensions,
-        extensions,
-    )?;
+    let settings = chat.agent.config.middleware.clone();
+    let workspace_path = chat.workspace.clone();
+    let bot_id = chat.bot_id.clone();
+    let attached_folders = chat.attached_folders.clone();
+    let state_dir = store.state_dir().to_path_buf();
+    let tls_key = gateway_config
+        .tls
+        .as_ref()
+        .map(|tls| tls.private_key.clone());
+    let extension_store = ExtensionStore::new(store);
+    let selected_extensions = chat.agent.config.extensions.clone();
+    let catalog_visible = chat.catalog_visible;
+    let gateway_for_middleware = Arc::clone(&gateway);
+    let (
+        gateway_sandbox,
+        sandbox,
+        BuiltMiddleware {
+            stack: middleware,
+            subagent_template: template,
+            subagents,
+        },
+    ) = run_discovery(discovery_gate, move || {
+        let resolved_extensions = extension_store.resolve(&gateway_config, &selected_extensions)?;
+        let extensions = (EXTENSIONS_MANIFEST.required || settings.enabled(EXTENSIONS_MANIFEST.id))
+            .then(|| {
+                Extensions::discover_installed(
+                    [
+                        workspace_path.join(".agents/skills"),
+                        workspace_path.join(".codex/skills"),
+                    ]
+                    .into_iter()
+                    .chain(resolved_extensions.skill_roots.iter().cloned()),
+                )
+            })
+            .transpose()?;
+        let instructions = settings
+            .enabled("instructions")
+            .then(|| Instructions::discover(&workspace_path))
+            .transpose()?;
+        let mut read_roots = extensions
+            .as_ref()
+            .map_or_else(Vec::new, Extensions::resource_roots);
+        if extensions.is_some() {
+            read_roots.extend(
+                resolved_extensions
+                    .plugins
+                    .iter()
+                    .map(|plugin| plugin.root.clone()),
+            );
+        }
+        let gateway_sandbox = Arc::new(
+            GatewaySandbox::new(
+                &workspace_path,
+                &state_dir,
+                tls_key.as_deref(),
+                COMMAND_TIMEOUT,
+            )?
+            .allow_attached_folders(attached_folders.iter().cloned())?
+            .allow_read_roots(read_roots)?,
+        );
+        let backend: Arc<dyn SandboxBackend> = gateway_sandbox.clone();
+        let sandbox = Sandbox::new(Arc::clone(&backend), approval_policy);
+        let sandbox = if attached_folders.is_empty() {
+            sandbox
+        } else {
+            sandbox.attached_folders(workspace_path.clone(), attached_folders.clone())
+        };
+        let middleware = build_middleware(
+            &settings,
+            &workspace_path,
+            &bot_id,
+            catalog_visible,
+            gateway_for_middleware,
+            scratchpad,
+            session_files,
+            swarm,
+            backend,
+            instructions,
+            &resolved_extensions,
+            extensions,
+        )?;
+        Ok((gateway_sandbox, Arc::new(sandbox), middleware))
+    })
+    .await?;
     let mut metadata = match session_id.as_deref() {
         Some(session_id) => checkpoints
             .load(session_id)
@@ -519,6 +557,7 @@ fn build_middleware(
     session_files: SessionFileStore,
     swarm: Arc<dyn BotsBackend>,
     backend: Arc<dyn SandboxBackend>,
+    mut instructions: Option<Instructions>,
     resolved_extensions: &ResolvedExtensions,
     mut extensions: Option<Extensions>,
 ) -> Result<BuiltMiddleware> {
@@ -537,7 +576,11 @@ fn build_middleware(
             }
             BuiltinMiddleware::Artifacts => Arc::new(Artifacts::new(session_files.clone())),
             BuiltinMiddleware::Tools => Arc::new(Tools::coding()),
-            BuiltinMiddleware::Instructions => Arc::new(Instructions::discover(workspace)?),
+            BuiltinMiddleware::Instructions => Arc::new(
+                instructions
+                    .take()
+                    .ok_or_else(|| Error::Config("instructions were not discovered".into()))?,
+            ),
             BuiltinMiddleware::Scratchpad => Arc::new(
                 Scratchpad::new(scratchpad.clone(), Arc::clone(&swarm), bot_id.to_owned())
                     .agent_enabled(settings.enabled("scratchpad")),

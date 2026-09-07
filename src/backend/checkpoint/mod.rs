@@ -697,33 +697,13 @@ pub trait CheckpointStore: Send + Sync {
     /// Loads one newest-first page of append-only transcript deltas.
     fn transcript_page<'a>(
         &'a self,
-        session_id: &'a str,
-        request: TranscriptPageRequest,
+        _session_id: &'a str,
+        _request: TranscriptPageRequest,
     ) -> BoxFuture<'a, Result<TranscriptPage>> {
-        Box::pin(async move {
-            if request.max_batches == 0 {
-                return Err(Error::Checkpoint(
-                    "transcript page limit must be positive".into(),
-                ));
-            }
-            let Some(checkpoint) = self.load(session_id).await? else {
-                return Ok(TranscriptPage::default());
-            };
-            if checkpoint.context.is_empty()
-                || request
-                    .before_sequence
-                    .is_some_and(|before| checkpoint.sequence >= before)
-            {
-                return Ok(TranscriptPage::default());
-            }
-            Ok(TranscriptPage {
-                batches: vec![TranscriptBatch {
-                    sequence: checkpoint.sequence,
-                    created_at: 0,
-                    items: checkpoint.context,
-                }],
-                next_before_sequence: None,
-            })
+        Box::pin(async {
+            Err(Error::Checkpoint(
+                "this checkpoint backend has no transcript journal".into(),
+            ))
         })
     }
 

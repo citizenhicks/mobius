@@ -64,6 +64,21 @@ pub use self::lifecycle::ensure_background_gateway;
 use self::lifecycle::*;
 use self::provider::*;
 
+#[cfg(unix)]
+/// Terminates a process group created by gateway autostart.
+pub fn terminate_process_group(pid: u32) {
+    if pid <= 1 {
+        return;
+    }
+    let Ok(pid) = i32::try_from(pid) else {
+        return;
+    };
+    let Some(group) = pid.checked_neg() else {
+        return;
+    };
+    let _ = kill(Pid::from_raw(group), Signal::SIGKILL);
+}
+
 #[cfg(any(unix, test))]
 const PROCESS_FILE: &str = "gateway-process.json";
 #[cfg(unix)]

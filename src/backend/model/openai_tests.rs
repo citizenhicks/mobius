@@ -47,10 +47,12 @@ fn only_the_first_party_endpoint_reports_known_openai_pricing() {
         ..TokenUsage::default()
     };
     for (model, cost) in [("gpt-5.6-luna", 20_000), ("gpt-6-astra", 1_000_000)] {
-        let official =
-            OpenAi::new("test-key", "https://api.openai.com/v1", model).expect("official provider");
+        let official = OpenAi::new("test-key", "https://api.openai.com:443/v1/", model)
+            .expect("official provider");
         let compatible =
             OpenAi::new("test-key", "https://example.com/v1", model).expect("compatible provider");
+        assert!(official.supports_realtime_voice());
+        assert!(!compatible.supports_realtime_voice());
         assert_eq!(
             official
                 .pricing()

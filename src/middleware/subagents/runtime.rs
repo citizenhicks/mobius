@@ -191,9 +191,48 @@ impl Shared {
         Ok(())
     }
 
-    pub(super) async fn remove_root(&self, root_id: &str) {
-        self.roots.lock().await.remove(root_id);
+    pub(super) async fn remove_root(&self, root_id: &str) -> Result<()> {
+        let root = self.roots.lock().await.get(root_id).cloned();
+        let Some(root) = root else {
+            self.changed.notify_waiters();
+            return Ok(());
+        };
+        let _writer = root.writer.lock().await;
+        let result = self
+            .commit_locked_root(
+                root_id,
+                &root,
+                |root| {
+                    let mut changed = false;
+                    for entry in root.tree.agents.values_mut() {
+                        if entry.status.is_active() {
+                            entry.status = AgentStatus::Interrupted;
+                            entry.active_turn_id = None;
+                            changed = true;
+                        }
+                    }
+                    Ok(if changed {
+                        Stage::Changed(())
+                    } else {
+                        Stage::Unchanged(())
+                    })
+                },
+                OnPersistFailure::CommitWithStatus,
+            )
+            .await;
+        let mut roots = self.roots.lock().await;
+        if roots
+            .get(root_id)
+            .is_some_and(|current| Arc::ptr_eq(current, &root))
+        {
+            roots.remove(root_id);
+        }
+        drop(roots);
         self.changed.notify_waiters();
+        match result {
+            Ok(_) | Err(Error::Unknown(_)) => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 
     pub(super) async fn has_active_children(&self, root_id: &str) -> Result<bool> {
@@ -477,6 +516,27 @@ impl Shared {
     ) -> Result<Stage<T>> {
         let root = self.root(root_id).await?;
         let _writer = root.writer.lock().await;
+        self.commit_locked_root(root_id, &root, mutate, on_failure)
+            .await
+    }
+
+    // The caller holds the writer through this commit and any root eviction.
+    async fn commit_locked_root<T>(
+        &self,
+        root_id: &str,
+        root: &Arc<RootSlot>,
+        mutate: impl FnOnce(&mut Root) -> Result<Stage<T>>,
+        on_failure: OnPersistFailure,
+    ) -> Result<Stage<T>> {
+        if !self
+            .roots
+            .lock()
+            .await
+            .get(root_id)
+            .is_some_and(|current| Arc::ptr_eq(current, root))
+        {
+            return Err(Error::Unknown(format!("agent tree `{root_id}`")));
+        }
         let (mut candidate, output) = {
             let current = root.state.lock().await;
             let mut candidate = current.clone();

@@ -217,7 +217,7 @@ impl RealtimeTransport {
                 }
             };
             if let Err(error) = result {
-                let _ = event_tx.try_send(Err(error));
+                let _ = event_tx.send(Err(error)).await;
             }
             if api == VoiceApi::Codex {
                 let _ = send(&mut socket, json!({"type":"session.close"})).await;
@@ -511,7 +511,10 @@ async fn drive(
                     Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => { timeout(IO_TIMEOUT, socket.flush()).await.map_err(|_| invalid("voice flush timed out"))?.map_err(socket_error)?; continue; }
                 };
                 for event in turns.observe(api, tool, &value)? {
-                    events.try_send(Ok(event)).map_err(|_| invalid("voice event consumer stopped or fell behind"))?;
+                    events
+                        .send(Ok(event))
+                        .await
+                        .map_err(|_| invalid("voice event consumer stopped"))?;
                 }
                 if value["type"] == "response.done" && value["response"]["status"] == "failed" {
                     return Err(invalid(&super::openai::response_error(&value["response"]["status_details"])));

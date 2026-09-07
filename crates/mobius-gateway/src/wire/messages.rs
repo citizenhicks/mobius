@@ -1,5 +1,7 @@
 use super::*;
 
+const MAX_REQUEST_ID_BYTES: usize = 256;
+
 /// One client-to-gateway frame.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ClientFrame {
@@ -14,6 +16,13 @@ impl<'de> Deserialize<'de> for ClientFrame {
         D: serde::Deserializer<'de>,
     {
         let (version, message) = deserialize_frame(deserializer)?;
+        if let Some(request_id) = message.get("request_id")
+            && !request_id
+                .as_str()
+                .is_some_and(|id| !id.is_empty() && id.len() <= MAX_REQUEST_ID_BYTES)
+        {
+            return Err(D::Error::custom("request ID must be 1–256 bytes"));
+        }
         let message = serde_json::from_value(message).map_err(D::Error::custom)?;
         Ok(Self { version, message })
     }

@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use serde_json::Value;
@@ -8,7 +9,7 @@ use uuid::Uuid;
 use super::turn_event;
 use crate::agent::input::Wait;
 use crate::agent::tool_step::record_model_input_image_bytes;
-use crate::agent::{Runner, SubmissionInbox, send_event, try_send_event, unix_timestamp_ms};
+use crate::agent::{Runner, SubmissionInbox, send_event, unix_timestamp_ms};
 use crate::backend::checkpoint::{
     ActiveModelStep, ContextRewrite, ContextRewriteReason, ExecutionOutcome, ExecutionPhase,
 };
@@ -64,6 +65,33 @@ enum ModelStepRequest {
     Completed(Box<CompletedModelStep>),
     Restart,
     Finished,
+}
+
+#[derive(Clone)]
+struct ModelEventGate(Arc<Mutex<bool>>);
+
+impl ModelEventGate {
+    fn new() -> Self {
+        Self(Arc::new(Mutex::new(true)))
+    }
+
+    fn enter(&self) -> Result<std::sync::MutexGuard<'_, bool>> {
+        self.0
+            .lock()
+            .map_err(|_| Error::Stopped("model event sink unavailable".into()))
+    }
+
+    fn close(&self) {
+        if let Ok(mut open) = self.0.lock() {
+            *open = false;
+        }
+    }
+}
+
+impl Drop for ModelEventGate {
+    fn drop(&mut self) {
+        self.close();
+    }
 }
 
 impl Runner {
@@ -481,7 +509,6 @@ impl Runner {
                 None,
             )
             .await?;
-            let events = self.events.clone();
             let event_submission_id = submission_id.to_string();
             let event_turn_id = turn_id.to_string();
             let event_session_id = self.state.session_id.clone();
@@ -489,16 +516,23 @@ impl Runner {
             let model_events = ModelEventTracker::default();
             let streamed_events = model_events.clone();
             let catalog_revision = self.catalog.revision()?.to_owned();
+            let recorder = self.events.downgrade();
+            let sink_gate = ModelEventGate::new();
+            let stream_gate = sink_gate.clone();
             let stream: ModelEventSink = Arc::new(move |event| {
+                let open = stream_gate.enter()?;
+                if !*open {
+                    return Err(Error::Stopped("model event sink closed".into()));
+                }
                 streamed_events.observe(&event)?;
                 let msg = event.into_event(&event_session_id, &event_turn_id, &event_model_step_id);
-                try_send_event(
-                    &events,
-                    Event {
-                        submission_id: Some(event_submission_id.clone()),
-                        msg,
-                    },
-                )
+                let recorder = recorder
+                    .upgrade()
+                    .ok_or_else(|| Error::Stopped("event recorder stopped".into()))?;
+                recorder.try_record(Event {
+                    submission_id: Some(event_submission_id.clone()),
+                    msg,
+                })
             });
             let response = model.respond(
                 &provider,
@@ -518,7 +552,14 @@ impl Runner {
                 },
                 stream,
             );
-            match self.wait_active(inbox, turn_id, response).await {
+            let response_gate = sink_gate;
+            let response = async move {
+                let response = response.await;
+                response_gate.close();
+                response
+            };
+            let response = self.wait_active(inbox, turn_id, response).await;
+            match response {
                 Ok(Wait::Ready {
                     value: Ok(output), ..
                 }) => {

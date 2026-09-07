@@ -1,6 +1,7 @@
 //! Ephemeral voice calls belong to the authenticated connection that opened them.
 
 use std::collections::VecDeque;
+use std::future::Future;
 
 use mobius::backend::model::{
     RealtimeVoiceCall, RealtimeVoiceCommand, RealtimeVoiceEvent, RealtimeVoiceRequest,
@@ -29,7 +30,7 @@ impl ConnectionVoice {
         let (updates, receiver) = mpsc::channel(2);
         let id = request_id.clone();
         let session = session_id.clone();
-        let (stop, stopped) = oneshot::channel();
+        let (stop, mut stopped) = oneshot::channel();
         let task = tokio::spawn(async move {
             let mut events = host.subscribe();
             let started = async {
@@ -60,8 +61,10 @@ impl ConnectionVoice {
                     )
                     .await?;
                 Ok::<_, Error>((lease, model, call, transcript))
-            }
-            .await;
+            };
+            let Some(started) = startup(&mut stopped, started).await else {
+                return;
+            };
             match started {
                 Ok((_lease, model, mut call, mut transcript)) => {
                     if updates
@@ -124,6 +127,17 @@ impl ConnectionVoice {
             self.task.abort();
             let _ = (&mut self.task).await;
         }
+    }
+}
+
+async fn startup<T>(
+    stopped: &mut oneshot::Receiver<()>,
+    started: impl Future<Output = Result<T>>,
+) -> Option<Result<T>> {
+    tokio::select! {
+        biased;
+        _ = &mut *stopped => None,
+        started = started => Some(started),
     }
 }
 

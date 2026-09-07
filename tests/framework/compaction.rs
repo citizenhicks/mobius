@@ -26,7 +26,10 @@ async fn native_compaction_survives_recreation_with_current_prompt_and_tools() {
         Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
         ApprovalPolicy::Ask,
     ));
-    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(MemoryCheckpoints::default());
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
+        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
+            .expect("checkpoint store"),
+    );
     let config = |base: &str, section: &'static str, coding_tools: bool| {
         let mut middleware: Vec<Arc<dyn Middleware>> = vec![
             Arc::new(Messages::default()),
@@ -46,6 +49,7 @@ async fn native_compaction_survives_recreation_with_current_prompt_and_tools() {
             base,
         )
         .session_id("prompt-refresh")
+        .session_context(test_session_context())
     };
 
     let mut first = create_agent(config("old base marker", "old section marker", true))

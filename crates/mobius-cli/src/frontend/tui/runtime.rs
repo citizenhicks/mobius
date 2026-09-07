@@ -13,8 +13,9 @@ use tokio::time::MissedTickBehavior;
 
 use super::TranscriptTone;
 use super::TuiState;
-use super::clipboard::ClipboardUploads;
-use super::clipboard::read_clipboard;
+use super::clipboard::{
+    ClipboardPreparation, ClipboardUploads, UploadCandidate, prepare_clipboard,
+};
 use super::events::{handle_gateway_event, handle_gateway_history};
 use super::input::UiAction;
 use super::view::render_preview;
@@ -122,6 +123,7 @@ pub(in crate::frontend) async fn run(
     let exit;
     let mut clear_on_exit = false;
     let mut pending_session_creation = None;
+    let mut clipboard_preparation = None;
     let mut workspace_reference_open = false;
     request_workspace_inventory(&sender, &session_id, &mut state).await;
 
@@ -173,6 +175,7 @@ pub(in crate::frontend) async fn run(
                         disconnect(
                             &mut state,
                             &mut uploads,
+                            &mut clipboard_preparation,
                             &mut replay_hydration,
                             "gateway disconnected · press q to exit",
                         );
@@ -182,6 +185,7 @@ pub(in crate::frontend) async fn run(
                         disconnect(
                             &mut state,
                             &mut uploads,
+                            &mut clipboard_preparation,
                             &mut replay_hydration,
                             error.to_string(),
                         );
@@ -203,6 +207,7 @@ pub(in crate::frontend) async fn run(
                     &mut state,
                     &mut uploads,
                     &mut pending_session_creation,
+                    &mut clipboard_preparation,
                     &mut dirty,
                 ).await? {
                     exit = next_exit;
@@ -215,11 +220,30 @@ pub(in crate::frontend) async fn run(
                 }
                 workspace_reference_open = reference_open;
             }
+            result = async {
+                clipboard_preparation
+                    .as_mut()
+                    .expect("clipboard preparation is active")
+                    .await
+            }, if clipboard_preparation.is_some() => {
+                clipboard_preparation = None;
+                handle_clipboard_preparation(
+                    result,
+                    &sender,
+                    &session_id,
+                    &mut state,
+                    &mut uploads,
+                ).await;
+                dirty = true;
+            }
             _ = elapsed.tick(), if state.active_turn.is_some() => {
                 dirty = true;
             }
         }
         guard.set_mouse_capture(state.preview.is_none())?;
+    }
+    if let Some(preparation) = clipboard_preparation.take() {
+        drop(preparation);
     }
     drop(terminal);
     drop(guard);
@@ -269,6 +293,7 @@ async fn handle_terminal_input(
     state: &mut TuiState,
     uploads: &mut ClipboardUploads,
     pending_session_creation: &mut Option<PendingSessionCreation>,
+    clipboard_preparation: &mut Option<ClipboardPreparation>,
     dirty: &mut bool,
 ) -> Result<Option<FrontendExit>> {
     for _ in 0..MAX_INPUT_BATCH {
@@ -277,7 +302,7 @@ async fn handle_terminal_input(
         match action {
             UiAction::None => {}
             UiAction::PasteClipboard => {
-                paste_clipboard(catalog, gateway, sender, session_id, state, uploads).await;
+                paste_clipboard(catalog, gateway, state, uploads, clipboard_preparation);
             }
             UiAction::Exit => {
                 interrupt_active_turn(sender, session_id, state).await;
@@ -356,9 +381,22 @@ async fn handle_incoming_message(
     pending_session_creation: &mut Option<PendingSessionCreation>,
 ) -> Option<(FrontendExit, bool)> {
     let session_id = session.session.session_id.clone();
+    let session_opened = match &message {
+        ServerMessage::SessionOpened { request_id, .. } => {
+            matches_pending_session_creation(request_id, pending_session_creation)
+        }
+        _ => false,
+    };
     let should_clear = settle_session_creation(&message, pending_session_creation);
     if !handle_upload_message(&message, sender, gateway, state, uploads, &session_id).await
-        && let Some(exit) = handle_server_message(message, gateway, session, state, &session_id)
+        && let Some(exit) = handle_server_message(
+            message,
+            gateway,
+            session,
+            state,
+            &session_id,
+            session_opened,
+        )
     {
         return Some((exit, should_clear));
     }
@@ -366,6 +404,15 @@ async fn handle_incoming_message(
         .requested_resume
         .take()
         .map(|request| (FrontendExit::Resume(request.session_id), true))
+}
+
+fn matches_pending_session_creation(
+    request_id: &str,
+    pending: &Option<PendingSessionCreation>,
+) -> bool {
+    pending
+        .as_ref()
+        .is_some_and(|request| request.request_id == request_id)
 }
 
 fn choose_bot(
@@ -497,6 +544,7 @@ fn handle_server_message(
     session: &mut SessionReadyPayload,
     state: &mut TuiState,
     session_id: &str,
+    session_opened: bool,
 ) -> Option<FrontendExit> {
     match message {
         ServerMessage::AgentEvent {
@@ -528,7 +576,7 @@ fn handle_server_message(
             }
             handle_gateway_history(state, records);
         }
-        ServerMessage::SessionOpened { payload, .. } => {
+        ServerMessage::SessionOpened { payload, .. } if session_opened => {
             *session = payload;
             return Some(FrontendExit::Reload);
         }
@@ -570,9 +618,13 @@ fn handle_server_message(
 fn disconnect(
     state: &mut TuiState,
     uploads: &mut ClipboardUploads,
+    clipboard_preparation: &mut Option<ClipboardPreparation>,
     replay_hydration: &mut ReplayHydration,
     message: impl AsRef<str>,
 ) {
+    if let Some(preparation) = clipboard_preparation.take() {
+        drop(preparation);
+    }
     uploads.abort();
     state.upload_in_progress = false;
     replay_hydration.finish();
@@ -614,13 +666,12 @@ fn terminal_action(
     }
 }
 
-async fn paste_clipboard(
+fn paste_clipboard(
     catalog: &UiCatalog,
     gateway: &ReadyPayload,
-    sender: &GatewaySender,
-    session_id: &str,
     state: &mut TuiState,
     uploads: &mut ClipboardUploads,
+    clipboard_preparation: &mut Option<ClipboardPreparation>,
 ) {
     if !catalog.accepts_file_attachments() {
         state.push(
@@ -640,25 +691,62 @@ async fn paste_clipboard(
         state.push("gateway is disconnected", TranscriptTone::Error);
         return;
     }
-    if uploads.is_active() {
+    if state.upload_in_progress || uploads.is_active() || clipboard_preparation.is_some() {
         state.push(
             "an attachment upload is already in progress",
             TranscriptTone::Warning,
         );
         return;
     }
-    match read_clipboard(&state.attachments, &gateway.session_file_limits)
-        .and_then(|candidates| uploads.start(candidates, session_id))
-    {
-        Ok(message) => {
+    let existing = state.attachments.clone();
+    let limits = gateway.session_file_limits;
+    match prepare_clipboard(existing, limits) {
+        Ok(preparation) => {
+            *clipboard_preparation = Some(preparation);
             state.upload_in_progress = true;
-            if let Err(error) = sender.send(message).await {
-                uploads.abort();
-                state.upload_in_progress = false;
-                state.push(error.to_string(), TranscriptTone::Error);
-            }
         }
         Err(error) => state.push(error, TranscriptTone::Error),
+    }
+}
+
+async fn handle_clipboard_preparation(
+    result: std::result::Result<
+        std::result::Result<Vec<UploadCandidate>, String>,
+        tokio::sync::oneshot::error::RecvError,
+    >,
+    sender: &GatewaySender,
+    session_id: &str,
+    state: &mut TuiState,
+    uploads: &mut ClipboardUploads,
+) {
+    let candidates = match result {
+        Ok(Ok(candidates)) => candidates,
+        Ok(Err(error)) => {
+            state.upload_in_progress = false;
+            state.push(error, TranscriptTone::Error);
+            return;
+        }
+        Err(error) => {
+            state.upload_in_progress = false;
+            state.push(
+                format!("clipboard preparation worker stopped: {error}"),
+                TranscriptTone::Error,
+            );
+            return;
+        }
+    };
+    let message = match uploads.start(candidates, session_id) {
+        Ok(message) => message,
+        Err(error) => {
+            state.upload_in_progress = false;
+            state.push(error, TranscriptTone::Error);
+            return;
+        }
+    };
+    if let Err(error) = sender.send(message).await {
+        uploads.abort();
+        state.upload_in_progress = false;
+        state.push(error.to_string(), TranscriptTone::Error);
     }
 }
 
@@ -1042,10 +1130,11 @@ mod tests {
     use super::*;
     use mobius::protocol::{
         Event, EventMsg, FrontendPickerOption, FrontendSetting, FrontendSettingOption,
-        FrontendTone, SessionContext,
+        FrontendTone, ModelChangedEvent, SessionConfiguredEvent, SessionContext, SessionFileLimits,
     };
     use mobius_gateway::wire::{
-        RecordedEvent, SessionActivity, SwarmMemberRecord, VersionedAgentConfig,
+        ReadyPayload, RecordedEvent, RunStats, SessionActivity, SessionReadyPayload,
+        SwarmMemberRecord, VersionedAgentConfig, WorkspaceInfo,
     };
 
     fn replay_event(sequence: u64) -> ServerMessage {
@@ -1146,6 +1235,109 @@ mod tests {
 
         assert!(!settle_session_creation(&rejection, &mut pending));
         assert_eq!(pending, None);
+    }
+
+    #[test]
+    fn stale_session_opened_does_not_reload_or_settle_new_creation() {
+        let mut pending = Some(PendingSessionCreation {
+            request_id: "create-new".into(),
+            clear: true,
+        });
+        let stale = ServerMessage::SessionOpened {
+            request_id: "create-old".into(),
+            payload: session_payload("session-old-response"),
+        };
+
+        let session_opened = match &stale {
+            ServerMessage::SessionOpened { request_id, .. } => {
+                matches_pending_session_creation(request_id, &pending)
+            }
+            _ => false,
+        };
+        let mut session = session_payload("session-current");
+        let mut gateway = ready_payload();
+        let catalog = UiCatalog::build(&[], std::path::Path::new("/tmp")).expect("catalog");
+        let mut state = TuiState::new(
+            &catalog,
+            "/tmp".into(),
+            ModelInfo::default(),
+            String::new(),
+            String::new(),
+        );
+
+        assert!(!session_opened);
+        assert!(!settle_session_creation(&stale, &mut pending));
+        assert!(
+            handle_server_message(
+                stale,
+                &mut gateway,
+                &mut session,
+                &mut state,
+                "session-current",
+                session_opened,
+            )
+            .is_none()
+        );
+        assert_eq!(session.session.session_id, "session-current");
+        assert_eq!(
+            pending.as_ref().map(|request| request.request_id.as_str()),
+            Some("create-new")
+        );
+    }
+
+    fn session_payload(session_id: &str) -> SessionReadyPayload {
+        SessionReadyPayload {
+            latest_sequence: 0,
+            next_before_sequence: None,
+            workspace: WorkspaceInfo {
+                id: "workspace".into(),
+                path: "/tmp".into(),
+            },
+            git: None,
+            session: SessionConfiguredEvent {
+                session_id: session_id.into(),
+                context: SessionContext::default(),
+                model: ModelChangedEvent {
+                    route: String::new(),
+                    model: String::new(),
+                    reasoning_effort: None,
+                    model_context_window: None,
+                },
+            },
+            contributions: Vec::new(),
+            widgets: Vec::new(),
+            tool_count: 0,
+            compaction_count: 0,
+            context_limit_tokens: None,
+            run_stats: RunStats::default(),
+        }
+    }
+
+    fn ready_payload() -> ReadyPayload {
+        ReadyPayload {
+            machine_name: String::new(),
+            bots: Vec::new(),
+            sessions: Vec::new(),
+            background_approvals: Vec::new(),
+            swarm_attentions: Vec::new(),
+            swarms: Vec::new(),
+            providers: Vec::new(),
+            provider_instances: Vec::new(),
+            bot_defaults: None,
+            models: Vec::new(),
+            model_providers: Default::default(),
+            middleware_features: Vec::new(),
+            extensions: Vec::new(),
+            contributions: Vec::new(),
+            max_active_sessions: 0,
+            session_file_limits: SessionFileLimits {
+                max_attachment_references: 1,
+                max_file_bytes: 1,
+                max_session_files: 1,
+                max_session_bytes: 1,
+                max_upload_chunk_bytes: 1,
+            },
+        }
     }
 
     #[test]

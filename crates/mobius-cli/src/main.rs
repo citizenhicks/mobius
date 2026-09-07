@@ -10,6 +10,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use clap::Parser as _;
+use mobius::protocol::MAX_MESSAGE_BYTES;
 use mobius::{Error, Result};
 use mobius_cli::command::{Cli, Command as CliCommand};
 use mobius_cli::frontend::{self, FrontendExit};
@@ -25,6 +26,7 @@ use mobius_gateway::wire::{
     BotRecord, ClientKind, ClientMessage, ReadyPayload, ServerFrame, ServerMessage,
     SessionActivityState, SessionReadyPayload, SessionRecord,
 };
+use tokio::io::AsyncReadExt as _;
 use tokio::process::{Child, Command};
 use uuid::Uuid;
 
@@ -108,7 +110,7 @@ async fn run_interactive() -> Result<()> {
 }
 
 async fn run_task(bot_handle: &str, task_file: &Path) -> Result<()> {
-    let task = std::fs::read_to_string(task_file)?;
+    let task = read_task_file(task_file).await?;
     let (sender, mut events, mut gateway, session, disposable_session, _) =
         connect(None, Some(bot_handle)).await?;
     if gateway.models.is_empty() {
@@ -125,6 +127,18 @@ async fn run_task(bot_handle: &str, task_file: &Path) -> Result<()> {
         print_output(&message);
     }
     Ok(())
+}
+
+async fn read_task_file(path: &Path) -> Result<String> {
+    let file = tokio::fs::File::open(path).await?;
+    let mut bytes = Vec::new();
+    file.take((MAX_MESSAGE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .await?;
+    if bytes.len() > MAX_MESSAGE_BYTES {
+        return Err(Error::Config("task file exceeds message size limit".into()));
+    }
+    String::from_utf8(bytes).map_err(|_| Error::Config("task file must contain valid UTF-8".into()))
 }
 
 async fn run_extensions() -> Result<()> {
@@ -523,7 +537,13 @@ fn detach_child(mut child: Child) {
 }
 
 async fn stop_child(child: &mut Child) {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        mobius_gateway::command::terminate_process_group(pid);
+    }
+    #[cfg(not(unix))]
     let _ = child.kill().await;
+    let _ = child.wait().await;
 }
 
 fn startup_error(
@@ -788,6 +808,26 @@ mod tests {
         let error = startup_error("gateway exited", &log);
 
         assert!(error.to_string().contains("Bubblewrap is unavailable"));
+    }
+
+    #[tokio::test]
+    async fn task_files_are_bounded_before_gateway_startup() {
+        let directory = tempfile::tempdir().expect("task directory");
+        let path = directory.path().join("task.md");
+        std::fs::write(&path, vec![b'x'; MAX_MESSAGE_BYTES]).expect("write task");
+        assert_eq!(
+            read_task_file(&path)
+                .await
+                .expect("read bounded task")
+                .len(),
+            MAX_MESSAGE_BYTES
+        );
+
+        std::fs::write(&path, vec![b'x'; MAX_MESSAGE_BYTES + 1]).expect("write oversized task");
+        assert!(read_task_file(&path).await.is_err());
+
+        std::fs::write(&path, [0xff]).expect("write invalid UTF-8 task");
+        assert!(read_task_file(&path).await.is_err());
     }
 
     #[test]
