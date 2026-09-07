@@ -130,7 +130,9 @@ extension AppModelTests {
             activityItems: ["ABCD-1234"], applicationActivities: nil)
         share.popoverPresentationController?.sourceView = sheet.view
         share.popoverPresentationController?.sourceRect = sheet.view.bounds
-        sheet.present(share, animated: false)
+        await withCheckedContinuation { continuation in
+            sheet.present(share, animated: false) { continuation.resume() }
+        }
         let shareAppeared = await eventually { share.viewIfLoaded?.window != nil }
         XCTAssertTrue(shareAppeared)
         app.isAppLocked = true
