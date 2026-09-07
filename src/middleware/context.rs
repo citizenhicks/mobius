@@ -405,11 +405,18 @@ pub struct ModelContext<'a> {
 /// Live capability state used to hide registered tools at a model boundary.
 pub struct ToolExposureContext<'a> {
     pub session_id: &'a str,
+    pub(crate) supports_image_input: bool,
     pub(crate) input: &'a [Value],
     pub(crate) available: &'a mut BTreeSet<String>,
 }
 
 impl ToolExposureContext<'_> {
+    /// Reports whether the active model accepts image input.
+    #[must_use]
+    pub fn supports_image_input(&self) -> bool {
+        self.supports_image_input
+    }
+
     /// Returns the most recent typed conversation message in model context.
     #[must_use]
     pub fn latest_message(&self) -> Option<MessageEvent> {

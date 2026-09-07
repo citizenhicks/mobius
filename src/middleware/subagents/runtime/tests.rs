@@ -599,6 +599,48 @@ async fn wait_returns_immediately_without_an_active_peer() {
 }
 
 #[tokio::test]
+async fn active_children_tracks_pending_and_terminal_agents() {
+    let shared = test_shared();
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(FailOnceStore {
+        fail_next_save: AtomicBool::new(false),
+        saved_state: StdMutex::new(None),
+    });
+    shared
+        .session_start(test_context(checkpoints, Arc::new(|_| Ok(()))))
+        .await
+        .expect("initialize runtime");
+    shared
+        .reserve(
+            "root",
+            "/root/child",
+            "/root",
+            "child".into(),
+            1,
+            test_presentation(),
+        )
+        .await
+        .expect("reserve child");
+    assert!(
+        shared
+            .has_active_children("root")
+            .await
+            .expect("active child status")
+    );
+
+    shared
+        .rollback("root", "/root/child", AgentStatus::Completed)
+        .await
+        .expect("complete child");
+
+    assert!(
+        !shared
+            .has_active_children("root")
+            .await
+            .expect("terminal child status")
+    );
+}
+
+#[tokio::test]
 async fn reserve_enforces_configured_concurrency_including_root() {
     let shared = Shared::new(3, 4).expect("valid limits");
     let checkpoints: Arc<dyn CheckpointStore> = Arc::new(FailOnceStore {

@@ -250,6 +250,10 @@ impl HostState {
                 let result = self.reload_bot(bot).await;
                 let _ = reply.send(result);
             }
+            HostCommand::AttachFolder { folder, reply } => {
+                let result = self.attach_folder(folder).await;
+                let _ = reply.send(result);
+            }
             HostCommand::GitDiff { scope, reply } => {
                 let _ = reply.send(
                     workspace_git_diff(&self.running.gateway_sandbox, &self.spec.workspace, scope)
@@ -532,6 +536,53 @@ impl HostState {
         let mut next = self.spec.clone();
         next.bot_description = bot.description;
         next.agent = bot.config;
+        let reusable_router = (self.running.provider_epoch
+            == self.provider_epoch.load(Ordering::Acquire))
+        .then(|| reusable_model_router(&self.spec, &next, &self.running))
+        .flatten();
+        self.replace_running(next, reusable_router).await
+    }
+
+    async fn attach_folder(&mut self, folder: PathBuf) -> std::result::Result<(), Rejection> {
+        self.require_idle()?;
+        if self
+            .running
+            .sandbox
+            .has_background_commands(&self.running.session_id)
+            .map_err(internal)?
+        {
+            return Err(Rejection {
+                code: "agent_busy",
+                message: "stop or poll background commands before attaching a folder".into(),
+                fatal: false,
+            });
+        }
+        if let Some(subagents) = &self.running.subagents
+            && subagents
+                .has_active_children(&self.running.session_id)
+                .await
+                .map_err(internal)?
+        {
+            return Err(Rejection {
+                code: "agent_busy",
+                message: "wait for active subagents before attaching a folder".into(),
+                fatal: false,
+            });
+        }
+        let _mutation = self.begin_session_mutation()?;
+        let tls = self
+            .gateway
+            .lock()
+            .map_err(|_| internal("gateway configuration lock is poisoned"))?
+            .tls
+            .clone();
+        let Some(next) = self
+            .spec
+            .with_attached_folder(&folder, self.store.state_dir(), tls.as_ref())
+            .map_err(invalid_workspace)?
+        else {
+            return Ok(());
+        };
         let reusable_router = (self.running.provider_epoch
             == self.provider_epoch.load(Ordering::Acquire))
         .then(|| reusable_model_router(&self.spec, &next, &self.running))

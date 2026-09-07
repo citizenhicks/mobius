@@ -146,6 +146,16 @@ impl GatewaySandbox {
         Ok(self)
     }
 
+    pub(crate) fn allow_attached_folders(
+        mut self,
+        roots: impl IntoIterator<Item = PathBuf>,
+    ) -> Result<Self> {
+        for root in roots {
+            self.delegate = self.delegate.allow_workspace_root(root)?;
+        }
+        Ok(self)
+    }
+
     pub(crate) async fn execute_git(&self, args: &[&str]) -> Result<CommandOutput> {
         let mut arguments = GIT_ARGUMENTS.to_vec();
         arguments.extend_from_slice(args);
@@ -370,6 +380,19 @@ mod tests {
                 .expect("gateway sandbox");
 
         let result = sandbox.allow_read_roots([state.path().to_path_buf()]);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn gateway_state_cannot_be_added_as_an_attached_folder() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let state = tempfile::tempdir().expect("state");
+        let sandbox =
+            GatewaySandbox::new(workspace.path(), state.path(), None, Duration::from_secs(5))
+                .expect("gateway sandbox");
+
+        let result = sandbox.allow_attached_folders([state.path().to_path_buf()]);
 
         assert!(result.is_err());
     }

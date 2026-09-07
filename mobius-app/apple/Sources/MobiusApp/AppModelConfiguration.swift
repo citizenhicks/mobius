@@ -277,9 +277,14 @@ extension AppModel {
     func saveBotDraft() {
         let name = botNameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         let description = botDescriptionDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let id = editingBotID,
-              canMutateBot(id),
-              let expectedRevision = editingBotRevision,
+        guard let id = editingBotID else { return }
+        guard canMutateBot(id) else {
+            if canMutateBots {
+                showToast("Bot settings can’t be changed while this Bot is running.", tone: .warning)
+            }
+            return
+        }
+        guard let expectedRevision = editingBotRevision,
               bots.contains(where: { $0.id == id }),
               let draft = botDraft,
               !name.isEmpty,

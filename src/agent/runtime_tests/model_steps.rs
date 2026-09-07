@@ -2,6 +2,36 @@
 
 use super::*;
 
+struct TextOnlyImageToolModel {
+    outputs: Mutex<VecDeque<ModelOutput>>,
+    exposed_image_tool: AtomicBool,
+    inputs: Mutex<Vec<Vec<Value>>>,
+}
+
+impl Model for TextOnlyImageToolModel {
+    fn respond<'a>(
+        &'a self,
+        request: ModelRequest,
+        _events: ModelEventSink,
+    ) -> BoxFuture<'a, Result<ModelOutput>> {
+        self.exposed_image_tool.fetch_or(
+            request.tools.iter().any(|tool| tool.name == "view_image"),
+            Ordering::SeqCst,
+        );
+        self.inputs
+            .lock()
+            .expect("input lock")
+            .push(request.input.to_vec());
+        let output = self
+            .outputs
+            .lock()
+            .expect("scripted output lock")
+            .pop_front()
+            .ok_or_else(|| Error::Provider("scripted output exhausted".into()));
+        Box::pin(async move { output })
+    }
+}
+
 #[tokio::test]
 async fn model_step_lifecycle_preserves_correlation_usage_and_content() {
     let workspace = tempfile::tempdir().expect("workspace");
@@ -86,6 +116,69 @@ async fn model_step_lifecycle_preserves_correlation_usage_and_content() {
     assert_eq!(message.session_id, started.session_id);
     assert_eq!(message.turn_id, started.turn_id);
     assert_eq!(message.model_step_id, started.model_step_id);
+}
+
+#[tokio::test]
+async fn text_only_routes_do_not_expose_or_execute_view_image() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
+        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
+            .expect("checkpoint store"),
+    );
+    let image_call = ModelOutput::from_output(
+        vec![serde_json::json!({
+            "type": "function_call",
+            "call_id": "view",
+            "name": "view_image",
+            "arguments": "{\"path\":\"page.png\"}"
+        })],
+        false,
+        scripted_usage(),
+    )
+    .expect("image tool output");
+    let model = Arc::new(TextOnlyImageToolModel {
+        outputs: Mutex::new(VecDeque::from([image_call, scripted_message("Done.")])),
+        exposed_image_tool: AtomicBool::new(false),
+        inputs: Mutex::new(Vec::new()),
+    });
+    let config = AgentConfig::new(
+        Arc::new(ModelRouter::new("text-only", model.clone())),
+        Arc::new(Sandbox::new(
+            Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
+            ApprovalPolicy::Ask,
+        )),
+        checkpoints,
+        test_middleware(vec![Arc::new(Tools::coding())]),
+        "test prompt",
+    )
+    .session_context(test_session_context())
+    .session_id("text-only-image-tool");
+    let mut agent = create_agent(config).await.expect("create agent");
+    agent
+        .sender()
+        .submit(user_op("view the image"))
+        .expect("submit input");
+
+    let mut result = None;
+    while let Some(event) = agent.next_event().await {
+        match event.msg {
+            EventMsg::ToolCallEnd(event) if event.call_id == "view" => result = Some(event),
+            EventMsg::TurnComplete(_) => break,
+            _ => {}
+        }
+    }
+
+    assert!(!model.exposed_image_tool.load(Ordering::SeqCst));
+    let result = result.expect("rejected image tool result");
+    assert!(result.is_error);
+    assert!(result.output.contains("unavailable for this model step"));
+    let inputs = model.inputs.lock().expect("input lock");
+    assert_eq!(inputs.len(), 2);
+    assert!(
+        !serde_json::to_string(&inputs[1])
+            .expect("serialize input")
+            .contains("input_image")
+    );
 }
 
 #[tokio::test(start_paused = true)]

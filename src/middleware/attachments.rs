@@ -9,6 +9,7 @@ use cap_std::fs::Dir;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::image_input::{MAX_IMAGE_INPUT_BYTES, model_input_image_bytes, raster_media_type};
 use super::manifest::MiddlewareManifest;
 use super::session_files::{SessionFileStore, session_storage_key};
 use super::tools::{Catalog, ExecutionMode, Tool, ToolContext, render_tool_event};
@@ -31,7 +32,6 @@ mod text {
     ));
 }
 
-const MAX_DIRECT_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 const MATERIALIZED_ATTACHMENTS_FIELD: &str = "_mobius_attachment_blobs";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -229,7 +229,7 @@ impl Middleware for Attachments {
                     let result = usize::try_from(reference.size)
                         .ok()
                         .and_then(|size| direct_image_bytes.checked_add(size))
-                        .filter(|size| *size <= MAX_DIRECT_IMAGE_BYTES)
+                        .filter(|size| *size <= MAX_IMAGE_INPUT_BYTES)
                         .ok_or_else(|| {
                             Error::Provider(
                                 "image attachments exceed the 8 MiB model-input limit".into(),
@@ -302,7 +302,7 @@ impl Middleware for Attachments {
         Box::pin(async move {
             let latest_user = context.input().iter().rposition(is_real_user);
             let supports_image_input = context.model.supports_image_input(context.provider)?;
-            let mut direct_image_bytes = 0_usize;
+            let mut direct_image_bytes = model_input_image_bytes(context.input())?;
             let mut input = context.input().to_vec();
             let mut changed = false;
             for message_index in (0..input.len()).rev() {
@@ -334,7 +334,7 @@ impl Middleware for Attachments {
                     let Some(next_image_bytes) = usize::try_from(attachment.reference.size)
                         .ok()
                         .and_then(|size| direct_image_bytes.checked_add(size))
-                        .filter(|size| *size <= MAX_DIRECT_IMAGE_BYTES)
+                        .filter(|size| *size <= MAX_IMAGE_INPUT_BYTES)
                     else {
                         if current {
                             return Err(Error::Provider(
@@ -615,107 +615,6 @@ fn replace_with_copy(source: &Path, destination: &Dir, name: &str) -> Result<()>
     }
     let _ = destination.remove_file(&temporary);
     Ok(())
-}
-
-fn raster_media_type(bytes: &[u8]) -> Result<&'static str> {
-    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        return Ok("image/png");
-    }
-    if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
-        return Ok("image/jpeg");
-    }
-    if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
-        if bytes
-            .windows(4)
-            .any(|window| matches!(window, b"ANIM" | b"ANMF"))
-        {
-            return Err(Error::Provider(
-                "animated WebP attachments are not supported".into(),
-            ));
-        }
-        return Ok("image/webp");
-    }
-    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        if gif_image_count(bytes)? == 1 {
-            return Ok("image/gif");
-        }
-        return Err(Error::Provider(
-            "animated GIF attachments are not supported".into(),
-        ));
-    }
-    Err(Error::Provider(
-        "image attachment is not a supported PNG, JPEG, WebP, or GIF".into(),
-    ))
-}
-
-fn gif_image_count(bytes: &[u8]) -> Result<usize> {
-    if bytes.len() < 13 {
-        return Err(Error::Provider("GIF attachment is truncated".into()));
-    }
-    let packed = bytes[10];
-    let global_table = if packed & 0x80 == 0 {
-        0
-    } else {
-        3_usize << (usize::from(packed & 0x07) + 1)
-    };
-    let mut offset = 13_usize
-        .checked_add(global_table)
-        .ok_or_else(|| Error::Provider("GIF attachment size overflow".into()))?;
-    let mut images = 0_usize;
-    while offset < bytes.len() {
-        match bytes[offset] {
-            0x2c => {
-                images += 1;
-                if images > 1 {
-                    return Ok(images);
-                }
-                let descriptor_end = offset
-                    .checked_add(10)
-                    .filter(|end| *end <= bytes.len())
-                    .ok_or_else(|| Error::Provider("GIF image descriptor is truncated".into()))?;
-                let packed = bytes[descriptor_end - 1];
-                let local_table = if packed & 0x80 == 0 {
-                    0
-                } else {
-                    3_usize << (usize::from(packed & 0x07) + 1)
-                };
-                offset = descriptor_end
-                    .checked_add(local_table)
-                    .and_then(|value| value.checked_add(1))
-                    .filter(|value| *value <= bytes.len())
-                    .ok_or_else(|| Error::Provider("GIF image data is truncated".into()))?;
-                offset = skip_gif_sub_blocks(bytes, offset)?;
-            }
-            0x21 => {
-                offset = offset
-                    .checked_add(2)
-                    .filter(|value| *value <= bytes.len())
-                    .ok_or_else(|| Error::Provider("GIF extension is truncated".into()))?;
-                offset = skip_gif_sub_blocks(bytes, offset)?;
-            }
-            0x3b => return Ok(images),
-            _ => return Err(Error::Provider("GIF attachment is malformed".into())),
-        }
-    }
-    Err(Error::Provider("GIF attachment has no trailer".into()))
-}
-
-fn skip_gif_sub_blocks(bytes: &[u8], mut offset: usize) -> Result<usize> {
-    loop {
-        let length = usize::from(
-            *bytes
-                .get(offset)
-                .ok_or_else(|| Error::Provider("GIF data block is truncated".into()))?,
-        );
-        offset = offset
-            .checked_add(1)
-            .and_then(|value| value.checked_add(length))
-            .filter(|value| *value <= bytes.len())
-            .ok_or_else(|| Error::Provider("GIF data block is truncated".into()))?;
-        if length == 0 {
-            return Ok(offset);
-        }
-    }
 }
 
 struct ListAttachments {

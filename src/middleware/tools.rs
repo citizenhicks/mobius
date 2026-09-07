@@ -3,7 +3,8 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::panic::AssertUnwindSafe;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use bm25::Document;
 use bm25::Language;
@@ -15,7 +16,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use super::manifest::MiddlewareManifest;
-use super::{Middleware, PromptSection};
+use super::{Middleware, PromptSection, ToolExposureContext};
 use crate::BoxFuture;
 use crate::Error;
 use crate::Result;
@@ -49,7 +50,7 @@ mod patch;
 
 #[cfg(test)]
 use coding::ApplyPatchArgs;
-use coding::{ApplyPatch, ReadFile, WriteFile};
+use coding::{ApplyPatch, ReadFile, ViewImage, WriteFile};
 #[cfg(test)]
 use commands::background_output;
 use commands::{Bash, PollCommand, StartCommand, StopCommand};
@@ -106,6 +107,66 @@ pub struct ToolContext {
     pub sandbox: Arc<Sandbox>,
     pub permissions: ToolPermissions,
     pub turn_id: String,
+    image_input: ImageInputBudget,
+    input: ToolInput,
+}
+
+impl ToolContext {
+    pub(crate) fn new(
+        sandbox: Arc<Sandbox>,
+        permissions: ToolPermissions,
+        turn_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            sandbox,
+            permissions,
+            turn_id: turn_id.into(),
+            image_input: ImageInputBudget::default(),
+            input: ToolInput::default(),
+        }
+    }
+
+    fn claim_image_input(&self) -> Result<()> {
+        self.image_input.claim()
+    }
+
+    /// Adds provider-neutral context immediately after this tool output.
+    pub fn push_input(&self, item: Value) -> Result<()> {
+        self.input.push(item)
+    }
+}
+
+#[derive(Clone, Default)]
+struct ImageInputBudget(Arc<AtomicBool>);
+
+impl ImageInputBudget {
+    fn claim(&self) -> Result<()> {
+        if self.0.swap(true, Ordering::AcqRel) {
+            return Err(Error::Tool(
+                "only one image may be added to model input per tool batch".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Default)]
+struct ToolInput(Arc<Mutex<Vec<Value>>>);
+
+impl ToolInput {
+    fn push(&self, item: Value) -> Result<()> {
+        self.0
+            .lock()
+            .map_err(|_| Error::Tool("tool model input is unavailable".into()))?
+            .push(item);
+        Ok(())
+    }
+
+    fn take(&self) -> Result<Vec<Value>> {
+        Ok(std::mem::take(&mut *self.0.lock().map_err(|_| {
+            Error::Tool("tool model input is unavailable".into())
+        })?))
+    }
 }
 
 /// External identity used when a tool participates in extension hooks.
@@ -811,6 +872,7 @@ pub(crate) async fn execute_batch(
     turn_id: &str,
 ) -> Vec<ToolResult> {
     let mut results = Vec::with_capacity(calls.len());
+    let image_input = ImageInputBudget::default();
     let mut index = 0;
     while index < calls.len() {
         if is_parallel(catalog, &calls[index]) {
@@ -820,12 +882,16 @@ pub(crate) async fn execute_batch(
                 .map_or(calls.len(), |offset| index + offset);
             // ModelOutput validation bounds every batch to 128 calls.
             results.extend(
-                join_all(
-                    calls[index..end]
-                        .iter()
-                        .cloned()
-                        .map(|call| execute_call(catalog, call, &sandbox, permissions, turn_id)),
-                )
+                join_all(calls[index..end].iter().cloned().map(|call| {
+                    execute_call(
+                        catalog,
+                        call,
+                        &sandbox,
+                        permissions,
+                        turn_id,
+                        image_input.clone(),
+                    )
+                }))
                 .await,
             );
             index = end;
@@ -837,6 +903,7 @@ pub(crate) async fn execute_batch(
                     &sandbox,
                     permissions,
                     turn_id,
+                    image_input.clone(),
                 )
                 .await,
             );
@@ -858,17 +925,20 @@ async fn execute_call(
     sandbox: &Arc<Sandbox>,
     permissions: &SandboxPermissions,
     turn_id: &str,
+    image_input: ImageInputBudget,
 ) -> ToolResult {
     let BoundToolCall {
         call,
         materialized,
         search_scope,
     } = call;
-    let context = ToolContext {
-        sandbox: Arc::clone(sandbox),
-        permissions: permissions.for_call(&call.call_id),
-        turn_id: turn_id.into(),
-    };
+    let mut context = ToolContext::new(
+        Arc::clone(sandbox),
+        permissions.for_call(&call.call_id),
+        turn_id,
+    );
+    context.image_input = image_input;
+    let pending_input = context.input.clone();
     let Some(tool) = catalog.get(&call.name).cloned() else {
         return ToolResult::error(&call, format!("unknown tool `{}`", call.name));
     };
@@ -922,17 +992,34 @@ async fn execute_call(
     .await;
     match result {
         Ok(Ok(output)) => {
+            let mut additional_input = match pending_input.take() {
+                Ok(input) => input,
+                Err(error) => {
+                    return ToolResult {
+                        call_id,
+                        name,
+                        output: capped(&error.to_string(), MAX_TOOL_OUTPUT_BYTES),
+                        is_error: true,
+                        handler_executed: true,
+                        additional_input: Vec::new(),
+                        events: Vec::new(),
+                    };
+                }
+            };
             match materialization_effects(&catalog_revision, output.loaded_tools, turn_id, &call_id)
             {
-                Ok(effects) => ToolResult {
-                    call_id,
-                    name,
-                    output: capped(&output.content, MAX_TOOL_OUTPUT_BYTES),
-                    is_error: false,
-                    handler_executed: true,
-                    additional_input: effects.input,
-                    events: effects.events,
-                },
+                Ok(effects) => {
+                    additional_input.extend(effects.input);
+                    ToolResult {
+                        call_id,
+                        name,
+                        output: capped(&output.content, MAX_TOOL_OUTPUT_BYTES),
+                        is_error: false,
+                        handler_executed: true,
+                        additional_input,
+                        events: effects.events,
+                    }
+                }
                 Err(error) => ToolResult {
                     call_id,
                     name,
@@ -1106,6 +1193,7 @@ impl Tools {
     pub fn coding() -> Self {
         Self::new(vec![
             Arc::new(ReadFile),
+            Arc::new(ViewImage),
             Arc::new(WriteFile),
             Arc::new(ApplyPatch),
             Arc::new(Bash),
@@ -1134,6 +1222,18 @@ impl Middleware for Tools {
 
     fn prompt_section(&self, _runtime: &super::RuntimeContext) -> Result<Option<PromptSection>> {
         Ok(Some(self.section()))
+    }
+
+    fn tool_exposure<'a>(
+        &'a self,
+        context: &'a mut ToolExposureContext<'_>,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            if !context.supports_image_input() {
+                context.hide(&["view_image"]);
+            }
+            Ok(())
+        })
     }
 
     fn frontend(&self) -> FrontendContribution {
@@ -1271,6 +1371,7 @@ fn tool_heading(name: &str, arguments: &Value) -> ToolHeading {
     }
     let (label, detail) = match name {
         "read_file" => (text::RENDER_READ_FILE, "path"),
+        "view_image" => (text::RENDER_VIEW_IMAGE, "path"),
         "write_file" => (text::RENDER_WRITE_FILE, "path"),
         "bash" => (text::RENDER_BASH, "command"),
         "start_command" => (text::RENDER_START_COMMAND, "command"),
@@ -1299,5 +1400,4 @@ pub(crate) fn labeled_tool_heading(label: &str, detail: &str, arguments: &Value)
 }
 
 #[cfg(test)]
-#[path = "tools_tests.rs"]
 mod tests;

@@ -81,6 +81,7 @@ fn only_core_tools_are_direct_by_default() {
     assert_eq!(DefaultDeferredTool.exposure(), ToolExposure::Deferred);
     for exposure in [
         ReadFile.exposure(),
+        ViewImage.exposure(),
         WriteFile.exposure(),
         ApplyPatch.exposure(),
         Bash.exposure(),

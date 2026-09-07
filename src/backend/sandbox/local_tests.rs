@@ -268,6 +268,45 @@ async fn absolute_reads_are_confined_to_explicit_read_roots() {
     );
 }
 
+#[tokio::test]
+async fn absolute_reads_and_writes_are_confined_to_workspace_roots() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let attached = tempfile::tempdir().expect("attached workspace");
+    let outside = tempfile::tempdir().expect("outside");
+    let attached_root = std::fs::canonicalize(attached.path()).expect("canonical workspace root");
+    let outside_root = std::fs::canonicalize(outside.path()).expect("canonical outside root");
+    let source = attached_root.join("source.txt");
+    let target = attached_root.join("target.txt");
+    let blocked = outside_root.join("blocked.txt");
+    std::fs::write(&source, "attached").expect("attached file");
+    let sandbox = local_sandbox(workspace.path())
+        .allow_workspace_root(attached.path())
+        .expect("workspace root");
+
+    assert_eq!(
+        sandbox
+            .read(source.to_str().expect("UTF-8 source path"))
+            .await
+            .expect("attached read"),
+        "attached"
+    );
+    sandbox
+        .write(target.to_str().expect("UTF-8 target path"), "written")
+        .await
+        .expect("attached write");
+    assert_eq!(
+        std::fs::read_to_string(target).expect("written file"),
+        "written"
+    );
+    assert!(
+        sandbox
+            .write(blocked.to_str().expect("UTF-8 blocked path"), "blocked")
+            .await
+            .is_err()
+    );
+    assert!(!blocked.exists());
+}
+
 #[test]
 fn read_roots_cannot_overlap_denied_paths() {
     let workspace = tempfile::tempdir().expect("workspace");
@@ -332,6 +371,55 @@ async fn absolute_read_roots_reject_replaced_roots() {
             .await
             .is_err()
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn absolute_workspace_roots_reject_replaced_roots() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let parent = tempfile::tempdir().expect("parent");
+    let attached = parent.path().join("attached");
+    let displaced = parent.path().join("displaced");
+    std::fs::create_dir(&attached).expect("attached workspace");
+    let requested = std::fs::canonicalize(&attached)
+        .expect("canonical attached workspace")
+        .join("bait.txt");
+    let sandbox = local_sandbox(workspace.path())
+        .allow_workspace_root(&attached)
+        .expect("workspace root");
+    std::fs::rename(&attached, &displaced).expect("displace attached workspace");
+    std::fs::create_dir(&attached).expect("replacement workspace");
+    std::fs::write(attached.join("bait.txt"), "replacement").expect("replacement file");
+
+    assert!(
+        sandbox
+            .read(requested.to_str().expect("UTF-8 attached path"))
+            .await
+            .is_err()
+    );
+    assert!(
+        sandbox
+            .write(requested.to_str().expect("UTF-8 attached path"), "escaped")
+            .await
+            .is_err()
+    );
+    assert!(
+        sandbox
+            .execute(
+                "true",
+                SandboxMode::WorkspaceWrite,
+                NetworkAccess::Denied,
+                CommandMode::Foreground,
+                CommandOutputSink::default(),
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        std::fs::read_to_string(attached.join("bait.txt")).expect("replacement file"),
+        "replacement"
+    );
+    assert!(!displaced.join("bait.txt").exists());
 }
 
 #[tokio::test]
@@ -428,6 +516,43 @@ async fn authorized_commands_can_modify_the_whole_workspace() {
         assert!(workspace.path().join(".agents").join(label).is_file());
         assert!(workspace.path().join(".codex").join(label).is_file());
     }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn commands_apply_workspace_access_to_attached_roots() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let attached = tempfile::tempdir().expect("attached workspace");
+    let writable = attached.path().join("writable");
+    let blocked = attached.path().join("blocked");
+    let sandbox = local_sandbox(workspace.path())
+        .allow_workspace_root(attached.path())
+        .expect("workspace root")
+        .isolated_home();
+
+    let output = sandbox
+        .execute(
+            &format!("touch {}", writable.display()),
+            SandboxMode::WorkspaceWrite,
+            NetworkAccess::Denied,
+            CommandMode::Foreground,
+            CommandOutputSink::default(),
+        )
+        .await
+        .expect("workspace command");
+    assert_eq!(output.exit_code, 0, "{}", output.stderr);
+    assert!(writable.is_file());
+
+    let output = sandbox
+        .execute_read_only(
+            "touch",
+            &[blocked.to_str().expect("UTF-8 blocked path")],
+            &[],
+        )
+        .await
+        .expect("read-only command");
+    assert_ne!(output.exit_code, 0);
+    assert!(!blocked.exists());
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]

@@ -41,7 +41,7 @@ pub(crate) use self::workspace::{
 };
 
 const CONFIG_VERSION: u32 = 23;
-const CHAT_SPEC_VERSION: u32 = 14;
+const CHAT_SPEC_VERSION: u32 = 15;
 pub(crate) const CHAT_SPEC_METADATA_KEY: &str = "mobius_gateway.chat";
 const CONFIG_FILE: &str = "gateway.toml";
 const CLOUDFLARE_TOKEN_FILE: &str = "cloudflare-token";
@@ -55,6 +55,7 @@ const MAX_PROVIDER_CATALOG_BYTES: usize = 16 * 1024;
 const MAX_CUSTOM_MODEL_ROUTES: usize = 64;
 const MAX_CLOUDFLARE_TOKEN_BYTES: usize = 16 * 1024;
 const MAX_WORKSPACE_DIRECTORY_NAME_BYTES: usize = 255;
+const MAX_ATTACHED_FOLDERS: usize = 8;
 const SECONDS_PER_DAY: u64 = 86_400;
 const USAGE_HISTORY_DAYS: u64 = 52 * 7;
 
@@ -120,6 +121,7 @@ pub(crate) struct ConfiguredProvider {
 pub(crate) struct ChatSpec {
     version: u32,
     pub(crate) workspace: PathBuf,
+    pub(crate) attached_folders: Vec<PathBuf>,
     pub(crate) bot_id: String,
     pub(crate) bot_description: String,
     pub(crate) agent: VersionedAgentConfig,
@@ -131,6 +133,7 @@ pub(crate) struct ChatSpec {
 struct StoredChatSpec {
     version: u32,
     workspace: PathBuf,
+    attached_folders: Vec<PathBuf>,
     bot_id: String,
 }
 
@@ -419,6 +422,7 @@ impl ChatSpec {
         let spec = Self {
             version: CHAT_SPEC_VERSION,
             workspace: validate_chat_workspace(workspace, state_dir, tls)?,
+            attached_folders: Vec::new(),
             bot_id: bot.id.clone(),
             bot_description: bot.description.clone(),
             agent: bot.config.clone(),
@@ -453,6 +457,11 @@ impl ChatSpec {
         let spec = Self {
             version: stored.version,
             workspace: stored.workspace,
+            attached_folders: stored
+                .attached_folders
+                .into_iter()
+                .filter(|folder| folder.is_dir())
+                .collect(),
             bot_id: bot.id,
             bot_description: bot.description,
             agent: bot.config,
@@ -468,6 +477,7 @@ impl ChatSpec {
             serde_json::to_value(StoredChatSpec {
                 version: self.version,
                 workspace: self.workspace.clone(),
+                attached_folders: self.attached_folders.clone(),
                 bot_id: self.bot_id.clone(),
             })?,
         )]))
@@ -479,6 +489,27 @@ impl ChatSpec {
             id: workspace_id(&self.workspace),
             path: self.workspace.clone(),
         }
+    }
+
+    pub(crate) fn with_attached_folder(
+        &self,
+        folder: &Path,
+        state_dir: &Path,
+        tls: Option<&TlsConfig>,
+    ) -> Result<Option<Self>> {
+        let folder = validate_chat_workspace(folder, state_dir, tls)?;
+        if folder == self.workspace || self.attached_folders.contains(&folder) {
+            return Ok(None);
+        }
+        if self.attached_folders.len() == MAX_ATTACHED_FOLDERS {
+            return Err(Error::Config(format!(
+                "a chat cannot attach more than {MAX_ATTACHED_FOLDERS} folders"
+            )));
+        }
+        let mut next = self.clone();
+        next.attached_folders.push(folder);
+        next.validate(state_dir, tls)?;
+        Ok(Some(next))
     }
 
     fn validate(&self, state_dir: &Path, tls: Option<&TlsConfig>) -> Result<()> {
@@ -501,6 +532,23 @@ impl ChatSpec {
             return Err(Error::Config(
                 "chat workspace must use its canonical path".into(),
             ));
+        }
+        if self.attached_folders.len() > MAX_ATTACHED_FOLDERS {
+            return Err(Error::Config(format!(
+                "a chat cannot attach more than {MAX_ATTACHED_FOLDERS} folders"
+            )));
+        }
+        let mut folders = BTreeSet::from([&self.workspace]);
+        for attached in &self.attached_folders {
+            let workspace = validate_chat_workspace(attached, state_dir, tls)?;
+            if workspace != *attached {
+                return Err(Error::Config(
+                    "attached folders must use canonical paths".into(),
+                ));
+            }
+            if !folders.insert(attached) {
+                return Err(Error::Config("chat folders must be unique".into()));
+            }
         }
         validate_agent_composition(&self.agent.config)
     }

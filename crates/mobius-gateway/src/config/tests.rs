@@ -1115,22 +1115,45 @@ fn chat_spec_rejects_a_tls_private_key_inside_its_workspace() {
 fn chat_spec_metadata_round_trips_and_revalidates_tampering() {
     let root = tempfile::tempdir().expect("root");
     let workspace = root.path().join("workspace");
+    let attached = root.path().join("attached");
     let state = root.path().join("state");
     fs::create_dir(&workspace).expect("workspace");
+    fs::create_dir(&attached).expect("attached folder");
     fs::create_dir(&state).expect("state");
     let bots = crate::bots::BotStore::open(&state).expect("Bots");
     let bot = bots
         .create_bot("Fixture", "Own fixture work.", AgentComposition::default())
         .expect("Bot");
-    let spec = ChatSpec::for_bot(&workspace, &bot, &state, None).expect("chat spec");
+    let spec = ChatSpec::for_bot(&workspace, &bot, &state, None)
+        .expect("chat spec")
+        .with_attached_folder(&attached.join("..").join("attached"), &state, None)
+        .expect("attach folder")
+        .expect("changed chat spec");
+    assert_eq!(
+        spec.attached_folders,
+        [fs::canonicalize(&attached).expect("canonical attached")]
+    );
+    assert!(
+        spec.with_attached_folder(&attached, &state, None)
+            .expect("duplicate attachment")
+            .is_none()
+    );
     let mut metadata = spec.metadata().expect("chat metadata");
-    assert_eq!(metadata[CHAT_SPEC_METADATA_KEY]["version"], 14);
+    assert_eq!(metadata[CHAT_SPEC_METADATA_KEY]["version"], 15);
 
     assert_eq!(
         ChatSpec::from_metadata(&metadata, &bots, &state, None).expect("restore chat spec"),
         spec
     );
-    for version in [10, 12, 13] {
+    fs::remove_dir(&attached).expect("remove attached folder");
+    assert!(
+        ChatSpec::from_metadata(&metadata, &bots, &state, None)
+            .expect("restore without optional folder")
+            .attached_folders
+            .is_empty()
+    );
+    fs::create_dir(&attached).expect("restore attached folder");
+    for version in [10, 12, 13, 14] {
         let mut previous = metadata.clone();
         previous
             .get_mut(CHAT_SPEC_METADATA_KEY)
@@ -1146,6 +1169,21 @@ fn chat_spec_metadata_round_trips_and_revalidates_tampering() {
         );
         assert_eq!(previous, unchanged);
     }
+    let mut attached_tampering = metadata.clone();
+    attached_tampering
+        .get_mut(CHAT_SPEC_METADATA_KEY)
+        .and_then(Value::as_object_mut)
+        .expect("chat metadata object")
+        .insert(
+            "attached_folders".into(),
+            serde_json::json!([fs::canonicalize(&state).expect("canonical state")]),
+        );
+    assert!(
+        ChatSpec::from_metadata(&attached_tampering, &bots, &state, None)
+            .expect_err("tampered attached folder must be revalidated")
+            .to_string()
+            .contains("must not overlap")
+    );
     metadata
         .get_mut(CHAT_SPEC_METADATA_KEY)
         .and_then(Value::as_object_mut)

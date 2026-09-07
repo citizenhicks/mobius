@@ -8,6 +8,7 @@ enum GatewayRequest: Encodable, Sendable {
     case listSessions(requestID: String)
     case listBotSessions(requestID: String, botID: String)
     case createSession(requestID: String, workspace: String, botID: String)
+    case attachSessionFolder(requestID: String, sessionID: String, folder: String)
     case openSession(
         requestID: String,
         sessionID: String,
@@ -220,6 +221,11 @@ enum GatewayRequest: Encodable, Sendable {
             try container.encode(requestID, forKey: "requestId")
             try container.encode(workspace, forKey: "workspace")
             try container.encode(botID, forKey: "botId")
+        case .attachSessionFolder(let requestID, let sessionID, let folder):
+            try container.encode("attach_session_folder", forKey: "type")
+            try container.encode(requestID, forKey: "requestId")
+            try container.encode(sessionID, forKey: "sessionId")
+            try container.encode(folder, forKey: "folder")
         case .openSession(let requestID, let sessionID, let lastSequence):
             try container.encode("open_session", forKey: "type")
             try container.encode(requestID, forKey: "requestId")

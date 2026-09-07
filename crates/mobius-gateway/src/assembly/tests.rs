@@ -591,7 +591,7 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
     };
     let active_extensions = discover(&active);
     let inactive_extensions = discover(&inactive);
-    let (active, _) = build_middleware(
+    let active = build_middleware(
         &settings,
         &workspace,
         "bot-fixture",
@@ -604,8 +604,9 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
         &active,
         Some(active_extensions),
     )
-    .expect("active middleware");
-    let (inactive, _) = build_middleware(
+    .expect("active middleware")
+    .stack;
+    let inactive = build_middleware(
         &settings,
         &workspace,
         "bot-fixture",
@@ -618,7 +619,8 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
         &inactive,
         Some(inactive_extensions),
     )
-    .expect("inactive middleware");
+    .expect("inactive middleware")
+    .stack;
     let active = active
         .frontend()
         .expect("active frontend")

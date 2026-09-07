@@ -1240,3 +1240,81 @@ async fn branch_switch_is_acknowledged_and_broadcasts_fresh_status() {
     shutdown.send(()).expect("stop gateway");
     serving.await.expect("gateway task").expect("gateway stop");
 }
+
+#[tokio::test]
+async fn attached_folder_is_persisted_for_tool_access() {
+    let root = tempfile::tempdir().expect("temporary directory");
+    let workspace = root.path().join("workspace");
+    let attached = root.path().join("attached");
+    let state = root.path().join("state");
+    fs::create_dir(&workspace).expect("workspace");
+    fs::create_dir(&attached).expect("attached folder");
+    let attached = fs::canonicalize(&attached).expect("canonical attached folder");
+    let (server, grant) = configured_test_server(state.clone()).await;
+    let listen = server.config.listen;
+    let checkpoints =
+        SqliteCheckpoint::new(state.join("checkpoints.sqlite3")).expect("checkpoint store");
+    let (shutdown, signal) = tokio::sync::oneshot::channel();
+    let serving = tokio::spawn(server.serve_until(async move {
+        let _ = signal.await;
+    }));
+    let endpoint = format!("tcp://{listen}")
+        .parse::<Endpoint>()
+        .expect("endpoint");
+    let (connection, _) = GatewayClient::pair(
+        &endpoint,
+        grant.code,
+        "attached folder test",
+        ClientKind::Ios,
+    )
+    .await
+    .expect("pair frontend");
+    let (sender, mut events) = connection.into_parts();
+    wait_gateway_ready(&mut events).await;
+    let session_id = create_chat(&sender, &mut events, &workspace).await;
+    drain_ready_replay(&mut events).await;
+    let request_id = Uuid::new_v4().to_string();
+
+    sender
+        .send(ClientMessage::AttachSessionFolder {
+            request_id: request_id.clone(),
+            session_id: session_id.clone(),
+            folder: attached.clone(),
+        })
+        .await
+        .expect("attach folder");
+    let mut accepted = false;
+    let mut changed = false;
+    while !accepted || !changed {
+        match next_gateway_message(&mut events).await {
+            ServerMessage::Accepted { request_id: actual } if actual == request_id => {
+                accepted = true;
+            }
+            ServerMessage::Rejected {
+                request_id: actual,
+                code,
+                message,
+                ..
+            } if actual == request_id => panic!("attach rejected ({code}): {message}"),
+            ServerMessage::SessionChanged { payload }
+                if payload.session.session_id == session_id =>
+            {
+                changed = true;
+            }
+            _ => {}
+        }
+    }
+
+    let checkpoint = checkpoints
+        .load(&session_id)
+        .await
+        .expect("load checkpoint")
+        .expect("session checkpoint");
+    assert_eq!(
+        checkpoint.metadata[crate::config::CHAT_SPEC_METADATA_KEY]["attached_folders"],
+        serde_json::json!([attached])
+    );
+
+    shutdown.send(()).expect("stop gateway");
+    serving.await.expect("gateway task").expect("gateway stop");
+}

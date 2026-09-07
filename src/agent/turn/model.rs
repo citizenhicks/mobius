@@ -7,6 +7,7 @@ use uuid::Uuid;
 
 use super::turn_event;
 use crate::agent::input::Wait;
+use crate::agent::tool_step::record_model_input_image_bytes;
 use crate::agent::{Runner, SubmissionInbox, send_event, try_send_event, unix_timestamp_ms};
 use crate::backend::checkpoint::{
     ActiveModelStep, ContextRewrite, ContextRewriteReason, ExecutionOutcome, ExecutionPhase,
@@ -18,7 +19,7 @@ use crate::backend::model::{
 };
 use crate::backend::sandbox::SandboxAuthorization;
 use crate::middleware::tools::{PreparedToolSet, ToolResult};
-use crate::middleware::{ModelContext, PreToolUseContext, StopContext};
+use crate::middleware::{ModelContext, PreToolUseContext, StopContext, model_input_image_bytes};
 use crate::protocol::{
     AssistantMessageEvent, Event, EventMsg, MessageTarget, ModelEventTracker,
     ModelStepCompletedEvent, ModelStepDiagnostics, ModelStepOutcome, ModelStepStartedEvent,
@@ -336,9 +337,18 @@ impl Runner {
 
     pub(in crate::agent) async fn live_tools(&self) -> Result<PreparedToolSet> {
         let mut available = self.catalog.exposed_names();
+        let supports_image_input = self
+            .config
+            .model
+            .supports_image_input(&self.config.provider)?;
         self.config
             .middleware
-            .resolve_tool_exposure(&self.config.session_id, &self.state.context, &mut available)
+            .resolve_tool_exposure(
+                &self.config.session_id,
+                supports_image_input,
+                &self.state.context,
+                &mut available,
+            )
             .await?;
         self.catalog.prepare(&self.state.context, available)
     }
@@ -600,6 +610,7 @@ impl Runner {
         submission_id: &str,
         turn_id: &str,
         rewrite_reasons: &[ContextRewriteReason],
+        input_image_bytes: usize,
         mut step: CompletedModelStep,
     ) -> Result<Option<(ModelOutput, Vec<ToolCall>, Vec<ToolResult>)>> {
         let provider = self.config.provider.clone();
@@ -682,6 +693,13 @@ impl Runner {
         let mut durable_output = step.output.output.clone();
         durable_output.append(&mut tool_effects.input);
         insert_before_open_tool_calls(&mut durable_output, hook_input);
+        if !step.output.tool_calls.is_empty() {
+            record_model_input_image_bytes(
+                &mut durable_output,
+                &step.output.tool_calls,
+                input_image_bytes,
+            )?;
+        }
         self.extend_context(durable_output);
         let message_index = durable_visible_message_index(
             &self.state.context[context_before..],
@@ -878,13 +896,19 @@ impl Runner {
         inbox: &mut SubmissionInbox,
         submission_id: &str,
         turn_id: &str,
+        input_image_bytes: usize,
         calls: Vec<ToolCall>,
     ) -> Result<bool> {
         let live_tools = self.live_tools().await?;
         let (live_calls, unavailable_results) = self.catalog.bind_live_batch(&calls, &live_tools);
         if !unavailable_results.is_empty() {
-            self.persist_tool_results(submission_id, turn_id, unavailable_results)
-                .await?;
+            self.persist_tool_results(
+                submission_id,
+                turn_id,
+                input_image_bytes,
+                unavailable_results,
+            )
+            .await?;
         }
         let calls = live_calls
             .into_iter()
@@ -932,7 +956,7 @@ impl Runner {
                 results
             }
         };
-        self.complete_tool_step(submission_id, turn_id, results)
+        self.complete_tool_step(submission_id, turn_id, input_image_bytes, results)
             .await?;
         Ok(false)
     }
@@ -1016,6 +1040,7 @@ impl Runner {
                     }
                 }
             };
+            let input_image_bytes = model_input_image_bytes(&request_input.0)?;
 
             let step = match self
                 .request_model_step(
@@ -1038,6 +1063,7 @@ impl Runner {
                     &submission_id,
                     &turn_id,
                     &rewrite_reasons,
+                    input_image_bytes,
                     step,
                 )
                 .await?
@@ -1048,14 +1074,25 @@ impl Runner {
                 continue;
             }
             if !denied_results.is_empty() {
-                self.persist_tool_results(&submission_id, &turn_id, denied_results)
-                    .await?;
+                self.persist_tool_results(
+                    &submission_id,
+                    &turn_id,
+                    input_image_bytes,
+                    denied_results,
+                )
+                .await?;
             }
             if executable_calls.is_empty() {
                 continue;
             }
             if self
-                .authorize_and_execute(inbox, &submission_id, &turn_id, executable_calls)
+                .authorize_and_execute(
+                    inbox,
+                    &submission_id,
+                    &turn_id,
+                    input_image_bytes,
+                    executable_calls,
+                )
                 .await?
             {
                 return Ok(());

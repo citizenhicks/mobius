@@ -295,20 +295,20 @@ fn tool_context() -> ToolContext {
     use crate::backend::sandbox::{
         ApprovalPolicy, NetworkAccess, Sandbox, SandboxMode, SandboxPermissions,
     };
-    ToolContext {
-        sandbox: Arc::new(Sandbox::new(
+    ToolContext::new(
+        Arc::new(Sandbox::new(
             Arc::new(crate::backend::sandbox::local::LocalSandbox::new(".").expect("sandbox")),
             ApprovalPolicy::Ask,
         )),
-        permissions: SandboxPermissions::restore(
+        SandboxPermissions::restore(
             "chat",
             SandboxMode::WorkspaceWrite,
             NetworkAccess::Denied,
             ["call".into()],
         )
         .for_call("call"),
-        turn_id: "turn".into(),
-    }
+        "turn",
+    )
 }
 
 fn write_tool(store: &ScratchpadStore, backend: Arc<TestBotsBackend>) -> WriteScratchpad {

@@ -55,12 +55,11 @@ struct PairingView: View {
                             }
                             .labelStyle(.iconOnly)
                             .buttonStyle(.mobiusPlain)
-                            .tint(.primary)
+                            .tint(palette.accent)
                             .frame(
                                 width: MobiusStyle.iconButtonSize,
                                 height: MobiusStyle.iconButtonSize
                             )
-                            .mobiusGlass(in: Circle(), interactive: true, clear: true)
                             .frame(maxWidth: .infinity, alignment: .trailing)
                             .accessibilityLabel("Paste pairing setup")
                             .help("Paste pairing setup")

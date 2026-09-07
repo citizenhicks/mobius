@@ -1,7 +1,7 @@
 import Foundation
 import UIKit
 
-let gatewayProtocolVersion = 70
+let gatewayProtocolVersion = 71
 let maximumGatewayFrameBytes = 50 * 1024 * 1024
 let maximumComposerBytes = 1024 * 1024
 let maximumWireSessionFileReferences = 16
@@ -38,7 +38,8 @@ struct GatewayPairingSetup: Equatable, Sendable {
     let code: String
 
     init(_ rawValue: String) throws {
-        let parts = rawValue.split(separator: "|", omittingEmptySubsequences: false)
+        let parts = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: "|", omittingEmptySubsequences: false)
         guard parts.count == 3, parts[0] == "mobius-pair:v1" else {
             throw GatewayWireError.invalidPairingSetup
         }

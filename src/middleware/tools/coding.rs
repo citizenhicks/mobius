@@ -1,13 +1,16 @@
+use base64::Engine as _;
 use diffy::DiffOptions;
 use serde::Deserialize;
 use serde_json::Value;
 
+use super::super::image_input::{MAX_IMAGE_INPUT_BYTES, raster_media_type};
 use super::patch::{apply_patch_document, parse_patch_document};
 use super::{
     ApprovalRequirement, ExecutionMode, HookIdentity, MAX_MUTATION_BYTES, MAX_TOOL_OUTPUT_BYTES,
     Tool, ToolContext, ToolExposure, text,
 };
 use crate::backend::model::ToolDefinition;
+use crate::protocol::INTERNAL_MESSAGE_FIELD;
 use crate::{BoxFuture, Error, Result};
 
 #[derive(Deserialize)]
@@ -48,6 +51,58 @@ impl Tool for ReadFile {
         Box::pin(async move {
             let arguments: PathArgs = serde_json::from_value(arguments)?;
             context.sandbox.read(&arguments.path).await
+        })
+    }
+}
+
+pub(super) struct ViewImage;
+
+impl Tool for ViewImage {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "view_image".into(),
+            description: text::TOOL_VIEW_IMAGE_DESCRIPTION.into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": text::TOOL_VIEW_IMAGE_PARAMETER_PATH_DESCRIPTION
+                    }
+                },
+                "required": ["path"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn exposure(&self) -> ToolExposure {
+        ToolExposure::Direct
+    }
+
+    fn execution_mode(&self) -> ExecutionMode {
+        ExecutionMode::Exclusive
+    }
+
+    fn call<'a>(&'a self, context: ToolContext, arguments: Value) -> BoxFuture<'a, Result<String>> {
+        Box::pin(async move {
+            let arguments: PathArgs = serde_json::from_value(arguments)?;
+            let bytes = context
+                .sandbox
+                .read_bytes(&arguments.path, MAX_IMAGE_INPUT_BYTES)
+                .await?;
+            let media_type = raster_media_type(&bytes)?;
+            context.claim_image_input()?;
+            context.push_input(serde_json::json!({
+                "role": "user",
+                "content": [{
+                    "type": "input_image",
+                    "media_type": media_type,
+                    "data": base64::engine::general_purpose::STANDARD.encode(bytes)
+                }],
+                (INTERNAL_MESSAGE_FIELD): "view_image"
+            }))?;
+            Ok(format!("viewed image {}", arguments.path))
         })
     }
 }

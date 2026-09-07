@@ -270,11 +270,7 @@ mod tests {
 
         let output = tool
             .call(
-                ToolContext {
-                    sandbox,
-                    permissions,
-                    turn_id: "turn".into(),
-                },
+                ToolContext::new(sandbox, permissions, "turn"),
                 serde_json::json!({"path": "report.xlsx"}),
             )
             .await

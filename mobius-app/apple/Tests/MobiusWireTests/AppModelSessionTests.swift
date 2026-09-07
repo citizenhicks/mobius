@@ -21,6 +21,7 @@ extension AppModelTests {
         XCTAssertFalse(model.canModifySelectedSession)
 
         model.switchGitBranch(to: "feature")
+        model.attachFolder("/srv/other")
         model.openSession("chat-2")
         try await Task.sleep(for: .milliseconds(30))
 
@@ -29,10 +30,38 @@ extension AppModelTests {
             if case .switchGitBranch = request { return true }
             return false
         })
+        XCTAssertFalse(requests.contains { request in
+            if case .attachSessionFolder = request { return true }
+            return false
+        })
         XCTAssertTrue(requests.contains { request in
             guard case .openSession(_, "chat-2", _) = request else { return false }
             return true
         })
+    }
+
+    func testAttachingFolderUsesSelectedSessionMutation() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model { request in await recorder.record(request) }
+        model.connectionState = .ready
+        model.selectedSessionID = "chat-1"
+
+        model.attachFolder("  /srv/other  ")
+
+        let request = await recorder.firstRequest(after: 0) { request in
+            if case .attachSessionFolder = request { return true }
+            return false
+        }
+        guard case .attachSessionFolder(
+            let requestID,
+            let sessionID,
+            let folder
+        ) = try XCTUnwrap(request) else {
+            return XCTFail("Expected folder attachment")
+        }
+        XCTAssertEqual(sessionID, "chat-1")
+        XCTAssertEqual(folder, "/srv/other")
+        XCTAssertEqual(model.sessionMutationRequestID, requestID)
     }
 
     func testNewChatBotCanChangeUntilFirstSendCreatesSession() async throws {

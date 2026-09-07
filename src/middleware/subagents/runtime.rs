@@ -196,6 +196,12 @@ impl Shared {
         self.changed.notify_waiters();
     }
 
+    pub(super) async fn has_active_children(&self, root_id: &str) -> Result<bool> {
+        let root = self.root(root_id).await?;
+        let root = root.state.lock().await;
+        Ok(active_count(&root.tree) > 0)
+    }
+
     pub(super) async fn remove_sender(&self, root_id: &str, path: &str) {
         if let Ok(root) = self.root(root_id).await {
             root.state.lock().await.senders.remove(path);

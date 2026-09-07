@@ -1040,6 +1040,11 @@ extension AppModelTests {
         model.saveBotDraft()
         let requestCount = await recorder.requestCount()
         XCTAssertEqual(requestCount, 0)
+        XCTAssertEqual(
+            model.toast?.message,
+            "Bot settings can’t be changed while this Bot is running."
+        )
+        XCTAssertEqual(model.toast?.tone, .warning)
     }
 
     func testBotMutationRejectionsUseConfigurationApplyStates() throws {

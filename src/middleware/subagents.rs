@@ -372,6 +372,11 @@ impl Subagents {
         })
     }
 
+    /// Reports whether this root session has a pending or running child agent.
+    pub async fn has_active_children(&self, root_session_id: &str) -> Result<bool> {
+        self.shared.has_active_children(root_session_id).await
+    }
+
     /// Selects a registered provider/model route for children by default.
     #[must_use]
     pub fn default_model(mut self, model: impl Into<String>) -> Self {

@@ -32,6 +32,7 @@ pub mod compaction;
 mod context;
 pub mod context_offloading;
 pub mod extensions;
+mod image_input;
 pub mod instructions;
 pub mod manifest;
 pub mod messages;
@@ -50,6 +51,11 @@ pub use context::{
     SubmissionResult, ToolExposureContext, TurnEndContext, TurnIdentity,
 };
 pub(crate) use context::{MessageSubmitResult, PreparedMessage};
+#[cfg(test)]
+pub(crate) use image_input::MAX_IMAGE_INPUT_BYTES;
+pub(crate) use image_input::{
+    checked_image_input_bytes, model_input_image_bytes, model_input_image_stats,
+};
 
 use tools::Catalog;
 
@@ -679,8 +685,10 @@ impl MiddlewareStack {
     }
 
     pub(crate) async fn prepare_model(&self, mut context: ModelContext<'_>) -> Result<()> {
+        let supports_image_input = context.model.supports_image_input(context.provider)?;
         self.resolve_tool_exposure(
             context.session_id,
+            supports_image_input,
             context.durable_input,
             context.available_tools,
         )
@@ -691,17 +699,17 @@ impl MiddlewareStack {
         if context.turn_stopped() {
             return Ok(());
         }
+        let mut request_context = ModelRequestContext {
+            role: &context.runtime.role,
+            model: context.model,
+            provider: context.provider,
+            session_id: context.session_id,
+            turn_id: context.turn_id,
+            model_step: context.model_step,
+            input: context.request_input,
+        };
         for entry in &self.entries {
-            let mut request = ModelRequestContext {
-                role: &context.runtime.role,
-                model: context.model,
-                provider: context.provider,
-                session_id: context.session_id,
-                turn_id: context.turn_id,
-                model_step: context.model_step,
-                input: context.request_input,
-            };
-            entry.model_request(&mut request).await?;
+            entry.model_request(&mut request_context).await?;
         }
         Ok(())
     }
@@ -709,6 +717,7 @@ impl MiddlewareStack {
     pub(crate) async fn resolve_tool_exposure(
         &self,
         session_id: &str,
+        supports_image_input: bool,
         input: &[Value],
         available: &mut BTreeSet<String>,
     ) -> Result<()> {
@@ -716,6 +725,7 @@ impl MiddlewareStack {
             entry
                 .tool_exposure(&mut ToolExposureContext {
                     session_id,
+                    supports_image_input,
                     input,
                     available,
                 })

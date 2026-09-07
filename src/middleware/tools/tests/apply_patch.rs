@@ -3,23 +3,23 @@ use super::*;
 async fn rejected_patch(content: &str, patch: &str) -> String {
     let workspace = tempfile::tempdir().expect("workspace");
     std::fs::write(workspace.path().join("note.txt"), content).expect("write fixture");
-    let context = ToolContext {
-        sandbox: Arc::new(Sandbox::new(
+    let context = ToolContext::new(
+        Arc::new(Sandbox::new(
             Arc::new(
                 crate::backend::sandbox::local::LocalSandbox::new(workspace.path())
                     .expect("local sandbox"),
             ),
             crate::backend::sandbox::ApprovalPolicy::Ask,
         )),
-        permissions: SandboxPermissions::restore(
+        SandboxPermissions::restore(
             "session",
             crate::backend::sandbox::SandboxMode::WorkspaceWrite,
             crate::backend::sandbox::NetworkAccess::Denied,
             ["patch".into()],
         )
         .for_call("patch"),
-        turn_id: "turn".into(),
-    };
+        "turn",
+    );
 
     ApplyPatch
         .call(context, serde_json::json!({"patch": patch}))
@@ -58,9 +58,12 @@ fn apply_patch_preserves_crlf_line_endings() {
 }
 
 #[tokio::test]
-async fn apply_patch_returns_a_unified_diff_after_writing() {
+async fn apply_patch_edits_an_absolute_path_in_an_attached_folder() {
     let workspace = tempfile::tempdir().expect("workspace");
-    let path = workspace.path().join("note.txt");
+    let attached = tempfile::tempdir().expect("attached folder");
+    let attached = std::fs::canonicalize(attached.path()).expect("canonical attached folder");
+    let path = attached.join("note.txt");
+    let patch_path = path.to_str().expect("UTF-8 attached path");
     std::fs::write(&path, "first\nold\nlast\n").expect("write fixture");
     let mut catalog = Catalog::default();
     catalog
@@ -69,7 +72,9 @@ async fn apply_patch_returns_a_unified_diff_after_writing() {
     let sandbox = Arc::new(Sandbox::new(
         Arc::new(
             crate::backend::sandbox::local::LocalSandbox::new(workspace.path())
-                .expect("local sandbox"),
+                .expect("local sandbox")
+                .allow_workspace_root(&attached)
+                .expect("attached folder"),
         ),
         crate::backend::sandbox::ApprovalPolicy::Ask,
     ));
@@ -85,7 +90,7 @@ async fn apply_patch_returns_a_unified_diff_after_writing() {
             call_id: "call-1".into(),
             name: "apply_patch".into(),
             arguments: serde_json::json!({
-                "patch": "*** Begin Patch\n*** Update File: note.txt\n@@\n first\n-old\n+new\n last\n*** End Patch\n"
+                "patch": format!("*** Begin Patch\n*** Update File: {patch_path}\n@@\n first\n-old\n+new\n last\n*** End Patch\n")
             }),
         }],
     );
@@ -99,7 +104,7 @@ async fn apply_patch_returns_a_unified_diff_after_writing() {
     let patch = diffy::Patch::from_str(&result.output).expect("unified diff");
     assert_eq!(
         (patch.original(), patch.modified()),
-        (Some("note.txt"), Some("note.txt"))
+        (Some(patch_path), Some(patch_path))
     );
     assert!(result.output.contains("-old\n+new\n"));
     assert_eq!(
@@ -107,7 +112,7 @@ async fn apply_patch_returns_a_unified_diff_after_writing() {
         "first\nnew\nlast\n"
     );
     assert_eq!(
-        std::fs::read_to_string(path).expect("read edited file"),
+        std::fs::read_to_string(&path).expect("read edited file"),
         "first\nnew\nlast\n"
     );
 
@@ -117,7 +122,7 @@ async fn apply_patch_returns_a_unified_diff_after_writing() {
                 call_id: "call-2".into(),
                 name: "apply_patch".into(),
                 arguments: serde_json::json!({
-                    "patch": "*** Begin Patch\n*** Update File: note.txt\n@@\n first\n-new\n+new\n last\n*** End Patch\n"
+                    "patch": format!("*** Begin Patch\n*** Update File: {patch_path}\n@@\n first\n-new\n+new\n last\n*** End Patch\n")
                 }),
             },
             &BTreeSet::new(),
@@ -134,7 +139,7 @@ async fn apply_patch_returns_a_unified_diff_after_writing() {
         "tool error: Patch rejected: patch applies but makes no changes."
     );
     assert_eq!(
-        std::fs::read_to_string(workspace.path().join("note.txt")).expect("read unchanged file"),
+        std::fs::read_to_string(&path).expect("read unchanged file"),
         "first\nnew\nlast\n"
     );
 }
@@ -164,23 +169,23 @@ async fn apply_patch_supports_context_headers_and_multiple_changes() {
     let path = workspace.path().join("runtime.rs");
     let content = "    fn first\ncomment\nold one\nmiddle\nsection\ncomment\nold two\nlast\n";
     std::fs::write(&path, content).expect("write fixture");
-    let context = ToolContext {
-        sandbox: Arc::new(Sandbox::new(
+    let context = ToolContext::new(
+        Arc::new(Sandbox::new(
             Arc::new(
                 crate::backend::sandbox::local::LocalSandbox::new(workspace.path())
                     .expect("local sandbox"),
             ),
             crate::backend::sandbox::ApprovalPolicy::Ask,
         )),
-        permissions: SandboxPermissions::restore(
+        SandboxPermissions::restore(
             "session",
             crate::backend::sandbox::SandboxMode::WorkspaceWrite,
             crate::backend::sandbox::NetworkAccess::Denied,
             ["patch".into()],
         )
         .for_call("patch"),
-        turn_id: "turn".into(),
-    };
+        "turn",
+    );
 
     ApplyPatch
         .call(
@@ -305,17 +310,17 @@ async fn apply_patch_cannot_make_a_file_unreadable() {
         ),
         crate::backend::sandbox::ApprovalPolicy::Ask,
     ));
-    let context = ToolContext {
+    let context = ToolContext::new(
         sandbox,
-        permissions: SandboxPermissions::restore(
+        SandboxPermissions::restore(
             "session",
             crate::backend::sandbox::SandboxMode::WorkspaceWrite,
             crate::backend::sandbox::NetworkAccess::Denied,
             ["patch".into()],
         )
         .for_call("patch"),
-        turn_id: "turn".into(),
-    };
+        "turn",
+    );
 
     let error = ApplyPatch
         .call(

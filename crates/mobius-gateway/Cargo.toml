@@ -1,6 +1,6 @@
 [package]
 name = "mobius-gateway"
-version = "0.15.2"
+version = "0.15.3"
 edition = "2024"
 rust-version = "1.98"
 description = "Headless authenticated gateway for möbius frontends"
@@ -22,7 +22,7 @@ chrono-tz = "0.10"
 clap = { version = "4.6.6", features = ["derive"] }
 croner = "3"
 futures-util = { version = "0.3", features = ["sink"] }
-mobius = { version = "=0.15.1", path = "../.." }
+mobius = { version = "=0.15.2", path = "../.." }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pemfile = "2"
 serde = { version = "1", features = ["derive"] }

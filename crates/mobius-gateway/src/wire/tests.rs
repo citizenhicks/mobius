@@ -718,6 +718,12 @@ fn session_actions_have_flat_authenticated_frames() {
         pinned: true,
     }))
     .expect("encode pin");
+    let attach = serde_json::to_value(ClientFrame::new(ClientMessage::AttachSessionFolder {
+        request_id: "request-b".into(),
+        session_id: "session-a".into(),
+        folder: PathBuf::from("/srv/second"),
+    }))
+    .expect("encode folder attachment");
     let delete = serde_json::to_value(ClientFrame::new(ClientMessage::DeleteSessions {
         request_id: "request-d".into(),
         session_ids: vec!["session-a".into(), "session-b".into()],
@@ -726,6 +732,9 @@ fn session_actions_have_flat_authenticated_frames() {
 
     assert_eq!(rename["type"], "rename_session");
     assert_eq!(rename["title"], "Renamed chat");
+    assert_eq!(attach["type"], "attach_session_folder");
+    assert_eq!(attach["session_id"], "session-a");
+    assert_eq!(attach["folder"], "/srv/second");
     assert_eq!(pin["type"], "set_session_pinned");
     assert_eq!(pin["pinned"], true);
     assert_eq!(delete["type"], "delete_sessions");

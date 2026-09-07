@@ -1,6 +1,7 @@
 //! Sandboxed execution and its approval boundary.
 
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde::Deserialize;
@@ -235,6 +236,7 @@ pub struct Sandbox {
     backend: Arc<dyn SandboxBackend>,
     approval: Approval,
     background: BackgroundCommands,
+    workspace_prompt: Option<String>,
 }
 
 impl Sandbox {
@@ -245,7 +247,22 @@ impl Sandbox {
             backend,
             approval: Approval::new(policy),
             background: BackgroundCommands::default(),
+            workspace_prompt: None,
         }
+    }
+
+    /// Adds the primary workspace and attached folder paths to the model prompt.
+    #[must_use]
+    pub fn attached_folders(mut self, primary: PathBuf, attached: Vec<PathBuf>) -> Self {
+        let mut prompt = format!("Primary workspace cwd: {primary:?}.");
+        if !attached.is_empty() {
+            prompt.push_str("\nAttached writable folders (use absolute paths):");
+            for path in attached {
+                prompt.push_str(&format!("\n- {path:?}"));
+            }
+        }
+        self.workspace_prompt = Some(prompt);
+        self
     }
 
     pub(crate) fn platform_prompt() -> &'static str {
@@ -344,6 +361,11 @@ impl Sandbox {
         )
     }
 
+    /// Reports whether one session still owns a background command result.
+    pub fn has_background_commands(&self, session_id: &str) -> Result<bool> {
+        self.background.has_owner(session_id)
+    }
+
     pub(crate) async fn poll_background(
         &self,
         id: &str,
@@ -411,7 +433,12 @@ impl Middleware for Sandbox {
     }
 
     fn prompt_section(&self, _runtime: &RuntimeContext) -> Result<Option<PromptSection>> {
-        Ok(Some(PromptSection::new(Sandbox::platform_prompt())))
+        let mut prompt = Sandbox::platform_prompt().to_owned();
+        if let Some(workspace) = &self.workspace_prompt {
+            prompt.push_str("\n\n");
+            prompt.push_str(workspace);
+        }
+        Ok(Some(PromptSection::new(prompt)))
     }
 
     fn render(&self, event: &EventMsg, _session_id: &str) -> Option<FrontendBlock> {
@@ -547,6 +574,26 @@ mod tests {
         assert_eq!(options[0].symbol, Some(FrontendSymbol::ShieldCheck));
         assert_eq!(options[3].symbol, Some(FrontendSymbol::ShieldOff));
         assert_eq!(options[3].tone, FrontendTone::Error);
+    }
+
+    #[test]
+    fn workspace_prompt_names_primary_and_attached_folders() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sandbox = Sandbox::new(
+            Arc::new(LocalSandbox::new(workspace.path()).expect("backend")),
+            ApprovalPolicy::Ask,
+        )
+        .attached_folders(
+            PathBuf::from("/primary workspace"),
+            vec![PathBuf::from("/attached\nworkspace")],
+        );
+
+        assert_eq!(
+            sandbox.workspace_prompt.as_deref(),
+            Some(
+                "Primary workspace cwd: \"/primary workspace\".\nAttached writable folders (use absolute paths):\n- \"/attached\\nworkspace\""
+            )
+        );
     }
 
     #[tokio::test]

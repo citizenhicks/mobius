@@ -138,6 +138,20 @@ pub(super) async fn handle_message(
         } => {
             return rename_session(writer, gateway, request_id, session_id, title).await;
         }
+        ClientMessage::AttachSessionFolder {
+            request_id,
+            session_id,
+            folder,
+        } => {
+            return attach_session_folder(
+                writer,
+                &*connection.selected,
+                request_id,
+                session_id,
+                folder,
+            )
+            .await;
+        }
         ClientMessage::SetSessionPinned {
             request_id,
             session_id,
@@ -884,6 +898,20 @@ async fn rename_session(
         gateway.rename_session(&session_id, &title).await,
     )
     .await
+}
+
+async fn attach_session_folder(
+    writer: &mut (impl AsyncWrite + Unpin),
+    selected: &Option<SelectedChat>,
+    request_id: String,
+    session_id: String,
+    folder: PathBuf,
+) -> Result<()> {
+    let host = match require_selected(selected, &session_id) {
+        Ok(host) => host,
+        Err(rejection) => return write_rejection(writer, request_id, rejection).await,
+    };
+    write_result(writer, request_id, host.attach_folder(folder).await).await
 }
 
 async fn set_session_pinned(

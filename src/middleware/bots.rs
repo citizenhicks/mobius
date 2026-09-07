@@ -682,22 +682,22 @@ mod tests {
             ApprovalPolicy, NetworkAccess, Sandbox, SandboxMode, SandboxPermissions,
         };
 
-        ToolContext {
-            sandbox: Arc::new(Sandbox::new(
+        ToolContext::new(
+            Arc::new(Sandbox::new(
                 Arc::new(
                     crate::backend::sandbox::local::LocalSandbox::new(".").expect("local sandbox"),
                 ),
                 ApprovalPolicy::Ask,
             )),
-            permissions: SandboxPermissions::restore(
+            SandboxPermissions::restore(
                 "chat",
                 SandboxMode::WorkspaceWrite,
                 NetworkAccess::Denied,
                 ["call".into()],
             )
             .for_call("call"),
-            turn_id: "turn".into(),
-        }
+            "turn",
+        )
     }
 
     #[test]
@@ -870,6 +870,7 @@ mod tests {
         hidden
             .tool_exposure(&mut ToolExposureContext {
                 session_id: "chat",
+                supports_image_input: true,
                 input: &[],
                 available: &mut unavailable,
             })
@@ -889,6 +890,7 @@ mod tests {
         active
             .tool_exposure(&mut ToolExposureContext {
                 session_id: "chat",
+                supports_image_input: true,
                 input: &[],
                 available: &mut available,
             })
@@ -914,6 +916,7 @@ mod tests {
         active
             .tool_exposure(&mut ToolExposureContext {
                 session_id: "chat",
+                supports_image_input: true,
                 input: std::slice::from_ref(&peer),
                 available: &mut peer_available,
             })
@@ -933,6 +936,7 @@ mod tests {
         bounded
             .tool_exposure(&mut ToolExposureContext {
                 session_id: "chat",
+                supports_image_input: true,
                 input: std::slice::from_ref(&peer),
                 available: &mut bounded_available,
             })

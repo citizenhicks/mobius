@@ -47,7 +47,7 @@ extension GatewayWireTests {
 
     func testPairingSetupParsesValidatedEndpointAndCode() throws {
         let setup = try GatewayPairingSetup(
-            "mobius-pair:v1|wss://gateway.example:443|0123456789abcdef"
+            "  \nmobius-pair:v1|wss://gateway.example:443|0123456789abcdef\t "
         )
 
         XCTAssertEqual(setup.endpoint.rawValue, "wss://gateway.example")

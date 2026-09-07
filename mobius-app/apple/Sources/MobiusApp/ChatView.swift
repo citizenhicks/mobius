@@ -19,6 +19,7 @@ struct ChatView: View {
     @State private var scrollToBottomRequest = 0
     @State private var presentedWidget: MountedWidget?
     @State private var presentedBotSettings: BotRecord?
+    @State private var showsFolderAttachmentBrowser = false
     @State private var hasEntered = false
     @State private var transcriptPresentationID = UUID()
 
@@ -106,7 +107,8 @@ struct ChatView: View {
                         newChatButton
                         ChatOptionsMenu(
                             presentedWidget: $presentedWidget,
-                            presentedBotSettings: $presentedBotSettings
+                            presentedBotSettings: $presentedBotSettings,
+                            showsFolderAttachmentBrowser: $showsFolderAttachmentBrowser
                         )
                     }
                 }
@@ -114,6 +116,13 @@ struct ChatView: View {
         }
         .sheet(item: $model.presentedPreview, content: PreviewTranscriptSheet.init)
         .sheet(item: $presentedWidget, content: FrontendWidgetSheet.init)
+        .sheet(isPresented: $showsFolderAttachmentBrowser) {
+            WorkspaceBrowserView(title: "Attach a folder for agent tools") { path in
+                model.attachFolder(path)
+            }
+            .frame(idealWidth: 520, idealHeight: 620)
+            .mobiusSheet()
+        }
         .sheet(item: $presentedBotSettings) { bot in
             NavigationStack {
                 AgentSettingsView(scope: .bot(bot.id))
@@ -177,6 +186,7 @@ private struct ChatOptionsMenu: View {
     @Environment(AppModel.self) private var model
     @Binding var presentedWidget: MountedWidget?
     @Binding var presentedBotSettings: BotRecord?
+    @Binding var showsFolderAttachmentBrowser: Bool
 
     var body: some View {
         HeaderOptionsMenu(label: "Chat options") {
@@ -228,6 +238,15 @@ private struct ChatOptionsMenu: View {
                     )
                 }
                 .disabled(model.selectedSessionID == nil || !model.connectionState.isReady)
+                Button {
+                    model.loadDirectory(
+                        model.workspace?.path ?? (model.selectedGatewayIsMobiusCloud ? "." : "/")
+                    )
+                    showsFolderAttachmentBrowser = true
+                } label: {
+                    MobiusLabel(title: "Attach folder…", glyph: .folderPlus)
+                }
+                .disabled(!model.canModifySelectedSession)
                 if let path = model.workspace?.path {
                     Button { copyToPasteboard(path) } label: {
                         MobiusLabel(

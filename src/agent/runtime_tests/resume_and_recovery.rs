@@ -230,6 +230,141 @@ async fn interrupted_approval_is_one_durable_terminal_transition() {
 }
 
 #[tokio::test]
+async fn restarted_approval_counts_request_only_images_before_tool_results() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let checkpoints = Arc::new(
+        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
+            .expect("checkpoint store"),
+    );
+    let call = ToolCall {
+        call_id: "image-call".into(),
+        name: "approval_required_image".into(),
+        arguments: serde_json::json!({}),
+    };
+    let mut checkpoint = Checkpoint::empty("image-approval-restart");
+    checkpoint.session_context = test_session_context();
+    checkpoint.model_route = Some("test".into());
+    checkpoint.active_execution = Some(crate::backend::checkpoint::ActiveExecution {
+        submission_id: "submission-1".into(),
+        turn_id: "turn-1".into(),
+        started_at_ms: 1,
+        model_calls: 1,
+        tool_calls: 0,
+        failed_tool_calls: 0,
+        usage: TokenUsage::default(),
+        next_model_step: 1,
+        stop_hook_active: false,
+        phase: crate::backend::checkpoint::ExecutionPhase::Model,
+    });
+    checkpoint.context.push(serde_json::json!({
+        "type": "function_call",
+        "call_id": call.call_id.clone(),
+        "name": call.name.clone(),
+        "arguments": call.arguments.to_string(),
+        "_mobius_image_bytes": crate::middleware::MAX_IMAGE_INPUT_BYTES
+    }));
+    checkpoint.pending_tools.push(call.clone());
+    checkpoint.pending_approval = Some(crate::backend::checkpoint::PendingApproval {
+        submission_id: "submission-1".into(),
+        turn_id: "turn-1".into(),
+        request_id: "approval-1".into(),
+        approval_call_ids: vec![call.call_id.clone()],
+        authorized_call_ids: vec![call.call_id.clone()],
+        calls: vec![call],
+        reason: "test approval".into(),
+        sandbox_mode: crate::backend::sandbox::SandboxMode::WorkspaceWrite,
+        network_access: crate::backend::sandbox::NetworkAccess::Denied,
+        decision_received: false,
+    });
+    checkpoints
+        .save(&checkpoint, &checkpoint.context, None)
+        .await
+        .expect("save pending approval");
+    let image_data: Arc<str> = Arc::from(
+        base64::engine::general_purpose::STANDARD
+            .encode(vec![0_u8; crate::middleware::MAX_IMAGE_INPUT_BYTES]),
+    );
+    let request_calls = Arc::new(AtomicUsize::new(0));
+    let model = Arc::new(ScriptedModel {
+        outputs: Mutex::new(VecDeque::from([scripted_message("done")])),
+        tool_counts: Mutex::new(Vec::new()),
+        inputs: Mutex::new(Vec::new()),
+    });
+    let checkpoint_store: Arc<dyn CheckpointStore> = checkpoints.clone();
+    let config = AgentConfig::new(
+        Arc::new(ModelRouter::new("test", model.clone())),
+        Arc::new(Sandbox::new(
+            Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
+            ApprovalPolicy::Ask,
+        )),
+        checkpoint_store,
+        test_middleware(vec![
+            Arc::new(RequestOnlyImageMiddleware {
+                data: image_data,
+                calls: Arc::clone(&request_calls),
+            }),
+            Arc::new(Tools::new(vec![Arc::new(ApprovalRequiredImageTool)])),
+        ]),
+        "test prompt",
+    )
+    .session_context(test_session_context())
+    .session_id("image-approval-restart")
+    .initial_replay_batches(0);
+    let mut agent = create_agent(config)
+        .await
+        .expect("restart pending approval");
+    assert!(matches!(
+        agent.next_event().await.expect("session event").msg,
+        EventMsg::SessionConfigured(_)
+    ));
+    let request = loop {
+        if let EventMsg::ExecApprovalRequest(request) =
+            agent.next_event().await.expect("approval request").msg
+        {
+            break request;
+        }
+    };
+    agent
+        .sender()
+        .submit(Op::ExecApproval {
+            id: request.id,
+            decision: crate::protocol::ReviewDecision::Approved,
+        })
+        .expect("approve image tool");
+    let result = loop {
+        match agent.next_event().await.expect("turn event").msg {
+            EventMsg::ToolCallEnd(result) if result.call_id == "image-call" => break result,
+            EventMsg::Error(error) => panic!("{}", error.message),
+            _ => {}
+        }
+    };
+    assert!(result.is_error);
+    assert!(result.output.contains("8 MiB"));
+    while !matches!(
+        agent.next_event().await.expect("completed turn").msg,
+        EventMsg::TurnComplete(_)
+    ) {}
+
+    {
+        let inputs = model.inputs.lock().expect("model inputs");
+        let stats =
+            crate::middleware::model_input_image_stats(&inputs[0]).expect("image input stats");
+        assert_eq!(stats.count, 1);
+        assert_eq!(stats.bytes, crate::middleware::MAX_IMAGE_INPUT_BYTES);
+    }
+    assert_eq!(request_calls.load(Ordering::SeqCst), 1);
+    let saved = checkpoints
+        .load("image-approval-restart")
+        .await
+        .expect("load checkpoint")
+        .expect("saved checkpoint");
+    assert_eq!(
+        crate::middleware::model_input_image_bytes(&saved.context).expect("durable image bytes"),
+        0
+    );
+}
+
+#[tokio::test]
 async fn resumed_agent_rejects_a_checkpoint_without_its_model_route() {
     let workspace = tempfile::tempdir().expect("workspace");
     let checkpoints = Arc::new(

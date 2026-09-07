@@ -647,6 +647,24 @@ extension AppModel {
         }
     }
 
+    func attachFolder(_ selectedPath: String) {
+        let path = selectedPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard canModifySelectedSession,
+              let sessionID = selectedSessionID,
+              sessionMutationRequestID == nil,
+              !path.isEmpty
+        else { return }
+        let id = requestID("session-attach-folder")
+        sessionMutationRequestID = id
+        transmit(.attachSessionFolder(
+            requestID: id,
+            sessionID: sessionID,
+            folder: path
+        )) { [weak self] _ in
+            if self?.sessionMutationRequestID == id { self?.sessionMutationRequestID = nil }
+        }
+    }
+
     func deleteSession(_ session: SessionRecord) {
         deleteSessions([session])
     }

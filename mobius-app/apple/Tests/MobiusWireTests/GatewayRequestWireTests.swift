@@ -50,6 +50,16 @@ extension GatewayWireTests {
         XCTAssertEqual(create["workspace"] as? String, "/srv/mobius")
         XCTAssertEqual(create["bot_id"] as? String, "bot-1")
 
+        let attach = try requestObject(.attachSessionFolder(
+            requestID: "attach-1",
+            sessionID: "chat-1",
+            folder: "/srv/api"
+        ))
+        XCTAssertEqual(attach["type"] as? String, "attach_session_folder")
+        XCTAssertEqual(attach["request_id"] as? String, "attach-1")
+        XCTAssertEqual(attach["session_id"] as? String, "chat-1")
+        XCTAssertEqual(attach["folder"] as? String, "/srv/api")
+
         let open = try requestObject(.openSession(
             requestID: "open-1",
             sessionID: "chat-1",

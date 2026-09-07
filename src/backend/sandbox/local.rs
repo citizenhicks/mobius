@@ -65,7 +65,8 @@ const SEATBELT_POLICY_SUFFIX: &str = r#"
 pub struct LocalSandbox {
     root: PathBuf,
     root_dir: Dir,
-    read_roots: Vec<ReadRoot>,
+    workspace_roots: Vec<PinnedRoot>,
+    read_roots: Vec<PinnedRoot>,
     temp: tempfile::TempDir,
     command_timeout: Duration,
     denied_reads: Vec<DeniedRead>,
@@ -80,7 +81,7 @@ struct DeniedRead {
     directory: bool,
 }
 
-struct ReadRoot {
+struct PinnedRoot {
     path: PathBuf,
     directory: Dir,
 }
@@ -151,6 +152,7 @@ impl LocalSandbox {
             Ok(Self {
                 root,
                 root_dir,
+                workspace_roots: Vec::new(),
                 read_roots: Vec::new(),
                 temp,
                 command_timeout: DEFAULT_COMMAND_TIMEOUT,
@@ -178,6 +180,15 @@ impl LocalSandbox {
         if paths_overlap(&self.root, &path) {
             return Err(Error::Config(
                 "sandbox root and denied read path must not overlap".into(),
+            ));
+        }
+        if self
+            .workspace_roots
+            .iter()
+            .any(|root| paths_overlap(&root.path, &path))
+        {
+            return Err(Error::Config(
+                "workspace root and denied read path must not overlap".into(),
             ));
         }
         if self
@@ -214,6 +225,33 @@ impl LocalSandbox {
         Ok(self)
     }
 
+    /// Allows file tools and workspace-isolated commands to use one additional directory.
+    pub fn allow_workspace_root(mut self, path: impl AsRef<Path>) -> Result<Self> {
+        let path = std::fs::canonicalize(path)?;
+        if !path.is_dir() {
+            return Err(Error::Config(format!(
+                "workspace root is not a directory: {}",
+                path.display()
+            )));
+        }
+        if self
+            .denied_reads
+            .iter()
+            .any(|denied| paths_overlap(&path, &denied.path))
+        {
+            return Err(Error::Config(
+                "workspace root and denied read path must not overlap".into(),
+            ));
+        }
+        if path == self.root || self.workspace_roots.iter().any(|root| root.path == path) {
+            return Ok(self);
+        }
+        let directory = Dir::open_ambient_dir(&path, ambient_authority())?;
+        validate_root(&path, &directory)?;
+        self.workspace_roots.push(PinnedRoot { path, directory });
+        Ok(self)
+    }
+
     /// Allows file tools to read one additional canonical directory without granting writes.
     pub fn allow_read_root(mut self, path: impl AsRef<Path>) -> Result<Self> {
         let path = std::fs::canonicalize(path)?;
@@ -237,7 +275,7 @@ impl LocalSandbox {
         }
         let directory = Dir::open_ambient_dir(&path, ambient_authority())?;
         validate_root(&path, &directory)?;
-        self.read_roots.push(ReadRoot { path, directory });
+        self.read_roots.push(PinnedRoot { path, directory });
         Ok(self)
     }
 
@@ -314,9 +352,7 @@ impl LocalSandbox {
                 "file read size must be 1–{MAX_FILE_BYTES} bytes"
             )));
         }
-        validate_root(&self.root, &self.root_dir)?;
-        let root = self.root_dir.try_clone()?;
-        let relative = self.relative(path)?;
+        let (root, relative) = self.read_target(path)?;
         let requested = path.to_string();
         tokio::task::spawn_blocking(move || {
             read_file_range(root, &relative, &requested, offset, max_bytes)
@@ -380,7 +416,7 @@ impl LocalSandbox {
             validate_root(&self.root, &self.root_dir)?;
             return Ok((self.root_dir.try_clone()?, self.relative(path)?));
         }
-        for root in &self.read_roots {
+        for root in self.workspace_roots.iter().chain(&self.read_roots) {
             let Ok(relative) = requested.strip_prefix(&root.path) else {
                 continue;
             };
@@ -394,6 +430,36 @@ impl LocalSandbox {
             return Ok((root.directory.try_clone()?, relative.to_path_buf()));
         }
         Err(Error::Sandbox(path.into()))
+    }
+
+    fn write_target(&self, path: &str) -> Result<(Dir, PathBuf)> {
+        let requested = Path::new(path);
+        if !requested.is_absolute() {
+            validate_root(&self.root, &self.root_dir)?;
+            return Ok((self.root_dir.try_clone()?, self.relative(path)?));
+        }
+        for root in &self.workspace_roots {
+            let Ok(relative) = requested.strip_prefix(&root.path) else {
+                continue;
+            };
+            if relative
+                .components()
+                .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
+            {
+                break;
+            }
+            validate_root(&root.path, &root.directory)?;
+            return Ok((root.directory.try_clone()?, relative.to_path_buf()));
+        }
+        Err(Error::Sandbox(path.into()))
+    }
+
+    fn validate_workspace_roots(&self) -> Result<()> {
+        validate_root(&self.root, &self.root_dir)?;
+        for root in &self.workspace_roots {
+            validate_root(&root.path, &root.directory)?;
+        }
+        Ok(())
     }
 
     fn find_executable(&self, name: &str) -> Result<PathBuf> {
@@ -457,6 +523,16 @@ impl LocalSandbox {
             })
             .arg(&self.root)
             .arg(&self.root);
+        for root in &self.workspace_roots {
+            command
+                .arg(if workspace_access == WorkspaceAccess::ReadOnly {
+                    "--ro-bind"
+                } else {
+                    "--bind"
+                })
+                .arg(&root.path)
+                .arg(&root.path);
+        }
         for denied in &self.denied_reads {
             if denied.directory {
                 command.arg("--tmpfs").arg(&denied.path);
@@ -610,6 +686,12 @@ impl LocalSandbox {
         let temp = std::fs::canonicalize(self.temp.path())?;
         let mut command = Command::new(executable);
         let mut policy = format!("{MACOS_SEATBELT_BASE_POLICY}{SEATBELT_POLICY_SUFFIX}");
+        for index in 0..self.workspace_roots.len() {
+            let parameter = format!("WORKSPACE_ROOT_{index}");
+            policy.push_str(&format!(
+                "\n(allow file-write*\n  (literal (param \"{parameter}\"))\n  (subpath (param \"{parameter}\")))"
+            ));
+        }
         for (index, denied) in self.denied_reads.iter().enumerate() {
             let parameter = format!("DENIED_READ_{index}");
             policy.push_str(&format!(
@@ -632,6 +714,12 @@ impl LocalSandbox {
   (literal (param "WRITABLE_ROOT"))
   (subpath (param "WRITABLE_ROOT")))"#,
             );
+            for index in 0..self.workspace_roots.len() {
+                let parameter = format!("WORKSPACE_ROOT_{index}");
+                policy.push_str(&format!(
+                    "\n(deny file-write*\n  (literal (param \"{parameter}\"))\n  (subpath (param \"{parameter}\")))"
+                ));
+            }
         }
         command.arg("-p").arg(policy);
         for (name, path) in [("WRITABLE_ROOT", self.root.clone()), ("TEMP_ROOT", temp)] {
@@ -639,6 +727,13 @@ impl LocalSandbox {
                 .to_str()
                 .ok_or_else(|| Error::Sandbox("sandbox path is not UTF-8".into()))?;
             command.arg(format!("-D{name}={path}"));
+        }
+        for (index, root) in self.workspace_roots.iter().enumerate() {
+            let path = root
+                .path
+                .to_str()
+                .ok_or_else(|| Error::Sandbox("sandbox path is not UTF-8".into()))?;
+            command.arg(format!("-DWORKSPACE_ROOT_{index}={path}"));
         }
         for (index, denied) in self.denied_reads.iter().enumerate() {
             let path = denied
@@ -684,14 +779,14 @@ impl LocalSandbox {
         if matches!(&invocation, Invocation::Shell(script) if script.trim().is_empty()) {
             return Err(Error::Sandbox("command is empty".into()));
         }
-        validate_root(&self.root, &self.root_dir)?;
+        self.validate_workspace_roots()?;
         let output_limit = if isolation.workspace_access == WorkspaceAccess::ReadOnly {
             MAX_READ_ONLY_OUTPUT_BYTES
         } else {
             MAX_COMMAND_OUTPUT_BYTES
         };
         async {
-            validate_root(&self.root, &self.root_dir)?;
+            self.validate_workspace_roots()?;
             let mut command = match isolation.sandbox_mode {
                 SandboxMode::WorkspaceWrite => self.sandboxed_command(
                     &invocation,
@@ -880,9 +975,7 @@ impl SandboxBackend for LocalSandbox {
             if content.len() > MAX_FILE_BYTES {
                 return Err(Error::Sandbox("file exceeds write limit".into()));
             }
-            validate_root(&self.root, &self.root_dir)?;
-            let relative = self.relative(path)?;
-            let root = self.root_dir.try_clone()?;
+            let (root, relative) = self.write_target(path)?;
             let requested = path.to_string();
             let content = content.as_bytes().to_vec();
             tokio::task::spawn_blocking(move || atomic_write(root, &relative, &content, &requested))

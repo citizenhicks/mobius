@@ -36,17 +36,11 @@ fn finalize_and_bind(catalog: &mut Catalog, calls: &[ToolCall]) -> Vec<BoundTool
         .collect()
 }
 
-#[path = "tools_tests/apply_patch.rs"]
 mod apply_patch;
-#[path = "tools_tests/background_commands.rs"]
 mod background_commands;
-#[path = "tools_tests/batch_scheduling.rs"]
 mod batch_scheduling;
-#[path = "tools_tests/discovery.rs"]
 mod discovery;
-#[path = "tools_tests/dispatch_safety.rs"]
 mod dispatch_safety;
-#[path = "tools_tests/presentation.rs"]
 mod presentation;
-#[path = "tools_tests/registry.rs"]
 mod registry;
+mod view_image;

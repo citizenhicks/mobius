@@ -85,10 +85,12 @@ struct RunningAgent {
     sender: Option<AgentSender>,
     events: mpsc::Receiver<JournalEvent>,
     model_router: Arc<ModelRouter>,
+    sandbox: Arc<mobius::backend::sandbox::Sandbox>,
     frontend: FrontendExtensions,
     frontend_sink: mobius::middleware::FrontendEventSink,
     session: mobius::protocol::SessionConfiguredEvent,
     gateway_sandbox: Arc<GatewaySandbox>,
+    subagents: Option<Arc<mobius::middleware::subagents::Subagents>>,
     subagent_template: Option<Arc<OnceLock<AgentConfig>>>,
     tool_count: usize,
     provider_epoch: u64,
@@ -143,6 +145,10 @@ pub(super) enum HostCommand {
     },
     ReloadBot {
         bot: crate::wire::BotRecord,
+        reply: oneshot::Sender<std::result::Result<(), Rejection>>,
+    },
+    AttachFolder {
+        folder: PathBuf,
         reply: oneshot::Sender<std::result::Result<(), Rejection>>,
     },
     GitDiff {
@@ -431,6 +437,16 @@ impl HostHandle {
         receive(receiver).await
     }
 
+    pub(crate) async fn attach_folder(
+        &self,
+        folder: PathBuf,
+    ) -> std::result::Result<(), Rejection> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(HostCommand::AttachFolder { folder, reply })
+            .await?;
+        receive(receiver).await
+    }
+
     pub(crate) async fn git_diff(
         &self,
         scope: GitDiffScope,
@@ -675,7 +691,9 @@ async fn start_agent(
     let BuiltAgent {
         agent,
         model_router,
+        sandbox,
         gateway_sandbox,
+        subagents,
         subagent_template,
     } = assemble(
         gateway,
@@ -703,10 +721,12 @@ async fn start_agent(
         sender: Some(sender),
         events,
         model_router,
+        sandbox,
         frontend,
         frontend_sink,
         session,
         gateway_sandbox,
+        subagents,
         subagent_template,
         tool_count,
         provider_epoch: reusable_provider_epoch

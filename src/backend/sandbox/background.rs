@@ -62,6 +62,15 @@ struct BufferedOutput {
 }
 
 impl BackgroundCommands {
+    pub(super) fn has_owner(&self, owner: &str) -> Result<bool> {
+        Ok(self
+            .entries
+            .lock()
+            .map_err(|_| state_error())?
+            .values()
+            .any(|entry| entry.owner == owner))
+    }
+
     pub(super) fn start(
         &self,
         owner: &str,
@@ -377,6 +386,8 @@ mod tests {
             .expect("start");
         started.notified().await;
 
+        assert!(commands.has_owner("session-a").expect("owned command"));
+        assert!(!commands.has_owner("session-b").expect("foreign command"));
         assert!(commands.poll("session-b", &id).await.is_err());
         let first = commands.poll("session-a", &id).await.expect("first poll");
         assert_eq!(first.status, BackgroundCommandStatus::Running);
@@ -393,6 +404,7 @@ mod tests {
         assert_eq!(completed.status, BackgroundCommandStatus::Exited);
         assert_eq!(completed.exit_code, Some(7));
         assert_eq!(completed.stderr, "last");
+        assert!(!commands.has_owner("session-a").expect("completed command"));
         assert!(commands.poll("session-a", &id).await.is_err());
     }
 

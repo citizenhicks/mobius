@@ -83,6 +83,11 @@ pub enum ClientMessage {
         session_id: String,
         title: String,
     },
+    AttachSessionFolder {
+        request_id: String,
+        session_id: String,
+        folder: PathBuf,
+    },
     SetSessionPinned {
         request_id: String,
         session_id: String,

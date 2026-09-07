@@ -47,8 +47,16 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 pub(crate) struct BuiltAgent {
     pub(crate) agent: Agent,
     pub(crate) model_router: Arc<ModelRouter>,
+    pub(crate) sandbox: Arc<Sandbox>,
     pub(crate) gateway_sandbox: Arc<GatewaySandbox>,
+    pub(crate) subagents: Option<Arc<Subagents>>,
     pub(crate) subagent_template: Option<Arc<OnceLock<AgentConfig>>>,
+}
+
+struct BuiltMiddleware {
+    stack: MiddlewareStack,
+    subagent_template: Option<Arc<OnceLock<AgentConfig>>>,
+    subagents: Option<Arc<Subagents>>,
 }
 
 #[expect(
@@ -130,6 +138,7 @@ pub(crate) async fn assemble(
                 .map(|tls| tls.private_key.as_path()),
             COMMAND_TIMEOUT,
         )?
+        .allow_attached_folders(chat.attached_folders.iter().cloned())?
         .allow_read_roots(read_roots)?,
     );
     let backend: Arc<dyn SandboxBackend> = gateway_sandbox.clone();
@@ -142,8 +151,18 @@ pub(crate) async fn assemble(
     )?
     .ok_or_else(|| Error::Config("missing middleware setting `sandbox.approval_policy`".into()))?
     .parse::<ApprovalPolicy>()?;
-    let sandbox = Arc::new(Sandbox::new(Arc::clone(&backend), approval_policy));
-    let (middleware, template) = build_middleware(
+    let sandbox = Sandbox::new(Arc::clone(&backend), approval_policy);
+    let sandbox = if chat.attached_folders.is_empty() {
+        sandbox
+    } else {
+        sandbox.attached_folders(chat.workspace.clone(), chat.attached_folders.clone())
+    };
+    let sandbox = Arc::new(sandbox);
+    let BuiltMiddleware {
+        stack: middleware,
+        subagent_template: template,
+        subagents,
+    } = build_middleware(
         &chat.agent.config.middleware,
         &chat.workspace,
         &chat.bot_id,
@@ -174,29 +193,32 @@ pub(crate) async fn assemble(
         "{}\n\n{}",
         chat.bot_description, chat.agent.config.system_prompt
     );
-    let mut agent_config =
-        AgentConfig::new(models, sandbox, checkpoints, middleware, system_prompt)
-            .context_window(context_window)
-            .catalog_visible(chat.catalog_visible)
-            .initial_replay_batches(0)
-            .max_model_steps(max_model_steps)
-            .metadata(metadata)
-            .usage_observer(move |route, usage| {
-                let provider = model_providers.get(route).ok_or_else(|| {
-                    MobiusError::Config(
-                        "model route is not in the configured gateway usage catalog".into(),
-                    )
-                })?;
-                persist_usage(&gateway, &usage_store, provider, usage)
-            })
-            .session_context(SessionContext {
-                bot_id: chat.bot_id.clone(),
-                user_name: local_user_name(),
-                workspace_id: Some(workspace.id),
-                workspace_label: Some(workspace.path.display().to_string()),
-                origin_label: Some(origin_label.into()),
-                ..SessionContext::default()
-            });
+    let mut agent_config = AgentConfig::new(
+        models,
+        Arc::clone(&sandbox),
+        checkpoints,
+        middleware,
+        system_prompt,
+    )
+    .context_window(context_window)
+    .catalog_visible(chat.catalog_visible)
+    .initial_replay_batches(0)
+    .max_model_steps(max_model_steps)
+    .metadata(metadata)
+    .usage_observer(move |route, usage| {
+        let provider = model_providers.get(route).ok_or_else(|| {
+            MobiusError::Config("model route is not in the configured gateway usage catalog".into())
+        })?;
+        persist_usage(&gateway, &usage_store, provider, usage)
+    })
+    .session_context(SessionContext {
+        bot_id: chat.bot_id.clone(),
+        user_name: local_user_name(),
+        workspace_id: Some(workspace.id),
+        workspace_label: Some(workspace.path.display().to_string()),
+        origin_label: Some(origin_label.into()),
+        ..SessionContext::default()
+    });
     if let Some(session_id) = session_id {
         agent_config = agent_config.session_id(session_id);
     }
@@ -213,7 +235,9 @@ pub(crate) async fn assemble(
     Ok(BuiltAgent {
         agent,
         model_router,
+        sandbox,
         gateway_sandbox,
+        subagents,
         subagent_template: template,
     })
 }
@@ -497,9 +521,10 @@ fn build_middleware(
     backend: Arc<dyn SandboxBackend>,
     resolved_extensions: &ResolvedExtensions,
     mut extensions: Option<Extensions>,
-) -> Result<(MiddlewareStack, Option<Arc<OnceLock<AgentConfig>>>)> {
+) -> Result<BuiltMiddleware> {
     let mut entries: Vec<Arc<dyn Middleware>> = Vec::new();
     let mut subagent_template = None;
+    let mut subagents = None;
     for feature in MIDDLEWARE.iter().filter(|feature| {
         feature.manifest.required
             || settings.enabled(feature.manifest.id)
@@ -559,8 +584,10 @@ fn build_middleware(
                     Some(route) => middleware.default_model(route),
                     None => middleware,
                 };
+                let middleware = Arc::new(middleware);
+                subagents = Some(Arc::clone(&middleware));
                 subagent_template = Some(template);
-                Arc::new(middleware)
+                middleware
             }
             BuiltinMiddleware::Messages => {
                 let delivery = match crate::middleware_manifest::string_setting(
@@ -610,7 +637,11 @@ fn build_middleware(
         };
         entries.push(middleware);
     }
-    Ok((MiddlewareStack::new(entries)?, subagent_template))
+    Ok(BuiltMiddleware {
+        stack: MiddlewareStack::new(entries)?,
+        subagent_template,
+        subagents,
+    })
 }
 
 #[cfg(test)]
