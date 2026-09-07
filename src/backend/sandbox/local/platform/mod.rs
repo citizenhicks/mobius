@@ -11,7 +11,7 @@ mod macos;
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 mod unsupported;
 
-#[cfg(target_os = "linux")]
+#[cfg(all(test, target_os = "linux"))]
 pub(super) use linux::validated_ssh_agent_socket;
 #[cfg(target_os = "linux")]
 pub(super) use linux::{protected_full_access_command, sandboxed_command};
@@ -77,7 +77,7 @@ pub(super) fn command_temp(private_temp: &Path) -> &Path {
 
 #[cfg(target_os = "linux")]
 pub(super) fn command_home(_private_temp: &Path) -> &Path {
-    Path::new(super::super::ISOLATED_HOME)
+    Path::new(super::ISOLATED_HOME)
 }
 
 #[cfg(not(target_os = "linux"))]

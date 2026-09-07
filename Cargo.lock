@@ -1637,7 +1637,7 @@ dependencies = [
 
 [[package]]
 name = "mobius"
-version = "0.15.3"
+version = "0.15.4"
 dependencies = [
  "base64",
  "bm25",

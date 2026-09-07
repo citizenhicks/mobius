@@ -59,6 +59,29 @@ jobs:
           tar -xzf "$tool_dir/tool.tgz" -C "$tool_dir"
           "$tool_dir/SwiftComplexityCLI-1.4.0-macos-arm64/SwiftComplexityCLI" \
             Sources Tests --recursive --threshold 21 --report-suppressions
+      - name: Resolve pinned packages
+        run: |
+          resolved=MobiusApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+          root="$RUNNER_TEMP/SourcePackages"
+          revision="$(jq -er '.pins[] | select(.identity == "swiftstreamingmarkdown") | .state.revision' "$resolved")"
+          location="$(jq -er '.pins[] | select(.identity == "swiftstreamingmarkdown") | .location' "$resolved")"
+          resolve() {
+            xcodebuild -project MobiusApp.xcodeproj -scheme MobiusApp \
+              -clonedSourcePackagesDirPath "$root" \
+              -onlyUsePackageVersionsFromResolvedFile -skipMacroValidation \
+              -resolvePackageDependencies
+          }
+          if ! resolve; then
+            # The pinned commit is public but is not in an advertised upstream ref.
+            repos=( "$root"/repositories/SwiftStreamingMarkdown-* )
+            test "${#repos[@]}" -eq 1
+            test -d "${repos[0]}"
+            test "$(git -C "${repos[0]}" remote get-url origin)" = "$location"
+            git -C "${repos[0]}" fetch --no-tags origin "$revision"
+            git -C "${repos[0]}" cat-file -e "$revision^{tree}"
+            resolve
+          fi
+          git diff --exit-code -- "$resolved"
       - name: Run signed simulator tests
         run: |
           xcodebuild -project MobiusApp.xcodeproj -scheme MobiusApp \
