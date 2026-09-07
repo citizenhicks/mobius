@@ -76,7 +76,7 @@ private struct FilesNavigationTitle: View {
                 Text(model.filesInspectorTab.title)
                     .font(MobiusStyle.titleFont)
                 if model.filesInspectorTab == .allFiles && model.isLoadingWorkspaceFiles
-                    || model.filesInspectorTab == .chatFiles && model.isLoadingSessionFiles {
+                    || model.filesInspectorTab == .chatFiles && model.chat.isLoadingSessionFiles {
                     MobiusSpinner(size: MobiusStyle.glyphMark)
                 }
             }
@@ -407,11 +407,11 @@ private struct ChatFileList: View {
     @Environment(AppModel.self) private var model
 
     private var agentFiles: [SessionFileRecord] {
-        model.sessionFiles.filter { $0.origin == .agent }
+        model.chat.sessionFiles.filter { $0.origin == .agent }
     }
 
     private var userFiles: [SessionFileRecord] {
-        model.sessionFiles.filter { $0.origin == .user }
+        model.chat.sessionFiles.filter { $0.origin == .user }
     }
 
     var body: some View {
@@ -446,7 +446,7 @@ private struct ChatFileList: View {
         accessibilityOrigin: LocalizedStringResource
     ) -> some View {
         Section {
-            if model.isLoadingSessionFiles {
+            if model.chat.isLoadingSessionFiles {
                 InspectorFileLoadingRows(title: loadingTitle)
             } else if records.isEmpty {
                 InspectorEmptyRow(title: emptyTitle, glyph: emptyGlyph)
@@ -472,7 +472,7 @@ private struct SessionFileInspectorRow: View {
     var body: some View {
         HStack(spacing: 0) {
             Button {
-                model.previewSessionFile(file, sessionID: model.selectedSessionID)
+                model.previewSessionFile(file, sessionID: model.chat.selectedSessionID)
             } label: {
                 InspectorFileRow(
                     name: file.name,
@@ -485,10 +485,10 @@ private struct SessionFileInspectorRow: View {
 
             Menu {
                 Button("Preview", glyph: file.name.fileGlyph) {
-                    model.previewSessionFile(file, sessionID: model.selectedSessionID)
+                    model.previewSessionFile(file, sessionID: model.chat.selectedSessionID)
                 }
                 Button("Share or Save…", glyph: .arrowUpRight01) {
-                    model.saveOrShareSessionFile(file, sessionID: model.selectedSessionID)
+                    model.saveOrShareSessionFile(file, sessionID: model.chat.selectedSessionID)
                 }
             } label: {
                 MobiusIcon(.dotsThree, size: MobiusStyle.glyphInline)

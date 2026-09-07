@@ -45,14 +45,14 @@ extension AppModelTests {
         model.gateway.connectionState = .ready
 
         var requestCount = await recorder.requestCount()
-        model.openSession("chat-1")
+        model.chat.openSession("chat-1")
         let firstRequest = await recorder.firstRequest(after: requestCount) { request in
             guard case .openSession(_, "chat-1", _) = request else { return false }
             return true
         }
         guard case .openSession(let firstID, "chat-1", _) = try XCTUnwrap(firstRequest)
         else { return XCTFail("Expected first session open") }
-        model.composer = "Typed while opening"
+        model.chat.composer = "Typed while opening"
         model.gateway.handle(.sessionOpened(
             requestID: firstID,
             payload: sessionReady(latestSequence: 1, sessionID: "chat-1")
@@ -60,12 +60,12 @@ extension AppModelTests {
         model.gateway.handle(.sessionReplayComplete(requestID: firstID, sessionID: "chat-1"))
         let firstSessionReady = await eventually { model.canCreateSession }
         XCTAssertTrue(firstSessionReady)
-        XCTAssertEqual(model.composer, "Typed while opening")
-        model.composer = "Draft one"
-        model.composerReply = firstReply
+        XCTAssertEqual(model.chat.composer, "Typed while opening")
+        model.chat.composer = "Draft one"
+        model.chat.composerReply = firstReply
 
         requestCount = await recorder.requestCount()
-        model.openSession("chat-2")
+        model.chat.openSession("chat-2")
         let secondRequest = await recorder.firstRequest(after: requestCount) { request in
             guard case .openSession(_, "chat-2", _) = request else { return false }
             return true
@@ -81,8 +81,8 @@ extension AppModelTests {
         model.gateway.handle(.sessionReplayComplete(requestID: secondID, sessionID: "chat-2"))
         let secondSessionReady = await eventually {
             model.canCreateSession
-                && model.composer == "Draft two"
-                && model.composerReply == secondReply
+                && model.chat.composer == "Draft two"
+                && model.chat.composerReply == secondReply
         }
         XCTAssertTrue(secondSessionReady)
 
@@ -98,12 +98,12 @@ extension AppModelTests {
             sessionID: "chat-1"
         )
         XCTAssertEqual(firstDraft, ComposerDraft(text: "Draft one", reply: firstReply))
-        XCTAssertEqual(model.composer, "Draft two")
-        XCTAssertEqual(model.composerReply, secondReply)
+        XCTAssertEqual(model.chat.composer, "Draft two")
+        XCTAssertEqual(model.chat.composerReply, secondReply)
 
         requestCount = await recorder.requestCount()
         model.sendMessage()
-        model.composer = "Next draft"
+        model.chat.composer = "Next draft"
         let submitRequest = await recorder.firstRequest(after: requestCount) { request in
             if case .submit = request { return true }
             return false
@@ -152,7 +152,7 @@ extension AppModelTests {
             accountID: account.id,
             sessionID: "chat-2"
         )
-        XCTAssertTrue(model.composer.isEmpty)
+        XCTAssertTrue(model.chat.composer.isEmpty)
         XCTAssertTrue(deletedDraft.isEmpty)
     }
 
@@ -303,7 +303,7 @@ extension AppModelTests {
         model.gateway.selectedAccountID = account.id
         model.gateway.connectionState = .ready
 
-        model.openSession("chat-1")
+        model.chat.openSession("chat-1")
         let firstRequest = await recorder.firstRequest(after: 0) { request in
             guard case .openSession(_, "chat-1", 7) = request else {
                 return false

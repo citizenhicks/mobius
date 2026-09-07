@@ -274,7 +274,7 @@ struct TranscriptView: View {
 
     @ViewBuilder
     var body: some View {
-        if model.isLoadingTranscript {
+        if model.chat.isLoadingTranscript {
             TranscriptLoadingView(bottomInset: bottomInset)
         } else {
             transcript
@@ -292,29 +292,29 @@ struct TranscriptView: View {
             // ponytail: chat rows have wildly different heights, so exact layout avoids the
             // blank gaps produced by LazyVStack estimates. Paginate before making this lazy again.
             VStack(alignment: .leading, spacing: 0) {
-                if model.hasEarlierHistory {
+                if model.chat.hasEarlierHistory {
                     TranscriptPaginationButton(
-                        isLoading: model.isLoadingEarlierHistory,
-                        isEnabled: model.canLoadEarlierHistory,
+                        isLoading: model.chat.isLoadingEarlierHistory,
+                        isEnabled: model.chat.canLoadEarlierHistory,
                         action: requestEarlierHistory
                     )
                     .padding(.bottom, rowSpacing)
                 }
                 TranscriptRowsView(
                     projection: projection,
-                    fileSessionID: model.selectedSessionID,
-                    activeStepID: model.activeTranscriptStepID,
+                    fileSessionID: model.chat.selectedSessionID,
+                    activeStepID: model.chat.activeTranscriptStepID,
                     rowSpacing: rowSpacing,
                     allowsMessageActions: true,
                     revealMessageTarget: groupedMessageTarget,
-                    turnDiff: { model.turnDiff(for: $0) },
+                    turnDiff: { model.chat.turnDiff(for: $0) },
                     onExpandActivityGroup: { scroll.stopFollowingTail() },
                     onRevealMessage: { target, rowID in
                         revealGroupedMessage(target, rowID: rowID, proxy: proxy)
                     }
                 )
                 TranscriptTailView(slot: projection.waiting, topSpacing: rowSpacing)
-                ForEach(model.transcriptTailWidgets) { widget in
+                ForEach(model.chat.transcriptTailWidgets) { widget in
                     TranscriptTailWidgetView(widget: widget)
                         .geometryGroup()
                         .padding(.top, rowSpacing)
@@ -329,35 +329,35 @@ struct TranscriptView: View {
         .transcriptScrollBehavior(
             $scroll,
             projection: projection,
-            historyLoadCompletionRevision: model.historyLoadCompletionRevision,
-            conversationID: model.selectedSessionID,
+            historyLoadCompletionRevision: model.chat.historyLoadCompletionRevision,
+            conversationID: model.chat.selectedSessionID,
             scrollToBottomRequest: scrollToBottomRequest,
             isAtBottom: $isAtBottom,
             loadEarlierHistory: loadEarlierHistory
         )
         .overlay {
-            if model.displayedTranscript.isEmpty {
+            if model.chat.displayedTranscript.isEmpty {
                 emptyState
             }
         }
-        .onChange(of: model.isWaitingForModel, initial: true) { _, isWaiting in
+        .onChange(of: model.chat.isWaitingForModel, initial: true) { _, isWaiting in
             rescheduleWaitingPhrase(isWaiting)
         }
-        .onChange(of: model.messageNavigationRequest) { _, request in
+        .onChange(of: model.chat.messageNavigationRequest) { _, request in
             pendingMessageTarget = request?.target
             groupedMessageTarget = nil
             messageNavigationProgress = nil
             seekMessageTarget()
         }
-        .onChange(of: model.historyLoadSuccessRevision) { _, _ in
+        .onChange(of: model.chat.historyLoadSuccessRevision) { _, _ in
             seekMessageTarget()
         }
-        .onChange(of: model.historyLoadFailureRevision) { _, _ in
+        .onChange(of: model.chat.historyLoadFailureRevision) { _, _ in
             pendingMessageTarget = nil
             groupedMessageTarget = nil
             messageNavigationProgress = nil
         }
-        .onChange(of: model.selectedSessionID) { _, _ in
+        .onChange(of: model.chat.selectedSessionID) { _, _ in
             pendingMessageTarget = nil
             groupedMessageTarget = nil
             messageNavigationProgress = nil
@@ -366,7 +366,7 @@ struct TranscriptView: View {
     }
 
     private var projection: TranscriptProjection {
-        model.transcriptProjection(
+        model.chat.transcriptProjection(
             breakBefore: scroll.historyBoundaryID,
             waitingPhrase: waitingPhrase
         )
@@ -379,21 +379,21 @@ struct TranscriptView: View {
     }
 
     private func requestEarlierHistory() {
-        guard model.canLoadEarlierHistory else { return }
+        guard model.chat.canLoadEarlierHistory else { return }
         scroll.beginHistoryRestore(
             projection: projection,
-            boundaryID: model.displayedTranscript.first?.presentationID
+            boundaryID: model.chat.displayedTranscript.first?.presentationID
         )
-        model.requestEarlierHistory()
+        model.chat.requestEarlierHistory()
     }
 
     private func loadEarlierHistory() async {
-        guard model.canLoadEarlierHistory else { return }
+        guard model.chat.canLoadEarlierHistory else { return }
         scroll.beginHistoryRestore(
             projection: projection,
-            boundaryID: model.displayedTranscript.first?.presentationID
+            boundaryID: model.chat.displayedTranscript.first?.presentationID
         )
-        await model.loadEarlierHistory()
+        await model.chat.loadEarlierHistory()
     }
 
     private func seekMessageTarget() {
@@ -405,22 +405,22 @@ struct TranscriptView: View {
             scroll.stopFollowingTail()
             return
         }
-        guard !model.isLoadingEarlierHistory else { return }
+        guard !model.chat.isLoadingEarlierHistory else { return }
         let progress = MessageNavigationProgress(
-            firstID: model.displayedTranscript.first?.id,
-            visibleCount: model.displayedTranscript.count,
-            beforeSequence: model.nextHistoryBeforeSequence
+            firstID: model.chat.displayedTranscript.first?.id,
+            visibleCount: model.chat.displayedTranscript.count,
+            beforeSequence: model.chat.nextHistoryBeforeSequence
         )
-        guard progress != messageNavigationProgress, model.canLoadEarlierHistory else {
+        guard progress != messageNavigationProgress, model.chat.canLoadEarlierHistory else {
             pendingMessageTarget = nil
             groupedMessageTarget = nil
             messageNavigationProgress = nil
-            model.showToast("Original message is unavailable.", tone: .warning)
+            model.chat.showToast("Original message is unavailable.", tone: .warning)
             return
         }
         messageNavigationProgress = progress
         scroll.stopFollowingTail()
-        model.requestEarlierHistory()
+        model.chat.requestEarlierHistory()
     }
 
     private func revealGroupedMessage(
@@ -504,7 +504,7 @@ private struct TranscriptRow: View {
                         ReplyQuoteView(
                             reply: reply,
                             open: allowsMessageActions
-                                ? { model.openMessageReply(reply) }
+                                ? { model.chat.openMessageReply(reply) }
                                 : nil
                         )
                     }
@@ -560,7 +560,7 @@ private struct TranscriptRow: View {
                 showsCopyConfirmation = false
             }
             if allowsMessageActions, let target = entry.messageTarget {
-                ForEach(model.messageActionWidgets) { widget in
+                ForEach(model.chat.messageActionWidgets) { widget in
                     MessageActionButton(
                         verbatim: widget.widget.text,
                         glyph: messageActionGlyph(widget)
@@ -576,7 +576,7 @@ private struct TranscriptRow: View {
             }
             if !entry.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 MessageActionButton(title: "Speak", glyph: .volumeHigh) {
-                    model.speakMessage(entry.text)
+                    model.chat.speakMessage(entry.text)
                 }
             }
             if !entry.pending, let bot = displayedBot {
@@ -614,7 +614,7 @@ private struct TranscriptRow: View {
             Button("Copy", glyph: .copy) { copyToPasteboard(entry.text) }
         }
         if allowsMessageActions, let target = entry.messageTarget {
-            ForEach(model.messageActionWidgets) { widget in
+            ForEach(model.chat.messageActionWidgets) { widget in
                 Button(verbatim: widget.widget.text, glyph: messageActionGlyph(widget)) {
                     model.submitMessageAction(widget, target: target)
                 }
@@ -630,7 +630,7 @@ private struct TranscriptRow: View {
     private var assistantActions: some View {
         Button("Copy", glyph: .copy) { copyToPasteboard(entry.text) }
         if allowsMessageActions, let target = entry.messageTarget {
-            ForEach(model.messageActionWidgets) { widget in
+            ForEach(model.chat.messageActionWidgets) { widget in
                 Button(verbatim: widget.widget.text, glyph: messageActionGlyph(widget)) {
                     model.submitMessageAction(widget, target: target)
                 }
@@ -638,7 +638,7 @@ private struct TranscriptRow: View {
             }
         }
         if !entry.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            Button("Speak", glyph: .volumeHigh) { model.speakMessage(entry.text) }
+            Button("Speak", glyph: .volumeHigh) { model.chat.speakMessage(entry.text) }
         }
         if allowsMessageActions, entry.messageTarget != nil {
             Button("Reply", glyph: .re) { model.beginReplying(to: entry) }

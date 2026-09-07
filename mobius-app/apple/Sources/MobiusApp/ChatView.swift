@@ -25,6 +25,7 @@ struct ChatView: View {
 
     var body: some View {
         @Bindable var model = model
+        @Bindable var chat = model.chat
         ZStack(alignment: .bottom) {
             TranscriptView(
                 bottomInset: bottomInset,
@@ -32,7 +33,7 @@ struct ChatView: View {
                 scrollToBottomRequest: scrollToBottomRequest
             )
             .id(transcriptPresentationID)
-            if model.selectedSessionIsHidden, let approval = model.pendingApproval {
+            if model.selectedSessionIsHidden, let approval = model.chat.pendingApproval {
                 ApprovalView(approval: approval)
                     .frame(maxWidth: MobiusStyle.transcriptWidth)
                     .frame(maxWidth: .infinity)
@@ -71,12 +72,12 @@ struct ChatView: View {
                 hasEntered = true
             }
         }
-        .onChange(of: model.chatPresentationRevision) {
+        .onChange(of: model.chat.chatPresentationRevision) {
             // SwiftUI can retain a popped navigation destination, so `onAppear` is not a
             // reliable signal when the same active chat is opened again.
             resetTranscriptPresentation()
         }
-        .onChange(of: model.selectedSessionID) {
+        .onChange(of: model.chat.selectedSessionID) {
             resetTranscriptPresentation()
         }
         .navigationTitle(chatTitle)
@@ -102,7 +103,7 @@ struct ChatView: View {
             // One item holding both, so the spacing is this stack's rather than the bar's
             // between two items. The 44pt targets still touch; only the slack goes.
             ToolbarItem(placement: .primaryAction) {
-                if model.selectedSessionID != nil, !model.selectedSessionIsHidden {
+                if model.chat.selectedSessionID != nil, !model.selectedSessionIsHidden {
                     HeaderActionGroup {
                         newChatButton
                         ChatOptionsMenu(
@@ -114,7 +115,7 @@ struct ChatView: View {
                 }
             }
         }
-        .sheet(item: $model.presentedPreview, content: PreviewTranscriptSheet.init)
+        .sheet(item: $chat.presentedPreview, content: PreviewTranscriptSheet.init)
         .sheet(item: $presentedWidget, content: FrontendWidgetSheet.init)
         .sheet(isPresented: $showsFolderAttachmentBrowser) {
             WorkspaceBrowserView(title: "Attach a folder for agent tools") { path in
@@ -158,7 +159,7 @@ struct ChatView: View {
     }
 
     private var bottomInset: CGFloat {
-        model.selectedSessionIsHidden && model.pendingApproval == nil ? 0 : composerHeight
+        model.selectedSessionIsHidden && model.chat.pendingApproval == nil ? 0 : composerHeight
     }
 
     private var workspaceName: String {
@@ -237,7 +238,7 @@ private struct ChatOptionsMenu: View {
                         glyph: .fileMagnifyingGlass
                     )
                 }
-                .disabled(model.selectedSessionID == nil || !model.gateway.connectionState.isReady)
+                .disabled(model.chat.selectedSessionID == nil || !model.gateway.connectionState.isReady)
                 Button {
                     model.loadDirectory(
                         model.workspace?.path ?? (model.selectedGatewayIsMobiusCloud ? "." : "/")
@@ -265,7 +266,7 @@ private struct ChatOptionsMenu: View {
                     MobiusLabel(title: "Bot agent settings", glyph: .slidersHorizontal)
                 }
                 .disabled(model.selectedBot == nil)
-                ForEach(model.chatMenuWidgets) { widget in
+                ForEach(model.chat.chatMenuWidgets) { widget in
                     Button {
                         activate(widget)
                     } label: {
@@ -289,7 +290,7 @@ private struct ChatOptionsMenu: View {
             if let session = model.selectedSession {
                 Section("Manage") {
                     Button {
-                        model.setSessionPinned(session, pinned: !session.pinned)
+                        model.chat.setSessionPinned(session, pinned: !session.pinned)
                     } label: {
                         MobiusLabel(
                             title: session.pinned ? "Unpin chat" : "Pin chat",

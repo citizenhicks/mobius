@@ -3,15 +3,15 @@ import Foundation
 extension AppModel {
     func handleGatewayDisconnected(_ message: String) {
         cancelVoiceChatIntent()
-        stopRealtimeVoice()
-        transcriptLoadGeneration = UUID()
-        finishHistoryLoad()
-        sessionFileUploadRequests.removeAll()
-        abandonedSessionFileUploadRequests.removeAll()
-        sessionFileDeleteRequests.removeAll()
-        activeSessionFileUpload = nil
-        sessionFilesRequestID = nil
-        isLoadingSessionFiles = false
+        chat.stopRealtimeVoice()
+        chat.transcriptLoadGeneration = UUID()
+        chat.finishHistoryLoad()
+        chat.sessionFileUploadRequests.removeAll()
+        chat.abandonedSessionFileUploadRequests.removeAll()
+        chat.sessionFileDeleteRequests.removeAll()
+        chat.activeSessionFileUpload = nil
+        chat.sessionFilesRequestID = nil
+        chat.isLoadingSessionFiles = false
         for scope in GitDiffScope.allCases { gitDiffs[scope]?.requestID = nil }
         cancelExtensionAndCredentialRequests()
         workspaceFilesRequestID = nil
@@ -22,10 +22,10 @@ extension AppModel {
         isLoadingRoutineRunPreview = false
         isLoadingWorkspaceFiles = false
         isSavingWorkspaceFile = false
-        discardPendingComposerAttachments()
+        chat.discardPendingComposerAttachments()
         discardFilePresentation(preservingWorkspaceTextDraft: true)
-        cancelSessionFileThumbnailDownloads()
-        restorePendingDrafts()
+        chat.cancelSessionFileThumbnailDownloads()
+        chat.restorePendingDrafts()
         if cloudPairingContinuation != nil {
             completeCloudPairing(.failure(MobiusCloudError.provisioningFailed))
         }
@@ -37,55 +37,55 @@ extension AppModel {
         preservingSession: Bool = false
     ) {
         cancelVoiceChatIntent()
-        stopRealtimeVoice()
+        chat.stopRealtimeVoice()
         if cloudPairingContinuation != nil {
             completeCloudPairing(.failure(CancellationError()))
         }
-        if !preservingSession { changeComposerDraftOwner(to: nil) }
-        if preservingSession { flushStreamDeltas() }
-        abandonedSessionFileUploadRequests.removeAll()
-        sessionFileDeleteRequests.removeAll()
-        transcriptLoadGeneration = UUID()
+        if !preservingSession { chat.changeComposerDraftOwner(to: nil) }
+        if preservingSession { chat.flushStreamDeltas() }
+        chat.abandonedSessionFileUploadRequests.removeAll()
+        chat.sessionFileDeleteRequests.removeAll()
+        chat.transcriptLoadGeneration = UUID()
         if !preservingSession {
-            latestSequence = nil
+            chat.latestSequence = nil
         }
-        sessionOpenCursor = nil
-        replayRequestID = nil
-        replaySnapshotSequence = nil
-        finishHistoryLoad()
+        chat.sessionOpenCursor = nil
+        chat.replayRequestID = nil
+        chat.replaySnapshotSequence = nil
+        chat.finishHistoryLoad()
         if !preservingSession {
-            nextHistoryBeforeSequence = nil
-            transcriptWindowAnchor = .tail
-            awaitingInitialMessageTurnID = nil
-            replayPresentedTranscript = nil
+            chat.nextHistoryBeforeSequence = nil
+            chat.transcriptWindowAnchor = .tail
+            chat.awaitingInitialMessageTurnID = nil
+            chat.replayPresentedTranscript = nil
         }
         if preservingDrafts {
-            discardPendingComposerAttachments()
+            chat.discardPendingComposerAttachments()
         } else {
-            pendingDrafts.removeAll()
-            composer = ""
-            discardComposerAttachments()
+            chat.pendingDrafts.removeAll()
+            chat.composer = ""
+            chat.discardComposerAttachments()
         }
         dismissToast()
-        sessionRequestID = nil
-        sessionOpeningID = nil
-        pendingCachedTranscript = nil
-        pendingPresentedTranscript = nil
-        botSessionsRequestID = nil
-        pendingBotSessionResume = nil
-        isLoadingBotSessions = false
-        sessionMutationRequestID = nil
+        chat.sessionRequestID = nil
+        chat.sessionOpeningID = nil
+        chat.pendingCachedTranscript = nil
+        chat.pendingPresentedTranscript = nil
+        chat.botSessionsRequestID = nil
+        chat.pendingBotSessionResume = nil
+        chat.isLoadingBotSessions = false
+        chat.sessionMutationRequestID = nil
         swarmMutationRequestID = nil
         swarmMessageRequestID = nil
         completedSwarmMessageRequestID = nil
         botMutationRequestID = nil
         botMutationSuccessMessage = nil
-        pendingDeletedSessionIDs = []
-        pendingDeletedPresentedSessionID = nil
-        for sessionID in Array(pendingChatTitles.keys) {
-            pendingChatTitles[sessionID]?.renameRequestID = nil
+        chat.pendingDeletedSessionIDs = []
+        chat.pendingDeletedPresentedSessionID = nil
+        for sessionID in Array(chat.pendingChatTitles.keys) {
+            chat.pendingChatTitles[sessionID]?.renameRequestID = nil
         }
-        sessionToRestoreID = nil
+        chat.sessionToRestoreID = nil
         botDefaultsRequestID = nil
         submittedBotDefaultsDraft = nil
         botApplyState = .idle
@@ -98,42 +98,43 @@ extension AppModel {
             for scope in GitDiffScope.allCases { gitDiffs[scope]?.requestID = nil }
             workspaceFilesRequestID = nil
             isLoadingWorkspaceFiles = false
-            sessionFilesRequestID = nil
-            isLoadingSessionFiles = false
-            sessionFileUploadRequests.removeAll()
-            activeSessionFileUpload = nil
+            chat.sessionFilesRequestID = nil
+            chat.isLoadingSessionFiles = false
+            chat.sessionFileUploadRequests.removeAll()
+            chat.activeSessionFileUpload = nil
             discardFilePresentation(preservingWorkspaceTextDraft: true)
-            cancelSessionFileThumbnailDownloads()
+            chat.cancelSessionFileThumbnailDownloads()
         }
         if !preservingSession {
-            selectedSessionID = nil
+            chat.selectedSessionID = nil
         }
         // A transport replacement must not replace the user's navigation or setup drafts.
         if !preservingDrafts {
-            chatTitleTasks.values.forEach { $0.cancel() }
-            chatTitleTasks.removeAll()
-            titleEligibleSessionIDs.removeAll()
-            pendingChatTitles.removeAll()
-            botSessions = []
-            botSessionsBotID = nil
-            pendingNewChatWorkspace = nil
-            pendingNewChatBotID = nil
+            chat.sessionFileLimits = nil
+            chat.chatTitleTasks.values.forEach { $0.cancel() }
+            chat.chatTitleTasks.removeAll()
+            chat.titleEligibleSessionIDs.removeAll()
+            chat.pendingChatTitles.removeAll()
+            chat.botSessions = []
+            chat.botSessionsBotID = nil
+            chat.pendingNewChatWorkspace = nil
+            chat.pendingNewChatBotID = nil
             showsWorkspaceBrowser = false
             directoryListing = nil
             directoryError = nil
             routineRunPreviewPollingTask?.cancel()
             routineRunPreviewPollingTask = nil
-            sessions = []
+            chat.sessions = []
             backgroundApprovals = []
             swarmAttentions = []
-            chatBotFilterIDs.removeAll()
+            chat.chatBotFilterIDs.removeAll()
             bots = []
             swarms = []
             navigationPath = []
-            sessionToRename = nil
-            sessionRenameDraft = ""
-            sessionToDelete = nil
-            unreadSessionIDs.removeAll()
+            chat.sessionToRename = nil
+            chat.sessionRenameDraft = ""
+            chat.sessionToDelete = nil
+            chat.unreadSessionIDs.removeAll()
             profile = nil
             modelChoices = []
             modelProviders = [:]
@@ -143,7 +144,6 @@ extension AppModel {
             swarmContributions = [:]
             providerStatuses = []
             providerInstances = []
-            sessionFileLimits = nil
             botDefaultsSnapshot = nil
             botDefaultsDraft = nil
             editingBotID = nil
@@ -197,10 +197,10 @@ extension AppModel {
         routineRunPreviewRequestBeforeSequence = nil
         isLoadingRoutineRunPreview = false
         if !preservingSession {
-            discardFileThumbnails()
+            chat.discardFileThumbnails()
             resetSessionState()
         }
-        if preservingDrafts { restorePendingDrafts() }
+        if preservingDrafts { chat.restorePendingDrafts() }
     }
 
     func cancelExtensionAndCredentialRequests() {
@@ -214,10 +214,7 @@ extension AppModel {
         isGeneratingSshIdentity = false
     }
 
-    func resetSessionState(preservingComposerAttachments: Bool = false) {
-        stopRealtimeVoice()
-        composerReply = nil
-        messageNavigationRequest = nil
+    func resetRootSessionState() {
         workspace = nil
         gitStatus = nil
         for scope in GitDiffScope.allCases {
@@ -233,53 +230,14 @@ extension AppModel {
         filesInspectorTab = .modified
         modifiedFilesScope = .unstaged
         gitBranchRequestID = nil
-        if !preservingComposerAttachments { discardComposerAttachments() }
-        cancelSessionFileThumbnailDownloads()
-        sessionFiles = []
-        sessionFilesRequestID = nil
-        isLoadingSessionFiles = false
-        sessionFileUploadRequests.removeAll()
-        activeSessionFileUpload = nil
-        discardFilePresentation()
-        selectedModelRoute = ""
-        contributions = []
         agentSnapshot = nil
         agentDraft = nil
-        transcript = []
-        deltaFlushTask?.cancel()
-        deltaFlushTask = nil
-        bufferedDeltas.removeAll()
-        replayRequestID = nil
-        replaySnapshotSequence = nil
-        replayPresentedTranscript = nil
-        transcriptRecordBase = []
-        transcriptRecordBaseSequence = nil
-        transcriptRecords.removeAll(keepingCapacity: true)
-        replayCompletionSubmissionIDs.removeAll(keepingCapacity: true)
-        replayUserMessages.removeAll(keepingCapacity: true)
-        completedComposerEditReplay = false
-        finishHistoryLoad()
-        nextHistoryBeforeSequence = nil
-        transcriptWindowAnchor = .tail
-        activeTurnID = nil
-        awaitingInitialMessageTurnID = nil
-        runStats = RunStats()
-        contextTokens = 0
-        sessionCompactionCount = 0
-        modelContextWindow = nil
-        contextLimitTokens = nil
-        pendingApproval = nil
-        approvalRequestID = nil
-        pendingPicker = nil
-        mountedWidgets = []
-        previews = []
-        presentedPreview = nil
-        previewSelections.removeAll()
-        previewWidgetRequestID = nil
-        previewPageRequestID = nil
-        isLoadingPreviewPage = false
         showsInspector = false
-        currentUsage = TokenUsage()
-        lastUsage = TokenUsage()
+        discardFilePresentation()
+    }
+
+    func resetSessionState(preservingComposerAttachments: Bool = false) {
+        resetRootSessionState()
+        chat.resetSessionState(preservingComposerAttachments: preservingComposerAttachments)
     }
 }

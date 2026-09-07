@@ -187,16 +187,16 @@ extension AppModelTests {
             bot(id: "bot-b", handle: "beta", name: "Beta"),
             bot(id: "bot-c", handle: "gamma", name: "Gamma"),
         ]
-        model.sessions = [
+        model.chat.sessions = [
             session(sessionID: "chat-a", state: .idle, botID: "bot-a"),
             session(sessionID: "chat-b", state: .idle, botID: "bot-b"),
             session(sessionID: "chat-c", state: .idle, botID: "bot-c"),
         ]
 
-        XCTAssertEqual(model.chatCatalogSessions.map(\.sessionId), ["chat-a", "chat-b", "chat-c"])
+        XCTAssertEqual(model.chat.chatCatalogSessions.map(\.sessionId), ["chat-a", "chat-b", "chat-c"])
 
-        model.chatBotFilterIDs = ["bot-a", "bot-c"]
-        XCTAssertEqual(model.chatCatalogSessions.map(\.sessionId), ["chat-a", "chat-c"])
+        model.chat.chatBotFilterIDs = ["bot-a", "bot-c"]
+        XCTAssertEqual(model.chat.chatCatalogSessions.map(\.sessionId), ["chat-a", "chat-c"])
     }
 
     func testCollapsedDurationUsesOneCompactNaturalUnit() {
@@ -239,7 +239,7 @@ extension AppModelTests {
             "tools": .array([.string("swarm_post"), .string("swarm_read")])
         ]))
         try AgentEventRecord.validate(event.msg)
-        app.reduce(record: RecordedEvent(
+        app.chat.reduce(record: RecordedEvent(
             sequence: 1,
             recordedAtMs: 1_000,
             event: event,
@@ -260,7 +260,7 @@ extension AppModelTests {
             preview: nil
         ))
 
-        let entry = try XCTUnwrap(app.transcript.first)
+        let entry = try XCTUnwrap(app.chat.transcript.first)
         XCTAssertEqual(entry.role, .tool)
         XCTAssertEqual(entry.title, "Loaded tools")
         XCTAssertEqual(entry.text, "swarm_post\nswarm_read")
@@ -289,10 +289,10 @@ extension AppModelTests {
             recorded(5, .object(["type": .string("turn_complete"), "turnId": .string("peer-turn")]))
         ]
         let live = try model()
-        for record in records { live.reduce(record: record) }
+        for record in records { live.chat.reduce(record: record) }
         let replay = try model()
-        replay.mergeHistory(records)
-        replay.apply(RenderedPreview(
+        replay.chat.mergeHistory(records)
+        replay.chat.apply(RenderedPreview(
             id: "reviewer",
             title: "reviewer",
             subtitle: "",
@@ -307,11 +307,11 @@ extension AppModelTests {
             },
             next: nil
         ), selection: nil)
-        let preview = try XCTUnwrap(replay.previews.first)
+        let preview = try XCTUnwrap(replay.chat.previews.first)
         let cached = CachedTranscript(
             sequence: 5,
             nextBeforeSequence: nil,
-            transcript: live.transcript,
+            transcript: live.chat.transcript,
             currentUsage: TokenUsage(),
             lastUsage: TokenUsage()
         )
@@ -320,7 +320,7 @@ extension AppModelTests {
             from: JSONEncoder().encode(cached)
         ).transcript
 
-        for entries in [live.transcript, replay.transcript, preview.entries, restored] {
+        for entries in [live.chat.transcript, replay.chat.transcript, preview.entries, restored] {
             XCTAssertEqual(entries.count, 3)
             XCTAssertEqual(entries.map(\.turnID), Array(repeating: "peer-turn", count: 3))
             XCTAssertEqual(entries.map(\.startsTurn), [true, false, false])
@@ -409,8 +409,8 @@ extension AppModelTests {
             blocks: [started],
             preview: nil
         )
-        app.reduce(record: firstRecord)
-        app.reduce(record: RecordedEvent(
+        app.chat.reduce(record: firstRecord)
+        app.chat.reduce(record: RecordedEvent(
             sequence: 2,
             recordedAtMs: 1_001,
             event: finishedEvent,
@@ -419,8 +419,8 @@ extension AppModelTests {
             preview: nil
         ))
 
-        let entry = try XCTUnwrap(app.transcript.first)
-        XCTAssertEqual(app.transcript.count, 1)
+        let entry = try XCTUnwrap(app.chat.transcript.first)
+        XCTAssertEqual(app.chat.transcript.count, 1)
         XCTAssertEqual(entry.id, "block:5:toolsresult")
         XCTAssertEqual(entry.group, "turn")
         XCTAssertEqual(entry.text, "Started\n and finished")
@@ -428,15 +428,15 @@ extension AppModelTests {
         XCTAssertFalse(entry.pending)
 
         let replay = try model()
-        replay.reduce(record: firstRecord)
-        XCTAssertEqual(replay.transcript.first?.id, "block:5:toolsresult")
-        XCTAssertEqual(replay.transcript.first?.tone, "warning")
+        replay.chat.reduce(record: firstRecord)
+        XCTAssertEqual(replay.chat.transcript.first?.id, "block:5:toolsresult")
+        XCTAssertEqual(replay.chat.transcript.first?.tone, "warning")
     }
 
     func testRenderedBlocksPreserveCapabilityAndGroup() throws {
         let app = try model()
         for (sequence, capability) in [(UInt64(1), "tools"), (UInt64(2), "review")] {
-            app.reduce(record: RecordedEvent(
+            app.chat.reduce(record: RecordedEvent(
                 sequence: sequence,
                 recordedAtMs: Int64(sequence),
                 event: renderEvent(group: "turn", text: capability),
@@ -458,8 +458,8 @@ extension AppModelTests {
             ))
         }
 
-        XCTAssertEqual(app.transcript.map(\.group), ["turn", "turn"])
-        XCTAssertEqual(app.transcript.compactMap(\.capability), ["tools", "review"])
+        XCTAssertEqual(app.chat.transcript.map(\.group), ["turn", "turn"])
+        XCTAssertEqual(app.chat.transcript.compactMap(\.capability), ["tools", "review"])
     }
 
     func testFrontendRenderCarriesFilesThroughReplacementAndAppend() throws {
@@ -471,30 +471,30 @@ extension AppModelTests {
             mediaType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-        model.reduce(
+        model.chat.reduce(
             event: renderEvent(pending: true, text: "Creating report"),
             blocks: [],
             preview: nil
         )
-        model.reduce(
+        model.chat.reduce(
             event: renderEvent(text: "Report ready", files: [file]),
             blocks: [],
             preview: nil
         )
 
-        let completed = try XCTUnwrap(model.transcript.first)
+        let completed = try XCTUnwrap(model.chat.transcript.first)
         XCTAssertEqual(completed.text, "Report ready")
         XCTAssertEqual(completed.files, [file])
         XCTAssertFalse(completed.pending)
 
-        model.reduce(
+        model.chat.reduce(
             event: renderEvent(group: nil, append: true, text: "\nOpen it below."),
             blocks: [],
             preview: nil
         )
 
-        XCTAssertEqual(model.transcript.first?.text, "Report ready\nOpen it below.")
-        XCTAssertEqual(model.transcript.first?.files, [file])
+        XCTAssertEqual(model.chat.transcript.first?.text, "Report ready\nOpen it below.")
+        XCTAssertEqual(model.chat.transcript.first?.files, [file])
     }
 
     func testProjectionRecomputesWhenAFileOnlyActivityBlockGainsText() throws {
@@ -509,7 +509,7 @@ extension AppModelTests {
             "Waiting"
         ])
 
-        model.reduce(
+        model.chat.reduce(
             event: renderEvent(title: "", text: "", files: [file]),
             blocks: [],
             preview: nil
@@ -518,18 +518,18 @@ extension AppModelTests {
         // its own and move into the row once text landed, which grew the transcript by a row
         // and shrank it again — one arrival, two corrections, a visible bump at the tail.
         XCTAssertEqual(
-            model.transcriptProjection(breakBefore: nil, waitingPhrase: phrase).waiting,
+            model.chat.transcriptProjection(breakBefore: nil, waitingPhrase: phrase).waiting,
             .row("block:5:toolsresult", phrase)
         )
 
-        model.reduce(
+        model.chat.reduce(
             event: renderEvent(title: "", text: "Ready", files: [file]),
             blocks: [],
             preview: nil
         )
 
         XCTAssertEqual(
-            model.transcriptProjection(breakBefore: nil, waitingPhrase: phrase).waiting,
+            model.chat.transcriptProjection(breakBefore: nil, waitingPhrase: phrase).waiting,
             .row("block:5:toolsresult", phrase)
         )
     }
@@ -588,7 +588,7 @@ extension AppModelTests {
             next: nil
         )
 
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(submissionId: nil, msg: .object([
                 "type": .string("frontend"),
                 "frontendType": .string("preview"),
@@ -599,14 +599,14 @@ extension AppModelTests {
             preview: preview
         )
 
-        let snapshot = try XCTUnwrap(model.previews.first)
+        let snapshot = try XCTUnwrap(model.chat.previews.first)
         XCTAssertEqual(snapshot.title, "worker")
         XCTAssertEqual(snapshot.context, "full")
         XCTAssertEqual(snapshot.entries.map(\.text), ["Read file", "@@ -1 +1 @@"])
         XCTAssertEqual(snapshot.entries.last?.group, "work")
         XCTAssertEqual(snapshot.entries.last?.format, "unified_diff")
         XCTAssertEqual(snapshot.entries.last?.tone, "success")
-        XCTAssertNil(model.presentedPreview)
+        XCTAssertNil(model.chat.presentedPreview)
         XCTAssertFalse(model.showsInspector)
     }
 
@@ -682,7 +682,7 @@ extension AppModelTests {
             ),
         ]
 
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(submissionId: nil, msg: .object([
                 "type": .string("frontend"),
                 "frontendType": .string("preview"),
@@ -699,7 +699,7 @@ extension AppModelTests {
             )
         )
 
-        let preview = try XCTUnwrap(model.previews.first)
+        let preview = try XCTUnwrap(model.chat.previews.first)
         let rows = TranscriptProjection(entries: preview.entries).rows
         XCTAssertEqual(rows.map(\.kind), [.user, .workedGroup, .narrative])
         XCTAssertEqual(
@@ -715,7 +715,7 @@ extension AppModelTests {
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
-        model.selectedSessionID = "chat-1"
+        model.chat.selectedSessionID = "chat-1"
         model.gateway.connectionState = .ready
         let requestCount = await recorder.requestCount()
         model.submitPickerOption(try FrontendPickerOption(json: .object([
@@ -753,7 +753,7 @@ extension AppModelTests {
             tone: "success",
             files: []
         )
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(submissionId: submission.id, msg: .object([
                 "type": .string("frontend"),
                 "frontendType": .string("preview"),
@@ -781,11 +781,11 @@ extension AppModelTests {
             )
         )
 
-        XCTAssertEqual(model.presentedPreview?.title, "reviewer")
-        XCTAssertEqual(model.presentedPreview?.status, "running")
-        XCTAssertEqual(model.presentedPreview?.model, "gpt-5.6-sol")
-        XCTAssertEqual(model.presentedPreview?.context, "none")
-        XCTAssertEqual(model.presentedPreview?.entries.map(\.text), ["Done"])
+        XCTAssertEqual(model.chat.presentedPreview?.title, "reviewer")
+        XCTAssertEqual(model.chat.presentedPreview?.status, "running")
+        XCTAssertEqual(model.chat.presentedPreview?.model, "gpt-5.6-sol")
+        XCTAssertEqual(model.chat.presentedPreview?.context, "none")
+        XCTAssertEqual(model.chat.presentedPreview?.entries.map(\.text), ["Done"])
         XCTAssertFalse(model.showsInspector)
     }
 
@@ -794,7 +794,7 @@ extension AppModelTests {
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
-        model.selectedSessionID = "chat-1"
+        model.chat.selectedSessionID = "chat-1"
         model.gateway.connectionState = .ready
         let next = AgentOperation.capabilityCommand(
             capability: "subagents",
@@ -818,7 +818,7 @@ extension AppModelTests {
                 files: []
             ))
         }
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(submissionId: nil, msg: .object(["type": .string("frontend")])),
             blocks: [],
             preview: RenderedPreview(
@@ -838,11 +838,11 @@ extension AppModelTests {
                 next: next
             )
         )
-        XCTAssertEqual(model.previews.first?.entries.map(\.text), ["new"])
+        XCTAssertEqual(model.chat.previews.first?.entries.map(\.text), ["new"])
 
         let requestCount = await recorder.requestCount()
         model.loadPreviewPage(next)
-        XCTAssertTrue(model.isLoadingPreviewPage)
+        XCTAssertTrue(model.chat.isLoadingPreviewPage)
         let request = await recorder.firstRequest(after: requestCount) { request in
             guard case .submit("chat-1", _) = request else { return false }
             return true
@@ -850,7 +850,7 @@ extension AppModelTests {
         guard case .submit(_, let submission) = try XCTUnwrap(request) else {
             return XCTFail("Expected preview page submission")
         }
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(
                 submissionId: submission.id,
                 msg: .object(["type": .string("frontend")])
@@ -870,9 +870,9 @@ extension AppModelTests {
             )
         )
 
-        XCTAssertFalse(model.isLoadingPreviewPage)
-        XCTAssertEqual(model.previews.first?.entries.map(\.text), ["old", "new"])
-        XCTAssertNil(model.previews.first?.next)
+        XCTAssertFalse(model.chat.isLoadingPreviewPage)
+        XCTAssertEqual(model.chat.previews.first?.entries.map(\.text), ["old", "new"])
+        XCTAssertNil(model.chat.previews.first?.next)
     }
 
     func testPreviewPaginationComposesCrossPageAppendAndAcceptsAnEmptyTerminalPage() async throws {
@@ -880,7 +880,7 @@ extension AppModelTests {
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
-        model.selectedSessionID = "chat-1"
+        model.chat.selectedSessionID = "chat-1"
         model.gateway.connectionState = .ready
         let next = AgentOperation.capabilityCommand(
             capability: "subagents",
@@ -907,7 +907,7 @@ extension AppModelTests {
                 ))]
             )
         }
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(submissionId: nil, msg: .object(["type": .string("frontend")])),
             blocks: [],
             preview: RenderedPreview(
@@ -923,7 +923,7 @@ extension AppModelTests {
                 next: next
             )
         )
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(submissionId: nil, msg: .object(["type": .string("frontend")])),
             blocks: [],
             preview: RenderedPreview(
@@ -937,7 +937,7 @@ extension AppModelTests {
             )
         )
 
-        XCTAssertEqual(model.previews.first?.entries.map(\.text), ["old \nnew\ner"])
+        XCTAssertEqual(model.chat.previews.first?.entries.map(\.text), ["old \nnew\ner"])
 
         let requestCount = await recorder.requestCount()
         model.loadPreviewPage(next)
@@ -948,7 +948,7 @@ extension AppModelTests {
         guard case .submit(_, let submission) = try XCTUnwrap(request) else {
             return XCTFail("Expected preview page submission")
         }
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(submissionId: submission.id, msg: .object([
                 "type": .string("frontend")
             ])),
@@ -964,15 +964,15 @@ extension AppModelTests {
             )
         )
 
-        XCTAssertFalse(model.isLoadingPreviewPage)
-        XCTAssertEqual(model.previews.first?.entries.map(\.text), ["old \nnew\ner"])
-        XCTAssertNil(model.previews.first?.next)
+        XCTAssertFalse(model.chat.isLoadingPreviewPage)
+        XCTAssertEqual(model.chat.previews.first?.entries.map(\.text), ["old \nnew\ner"])
+        XCTAssertNil(model.chat.previews.first?.next)
     }
 
     func testPreviewIdentityDoesNotCollideForMatchingLeafNames() throws {
         let model = try model()
         for path in ["/root/a/reviewer", "/root/b/reviewer"] {
-            model.reduce(
+            model.chat.reduce(
                 event: AgentEventRecord(
                     submissionId: nil,
                     msg: .object(["type": .string("frontend")])
@@ -993,8 +993,8 @@ extension AppModelTests {
             )
         }
 
-        XCTAssertEqual(Set(model.previews.map(\.id)), ["/root/a/reviewer", "/root/b/reviewer"])
-        XCTAssertEqual(model.previews.map(\.title), ["reviewer", "reviewer"])
+        XCTAssertEqual(Set(model.chat.previews.map(\.id)), ["/root/a/reviewer", "/root/b/reviewer"])
+        XCTAssertEqual(model.chat.previews.map(\.title), ["reviewer", "reviewer"])
     }
 
     func testRejectedPreviewPageClearsLoadingState() async throws {
@@ -1002,7 +1002,7 @@ extension AppModelTests {
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
-        model.selectedSessionID = "chat-1"
+        model.chat.selectedSessionID = "chat-1"
         model.gateway.connectionState = .ready
         let operation = AgentOperation.capabilityCommand(
             capability: "subagents",
@@ -1028,13 +1028,13 @@ extension AppModelTests {
             fatal: false
         )))
 
-        XCTAssertFalse(model.isLoadingPreviewPage)
+        XCTAssertFalse(model.chat.isLoadingPreviewPage)
     }
 
     func testFrontendPickerUsesGenericPromptForAnyCapability() throws {
         let model = try model()
 
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(submissionId: nil, msg: .object([
                 "type": .string("frontend"),
                 "frontendType": .string("picker"),
@@ -1059,8 +1059,8 @@ extension AppModelTests {
             preview: nil
         )
 
-        XCTAssertEqual(model.pendingPicker?.title, "Choose a review action")
-        XCTAssertEqual(model.pendingPicker?.options.first?.label, "Accept")
+        XCTAssertEqual(model.chat.pendingPicker?.title, "Choose a review action")
+        XCTAssertEqual(model.chat.pendingPicker?.options.first?.label, "Accept")
         XCTAssertFalse(model.showsInspector)
     }
 
@@ -1071,7 +1071,7 @@ extension AppModelTests {
             await recorder.record(request)
             if case .submit = request { operationSent.fulfill() }
         })
-        model.selectedSessionID = "chat-1"
+        model.chat.selectedSessionID = "chat-1"
         model.gateway.connectionState = .ready
 
         model.submitFrontendOperation(.capabilityCommand(
@@ -1106,7 +1106,7 @@ extension AppModelTests {
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
-        model.selectedSessionID = "chat-1"
+        model.chat.selectedSessionID = "chat-1"
         model.gateway.connectionState = .ready
         let patch = """
         --- note.txt
@@ -1117,7 +1117,7 @@ extension AppModelTests {
         """
 
         let requestCount = await recorder.requestCount()
-        model.reduce(
+        model.chat.reduce(
             event: renderEvent(
                 capability: "reviewer",
                 text: patch,
@@ -1132,7 +1132,7 @@ extension AppModelTests {
             return true
         }
         XCTAssertNotNil(refresh)
-        let entry = try XCTUnwrap(model.transcript.last)
+        let entry = try XCTUnwrap(model.chat.transcript.last)
         XCTAssertEqual(entry.text, patch)
         XCTAssertEqual(entry.format, "unified_diff")
         XCTAssertEqual(entry.tone, "success")
@@ -1141,11 +1141,11 @@ extension AppModelTests {
     func testDuplicateSessionIdentifiersAreRejectedWithoutReplacingTheCatalog() throws {
         let model = try model()
         let original = session(state: .idle)
-        model.sessions = [original]
+        model.chat.sessions = [original]
 
         model.applySessions([original, session(state: .running)])
 
-        XCTAssertEqual(model.sessions, [original])
+        XCTAssertEqual(model.chat.sessions, [original])
         XCTAssertEqual(model.toast?.tone, .error)
     }
 
@@ -1154,20 +1154,20 @@ extension AppModelTests {
         let helper = bot()
         let original = session(state: .idle, botID: helper.id)
         model.bots = [helper]
-        model.sessions = [original]
+        model.chat.sessions = [original]
 
         model.gateway.handle(.sessions(
             requestID: nil,
             sessions: [session(state: .running, botID: "missing-bot")]
         ))
 
-        XCTAssertEqual(model.sessions, [original])
+        XCTAssertEqual(model.chat.sessions, [original])
         XCTAssertEqual(model.toast?.message, "The gateway returned a chat with an unknown Bot.")
     }
 
     func testAssistantAttributionResolvesCurrentBotCatalogIdentity() throws {
         let model = try model()
-        model.sessions = [session(state: .idle, botID: "bot-1")]
+        model.chat.sessions = [session(state: .idle, botID: "bot-1")]
         model.bots = [bot(
             id: "bot-1",
             handle: "reviewer",
@@ -1188,7 +1188,7 @@ extension AppModelTests {
         let changed = expectation(description: "sessions changed")
         changed.isInverted = true
         withObservationTracking {
-            _ = model.sessions
+            _ = model.chat.sessions
         } onChange: {
             changed.fulfill()
         }

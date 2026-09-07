@@ -10,14 +10,14 @@ private struct TurnDiffTranscriptHost: View {
         VStack(alignment: .leading, spacing: 0) {
             if showsTurnDiff {
                 Mobius.TranscriptRowsView(
-                    projection: model.transcriptProjection(breakBefore: nil),
-                    fileSessionID: model.selectedSessionID,
-                    turnDiff: { model.turnDiff(for: $0) }
+                    projection: model.chat.transcriptProjection(breakBefore: nil),
+                    fileSessionID: model.chat.selectedSessionID,
+                    turnDiff: { model.chat.turnDiff(for: $0) }
                 )
             } else {
                 Mobius.TranscriptRowsView(
-                    projection: model.transcriptProjection(breakBefore: nil),
-                    fileSessionID: model.selectedSessionID
+                    projection: model.chat.transcriptProjection(breakBefore: nil),
+                    fileSessionID: model.chat.selectedSessionID
                 )
             }
         }
@@ -73,8 +73,8 @@ final class ReplyQuoteLayoutTests: XCTestCase {
             view as? UIScrollView ?? view.subviews.lazy.compactMap { scrollView(in: $0) }.first
         }
         for entries in [[peer], [peer, final]] {
-            model.messageNavigationRequest = nil
-            model.transcript = entries
+            model.chat.messageNavigationRequest = nil
+            model.chat.transcript = entries
             let host = UIHostingController(rootView: Mobius.TranscriptView(
                 bottomInset: 0, isAtBottom: .constant(true), scrollToBottomRequest: 0
             ).environment(model))
@@ -83,7 +83,7 @@ final class ReplyQuoteLayoutTests: XCTestCase {
             host.view.layoutIfNeeded()
             let scroll = try XCTUnwrap(scrollView(in: host.view))
             let collapsedHeight = scroll.contentSize.height
-            model.openMessageReply(Mobius.MessageReply(target: target, text: peer.text))
+            model.chat.openMessageReply(Mobius.MessageReply(target: target, text: peer.text))
             for _ in 0..<100 where scroll.contentSize.height < collapsedHeight + 200 {
                 try await Task.sleep(for: .milliseconds(10))
                 host.view.layoutIfNeeded()
@@ -121,7 +121,7 @@ final class UnifiedDiffTests: XCTestCase {
             turnID: "turn",
             turnTerminal: true
         )
-        model.transcript = [
+        model.chat.transcript = [
             Mobius.TranscriptEntry(
                 id: "patch",
                 text: "--- a\n+++ a\n@@ -1 +1 @@\n-old\n+new",
@@ -133,7 +133,7 @@ final class UnifiedDiffTests: XCTestCase {
             ),
             final,
         ]
-        XCTAssertFalse(model.turnDiff(for: final).isEmpty)
+        XCTAssertFalse(model.chat.turnDiff(for: final).isEmpty)
 
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
         let window = UIWindow(windowScene: scene)

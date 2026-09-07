@@ -13,7 +13,10 @@ extension AppModel {
         case .ready(let payload):
             applyGatewayReady(payload)
         case .realtimeVoiceStarted, .realtimeVoiceEnded, .realtimeVoiceFailed:
-            handleRealtimeVoiceEnvelope(envelope)
+            chat.handleRealtimeVoiceEnvelope(
+                envelope,
+                eligible: selectedRouteSupportsRealtimeVoice
+            )
         case .sessionOpened, .sessionReplayComplete, .sessionHistory, .sessionChanged:
             handleSessionEnvelope(envelope)
         case .gatewayConfigured, .contributionsChanged, .accepted, .rejected,
@@ -36,29 +39,31 @@ extension AppModel {
     private func handleSessionEnvelope(_ envelope: GatewayEnvelope) {
         switch envelope {
         case .sessionOpened(let requestID, let payload):
-            guard requestID == sessionRequestID else { break }
+            guard requestID == chat.sessionRequestID else { break }
             applySessionReady(payload, opened: true, replayRequestID: requestID)
         case .sessionReplayComplete(let requestID, let sessionID):
-            guard requestID == replayRequestID, sessionID == selectedSessionID else { break }
-            finishSessionReplay()
+            guard requestID == chat.replayRequestID, sessionID == chat.selectedSessionID else { break }
+            let completedRequestID = chat.finishSessionReplay()
+            completePendingVoiceChat(requestID: completedRequestID)
+            submitPendingNewChatDraft(requestID: completedRequestID)
         case .sessionHistory(
             let requestID,
             let sessionID,
             let records,
             let nextBeforeSequence
         ):
-            guard requestID == historyRequestID, sessionID == selectedSessionID else { break }
-            flushStreamDeltas()
-            mergeHistory(records)
-            self.nextHistoryBeforeSequence = nextBeforeSequence
+            guard requestID == chat.historyRequestID, sessionID == chat.selectedSessionID else { break }
+            chat.flushStreamDeltas()
+            chat.mergeHistory(records)
+            chat.nextHistoryBeforeSequence = nextBeforeSequence
             if !records.isEmpty,
-               case .visibleTurns(let count) = transcriptWindowAnchor {
-                transcriptWindowAnchor = .visibleTurns(count + transcriptTurnsPerPage)
-                _ = transcriptWindow
+               case .visibleTurns(let count) = chat.transcriptWindowAnchor {
+                chat.transcriptWindowAnchor = .visibleTurns(count + transcriptTurnsPerPage)
+                _ = chat.transcriptWindow
             }
-            finishHistoryLoad(succeeded: true)
+            chat.finishHistoryLoad(succeeded: true)
         case .sessionChanged(let payload):
-            guard payload.session.sessionId == selectedSessionID else { break }
+            guard payload.session.sessionId == chat.selectedSessionID else { break }
             applySessionReady(payload, opened: false)
         default:
             break
@@ -76,11 +81,11 @@ extension AppModel {
         case .rejected(let rejection):
             handleRejected(rejection)
         case .agentEvent(let sessionID, let record):
-            guard sessionID == selectedSessionID else { break }
+            guard sessionID == chat.selectedSessionID else { break }
             let buffered = BufferedAgentEvent(record: record)
             applyAgentEvent(buffered)
-            if replayRequestID == nil, shouldCacheTranscript(after: record.event) {
-                cacheSelectedTranscript()
+            if chat.replayRequestID == nil, shouldCacheTranscript(after: record.event) {
+                chat.cacheSelectedTranscript()
             }
         case .sessions(let requestID, let sessions):
             applySessionResponse(requestID: requestID, sessions: sessions)
@@ -115,9 +120,9 @@ extension AppModel {
     }
 
     private func applySessionResponse(requestID: String?, sessions: [SessionRecord]) {
-        if requestID == sessionMutationRequestID {
-            sessionMutationRequestID = nil
-            pendingDeletedPresentedSessionID = nil
+        if requestID == chat.sessionMutationRequestID {
+            chat.sessionMutationRequestID = nil
+            chat.pendingDeletedPresentedSessionID = nil
         }
         applySessionCatalog(sessions)
     }
@@ -127,12 +132,12 @@ extension AppModel {
         botID: String,
         sessions: [SessionRecord]
     ) {
-        guard requestID == botSessionsRequestID, botID == botSessionsBotID else { return }
-        botSessionsRequestID = nil
-        isLoadingBotSessions = false
+        guard requestID == chat.botSessionsRequestID, botID == chat.botSessionsBotID else { return }
+        chat.botSessionsRequestID = nil
+        chat.isLoadingBotSessions = false
         let valid = applyBotSessions(sessions, botID: botID)
-        guard let resume = pendingBotSessionResume, resume.botID == botID else { return }
-        pendingBotSessionResume = nil
+        guard let resume = chat.pendingBotSessionResume, resume.botID == botID else { return }
+        chat.pendingBotSessionResume = nil
         guard valid else { return }
         guard sessions.contains(where: { $0.sessionId == resume.sessionID }) else {
             showToast("That Bot work is no longer available.", tone: .warning)
@@ -252,12 +257,12 @@ extension AppModel {
     private func handleFileEnvelope(_ envelope: GatewayEnvelope) {
         switch envelope {
         case .gitDiff(let requestID, let sessionID, let scope, let diff):
-            guard sessionID == selectedSessionID, requestID == gitDiffs[scope]?.requestID else { break }
+            guard sessionID == chat.selectedSessionID, requestID == gitDiffs[scope]?.requestID else { break }
             gitDiffs[scope]?.requestID = nil
             gitDiffs[scope]?.text = diff
         case .workspaceFiles(let requestID, let sessionID, let files, let truncated):
             guard requestID == workspaceFilesRequestID,
-                  sessionID == selectedSessionID
+                  sessionID == chat.selectedSessionID
             else { break }
             workspaceFilesRequestID = nil
             isLoadingWorkspaceFiles = false
@@ -280,33 +285,33 @@ extension AppModel {
                 nextOffset: nextOffset
             )
         case .sessionFileUploadReady(let requestID, let sessionID, let uploadID, let maxChunkBytes):
-            handleSessionFileUploadReady(
+            chat.handleSessionFileUploadReady(
                 requestID: requestID,
                 sessionID: sessionID,
                 uploadID: uploadID,
                 maxChunkBytes: maxChunkBytes
             )
         case .sessionFileUploadChunkAccepted(let requestID, let sessionID, let uploadID, let nextOffset):
-            handleSessionFileUploadChunkAccepted(
+            chat.handleSessionFileUploadChunkAccepted(
                 requestID: requestID,
                 sessionID: sessionID,
                 uploadID: uploadID,
                 nextOffset: nextOffset
             )
         case .sessionFileUploadCompleted(let requestID, let sessionID, let file):
-            handleSessionFileUploadCompleted(
+            chat.handleSessionFileUploadCompleted(
                 requestID: requestID,
                 sessionID: sessionID,
                 file: file
             )
-            if pendingNewChatBotID != nil, pendingDrafts.count == 1 {
-                submitPendingNewChatDraft(requestID: pendingDrafts.keys.first)
+            if chat.pendingNewChatBotID != nil, chat.pendingDrafts.count == 1 {
+                submitPendingNewChatDraft(requestID: chat.pendingDrafts.keys.first)
             }
         case .sessionFiles(let requestID, let sessionID, let files):
-            guard requestID == sessionFilesRequestID, sessionID == selectedSessionID else { break }
-            sessionFilesRequestID = nil
-            isLoadingSessionFiles = false
-            sessionFiles = files
+            guard requestID == chat.sessionFilesRequestID, sessionID == chat.selectedSessionID else { break }
+            chat.sessionFilesRequestID = nil
+            chat.isLoadingSessionFiles = false
+            chat.sessionFiles = files
         case .sessionFileChunk(
             let requestID,
             let sessionID,
@@ -355,8 +360,8 @@ extension AppModel {
             showToast(verbatim: failure.message, tone: .error)
             if failure.fatal {
                 cancelVoiceChatIntent()
-                stopRealtimeVoice()
-                restorePendingDrafts()
+                chat.stopRealtimeVoice()
+                chat.restorePendingDrafts()
                 cancelExtensionAndCredentialRequests()
                 sshIdentityError = failure.message
             }
@@ -366,88 +371,18 @@ extension AppModel {
     }
 
     private func applyAgentEvent(_ buffered: BufferedAgentEvent) {
-        guard latestSequence.map({ buffered.record.sequence > $0 }) ?? true else { return }
-        let isLiveEvent = replayRequestID == nil
-        observeReplayCompletion(buffered)
-        latestSequence = buffered.record.sequence
+        guard chat.latestSequence.map({ buffered.record.sequence > $0 }) ?? true else { return }
+        let isLiveEvent = chat.replayRequestID == nil
+        chat.observeReplayCompletion(buffered)
+        chat.latestSequence = buffered.record.sequence
         if isLiveEvent,
            buffered.record.event.msg["type"]?.stringValue == "context_compacted" {
-            sessionCompactionCount += 1
+            chat.sessionCompactionCount += 1
         }
-        transcriptRecords[buffered.record.sequence] = buffered.record
-        reduce(
+        chat.transcriptRecords[buffered.record.sequence] = buffered.record
+        chat.reduce(
             record: buffered.record
         )
-    }
-
-    private func finishSessionReplay() {
-        let completedRequestID = replayRequestID
-        flushStreamDeltas()
-        if let replaySnapshotSequence { latestSequence = replaySnapshotSequence }
-        replayRequestID = nil
-        replaySnapshotSequence = nil
-        replayPresentedTranscript = nil
-        gateway.connectionState = .ready
-        completedComposerEditReplay = true
-        reconcileChatTitleAfterReplay()
-        reconcileComposerEditRecovery()
-        requestSessionData()
-        cacheSelectedTranscript()
-        submitPendingNewChatDraft(requestID: completedRequestID)
-        completePendingVoiceChat(requestID: completedRequestID)
-    }
-
-    func submitPendingNewChatDraft(requestID: String?) {
-        guard let requestID,
-              pendingDrafts[requestID] != nil,
-              let sessionID = selectedSessionID
-        else { return }
-        guard !composerHasUnfinishedAttachments else {
-            startNextSessionFileUpload()
-            return
-        }
-        let draftIO = composerDraftIOTask
-        Task { [weak self] in
-            await draftIO?.value
-            guard let self,
-                  self.gateway.connectionState.isReady,
-                  self.selectedSessionID == sessionID,
-                  let draft = self.pendingDrafts.removeValue(forKey: requestID)
-            else { return }
-            self.pendingNewChatBotID = nil
-            let nextDraft = self.composer
-            self.suppressesComposerDraftSave = true
-            self.composer = draft.text
-            self.suppressesComposerDraftSave = false
-            self.stashedComposerDraft = nextDraft
-            guard self.sendMessage() else {
-                self.stashedComposerDraft = nil
-                self.suppressesComposerDraftSave = true
-                self.composer = nextDraft
-                self.suppressesComposerDraftSave = false
-                self.restoreDraft(draft)
-                return
-            }
-        }
-    }
-
-    /// A disconnected submission is ambiguous until replay proves whether it reached the
-    /// checkpoint. Only then can the restored draft safely become title-eligible again.
-    private func reconcileChatTitleAfterReplay() {
-        guard let sessionID = selectedSessionID,
-              let pending = pendingChatTitles[sessionID],
-              !pending.submissionConfirmed
-        else { return }
-        let promptWasReplayed = replayCompletionSubmissionIDs.contains(
-            pending.attempt.submissionID
-        ) || replayUserMessages.contains {
-            $0.text.trimmingCharacters(in: .whitespacesAndNewlines) == pending.attempt.prompt
-        }
-        if promptWasReplayed {
-            confirmChatTitle(sessionID: sessionID)
-        } else {
-            cancelChatTitle(sessionID, rearm: true)
-        }
     }
 
     private func shouldCacheTranscript(after event: AgentEventRecord) -> Bool {
@@ -457,50 +392,54 @@ extension AppModel {
         }
     }
 
-    func cacheSelectedTranscript() {
-        guard !isClearingLocalData,
-              let accountID = gateway.selectedAccountID,
-              let sessionID = selectedSessionID,
-              let latestSequence,
-              activeTurnID == nil,
-              pendingApproval == nil,
-              pendingWidgetEdit == nil
+    func submitPendingNewChatDraft(requestID: String?) {
+        guard let requestID,
+              chat.pendingDrafts[requestID] != nil
         else { return }
-        let snapshot = CachedTranscript(
-            sequence: latestSequence,
-            nextBeforeSequence: nextHistoryBeforeSequence,
-            transcript: transcript,
-            currentUsage: currentUsage,
-            lastUsage: lastUsage
-        )
-        enqueueTranscriptIO { [store] in
-            await store.saveTranscript(
-                snapshot,
-                accountID: accountID,
-                sessionID: sessionID
-            )
+        guard !chat.composerHasUnfinishedAttachments else {
+            chat.startNextSessionFileUpload()
+            return
+        }
+        Task { [weak self] in
+            guard let self,
+                  let draft = await self.chat.takePendingNewChatDraft(requestID: requestID)
+            else { return }
+            self.chat.pendingNewChatBotID = nil
+            let nextDraft = self.chat.composer
+            self.chat.suppressesComposerDraftSave = true
+            self.chat.composer = draft.text
+            self.chat.suppressesComposerDraftSave = false
+            self.chat.stashedComposerDraft = nextDraft
+            guard self.sendMessage() else {
+                self.chat.stashedComposerDraft = nil
+                self.chat.suppressesComposerDraftSave = true
+                self.chat.composer = nextDraft
+                self.chat.suppressesComposerDraftSave = false
+                self.chat.restoreDraft(draft)
+                return
+            }
         }
     }
 
     private func applyGatewayReady(_ payload: ReadyPayload) {
         applyGatewayCatalog(payload)
-        gateway.connectionState = sessionRequestID == nil ? .ready : .loading
+        gateway.connectionState = chat.sessionRequestID == nil ? .ready : .loading
         resumeProviderLogin()
         applySessionCatalog(payload.sessions)
         refreshProfile()
-        guard sessionRequestID == nil else { return }
+        guard chat.sessionRequestID == nil else { return }
         if openPendingRemoteNotification() {
-            sessionToRestoreID = nil
+            chat.sessionToRestoreID = nil
             return
         }
-        if let sessionToRestoreID {
+        if let sessionToRestoreID = chat.sessionToRestoreID {
             guard presentedChatSessionID == sessionToRestoreID else {
                 clearSelectedSession()
                 return
             }
-            if sessions.contains(where: { $0.sessionId == sessionToRestoreID })
-                || botSessions.contains(where: { $0.sessionId == sessionToRestoreID }) {
-                restoreSession(sessionToRestoreID)
+            if chat.sessions.contains(where: { $0.sessionId == sessionToRestoreID })
+                || chat.botSessions.contains(where: { $0.sessionId == sessionToRestoreID }) {
+                chat.restoreSession(sessionToRestoreID)
             } else {
                 showToast("The previously selected chat is no longer available.", tone: .error)
                 clearSelectedSession()
@@ -563,7 +502,7 @@ extension AppModel {
         }
         providerStatuses = payload.providers
         providerInstances = payload.providerInstances
-        sessionFileLimits = payload.sessionFileLimits
+        chat.sessionFileLimits = payload.sessionFileLimits
         modelChoices = payload.models
         modelProviders = payload.modelProviders
         middlewareFeatures = payload.middlewareFeatures
@@ -584,7 +523,7 @@ extension AppModel {
         if providerDraft == nil, let instance = providerInstances.first {
             editProviderInstance(instance)
         }
-        if !selectedRouteSupportsRealtimeVoice { stopRealtimeVoice() }
+        if !selectedRouteSupportsRealtimeVoice { chat.stopRealtimeVoice() }
     }
 
     private func applySessionReady(
@@ -594,91 +533,91 @@ extension AppModel {
     ) {
         guard let bot = bots.first(where: { $0.id == payload.session.context.botId }) else {
             cancelVoiceChatIntent()
-            restorePendingDrafts()
-            sessionRequestID = nil
-            sessionOpeningID = nil
-            sessionOpenCursor = nil
-            pendingCachedTranscript = nil
-            pendingPresentedTranscript = nil
+            chat.restorePendingDrafts()
+            chat.sessionRequestID = nil
+            chat.sessionOpeningID = nil
+            chat.sessionOpenCursor = nil
+            chat.pendingCachedTranscript = nil
+            chat.pendingPresentedTranscript = nil
             isChangingWorkspace = false
-            pendingNewChatBotID = nil
+            chat.pendingNewChatBotID = nil
             gateway.connectionState = .ready
             showToast("The gateway returned a chat with an unknown Bot.", tone: .error)
             return
         }
         let createdByThisClient = opened && isChangingWorkspace
         let createdWithPendingDraft = createdByThisClient
-            && replayRequestID.map { pendingDrafts[$0] != nil } == true
-        let cursor = sessionOpenCursor
-        let cached = opened && sessionOpeningID == payload.session.sessionId
-            ? pendingCachedTranscript
+            && replayRequestID.map { chat.pendingDrafts[$0] != nil } == true
+        let cursor = chat.sessionOpenCursor
+        let cached = opened && chat.sessionOpeningID == payload.session.sessionId
+            ? chat.pendingCachedTranscript
             : nil
-        let presented = opened && sessionOpeningID == payload.session.sessionId
-            ? pendingPresentedTranscript
+        let presented = opened && chat.sessionOpeningID == payload.session.sessionId
+            ? chat.pendingPresentedTranscript
             : nil
-        if selectedSessionID != payload.session.sessionId {
-            if !createdWithPendingDraft { restorePendingDrafts() }
-            changeComposerDraftOwner(to: gateway.selectedAccountID.map {
+        if chat.selectedSessionID != payload.session.sessionId {
+            if !createdWithPendingDraft { chat.restorePendingDrafts() }
+            chat.changeComposerDraftOwner(to: gateway.selectedAccountID.map {
                 ComposerDraftOwner(accountID: $0, sessionID: payload.session.sessionId)
             })
             resetSessionState(preservingComposerAttachments: createdWithPendingDraft)
         }
         if opened {
-            latestSequence = cursor
-            self.replayRequestID = replayRequestID
-            replaySnapshotSequence = payload.latestSequence
-            sessionOpenCursor = nil
-            sessionOpeningID = nil
-            pendingCachedTranscript = nil
-            replayPresentedTranscript = presented ?? []
-            pendingPresentedTranscript = nil
-            transcriptRecordBase = cached?.transcript ?? []
-            transcriptRecordBaseSequence = cursor
-            transcriptRecords.removeAll(keepingCapacity: true)
-            transcript = cached?.transcript ?? []
+            chat.latestSequence = cursor
+            chat.replayRequestID = replayRequestID
+            chat.replaySnapshotSequence = payload.latestSequence
+            chat.sessionOpenCursor = nil
+            chat.sessionOpeningID = nil
+            chat.pendingCachedTranscript = nil
+            chat.replayPresentedTranscript = presented ?? []
+            chat.pendingPresentedTranscript = nil
+            chat.transcriptRecordBase = cached?.transcript ?? []
+            chat.transcriptRecordBaseSequence = cursor
+            chat.transcriptRecords.removeAll(keepingCapacity: true)
+            chat.transcript = cached?.transcript ?? []
             if let cached {
-                nextHistoryBeforeSequence = cached.nextBeforeSequence
+                chat.nextHistoryBeforeSequence = cached.nextBeforeSequence
             } else {
-                nextHistoryBeforeSequence = payload.nextBeforeSequence
+                chat.nextHistoryBeforeSequence = payload.nextBeforeSequence
             }
             if let cached {
-                currentUsage = cached.currentUsage
-                lastUsage = cached.lastUsage
-                updateContextTokens()
+                chat.currentUsage = cached.currentUsage
+                chat.lastUsage = cached.lastUsage
+                chat.updateContextTokens()
             }
         }
-        sessionRequestID = nil
+        chat.sessionRequestID = nil
         workspace = payload.workspace
         gitStatus = payload.git
         workspaceError = nil
         isChangingWorkspace = false
         showsWorkspaceBrowser = false
-        pendingNewChatWorkspace = nil
-        if !createdWithPendingDraft, pendingDrafts.isEmpty { pendingNewChatBotID = nil }
-        selectedSessionID = payload.session.sessionId
+        chat.pendingNewChatWorkspace = nil
+        if !createdWithPendingDraft, chat.pendingDrafts.isEmpty { chat.pendingNewChatBotID = nil }
+        chat.selectedSessionID = payload.session.sessionId
         if createdByThisClient {
             destination = .chats
             navigationPath = [.chat(.session(payload.session.sessionId))]
-            prepareChatTitle(for: payload.session.sessionId)
+            chat.prepareChatTitle(for: payload.session.sessionId)
         }
-        if isChatVisible, sessionReadCursors?[payload.session.sessionId]?.isMarkedUnread != true {
+        if isChatVisible, chat.sessionReadCursors?[payload.session.sessionId]?.isMarkedUnread != true {
             markSessionRead(payload.session.sessionId)
         }
-        selectedModelRoute = payload.session.model.route
-        modelContextWindow = payload.session.model.modelContextWindow
-        contextLimitTokens = payload.contextLimitTokens ?? modelContextWindow
-        contributions = payload.contributions
-        mountedWidgets = payload.contributions.flatMap { contribution in
+        chat.selectedModelRoute = payload.session.model.route
+        chat.modelContextWindow = payload.session.model.modelContextWindow
+        chat.contextLimitTokens = payload.contextLimitTokens ?? chat.modelContextWindow
+        chat.contributions = payload.contributions
+        chat.mountedWidgets = payload.contributions.flatMap { contribution in
             contribution.widgets.map {
                 MountedWidget(capability: contribution.capability, widget: $0)
             }
         }
         for widget in payload.widgets {
-            upsertWidget(MountedWidget(capability: widget.capability, widget: widget.item))
+            chat.upsertWidget(MountedWidget(capability: widget.capability, widget: widget.item))
         }
-        runStats = payload.runStats
-        sessionCompactionCount = payload.compactionCount
-        activeTurnID = payload.runStats.active?.turnId
+        chat.runStats = payload.runStats
+        chat.sessionCompactionCount = payload.compactionCount
+        chat.activeTurnID = payload.runStats.active?.turnId
         agentDraft = refreshedAgentDraft(
             currentDraft: agentDraft,
             currentSnapshot: agentSnapshot,
@@ -687,14 +626,14 @@ extension AppModel {
         agentSnapshot = bot.config
         if !opened { gateway.connectionState = .ready }
         if let accountID = gateway.selectedAccountID {
-            prepareComposerEditRecovery(
+            chat.prepareComposerEditRecovery(
                 for: ComposerDraftOwner(
                     accountID: accountID,
                     sessionID: payload.session.sessionId
                 )
             )
         }
-        persistGeneratedChatTitles()
+        chat.persistGeneratedChatTitles()
     }
 
     func applySessionCatalog(_ records: [SessionRecord]) {
@@ -712,51 +651,51 @@ extension AppModel {
             showToast("The gateway returned duplicate chat identifiers.", tone: .error)
             return
         }
-        if sessions != records {
+        if chat.sessions != records {
             let previous = Dictionary(
-                sessions.map { ($0.sessionId, $0) },
+                chat.sessions.map { ($0.sessionId, $0) },
                 uniquingKeysWith: { _, latest in latest }
             )
-            sessions = records
-            for session in sessions {
+            chat.sessions = records
+            for session in chat.sessions {
                 applyActivityTransition(
                     from: previous[session.sessionId],
                     to: session
                 )
             }
         }
-        if let selected = sessions.first(where: { $0.sessionId == selectedSessionID }) {
+        if let selected = chat.sessions.first(where: { $0.sessionId == chat.selectedSessionID }) {
             applyExecutionStats(selected.executionStats)
-            if selected.activity.state == .idle { runStats.active = nil }
+            if selected.activity.state == .idle { chat.runStats.active = nil }
         }
         if let accountID = gateway.selectedAccountID { reconcileSessionReadState(accountID: accountID) }
-        let visible = Set(sessions.map(\.sessionId))
-        unreadSessionIDs.formIntersection(visible)
-        reconcileChatTitles()
+        let visible = Set(chat.sessions.map(\.sessionId))
+        chat.unreadSessionIDs.formIntersection(visible)
+        chat.reconcileChatTitles()
         cacheChatCatalog()
         if gateway.connectionState.isReady, openPendingRemoteNotification() { return }
-        guard selectedSessionID != nil,
+        guard chat.selectedSessionID != nil,
               selectedSession == nil,
-              sessionRequestID == nil
+              chat.sessionRequestID == nil
         else { return }
         clearSelectedSession()
     }
 
     private func reconcileSessionReadState(accountID: UUID) {
-        guard var cursors = sessionReadCursors else {
-            let cursors = Dictionary(uniqueKeysWithValues: sessions.map { session in
+        guard var cursors = chat.sessionReadCursors else {
+            let cursors = Dictionary(uniqueKeysWithValues: chat.sessions.map { session in
                 (session.sessionId, sessionReadCursor(for: session))
             })
-            sessionReadCursors = cursors
+            chat.sessionReadCursors = cursors
             store.saveSessionReadCursors(cursors, accountID: accountID)
             return
         }
         var changed = false
-        for session in sessions {
+        for session in chat.sessions {
             if reconcileReadCursor(for: session, cursors: &cursors) { changed = true }
         }
         guard changed else { return }
-        sessionReadCursors = cursors
+        chat.sessionReadCursors = cursors
         store.saveSessionReadCursors(cursors, accountID: accountID)
     }
 
@@ -767,11 +706,11 @@ extension AppModel {
         let sessionID = session.sessionId
         let cursor = sessionReadCursor(for: session)
         if cursors[sessionID]?.isMarkedUnread == true {
-            unreadSessionIDs.insert(sessionID)
+            chat.unreadSessionIDs.insert(sessionID)
             return false
         }
-        if selectedSessionID == sessionID, isChatVisible {
-            unreadSessionIDs.remove(sessionID)
+        if chat.selectedSessionID == sessionID, isChatVisible {
+            chat.unreadSessionIDs.remove(sessionID)
             guard cursors[sessionID] != cursor else { return false }
             cursors[sessionID] = cursor
             return true
@@ -779,13 +718,13 @@ extension AppModel {
         if let readCursor = cursors[sessionID], let readSequence = readCursor.sequence {
             if session.activity.state == .idle,
                session.sequence > readSequence || readCursor.wasActive {
-                unreadSessionIDs.insert(sessionID)
+                chat.unreadSessionIDs.insert(sessionID)
             }
             return false
         }
         guard session.activity.state == .idle else { return false }
         if session.sequence > 0 || session.activity.lastOutcome != nil {
-            unreadSessionIDs.insert(sessionID)
+            chat.unreadSessionIDs.insert(sessionID)
             return false
         }
         cursors[sessionID] = cursor
@@ -794,14 +733,14 @@ extension AppModel {
 
     @discardableResult
     func applyBotSessions(_ records: [SessionRecord], botID: String) -> Bool {
-        guard botSessionsBotID == botID,
+        guard chat.botSessionsBotID == botID,
               Set(records.map(\.sessionId)).count == records.count,
               records.allSatisfy({ $0.sessionContext.botId == botID })
         else {
             showToast("The gateway returned invalid Bot work.", tone: .error)
             return false
         }
-        botSessions = records
+        chat.botSessions = records
         return true
     }
 
@@ -824,21 +763,21 @@ extension AppModel {
             return
         }
         let selectedHiddenBotID = selectedSessionIsHidden
-            ? selectedSession?.sessionContext.botId ?? botSessionsBotID
+            ? selectedSession?.sessionContext.botId ?? chat.botSessionsBotID
             : nil
         bots = records
         let botIDs = Set(records.map(\.id))
-        if let botSessionsBotID, !botIDs.contains(botSessionsBotID) {
-            self.botSessionsBotID = nil
-            botSessionsRequestID = nil
-            pendingBotSessionResume = nil
-            botSessions = []
-            isLoadingBotSessions = false
+        if let botSessionsBotID = chat.botSessionsBotID, !botIDs.contains(botSessionsBotID) {
+            self.chat.botSessionsBotID = nil
+            chat.botSessionsRequestID = nil
+            chat.pendingBotSessionResume = nil
+            chat.botSessions = []
+            chat.isLoadingBotSessions = false
         }
         if let selectedHiddenBotID, !botIDs.contains(selectedHiddenBotID) {
             clearSelectedSession()
         }
-        chatBotFilterIDs.formIntersection(botIDs)
+        chat.chatBotFilterIDs.formIntersection(botIDs)
         backgroundApprovals.removeAll { !botIDs.contains($0.botId) }
         swarmAttentions.removeAll { !botIDs.contains($0.botId) }
         routines.removeAll { !botIDs.contains($0.botId) }
@@ -852,7 +791,7 @@ extension AppModel {
             )
             agentSnapshot = bot.config
             if let route = modelRoute(for: bot.config.config) {
-                selectedModelRoute = route
+                chat.selectedModelRoute = route
             }
         }
         if let editingBotID, !records.contains(where: { $0.id == editingBotID }) {
@@ -898,14 +837,14 @@ extension AppModel {
     }
 
     private func applyExecutionStats(_ stats: ExecutionStats) {
-        runStats.runCount = stats.runCount
-        runStats.failedRunCount = stats.failedRunCount
-        runStats.abortedRunCount = stats.abortedRunCount
-        runStats.modelCalls = stats.modelCalls
-        runStats.toolCalls = stats.toolCalls
-        runStats.failedToolCalls = stats.failedToolCalls
-        runStats.elapsedMs = stats.elapsedMs
-        runStats.usage = stats.usage
+        chat.runStats.runCount = stats.runCount
+        chat.runStats.failedRunCount = stats.failedRunCount
+        chat.runStats.abortedRunCount = stats.abortedRunCount
+        chat.runStats.modelCalls = stats.modelCalls
+        chat.runStats.toolCalls = stats.toolCalls
+        chat.runStats.failedToolCalls = stats.failedToolCalls
+        chat.runStats.elapsedMs = stats.elapsedMs
+        chat.runStats.usage = stats.usage
     }
 
     @discardableResult
@@ -999,11 +938,11 @@ extension AppModel {
               previous.activity.state != .idle || session.sequence > previous.sequence
         else { return }
 
-        let isActiveChat = selectedSessionID == sessionID && isChatVisible
+        let isActiveChat = chat.selectedSessionID == sessionID && isChatVisible
         if isActiveChat {
-            unreadSessionIDs.remove(sessionID)
+            chat.unreadSessionIDs.remove(sessionID)
         } else {
-            unreadSessionIDs.insert(sessionID)
+            chat.unreadSessionIDs.insert(sessionID)
         }
 
         guard let outcome = activity.lastOutcome else { return }
@@ -1033,19 +972,12 @@ extension AppModel {
         }
     }
 
-    private func requestSessionData() {
-        guard selectedSessionID != nil else { return }
-        refreshWorkspaceChanges()
-        refreshSessionFiles()
-        startNextSessionFileThumbnailDownload()
-    }
-
     func clearSelectedSession() {
-        changeComposerDraftOwner(to: nil)
-        latestSequence = nil
-        sessionOpenCursor = nil
-        sessionToRestoreID = nil
-        selectedSessionID = nil
+        chat.changeComposerDraftOwner(to: nil)
+        chat.latestSequence = nil
+        chat.sessionOpenCursor = nil
+        chat.sessionToRestoreID = nil
+        chat.selectedSessionID = nil
         if isPresentingChat { navigationPath = [] }
         resetSessionState()
         gateway.connectionState = .ready
@@ -1053,28 +985,28 @@ extension AppModel {
     }
 
     private func handleAccepted(_ requestID: String) {
-        acceptSessionFileDeletionRequest(requestID)
-        if pendingDrafts[requestID] != nil { flushComposerDraft() }
-        if requestID == approvalRequestID {
-            pendingApproval = nil
-            approvalRequestID = nil
+        chat.acceptSessionFileDeletionRequest(requestID)
+        if chat.pendingDrafts[requestID] != nil { chat.flushComposerDraft() }
+        if requestID == chat.approvalRequestID {
+            chat.pendingApproval = nil
+            chat.approvalRequestID = nil
         }
-        if requestID == sessionMutationRequestID {
-            for sessionID in pendingDeletedSessionIDs {
-                cancelChatTitle(sessionID)
+        if requestID == chat.sessionMutationRequestID {
+            for sessionID in chat.pendingDeletedSessionIDs {
+                chat.cancelChatTitle(sessionID)
                 if let accountID = gateway.selectedAccountID {
                     let owner = ComposerDraftOwner(accountID: accountID, sessionID: sessionID)
-                    invalidateComposerEditRecovery(for: owner)
-                    enqueueComposerDraftSave(.empty, owner: owner)
-                    enqueueComposerEditRecoveryRemoval(owner: owner)
-                    if composerDraftOwner == owner { discardComposerDraft() }
+                    chat.invalidateComposerEditRecovery(for: owner)
+                    chat.enqueueComposerDraftSave(.empty, owner: owner)
+                    chat.enqueueComposerEditRecoveryRemoval(owner: owner)
+                    if chat.composerDraftOwner == owner { chat.discardComposerDraft() }
                 }
             }
-            pendingDeletedSessionIDs = []
-            pendingDeletedPresentedSessionID = nil
+            chat.pendingDeletedSessionIDs = []
+            chat.pendingDeletedPresentedSessionID = nil
             gateway.transmit(.listSessions(requestID: requestID)) { [weak self] _ in
-                if self?.sessionMutationRequestID == requestID {
-                    self?.sessionMutationRequestID = nil
+                if self?.chat.sessionMutationRequestID == requestID {
+                    self?.chat.sessionMutationRequestID = nil
                 }
             }
         }
@@ -1096,18 +1028,18 @@ extension AppModel {
     }
 
     private func handleRejected(_ rejection: GatewayRejection) {
-        let rejectedAbandonedUpload = discardAbandonedSessionFileUploadRequest(
+        let rejectedAbandonedUpload = chat.discardAbandonedSessionFileUploadRequest(
             rejection.requestId
         )
-        let rejectedFileThumbnailDownload = sessionFileThumbnailDownload.flatMap { download in
+        let rejectedFileThumbnailDownload = chat.sessionFileThumbnailDownload.flatMap { download in
             download.requestID == rejection.requestId ? download : nil
         }
         let rejectedDiscardedFileThumbnail =
-            discardedSessionFileThumbnailRequestIDs.remove(rejection.requestId) != nil
+            chat.discardedSessionFileThumbnailRequestIDs.remove(rejection.requestId) != nil
         let rejectedFileThumbnail = rejectedFileThumbnailDownload != nil
             || rejectedDiscardedFileThumbnail
-        let deletedPresentedSessionID = rejection.requestId == sessionMutationRequestID
-            ? pendingDeletedPresentedSessionID
+        let deletedPresentedSessionID = rejection.requestId == chat.sessionMutationRequestID
+            ? chat.pendingDeletedPresentedSessionID
             : nil
         handleRejectedTranscript(rejection)
         if retryRejectedSessionReplay(rejection) { return }
@@ -1124,49 +1056,49 @@ extension AppModel {
             )
         }
         if rejection.fatal {
-            restorePendingDrafts()
+            chat.restorePendingDrafts()
             cancelExtensionAndCredentialRequests()
             sshIdentityError = rejection.message
         }
     }
 
     private func handleRejectedTranscript(_ rejection: GatewayRejection) {
-        if rejection.requestId == historyRequestID {
-            finishHistoryLoad()
+        if rejection.requestId == chat.historyRequestID {
+            chat.finishHistoryLoad()
         }
-        if rejection.requestId == previewPageRequestID {
-            previewPageRequestID = nil
-            isLoadingPreviewPage = false
+        if rejection.requestId == chat.previewPageRequestID {
+            chat.previewPageRequestID = nil
+            chat.isLoadingPreviewPage = false
         }
-        if rejection.requestId == sessionMutationRequestID {
-            pendingDeletedSessionIDs = []
-            pendingDeletedPresentedSessionID = nil
-            if let sessionID = pendingChatTitles.first(where: {
+        if rejection.requestId == chat.sessionMutationRequestID {
+            chat.pendingDeletedSessionIDs = []
+            chat.pendingDeletedPresentedSessionID = nil
+            if let sessionID = chat.pendingChatTitles.first(where: {
                 $0.value.renameRequestID == rejection.requestId
             })?.key {
-                cancelChatTitle(sessionID)
+                chat.cancelChatTitle(sessionID)
             }
         }
-        cancelChatTitle(submissionID: rejection.requestId, rearm: true)
+        chat.cancelChatTitle(submissionID: rejection.requestId, rearm: true)
     }
 
     private func retryRejectedSessionReplay(_ rejection: GatewayRejection) -> Bool {
-        guard rejection.requestId == sessionRequestID,
+        guard rejection.requestId == chat.sessionRequestID,
               rejection.code == "replay_unavailable",
-              let sessionID = sessionOpeningID,
-              sessionOpenCursor != nil
+              let sessionID = chat.sessionOpeningID,
+              chat.sessionOpenCursor != nil
         else { return false }
         if let accountID = gateway.selectedAccountID {
-            enqueueTranscriptIO { [store] in
+            chat.enqueueTranscriptIO { [store] in
                 await store.removeTranscript(accountID: accountID, sessionID: sessionID)
             }
         }
-        sessionRequestID = nil
-        sessionOpenCursor = nil
-        pendingCachedTranscript = nil
-        pendingPresentedTranscript = nil
-        if sessionID == selectedSessionID { resetSessionState() }
-        requestSessionOpen(sessionID, lastSequence: nil)
+        chat.sessionRequestID = nil
+        chat.sessionOpenCursor = nil
+        chat.pendingCachedTranscript = nil
+        chat.pendingPresentedTranscript = nil
+        if sessionID == chat.selectedSessionID { chat.resetSessionState() }
+        chat.requestSessionOpen(sessionID, lastSequence: nil)
         return true
     }
 
@@ -1174,27 +1106,27 @@ extension AppModel {
         _ rejection: GatewayRejection,
         thumbnail: SessionFileThumbnailDownload?
     ) {
-        failSessionFileUploadRequest(
+        chat.failSessionFileUploadRequest(
             rejection.requestId,
             message: rejection.message,
             showsToast: false
         )
-        failSessionFileDeletionRequest(
+        chat.failSessionFileDeletionRequest(
             rejection.requestId,
             message: rejection.message,
             refreshesFiles: true,
             showsToast: false
         )
-        if rejection.requestId == sessionFilesRequestID {
-            sessionFilesRequestID = nil
-            isLoadingSessionFiles = false
+        if rejection.requestId == chat.sessionFilesRequestID {
+            chat.sessionFilesRequestID = nil
+            chat.isLoadingSessionFiles = false
         }
-        if rejection.requestId == sessionFileDownload?.requestID {
-            sessionFileDownload = nil
+        if rejection.requestId == chat.sessionFileDownload?.requestID {
+            chat.sessionFileDownload = nil
             isLoadingFilePresentation = false
         }
         if let thumbnail {
-            finishSessionFileThumbnailAttempt(thumbnail, startsNext: !rejection.fatal)
+            chat.finishSessionFileThumbnailAttempt(thumbnail, startsNext: !rejection.fatal)
         }
         if rejection.requestId == workspaceFilePreviewDownload?.requestID {
             workspaceFilePreviewDownload = nil
@@ -1204,10 +1136,10 @@ extension AppModel {
             workspaceFileWriteRequestID = nil
             isSavingWorkspaceFile = false
         }
-        if pendingDrafts[rejection.requestId] != nil {
-            restoreDraft(id: rejection.requestId)
+        if chat.pendingDrafts[rejection.requestId] != nil {
+            chat.restoreDraft(id: rejection.requestId)
         }
-        rejectComposerEdit(requestID: rejection.requestId)
+        chat.rejectComposerEdit(requestID: rejection.requestId)
     }
 
     private func handleRejectedConfiguration(
@@ -1219,22 +1151,22 @@ extension AppModel {
             botDefaultsRequestID = nil
             submittedBotDefaultsDraft = nil
         }
-        if rejection.requestId == approvalRequestID {
-            approvalRequestID = nil
+        if rejection.requestId == chat.approvalRequestID {
+            chat.approvalRequestID = nil
         }
-        if rejection.requestId == sessionRequestID {
+        if rejection.requestId == chat.sessionRequestID {
             cancelVoiceChatIntent()
-            sessionRequestID = nil
-            sessionOpeningID = nil
-            sessionOpenCursor = nil
-            pendingCachedTranscript = nil
-            pendingPresentedTranscript = nil
+            chat.sessionRequestID = nil
+            chat.sessionOpeningID = nil
+            chat.sessionOpenCursor = nil
+            chat.pendingCachedTranscript = nil
+            chat.pendingPresentedTranscript = nil
             gateway.connectionState = .ready
             if isChangingWorkspace { workspaceError = rejection.message }
             isChangingWorkspace = false
         }
-        if rejection.requestId == sessionMutationRequestID {
-            sessionMutationRequestID = nil
+        if rejection.requestId == chat.sessionMutationRequestID {
+            chat.sessionMutationRequestID = nil
             restoreDeletedPresentedSession(deletedSessionID)
         }
     }
@@ -1276,10 +1208,10 @@ extension AppModel {
         if rejection.requestId == swarmMessageRequestID {
             swarmMessageRequestID = nil
         }
-        if rejection.requestId == botSessionsRequestID {
-            botSessionsRequestID = nil
-            pendingBotSessionResume = nil
-            isLoadingBotSessions = false
+        if rejection.requestId == chat.botSessionsRequestID {
+            chat.botSessionsRequestID = nil
+            chat.pendingBotSessionResume = nil
+            chat.isLoadingBotSessions = false
         }
         if rejection.requestId == botMutationRequestID {
             botMutationRequestID = nil

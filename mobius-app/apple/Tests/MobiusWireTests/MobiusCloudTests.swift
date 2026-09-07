@@ -1897,7 +1897,7 @@ final class MobiusCloudTests: XCTestCase {
             sharesDiagnostics: false
         )
         model.gateway.connectionState = .ready
-        model.selectedSessionID = "chat-1"
+        model.chat.selectedSessionID = "chat-1"
         model.destination = .chats
         model.navigationPath = [.chat(.session("chat-1"))]
 
@@ -1913,7 +1913,7 @@ final class MobiusCloudTests: XCTestCase {
         XCTAssertTrue(gatewayStore.loadAccounts().isEmpty)
         XCTAssertNil(model.gateway.selectedAccountID)
         XCTAssertNil(gatewayStore.selectedAccountID())
-        XCTAssertNil(model.selectedSessionID)
+        XCTAssertNil(model.chat.selectedSessionID)
         XCTAssertTrue(model.navigationPath.isEmpty)
         XCTAssertEqual(model.gateway.connectionState, .disconnected)
         XCTAssertTrue(model.showsPairing)
@@ -1992,7 +1992,7 @@ final class MobiusCloudTests: XCTestCase {
             sharesDiagnostics: false
         )
         model.gateway.connectionState = .ready
-        model.selectedSessionID = "chat-1"
+        model.chat.selectedSessionID = "chat-1"
         failNextCloudDelete = true
 
         await model.signOutOfCloud()
@@ -2003,7 +2003,7 @@ final class MobiusCloudTests: XCTestCase {
         XCTAssertEqual(gatewayStore.loadAccounts(), [gateway])
         XCTAssertEqual(model.gateway.selectedAccountID, gateway.id)
         XCTAssertEqual(gatewayStore.selectedAccountID(), gateway.id)
-        XCTAssertEqual(model.selectedSessionID, "chat-1")
+        XCTAssertEqual(model.chat.selectedSessionID, "chat-1")
         XCTAssertEqual(model.gateway.connectionState, .ready)
         XCTAssertFalse(model.showsPairing)
         XCTAssertFalse(model.pushTokenRemovalPending)
@@ -2166,10 +2166,22 @@ final class MobiusCloudTests: XCTestCase {
             cloudClient: client
         )
         model.gateway.connectionState = .ready
-        model.selectedSessionID = "chat-1"
+        model.chat.selectedSessionID = "chat-1"
         model.navigationPath = [.chat(.session("chat-1"))]
+        let previousConnectionGeneration = model.gateway.connectionGeneration
+        let chatIOGate = AsyncGate()
+        model.chat.transcriptIOTask = Task { await chatIOGate.wait() }
 
-        await model.clearDataAndGatewayInformation()
+        let clearing = Task { await model.clearDataAndGatewayInformation() }
+        let resetBeforeDrain = await eventually {
+            model.gateway.connectionState == .disconnected
+                && model.gateway.connectionGeneration != previousConnectionGeneration
+                && model.chat.selectedSessionID == nil
+                && model.chat.sessionToRestoreID == nil
+        }
+        XCTAssertTrue(resetBeforeDrain)
+        await chatIOGate.open()
+        await clearing.value
 
         let catalog = await gatewayStore.loadChatCatalog(accountID: secondGateway.id)
         let transcript = await gatewayStore.loadTranscript(
@@ -2592,7 +2604,7 @@ final class MobiusCloudTests: XCTestCase {
             format: "plain_text",
             pending: false
         )
-        model.transcript = [cachedTranscript]
+        model.chat.transcript = [cachedTranscript]
         model.gateway.connectionState = .ready
         model.gateway.setSceneActive(false)
 
@@ -2608,7 +2620,7 @@ final class MobiusCloudTests: XCTestCase {
         )
         XCTAssertTrue(model.gateway.automaticReconnectBlocked)
         XCTAssertFalse(model.gateway.reconnectsOnActivation)
-        XCTAssertEqual(model.transcript.map(\.id), [cachedTranscript.id])
+        XCTAssertEqual(model.chat.transcript.map(\.id), [cachedTranscript.id])
         XCTAssertEqual(model.gateway.selectedAccountID, gateway.id)
         let expiredGeneration = model.gateway.connectionGeneration
 

@@ -13,7 +13,7 @@ extension AppModelTests {
         model.gateway.connectionState = .ready
 
         let openRequestCount = await recorder.requestCount()
-        model.openSession("chat-1")
+        model.chat.openSession("chat-1")
         let openRequest = await recorder.firstRequest(after: openRequestCount) {
             guard case .openSession(_, "chat-1", nil) = $0 else { return false }
             return true
@@ -22,9 +22,9 @@ extension AppModelTests {
         guard case .openSession(let requestID, _, nil) = request else {
             return XCTFail("Expected an uncached session open")
         }
-        XCTAssertTrue(model.isLoadingTranscript)
+        XCTAssertTrue(model.chat.isLoadingTranscript)
         model.gateway.handle(.sessionOpened(requestID: requestID, payload: sessionReady(latestSequence: 2)))
-        XCTAssertTrue(model.isLoadingTranscript)
+        XCTAssertTrue(model.chat.isLoadingTranscript)
         model.showFiles(.unstaged)
         model.gateway.handle(.agentEvent(
             sessionID: "chat-1",
@@ -41,7 +41,7 @@ extension AppModelTests {
             history: nil,
             preview: nil
         ))
-        XCTAssertTrue(model.displayedTranscript.isEmpty)
+        XCTAssertTrue(model.chat.displayedTranscript.isEmpty)
 
         model.gateway.handle(.agentEvent(
             sessionID: "chat-1",
@@ -58,12 +58,12 @@ extension AppModelTests {
             history: nil,
             preview: nil
         ))
-        XCTAssertEqual(model.transcript.map(\.text), ["Hello"])
-        XCTAssertTrue(model.displayedTranscript.isEmpty)
+        XCTAssertEqual(model.chat.transcript.map(\.text), ["Hello"])
+        XCTAssertTrue(model.chat.displayedTranscript.isEmpty)
         let refreshRequestCount = await recorder.requestCount()
         model.gateway.handle(.sessionReplayComplete(requestID: requestID, sessionID: "chat-1"))
-        XCTAssertFalse(model.isLoadingTranscript)
-        XCTAssertEqual(model.displayedTranscript.map(\.text), ["Hello"])
+        XCTAssertFalse(model.chat.isLoadingTranscript)
+        XCTAssertEqual(model.chat.displayedTranscript.map(\.text), ["Hello"])
         let gitDiffRequest = await recorder.firstRequest(after: refreshRequestCount) { request in
             guard case .getGitDiff(_, "chat-1", .unstaged) = request else { return false }
             return true
@@ -85,7 +85,7 @@ extension AppModelTests {
         model.gateway.connectionState = .ready
 
         let openRequestCount = await recorder.requestCount()
-        model.openSession("chat-1")
+        model.chat.openSession("chat-1")
         let openRequest = await recorder.firstRequest(after: openRequestCount) { request in
             guard case .openSession(_, "chat-1", _) = request else { return false }
             return true
@@ -112,7 +112,7 @@ extension AppModelTests {
             preview: nil
         ))
         model.gateway.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
-        model.selectedModelRoute = "current-route"
+        model.chat.selectedModelRoute = "current-route"
 
         let initialRequests = await recorder.requests()
         let historyRequestCount = initialRequests.filter {
@@ -120,7 +120,7 @@ extension AppModelTests {
             return false
         }.count
         model.gateway.connectionState = .disconnected
-        model.requestEarlierHistory()
+        model.chat.requestEarlierHistory()
         let disconnectedRequests = await recorder.requests()
         XCTAssertEqual(
             disconnectedRequests.filter {
@@ -131,11 +131,11 @@ extension AppModelTests {
         )
 
         model.gateway.connectionState = .ready
-        model.activeTurnID = "turn-live"
-        XCTAssertTrue(model.canLoadEarlierHistory)
+        model.chat.activeTurnID = "turn-live"
+        XCTAssertTrue(model.chat.canLoadEarlierHistory)
         let readyRequestCount = await recorder.requestCount()
-        model.requestEarlierHistory()
-        model.requestEarlierHistory()
+        model.chat.requestEarlierHistory()
+        model.chat.requestEarlierHistory()
         let historyRequest = await recorder.firstRequest(after: readyRequestCount) { request in
             if case .getSessionHistory = request { return true }
             return false
@@ -225,7 +225,7 @@ extension AppModelTests {
             records: records,
             nextBeforeSequence: nil
         ))
-        XCTAssertEqual(model.displayedTranscript.map(\.text), ["Current", "Still working"])
+        XCTAssertEqual(model.chat.displayedTranscript.map(\.text), ["Current", "Still working"])
 
         model.gateway.handle(.sessionHistory(
             requestID: historyID,
@@ -235,18 +235,18 @@ extension AppModelTests {
         ))
 
         XCTAssertEqual(
-            model.displayedTranscript.map(\.text),
+            model.chat.displayedTranscript.map(\.text),
             ["Older question", "Earlier update", "Older answer", "Current", "Still working"]
         )
         XCTAssertEqual(
-            model.displayedTranscript.map(\.kind),
+            model.chat.displayedTranscript.map(\.kind),
             [.user, .commentary, .assistant, .assistant, .commentary]
         )
-        XCTAssertEqual(model.selectedModelRoute, "current-route")
-        XCTAssertTrue(model.hasEarlierHistory)
+        XCTAssertEqual(model.chat.selectedModelRoute, "current-route")
+        XCTAssertTrue(model.chat.hasEarlierHistory)
 
         let olderRequestCount = await recorder.requestCount()
-        model.requestEarlierHistory()
+        model.chat.requestEarlierHistory()
         let olderRequest = await recorder.firstRequest(after: olderRequestCount) { request in
             if case .getSessionHistory = request { return true }
             return false
@@ -265,7 +265,7 @@ extension AppModelTests {
             nextBeforeSequence: nil
         ))
         XCTAssertEqual(
-            model.displayedTranscript.map(\.text),
+            model.chat.displayedTranscript.map(\.text),
             [
                 "Oldest question",
                 "Oldest answer",
@@ -276,7 +276,7 @@ extension AppModelTests {
                 "Still working",
             ]
         )
-        XCTAssertFalse(model.hasEarlierHistory)
+        XCTAssertFalse(model.chat.hasEarlierHistory)
 
         model.gateway.handle(.agentEvent(
             sessionID: "chat-1",
@@ -288,7 +288,7 @@ extension AppModelTests {
             ))
         ))
         XCTAssertEqual(
-            model.displayedTranscript.map(\.text),
+            model.chat.displayedTranscript.map(\.text),
             [
                 "Oldest question",
                 "Oldest answer",
@@ -301,12 +301,12 @@ extension AppModelTests {
             ]
         )
 
-        let visibleBeforeReconnect = model.displayedTranscript.map(\.text)
+        let visibleBeforeReconnect = model.chat.displayedTranscript.map(\.text)
         model.gateway.reset(preservingDrafts: true)
         model.resetGatewayDependentState(preservingDrafts: true, preservingSession: true)
-        XCTAssertEqual(model.displayedTranscript.map(\.text), visibleBeforeReconnect)
+        XCTAssertEqual(model.chat.displayedTranscript.map(\.text), visibleBeforeReconnect)
         model.gateway.connectionState = .ready
-        model.restoreSession("chat-1")
+        model.chat.restoreSession("chat-1")
         try await Task.sleep(for: .milliseconds(30))
         let reconnectRequests = await recorder.requests()
         guard case .openSession(let reconnectID, _, _) = try XCTUnwrap(
@@ -318,10 +318,10 @@ extension AppModelTests {
         ))
         model.gateway.handle(.sessionReplayComplete(requestID: reconnectID, sessionID: "chat-1"))
         XCTAssertEqual(
-            model.displayedTranscript.map(\.text),
+            model.chat.displayedTranscript.map(\.text),
             visibleBeforeReconnect
         )
-        XCTAssertFalse(model.hasEarlierHistory)
+        XCTAssertFalse(model.chat.hasEarlierHistory)
     }
 
     func testHistoryMergeDoesNotReplayABufferedDeltaTwice() async throws {
@@ -332,7 +332,7 @@ extension AppModelTests {
         model.gateway.selectedAccountID = account.id
         model.gateway.connectionState = .ready
 
-        model.openSession("chat-1")
+        model.chat.openSession("chat-1")
         let openRequest = await recorder.firstRequest(after: 0) {
             guard case .openSession(_, "chat-1", _) = $0 else { return false }
             return true
@@ -353,10 +353,10 @@ extension AppModelTests {
             ))
         ))
         model.gateway.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
-        model.activeTurnID = "turn-live"
+        model.chat.activeTurnID = "turn-live"
 
         let requestCount = await recorder.requestCount()
-        model.requestEarlierHistory()
+        model.chat.requestEarlierHistory()
         let historyRequest = await recorder.firstRequest(after: requestCount) {
             guard case .getSessionHistory = $0 else { return false }
             return true
@@ -375,7 +375,7 @@ extension AppModelTests {
                 "delta": .string("Still working"),
             ]))
         ))
-        XCTAssertEqual(model.transcript.map(\.text), ["Current"])
+        XCTAssertEqual(model.chat.transcript.map(\.text), ["Current"])
 
         model.gateway.handle(.sessionHistory(
             requestID: historyID,
@@ -386,7 +386,7 @@ extension AppModelTests {
         try await Task.sleep(for: .milliseconds(80))
 
         XCTAssertEqual(
-            model.transcript.map(\.text),
+            model.chat.transcript.map(\.text),
             ["Older question", "Current", "Still working"]
         )
     }
@@ -399,7 +399,7 @@ extension AppModelTests {
         model.gateway.selectedAccountID = account.id
         model.gateway.connectionState = .ready
 
-        model.openSession("chat-1")
+        model.chat.openSession("chat-1")
         let openRequest = await recorder.firstRequest(after: 0) {
             guard case .openSession(_, "chat-1", _) = $0 else { return false }
             return true
@@ -413,7 +413,7 @@ extension AppModelTests {
         ))
         model.gateway.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
 
-        model.requestEarlierHistory()
+        model.chat.requestEarlierHistory()
         let firstRequest = await recorder.firstRequest(after: 1) {
             guard case .getSessionHistory = $0 else { return false }
             return true
@@ -449,14 +449,14 @@ extension AppModelTests {
             nextBeforeSequence: 5
         ))
 
-        XCTAssertEqual(model.transcript.map(\.turnID), Array(repeating: turnID, count: 3))
+        XCTAssertEqual(model.chat.transcript.map(\.turnID), Array(repeating: turnID, count: 3))
         XCTAssertEqual(
-            model.transcriptProjection(breakBefore: nil).rows.map(\.kind),
+            model.chat.transcriptProjection(breakBefore: nil).rows.map(\.kind),
             [.workedGroup, .narrative]
         )
 
         let requestCount = await recorder.requestCount()
-        model.requestEarlierHistory()
+        model.chat.requestEarlierHistory()
         let secondRequest = await recorder.firstRequest(after: requestCount) {
             guard case .getSessionHistory = $0 else { return false }
             return true
@@ -488,7 +488,7 @@ extension AppModelTests {
         ))
 
         XCTAssertEqual(
-            model.transcript.map(\.text),
+            model.chat.transcript.map(\.text),
             [
                 "Start",
                 "Before steering",
@@ -498,16 +498,16 @@ extension AppModelTests {
                 "Done",
             ]
         )
-        XCTAssertEqual(model.transcript.map(\.turnID), Array(repeating: turnID, count: 6))
+        XCTAssertEqual(model.chat.transcript.map(\.turnID), Array(repeating: turnID, count: 6))
         XCTAssertEqual(
-            model.transcript.map(\.startsTurn),
+            model.chat.transcript.map(\.startsTurn),
             [true, false, false, false, false, false]
         )
         XCTAssertEqual(
-            model.transcript.compactMap { $0.messageMetadata?.delivery },
+            model.chat.transcript.compactMap { $0.messageMetadata?.delivery },
             [.turn, .steer, .steer]
         )
-        let projection = model.transcriptProjection(breakBefore: nil)
+        let projection = model.chat.transcriptProjection(breakBefore: nil)
         XCTAssertEqual(projection.rows.map(\.kind), [.user, .workedGroup, .narrative])
         XCTAssertEqual(
             projection.rows[1].records.map(\.text),
@@ -523,7 +523,7 @@ extension AppModelTests {
     func testPeerHistoryReconnectsTurnMetadataAcrossAPageBoundary() throws {
         let model = try model()
         let turnID = "peer-turn"
-        model.mergeHistory([
+        model.chat.mergeHistory([
             recordedPeerMessage(5,
                 text: "Review the parser boundary."
             ),
@@ -544,22 +544,22 @@ extension AppModelTests {
             ])),
         ])
 
-        XCTAssertEqual(model.transcript.map(\.turnID), Array(repeating: turnID, count: 3))
-        XCTAssertEqual(model.transcript.map(\.startsTurn), [true, false, false])
+        XCTAssertEqual(model.chat.transcript.map(\.turnID), Array(repeating: turnID, count: 3))
+        XCTAssertEqual(model.chat.transcript.map(\.startsTurn), [true, false, false])
 
-        model.mergeHistory([recorded(1, .object([
+        model.chat.mergeHistory([recorded(1, .object([
             "type": .string("turn_started"),
             "turnId": .string(turnID),
         ]))])
 
         XCTAssertEqual(
-            model.transcript.map(\.text),
+            model.chat.transcript.map(\.text),
             ["Review the parser boundary.", "Checking", "Done"]
         )
-        XCTAssertEqual(model.transcript.map(\.turnID), Array(repeating: turnID, count: 3))
-        XCTAssertEqual(model.transcript.map(\.startsTurn), [true, false, false])
+        XCTAssertEqual(model.chat.transcript.map(\.turnID), Array(repeating: turnID, count: 3))
+        XCTAssertEqual(model.chat.transcript.map(\.startsTurn), [true, false, false])
         XCTAssertEqual(
-            model.transcriptProjection(breakBefore: nil).rows.map(\.kind),
+            model.chat.transcriptProjection(breakBefore: nil).rows.map(\.kind),
             [.workedGroup, .narrative]
         )
     }
@@ -572,7 +572,7 @@ extension AppModelTests {
         model.gateway.selectedAccountID = account.id
         model.gateway.connectionState = .ready
 
-        model.openSession("chat-1")
+        model.chat.openSession("chat-1")
         let openRequest = await recorder.firstRequest(after: 0) {
             guard case .openSession(_, "chat-1", _) = $0 else { return false }
             return true
@@ -587,7 +587,7 @@ extension AppModelTests {
         model.gateway.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
 
         let requestCount = await recorder.requestCount()
-        model.requestEarlierHistory()
+        model.chat.requestEarlierHistory()
         let historyRequest = await recorder.firstRequest(after: requestCount) {
             if case .getSessionHistory = $0 { return true }
             return false
@@ -632,14 +632,14 @@ extension AppModelTests {
             nextBeforeSequence: nil
         ))
 
-        XCTAssertEqual(model.displayedTranscript.map(\.turnID), Array(repeating: turnID, count: 3))
-        XCTAssertEqual(model.displayedTranscript.map(\.turnTerminal), [false, false, true])
-        let projection = model.transcriptProjection(breakBefore: nil)
+        XCTAssertEqual(model.chat.displayedTranscript.map(\.turnID), Array(repeating: turnID, count: 3))
+        XCTAssertEqual(model.chat.displayedTranscript.map(\.turnTerminal), [false, false, true])
+        let projection = model.chat.transcriptProjection(breakBefore: nil)
         XCTAssertEqual(projection.rows.map(\.kind), [.user, .workedGroup, .activityGroup])
         XCTAssertEqual(projection.rows[1].records.map(\.text), ["Checking"])
         XCTAssertEqual(projection.rows[2].records.map(\.title), ["Turn aborted"])
         XCTAssertEqual(projection.rows[1].elapsedMs, 200)
-        XCTAssertFalse(model.hasEarlierHistory)
+        XCTAssertFalse(model.chat.hasEarlierHistory)
     }
 
     func testHistoryCompletionRevisionCoversRejectedAndEmptyPages() async throws {
@@ -650,7 +650,7 @@ extension AppModelTests {
         model.gateway.selectedAccountID = account.id
         model.gateway.connectionState = .ready
 
-        model.openSession("chat-1")
+        model.chat.openSession("chat-1")
         let openRequest = await recorder.firstRequest(after: 0) {
             guard case .openSession(_, "chat-1", _) = $0 else { return false }
             return true
@@ -664,11 +664,11 @@ extension AppModelTests {
         ))
         model.gateway.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
 
-        let initialRevision = model.historyLoadCompletionRevision
-        let initialSuccessRevision = model.historyLoadSuccessRevision
-        let initialFailureRevision = model.historyLoadFailureRevision
+        let initialRevision = model.chat.historyLoadCompletionRevision
+        let initialSuccessRevision = model.chat.historyLoadSuccessRevision
+        let initialFailureRevision = model.chat.historyLoadFailureRevision
         var requestCount = await recorder.requestCount()
-        model.requestEarlierHistory()
+        model.chat.requestEarlierHistory()
         let rejectedRequest = await recorder.firstRequest(after: requestCount) {
             if case .getSessionHistory = $0 { return true }
             return false
@@ -683,13 +683,13 @@ extension AppModelTests {
             fatal: false
         )))
 
-        XCTAssertFalse(model.isLoadingEarlierHistory)
-        XCTAssertEqual(model.historyLoadCompletionRevision, initialRevision + 1)
-        XCTAssertEqual(model.historyLoadSuccessRevision, initialSuccessRevision)
-        XCTAssertEqual(model.historyLoadFailureRevision, initialFailureRevision + 1)
+        XCTAssertFalse(model.chat.isLoadingEarlierHistory)
+        XCTAssertEqual(model.chat.historyLoadCompletionRevision, initialRevision + 1)
+        XCTAssertEqual(model.chat.historyLoadSuccessRevision, initialSuccessRevision)
+        XCTAssertEqual(model.chat.historyLoadFailureRevision, initialFailureRevision + 1)
 
         requestCount = await recorder.requestCount()
-        model.requestEarlierHistory()
+        model.chat.requestEarlierHistory()
         let emptyRequest = await recorder.firstRequest(after: requestCount) {
             if case .getSessionHistory = $0 { return true }
             return false
@@ -704,11 +704,11 @@ extension AppModelTests {
             nextBeforeSequence: nil
         ))
 
-        XCTAssertFalse(model.isLoadingEarlierHistory)
-        XCTAssertEqual(model.historyLoadCompletionRevision, initialRevision + 2)
-        XCTAssertEqual(model.historyLoadSuccessRevision, initialSuccessRevision + 1)
-        XCTAssertEqual(model.historyLoadFailureRevision, initialFailureRevision + 1)
-        XCTAssertFalse(model.hasEarlierHistory)
+        XCTAssertFalse(model.chat.isLoadingEarlierHistory)
+        XCTAssertEqual(model.chat.historyLoadCompletionRevision, initialRevision + 2)
+        XCTAssertEqual(model.chat.historyLoadSuccessRevision, initialSuccessRevision + 1)
+        XCTAssertEqual(model.chat.historyLoadFailureRevision, initialFailureRevision + 1)
+        XCTAssertFalse(model.chat.hasEarlierHistory)
     }
 
     func testAsyncHistoryLoadCompletesWhenTheGatewayFinishes() async throws {
@@ -718,7 +718,7 @@ extension AppModelTests {
         model.gateway.accounts = [account]
         model.gateway.selectedAccountID = account.id
         model.gateway.connectionState = .ready
-        model.openSession("chat-1")
+        model.chat.openSession("chat-1")
         let openRequest = await recorder.firstRequest(after: 0) {
             guard case .openSession(_, "chat-1", _) = $0 else { return false }
             return true
@@ -732,14 +732,14 @@ extension AppModelTests {
         ))
         model.gateway.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
 
-        let load = Task { @MainActor in await model.loadEarlierHistory() }
+        let load = Task { @MainActor in await model.chat.loadEarlierHistory() }
         let historyRequest = await recorder.firstRequest(after: 1) {
             if case .getSessionHistory = $0 { return true }
             return false
         }
         guard case .getSessionHistory(let historyID, _, _) = try XCTUnwrap(historyRequest)
         else { return XCTFail("Expected history request") }
-        XCTAssertTrue(model.isLoadingEarlierHistory)
+        XCTAssertTrue(model.chat.isLoadingEarlierHistory)
 
         model.gateway.handle(.sessionHistory(
             requestID: historyID,
@@ -749,8 +749,8 @@ extension AppModelTests {
         ))
         await load.value
 
-        XCTAssertFalse(model.isLoadingEarlierHistory)
-        XCTAssertNil(model.historyRequestID)
+        XCTAssertFalse(model.chat.isLoadingEarlierHistory)
+        XCTAssertNil(model.chat.historyRequestID)
     }
 
     func testAsyncHistoryLoadCancellationDoesNotCancelTheGatewayRequest() async throws {
@@ -760,11 +760,11 @@ extension AppModelTests {
         model.gateway.accounts = [account]
         model.gateway.selectedAccountID = account.id
         model.gateway.connectionState = .ready
-        model.selectedSessionID = "chat-1"
-        model.nextHistoryBeforeSequence = 40
-        model.activeTurnID = "turn-live"
+        model.chat.selectedSessionID = "chat-1"
+        model.chat.nextHistoryBeforeSequence = 40
+        model.chat.activeTurnID = "turn-live"
 
-        let load = Task { @MainActor in await model.loadEarlierHistory() }
+        let load = Task { @MainActor in await model.chat.loadEarlierHistory() }
         let historyRequest = await recorder.firstRequest(after: 0) {
             if case .getSessionHistory = $0 { return true }
             return false
@@ -774,8 +774,8 @@ extension AppModelTests {
 
         load.cancel()
         await load.value
-        XCTAssertEqual(model.historyRequestID, historyID)
-        XCTAssertTrue(model.isLoadingEarlierHistory)
+        XCTAssertEqual(model.chat.historyRequestID, historyID)
+        XCTAssertTrue(model.chat.isLoadingEarlierHistory)
 
         model.gateway.handle(.rejected(GatewayRejection(
             requestId: historyID,
@@ -783,11 +783,11 @@ extension AppModelTests {
             message: "Try again",
             fatal: false
         )))
-        XCTAssertNil(model.historyRequestID)
-        XCTAssertFalse(model.isLoadingEarlierHistory)
+        XCTAssertNil(model.chat.historyRequestID)
+        XCTAssertFalse(model.chat.isLoadingEarlierHistory)
 
         model.gateway.connectionState = .ready
-        let resetLoad = Task { @MainActor in await model.loadEarlierHistory() }
+        let resetLoad = Task { @MainActor in await model.chat.loadEarlierHistory() }
         let resetRequest = await recorder.firstRequest(after: 1) {
             if case .getSessionHistory = $0 { return true }
             return false
@@ -796,8 +796,8 @@ extension AppModelTests {
         model.gateway.reset(preservingDrafts: true)
         model.resetGatewayDependentState(preservingDrafts: true)
         await resetLoad.value
-        XCTAssertFalse(model.isLoadingEarlierHistory)
-        XCTAssertNil(model.historyRequestID)
+        XCTAssertFalse(model.chat.isLoadingEarlierHistory)
+        XCTAssertNil(model.chat.historyRequestID)
     }
 
     func testHistoryPagesRebuildCrossPageAppendsAndFailedStepDeltas() async throws {
@@ -809,7 +809,7 @@ extension AppModelTests {
         model.gateway.connectionState = .ready
 
         let openRequestCount = await recorder.requestCount()
-        model.openSession("chat-1")
+        model.chat.openSession("chat-1")
         let open = await recorder.firstRequest(after: openRequestCount) {
             guard case .openSession(_, "chat-1", nil) = $0 else { return false }
             return true
@@ -855,10 +855,10 @@ extension AppModelTests {
         model.gateway.handle(.agentEvent(sessionID: "chat-1", record: toolEnd))
         model.gateway.handle(.agentEvent(sessionID: "chat-1", record: failed))
         model.gateway.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
-        XCTAssertEqual(model.transcript.map(\.text), ["\nOutput"])
+        XCTAssertEqual(model.chat.transcript.map(\.text), ["\nOutput"])
 
         var requestCount = await recorder.requestCount()
-        model.requestEarlierHistory()
+        model.chat.requestEarlierHistory()
         let firstHistory = await recorder.firstRequest(after: requestCount) {
             guard case .getSessionHistory = $0 else { return false }
             return true
@@ -880,11 +880,11 @@ extension AppModelTests {
             records: [partial],
             nextBeforeSequence: 6
         ))
-        XCTAssertEqual(model.transcript.map(\.text), ["Partial reasoning", "\nOutput"])
-        XCTAssertFalse(try XCTUnwrap(model.transcript.first).pending)
+        XCTAssertEqual(model.chat.transcript.map(\.text), ["Partial reasoning", "\nOutput"])
+        XCTAssertFalse(try XCTUnwrap(model.chat.transcript.first).pending)
 
         requestCount = await recorder.requestCount()
-        model.requestEarlierHistory()
+        model.chat.requestEarlierHistory()
         let secondHistory = await recorder.firstRequest(after: requestCount) {
             guard case .getSessionHistory = $0 else { return false }
             return true
@@ -918,9 +918,9 @@ extension AppModelTests {
             nextBeforeSequence: nil
         ))
 
-        XCTAssertEqual(model.transcript.map(\.text), ["Arguments\nOutput", "Partial reasoning"])
-        XCTAssertEqual(model.transcript.map(\.role), [.tool, nil])
-        XCTAssertTrue(model.transcript.allSatisfy { !$0.pending })
+        XCTAssertEqual(model.chat.transcript.map(\.text), ["Arguments\nOutput", "Partial reasoning"])
+        XCTAssertEqual(model.chat.transcript.map(\.role), [.tool, nil])
+        XCTAssertTrue(model.chat.transcript.allSatisfy { !$0.pending })
     }
 
 }
@@ -955,17 +955,17 @@ extension AppModelTests {
         XCTAssertTrue(model.canBrowseSessions)
         XCTAssertFalse(model.canOpenSession)
         model.openChat("chat-1")
-        await model.transcriptIOTask?.value
-        XCTAssertEqual(model.displayedTranscript.map(\.text), ["Cached chat-1"])
-        await model.composerDraftIOTask?.value
-        model.composer = "Keep this draft"
+        await model.chat.transcriptIOTask?.value
+        XCTAssertEqual(model.chat.displayedTranscript.map(\.text), ["Cached chat-1"])
+        await model.chat.composerDraftIOTask?.value
+        model.chat.composer = "Keep this draft"
         model.openChat("chat-2")
-        await model.transcriptIOTask?.value
-        await model.composerDraftIOTask?.value
-        XCTAssertEqual(model.selectedSessionID, "chat-2")
-        XCTAssertEqual(model.sessionToRestoreID, "chat-2")
-        XCTAssertEqual(model.displayedTranscript.map(\.text), ["Cached chat-2"])
-        XCTAssertEqual(model.latestSequence, 8)
+        await model.chat.transcriptIOTask?.value
+        await model.chat.composerDraftIOTask?.value
+        XCTAssertEqual(model.chat.selectedSessionID, "chat-2")
+        XCTAssertEqual(model.chat.sessionToRestoreID, "chat-2")
+        XCTAssertEqual(model.chat.displayedTranscript.map(\.text), ["Cached chat-2"])
+        XCTAssertEqual(model.chat.latestSequence, 8)
         XCTAssertFalse(model.canSendComposer)
         XCTAssertFalse(model.canModifySelectedSession)
         XCTAssertFalse(model.canCreateSession)
@@ -985,13 +985,13 @@ extension AppModelTests {
         guard case .openSession(let requestID, "chat-2", 8) = try XCTUnwrap(request) else {
             return XCTFail("Only the currently visible chat should synchronize from its cache cursor")
         }
-        XCTAssertEqual(model.displayedTranscript.map(\.text), ["Cached chat-2"])
+        XCTAssertEqual(model.chat.displayedTranscript.map(\.text), ["Cached chat-2"])
         model.gateway.handle(.sessionOpened(
             requestID: requestID,
             payload: sessionReady(latestSequence: 8, sessionID: "chat-2")
         ))
         model.gateway.handle(.sessionReplayComplete(requestID: requestID, sessionID: "chat-2"))
-        XCTAssertEqual(model.displayedTranscript.map(\.text), ["Cached chat-2"])
+        XCTAssertEqual(model.chat.displayedTranscript.map(\.text), ["Cached chat-2"])
         XCTAssertTrue(model.gateway.connectionState.isReady)
     }
 
@@ -1004,11 +1004,11 @@ extension AppModelTests {
         model.applySessions([session(state: .idle)])
         model.gateway.connectionState = .connecting
         let gate = AsyncGate()
-        model.transcriptIOTask = Task { await gate.wait() }
+        model.chat.transcriptIOTask = Task { await gate.wait() }
         model.openChat("chat-1")
-        let cacheRead = model.transcriptIOTask
-        XCTAssertTrue(model.isLoadingTranscript)
-        XCTAssertTrue(model.displayedTranscript.isEmpty)
+        let cacheRead = model.chat.transcriptIOTask
+        XCTAssertTrue(model.chat.isLoadingTranscript)
+        XCTAssertTrue(model.chat.displayedTranscript.isEmpty)
         model.gateway.handle(.ready(ready(
             botDefaults: VersionedAgentConfig(revision: 1, config: composition())
         )))
@@ -1026,12 +1026,12 @@ extension AppModelTests {
                 turnID: "turn-1", modelStepID: "answer", text: "Fresh from replay"
             ))
         ))
-        XCTAssertEqual(model.transcript.map(\.text), ["Fresh from replay"], "Replay must populate the live transcript")
+        XCTAssertEqual(model.chat.transcript.map(\.text), ["Fresh from replay"], "Replay must populate the live transcript")
         model.gateway.handle(.sessionReplayComplete(requestID: requestID, sessionID: "chat-1"))
-        XCTAssertEqual(model.displayedTranscript.map(\.text), ["Fresh from replay"], "Completed replay must be visible before the cache read resumes")
+        XCTAssertEqual(model.chat.displayedTranscript.map(\.text), ["Fresh from replay"], "Completed replay must be visible before the cache read resumes")
         await gate.open()
         await cacheRead?.value
-        XCTAssertEqual(model.displayedTranscript.map(\.text), ["Fresh from replay"])
+        XCTAssertEqual(model.chat.displayedTranscript.map(\.text), ["Fresh from replay"])
         let requests = await recorder.requests()
         XCTAssertEqual(requests.filter {
             if case .openSession = $0 { return true }
@@ -1046,15 +1046,15 @@ extension AppModelTests {
         model.gateway.selectedAccountID = account.id
         model.applySessions([session(state: .idle), session(sessionID: "chat-2", state: .idle)])
         let gate = AsyncGate()
-        model.transcriptIOTask = Task { await gate.wait() }
+        model.chat.transcriptIOTask = Task { await gate.wait() }
         model.openChat("chat-1")
         model.openChat("chat-2")
         await gate.open()
-        await model.transcriptIOTask?.value
-        XCTAssertEqual(model.selectedSessionID, "chat-2")
+        await model.chat.transcriptIOTask?.value
+        XCTAssertEqual(model.chat.selectedSessionID, "chat-2")
         XCTAssertEqual(model.navigationPath, [.chat(.session("chat-2"))])
-        XCTAssertEqual(model.sessionToRestoreID, "chat-2")
-        XCTAssertTrue(model.isLoadingTranscript)
+        XCTAssertEqual(model.chat.sessionToRestoreID, "chat-2")
+        XCTAssertTrue(model.chat.isLoadingTranscript)
     }
 
     func testVisibleBotSessionIsRestoredWithoutOpeningOtherBotWork() async throws {
@@ -1063,12 +1063,12 @@ extension AppModelTests {
         let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
         model.gateway.accounts = [account]
         model.gateway.selectedAccountID = account.id
-        model.botSessionsBotID = "bot-1"
-        model.botSessions = [session(state: .idle), session(sessionID: "chat-2", state: .idle)]
+        model.chat.botSessionsBotID = "bot-1"
+        model.chat.botSessions = [session(state: .idle), session(sessionID: "chat-2", state: .idle)]
         model.destination = .bots
         model.navigationPath = [.botSessions("bot-1")]
         model.openBotSession("chat-1")
-        await model.transcriptIOTask?.value
+        await model.chat.transcriptIOTask?.value
         XCTAssertEqual(model.presentedChatSessionID, "chat-1")
         XCTAssertTrue(model.isPresentingChat)
         model.gateway.handle(.ready(ready(

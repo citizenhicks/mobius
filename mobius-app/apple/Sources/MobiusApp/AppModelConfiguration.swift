@@ -137,7 +137,7 @@ extension AppModel {
     }
 
     func interrupt() {
-        guard let sessionID = selectedSessionID, let activeTurnID else { return }
+        guard let sessionID = chat.selectedSessionID, let activeTurnID = chat.activeTurnID else { return }
         gateway.transmit(.submit(
             sessionID: sessionID,
             submission: Submission(
@@ -148,12 +148,12 @@ extension AppModel {
     }
 
     func resolveApproval(_ decision: ReviewDecision) {
-        guard let sessionID = selectedSessionID,
-              let approval = pendingApproval,
-              approvalRequestID == nil
+        guard let sessionID = chat.selectedSessionID,
+              let approval = chat.pendingApproval,
+              chat.approvalRequestID == nil
         else { return }
         let id = requestID("approval")
-        approvalRequestID = id
+        chat.approvalRequestID = id
         gateway.transmit(.submit(
             sessionID: sessionID,
             submission: Submission(
@@ -161,8 +161,8 @@ extension AppModel {
                 op: .execApproval(id: approval.id, decision: decision)
             )
         )) { [weak self] _ in
-            guard self?.approvalRequestID == id else { return }
-            self?.approvalRequestID = nil
+            guard self?.chat.approvalRequestID == id else { return }
+            self?.chat.approvalRequestID = nil
         }
     }
 
@@ -183,7 +183,7 @@ extension AppModel {
         switch tab {
         case .modified: refreshModifiedFiles(modifiedFilesScope)
         case .allFiles: refreshWorkspaceFiles()
-        case .chatFiles: refreshSessionFiles()
+        case .chatFiles: chat.refreshSessionFiles()
         }
     }
 
@@ -701,7 +701,7 @@ extension AppModel {
     }
 
     func presentRoutineRun(_ run: RoutineRun) {
-        cancelSessionFileThumbnailDownloads()
+        chat.cancelSessionFileThumbnailDownloads()
         presentedRoutineRun = run
         routineRunPreview = nil
         routineRunPreviewEntries = []
@@ -724,7 +724,7 @@ extension AppModel {
     }
 
     func closeRoutineRunPreview() {
-        cancelSessionFileThumbnailDownloads()
+        chat.cancelSessionFileThumbnailDownloads()
         routineRunPreviewPollingTask?.cancel()
         routineRunPreviewPollingTask = nil
         routineRunPreviewRequestID = nil
@@ -819,12 +819,12 @@ extension AppModel {
         messageSpeaker.stop()
         Task { await dictation.cancel() }
         cancelVoiceChatIntent()
-        let voiceCall = realtimeVoiceCall
-        stopRealtimeVoice(notifyGateway: false)
+        let voiceCall = chat.realtimeVoiceCall
+        chat.stopRealtimeVoice(notifyGateway: false)
         gateway.setAppInBackground(true)
         gateway.setSceneActive(false)
-        flushStreamDeltas()
-        restorePendingDrafts()
+        chat.flushStreamDeltas()
+        chat.restorePendingDrafts()
         let endVoiceRequest = voiceCall.map {
             GatewayRequest.endRealtimeVoice(
                 sessionID: $0.sessionID,
@@ -838,7 +838,7 @@ extension AppModel {
                     ? .disconnected : nil
             )
         }
-        flushComposerDraft()
+        chat.flushComposerDraft()
         guard appLockEnabled else { return }
         discardFilePresentation(preservingWorkspaceTextDraft: true)
         isAppLocked = true

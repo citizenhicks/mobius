@@ -1,6 +1,6 @@
 import Foundation
 
-extension AppModel {
+extension ChatSessionModel {
     func beginReplying(to entry: TranscriptEntry) {
         guard canBeginReply,
               !entry.pending,
@@ -240,8 +240,8 @@ extension AppModel {
         awaitingInitialMessageTurnID = nil
         activeTurnID = nil
         if replayRequestID == nil { runStats.active = nil }
-        refreshWorkspaceChanges()
-        if filesInspectorTab == .chatFiles { refreshSessionFiles() }
+        onWorkspaceRefresh?()
+        onSessionFilesRefresh?()
         pendingApproval = nil
         approvalRequestID = nil
         if aborted, !wasRendered { finishPendingTranscriptEntries() }
@@ -258,7 +258,7 @@ extension AppModel {
                 modelContextWindow = Int64(window)
             }
         case "session_resume_requested":
-            if let sessionID = event.msg["sessionId"]?.stringValue { openChat(sessionID) }
+            if let sessionID = event.msg["sessionId"]?.stringValue { onOpenChat?(sessionID) }
         case "exec_approval_request":
             approvalRequestID = nil
             pendingApproval = decodeApproval(event.msg)
@@ -371,7 +371,7 @@ extension AppModel {
         }
         let block = rendered.block
         if block.format == "unified_diff", !block.pending {
-            refreshWorkspaceChanges()
+            onWorkspaceRefresh?()
         }
     }
 
@@ -519,28 +519,7 @@ extension AppModel {
         if present || selection != nil || presentedPreview?.id == preview.id { presentedPreview = record }
     }
 
-    func applyRoutineRunPreview(_ preview: RoutineRunPreview) {
-        guard routineRunPreviewRequestID == preview.requestID else { return }
-        var pageEntries: [TranscriptEntry] = []
-        var turnState = TranscriptHistoryTurnState()
-        for record in preview.records {
-            reduceHistory(record, into: &pageEntries, turnState: &turnState)
-        }
-        routineRunPreviewEntries = if routineRunPreviewRequestBeforeSequence == nil {
-            pageEntries
-        } else {
-            mergePreviewPages(older: pageEntries, newer: routineRunPreviewEntries)
-        }
-        routineRunPreview = preview
-        presentedRoutineRun = preview.run
-        routineRunPreviewNextBeforeSequence = preview.nextBeforeSequence
-        routineRunPreviewRequestID = nil
-        routineRunPreviewRequestBeforeSequence = nil
-        isLoadingRoutineRunPreview = false
-        routineRunPreviewError = nil
-    }
-
-    private func mergePreviewPages(
+    func mergePreviewPages(
         older: [TranscriptEntry],
         newer: [TranscriptEntry]
     ) -> [TranscriptEntry] {
@@ -937,4 +916,32 @@ extension AppModel {
         if changed { invalidateTranscriptProjection() }
     }
 
+}
+
+extension AppModel {
+    func beginReplying(to entry: TranscriptEntry) {
+        guard canBeginReply else { return }
+        chat.beginReplying(to: entry)
+    }
+
+    func applyRoutineRunPreview(_ preview: RoutineRunPreview) {
+        guard routineRunPreviewRequestID == preview.requestID else { return }
+        var pageEntries: [TranscriptEntry] = []
+        var turnState = TranscriptHistoryTurnState()
+        for record in preview.records {
+            chat.reduceHistory(record, into: &pageEntries, turnState: &turnState)
+        }
+        routineRunPreviewEntries = if routineRunPreviewRequestBeforeSequence == nil {
+            pageEntries
+        } else {
+            chat.mergePreviewPages(older: pageEntries, newer: routineRunPreviewEntries)
+        }
+        routineRunPreview = preview
+        presentedRoutineRun = preview.run
+        routineRunPreviewNextBeforeSequence = preview.nextBeforeSequence
+        routineRunPreviewRequestID = nil
+        routineRunPreviewRequestBeforeSequence = nil
+        isLoadingRoutineRunPreview = false
+        routineRunPreviewError = nil
+    }
 }

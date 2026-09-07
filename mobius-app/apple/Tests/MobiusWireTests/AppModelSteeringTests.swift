@@ -11,8 +11,8 @@ extension AppModelTests {
         })
         let target = MessageTarget(checkpointSequence: 7, batchItemCount: 2)
         model.gateway.connectionState = .ready
-        model.selectedSessionID = "chat-1"
-        model.reduce(
+        model.chat.selectedSessionID = "chat-1"
+        model.chat.reduce(
             event: AgentEventRecord(
                 submissionId: "original",
                 msg: testMessageEvent(text: "Earlier message", messageTarget: target)
@@ -21,8 +21,8 @@ extension AppModelTests {
             preview: nil
         )
 
-        model.activeTurnID = "turn-active"
-        model.composerAttachments = [ComposerAttachment(
+        model.chat.activeTurnID = "turn-active"
+        model.chat.composerAttachments = [ComposerAttachment(
             id: UUID(),
             name: "context.txt",
             size: 7,
@@ -34,10 +34,10 @@ extension AppModelTests {
                 mediaType: "text/plain"
             ))
         )]
-        model.beginReplying(to: try XCTUnwrap(model.transcript.first))
-        let reply = try XCTUnwrap(model.composerReply)
-        model.composerAttachments = []
-        model.composer = "Focused response"
+        model.chat.beginReplying(to: try XCTUnwrap(model.chat.transcript.first))
+        let reply = try XCTUnwrap(model.chat.composerReply)
+        model.chat.composerAttachments = []
+        model.chat.composer = "Focused response"
         XCTAssertTrue(model.sendMessage())
 
         let request = await recorder.firstRequest(after: 0) { request in
@@ -48,16 +48,16 @@ extension AppModelTests {
               case .message(let message) = submission.op
         else { return XCTFail("Expected reply message submission") }
         XCTAssertEqual(message.reply, reply)
-        XCTAssertNil(model.composerReply)
+        XCTAssertNil(model.chat.composerReply)
 
-        model.openMessageReply(reply)
-        let firstNavigationID = try XCTUnwrap(model.messageNavigationRequest?.id)
-        model.openMessageReply(reply)
-        XCTAssertNotEqual(model.messageNavigationRequest?.id, firstNavigationID)
-        XCTAssertEqual(model.messageNavigationRequest?.target, target)
+        model.chat.openMessageReply(reply)
+        let firstNavigationID = try XCTUnwrap(model.chat.messageNavigationRequest?.id)
+        model.chat.openMessageReply(reply)
+        XCTAssertNotEqual(model.chat.messageNavigationRequest?.id, firstNavigationID)
+        XCTAssertEqual(model.chat.messageNavigationRequest?.target, target)
 
-        model.composer = "New draft"
-        model.composerReply = MessageReply(
+        model.chat.composer = "New draft"
+        model.chat.composerReply = MessageReply(
             target: MessageTarget(checkpointSequence: 9, batchItemCount: 1),
             text: "Different original"
         )
@@ -67,10 +67,10 @@ extension AppModelTests {
             message: "Try again",
             fatal: false
         )))
-        XCTAssertEqual(model.composer, "Focused response\n\nNew draft")
-        XCTAssertNil(model.composerReply)
+        XCTAssertEqual(model.chat.composer, "Focused response\n\nNew draft")
+        XCTAssertNil(model.chat.composerReply)
 
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(
                 submissionId: "reply",
                 msg: testMessageEvent(
@@ -82,7 +82,7 @@ extension AppModelTests {
             blocks: [],
             preview: nil
         )
-        XCTAssertEqual(model.transcript.last?.reply, reply)
+        XCTAssertEqual(model.chat.transcript.last?.reply, reply)
     }
 
     func testSteeringDraftSettlesOnSuccessAndRestoresOnSubmissionRejection() async throws {
@@ -91,9 +91,9 @@ extension AppModelTests {
             await recorder.record(request)
         })
         model.gateway.connectionState = .ready
-        model.selectedSessionID = "chat-1"
-        model.activeTurnID = "turn-1"
-        model.composer = "Use the smaller patch"
+        model.chat.selectedSessionID = "chat-1"
+        model.chat.activeTurnID = "turn-1"
+        model.chat.composer = "Use the smaller patch"
 
         var requestCount = await recorder.requestCount()
         model.sendMessage()
@@ -105,7 +105,7 @@ extension AppModelTests {
             guard case .submit(_, let submission) = request else { return nil }
             return submission
         })
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(submissionId: first.id, msg: .object([
                 "type": .string("frontend"),
                 "frontendType": .string("widget"),
@@ -139,15 +139,15 @@ extension AppModelTests {
             fatal: true
         )))
 
-        XCTAssertEqual(model.composer, "")
-        XCTAssertEqual(model.transcriptTailWidgets.first?.widget.text, "Use the smaller patch")
+        XCTAssertEqual(model.chat.composer, "")
+        XCTAssertEqual(model.chat.transcriptTailWidgets.first?.widget.text, "Use the smaller patch")
         XCTAssertEqual(
-            model.transcriptTailWidgets.first?.widget.action?.capabilityInput,
+            model.chat.transcriptTailWidgets.first?.widget.action?.capabilityInput,
             "Use the smaller patch"
         )
 
         model.gateway.connectionState = .ready
-        model.composer = "Retry this steering"
+        model.chat.composer = "Retry this steering"
         requestCount = await recorder.requestCount()
         model.sendMessage()
         let secondRequest = await recorder.firstRequest(after: requestCount) { request in
@@ -158,7 +158,7 @@ extension AppModelTests {
             guard case .submit(_, let submission) = request else { return nil }
             return submission
         })
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(submissionId: second.id, msg: .object([
                 "type": .string("submission_rejected"),
                 "message": .string("Steering queue is full")
@@ -167,13 +167,13 @@ extension AppModelTests {
             preview: nil
         )
 
-        XCTAssertEqual(model.composer, "Retry this steering")
+        XCTAssertEqual(model.chat.composer, "Retry this steering")
     }
 
     func testQueuedSteeringKeepsOneBubblePerMessageAndRemovesOnlyTheTarget() throws {
         let model = try model()
         for (id, text) in [("steer-1", "First"), ("steer-2", "Second")] {
-            model.reduce(
+            model.chat.reduce(
                 event: AgentEventRecord(submissionId: id, msg: .object([
                     "type": .string("frontend"),
                     "frontendType": .string("widget"),
@@ -195,9 +195,9 @@ extension AppModelTests {
             )
         }
 
-        XCTAssertEqual(model.transcriptTailWidgets.map(\.widget.text), ["First", "Second"])
+        XCTAssertEqual(model.chat.transcriptTailWidgets.map(\.widget.text), ["First", "Second"])
 
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(submissionId: "input-1", msg: .object([
                 "type": .string("frontend"),
                 "frontendType": .string("remove_widget"),
@@ -208,9 +208,9 @@ extension AppModelTests {
             preview: nil
         )
 
-        XCTAssertEqual(model.transcriptTailWidgets.map(\.widget.text), ["Second"])
+        XCTAssertEqual(model.chat.transcriptTailWidgets.map(\.widget.text), ["Second"])
 
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(submissionId: "input-1", msg: .object([
                 "type": .string("frontend"),
                 "frontendType": .string("remove_widget"),
@@ -221,7 +221,7 @@ extension AppModelTests {
             preview: nil
         )
 
-        XCTAssertTrue(model.transcriptTailWidgets.isEmpty)
+        XCTAssertTrue(model.chat.transcriptTailWidgets.isEmpty)
     }
 
     func testPeerSteeringUsesEventsWhileUserSteeringKeepsItsBubble() throws {
@@ -248,20 +248,20 @@ extension AppModelTests {
         XCTAssertEqual(queuedPeerEntry.text, peer.widget.text)
 
         let model = try model()
-        model.reduce(record: recordedPeerMessage(
+        model.chat.reduce(record: recordedPeerMessage(
             1,
             delivery: .steer,
             text: "Review this"
         ))
-        let peerEntry = try XCTUnwrap(model.transcript.first)
+        let peerEntry = try XCTUnwrap(model.chat.transcript.first)
         XCTAssertEqual(peerEntry.kind, .event)
         XCTAssertEqual(peerEntry.messageMetadata?.delivery, .steer)
         XCTAssertEqual(
-            TranscriptProjection(entries: model.transcript).rows.map(\.kind),
+            TranscriptProjection(entries: model.chat.transcript).rows.map(\.kind),
             [.activityGroup]
         )
 
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(
                 submissionId: "user-steer",
                 msg: testMessageEvent(delivery: .steer, text: "Use the smaller patch")
@@ -269,13 +269,13 @@ extension AppModelTests {
             blocks: [],
             preview: nil
         )
-        XCTAssertEqual(model.transcript.last?.kind, .user)
-        XCTAssertEqual(model.transcript.last?.messageMetadata?.delivery, .steer)
+        XCTAssertEqual(model.chat.transcript.last?.kind, .user)
+        XCTAssertEqual(model.chat.transcript.last?.messageMetadata?.delivery, .steer)
     }
 
     func testSteeringFeedbackFiresWhenTheMessageReachesModelInput() throws {
         let model = try model()
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(submissionId: "input-1", msg: .object([
                 "type": .string("turn_started"),
                 "turnId": .string("turn-1")
@@ -283,7 +283,7 @@ extension AppModelTests {
             blocks: [],
             preview: nil
         )
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(
                 submissionId: "input-1",
                 msg: testMessageEvent(
@@ -294,7 +294,7 @@ extension AppModelTests {
             blocks: [],
             preview: nil
         )
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(submissionId: "input-1", msg: .object([
                 "type": .string("frontend"),
                 "frontendType": .string("remove_widget"),
@@ -305,9 +305,9 @@ extension AppModelTests {
             preview: nil
         )
 
-        XCTAssertEqual(model.steeringDeliveryRevision, 0)
+        XCTAssertEqual(model.chat.steeringDeliveryRevision, 0)
 
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(
                 submissionId: "input-1",
                 msg: testMessageEvent(
@@ -320,7 +320,7 @@ extension AppModelTests {
             preview: nil
         )
 
-        XCTAssertEqual(model.steeringDeliveryRevision, 1)
+        XCTAssertEqual(model.chat.steeringDeliveryRevision, 1)
     }
 
     func testActiveMessageOmitsMiddlewareDefaultAndAllowsTheOppositeOverride() async throws {
@@ -332,10 +332,10 @@ extension AppModelTests {
         composition.middleware.settings["messages"] = ["delivery": .string("queue")]
         model.agentDraft = composition
         model.gateway.connectionState = .ready
-        model.selectedSessionID = "chat-1"
-        model.activeTurnID = "turn-1"
+        model.chat.selectedSessionID = "chat-1"
+        model.chat.activeTurnID = "turn-1"
 
-        model.composer = "Handle this next"
+        model.chat.composer = "Handle this next"
         var requestCount = await recorder.requestCount()
         XCTAssertTrue(model.sendMessage())
         let queuedRequest = await recorder.firstRequest(after: requestCount) { request in
@@ -351,7 +351,7 @@ extension AppModelTests {
         XCTAssertNil(queuedMessage.requestedDelivery)
         XCTAssertEqual(queuedMessage.targetTurnId, "turn-1")
 
-        model.composer = "Use this immediately"
+        model.chat.composer = "Use this immediately"
         requestCount = await recorder.requestCount()
         XCTAssertTrue(model.sendMessage(delivery: .steer))
         let steeringRequest = await recorder.firstRequest(after: requestCount) { request in
@@ -366,8 +366,8 @@ extension AppModelTests {
         XCTAssertEqual(steeringMessage.requestedDelivery, .steer)
         XCTAssertEqual(steeringMessage.targetTurnId, "turn-1")
 
-        model.activeTurnID = nil
-        model.composer = "Start another turn"
+        model.chat.activeTurnID = nil
+        model.chat.composer = "Start another turn"
         requestCount = await recorder.requestCount()
         XCTAssertTrue(model.sendMessage(delivery: .queue))
         let turnRequest = await recorder.firstRequest(after: requestCount) { request in

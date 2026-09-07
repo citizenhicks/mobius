@@ -424,7 +424,7 @@ extension AppModel {
             openSwarmChat(swarmID)
             return true
         case .session(_, let kind, let sessionID, _, let requestID):
-            guard canOpenSession || selectedSessionID == sessionID else { return false }
+            guard canOpenSession || chat.selectedSessionID == sessionID else { return false }
             if kind == .awaitingApproval,
                let requestID,
                let approval = backgroundApprovals.first(where: {
@@ -435,7 +435,7 @@ extension AppModel {
                 resumeBotSession(botID: approval.botId, sessionID: approval.sessionId)
                 return true
             }
-            guard sessions.contains(where: { $0.sessionId == sessionID }) else { return false }
+            guard chat.sessions.contains(where: { $0.sessionId == sessionID }) else { return false }
             pendingRemoteNotification = nil
             prepareToOpenNotification()
             openChat(sessionID)
@@ -449,7 +449,7 @@ extension AppModel {
         case .session(let sessionID):
             if let approval = backgroundApproval(forSessionID: sessionID) {
                 resumeBotSession(botID: approval.botId, sessionID: approval.sessionId)
-            } else if sessions.contains(where: { $0.sessionId == sessionID }) {
+            } else if chat.sessions.contains(where: { $0.sessionId == sessionID }) {
                 openChat(sessionID)
             }
         case .swarm(let swarmID, _):
@@ -492,11 +492,11 @@ extension AppModel {
             return
         }
         let isHiddenApproval = kind == .awaitingApproval
-            && !sessions.contains(where: { $0.sessionId == sessionID })
+            && !chat.sessions.contains(where: { $0.sessionId == sessionID })
         let title = backgroundApproval(forSessionID: sessionID) != nil || isHiddenApproval
             ? botName
             : sessionTitle(sessionID)
-        let isActiveChat = selectedSessionID == sessionID && isChatVisible
+        let isActiveChat = chat.selectedSessionID == sessionID && isChatVisible
         switch kind {
         case .awaitingApproval:
             showToast("\(title) needs approval.", tone: .warning, target: .session(sessionID))
@@ -672,7 +672,7 @@ extension AppModel {
             if let approval = backgroundApproval(forSessionID: sessionID) {
                 return approval.requestId == requestID
             }
-            guard let session = sessions.first(where: {
+            guard let session = chat.sessions.first(where: {
                 $0.sessionId == sessionID
             }) else { return false }
             return session.activity.state == .awaitingApproval
@@ -680,7 +680,7 @@ extension AppModel {
         case .session(_, .completed, let sessionID, let runCount, _),
              .session(_, .aborted, let sessionID, let runCount, _),
              .session(_, .failed, let sessionID, let runCount, _):
-            guard let session = sessions.first(where: {
+            guard let session = chat.sessions.first(where: {
                 $0.sessionId == sessionID
             }), let runCount else { return false }
             return session.executionStats.runCount >= runCount

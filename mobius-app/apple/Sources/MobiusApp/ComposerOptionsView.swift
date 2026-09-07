@@ -329,7 +329,7 @@ struct ComposerOptionsView: View {
         }
 
         Group {
-            if model.activeTurnID != nil && !canSend {
+            if model.chat.activeTurnID != nil && !canSend {
                 Button("Stop", glyph: .stopFill) { model.interrupt() }
                     .help("Stop")
             } else {
@@ -347,17 +347,17 @@ struct ComposerOptionsView: View {
                         }
                     }
                 }
-                    .disabled(!canSend)
-                    .help(Text(sendLabel))
-                    .accessibilityLabel(Text(sendLabel))
-                    .accessibilityHint(Text(sendHint))
-                    .contextMenu {
-                        if model.activeTurnID != nil {
-                            Button(alternateSendLabel, glyph: alternateSendGlyph) {
-                                send(alternateDelivery)
-                            }
+                .disabled(!canSend)
+                .help(Text(sendLabel))
+                .accessibilityLabel(Text(sendLabel))
+                .accessibilityHint(Text(sendHint))
+                .contextMenu {
+                    if model.chat.activeTurnID != nil {
+                        Button(alternateSendLabel, glyph: alternateSendGlyph) {
+                            send(alternateDelivery)
                         }
                     }
+                }
             }
         }
         .mobiusProminentIconButton()
@@ -502,7 +502,7 @@ struct ComposerOptionsView: View {
     private var canSend: Bool {
         guard model.gateway.connectionState.isReady,
               model.canSendComposer,
-              model.activeTurnID == nil || model.composerAttachments.isEmpty
+              model.chat.activeTurnID == nil || model.chat.composerAttachments.isEmpty
         else { return false }
         return !dictation.isActive
     }
@@ -515,11 +515,11 @@ struct ComposerOptionsView: View {
     }
 
     private var canToggleDictation: Bool {
-        guard !model.selectedRouteSupportsRealtimeVoice, model.realtimeVoiceCall == nil else { return false }
+        guard !model.selectedRouteSupportsRealtimeVoice, model.chat.realtimeVoiceCall == nil else { return false }
         return dictation.isRecording
             || dictation.canToggle
                 && model.gateway.connectionState.isReady
-                && model.selectedSessionID != nil
+                && model.chat.selectedSessionID != nil
     }
 
     private var dictationLabel: LocalizedStringResource {
@@ -541,19 +541,19 @@ struct ComposerOptionsView: View {
     }
 
     private var sendLabel: LocalizedStringResource {
-        guard model.activeTurnID != nil else { return "Send" }
+        guard model.chat.activeTurnID != nil else { return "Send" }
         return model.activeMessageDelivery == .steer ? "Send as Steer" : "Send as Queue"
     }
 
     private var sendHint: LocalizedStringResource {
-        guard model.activeTurnID != nil else { return "Starts a new turn" }
+        guard model.chat.activeTurnID != nil else { return "Starts a new turn" }
         return model.activeMessageDelivery == .steer
             ? "Long press to send after this turn"
             : "Long press to steer the active turn"
     }
 
     private var sendGlyph: MobiusGlyph {
-        guard model.activeTurnID != nil else { return .arrowUp02 }
+        guard model.chat.activeTurnID != nil else { return .arrowUp02 }
         return model.activeMessageDelivery == .steer ? .arrowUpRight01 : .queue01
     }
 
@@ -577,13 +577,13 @@ struct ComposerOptionsView: View {
                 if dictation.isRecording {
                     try await dictation.stop()
                 } else {
-                    let sessionID = model.selectedSessionID
+                    let sessionID = model.chat.selectedSessionID
                     try await dictation.start(
-                        existingText: model.composer,
+                        existingText: model.chat.composer,
                         updateText: { text in
-                            guard model.selectedSessionID == sessionID else { return }
+                            guard model.chat.selectedSessionID == sessionID else { return }
                             selection = nil
-                            model.composer = text
+                            model.chat.composer = text
                         },
                         reportError: {
                             model.showToast($0.localizedDescriptionResource, tone: .error)

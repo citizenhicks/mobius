@@ -23,6 +23,7 @@ struct AppShell: View {
 
     var body: some View {
         @Bindable var model = model
+        @Bindable var chat = model.chat
         ZStack(alignment: .top) {
             MobiusBackdrop()
             if model.gateway.accounts.isEmpty {
@@ -35,21 +36,14 @@ struct AppShell: View {
                         FilesView()
                             .frame(idealWidth: 720, idealHeight: 720)
                             .overlay(alignment: .top) {
-                                if horizontalSizeClass == .compact { AppToastOverlay() }
+                                compactInspectorToastOverlay
                             }
                     }
                     .sheet(isPresented: $model.showsPairing) {
-                        PairingView(canCancel: true)
-                            .frame(maxWidth: 560)
-                            .padding(MobiusSpace.xl)
-                            .overlay(alignment: .top) { AppToastOverlay() }
-                            .mobiusSheet(detents: [.large])
+                        pairingSheet
                     }
                     .sheet(isPresented: $model.showsWorkspaceBrowser) {
-                        WorkspaceBrowserView()
-                            .frame(idealWidth: 520, idealHeight: 620)
-                            .overlay(alignment: .top) { AppToastOverlay() }
-                            .mobiusSheet()
+                        workspaceBrowserSheet
                     }
             }
             AppToastOverlay().zIndex(10)
@@ -67,37 +61,37 @@ struct AppShell: View {
         .alert(
             "Rename chat",
             isPresented: Binding(
-                get: { model.sessionToRename != nil },
-                set: { if !$0 { model.sessionToRename = nil } }
+                get: { model.chat.sessionToRename != nil },
+                set: { if !$0 { model.chat.sessionToRename = nil } }
             )
         ) {
-            TextField("Chat name", text: $model.sessionRenameDraft)
-            Button("Cancel", role: .cancel) { model.sessionToRename = nil }
+            TextField("Chat name", text: $chat.sessionRenameDraft)
+            Button("Cancel", role: .cancel) { model.chat.sessionToRename = nil }
             Button("Rename") {
-                guard let session = model.sessionToRename,
-                      model.renameSession(session, title: model.sessionRenameDraft) != nil
+                guard let session = model.chat.sessionToRename,
+                      model.renameSession(session, title: model.chat.sessionRenameDraft) != nil
                 else { return }
-                model.sessionToRename = nil
+                model.chat.sessionToRename = nil
             }
             .disabled(
-                model.sessionRenameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                model.chat.sessionRenameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     || !model.canRenameSession
             )
         }
         .confirmationDialog(
             deleteChatsTitle,
             isPresented: Binding(
-                get: { model.sessionToDelete != nil },
-                set: { if !$0 { model.sessionToDelete = nil } }
+                get: { model.chat.sessionToDelete != nil },
+                set: { if !$0 { model.chat.sessionToDelete = nil } }
             ),
             titleVisibility: .visible
         ) {
             Button(deleteChatsActionTitle, role: .destructive) {
-                if let sessions = model.sessionToDelete { model.deleteSessions(sessions) }
-                model.sessionToDelete = nil
+                if let sessions = model.chat.sessionToDelete { model.deleteSessions(sessions) }
+                model.chat.sessionToDelete = nil
             }
             .disabled(!model.canRenameSession)
-            Button("Cancel", role: .cancel) { model.sessionToDelete = nil }
+            Button("Cancel", role: .cancel) { model.chat.sessionToDelete = nil }
         } message: {
             Text(deleteChatsMessage)
         }
@@ -154,7 +148,7 @@ struct AppShell: View {
             announce(toast)
         }
         .sensoryFeedback(.impact(weight: .light), trigger: model.toast?.id) { _, id in id != nil }
-        .sensoryFeedback(.impact(weight: .light), trigger: model.steeringDeliveryRevision)
+        .sensoryFeedback(.impact(weight: .light), trigger: model.chat.steeringDeliveryRevision)
         .onChange(of: chatIsVisible) { _, visible in
             model.setChatVisible(visible, windowToken: chatWindowToken)
         }
@@ -162,11 +156,31 @@ struct AppShell: View {
             guard chatIsVisible else { return }
             model.setChatVisible(true, windowToken: chatWindowToken)
         }
-        .onChange(of: model.selectedSessionID) { _, newSessionID in
+        .onChange(of: model.chat.selectedSessionID) { _, newSessionID in
             guard chatIsVisible, newSessionID != nil else { return }
             model.setChatVisible(true, windowToken: chatWindowToken)
         }
         .environment(\.locale, model.language.locale)
+    }
+
+    @ViewBuilder
+    private var compactInspectorToastOverlay: some View {
+        if horizontalSizeClass == .compact { AppToastOverlay() }
+    }
+
+    private var pairingSheet: some View {
+        PairingView(canCancel: true)
+            .frame(maxWidth: 560)
+            .padding(MobiusSpace.xl)
+            .overlay(alignment: .top) { AppToastOverlay() }
+            .mobiusSheet(detents: [.large])
+    }
+
+    private var workspaceBrowserSheet: some View {
+        WorkspaceBrowserView()
+            .frame(idealWidth: 520, idealHeight: 620)
+            .overlay(alignment: .top) { AppToastOverlay() }
+            .mobiusSheet()
     }
 
     private var filePresentationsAreSuppressed: Bool {
@@ -174,16 +188,16 @@ struct AppShell: View {
     }
 
     private var deleteChatsTitle: LocalizedStringResource {
-        let count = model.sessionToDelete?.count ?? 0
+        let count = model.chat.sessionToDelete?.count ?? 0
         return count == 1 ? "Delete this chat?" : "Delete \(count) chats?"
     }
 
     private var deleteChatsActionTitle: LocalizedStringResource {
-        (model.sessionToDelete?.count ?? 0) == 1 ? "Delete chat" : "Delete chats"
+        (model.chat.sessionToDelete?.count ?? 0) == 1 ? "Delete chat" : "Delete chats"
     }
 
     private var deleteChatsMessage: LocalizedStringResource {
-        (model.sessionToDelete?.count ?? 0) == 1
+        (model.chat.sessionToDelete?.count ?? 0) == 1
             ? "This removes the chat from the gateway history."
             : "This removes the selected chats from the gateway history."
     }
@@ -273,7 +287,7 @@ struct AppShell: View {
                             ) {
                                 // The keyboard belongs to the page being slid away; left
                                 // up, it animates against a screen the reader just left.
-                                model.dismissComposerFocus()
+                                model.chat.dismissComposerFocus()
                                 withAnimation(SidebarDrawerMetrics.animation) {
                                     sidebarIsOpen.toggle()
                                 }
@@ -287,7 +301,7 @@ struct AppShell: View {
 
     private var iPadSidebarButton: some View {
         MobiusToolbarIconButton(glyph: .menu, label: iPadSidebarButtonTitle) {
-            model.dismissComposerFocus()
+            model.chat.dismissComposerFocus()
             withAnimation(SidebarDrawerMetrics.animation) {
                 if horizontalSizeClass == .compact {
                     sidebarIsOpen.toggle()
@@ -319,7 +333,7 @@ struct AppShell: View {
         case .globalContributions: GlobalContributionsView()
         case .profile: ProfileView()
         case .contribution(let id):
-            if let widget = model.navigationWidgets.first(where: { $0.id == id }) {
+            if let widget = model.chat.navigationWidgets.first(where: { $0.id == id }) {
                 FrontendContributionPage(widget: widget)
             } else {
                 MobiusUnavailable(
@@ -365,7 +379,7 @@ struct AppShell: View {
         case .profile:
             MobiusTitleText(title: "Settings")
         case .contribution(let id):
-            if let widget = model.navigationWidgets.first(where: { $0.id == id }) {
+            if let widget = model.chat.navigationWidgets.first(where: { $0.id == id }) {
                 MobiusTitleText(title: frontendPresentationText(widget.title))
             } else {
                 MobiusTitleText(title: "Capability unavailable")

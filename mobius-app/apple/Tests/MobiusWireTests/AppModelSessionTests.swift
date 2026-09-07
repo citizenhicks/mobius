@@ -8,9 +8,9 @@ extension AppModelTests {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
         model.gateway.connectionState = .ready
-        model.selectedSessionID = "chat-1"
-        model.activeTurnID = "turn-1"
-        model.pendingApproval = PendingApproval(
+        model.chat.selectedSessionID = "chat-1"
+        model.chat.activeTurnID = "turn-1"
+        model.chat.pendingApproval = PendingApproval(
             id: "approval-1",
             reason: "Approve this tool?",
             calls: []
@@ -23,7 +23,7 @@ extension AppModelTests {
 
         model.switchGitBranch(to: "feature")
         model.attachFolder("/srv/other")
-        model.openSession("chat-2")
+        model.chat.openSession("chat-2")
         try await Task.sleep(for: .milliseconds(30))
 
         let requests = await recorder.requests()
@@ -45,7 +45,7 @@ extension AppModelTests {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
         model.gateway.connectionState = .ready
-        model.selectedSessionID = "chat-1"
+        model.chat.selectedSessionID = "chat-1"
 
         model.attachFolder("  /srv/other  ")
 
@@ -62,15 +62,18 @@ extension AppModelTests {
         }
         XCTAssertEqual(sessionID, "chat-1")
         XCTAssertEqual(folder, "/srv/other")
-        XCTAssertEqual(model.sessionMutationRequestID, requestID)
+        XCTAssertEqual(model.chat.sessionMutationRequestID, requestID)
     }
 
     func testNewChatBotCanChangeUntilFirstSendCreatesSession() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
         model.gateway.connectionState = .ready
-        model.selectedSessionID = "chat-1"
-        model.activeTurnID = "turn-1"
+        model.chat.selectedSessionID = "chat-1"
+        model.chat.activeTurnID = "turn-1"
+        model.workspace = WorkspaceInfo(id: "workspace-1", path: "/srv/old")
+        model.gitStatus = GitStatus(currentBranch: "main", branches: ["main"])
+        model.gitDiffs[.unstaged]?.text = "old diff"
         let helper = bot()
         let reviewer = bot(id: "bot-2", handle: "reviewer", name: "Reviewer")
         model.bots = [helper, reviewer]
@@ -79,6 +82,9 @@ extension AppModelTests {
         try await Task.sleep(for: .milliseconds(20))
 
         XCTAssertEqual(model.navigationPath, [.chat(.new)])
+        XCTAssertNil(model.workspace)
+        XCTAssertNil(model.gitStatus)
+        XCTAssertEqual(model.gitDiffs[.unstaged]?.text, "")
         let stagedRequests = await recorder.requests()
         XCTAssertFalse(stagedRequests.contains { request in
             if case .createSession = request { return true }
@@ -87,14 +93,14 @@ extension AppModelTests {
 
         model.selectBotForNewChat(helper)
         model.selectBotForNewChat(reviewer)
-        XCTAssertEqual(model.pendingNewChatBotID, reviewer.id)
+        XCTAssertEqual(model.chat.pendingNewChatBotID, reviewer.id)
         let selectedRequests = await recorder.requests()
         XCTAssertFalse(selectedRequests.contains { request in
             if case .createSession = request { return true }
             return false
         })
 
-        model.composer = "Start here"
+        model.chat.composer = "Start here"
         XCTAssertTrue(model.sendMessage())
         let request = await recorder.firstRequest(after: 0) { request in
             guard case .createSession(_, "/srv/another-project", "bot-2") = request else {
@@ -115,14 +121,14 @@ extension AppModelTests {
         )
         let helper = bot()
         model.bots = [helper]
-        model.sessions = [session(
+        model.chat.sessions = [session(
             sessionID: "chat-current",
             state: .idle,
             workspaceID: "workspace-1",
             workspaceLabel: "/srv/current-project",
             botID: helper.id
         )]
-        model.selectedSessionID = "chat-current"
+        model.chat.selectedSessionID = "chat-current"
         model.navigationPath = [.chat(.session("chat-current"))]
 
         let requestCount = await recorder.requestCount()
@@ -131,8 +137,8 @@ extension AppModelTests {
         try await Task.sleep(for: .milliseconds(20))
         let requests = await recorder.requests()
         XCTAssertTrue(requests.dropFirst(requestCount).isEmpty)
-        XCTAssertEqual(model.pendingNewChatWorkspace, "/srv/current-project")
-        XCTAssertEqual(model.pendingNewChatBotID, helper.id)
+        XCTAssertEqual(model.chat.pendingNewChatWorkspace, "/srv/current-project")
+        XCTAssertEqual(model.chat.pendingNewChatBotID, helper.id)
     }
 
     func testBeginningSwarmCreationExplainsWhenEveryBotIsOff() throws {
@@ -298,7 +304,7 @@ extension AppModelTests {
             botID: helper.id
         )
         model.bots = [helper]
-        model.sessions = [visible]
+        model.chat.sessions = [visible]
         model.gateway.connectionState = .ready
 
         model.openBotSessions(helper.id)
@@ -317,20 +323,31 @@ extension AppModelTests {
             botID: helper.id,
             sessions: [hidden]
         ))
-        XCTAssertEqual(model.botSessions, [hidden])
-        XCTAssertEqual(model.sessions, [visible])
-        XCTAssertEqual(model.chatCatalogSessions, [visible])
-        XCTAssertFalse(model.unreadSessionIDs.contains(hidden.sessionId))
+        XCTAssertEqual(model.chat.botSessions, [hidden])
+        XCTAssertEqual(model.chat.sessions, [visible])
+        XCTAssertEqual(model.chat.chatCatalogSessions, [visible])
+        XCTAssertFalse(model.chat.unreadSessionIDs.contains(hidden.sessionId))
         XCTAssertNil(model.toast)
 
-        model.selectedSessionID = hidden.sessionId
+        model.chat.selectedSessionID = hidden.sessionId
         model.applySessions([visible])
         XCTAssertEqual(model.selectedSession, hidden)
         XCTAssertTrue(model.selectedSessionIsHidden)
 
         model.navigationPath.append(.chat(.session(hidden.sessionId)))
-        model.botSessions = []
+        model.chat.botSessions = []
         XCTAssertTrue(model.selectedSessionIsHidden)
+        model.chat.transcript = [TranscriptEntry(
+            id: "hidden-message",
+            text: "Hidden message",
+            kind: .assistant,
+            format: "plain_text",
+            pending: false,
+            messageTarget: MessageTarget(checkpointSequence: 1, batchItemCount: 1)
+        )]
+        XCTAssertFalse(model.canBeginReply)
+        model.beginReplying(to: model.chat.transcript[0])
+        XCTAssertNil(model.chat.composerReply)
     }
 
     func testBackgroundApprovalSnapshotValidatesOwnershipAndNotifiesOncePerRequest() throws {
@@ -446,7 +463,7 @@ extension AppModelTests {
 
         model.openNotificationTarget(.session("work-1"))
 
-        XCTAssertNil(model.selectedSessionID)
+        XCTAssertNil(model.chat.selectedSessionID)
         XCTAssertTrue(model.navigationPath.isEmpty)
     }
 
@@ -463,7 +480,7 @@ extension AppModelTests {
             botID: helper.id
         )
         model.bots = [helper]
-        model.sessions = [visible]
+        model.chat.sessions = [visible]
         model.gateway.connectionState = .ready
         model.destination = .bots
         model.navigationPath = [.swarm("swarm-1"), .swarmChat("swarm-1")]
@@ -494,9 +511,9 @@ extension AppModelTests {
         }
 
         XCTAssertNotNil(opening)
-        XCTAssertEqual(model.sessions, [visible])
-        XCTAssertEqual(model.botSessions, [hidden])
-        XCTAssertFalse(model.unreadSessionIDs.contains(hidden.sessionId))
+        XCTAssertEqual(model.chat.sessions, [visible])
+        XCTAssertEqual(model.chat.botSessions, [hidden])
+        XCTAssertFalse(model.chat.unreadSessionIDs.contains(hidden.sessionId))
         XCTAssertEqual(
             model.navigationPath,
             [.swarm("swarm-1"), .swarmChat("swarm-1"), .chat(.session(hidden.sessionId))]
@@ -540,7 +557,7 @@ extension AppModelTests {
             botID: helper.id,
             sessions: [target]
         ))
-        XCTAssertEqual(model.pendingBotSessionResume?.sessionID, target.sessionId)
+        XCTAssertEqual(model.chat.pendingBotSessionResume?.sessionID, target.sessionId)
 
         model.gateway.handle(.botSessions(
             requestID: requestID,
@@ -548,8 +565,8 @@ extension AppModelTests {
             sessions: [other]
         ))
 
-        XCTAssertNil(model.pendingBotSessionResume)
-        XCTAssertEqual(model.botSessions, [other])
+        XCTAssertNil(model.chat.pendingBotSessionResume)
+        XCTAssertEqual(model.chat.botSessions, [other])
         XCTAssertEqual(
             model.navigationPath,
             [.swarm("swarm-1"), .swarmChat("swarm-1")]
@@ -564,7 +581,7 @@ extension AppModelTests {
         let helper = bot()
         let source = session(sessionID: "chat-source", state: .idle, botID: helper.id)
         model.bots = [helper]
-        model.sessions = [source]
+        model.chat.sessions = [source]
         model.gateway.connectionState = .ready
 
         model.resumeBotSession(botID: helper.id, sessionID: source.sessionId)
@@ -741,8 +758,8 @@ extension AppModelTests {
         )))
         try await Task.sleep(for: .milliseconds(30))
 
-        XCTAssertEqual(model.sessions.map(\.sessionId), ["chat-1", "chat-2"])
-        XCTAssertNil(model.selectedSessionID)
+        XCTAssertEqual(model.chat.sessions.map(\.sessionId), ["chat-1", "chat-2"])
+        XCTAssertNil(model.chat.selectedSessionID)
         XCTAssertTrue(model.navigationPath.isEmpty)
         let requests = await recorder.requests()
         XCTAssertFalse(requests.contains { request in
@@ -755,15 +772,15 @@ extension AppModelTests {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
         model.gateway.connectionState = .ready
-        model.sessions = [session(sessionID: "chat-2", state: .idle)]
+        model.chat.sessions = [session(sessionID: "chat-2", state: .idle)]
 
         let requestCount = await recorder.requestCount()
-        let presentationRevision = model.chatPresentationRevision
+        let presentationRevision = model.chat.chatPresentationRevision
         model.openChat("chat-2")
 
         XCTAssertEqual(model.destination, .chats)
         XCTAssertEqual(model.navigationPath, [.chat(.session("chat-2"))])
-        XCTAssertEqual(model.chatPresentationRevision, presentationRevision + 1)
+        XCTAssertEqual(model.chat.chatPresentationRevision, presentationRevision + 1)
         let request = await recorder.firstRequest(after: requestCount) { request in
             guard case .openSession(_, "chat-2", _) = request else { return false }
             return true
@@ -779,7 +796,7 @@ extension AppModelTests {
         model.navigationPath = []
         model.openChat("chat-2")
         XCTAssertEqual(model.navigationPath, [.chat(.session("chat-2"))])
-        XCTAssertEqual(model.chatPresentationRevision, presentationRevision + 2)
+        XCTAssertEqual(model.chat.chatPresentationRevision, presentationRevision + 2)
         try await Task.sleep(for: .milliseconds(30))
         let requests = await recorder.requests()
         let opens = requests.dropFirst(requestCount).filter { request in
@@ -796,22 +813,22 @@ extension AppModelTests {
         model.bots = [alpha, beta]
         model.destination = .bots
         model.navigationPath = [.bot(beta.id)]
-        model.chatBotFilterIDs = [alpha.id]
+        model.chat.chatBotFilterIDs = [alpha.id]
 
         model.openBotChats("missing")
         XCTAssertEqual(model.destination, .bots)
         XCTAssertEqual(model.navigationPath, [.bot(beta.id)])
-        XCTAssertEqual(model.chatBotFilterIDs, [alpha.id])
+        XCTAssertEqual(model.chat.chatBotFilterIDs, [alpha.id])
 
         model.openBotChats(beta.id)
-        XCTAssertEqual(model.chatBotFilterIDs, [beta.id])
+        XCTAssertEqual(model.chat.chatBotFilterIDs, [beta.id])
         XCTAssertEqual(model.destination, .chats)
         XCTAssertTrue(model.navigationPath.isEmpty)
     }
 
     func testPoppingNavigationPathClearsPresentedChat() throws {
         let model = try model()
-        model.selectedSessionID = "chat-1"
+        model.chat.selectedSessionID = "chat-1"
         model.navigationPath = [.chat(.session("chat-1"))]
 
         XCTAssertEqual(model.navigationPath, [.chat(.session("chat-1"))])
@@ -831,12 +848,12 @@ extension AppModelTests {
         let requestCount = await recorder.requestCount()
         model.chooseWorkspace("/srv/mobius")
         XCTAssertEqual(model.navigationPath, [.chat(.new)])
-        XCTAssertEqual(model.pendingNewChatBotID, helper.id)
+        XCTAssertEqual(model.chat.pendingNewChatBotID, helper.id)
         try await Task.sleep(for: .milliseconds(20))
         let stagedRequests = await recorder.requests()
         XCTAssertTrue(stagedRequests.dropFirst(requestCount).isEmpty)
 
-        model.composer = "Inspect the project"
+        model.chat.composer = "Inspect the project"
         XCTAssertTrue(model.sendMessage())
         let request = await recorder.firstRequest(after: requestCount) { request in
             if case .createSession = request { return true }
@@ -866,9 +883,9 @@ extension AppModelTests {
         }
 
         XCTAssertEqual(model.destination, .chats)
-        XCTAssertEqual(model.selectedSessionID, "chat-created")
+        XCTAssertEqual(model.chat.selectedSessionID, "chat-created")
         XCTAssertEqual(model.navigationPath, [.chat(.session("chat-created"))])
-        XCTAssertNil(model.pendingNewChatBotID)
+        XCTAssertNil(model.chat.pendingNewChatBotID)
         XCTAssertNotNil(submission)
         let submissions = (await recorder.requests()).dropFirst(requestCount).filter {
             if case .submit("chat-created", _) = $0 { return true }
@@ -884,7 +901,7 @@ extension AppModelTests {
         let helper = bot()
         model.bots = [helper]
         model.chooseWorkspace("/srv/mobius")
-        model.composer = "Try again"
+        model.chat.composer = "Try again"
 
         XCTAssertTrue(model.sendMessage())
         let request = await recorder.firstRequest(after: 0) {
@@ -903,9 +920,9 @@ extension AppModelTests {
         )))
 
         XCTAssertEqual(model.gateway.connectionState, .ready)
-        XCTAssertEqual(model.pendingNewChatBotID, helper.id)
-        XCTAssertEqual(model.composer, "Try again")
-        XCTAssertNil(model.selectedSessionID)
+        XCTAssertEqual(model.chat.pendingNewChatBotID, helper.id)
+        XCTAssertEqual(model.chat.composer, "Try again")
+        XCTAssertNil(model.chat.selectedSessionID)
     }
 
     func testDeletingMultipleChatsUsesOneAtomicRequest() async throws {
@@ -914,7 +931,7 @@ extension AppModelTests {
         let first = session(sessionID: "chat-1", state: .idle)
         let second = session(sessionID: "chat-2", state: .idle)
         model.gateway.connectionState = .ready
-        model.sessions = [first, second]
+        model.chat.sessions = [first, second]
 
         model.deleteSessions([first, second, first])
 
@@ -928,8 +945,8 @@ extension AppModelTests {
         model.gateway.handle(.accepted(requestID: requestID))
         model.gateway.handle(.sessions(requestID: requestID, sessions: []))
 
-        XCTAssertTrue(model.sessions.isEmpty)
-        XCTAssertNil(model.sessionMutationRequestID)
+        XCTAssertTrue(model.chat.sessions.isEmpty)
+        XCTAssertNil(model.chat.sessionMutationRequestID)
     }
 
     func testDeletingPresentedChatReturnsToCatalogWithoutOpeningAnother() async throws {
@@ -938,15 +955,15 @@ extension AppModelTests {
         let selected = session(sessionID: "chat-1", state: .idle)
         let remaining = session(sessionID: "chat-2", state: .idle)
         model.gateway.connectionState = .ready
-        model.sessions = [selected, remaining]
-        model.selectedSessionID = selected.sessionId
+        model.chat.sessions = [selected, remaining]
+        model.chat.selectedSessionID = selected.sessionId
         model.destination = .chats
         model.navigationPath = [.chat(.session(selected.sessionId))]
 
         let requestCount = await recorder.requestCount()
         model.deleteSession(selected)
 
-        XCTAssertNil(model.selectedSessionID)
+        XCTAssertNil(model.chat.selectedSessionID)
         XCTAssertTrue(model.navigationPath.isEmpty)
         let request = await recorder.firstRequest(after: requestCount) { request in
             guard case .deleteSessions(_, let ids) = request else { return false }
@@ -959,7 +976,7 @@ extension AppModelTests {
         model.gateway.handle(.sessions(requestID: requestID, sessions: [remaining]))
         try await Task.sleep(for: .milliseconds(30))
 
-        XCTAssertEqual(model.sessions.map(\.sessionId), ["chat-2"])
+        XCTAssertEqual(model.chat.sessions.map(\.sessionId), ["chat-2"])
         let requests = await recorder.requests()
         XCTAssertFalse(requests.dropFirst(requestCount).contains { request in
             if case .openSession = request { return true }
@@ -972,8 +989,8 @@ extension AppModelTests {
         let model = try model { request in await recorder.record(request) }
         let selected = session(sessionID: "chat-1", state: .idle)
         model.gateway.connectionState = .ready
-        model.sessions = [selected]
-        model.selectedSessionID = selected.sessionId
+        model.chat.sessions = [selected]
+        model.chat.selectedSessionID = selected.sessionId
         model.destination = .chats
         model.navigationPath = [.chat(.session(selected.sessionId))]
 
@@ -1011,12 +1028,12 @@ extension AppModelTests {
         }
         let selected = session(sessionID: "chat-1", state: .running, turnID: "turn-1")
         model.gateway.connectionState = .ready
-        model.sessions = [selected]
-        model.selectedSessionID = selected.sessionId
+        model.chat.sessions = [selected]
+        model.chat.selectedSessionID = selected.sessionId
         model.destination = .chats
         model.navigationPath = [.chat(.session(selected.sessionId))]
-        model.activeTurnID = "turn-1"
-        model.composer = "Keep working"
+        model.chat.activeTurnID = "turn-1"
+        model.chat.composer = "Keep working"
 
         model.sendMessage()
         let submission = await recorder.firstRequest(after: 0) { request in
@@ -1029,7 +1046,7 @@ extension AppModelTests {
         let requestCount = await recorder.requestCount()
         model.deleteSession(selected)
 
-        XCTAssertNil(model.selectedSessionID)
+        XCTAssertNil(model.chat.selectedSessionID)
         XCTAssertTrue(model.navigationPath.isEmpty)
         let disconnected = await eventually {
             if case .failed = model.gateway.connectionState { return true }
@@ -1050,7 +1067,7 @@ extension AppModelTests {
         let model = try model()
 
         for delta in ["think", "ing"] {
-            model.reduce(
+            model.chat.reduce(
                 event: AgentEventRecord(submissionId: nil, msg: .object([
                     "type": .string("assistant_content_delta"),
                     "sessionId": .string("chat-1"),
@@ -1063,9 +1080,9 @@ extension AppModelTests {
                 preview: nil
             )
         }
-        XCTAssertTrue(model.transcript.isEmpty)
+        XCTAssertTrue(model.chat.transcript.isEmpty)
 
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(submissionId: nil, msg: .object([
                 "type": .string("turn_complete")
             ])),
@@ -1073,25 +1090,25 @@ extension AppModelTests {
             preview: nil
         )
 
-        XCTAssertEqual(model.transcript.map(\.text), ["thinking"])
-        XCTAssertFalse(try XCTUnwrap(model.transcript.first).pending)
+        XCTAssertEqual(model.chat.transcript.map(\.text), ["thinking"])
+        XCTAssertFalse(try XCTUnwrap(model.chat.transcript.first).pending)
     }
 
     func testTurnCompleteCollapsesCompactionAndSteeringIntoFinishedTurnWork() throws {
         let model = try model()
         let turnID = "turn-1"
-        model.reduce(record: recorded(1, .object([
+        model.chat.reduce(record: recorded(1, .object([
             "type": .string("turn_started"),
             "turnId": .string(turnID),
         ])))
-        model.reduce(record: recorded(2, testMessageEvent(text: "Start")))
-        model.reduce(record: recorded(3, testAssistantMessage(
+        model.chat.reduce(record: recorded(2, testMessageEvent(text: "Start")))
+        model.chat.reduce(record: recorded(3, testAssistantMessage(
             turnID: turnID,
             modelStepID: "step-1",
             phase: "commentary",
             text: "Checking"
         )))
-        model.reduce(record: recorded(4, .object([
+        model.chat.reduce(record: recorded(4, .object([
             "type": .string("context_compacted"),
         ]), blocks: [RenderedBlock(capability: "compaction", block: FrontendBlock(
             id: nil,
@@ -1106,31 +1123,31 @@ extension AppModelTests {
             tone: "neutral",
             files: []
         ))]))
-        model.reduce(record: recorded(5, testMessageEvent(
+        model.chat.reduce(record: recorded(5, testMessageEvent(
             delivery: .steer,
             text: "Also check tests"
         )))
-        model.reduce(record: recordedPeerMessage(6,
+        model.chat.reduce(record: recordedPeerMessage(6,
             delivery: .steer,
             text: "The parser boundary is covered."
         ))
-        model.reduce(record: recorded(7, testAssistantMessage(
+        model.chat.reduce(record: recorded(7, testAssistantMessage(
             turnID: turnID,
             modelStepID: "step-2",
             text: "Done"
         )))
 
         XCTAssertEqual(
-            model.transcriptProjection(breakBefore: nil).rows.map(\.kind),
+            model.chat.transcriptProjection(breakBefore: nil).rows.map(\.kind),
             [.user, .narrative, .activityGroup, .user, .activityGroup, .narrative]
         )
 
-        model.reduce(record: recorded(8, .object([
+        model.chat.reduce(record: recorded(8, .object([
             "type": .string("turn_complete"),
             "turnId": .string(turnID),
         ])))
 
-        let projection = model.transcriptProjection(breakBefore: nil)
+        let projection = model.chat.transcriptProjection(breakBefore: nil)
         XCTAssertEqual(projection.rows.map(\.kind), [.user, .workedGroup, .narrative])
         XCTAssertEqual(
             projection.rows[1].records.map(\.text),
@@ -1145,13 +1162,13 @@ extension AppModelTests {
             [.steer, .steer]
         )
         XCTAssertEqual(projection.rows[1].elapsedMs, 600)
-        XCTAssertEqual(model.transcript.map(\.turnID), Array(repeating: turnID, count: 6))
+        XCTAssertEqual(model.chat.transcript.map(\.turnID), Array(repeating: turnID, count: 6))
         XCTAssertEqual(
-            model.transcript.map(\.startsTurn),
+            model.chat.transcript.map(\.startsTurn),
             [true, false, false, false, false, false]
         )
-        XCTAssertEqual(TranscriptProjection.turnCount(in: model.transcript), 1)
-        XCTAssertEqual(model.transcript.last?.turnElapsedMs, 600)
+        XCTAssertEqual(TranscriptProjection.turnCount(in: model.chat.transcript), 1)
+        XCTAssertEqual(model.chat.transcript.last?.turnElapsedMs, 600)
     }
 
     func testQueuedMessageStartsTheNextTranscriptTurn() throws {
@@ -1160,15 +1177,15 @@ extension AppModelTests {
             (UInt64(1), "turn-1", MessageDelivery.turn, "Start"),
             (UInt64(5), "turn-2", MessageDelivery.queue, "Follow up"),
         ] {
-            model.reduce(record: recorded(sequence, .object([
+            model.chat.reduce(record: recorded(sequence, .object([
                 "type": .string("turn_started"),
                 "turnId": .string(turnID),
             ])))
-            model.reduce(record: recorded(
+            model.chat.reduce(record: recorded(
                 sequence + 1,
                 testMessageEvent(delivery: delivery, text: text)
             ))
-            model.reduce(record: recorded(
+            model.chat.reduce(record: recorded(
                 sequence + 2,
                 testAssistantMessage(
                     turnID: turnID,
@@ -1176,29 +1193,29 @@ extension AppModelTests {
                     text: "Done \(turnID)"
                 )
             ))
-            model.reduce(record: recorded(sequence + 3, .object([
+            model.chat.reduce(record: recorded(sequence + 3, .object([
                 "type": .string("turn_complete"),
                 "turnId": .string(turnID),
             ])))
         }
 
         XCTAssertEqual(
-            model.transcript
+            model.chat.transcript
                 .filter { $0.kind == .user }
                 .compactMap { $0.messageMetadata?.delivery },
             [.turn, .queue]
         )
         XCTAssertEqual(
-            model.transcript.filter { $0.kind == .user }.map(\.startsTurn),
+            model.chat.transcript.filter { $0.kind == .user }.map(\.startsTurn),
             [true, true]
         )
-        XCTAssertEqual(TranscriptProjection.turnCount(in: model.transcript), 2)
+        XCTAssertEqual(TranscriptProjection.turnCount(in: model.chat.transcript), 2)
     }
 
     func testOnlyLatestActivityStepIsActiveDuringTurn() throws {
         let model = try model()
-        model.activeTurnID = "turn-1"
-        model.transcript = [
+        model.chat.activeTurnID = "turn-1"
+        model.chat.transcript = [
             TranscriptEntry(
                 id: "reasoning-1",
                 text: "Considering the request",
@@ -1224,20 +1241,20 @@ extension AppModelTests {
             ),
         ]
 
-        XCTAssertEqual(model.activeTranscriptStepID, "tools/turn-1/call-2")
+        XCTAssertEqual(model.chat.activeTranscriptStepID, "tools/turn-1/call-2")
 
-        model.transcript.append(TranscriptEntry(
+        model.chat.transcript.append(TranscriptEntry(
             id: "answer-1",
             text: "Here is the answer",
             kind: .assistant,
             format: "plain_text",
             pending: true
         ))
-        XCTAssertNil(model.activeTranscriptStepID)
+        XCTAssertNil(model.chat.activeTranscriptStepID)
 
-        model.transcript.removeLast()
-        model.activeTurnID = nil
-        XCTAssertNil(model.activeTranscriptStepID)
+        model.chat.transcript.removeLast()
+        model.chat.activeTurnID = nil
+        XCTAssertNil(model.chat.activeTranscriptStepID)
     }
 
 }

@@ -58,7 +58,7 @@ extension AppModelTests {
             return false
         })
 
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(
                 submissionId: submission.id,
                 msg: testMessageEvent(text: "Review the gateway")
@@ -98,15 +98,15 @@ extension AppModelTests {
         let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
         try await openNewSession(in: model, recorder: recorder, account: account)
         model.applySessions([session(state: .idle, firstUserMessage: nil)])
-        model.titleEligibleSessionIDs.removeAll()
-        model.composer = "Review the gateway"
+        model.chat.titleEligibleSessionIDs.removeAll()
+        model.chat.composer = "Review the gateway"
         model.destination = .profile
         model.navigationPath = []
         model.destination = .chats
         model.openChat("chat-1")
 
         try await submitMessage("Review the gateway", in: model, recorder: recorder)
-        model.startChatTitle(
+        model.chat.startChatTitle(
             prompt: "Use the second prompt instead",
             submissionID: "second-submission",
             sessionID: "chat-1"
@@ -159,7 +159,7 @@ extension AppModelTests {
             recorder: recorder
         )
 
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(
                 submissionId: "another-submission",
                 msg: testMessageEvent(text: "Another message")
@@ -174,7 +174,7 @@ extension AppModelTests {
             return false
         })
 
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(
                 submissionId: submission.id,
                 msg: testMessageEvent(text: "Review the gateway")
@@ -217,7 +217,7 @@ extension AppModelTests {
         XCTAssertEqual(model.currentSessionTitle, "Review the gateway")
 
         let requestCount = await recorder.requestCount()
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(
                 submissionId: submission.id,
                 msg: testMessageEvent(text: "Review the gateway")
@@ -264,7 +264,7 @@ extension AppModelTests {
         XCTAssertEqual(model.currentSessionTitle, "Generated title")
 
         let requestCount = await recorder.requestCount()
-        model.restoreSession("chat-1")
+        model.chat.restoreSession("chat-1")
         let open = await recorder.firstRequest(after: requestCount) { request in
             guard case .openSession(_, "chat-1", _) = request else { return false }
             return true
@@ -385,7 +385,7 @@ extension AppModelTests {
         let replayFinished = await eventually { model.canCreateSession }
         XCTAssertTrue(replayFinished)
         XCTAssertEqual(model.currentSessionTitle, "new conversation")
-        XCTAssertEqual(model.composer, "Review the gateway")
+        XCTAssertEqual(model.chat.composer, "Review the gateway")
         try await submitMessage("Review the gateway", in: model, recorder: recorder)
         await fulfillment(of: [secondTitleGenerated], timeout: 1)
         XCTAssertEqual(prompts, ["Review the gateway", "Review the gateway"])
@@ -420,7 +420,7 @@ extension AppModelTests {
             fatal: false
         )))
         XCTAssertEqual(model.currentSessionTitle, "new conversation")
-        XCTAssertEqual(model.composer, "Review the gateway")
+        XCTAssertEqual(model.chat.composer, "Review the gateway")
 
         try await submitMessage("Review the gateway again", in: model, recorder: recorder)
 
@@ -492,7 +492,7 @@ extension AppModelTests {
         XCTAssertEqual(model.toast?.message, "Apple did not produce a chat title.")
         XCTAssertEqual(model.toast?.tone, .warning)
 
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(
                 submissionId: submission.id,
                 msg: testMessageEvent(text: "Review the gateway retry behavior")
@@ -595,7 +595,7 @@ extension AppModelTests {
             sessionID: "chat-1"
         )
         await fulfillment(of: [firstTitleStarted], timeout: 1)
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(
                 submissionId: firstSubmission.id,
                 msg: testMessageEvent(text: "First prompt")

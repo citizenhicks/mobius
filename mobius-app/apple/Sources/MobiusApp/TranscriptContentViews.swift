@@ -282,7 +282,7 @@ struct SessionFileCard: View {
     let sessionID: String?
 
     var body: some View {
-        let thumbnail = model.fileThumbnail(for: file, sessionID: sessionID)
+        let thumbnail = model.chat.fileThumbnail(for: file, sessionID: sessionID)
         Button {
             model.previewSessionFile(file, sessionID: sessionID)
         } label: {
@@ -306,7 +306,7 @@ struct SessionFileCard: View {
         }
         .disabled(model.isLoadingFilePresentation)
         .task(id: thumbnailTaskID) {
-            model.requestSessionFileThumbnail(file, sessionID: sessionID)
+            model.chat.requestSessionFileThumbnail(file, sessionID: sessionID)
         }
     }
 

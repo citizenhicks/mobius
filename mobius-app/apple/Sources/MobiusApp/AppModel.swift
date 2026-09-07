@@ -19,15 +19,6 @@ final class AppModel {
     var isGeneratingSshIdentity = false
     var generatedSshIdentity: GeneratedSshIdentity?
     var gitDiffs: [GitDiffScope: GitDiffState] = [:]
-    var sessions: [SessionRecord] = []
-    var botSessions: [SessionRecord] = []
-    var botSessionsBotID: String?
-    var isLoadingBotSessions = false
-    var chatBotFilterIDs: Set<String> = []
-    var chatCatalogSessions: [SessionRecord] {
-        guard !chatBotFilterIDs.isEmpty else { return sessions }
-        return sessions.filter { chatBotFilterIDs.contains($0.sessionContext.botId) }
-    }
     var bots: [BotRecord] = []
     var backgroundApprovals: [BackgroundApproval] = []
     var swarmAttentions: [SwarmAttention] = []
@@ -48,136 +39,6 @@ final class AppModel {
         hasCloudAccount && cloudAccount == nil && cloudError == nil
     }
 
-    @ObservationIgnored let titleWriter: ChatTitleWriter
-    @ObservationIgnored var chatTitleTasks: [String: Task<Void, Never>] = [:]
-    @ObservationIgnored var titleEligibleSessionIDs: Set<String> = []
-    var pendingChatTitles: [String: PendingChatTitle] = [:]
-    var selectedSessionID: String? {
-        didSet {
-            if oldValue != selectedSessionID { stopRealtimeVoice() }
-        }
-    }
-    var chatPresentationRevision = 0
-    var sessionToRename: SessionRecord?
-    var sessionRenameDraft = ""
-    var sessionToDelete: [SessionRecord]?
-    var unreadSessionIDs: Set<String> = []
-    @ObservationIgnored var sessionReadCursors: [String: SessionReadCursor]?
-    var transcript: [TranscriptEntry] = [] {
-        didSet { updateTranscriptWindow(after: oldValue) }
-    }
-    var replayPresentedTranscript: [TranscriptEntry]? {
-        didSet { invalidateTranscriptProjection() }
-    }
-    var pendingPresentedTranscript: [TranscriptEntry]? {
-        didSet { invalidateTranscriptProjection() }
-    }
-    var transcriptWindowAnchor = TranscriptWindowAnchor.tail {
-        didSet { invalidateTranscriptProjection() }
-    }
-    var displayedTranscript: [TranscriptEntry] {
-        transcriptWindow.entries
-    }
-    var transcriptWindow: TranscriptWindowCache {
-        let source = pendingPresentedTranscript ?? replayPresentedTranscript ?? transcript
-        if let transcriptWindowCache { return transcriptWindowCache }
-        let maximumTurns = switch transcriptWindowAnchor {
-        case .tail: transcriptTurnsPerPage
-        case .visibleTurns(let count): count
-        }
-        let window = TranscriptProjection.turnWindow(
-            from: source,
-            maximumTurns: maximumTurns
-        )
-        let cached = TranscriptWindowCache(
-            entries: window.entries,
-            turnCount: window.turnCount,
-            hasEarlierEntries: window.hasEarlierEntries
-        )
-        transcriptWindowCache = cached
-        return cached
-    }
-    /// The one visible activity label that represents the live turn's current step.
-    var activeTranscriptStepID: String? {
-        activeStepID(in: displayedTranscript, isRunning: activeTurnID != nil)
-    }
-    /// The turn is running with nothing pending, so no row is shimmering and the transcript
-    /// would otherwise sit still while the model decides what to do next.
-    var isWaitingForModel: Bool {
-        TranscriptWaitingNote.isWaiting(
-            hasActiveTurn: activeTurnID != nil,
-            lastEntryIsPending: displayedTranscript.last?.pending == true,
-            connectionIsReady: gateway.connectionState.isReady,
-            hasPendingApproval: pendingApproval != nil,
-            hasPendingPicker: pendingPicker != nil
-        )
-    }
-
-    var isLoadingTranscript: Bool {
-        if !gateway.connectionState.isReady, let selectedSessionID,
-           sessionToRestoreID == selectedSessionID, latestSequence == nil, transcript.isEmpty {
-            return true
-        }
-        guard gateway.connectionState == .loading,
-              sessionRequestID != nil || replayRequestID != nil
-        else { return false }
-
-        let opensAnotherSessionWithoutCache =
-            (sessionOpeningID.map { $0 != selectedSessionID } ?? false)
-            && pendingPresentedTranscript == nil
-        if opensAnotherSessionWithoutCache { return true }
-
-        return (pendingPresentedTranscript ?? replayPresentedTranscript ?? transcript).isEmpty
-    }
-    var isLoadingEarlierHistory = false
-    var historyLoadCompletionRevision = 0
-    var historyLoadSuccessRevision = 0
-    var historyLoadFailureRevision = 0
-    var hasEarlierHistory: Bool {
-        transcriptWindow.hasEarlierEntries
-            || nextHistoryBeforeSequence != nil
-            || isLoadingEarlierHistory
-    }
-    var canLoadEarlierHistory: Bool {
-        hasEarlierHistory
-            && (gateway.connectionState.isReady || transcriptWindow.hasEarlierEntries)
-            && historyRequestID == nil
-    }
-    var composer = "" {
-        didSet { scheduleComposerDraftSave() }
-    }
-    var composerReply: MessageReply? {
-        didSet { scheduleComposerDraftSave() }
-    }
-    var messageNavigationRequest: MessageNavigationRequest?
-    @ObservationIgnored var transcriptProjectionCache:
-        (key: TranscriptProjectionKey, projection: TranscriptProjection)?
-    @ObservationIgnored var transcriptWindowCache: TranscriptWindowCache?
-    @ObservationIgnored var transcriptProjectionVersion = 0
-    @ObservationIgnored var transcriptMutationPreservesPrefix = false
-    var composerFocusRequest = 0
-    /// Counterpart to `composerFocusRequest`: the composer owns the focus state, so anything
-    /// outside it that needs the keyboard gone asks rather than reaching in.
-    private(set) var composerBlurRequest = 0
-    var composerAttachments: [ComposerAttachment] = []
-    var fileThumbnails: [FileThumbnailKey: CGImage] = [:]
-    var sessionFiles: [SessionFileRecord] = []
-    var isLoadingSessionFiles = false
-    var previewURL: URL?
-    var textFilePreview: TextFilePreview?
-    var sessionFileShareItem: SessionFileShareItem?
-    var isLoadingFilePresentation = false
-    var isSavingWorkspaceFile = false
-    var returnsToFilesAfterFilePresentation = false
-    var toast: AppToast?
-    var showsAppUpdateAlert = false
-    var activeTurnID: String?
-    var steeringDeliveryRevision = 0
-    var contextTokens = 0
-    var sessionCompactionCount: UInt64 = 0
-    var modelContextWindow: Int64?
-    var contextLimitTokens: Int64?
-    var pendingApproval: PendingApproval?
     var modelChoices: [ModelChoice] = []
     var modelProviders: [String: String] = [:]
     var middlewareFeatures: [MiddlewareFeature] = []
@@ -188,40 +49,28 @@ final class AppModel {
     var gatewayContributions: [FrontendContribution] = []
     var swarmContributions: [String: [FrontendContribution]] = [:]
     var extensionInstallSource = ""
-    var selectedModelRoute = "" {
-        didSet {
-            if oldValue != selectedModelRoute { stopRealtimeVoice() }
-        }
-    }
     let dictation = ComposerDictation()
     @ObservationIgnored let messageSpeaker = MessageSpeaker()
-    var realtimeVoice = RealtimeVoiceSession()
-    var realtimeVoiceCall: RealtimeVoiceCall?
     var newVoiceChatIntent: NewVoiceChatIntent?
-    @ObservationIgnored var realtimeVoiceTask: Task<Void, Never>?
-    private(set) var contributionsRevision = 0
-    var contributions: [FrontendContribution] = [] {
-        didSet { contributionsRevision &+= 1 }
-    }
-    var mountedWidgets: [MountedWidget] = []
-    var pendingPicker: FrontendPickerPrompt?
-    var previews: [TranscriptPreview] = []
-    var presentedPreview: TranscriptPreview?
-    var isLoadingPreviewPage = false
+    var previewURL: URL?
+    var textFilePreview: TextFilePreview?
+    var sessionFileShareItem: SessionFileShareItem?
+    var isLoadingFilePresentation = false
+    var isSavingWorkspaceFile = false
+    var returnsToFilesAfterFilePresentation = false
+    var toast: AppToast?
+    var showsAppUpdateAlert = false
     var showsInspector = false
     var filesInspectorTab: FilesInspectorTab = .modified
     var modifiedFilesScope: ModifiedFilesScope = .unstaged
     var lastTurnDiff: String {
-        guard let final = transcript.last(where: {
+        guard let final = chat.transcript.last(where: {
             $0.turnTerminal && $0.kind == .assistant
         })?.turnID else { return "" }
-        return transcriptTurnDiff(forTurn: final, in: transcript)
-    }
-    func turnDiff(for entry: TranscriptEntry) -> String {
-        transcriptTurnDiff(for: entry, in: transcript)
+        return transcriptTurnDiff(forTurn: final, in: chat.transcript)
     }
     var lastTurnDiffRevision: Int {
-        transcript.lastIndex(where: {
+        chat.transcript.lastIndex(where: {
             $0.turnTerminal && $0.kind == .assistant
         }) ?? -1
     }
@@ -232,9 +81,6 @@ final class AppModel {
     var workspaceFilesTruncated = false
     var isLoadingWorkspaceFiles = false
     var profile: ProfileSnapshot?
-    var runStats = RunStats()
-    var currentUsage = TokenUsage()
-    var lastUsage = TokenUsage()
     var routines: [Routine] = []
     var routineRuns: [RoutineRun] = []
     var routineError: String?
@@ -246,8 +92,6 @@ final class AppModel {
     var routineRunPreviewError: String?
     var workspaceError: String?
     var isChangingWorkspace = false
-    var pendingNewChatWorkspace: String?
-    var pendingNewChatBotID: String?
     var showsWorkspaceBrowser = false {
         didSet {
             if !showsWorkspaceBrowser, newVoiceChatIntent == .selectingWorkspace { cancelVoiceChatIntent() }
@@ -272,7 +116,6 @@ final class AppModel {
     var botDefaultsApplyState: ApplyState = .idle
     var providerStatuses: [ProviderStatus] = []
     var providerInstances: [ProviderInstance] = []
-    var sessionFileLimits: SessionFileLimits?
     var providerAPIKey = ""
     var providerLabelDraft = ""
     var providerTintDraft: AccentTint = .appDefault
@@ -285,7 +128,10 @@ final class AppModel {
     var showsPairing = false
     var theme: ThemePreference
     var language: AppLanguage {
-        didSet { gateway.locale = language.locale }
+        didSet {
+            gateway.locale = language.locale
+            chat.locale = language.locale
+        }
     }
     var accentTint: AccentTint
     var appLockEnabled: Bool
@@ -300,6 +146,7 @@ final class AppModel {
 
     @ObservationIgnored let gateway: GatewayConnectionModel
     @ObservationIgnored let store: GatewayStore
+    @ObservationIgnored let chat: ChatSessionModel
     @ObservationIgnored let cloudClient: MobiusCloudClient
     @ObservationIgnored let cloudPurchases: MobiusCloudPurchases
     @ObservationIgnored let settingsDefaults: UserDefaults
@@ -325,57 +172,17 @@ final class AppModel {
     @ObservationIgnored var startedAccountID: UUID?
     @ObservationIgnored var appActivationTask: Task<Void, Never>?
     @ObservationIgnored var cloudAuthenticationTask: Task<Void, Never>?
-    @ObservationIgnored var pendingDrafts: [String: PendingComposerDraft] = [:]
-    var pendingWidgetEdit: PendingWidgetEdit?
-    var stashedComposerDraft: String?
-    var isLoadingComposerEditRecovery = false
-    @ObservationIgnored var composerEditRecoveryGeneration = UUID()
-    @ObservationIgnored var replayCompletionSubmissionIDs: Set<String> = []
-    @ObservationIgnored var replayUserMessages: [ReplayUserMessage] = []
-    @ObservationIgnored var completedComposerEditReplay = false
-    @ObservationIgnored var composerDraftOwner: ComposerDraftOwner?
-    @ObservationIgnored var composerDraftGeneration = UUID()
-    @ObservationIgnored var composerDraftSaveTask: Task<Void, Never>?
-    @ObservationIgnored var composerDraftIOTask: Task<Void, Never>?
-    @ObservationIgnored var isLoadingComposerDraft = false
-    @ObservationIgnored var suppressesComposerDraftSave = false
-    @ObservationIgnored var transcriptIOTask: Task<Void, Never>?
-    @ObservationIgnored var transcriptLoadGeneration = UUID()
-    @ObservationIgnored var sessionRequestID: String?
-    @ObservationIgnored var sessionOpeningID: String?
-    @ObservationIgnored var pendingCachedTranscript: CachedTranscript?
-    @ObservationIgnored var botSessionsRequestID: String?
-    @ObservationIgnored var pendingBotSessionResume: (botID: String, sessionID: String)?
-    var sessionMutationRequestID: String?
     var swarmMutationRequestID: String?
     var botMutationRequestID: String?
     var botMutationSuccessMessage: String?
-    @ObservationIgnored var pendingDeletedSessionIDs: [String] = []
-    @ObservationIgnored var pendingDeletedPresentedSessionID: String?
-    @ObservationIgnored var sessionToRestoreID: String?
     @ObservationIgnored var botDefaultsRequestID: String?
     @ObservationIgnored var submittedBotDefaultsDraft: AgentComposition?
-    @ObservationIgnored var approvalRequestID: String?
     @ObservationIgnored var directoryRequestID: String?
     @ObservationIgnored var gitCredentialRequestID: String?
     @ObservationIgnored var isApprovingGitCredential = false
     @ObservationIgnored var sshIdentityRequestID: String?
     @ObservationIgnored var workspaceFilesRequestID: String?
     @ObservationIgnored var workspaceFileWriteRequestID: String?
-    @ObservationIgnored var sessionFilesRequestID: String?
-    @ObservationIgnored var sessionFileUploadRequests: [String: SessionFileUploadRequest] = [:]
-    @ObservationIgnored var abandonedSessionFileUploadRequests:
-        [String: RemovedComposerAttachment] = [:]
-    @ObservationIgnored var sessionFileDeleteRequests: [String: RemovedComposerAttachment] = [:]
-    @ObservationIgnored var sessionFileData: [UUID: Data] = [:]
-    @ObservationIgnored var activeSessionFileUpload: ActiveSessionFileUpload?
-    @ObservationIgnored var sessionFileDownload: SessionFileDownload?
-    @ObservationIgnored var fileThumbnailOrder: [FileThumbnailKey] = []
-    @ObservationIgnored var requestedSessionFileThumbnailKeys: Set<FileThumbnailKey> = []
-    @ObservationIgnored var discardedSessionFileThumbnailRequestIDs: Set<String> = []
-    @ObservationIgnored var queuedSessionFileThumbnails:
-        [(sessionID: String, file: SessionFileReference)] = []
-    @ObservationIgnored var sessionFileThumbnailDownload: SessionFileThumbnailDownload?
     @ObservationIgnored var workspaceFilePreviewDownload: WorkspaceFilePreviewDownload?
     @ObservationIgnored var filePresentationGeneration = UUID()
     @ObservationIgnored var previewTemporaryDirectory: URL?
@@ -397,19 +204,6 @@ final class AppModel {
     @ObservationIgnored var routineRunPreviewRequestBeforeSequence: UInt64?
     @ObservationIgnored var routineRunPreviewPollingTask: Task<Void, Never>?
     @ObservationIgnored var toastDismissTask: Task<Void, Never>?
-    @ObservationIgnored var visibleChatWindowTokens: Set<UUID> = []
-    @ObservationIgnored var latestSequence: UInt64?
-    @ObservationIgnored var sessionOpenCursor: UInt64?
-    @ObservationIgnored var replayRequestID: String?
-    @ObservationIgnored var replaySnapshotSequence: UInt64?
-    @ObservationIgnored var transcriptRecordBase: [TranscriptEntry] = []
-    @ObservationIgnored var transcriptRecordBaseSequence: UInt64?
-    @ObservationIgnored var transcriptRecords: [UInt64: RecordedEvent] = [:]
-    @ObservationIgnored var historyRequestID: String?
-    @ObservationIgnored var nextHistoryBeforeSequence: UInt64?
-    @ObservationIgnored var previewSelections: [String: FrontendPickerOption] = [:]
-    @ObservationIgnored var previewWidgetRequestID: String?
-    @ObservationIgnored var previewPageRequestID: String?
     @ObservationIgnored var appIsInBackground = true
     @ObservationIgnored var remoteNotificationDeviceToken: String?
     @ObservationIgnored var remoteNotificationRegistrationTask: Task<Void, Never>?
@@ -441,6 +235,9 @@ final class AppModel {
         let cloudClient = cloudClient ?? MobiusCloudClient()
         let appLockAuthenticator = appLockAuthenticator ?? AppLockAuthenticator()
         let appLockEnabled = settingsDefaults.bool(forKey: appLockEnabledKey)
+        let language = AppLanguage(
+            rawValue: settingsDefaults.string(forKey: "language") ?? ""
+        ) ?? .system
         let pushInstallationID = settingsDefaults.string(forKey: pushInstallationIDKey)
             .flatMap(UUID.init(uuidString:)) ?? UUID()
         settingsDefaults.set(pushInstallationID.uuidString, forKey: pushInstallationIDKey)
@@ -462,11 +259,17 @@ final class AppModel {
         self.pushTokenRemovalPending = settingsDefaults.bool(
             forKey: pushTokenRemovalPendingKey
         )
-        self.titleWriter = titleWriter ?? ChatTitleWriter()
         self.theme = ThemePreference(rawValue: settingsDefaults.string(forKey: "theme") ?? "") ?? .system
-        self.language = AppLanguage(
-            rawValue: settingsDefaults.string(forKey: "language") ?? ""
-        ) ?? .system
+        self.language = language
+        let titleWriter = titleWriter ?? ChatTitleWriter()
+        self.chat = ChatSessionModel(
+            gateway: gateway,
+            store: store,
+            titleWriter: titleWriter,
+            dictation: dictation,
+            messageSpeaker: messageSpeaker,
+            locale: language.locale
+        )
         self.accentTint = AccentTint(
             rawValue: settingsDefaults.string(forKey: "accent-tint") ?? ""
         ) ?? .appDefault
@@ -502,7 +305,7 @@ final class AppModel {
                 preservingDrafts: preserving,
                 preservingSession: sessionID != nil
             )
-            self.sessionToRestoreID = sessionID
+            self.chat.sessionToRestoreID = sessionID
             self.restoreSessionReadState(for: account.id)
         }
         gateway.onEnvelope = { [weak self] envelope in
@@ -517,6 +320,22 @@ final class AppModel {
         gateway.onPairingRepairRequired = { [weak self] in
             self?.showsPairing = true
         }
+        chat.onToast = { [weak self] message, tone in
+            self?.showToast(verbatim: message, tone: tone)
+        }
+        chat.onWorkspaceRefresh = { [weak self] in
+            self?.refreshWorkspaceChanges()
+        }
+        chat.onSessionFilesRefresh = { [weak self] in
+            guard let self, self.filesInspectorTab == .chatFiles else { return }
+            self.chat.refreshSessionFiles()
+        }
+        chat.onDiscardFilePresentation = { [weak self] in
+            self?.resetRootSessionState()
+        }
+        chat.onOpenChat = { [weak self] sessionID in
+            self?.openChat(sessionID)
+        }
         observeCloudPurchaseUpdates()
     }
 
@@ -525,15 +344,13 @@ final class AppModel {
         startupTask?.cancel()
         appActivationTask?.cancel()
         cloudAuthenticationTask?.cancel()
-        deltaFlushTask?.cancel()
-        realtimeVoiceTask?.cancel()
-        realtimeVoice.close()
-        composerDraftSaveTask?.cancel()
+        chat.deltaFlushTask?.cancel()
+        chat.composerDraftSaveTask?.cancel()
         pairingCodeExpiryTask?.cancel()
         toastDismissTask?.cancel()
         cloudPurchaseUpdateTask?.cancel()
         cloudPurchaseTasks.values.forEach { $0.cancel() }
-        chatTitleTasks.values.forEach { $0.cancel() }
+        chat.chatTitleTasks.values.forEach { $0.cancel() }
     }
 
     var mobiusCloudGateway: GatewayAccount? {
@@ -559,21 +376,21 @@ final class AppModel {
     }
 
     private var canChangeSession: Bool {
-        pendingDrafts.isEmpty
-            && sessionRequestID == nil
-            && sessionMutationRequestID == nil
+        chat.pendingDrafts.isEmpty
+            && chat.sessionRequestID == nil
+            && chat.sessionMutationRequestID == nil
             && gitBranchRequestID == nil
-            && sessionFileUploadRequests.isEmpty
-            && abandonedSessionFileUploadRequests.isEmpty
-            && sessionFileDeleteRequests.isEmpty
-            && pendingWidgetEdit == nil
-            && !isLoadingComposerEditRecovery
+            && chat.sessionFileUploadRequests.isEmpty
+            && chat.abandonedSessionFileUploadRequests.isEmpty
+            && chat.sessionFileDeleteRequests.isEmpty
+            && chat.pendingWidgetEdit == nil
+            && !chat.isLoadingComposerEditRecovery
             && !isApplyingConfiguration
     }
 
     var canBrowseSessions: Bool {
         (gateway.connectionState.isReady || gateway.selectedAccountID != nil)
-            && canChangeSession && composerAttachments.isEmpty
+            && canChangeSession && chat.composerAttachments.isEmpty
     }
 
     var canOpenSession: Bool {
@@ -581,42 +398,35 @@ final class AppModel {
     }
 
     var canCreateSession: Bool {
-        gateway.connectionState.isReady && canChangeSession && (composerAttachments.isEmpty || (
-            selectedSessionID == nil
-                && pendingNewChatWorkspace != nil
-                && composerAttachments.allSatisfy {
+        gateway.connectionState.isReady && canChangeSession && (chat.composerAttachments.isEmpty || (
+            chat.selectedSessionID == nil
+                && chat.pendingNewChatWorkspace != nil
+                && chat.composerAttachments.allSatisfy {
                     if case .queued = $0.state { true } else { false }
                 }
         ))
     }
 
     var canRenameSession: Bool {
-        gateway.connectionState.isReady && sessionMutationRequestID == nil
+        gateway.connectionState.isReady && chat.sessionMutationRequestID == nil
     }
 
     var canModifySelectedSession: Bool {
         canOpenSession
             && !selectedSessionIsHidden
-            && activeTurnID == nil
-            && pendingApproval == nil
+            && chat.activeTurnID == nil
+            && chat.pendingApproval == nil
     }
 
     var canBeginReply: Bool {
-        gateway.connectionState.isReady
-            && selectedSessionID != nil
-            && sessionRequestID == nil
-            && sessionMutationRequestID == nil
-            && !selectedSessionIsHidden
-            && !isLoadingComposerDraft
-            && !isLoadingComposerEditRecovery
-            && pendingWidgetEdit == nil
+        chat.canBeginReply && !selectedSessionIsHidden
     }
 
     func isCapabilityEnabled(_ capability: String) -> Bool {
         guard let snapshot = agentSnapshot else { return false }
         guard let feature = middlewareFeatures.first(where: { $0.id == capability }) else {
             return snapshot.config.middleware.enabled.contains(capability)
-                || contributions.contains { $0.capability == capability }
+                || chat.contributions.contains { $0.capability == capability }
         }
         return feature.required
             || snapshot.config.middleware.enabled.contains(capability)
@@ -625,23 +435,23 @@ final class AppModel {
     var isSwitchingGitBranch: Bool { gitBranchRequestID != nil }
 
     var attachmentsEnabled: Bool {
-        if selectedSessionID == nil {
+        if chat.selectedSessionID == nil {
             return selectedBot?.config.config.middleware.enabled.contains("attachments") == true
         }
-        return contributions.contains { $0.acceptsFileAttachments }
+        return chat.contributions.contains { $0.acceptsFileAttachments }
     }
 
     var selectedRouteSupportsImageInput: Bool {
-        let route = selectedSessionID == nil
+        let route = chat.selectedSessionID == nil
             ? modelRoute(for: selectedBot?.config.config)
-            : selectedModelRoute
+            : chat.selectedModelRoute
         return modelChoices.first(where: { $0.route == route })?
             .supportsImageInput == true
     }
 
     var canSubmitAttachments: Bool {
         attachmentsEnabled
-            && (selectedRouteSupportsImageInput || !composerAttachments.contains {
+            && (selectedRouteSupportsImageInput || !chat.composerAttachments.contains {
                 $0.mediaType.hasPrefix("image/")
             })
     }
@@ -655,53 +465,53 @@ final class AppModel {
     var canImportAttachments: Bool {
         attachmentsEnabled
             && gateway.connectionState.isReady
-            && (selectedSessionID != nil
-                || pendingNewChatWorkspace != nil && selectedBot != nil)
-            && sessionFileLimits != nil
-            && pendingWidgetEdit == nil
+            && (chat.selectedSessionID != nil
+                || chat.pendingNewChatWorkspace != nil && selectedBot != nil)
+            && chat.sessionFileLimits != nil
+            && chat.pendingWidgetEdit == nil
     }
 
     var attachmentReferenceLimit: Int {
         min(
-            sessionFileLimits?.maxAttachmentReferences ?? 0,
+            chat.sessionFileLimits?.maxAttachmentReferences ?? 0,
             maximumWireSessionFileReferences
         )
     }
 
     var attachmentFileByteLimit: Int {
         Int(min(
-            sessionFileLimits?.maxFileBytes ?? 0,
+            chat.sessionFileLimits?.maxFileBytes ?? 0,
             UInt64(maximumClientAttachmentBytes)
         ))
     }
 
     var attachmentDraftByteLimit: Int64 {
         Int64(min(
-            sessionFileLimits?.maxSessionBytes ?? 0,
+            chat.sessionFileLimits?.maxSessionBytes ?? 0,
             UInt64(maximumClientComposerAttachmentBytes)
         ))
     }
 
     var uploadChunkByteLimit: Int {
         min(
-            sessionFileLimits?.maxUploadChunkBytes ?? 0,
+            chat.sessionFileLimits?.maxUploadChunkBytes ?? 0,
             maximumClientUploadChunkBytes
         )
     }
 
     var canSendComposer: Bool {
         guard gateway.connectionState.isReady,
-              sessionRequestID == nil,
-              !isLoadingComposerDraft,
-              !isLoadingComposerEditRecovery
+              chat.sessionRequestID == nil,
+              !chat.isLoadingComposerDraft,
+              !chat.isLoadingComposerEditRecovery
         else { return false }
-        let sessionID = selectedSessionID
+        let sessionID = chat.selectedSessionID
         let hasPendingSession = sessionID == nil
-            && pendingNewChatWorkspace != nil
-            && pendingNewChatBotID.map { botID in bots.contains { $0.id == botID } } == true
+            && chat.pendingNewChatWorkspace != nil
+            && chat.pendingNewChatBotID.map { botID in bots.contains { $0.id == botID } } == true
         guard sessionID != nil || hasPendingSession else { return false }
-        guard sessionID == nil || pendingNewChatBotID == nil else { return false }
-        guard composerAttachments.allSatisfy({ attachment in
+        guard sessionID == nil || chat.pendingNewChatBotID == nil else { return false }
+        guard chat.composerAttachments.allSatisfy({ attachment in
                   switch attachment.state {
                   case .uploaded: true
                   case .queued: sessionID == nil
@@ -709,27 +519,27 @@ final class AppModel {
                   }
               })
         else { return false }
-        if let pending = pendingWidgetEdit {
+        if let pending = chat.pendingWidgetEdit {
             guard let sessionID,
                   let accountID = gateway.selectedAccountID,
                   pending.owner == ComposerDraftOwner(accountID: accountID, sessionID: sessionID),
                   pending.recovery.phase == .editing
             else { return false }
         }
-        let hasText = !composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        guard composerAttachments.isEmpty || canSubmitAttachments else { return false }
-        return hasText || !composerAttachments.isEmpty
+        let hasText = !chat.composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard chat.composerAttachments.isEmpty || canSubmitAttachments else { return false }
+        return hasText || !chat.composerAttachments.isEmpty
     }
 
     var uploadedComposerAttachments: [SessionFileReference] {
-        composerAttachments.compactMap { item in
+        chat.composerAttachments.compactMap { item in
             guard case .uploaded(let attachment) = item.state else { return nil }
             return attachment
         }
     }
 
     var composerHasUnfinishedAttachments: Bool {
-        composerAttachments.contains { item in
+        chat.composerAttachments.contains { item in
             switch item.state {
             case .uploaded: false
             case .preparing, .queued, .uploading, .failed: true
@@ -738,11 +548,11 @@ final class AppModel {
     }
 
     var runningSessionIDs: Set<String> {
-        Set(sessions.lazy.filter { $0.activity.state != .idle }.map(\.sessionId))
+        Set(chat.sessions.lazy.filter { $0.activity.state != .idle }.map(\.sessionId))
     }
 
     var attentionSessionIDs: Set<String> {
-        runningSessionIDs.union(unreadSessionIDs)
+        runningSessionIDs.union(chat.unreadSessionIDs)
     }
 
     var canMutateSwarm: Bool {
@@ -759,10 +569,10 @@ final class AppModel {
 
     func canMutateBot(_ botID: String) -> Bool {
         guard canMutateBots else { return false }
-        if selectedSession?.sessionContext.botId == botID, activeTurnID != nil {
+        if selectedSession?.sessionContext.botId == botID, chat.activeTurnID != nil {
             return false
         }
-        return !sessions.contains {
+        return !chat.sessions.contains {
             $0.sessionContext.botId == botID && $0.activity.state != .idle
         }
     }
@@ -783,8 +593,8 @@ final class AppModel {
     }
 
     var contextFillFraction: Double {
-        guard let contextLimitTokens, contextLimitTokens > 0 else { return 0 }
-        return min(max(Double(contextTokens) / Double(contextLimitTokens), 0), 1)
+        guard let contextLimitTokens = chat.contextLimitTokens, contextLimitTokens > 0 else { return 0 }
+        return min(max(Double(chat.contextTokens) / Double(contextLimitTokens), 0), 1)
     }
 
     var contextFillPercent: Int {
@@ -793,26 +603,26 @@ final class AppModel {
 
     /// Completed execution time plus the live turn, when one is running.
     func sessionElapsed(at date: Date) -> TimeInterval {
-        let completed = TimeInterval(runStats.elapsedMs) / 1_000
-        if let active = runStats.active {
+        let completed = TimeInterval(chat.runStats.elapsedMs) / 1_000
+        if let active = chat.runStats.active {
             let live = max(
                 TimeInterval(active.elapsedMs) / 1_000,
                 date.timeIntervalSince1970 - TimeInterval(active.startedAtMs) / 1_000
             )
             return completed + max(0, live)
         }
-        guard let session = sessions.first(where: { $0.sessionId == selectedSessionID }),
+        guard let session = chat.sessions.first(where: { $0.sessionId == chat.selectedSessionID }),
               session.activity.state != .idle
         else { return completed }
         guard let startedAt = session.activity.startedAt else { return completed }
         return completed + max(0, date.timeIntervalSince1970 - TimeInterval(startedAt))
     }
 
-    var sessionRunCount: UInt64 { runStats.runCount + (runStats.active == nil ? 0 : 1) }
-    var sessionModelCalls: UInt64 { runStats.modelCalls + (runStats.active?.modelCalls ?? 0) }
-    var sessionToolCalls: UInt64 { runStats.toolCalls + (runStats.active?.toolCalls ?? 0) }
+    var sessionRunCount: UInt64 { chat.runStats.runCount + (chat.runStats.active == nil ? 0 : 1) }
+    var sessionModelCalls: UInt64 { chat.runStats.modelCalls + (chat.runStats.active?.modelCalls ?? 0) }
+    var sessionToolCalls: UInt64 { chat.runStats.toolCalls + (chat.runStats.active?.toolCalls ?? 0) }
     var sessionFailedToolCalls: UInt64 {
-        runStats.failedToolCalls + (runStats.active?.failedToolCalls ?? 0)
+        chat.runStats.failedToolCalls + (chat.runStats.active?.failedToolCalls ?? 0)
     }
 
     func showToast(
@@ -878,50 +688,50 @@ final class AppModel {
         toast = nil
     }
 
-    var isChatVisible: Bool { !visibleChatWindowTokens.isEmpty }
+    var isChatVisible: Bool { !chat.visibleChatWindowTokens.isEmpty }
 
     func setChatVisible(_ visible: Bool, windowToken: UUID) {
         if visible {
-            visibleChatWindowTokens.insert(windowToken)
+            chat.visibleChatWindowTokens.insert(windowToken)
         } else {
-            visibleChatWindowTokens.remove(windowToken)
+            chat.visibleChatWindowTokens.remove(windowToken)
         }
-        if visible, let selectedSessionID {
+        if visible, let selectedSessionID = chat.selectedSessionID {
             markSessionRead(selectedSessionID)
         }
     }
 
     func restoreSessionReadState(for accountID: UUID?) {
         guard let accountID else {
-            sessionReadCursors = nil
-            unreadSessionIDs.removeAll()
+            chat.sessionReadCursors = nil
+            chat.unreadSessionIDs.removeAll()
             return
         }
-        sessionReadCursors = store.loadSessionReadCursors(accountID: accountID)
-        unreadSessionIDs.removeAll()
+        chat.sessionReadCursors = store.loadSessionReadCursors(accountID: accountID)
+        chat.unreadSessionIDs.removeAll()
     }
 
     func markSessionRead(_ sessionID: String) {
-        unreadSessionIDs.remove(sessionID)
+        chat.unreadSessionIDs.remove(sessionID)
         saveSessionReadCursor(sessionID, unread: false)
     }
 
     func markSessionUnread(_ sessionID: String) {
-        unreadSessionIDs.insert(sessionID)
+        chat.unreadSessionIDs.insert(sessionID)
         saveSessionReadCursor(sessionID, unread: true)
     }
 
     private func saveSessionReadCursor(_ sessionID: String, unread: Bool) {
         guard let accountID = gateway.selectedAccountID,
-              let session = sessions.first(where: { $0.sessionId == sessionID })
+              let session = chat.sessions.first(where: { $0.sessionId == sessionID })
         else { return }
         let cursor = unread
             ? SessionReadCursor(sequence: nil, wasActive: session.activity.state != .idle)
             : sessionReadCursor(for: session)
-        guard sessionReadCursors?[sessionID] != cursor else { return }
-        var cursors = sessionReadCursors ?? [:]
+        guard chat.sessionReadCursors?[sessionID] != cursor else { return }
+        var cursors = chat.sessionReadCursors ?? [:]
         cursors[sessionID] = cursor
-        sessionReadCursors = cursors
+        chat.sessionReadCursors = cursors
         store.saveSessionReadCursors(cursors, accountID: accountID)
     }
 
@@ -932,272 +742,8 @@ final class AppModel {
         )
     }
 
-    /// Asks the composer to give up the keyboard. Leaving it up while the drawer slides means
-    /// the page animates against a keyboard that belongs to a screen the reader just left.
-    func dismissComposerFocus() {
-        composerBlurRequest &+= 1
-    }
-
-    /// The stable presentation consumed by ChatView. Wire identity and reduction stay below
-    /// this boundary; text deltas keep the cached row objects, while structural changes are
-    /// projected once and receive one revision.
-    func transcriptProjection(
-        breakBefore boundaryID: TranscriptPresentationID?,
-        waitingPhrase: TranscriptWaitingPhrase? = nil
-    ) -> TranscriptProjection {
-        let source = displayedTranscript
-        let key = TranscriptProjectionKey(
-            version: transcriptProjectionVersion,
-            count: source.count,
-            boundaryID: boundaryID,
-            firstID: source.first?.presentationID,
-            lastID: source.last?.presentationID,
-            waitingPhrase: waitingPhrase
-        )
-        if let cached = transcriptProjectionCache, cached.key == key {
-            return cached.projection
-        }
-        let projection = TranscriptProjection(
-            entries: source,
-            breakBefore: boundaryID,
-            waitingPhrase: waitingPhrase,
-            previous: transcriptProjectionCache?.projection
-        )
-        transcriptProjectionCache = (key, projection)
-        return projection
-    }
-
-    func invalidateTranscriptProjection() {
-        transcriptProjectionVersion &+= 1
-        transcriptWindowCache = nil
-    }
-
-    private func updateTranscriptWindow(after previous: [TranscriptEntry]) {
-        guard transcriptMutationPreservesPrefix,
-              replayPresentedTranscript == nil,
-              case .visibleTurns = transcriptWindowAnchor,
-              let cached = transcriptWindowCache,
-              transcript.count > previous.count,
-              previous.isEmpty
-                || (transcript.first === previous.first
-                    && transcript[previous.count - 1] === previous.last)
-        else {
-            invalidateTranscriptProjection()
-            return
-        }
-        let entries = cached.entries + transcript.dropFirst(previous.count)
-        let updated = TranscriptWindowCache(
-            entries: entries,
-            turnCount: TranscriptProjection.turnCount(in: entries),
-            hasEarlierEntries: cached.hasEarlierEntries
-        )
-        transcriptWindowAnchor = .visibleTurns(updated.turnCount)
-        transcriptWindowCache = updated
-    }
-
-    func mutateTranscriptPreservingPrefix(
-        _ mutation: (inout [TranscriptEntry]) -> Void
-    ) {
-        let wasPreservingPrefix = transcriptMutationPreservesPrefix
-        transcriptMutationPreservesPrefix = true
-        defer { transcriptMutationPreservesPrefix = wasPreservingPrefix }
-        mutation(&transcript)
-    }
-
-    func pinTranscriptWindowIfNeeded() {
-        guard replayRequestID == nil,
-              historyRequestID == nil,
-              let cached = transcriptWindowCache,
-              cached.turnCount > 0
-        else { return }
-        switch transcriptWindowAnchor {
-        case .visibleTurns:
-            return
-        case .tail:
-            break
-        }
-        transcriptWindowAnchor = .visibleTurns(cached.turnCount)
-        transcriptWindowCache = cached
-    }
-
-    /// Starts the on-device rewrite with the submitted first message. The task is stored,
-    /// but deliberately not awaited, so the gateway turn and Foundation Models run together.
-    func startChatTitle(
-        prompt submittedPrompt: String,
-        submissionID: String,
-        sessionID: String
-    ) {
-        let prompt = submittedPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let previewTitle = ChatTitleWriter.preview(for: prompt),
-              titleEligibleSessionIDs.contains(sessionID)
-                  || (pendingChatTitles[sessionID] == nil && sessions.contains(where: {
-                      $0.sessionId == sessionID
-                          && $0.explicitTitle == nil
-                          && ($0.firstUserMessage ?? "")
-                              .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                  })),
-              let accountID = gateway.selectedAccountID
-        else { return }
-        guard sessions.first(where: { $0.sessionId == sessionID })?.explicitTitle == nil
-        else {
-            titleEligibleSessionIDs.remove(sessionID)
-            return
-        }
-        let attempt = ChatTitleAttempt(
-            accountID: accountID,
-            sessionID: sessionID,
-            submissionID: submissionID,
-            prompt: prompt
-        )
-        pendingChatTitles[sessionID] = PendingChatTitle(
-            attempt: attempt,
-            previewTitle: previewTitle,
-            generatedTitle: nil,
-            renameRequestID: nil,
-            submissionConfirmed: false
-        )
-        titleEligibleSessionIDs.remove(sessionID)
-        let titleWriter = titleWriter
-        let locale = language.locale
-        chatTitleTasks[sessionID] = Task { [weak self] in
-            let outcome = await titleWriter.title(for: prompt, locale: locale) { [weak self] message in
-                self?.showToast(verbatim: message, tone: .warning)
-            }
-            guard let self else { return }
-            self.finishChatTitle(outcome, attempt: attempt)
-        }
-    }
-
-    private func finishChatTitle(_ outcome: ChatTitleWriter.Outcome, attempt: ChatTitleAttempt) {
-        guard pendingChatTitles[attempt.sessionID]?.attempt == attempt else { return }
-        chatTitleTasks.removeValue(forKey: attempt.sessionID)
-        guard !Task.isCancelled, gateway.selectedAccountID == attempt.accountID
-        else {
-            pendingChatTitles.removeValue(forKey: attempt.sessionID)
-            return
-        }
-        switch outcome {
-        case .title(let title):
-            pendingChatTitles[attempt.sessionID]?.generatedTitle = title
-        case .failed(let message):
-            showToast(verbatim: message, tone: .warning)
-        case .cancelled:
-            break
-        }
-        reconcileChatTitles()
-    }
-
-    func confirmChatTitle(submissionID: String) {
-        guard let sessionID = pendingChatTitles.first(where: {
-            $0.value.attempt.submissionID == submissionID
-        })?.key else { return }
-        confirmChatTitle(sessionID: sessionID)
-    }
-
-    func confirmChatTitle(sessionID: String) {
-        guard pendingChatTitles[sessionID] != nil else { return }
-        pendingChatTitles[sessionID]?.submissionConfirmed = true
-        persistGeneratedChatTitles()
-    }
-
-    func reconcileChatTitles() {
-        for sessionID in Array(pendingChatTitles.keys) {
-            guard let pending = pendingChatTitles[sessionID] else { continue }
-            guard pending.attempt.accountID == gateway.selectedAccountID else {
-                cancelChatTitle(sessionID)
-                continue
-            }
-            guard let session = sessions.first(where: { $0.sessionId == sessionID }) else {
-                continue
-            }
-            if let durableTitle = session.explicitTitle {
-                if durableTitle == pending.generatedTitle {
-                    completeChatTitle(sessionID)
-                } else {
-                    // An explicit user or another client always wins.
-                    cancelChatTitle(sessionID)
-                }
-                continue
-            }
-
-            let catalogPrompt = (session.firstUserMessage ?? "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !catalogPrompt.isEmpty {
-                guard pending.attempt.prompt.hasPrefix(catalogPrompt) else {
-                    cancelChatTitle(sessionID)
-                    continue
-                }
-                if !pending.submissionConfirmed {
-                    pendingChatTitles[sessionID]?.submissionConfirmed = true
-                }
-                if pending.generatedTitle == nil, chatTitleTasks[sessionID] == nil {
-                    // The catalog now owns the same deterministic preview, so the temporary
-                    // override is no longer needed.
-                    completeChatTitle(sessionID)
-                }
-            } else if let requestID = pending.renameRequestID,
-                      requestID != sessionMutationRequestID {
-                // The mutation slot cleared without the generated title reaching the catalog.
-                cancelChatTitle(sessionID)
-            }
-        }
-        persistGeneratedChatTitles()
-    }
-
-    func persistGeneratedChatTitles() {
-        guard gateway.connectionState.isReady,
-              sessionMutationRequestID == nil,
-              let accountID = gateway.selectedAccountID
-        else { return }
-
-        for sessionID in pendingChatTitles.keys.sorted() {
-            guard var pending = pendingChatTitles[sessionID],
-                  pending.attempt.accountID == accountID,
-                  let title = pending.generatedTitle,
-                  pending.submissionConfirmed,
-                  pending.renameRequestID == nil
-            else { continue }
-            if sessions.first(where: { $0.sessionId == sessionID })?.explicitTitle != nil {
-                cancelChatTitle(sessionID)
-                continue
-            }
-            guard let requestID = requestSessionRename(
-                sessionID: sessionID,
-                title: title,
-                generatedTitleSessionID: sessionID
-            ) else { return }
-            pending.renameRequestID = requestID
-            pendingChatTitles[sessionID] = pending
-            return
-        }
-    }
-
-    func cancelChatTitle(_ sessionID: String, rearm: Bool = false) {
-        chatTitleTasks.removeValue(forKey: sessionID)?.cancel()
-        pendingChatTitles.removeValue(forKey: sessionID)
-        if rearm { titleEligibleSessionIDs.insert(sessionID) }
-    }
-
-    func cancelChatTitle(submissionID: String, rearm: Bool) {
-        guard let sessionID = pendingChatTitles.first(where: {
-            $0.value.attempt.submissionID == submissionID
-        })?.key else { return }
-        cancelChatTitle(sessionID, rearm: rearm)
-    }
-
-    private func completeChatTitle(_ sessionID: String) {
-        chatTitleTasks.removeValue(forKey: sessionID)?.cancel()
-        pendingChatTitles.removeValue(forKey: sessionID)
-        titleEligibleSessionIDs.remove(sessionID)
-    }
-
-    func prepareChatTitle(for sessionID: String) {
-        cancelChatTitle(sessionID)
-        titleEligibleSessionIDs.insert(sessionID)
-    }
-
     var capabilityReferences: [MountedReference] {
-        contributions.flatMap { contribution in
+        chat.contributions.flatMap { contribution in
             contribution.references.map {
                 MountedReference(capability: contribution.capability, reference: $0)
             }
@@ -1205,13 +751,13 @@ final class AppModel {
     }
 
     func commandSuggestions(in text: String, cursorOffset: Int) -> ReferenceSuggestions? {
-        guard text.hasPrefix("/"), pendingWidgetEdit == nil else { return nil }
+        guard text.hasPrefix("/"), chat.pendingWidgetEdit == nil else { return nil }
         let end = text.firstIndex(where: \.isWhitespace) ?? text.endIndex
         guard cursorOffset >= 0, cursorOffset <= text.distance(from: text.startIndex, to: end) else {
             return nil
         }
         let query = text[text.index(after: text.startIndex)..<end].lowercased()
-        let matches = contributions.flatMap { contribution in
+        let matches = chat.contributions.flatMap { contribution in
             contribution.commands.filter { $0.name.hasPrefix(query) }.map { command in
                 MountedReference(
                     capability: contribution.capability,
@@ -1238,7 +784,7 @@ final class AppModel {
         var seen = Set(extensions
             .filter { selected.contains($0.id) }
             .flatMap(\.skills))
-        let references = (gatewayContributions + contributions)
+        let references = (gatewayContributions + chat.contributions)
             .flatMap(\.references)
             .filter { $0.trigger == "$" }
         return references.filter {
@@ -1247,18 +793,18 @@ final class AppModel {
     }
 
     var currentSessionTitle: String {
-        selectedSessionID.map(sessionTitle) ?? localizedString("new conversation")
+        chat.selectedSessionID.map(sessionTitle) ?? localizedString("new conversation")
     }
 
     var selectedSession: SessionRecord? {
-        guard let selectedSessionID else { return nil }
-        return sessions.first { $0.sessionId == selectedSessionID }
-            ?? botSessions.first { $0.sessionId == selectedSessionID }
+        guard let selectedSessionID = chat.selectedSessionID else { return nil }
+        return chat.sessions.first { $0.sessionId == selectedSessionID }
+            ?? chat.botSessions.first { $0.sessionId == selectedSessionID }
     }
 
     var selectedSessionIsHidden: Bool {
-        if let selectedSessionID,
-           botSessions.contains(where: { $0.sessionId == selectedSessionID }) {
+        if let selectedSessionID = chat.selectedSessionID,
+           chat.botSessions.contains(where: { $0.sessionId == selectedSessionID }) {
             return true
         }
         guard let route = navigationPath.last,
@@ -1271,7 +817,7 @@ final class AppModel {
     }
 
     var selectedBot: BotRecord? {
-        guard let botID = selectedSession?.sessionContext.botId ?? pendingNewChatBotID else {
+        guard let botID = selectedSession?.sessionContext.botId ?? chat.pendingNewChatBotID else {
             return nil
         }
         return bots.first { $0.id == botID }
@@ -1283,8 +829,8 @@ final class AppModel {
 
     func bot(forSessionID sessionID: String?) -> BotRecord? {
         guard let sessionID else { return nil }
-        if let session = sessions.first(where: { $0.sessionId == sessionID })
-            ?? botSessions.first(where: { $0.sessionId == sessionID }) {
+        if let session = chat.sessions.first(where: { $0.sessionId == sessionID })
+            ?? chat.botSessions.first(where: { $0.sessionId == sessionID }) {
             return bot(for: session)
         }
         guard let approval = backgroundApproval(forSessionID: sessionID) else { return nil }
@@ -1321,8 +867,8 @@ final class AppModel {
     }
 
     func beginRenamingSession(_ session: SessionRecord) {
-        sessionRenameDraft = displayedTitle(for: session)
-        sessionToRename = session
+        chat.sessionRenameDraft = displayedTitle(for: session)
+        chat.sessionToRename = session
     }
 
     func beginDeletingSession(_ session: SessionRecord) {
@@ -1331,13 +877,13 @@ final class AppModel {
 
     func beginDeletingSessions(_ sessions: [SessionRecord]) {
         var seen = Set<String>()
-        let sessions = sessions.filter { seen.insert($0.sessionId).inserted }
-        guard !sessions.isEmpty else { return }
-        sessionToDelete = sessions
+        let uniqueSessions = sessions.filter { seen.insert($0.sessionId).inserted }
+        guard !uniqueSessions.isEmpty else { return }
+        chat.sessionToDelete = uniqueSessions
     }
 
     func displayedTitle(for session: SessionRecord) -> String {
-        if let title = pendingChatTitles[session.sessionId]?.displayTitle
+        if let title = chat.pendingChatTitles[session.sessionId]?.displayTitle
             ?? session.explicitTitle
             ?? ChatTitleWriter.preview(for: session.firstUserMessage) {
             return title
@@ -1346,24 +892,15 @@ final class AppModel {
     }
 
     func sessionTitle(_ sessionID: String) -> String {
-        if let pendingTitle = pendingChatTitles[sessionID]?.displayTitle {
+        if let pendingTitle = chat.pendingChatTitles[sessionID]?.displayTitle {
             return pendingTitle
         }
-        let session = sessions.first(where: { $0.sessionId == sessionID })
-            ?? botSessions.first(where: { $0.sessionId == sessionID })
+        let session = chat.sessions.first(where: { $0.sessionId == sessionID })
+            ?? chat.botSessions.first(where: { $0.sessionId == sessionID })
         return session.map { String(displayedTitle(for: $0).prefix(72)) }
             ?? localizedString("new conversation")
     }
 
-    var headerWidgets: [MountedWidget] { widgets(in: .header) }
-    var transcriptTailWidgets: [MountedWidget] { widgets(in: .transcriptTail) }
-    var composerHeaderWidgets: [MountedWidget] { widgets(in: .composerHeader) }
-    var composerFooterWidgets: [MountedWidget] { widgets(in: .composerFooter) }
-    var messageActionWidgets: [MountedWidget] {
-        widgets(in: .messageActions).filter { $0.widget.action != nil }
-    }
-    var navigationWidgets: [MountedWidget] { widgets(in: .navigation) }
-    var chatMenuWidgets: [MountedWidget] { widgets(in: .chatMenu) }
     func contributions(in scope: ContributionScope) -> [FrontendContribution] {
         switch scope {
         case .global: gatewayContributions

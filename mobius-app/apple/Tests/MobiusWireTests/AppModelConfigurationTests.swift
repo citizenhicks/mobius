@@ -21,7 +21,7 @@ extension AppModelTests {
         model.botDraft = snapshot.config
         model.botNameDraft = "Unsaved Bot name"
         model.showsWorkspaceBrowser = true
-        model.pendingNewChatWorkspace = "/work"
+        model.chat.pendingNewChatWorkspace = "/work"
         model.gateway.pairingCode = "unsaved-pairing-code"
         let navigation = model.navigationPath
 
@@ -29,10 +29,10 @@ extension AppModelTests {
         model.setSceneActive(true)
 
         XCTAssertEqual(model.gateway.connectionState, .connecting)
-        XCTAssertEqual(model.sessions.map(\.sessionId), ["chat-1"])
+        XCTAssertEqual(model.chat.sessions.map(\.sessionId), ["chat-1"])
         XCTAssertEqual(model.bots.map(\.id), ["bot-1"])
         XCTAssertEqual(model.navigationPath, navigation)
-        XCTAssertNil(model.selectedSessionID)
+        XCTAssertNil(model.chat.selectedSessionID)
         XCTAssertEqual(model.providerDraft, snapshot.config.provider)
         XCTAssertEqual(model.providerLabelDraft, "My setup")
         XCTAssertEqual(model.providerAPIKey, "unsaved-test-key")
@@ -40,7 +40,7 @@ extension AppModelTests {
         XCTAssertEqual(model.providerReasoningEffortsText, "high")
         XCTAssertEqual(model.botNameDraft, "Unsaved Bot name")
         XCTAssertTrue(model.showsWorkspaceBrowser)
-        XCTAssertEqual(model.pendingNewChatWorkspace, "/work")
+        XCTAssertEqual(model.chat.pendingNewChatWorkspace, "/work")
         XCTAssertEqual(model.gateway.pairingCode, "unsaved-pairing-code")
 
         model.gateway.handle(.ready(ready(
@@ -50,7 +50,7 @@ extension AppModelTests {
         )))
 
         XCTAssertEqual(model.bots.first?.name, "Synced Bot name")
-        XCTAssertEqual(model.sessions.map(\.sessionId), ["chat-2"])
+        XCTAssertEqual(model.chat.sessions.map(\.sessionId), ["chat-2"])
         XCTAssertEqual(model.navigationPath, navigation)
         XCTAssertEqual(model.botNameDraft, "Unsaved Bot name")
         XCTAssertEqual(model.providerAPIKey, "unsaved-test-key")
@@ -300,7 +300,7 @@ extension AppModelTests {
             sessionFileLimits: testSessionFileLimits()
         ))
 
-        XCTAssertNil(model.selectedSessionID)
+        XCTAssertNil(model.chat.selectedSessionID)
         XCTAssertNil(model.agentDraft)
         model.addProviderInstance("openai_socket")
         XCTAssertEqual(model.providerDraft?.model, "gpt-5.6-sol")
@@ -1000,8 +1000,8 @@ extension AppModelTests {
         let active = composition(systemPrompt: "Active chat")
         let botDefaults = composition(systemPrompt: "New chats")
         model.gateway.connectionState = .ready
-        model.selectedSessionID = "chat-1"
-        model.sessions = [session(state: .idle)]
+        model.chat.selectedSessionID = "chat-1"
+        model.chat.sessions = [session(state: .idle)]
         model.agentSnapshot = VersionedAgentConfig(revision: 3, config: active)
         model.agentDraft = active
         model.botDefaultsSnapshot = VersionedAgentConfig(revision: 8, config: botDefaults)
@@ -1010,7 +1010,7 @@ extension AppModelTests {
 
         model.applySessions([])
 
-        XCTAssertNil(model.selectedSessionID)
+        XCTAssertNil(model.chat.selectedSessionID)
         XCTAssertNil(model.agentSnapshot)
         XCTAssertNil(model.agentDraft)
         XCTAssertEqual(
@@ -1099,11 +1099,11 @@ extension AppModelTests {
         let helper = bot()
         model.gateway.connectionState = .ready
         model.bots = [helper]
-        model.sessions = [
+        model.chat.sessions = [
             session(sessionID: "chat-1", state: .idle, botID: helper.id),
             session(sessionID: "chat-2", state: .running, botID: helper.id),
         ]
-        model.selectedSessionID = "chat-1"
+        model.chat.selectedSessionID = "chat-1"
         model.beginEditingBot(helper)
         model.botNameDraft = "Blocked edit"
 
@@ -1148,8 +1148,8 @@ extension AppModelTests {
         let helper = bot(config: VersionedAgentConfig(revision: 7, config: initial))
         model.gateway.connectionState = .ready
         model.bots = [helper]
-        model.sessions = [session(state: .idle)]
-        model.selectedSessionID = "chat-1"
+        model.chat.sessions = [session(state: .idle)]
+        model.chat.selectedSessionID = "chat-1"
         model.middlewareFeatures = [MiddlewareFeature(
             id: "owner", label: "Owner", description: "Required capability", required: true,
             settings: [FrontendSetting(
@@ -1199,8 +1199,8 @@ extension AppModelTests {
         let original = bot(config: VersionedAgentConfig(revision: 4, config: composition()))
         model.gateway.connectionState = .ready
         model.bots = [original]
-        model.sessions = [session(state: .idle)]
-        model.selectedSessionID = "chat-1"
+        model.chat.sessions = [session(state: .idle)]
+        model.chat.selectedSessionID = "chat-1"
         model.agentSnapshot = original.config
         model.agentDraft = original.config.config
         model.beginEditingBot(original)
@@ -1283,8 +1283,8 @@ extension AppModelTests {
             sessionId: nil,
             message: nil
         )]
-        model.botSessionsBotID = helper.id
-        model.selectedSessionID = "work-1"
+        model.chat.botSessionsBotID = helper.id
+        model.chat.selectedSessionID = "work-1"
         model.destination = .bots
         model.navigationPath = [
             .botSessions(helper.id),
@@ -1293,7 +1293,7 @@ extension AppModelTests {
         XCTAssertTrue(model.selectedSessionIsHidden)
 
         model.applyBots([mobius, helper])
-        XCTAssertEqual(model.selectedSessionID, "work-1")
+        XCTAssertEqual(model.chat.selectedSessionID, "work-1")
 
         model.deleteBot(helper)
         let request = await recorder.firstRequest(after: 0) {
@@ -1310,8 +1310,8 @@ extension AppModelTests {
 
         XCTAssertTrue(model.routines.isEmpty)
         XCTAssertTrue(model.routineRuns.isEmpty)
-        XCTAssertTrue(model.botSessions.isEmpty)
-        XCTAssertNil(model.selectedSessionID)
+        XCTAssertTrue(model.chat.botSessions.isEmpty)
+        XCTAssertNil(model.chat.selectedSessionID)
         XCTAssertTrue(model.navigationPath.isEmpty)
     }
 
@@ -1322,7 +1322,7 @@ extension AppModelTests {
         })
         let draft = composition(systemPrompt: "New Bot defaults")
         let previousBotDefaults = composition(systemPrompt: "Previous Bot defaults")
-        model.selectedSessionID = "chat-1"
+        model.chat.selectedSessionID = "chat-1"
         model.agentSnapshot = VersionedAgentConfig(revision: 3, config: composition())
         model.agentDraft = composition(systemPrompt: "Active chat")
         model.botDefaultsSnapshot = VersionedAgentConfig(
@@ -1376,8 +1376,8 @@ extension AppModelTests {
             middleware: "example",
             setting: "mode"
         )
-        model.selectedSessionID = "chat-1"
-        model.sessions = [session(state: .idle)]
+        model.chat.selectedSessionID = "chat-1"
+        model.chat.sessions = [session(state: .idle)]
         model.agentSnapshot = VersionedAgentConfig(revision: 3, config: active)
         model.botDefaultsSnapshot = VersionedAgentConfig(revision: 7, config: active)
         model.agentDraft = active
@@ -1424,7 +1424,7 @@ extension AppModelTests {
             middleware: "example",
             setting: "mode"
         )
-        model.selectedSessionID = "chat-1"
+        model.chat.selectedSessionID = "chat-1"
         model.agentSnapshot = VersionedAgentConfig(revision: 3, config: active)
         model.botDefaultsSnapshot = VersionedAgentConfig(revision: 7, config: active)
         model.agentDraft = active

@@ -104,7 +104,7 @@ struct ChatsView: View {
         )
         .searchToolbarBehavior(.automatic)
         .searchPresentationToolbarBehavior(.avoidHidingContent)
-        .onChange(of: model.sessions.map(\.sessionId)) { _, sessionIDs in
+        .onChange(of: model.chat.sessions.map(\.sessionId)) { _, sessionIDs in
             guard let selection = selectedSessionIDs, !selection.isEmpty else { return }
             let remaining = selection.intersection(sessionIDs)
             selectedSessionIDs = remaining.isEmpty ? nil : remaining
@@ -150,18 +150,18 @@ struct ChatsView: View {
                 MobiusSpinner(size: MobiusStyle.glyphMark)
             }
             Spacer(minLength: 0)
-            if !model.chatBotFilterIDs.isEmpty {
+            if !model.chat.chatBotFilterIDs.isEmpty {
                 Button {
-                    model.chatBotFilterIDs.removeAll()
+                    model.chat.chatBotFilterIDs.removeAll()
                 } label: {
                     MobiusIcon(.filterMailRemove)
                 }
                 .buttonStyle(MobiusIconButtonStyle(bare: true))
                 .accessibilityLabel("Clear Bot filters")
                 .accessibilityValue(
-                    model.chatBotFilterIDs.count == 1
+                    model.chat.chatBotFilterIDs.count == 1
                         ? Text("1 selected")
-                        : Text("\(model.chatBotFilterIDs.count) selected")
+                        : Text("\(model.chat.chatBotFilterIDs.count) selected")
                 )
                 .help("Clear Bot filters")
                 .disabled(showsLoadingCatalog)
@@ -226,11 +226,11 @@ struct ChatsView: View {
             }
             Section("Filter") {
                 Button {
-                    model.chatBotFilterIDs.removeAll()
+                    model.chat.chatBotFilterIDs.removeAll()
                 } label: {
                     MobiusLabel(
                         title: "All",
-                        glyph: model.chatBotFilterIDs.isEmpty ? .check : .aiScan
+                        glyph: model.chat.chatBotFilterIDs.isEmpty ? .check : .aiScan
                     )
                 }
                 ForEach(orderedBots) { bot in
@@ -255,11 +255,11 @@ struct ChatsView: View {
             }
         }
         .accessibilityValue(
-            model.chatBotFilterIDs.isEmpty
+            model.chat.chatBotFilterIDs.isEmpty
                 ? Text("\(organization.title), all Bots")
-                : model.chatBotFilterIDs.count == 1
+                : model.chat.chatBotFilterIDs.count == 1
                     ? Text("\(organization.title), 1 Bot selected")
-                    : Text("\(organization.title), \(model.chatBotFilterIDs.count) Bots selected")
+                    : Text("\(organization.title), \(model.chat.chatBotFilterIDs.count) Bots selected")
         )
     }
 
@@ -288,7 +288,7 @@ struct ChatsView: View {
 
     private var showsLoadingCatalog: Bool {
         model.gateway.connectionState.isLoading
-            && model.sessions.isEmpty
+            && model.chat.sessions.isEmpty
             && !showsAttentionOnly
             && searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -346,7 +346,7 @@ struct ChatsView: View {
     }
 
     private var displayedSessions: [SessionRecord] {
-        var sessions = model.chatCatalogSessions
+        var sessions = model.chat.chatCatalogSessions
         if showsAttentionOnly {
             let attentionSessionIDs = model.attentionSessionIDs
             sessions = sessions.filter { attentionSessionIDs.contains($0.sessionId) }
@@ -366,13 +366,13 @@ struct ChatsView: View {
         if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return "No chats match your search"
         }
-        if !model.gateway.connectionState.isReady && model.sessions.isEmpty {
+        if !model.gateway.connectionState.isReady && model.chat.sessions.isEmpty {
             return model.gateway.connectionState.label
         }
         if showsAttentionOnly {
             return "No chats need attention"
         }
-        if !model.chatBotFilterIDs.isEmpty {
+        if !model.chat.chatBotFilterIDs.isEmpty {
             return "No chats for the selected Bots"
         }
         return "No chats yet"
@@ -408,7 +408,7 @@ struct ChatsView: View {
     }
 
     private var filteredBots: [BotRecord] {
-        orderedBots.filter { model.chatBotFilterIDs.contains($0.id) }
+        orderedBots.filter { model.chat.chatBotFilterIDs.contains($0.id) }
     }
 
     private var attentionFilterGlyph: MobiusGlyph {
@@ -426,7 +426,7 @@ struct ChatsView: View {
 
     @ViewBuilder
     private func botFilterLabel(_ bot: BotRecord) -> some View {
-        let selected = model.chatBotFilterIDs.contains(bot.id)
+        let selected = model.chat.chatBotFilterIDs.contains(bot.id)
         let glyph = selected ? MobiusGlyph.check : .aiScan
         let color = selected ? palette.accent : bot.tint.color
         let title = "\(bot.name) (@\(bot.handle))"
@@ -438,8 +438,8 @@ struct ChatsView: View {
     }
 
     private func toggleBotFilter(_ botID: String) {
-        if !model.chatBotFilterIDs.insert(botID).inserted {
-            model.chatBotFilterIDs.remove(botID)
+        if !model.chat.chatBotFilterIDs.insert(botID).inserted {
+            model.chat.chatBotFilterIDs.remove(botID)
         }
     }
 
@@ -453,7 +453,7 @@ struct ChatsView: View {
 
     private var selectedSessions: [SessionRecord] {
         guard let selectedSessionIDs else { return [] }
-        return model.sessions.filter { selectedSessionIDs.contains($0.sessionId) }
+        return model.chat.sessions.filter { selectedSessionIDs.contains($0.sessionId) }
     }
 
     private func deleteSelectedSessions() {
@@ -614,8 +614,8 @@ struct SessionCatalogRow: View {
     var body: some View {
         let isSelecting = selectedSessionIDs != nil
         let isSelected = selectedSessionIDs?.wrappedValue.contains(session.sessionId)
-            ?? (session.sessionId == model.selectedSessionID)
-        let isUnread = model.unreadSessionIDs.contains(session.sessionId)
+            ?? (session.sessionId == model.chat.selectedSessionID)
+        let isUnread = model.chat.unreadSessionIDs.contains(session.sessionId)
         let row = HStack(spacing: MobiusSpace.xs) {
             Button {
                 activate()
@@ -668,7 +668,7 @@ struct SessionCatalogRow: View {
             .disabled(
                 !isSelecting
                     && !model.canBrowseSessions
-                    && session.sessionId != model.selectedSessionID
+                    && session.sessionId != model.chat.selectedSessionID
             )
             .accessibilityValue(
                 accessibilityValue(isUnread: isUnread, selection: isSelecting ? isSelected : nil)
@@ -687,7 +687,7 @@ struct SessionCatalogRow: View {
 
     @ViewBuilder
     private var controls: some View {
-        if model.unreadSessionIDs.contains(session.sessionId) {
+        if model.chat.unreadSessionIDs.contains(session.sessionId) {
             Button("Mark as read", glyph: .checkCircle) {
                 model.markSessionRead(session.sessionId)
             }
@@ -700,7 +700,7 @@ struct SessionCatalogRow: View {
             session.pinned ? "Unpin chat" : "Pin chat",
             glyph: session.pinned ? .pushPinSlash : .pushPin
         ) {
-            model.setSessionPinned(session, pinned: !session.pinned)
+            model.chat.setSessionPinned(session, pinned: !session.pinned)
         }
         .disabled(!model.canRenameSession)
         Button("Rename chat", glyph: .pencilSimple) {

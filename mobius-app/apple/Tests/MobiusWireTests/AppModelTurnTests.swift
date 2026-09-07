@@ -6,13 +6,13 @@ import XCTest
 extension AppModelTests {
     func testSessionElapsedTimesTheRunningTurn() throws {
         let model = try model()
-        model.selectedSessionID = "chat-1"
-        model.sessions = [session(state: .idle, createdAt: 100, updatedAt: 160)]
+        model.chat.selectedSessionID = "chat-1"
+        model.chat.sessions = [session(state: .idle, createdAt: 100, updatedAt: 160)]
 
         XCTAssertEqual(model.sessionElapsed(at: Date(timeIntervalSince1970: 200)), 0)
 
         // `session(state:)` starts a running turn at 100, not at the chat's creation time.
-        model.sessions = [session(state: .running, createdAt: 20, updatedAt: 160)]
+        model.chat.sessions = [session(state: .running, createdAt: 20, updatedAt: 160)]
         XCTAssertEqual(model.sessionElapsed(at: Date(timeIntervalSince1970: 200)), 100)
     }
 
@@ -24,7 +24,7 @@ extension AppModelTests {
         model.gateway.selectedAccountID = account.id
         model.gateway.connectionState = .ready
 
-        model.openSession("chat-1")
+        model.chat.openSession("chat-1")
         let request = await recorder.firstRequest(after: 0) {
             guard case .openSession(_, "chat-1", nil) = $0 else { return false }
             return true
@@ -45,7 +45,7 @@ extension AppModelTests {
             blocks: [],
             preview: nil
         ))
-        XCTAssertEqual(model.sessionCompactionCount, 2)
+        XCTAssertEqual(model.chat.sessionCompactionCount, 2)
 
         model.gateway.handle(.sessionReplayComplete(requestID: requestID, sessionID: "chat-1"))
         model.gateway.handle(.agentEvent(
@@ -58,14 +58,14 @@ extension AppModelTests {
             preview: nil
         ))
 
-        XCTAssertEqual(model.sessionCompactionCount, 3)
+        XCTAssertEqual(model.chat.sessionCompactionCount, 3)
     }
 
     func testLiveRunStatsStartImmediatelyAndTrackToolCalls() throws {
         let model = try model()
-        model.selectedSessionID = "chat-1"
+        model.chat.selectedSessionID = "chat-1"
 
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(submissionId: "input-1", msg: .object([
                 "type": .string("turn_started"),
                 "turnId": .string("turn-1")
@@ -73,21 +73,21 @@ extension AppModelTests {
             blocks: [],
             preview: nil
         )
-        let active = try XCTUnwrap(model.runStats.active)
+        let active = try XCTUnwrap(model.chat.runStats.active)
         XCTAssertEqual(model.sessionRunCount, 1)
         XCTAssertGreaterThan(
             model.sessionElapsed(at: Date(timeIntervalSince1970: TimeInterval(active.startedAtMs) / 1_000 + 2)),
             1.9
         )
 
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(submissionId: nil, msg: .object([
                 "type": .string("tool_call_begin")
             ])),
             blocks: [],
             preview: nil
         )
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(submissionId: nil, msg: .object([
                 "type": .string("tool_call_end"),
                 "isError": .bool(true)
@@ -98,14 +98,14 @@ extension AppModelTests {
         XCTAssertEqual(model.sessionToolCalls, 1)
         XCTAssertEqual(model.sessionFailedToolCalls, 1)
 
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(submissionId: nil, msg: .object([
                 "type": .string("turn_complete")
             ])),
             blocks: [],
             preview: nil
         )
-        XCTAssertNil(model.runStats.active)
+        XCTAssertNil(model.chat.runStats.active)
     }
 
     func testSessionSnapshotRestoresActiveTurnInterrupt() async throws {
@@ -119,7 +119,7 @@ extension AppModelTests {
             interruptSent.fulfill()
         }
         model.gateway.connectionState = .ready
-        model.selectedSessionID = "chat-1"
+        model.chat.selectedSessionID = "chat-1"
         var stats = RunStats()
         stats.active = RunSummary(
             sessionId: "chat-1",
@@ -137,7 +137,7 @@ extension AppModelTests {
 
         model.gateway.handle(.sessionChanged(sessionReady(latestSequence: 8, runStats: stats)))
 
-        XCTAssertEqual(model.activeTurnID, "turn-1")
+        XCTAssertEqual(model.chat.activeTurnID, "turn-1")
         model.interrupt()
         await fulfillment(of: [interruptSent], timeout: 1)
         let requests = await recorder.requests()
@@ -152,7 +152,7 @@ extension AppModelTests {
         let model = try model()
 
         for _ in 0..<100 {
-            model.reduce(
+            model.chat.reduce(
                 event: AgentEventRecord(submissionId: nil, msg: .object([
                     "type": .string("assistant_content_delta"),
                     "sessionId": .string("chat-1"),
@@ -165,17 +165,17 @@ extension AppModelTests {
                 preview: nil
             )
         }
-        XCTAssertTrue(model.transcript.isEmpty)
+        XCTAssertTrue(model.chat.transcript.isEmpty)
 
         let expected = String(repeating: "x", count: 100)
         let deltasFlushed = await eventually {
-            model.transcript.map(\.text) == [expected]
+            model.chat.transcript.map(\.text) == [expected]
         }
         XCTAssertTrue(deltasFlushed)
-        XCTAssertEqual(model.transcript.map(\.text), [expected])
-        XCTAssertTrue(try XCTUnwrap(model.transcript.first).pending)
+        XCTAssertEqual(model.chat.transcript.map(\.text), [expected])
+        XCTAssertTrue(try XCTUnwrap(model.chat.transcript.first).pending)
 
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(
                 submissionId: nil,
                 msg: testAssistantMessage(
@@ -188,15 +188,15 @@ extension AppModelTests {
             preview: nil
         )
 
-        XCTAssertEqual(model.transcript.map(\.text), ["Canonical **Markdown**"])
-        XCTAssertFalse(try XCTUnwrap(model.transcript.first).pending)
+        XCTAssertEqual(model.chat.transcript.map(\.text), ["Canonical **Markdown**"])
+        XCTAssertFalse(try XCTUnwrap(model.chat.transcript.first).pending)
     }
 
     func testCommentaryAndFinalAnswerRemainSeparateAssistantMessages() throws {
         let model = try model()
 
         for (phase, delta) in [("commentary", "Checking **the workspace**"), ("final_answer", "Done")] {
-            model.reduce(
+            model.chat.reduce(
                 event: AgentEventRecord(submissionId: nil, msg: .object([
                     "type": .string("assistant_content_delta"),
                     "sessionId": .string("chat-1"),
@@ -210,7 +210,7 @@ extension AppModelTests {
             )
         }
 
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(submissionId: nil, msg: .object([
                 "type": .string("assistant_message"),
                 "sessionId": .string("chat-1"),
@@ -238,9 +238,9 @@ extension AppModelTests {
             preview: nil
         )
 
-        XCTAssertEqual(model.transcript.map(\.text), ["Checking **the workspace**", "Done"])
-        XCTAssertEqual(model.transcript.map(\.kind), [.commentary, .assistant])
-        XCTAssertTrue(model.transcript.allSatisfy { !$0.pending })
+        XCTAssertEqual(model.chat.transcript.map(\.text), ["Checking **the workspace**", "Done"])
+        XCTAssertEqual(model.chat.transcript.map(\.kind), [.commentary, .assistant])
+        XCTAssertTrue(model.chat.transcript.allSatisfy { !$0.pending })
     }
 
     func testCompletedModelStepSnapshotMatchesReplayWithoutDeltas() throws {
@@ -261,7 +261,7 @@ extension AppModelTests {
                 "phase": .string(delta.0),
                 "delta": .string(delta.1),
             ]
-            live.reduce(record: recorded(UInt64(offset + 1), .object(fields)))
+            live.chat.reduce(record: recorded(UInt64(offset + 1), .object(fields)))
         }
         let completion = recorded(4, .object([
             "type": .string("model_step_completed"),
@@ -316,28 +316,28 @@ extension AppModelTests {
             "messageTarget": .null,
         ]))
 
-        live.reduce(record: completion)
-        replay.reduce(record: completion)
-        live.reduce(record: snapshot)
-        replay.reduce(record: snapshot)
+        live.chat.reduce(record: completion)
+        replay.chat.reduce(record: completion)
+        live.chat.reduce(record: snapshot)
+        replay.chat.reduce(record: snapshot)
 
-        let liveProjection = live.transcript.map {
+        let liveProjection = live.chat.transcript.map {
             [$0.id, $0.kind.rawValue, $0.text, String($0.pending), $0.modelStepID ?? ""]
         }
-        let replayProjection = replay.transcript.map {
+        let replayProjection = replay.chat.transcript.map {
             [$0.id, $0.kind.rawValue, $0.text, String($0.pending), $0.modelStepID ?? ""]
         }
         XCTAssertEqual(liveProjection, replayProjection)
-        XCTAssertEqual(live.transcript.map(\.text), ["Reason", "Checking", "Done"])
+        XCTAssertEqual(live.chat.transcript.map(\.text), ["Reason", "Checking", "Done"])
         XCTAssertEqual(
-            live.transcript.map(\.presentationID),
+            live.chat.transcript.map(\.presentationID),
             [
                 "step-1:reasoning:0",
                 "step-1:commentary:0",
                 "step-1:final_answer:0",
             ]
         )
-        XCTAssertEqual(live.transcript.map(\.presentationID), replay.transcript.map(\.presentationID))
+        XCTAssertEqual(live.chat.transcript.map(\.presentationID), replay.chat.transcript.map(\.presentationID))
     }
 
     func testCompletedModelStepAssignsDeterministicPresentationOrdinalsWithinEachPhase() async throws {
@@ -345,7 +345,7 @@ extension AppModelTests {
         let replay = try model()
         let stepID = "step-1"
 
-        live.reduce(record: recorded(1, .object([
+        live.chat.reduce(record: recorded(1, .object([
             "type": .string("assistant_content_delta"),
             "sessionId": .string("chat-1"),
             "turnId": .string("turn-1"),
@@ -355,7 +355,7 @@ extension AppModelTests {
         ])))
         // Deltas are batched, so the streamed row exists a flush later, not on the record.
         let streamed = await eventually {
-            live.transcript.map(\.presentationID) == ["step-1:commentary:0"]
+            live.chat.transcript.map(\.presentationID) == ["step-1:commentary:0"]
         }
         XCTAssertTrue(streamed)
 
@@ -412,18 +412,18 @@ extension AppModelTests {
             "messageTarget": .null,
         ]))
 
-        live.reduce(record: completion)
-        replay.reduce(record: completion)
-        live.reduce(record: snapshot)
-        replay.reduce(record: snapshot)
+        live.chat.reduce(record: completion)
+        replay.chat.reduce(record: completion)
+        live.chat.reduce(record: snapshot)
+        replay.chat.reduce(record: snapshot)
 
         let expected = [
             "step-1:commentary:0",
             "step-1:commentary:1",
             "step-1:final_answer:0",
         ]
-        XCTAssertEqual(live.transcript.map(\.presentationID), expected)
-        XCTAssertEqual(replay.transcript.map(\.presentationID), expected)
+        XCTAssertEqual(live.chat.transcript.map(\.presentationID), expected)
+        XCTAssertEqual(replay.chat.transcript.map(\.presentationID), expected)
         XCTAssertEqual(Set(expected).count, expected.count)
     }
 
@@ -441,7 +441,7 @@ extension AppModelTests {
 
     func testFailedModelStepKeepsItsPartialDelta() throws {
         let model = try model()
-        model.reduce(record: recorded(1, .object([
+        model.chat.reduce(record: recorded(1, .object([
             "type": .string("assistant_content_delta"),
             "sessionId": .string("chat-1"),
             "turnId": .string("turn-1"),
@@ -449,7 +449,7 @@ extension AppModelTests {
             "phase": .string("reasoning"),
             "delta": .string("Partial reasoning"),
         ])))
-        model.reduce(record: recorded(2, .object([
+        model.chat.reduce(record: recorded(2, .object([
             "type": .string("model_step_completed"),
             "sessionId": .string("chat-1"),
             "turnId": .string("turn-1"),
@@ -460,13 +460,13 @@ extension AppModelTests {
             "outcome": .object(["status": .string("failed")]),
         ])))
 
-        XCTAssertEqual(model.transcript.map(\.text), ["Partial reasoning"])
-        XCTAssertFalse(try XCTUnwrap(model.transcript.first).pending)
+        XCTAssertEqual(model.chat.transcript.map(\.text), ["Partial reasoning"])
+        XCTAssertFalse(try XCTUnwrap(model.chat.transcript.first).pending)
     }
 
     func testRetryingModelStepSeparatesPartialOutputAndClosesSearch() throws {
         let model = try model()
-        model.reduce(record: recorded(1, .object([
+        model.chat.reduce(record: recorded(1, .object([
             "type": .string("assistant_content_delta"),
             "sessionId": .string("chat-1"),
             "turnId": .string("turn-1"),
@@ -474,7 +474,7 @@ extension AppModelTests {
             "delta": .string("Partial answer"),
             "phase": .string("final_answer"),
         ])))
-        model.reduce(record: recorded(2, .object([
+        model.chat.reduce(record: recorded(2, .object([
             "type": .string("web_search_begin"),
             "sessionId": .string("chat-1"),
             "turnId": .string("turn-1"),
@@ -493,7 +493,7 @@ extension AppModelTests {
             tone: "neutral",
             files: []
         ))]))
-        model.reduce(record: recorded(3, .object([
+        model.chat.reduce(record: recorded(3, .object([
             "type": .string("web_search_end"),
             "sessionId": .string("chat-1"),
             "turnId": .string("turn-1"),
@@ -513,7 +513,7 @@ extension AppModelTests {
             tone: "warning",
             files: []
         ))]))
-        model.reduce(record: recorded(4, .object([
+        model.chat.reduce(record: recorded(4, .object([
             "type": .string("model_step_completed"),
             "sessionId": .string("chat-1"),
             "turnId": .string("turn-1"),
@@ -536,13 +536,13 @@ extension AppModelTests {
             files: []
         ))]))
 
-        let partial = try XCTUnwrap(model.transcript.first(where: {
+        let partial = try XCTUnwrap(model.chat.transcript.first(where: {
             $0.modelStepID == "step-1" && $0.kind == .assistant
         }))
-        let search = try XCTUnwrap(model.transcript.first(where: {
+        let search = try XCTUnwrap(model.chat.transcript.first(where: {
             $0.capability == "web_search"
         }))
-        let reconnecting = try XCTUnwrap(model.transcript.first(where: {
+        let reconnecting = try XCTUnwrap(model.chat.transcript.first(where: {
             $0.title == "Reconnecting…"
         }))
         XCTAssertFalse(partial.pending)
@@ -551,15 +551,15 @@ extension AppModelTests {
         XCTAssertEqual(search.title, "Web search interrupted")
         XCTAssertEqual(search.tone, "warning")
         XCTAssertLessThan(
-            try XCTUnwrap(model.transcript.firstIndex(where: { $0 === partial })),
-            try XCTUnwrap(model.transcript.firstIndex(where: { $0 === reconnecting }))
+            try XCTUnwrap(model.chat.transcript.firstIndex(where: { $0 === partial })),
+            try XCTUnwrap(model.chat.transcript.firstIndex(where: { $0 === reconnecting }))
         )
     }
 
     func testAssistantCitationsAttachToTheirWebSearchResult() throws {
         let model = try model()
         for (sequence, stepID) in [(UInt64(1), "step-1"), (UInt64(2), "step-2")] {
-            model.reduce(record: recorded(sequence, .object([
+            model.chat.reduce(record: recorded(sequence, .object([
                 "type": .string("web_search_end"),
                 "sessionId": .string("chat-1"),
                 "turnId": .string("turn-1"),
@@ -583,7 +583,7 @@ extension AppModelTests {
                 files: []
             ))]))
         }
-        model.reduce(record: recorded(3, testAssistantMessage(
+        model.chat.reduce(record: recorded(3, testAssistantMessage(
             turnID: "turn-1",
             modelStepID: "step-1",
             text: "Done",
@@ -613,7 +613,7 @@ extension AppModelTests {
             ]
         )))
 
-        let searches = model.transcript.filter(\.isWebSearch)
+        let searches = model.chat.transcript.filter(\.isWebSearch)
         XCTAssertEqual(searches.map(\.modelStepID), ["step-1", "step-2"])
         let source = try XCTUnwrap(searches[0].webSearchSources.first)
         XCTAssertEqual(searches[0].webSearchSources.count, 1)
@@ -621,7 +621,7 @@ extension AppModelTests {
         XCTAssertEqual(source.title, "Example")
         XCTAssertEqual(source.excerpt, "Relevant excerpt.")
         XCTAssertTrue(searches[1].webSearchSources.isEmpty)
-        XCTAssertEqual(model.copiedTranscript([searches[0]])[0].webSearchSources, [source])
+        XCTAssertEqual(model.chat.copiedTranscript([searches[0]])[0].webSearchSources, [source])
     }
 
 }

@@ -435,7 +435,7 @@ struct FrontendWidgetSheet: View {
     }
 
     private var currentWidget: MountedWidget? {
-        model.chatMenuWidgets.first { $0.id == widget.id }
+        model.chat.chatMenuWidgets.first { $0.id == widget.id }
     }
 }
 
@@ -451,7 +451,7 @@ struct FrontendPickerView: View {
                     Text(verbatim: picker.title)
                         .font(MobiusStyle.titleFont)
                     Spacer(minLength: MobiusSpace.s)
-                    Button { model.pendingPicker = nil } label: {
+                    Button { model.chat.pendingPicker = nil } label: {
                         MobiusIcon(.x, size: MobiusStyle.glyphInline, foreground: palette.muted)
                             .frame(
                                 width: MobiusStyle.iconButtonSize,

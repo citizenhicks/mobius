@@ -1,6 +1,6 @@
 import Foundation
 
-extension AppModel {
+extension ChatSessionModel {
     /// Rebuilds record-owned presentation in sequence order because a replace/append pair
     /// can straddle history pages. The cached base already includes records at its cursor.
     func mergeHistory(_ records: [RecordedEvent]) {
@@ -241,6 +241,9 @@ extension AppModel {
         )
     }
 
+}
+
+extension AppModel {
     func setPairingCode(_ code: String, expiresAt: Date) {
         pairingCodeExpiryTask?.cancel()
         guard expiresAt > .now else {
@@ -258,25 +261,6 @@ extension AppModel {
             self.pairingCodeInfo = nil
             self.pairingCodeExpiryTask = nil
         }
-    }
-
-    func decodeApproval(_ value: JSONValue) -> PendingApproval? {
-        guard let id = value["id"]?.stringValue else { return nil }
-        let calls = value["calls"]?.arrayValue?.compactMap { call -> ApprovalCall? in
-            guard let callID = call["callId"]?.stringValue,
-                  let name = call["name"]?.stringValue
-            else { return nil }
-            return ApprovalCall(
-                id: callID,
-                name: name,
-                arguments: call["arguments"]?.prettyPrinted ?? "{}"
-            )
-        } ?? []
-        return PendingApproval(
-            id: id,
-            reason: value["reason"]?.stringValue ?? "möbius needs permission to continue.",
-            calls: calls
-        )
     }
 
 }

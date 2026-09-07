@@ -157,7 +157,7 @@ actor GatewayConnectionHarness {
     func attemptCount() -> Int { attempts }
 }
 
-extension AppModel {
+extension ChatSessionModel {
     func reduce(
         event: AgentEventRecord,
         blocks: [FrontendBlock],
@@ -235,7 +235,7 @@ final class AppModelTests: XCTestCase {
             requestSender: requestSender,
             titleWriter: titleWriter
         )
-        model.sessionFileLimits = testSessionFileLimits()
+        model.chat.sessionFileLimits = testSessionFileLimits()
         model.bots = [bot()]
         return model
     }
@@ -465,8 +465,8 @@ final class AppModelTests: XCTestCase {
         model.gateway.accounts = [account]
         model.gateway.selectedAccountID = account.id
         model.gateway.connectionState = .ready
-        model.selectedSessionID = sessionID
-        model.composer = "Displaced draft"
+        model.chat.selectedSessionID = sessionID
+        model.chat.composer = "Displaced draft"
         let requestCount = await recorder.requestCount()
         model.editWidgetInputInComposer(editableWidget())
         let request = await recorder.firstRequest(after: requestCount) {
@@ -477,7 +477,7 @@ final class AppModelTests: XCTestCase {
             guard case .submit(_, let submission) = request else { return nil }
             return submission
         })
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(submissionId: submission.id, msg: .object([
                 "type": .string("frontend"),
                 "frontendType": .string("remove_widget"),
@@ -580,7 +580,7 @@ final class AppModelTests: XCTestCase {
         recorder: GatewayRequestRecorder,
         sessionID: String = "chat-1"
     ) async throws -> Submission {
-        model.composer = text
+        model.chat.composer = text
         let requestCount = await recorder.requestCount()
         model.sendMessage()
         let request = await recorder.firstRequest(after: requestCount) { request in

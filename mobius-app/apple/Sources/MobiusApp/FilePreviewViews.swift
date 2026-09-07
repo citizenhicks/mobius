@@ -466,9 +466,9 @@ struct PreviewTranscriptSheet: View {
     var body: some View {
         ReadOnlyTranscriptSheet(
             entries: currentPreview.entries,
-            fileSessionID: model.selectedSessionID,
+            fileSessionID: model.chat.selectedSessionID,
             hasEarlier: currentPreview.next != nil,
-            isLoading: model.isLoadingPreviewPage,
+            isLoading: model.chat.isLoadingPreviewPage,
             isRunning: currentPreview.status == "running",
             loadEarlier: loadEarlierPage,
             header: { header }
@@ -534,15 +534,15 @@ struct PreviewTranscriptSheet: View {
     }
 
     private func loadEarlierPage() async {
-        guard let next = currentPreview.next, !model.isLoadingPreviewPage else { return }
+        guard let next = currentPreview.next, !model.chat.isLoadingPreviewPage else { return }
         await model.loadPreviewPageAndWait(next)
     }
 
     private var currentPreview: TranscriptPreview {
-        if model.presentedPreview?.id == preview.id, let presented = model.presentedPreview {
+        if model.chat.presentedPreview?.id == preview.id, let presented = model.chat.presentedPreview {
             return presented
         }
-        return model.previews.first(where: { $0.id == preview.id }) ?? preview
+        return model.chat.previews.first(where: { $0.id == preview.id }) ?? preview
     }
 
     private var agentName: String {
@@ -587,7 +587,7 @@ struct PreviewBlockView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: MobiusSpace.s) {
             ForEach(block.files) { file in
-                SessionFileCard(file: file, sessionID: model.selectedSessionID)
+                SessionFileCard(file: file, sessionID: model.chat.selectedSessionID)
             }
             if !block.text.isEmpty {
                 HStack(alignment: .top, spacing: MobiusSpace.s) {

@@ -9,13 +9,13 @@ struct ComposerView: View {
 
     var body: some View {
         VStack(spacing: MobiusSpace.s) {
-            ForEach(model.composerHeaderWidgets) { widget in
+            ForEach(model.chat.composerHeaderWidgets) { widget in
                 FrontendWidgetView(widget: widget)
             }
-            if let approval = model.pendingApproval {
+            if let approval = model.chat.pendingApproval {
                 ApprovalView(approval: approval)
             }
-            if let picker = model.pendingPicker {
+            if let picker = model.chat.pendingPicker {
                 FrontendPickerView(picker: picker)
             }
             ComposerStack(showBotSettings: showBotSettings)
@@ -34,7 +34,7 @@ private struct ComposerStack: View {
     var body: some View {
         VStack(spacing: MobiusSpace.xs) {
             ComposerActivityView(showBotSettings: showBotSettings)
-            if model.realtimeVoiceCall != nil {
+            if model.chat.realtimeVoiceCall != nil {
                 RealtimeVoiceComposer()
             } else {
                 ComposerSurface()
@@ -49,7 +49,7 @@ private struct RealtimeVoiceComposer: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        let voice = model.realtimeVoice
+        let voice = model.chat.realtimeVoice
         VStack(spacing: MobiusSpace.s) {
             AudioLevelEqualizer(
                 amplitude: sqrt(voice.audioLevels.displayLevel),
@@ -85,7 +85,7 @@ private struct RealtimeVoiceComposer: View {
                         .foregroundStyle(palette.muted)
                 }
                 Spacer(minLength: MobiusSpace.s)
-                Button("End voice chat", glyph: .stopFill) { model.stopRealtimeVoice() }
+                Button("End voice chat", glyph: .stopFill) { model.chat.stopRealtimeVoice() }
                     .buttonStyle(MobiusIconButtonStyle(bare: true))
             }
             .labelStyle(.iconOnly)
@@ -173,25 +173,26 @@ private struct ComposerSurface: View {
 
     var body: some View {
         @Bindable var model = model
+        @Bindable var chat = model.chat
         VStack(spacing: 0) {
             if !showsExpandedComposer {
-                if let reply = model.composerReply {
+                if let reply = model.chat.composerReply {
                     ReplyQuoteView(
                         reply: reply,
-                        open: { model.openMessageReply(reply) },
-                        dismiss: { model.composerReply = nil }
+                        open: { model.chat.openMessageReply(reply) },
+                        dismiss: { model.chat.composerReply = nil }
                     )
                     .padding(.horizontal, MobiusSpace.m)
                     .padding(.top, MobiusSpace.m)
                 }
-                if !model.composerAttachments.isEmpty {
+                if !model.chat.composerAttachments.isEmpty {
                     ComposerAttachmentsView()
                         .padding(.horizontal, MobiusSpace.m)
                         .padding(.top, MobiusSpace.m)
                 }
                 TextField(
                     "You can just do things",
-                    text: $model.composer,
+                    text: $chat.composer,
                     selection: $selection,
                     axis: .vertical
                 )
@@ -283,17 +284,17 @@ private struct ComposerSurface: View {
             guard !Task.isCancelled else { return }
             referenceSuggestions = result
         }
-        .onChange(of: model.composerFocusRequest) { _, _ in
+        .onChange(of: model.chat.composerFocusRequest) { _, _ in
             isComposerFocused = true
         }
-        .onChange(of: model.composerBlurRequest) { _, _ in
+        .onChange(of: model.chat.composerBlurRequest) { _, _ in
             isComposerFocused = false
         }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .background else { return }
             Task { await dictation.cancel() }
         }
-        .onChange(of: model.selectedSessionID) { _, _ in
+        .onChange(of: model.chat.selectedSessionID) { _, _ in
             Task { await dictation.cancel() }
         }
         .onChange(of: model.gateway.connectionState.isReady) { _, isReady in
@@ -307,7 +308,7 @@ private struct ComposerSurface: View {
                 as? UInt,
                   AVAudioSession.InterruptionType(rawValue: rawValue) == .began
             else { return }
-            model.stopRealtimeVoice()
+            model.chat.stopRealtimeVoice()
             Task { await dictation.cancel() }
         }
         .onDisappear {
@@ -327,7 +328,7 @@ private struct ComposerSurface: View {
 
     private var referenceSuggestionRequest: ReferenceSuggestionRequest {
         let isDisabled = dictation.isActive
-        let text = model.composer
+        let text = model.chat.composer
         let cursor: String.Index
         if let selection,
            case .selection(let range) = selection.indices,
@@ -341,18 +342,18 @@ private struct ComposerSurface: View {
         return ReferenceSuggestionRequest(
             text: text,
             cursorOffset: text.distance(from: text.startIndex, to: cursor),
-            capabilityRevision: model.contributionsRevision,
+            capabilityRevision: model.chat.contributionsRevision,
             workspaceFileRevision: model.workspaceFilesRevision,
             isDisabled: isDisabled
         )
     }
 
     private func complete(_ mounted: MountedReference, suggestions: ReferenceSuggestions) {
-        guard model.composer == suggestions.source else { return }
+        guard model.chat.composer == suggestions.source else { return }
         var text = suggestions.source
         let offset = text.distance(from: text.startIndex, to: suggestions.range.lowerBound)
         text.replaceSubrange(suggestions.range, with: mounted.replacement)
-        model.composer = text
+        model.chat.composer = text
         selection = TextSelection(insertionPoint: text.index(
             text.startIndex,
             offsetBy: offset + mounted.replacement.count
@@ -360,7 +361,7 @@ private struct ComposerSurface: View {
     }
 
     private func insertLineBreak() {
-        var text = model.composer
+        var text = model.chat.composer
         let range: Range<String.Index>
         if let selection, case .selection(let selectedRange) = selection.indices {
             range = selectedRange
@@ -369,7 +370,7 @@ private struct ComposerSurface: View {
         }
         let offset = text.distance(from: text.startIndex, to: range.lowerBound)
         text.replaceSubrange(range, with: "\n")
-        model.composer = text
+        model.chat.composer = text
         self.selection = TextSelection(
             insertionPoint: text.index(text.startIndex, offsetBy: offset + 1)
         )
@@ -389,25 +390,26 @@ private struct ExpandedComposerSheet: View {
 
     var body: some View {
         @Bindable var model = model
+        @Bindable var chat = model.chat
         VStack(spacing: 0) {
-            if let reply = model.composerReply {
+            if let reply = model.chat.composerReply {
                 ReplyQuoteView(
                     reply: reply,
                     open: {
                         dismiss()
-                        model.openMessageReply(reply)
+                        model.chat.openMessageReply(reply)
                     },
-                    dismiss: { model.composerReply = nil }
+                    dismiss: { model.chat.composerReply = nil }
                 )
                 .padding(.horizontal, MobiusSpace.m)
                 .padding(.top, MobiusSpace.m)
             }
-            if !model.composerAttachments.isEmpty {
+            if !model.chat.composerAttachments.isEmpty {
                 ComposerAttachmentsView()
                     .padding(.horizontal, MobiusSpace.m)
                     .padding(.top, MobiusSpace.m)
             }
-            TextEditor(text: $model.composer, selection: $selection)
+            TextEditor(text: $chat.composer, selection: $selection)
                 .scrollContentBackground(.hidden)
                 .scrollDismissesKeyboard(.interactively)
                 .focused($isComposerFocused)
@@ -448,10 +450,10 @@ private struct ExpandedComposerSheet: View {
         .padding(.top, MobiusSpace.xl)
         .padding(.bottom, MobiusSpace.m)
         .task { isComposerFocused = true }
-        .onChange(of: model.composerFocusRequest) { _, _ in
+        .onChange(of: model.chat.composerFocusRequest) { _, _ in
             isComposerFocused = true
         }
-        .onChange(of: model.composerBlurRequest) { _, _ in
+        .onChange(of: model.chat.composerBlurRequest) { _, _ in
             isComposerFocused = false
         }
         .mobiusSheet(detents: [.fraction(0.75)])
@@ -558,7 +560,7 @@ private struct ComposerActivityView: View {
                             .transition(.opacity)
                     }
                 } else {
-                    ForEach(model.composerFooterWidgets) { widget in
+                    ForEach(model.chat.composerFooterWidgets) { widget in
                         FrontendWidgetView(widget: widget)
                     }
                     if totals.added > 0 || totals.removed > 0 {
@@ -607,7 +609,7 @@ private struct ComposerActivityView: View {
     }
 
     private var showsBotChoices: Bool {
-        model.selectedSessionID == nil && model.pendingNewChatWorkspace != nil
+        model.chat.selectedSessionID == nil && model.chat.pendingNewChatWorkspace != nil
     }
 }
 
@@ -616,7 +618,7 @@ private struct BotChoiceBadge: View {
     let bot: BotRecord
 
     var body: some View {
-        let selected = model.pendingNewChatBotID == bot.id
+        let selected = model.chat.pendingNewChatBotID == bot.id
         Button {
             model.selectBotForNewChat(bot)
         } label: {
@@ -631,7 +633,7 @@ private struct BotChoiceBadge: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.mobiusPlain)
-        .disabled(model.sessionRequestID != nil)
+        .disabled(model.chat.sessionRequestID != nil)
         .accessibilityLabel(Text("Start with Bot \(bot.name)"))
         .accessibilityValue(selected ? Text("Selected") : Text("Not selected"))
         .accessibilityAddTraits(selected ? .isSelected : [])
@@ -666,7 +668,7 @@ private struct SessionStatsBadge: View {
     @State private var showsDetail = false
 
     var body: some View {
-        if model.selectedSessionID != nil {
+        if model.chat.selectedSessionID != nil {
             TimelineView(.periodic(from: .now, by: 1)) { timeline in
                 let elapsed = model.sessionElapsed(at: timeline.date)
                 Button { showsDetail = true } label: {
@@ -693,11 +695,11 @@ private struct SessionStatsBadge: View {
                     BadgePopover(localizedTitle: "Session") {
                         BadgeStat(
                             label: "Context",
-                            value: "\(model.contextFillPercent)% · \(model.contextTokens.formatted()) / \(model.contextLimitTokens?.formatted() ?? "—")"
+                            value: "\(model.contextFillPercent)% · \(model.chat.contextTokens.formatted()) / \(model.chat.contextLimitTokens?.formatted() ?? "—")"
                         )
                         BadgeStat(
                             label: "Compactions",
-                            value: model.sessionCompactionCount.formatted()
+                            value: model.chat.sessionCompactionCount.formatted()
                         )
                         BadgeStat(label: "Elapsed", value: formatDuration(elapsed))
                         BadgeStat(label: "Runs", value: model.sessionRunCount.formatted())
@@ -710,11 +712,11 @@ private struct SessionStatsBadge: View {
                         BadgeStat(
                             label: "Run tokens",
                             value: (
-                                model.runStats.usage.totalTokens
-                                    + (model.runStats.active?.usage.totalTokens ?? 0)
+                                model.chat.runStats.usage.totalTokens
+                                    + (model.chat.runStats.active?.usage.totalTokens ?? 0)
                             ).formatted()
                         )
-                        BadgeStat(label: "Cache hit", value: cacheHit(model.lastUsage))
+                        BadgeStat(label: "Cache hit", value: cacheHit(model.chat.lastUsage))
                     }
                 }
             }
@@ -785,7 +787,7 @@ private struct ComposerAttachmentsView: View {
             // Tiles are too tall to stack: a few files would push the text field off screen.
             ScrollView(.horizontal) {
                 HStack(spacing: MobiusSpace.s) {
-                    ForEach(model.composerAttachments) { attachment in
+                    ForEach(model.chat.composerAttachments) { attachment in
                         ComposerAttachmentRow(attachment: attachment)
                     }
                 }
@@ -803,7 +805,7 @@ private struct ComposerAttachmentRow: View {
     let attachment: ComposerAttachment
 
     var body: some View {
-        let thumbnail = model.fileThumbnail(for: attachment)
+        let thumbnail = model.chat.fileThumbnail(for: attachment)
         FileCard(
             name: attachment.name,
             detail: status,

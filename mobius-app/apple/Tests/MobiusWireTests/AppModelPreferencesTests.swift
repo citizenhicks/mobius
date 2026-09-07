@@ -225,8 +225,8 @@ extension AppModelTests {
             store: store,
             settingsDefaults: defaults
         )
-        let image = await AppModel.downsampledFileThumbnail(from: png)
-        model.cacheFileThumbnail(
+        let image = await ChatSessionModel.downsampledFileThumbnail(from: png)
+        model.chat.cacheFileThumbnail(
             try XCTUnwrap(image),
             for: .session(sessionID: "chat-1", fileID: "file-1")
         )
@@ -252,7 +252,25 @@ extension AppModelTests {
         XCTAssertEqual(store.loadAccounts().map(\.id), [account.id])
         XCTAssertEqual(defaults.string(forKey: "theme"), ThemePreference.light.rawValue)
         XCTAssertEqual(defaults.string(forKey: "language"), AppLanguage.french.rawValue)
-        XCTAssertTrue(model.fileThumbnails.isEmpty)
+        XCTAssertTrue(model.chat.fileThumbnails.isEmpty)
+    }
+
+    func testClearCachedDataMarksChatAndDrainsItsTranscriptIO() async throws {
+        let model = try model()
+        let gate = AsyncGate()
+        model.chat.transcriptIOTask = Task { await gate.wait() }
+
+        let clearing = Task { await model.clearCachedData() }
+        let clearingStarted = await eventually {
+            model.isClearingLocalData && model.chat.isClearingLocalData
+        }
+        XCTAssertTrue(clearingStarted)
+
+        await gate.open()
+        await clearing.value
+
+        XCTAssertFalse(model.isClearingLocalData)
+        XCTAssertFalse(model.chat.isClearingLocalData)
     }
 
     func testClearCachedDataReportsDeletionFailure() async throws {
@@ -548,7 +566,7 @@ extension AppModelTests {
         model.cloudSession = MobiusCloudSession(userID: UUID(), expiresAt: .distantFuture)
         model.notificationsEnabled = true
         model.bots = []
-        model.sessions = [session(
+        model.chat.sessions = [session(
             state: .running,
             turnID: "turn-1",
             executionStats: ExecutionStats(runCount: 0),
@@ -583,7 +601,7 @@ extension AppModelTests {
         model.cloudSession = MobiusCloudSession(userID: UUID(), expiresAt: .distantFuture)
         model.notificationsEnabled = true
         model.bots = []
-        model.sessions = [session(
+        model.chat.sessions = [session(
             state: .running,
             turnID: "turn-1",
             executionStats: ExecutionStats(runCount: 0)
@@ -612,7 +630,7 @@ extension AppModelTests {
     func testSessionToastAccessibilityIncludesBotWithoutDuplicatingItsName() throws {
         let model = try model()
         model.bots = [bot()]
-        model.sessions = [session(state: .idle)]
+        model.chat.sessions = [session(state: .idle)]
 
         XCTAssertEqual(
             model.accessibilityMessage(for: AppToast(
@@ -637,7 +655,7 @@ extension AppModelTests {
         model.cloudSession = MobiusCloudSession(userID: UUID(), expiresAt: .distantFuture)
         model.notificationsEnabled = true
         model.bots = []
-        model.sessions = [session(
+        model.chat.sessions = [session(
             state: .running,
             turnID: "turn-1",
             executionStats: ExecutionStats(runCount: 0)
@@ -669,7 +687,7 @@ extension AppModelTests {
         let model = try model()
         model.cloudSession = MobiusCloudSession(userID: UUID(), expiresAt: .distantFuture)
         model.notificationsEnabled = true
-        model.sessions = [session(
+        model.chat.sessions = [session(
             state: .running,
             turnID: "turn-1",
             executionStats: ExecutionStats(runCount: 0)
@@ -699,7 +717,7 @@ extension AppModelTests {
         let model = try model()
         model.cloudSession = MobiusCloudSession(userID: UUID(), expiresAt: .distantFuture)
         model.notificationsEnabled = true
-        model.sessions = [session(state: .running, turnID: "turn-1", title: "Deploy")]
+        model.chat.sessions = [session(state: .running, turnID: "turn-1", title: "Deploy")]
         model.applySessions([session(
             state: .awaitingApproval,
             turnID: "turn-1",
@@ -761,7 +779,7 @@ extension AppModelTests {
         model.openRemoteNotification(notification)
         XCTAssertEqual(model.pendingRemoteNotification, notification)
 
-        model.sessions = [session(state: .idle)]
+        model.chat.sessions = [session(state: .idle)]
         model.gateway.connectionState = .ready
         XCTAssertTrue(model.openPendingRemoteNotification())
         XCTAssertNil(model.pendingRemoteNotification)
@@ -930,8 +948,8 @@ extension AppModelTests {
         model.notificationsEnabled = true
         model.gateway.accounts = [cloudGateway]
         model.gateway.selectedAccountID = cloudGateway.id
-        model.sessions = [cachedSession]
-        model.transcript = [cachedTranscript]
+        model.chat.sessions = [cachedSession]
+        model.chat.transcript = [cachedTranscript]
         model.gateway.connectionState = .connecting
 
         model.openRemoteNotification(.subscriptionExpired(eventID: "subscription-expired-1"))
@@ -943,9 +961,9 @@ extension AppModelTests {
         )
         XCTAssertTrue(model.gateway.automaticReconnectBlocked)
         XCTAssertNil(model.pendingRemoteNotification)
-        XCTAssertEqual(model.sessions, [cachedSession])
-        XCTAssertEqual(model.transcript.map(\.id), [cachedTranscript.id])
-        XCTAssertEqual(model.transcript.map(\.text), [cachedTranscript.text])
+        XCTAssertEqual(model.chat.sessions, [cachedSession])
+        XCTAssertEqual(model.chat.transcript.map(\.id), [cachedTranscript.id])
+        XCTAssertEqual(model.chat.transcript.map(\.text), [cachedTranscript.text])
     }
 
     func testSubscriptionExpiredRemoteNotificationPayload() {
@@ -1154,7 +1172,7 @@ extension AppModelTests {
             await recorder.record(request)
         })
         model.gateway.connectionState = .ready
-        model.selectedSessionID = "chat-1"
+        model.chat.selectedSessionID = "chat-1"
         model.gitStatus = GitStatus(currentBranch: "main", branches: ["feature", "main"])
 
         model.switchGitBranch(to: "unknown")

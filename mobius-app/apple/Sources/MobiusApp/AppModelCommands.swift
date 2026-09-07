@@ -56,8 +56,8 @@ extension AppModel {
             if let sessionID = catalog.lastSessionID {
                 destination = .chats
                 navigationPath = [.chat(.session(sessionID))]
-                presentCachedSession(sessionID, transcript: cachedTranscript)
-                sessionToRestoreID = sessionID
+                chat.presentCachedSession(sessionID, transcript: cachedTranscript)
+                chat.sessionToRestoreID = sessionID
                 cacheChatCatalog(lastSessionID: sessionID)
             }
         }
@@ -147,16 +147,16 @@ extension AppModel {
         }
         guard canCreateSession else { return }
         if newVoiceChatIntent == .selectingWorkspace { newVoiceChatIntent = .selectingBot }
-        changeComposerDraftOwner(to: nil)
-        discardComposerAttachments()
-        discardFilePresentation()
-        selectedSessionID = nil
-        sessionToRestoreID = nil
-        sessionOpenCursor = nil
-        pendingNewChatWorkspace = path
-        pendingNewChatBotID = nil
+        chat.changeComposerDraftOwner(to: nil)
+        chat.discardComposerAttachments()
+        resetRootSessionState()
+        chat.selectedSessionID = nil
+        chat.sessionToRestoreID = nil
+        chat.sessionOpenCursor = nil
+        chat.pendingNewChatWorkspace = path
+        chat.pendingNewChatBotID = nil
         workspaceError = nil
-        resetSessionState()
+        chat.resetSessionState()
         destination = .chats
         navigationPath = [.chat(.new)]
         showsWorkspaceBrowser = false
@@ -167,10 +167,10 @@ extension AppModel {
     func selectBotForNewChat(_ bot: BotRecord) {
         guard canCreateSession,
               bots.contains(where: { $0.id == bot.id }),
-              pendingNewChatWorkspace != nil,
+              chat.pendingNewChatWorkspace != nil,
               case .chat(.new)? = navigationPath.last
         else { return }
-        pendingNewChatBotID = bot.id
+        chat.pendingNewChatBotID = bot.id
         workspaceError = nil
         createPendingVoiceChat()
     }
@@ -178,21 +178,21 @@ extension AppModel {
     @discardableResult
     func createPendingSession() -> String? {
         guard canCreateSession,
-              let path = pendingNewChatWorkspace,
-              let botID = pendingNewChatBotID,
+              let path = chat.pendingNewChatWorkspace,
+              let botID = chat.pendingNewChatBotID,
               bots.contains(where: { $0.id == botID }),
               case .chat(.new)? = navigationPath.last
         else { return nil }
         let id = requestID("create")
-        sessionRequestID = id
+        chat.sessionRequestID = id
         workspaceError = nil
         isChangingWorkspace = true
         gateway.connectionState = .loading
         gateway.transmit(.createSession(requestID: id, workspace: path, botID: botID)) {
             [weak self] message in
-            guard let self, self.sessionRequestID == id else { return }
-            self.restoreDraft(id: id)
-            self.sessionRequestID = nil
+            guard let self, self.chat.sessionRequestID == id else { return }
+            self.chat.restoreDraft(id: id)
+            self.chat.sessionRequestID = nil
             self.isChangingWorkspace = false
             self.gateway.connectionState = .ready
             self.workspaceError = message
@@ -254,11 +254,10 @@ extension AppModel {
     func removeGateway(_ account: GatewayAccount) async -> Bool {
         let wasSelected = gateway.prepareAccountRemoval(account)
         if wasSelected {
-            discardComposerDraft()
+            chat.quiesce()
             resetGatewayDependentState(preservingDrafts: false)
         }
-        await composerDraftIOTask?.value
-        await transcriptIOTask?.value
+        await chat.drainIO()
         var removalError: Error?
         do {
             try await store.remove(account)
@@ -285,7 +284,7 @@ extension AppModel {
     func openNewSession() {
         guard canCreateSession else { return }
         cancelVoiceChatIntent()
-        stopRealtimeVoice()
+        chat.stopRealtimeVoice()
         destination = .chats
         navigationPath = []
         openWorkspaceBrowser()
@@ -301,29 +300,30 @@ extension AppModel {
     }
 
     func openChat(_ sessionID: String) {
-        guard canBrowseSessions || sessionID == selectedSessionID else { return }
-        chatPresentationRevision &+= 1
+        guard canBrowseSessions || sessionID == chat.selectedSessionID else { return }
+        cancelVoiceChatIntent()
+        chat.chatPresentationRevision &+= 1
         destination = .chats
-        openSession(sessionID)
+        chat.openSession(sessionID)
         navigationPath = [.chat(.session(sessionID))]
         cacheChatCatalog(lastSessionID: sessionID)
     }
 
     func openBotChats(_ botID: String) {
         guard bots.contains(where: { $0.id == botID }) else { return }
-        chatBotFilterIDs = [botID]
+        chat.chatBotFilterIDs = [botID]
         destination = .chats
         navigationPath = []
     }
 
     func openBotSessions(_ botID: String) {
         guard bots.contains(where: { $0.id == botID }) else { return }
-        if botSessionsBotID != botID {
-            botSessionsRequestID = nil
-            botSessions = []
-            isLoadingBotSessions = false
+        if chat.botSessionsBotID != botID {
+            chat.botSessionsRequestID = nil
+            chat.botSessions = []
+            chat.isLoadingBotSessions = false
         }
-        botSessionsBotID = botID
+        chat.botSessionsBotID = botID
         destination = .bots
         if navigationPath.last != .botSessions(botID) {
             navigationPath.append(.botSessions(botID))
@@ -333,49 +333,50 @@ extension AppModel {
 
     func refreshBotSessions(_ botID: String) {
         guard gateway.connectionState.isReady,
-              botSessionsRequestID == nil,
+              chat.botSessionsRequestID == nil,
               bots.contains(where: { $0.id == botID })
         else { return }
-        if botSessionsBotID != botID { botSessions = [] }
-        botSessionsBotID = botID
+        if chat.botSessionsBotID != botID { chat.botSessions = [] }
+        chat.botSessionsBotID = botID
         let id = requestID("bot-sessions")
-        botSessionsRequestID = id
-        isLoadingBotSessions = true
+        chat.botSessionsRequestID = id
+        chat.isLoadingBotSessions = true
         gateway.transmit(.listBotSessions(requestID: id, botID: botID)) { [weak self] _ in
-            guard self?.botSessionsRequestID == id else { return }
-            self?.botSessionsRequestID = nil
-            self?.isLoadingBotSessions = false
+            guard self?.chat.botSessionsRequestID == id else { return }
+            self?.chat.botSessionsRequestID = nil
+            self?.chat.isLoadingBotSessions = false
         }
     }
 
     func openBotSession(_ sessionID: String) {
-        guard canBrowseSessions || sessionID == selectedSessionID,
-              botSessions.contains(where: { $0.sessionId == sessionID })
+        guard canBrowseSessions || sessionID == chat.selectedSessionID,
+              chat.botSessions.contains(where: { $0.sessionId == sessionID })
         else { return }
-        chatPresentationRevision &+= 1
-        openSession(sessionID)
+        cancelVoiceChatIntent()
+        chat.chatPresentationRevision &+= 1
+        chat.openSession(sessionID)
         navigationPath.append(.chat(.session(sessionID)))
     }
 
     func resumeBotSession(botID: String, sessionID: String) {
         guard bots.contains(where: { $0.id == botID }) else { return }
-        if let visible = sessions.first(where: { $0.sessionId == sessionID }) {
+        if let visible = chat.sessions.first(where: { $0.sessionId == sessionID }) {
             guard visible.sessionContext.botId == botID else {
                 showToast("The source conversation belongs to another Bot.", tone: .error)
                 return
             }
-            pendingBotSessionResume = nil
+            chat.pendingBotSessionResume = nil
             openChat(sessionID)
             return
         }
         guard canOpenSession else { return }
-        pendingBotSessionResume = (botID, sessionID)
-        if botSessionsBotID != botID {
-            botSessionsRequestID = nil
-            botSessions = []
-            isLoadingBotSessions = false
+        chat.pendingBotSessionResume = (botID, sessionID)
+        if chat.botSessionsBotID != botID {
+            chat.botSessionsRequestID = nil
+            chat.botSessions = []
+            chat.isLoadingBotSessions = false
         }
-        botSessionsBotID = botID
+        chat.botSessionsBotID = botID
         refreshBotSessions(botID)
     }
 
@@ -415,267 +416,35 @@ extension AppModel {
         return availableBotsForSwarm().count >= 2
     }
 
-    func openSession(_ sessionID: String) {
-        guard canBrowseSessions || sessionID == selectedSessionID else { return }
-        guard gateway.connectionState.isReady || sessionID == selectedSessionID
-            || sessions.contains(where: { $0.sessionId == sessionID })
-            || botSessions.contains(where: { $0.sessionId == sessionID })
-        else { return }
-        cancelVoiceChatIntent()
-        if selectedSessionID != sessionID { stopRealtimeVoice() }
-        markSessionRead(sessionID)
-        guard sessionID != selectedSessionID else { return }
-        flushStreamDeltas()
-        cacheSelectedTranscript()
-        let generation = UUID()
-        transcriptLoadGeneration = generation
-        let accountID = gateway.selectedAccountID
-        let wasReady = gateway.connectionState.isReady
-        presentCachedSession(sessionID, transcript: nil)
-        sessionToRestoreID = sessionID
-        sessionOpeningID = sessionID
-        let openRequestID = wasReady ? requestID("open") : nil
-        sessionRequestID = openRequestID
-        if wasReady { gateway.connectionState = .loading }
-        let previous = transcriptIOTask
-        transcriptIOTask = Task { [weak self, store] in
-            await previous?.value
-            let cached: CachedTranscript? = if let accountID {
-                await store.loadTranscript(accountID: accountID, sessionID: sessionID)
-            } else {
-                nil
-            }
-            guard let self,
-                  generation == transcriptLoadGeneration,
-                  accountID == gateway.selectedAccountID,
-                  sessionOpeningID == sessionID,
-                  sessionRequestID == openRequestID,
-                  replayRequestID == nil
-            else { return }
-            if wasReady {
-                requestSessionOpen(
-                    sessionID,
-                    lastSequence: cached?.sequence,
-                    cachedTranscript: cached,
-                    presentedTranscript: cached?.transcript,
-                    requestID: openRequestID
-                )
-            } else {
-                presentCachedSession(sessionID, transcript: cached)
-                sessionToRestoreID = sessionID
-                sessionRequestID = nil
-                sessionOpeningID = nil
-            }
-        }
-    }
-
-    private func presentCachedSession(_ sessionID: String, transcript cached: CachedTranscript?) {
-        if selectedSessionID != sessionID {
-            changeComposerDraftOwner(to: gateway.selectedAccountID.map {
-                ComposerDraftOwner(accountID: $0, sessionID: sessionID)
-            })
-            resetSessionState()
-        }
-        selectedSessionID = sessionID
-        latestSequence = cached?.sequence
-        nextHistoryBeforeSequence = cached?.nextBeforeSequence
-        transcript = cached?.transcript ?? []
-        currentUsage = cached?.currentUsage ?? TokenUsage()
-        lastUsage = cached?.lastUsage ?? TokenUsage()
-        updateContextTokens()
-    }
-
-    func requestEarlierHistory() {
-        guard canLoadEarlierHistory else { return }
-        let window = transcriptWindow
-        if window.hasEarlierEntries {
-            transcriptWindowAnchor = .visibleTurns(
-                window.turnCount + transcriptTurnsPerPage
-            )
-            _ = transcriptWindow
-            historyLoadCompletionRevision &+= 1
-            historyLoadSuccessRevision &+= 1
-            return
-        }
-        guard let sessionID = selectedSessionID,
-              let beforeSequence = nextHistoryBeforeSequence
-        else { return }
-        let id = requestID("history")
-        historyRequestID = id
-        isLoadingEarlierHistory = true
-        transcriptWindowAnchor = .visibleTurns(window.turnCount)
-        transcriptWindowCache = window
-        gateway.transmit(.getSessionHistory(
-            requestID: id,
-            sessionID: sessionID,
-            beforeSequence: beforeSequence
-        )) { [weak self] _ in
-            guard self?.historyRequestID == id else { return }
-            self?.finishHistoryLoad()
-        }
-    }
-
-    func loadEarlierHistory() async {
-        guard !Task.isCancelled, historyRequestID == nil else { return }
-        let initialRevision = historyLoadCompletionRevision
-        requestEarlierHistory()
-        guard historyLoadCompletionRevision == initialRevision,
-              historyRequestID != nil
-        else { return }
-        for await revision in Observations({ self.historyLoadCompletionRevision }) {
-            if revision != initialRevision { return }
-        }
-    }
-
-    func finishHistoryLoad(succeeded: Bool = false) {
-        let wasLoading = historyRequestID != nil || isLoadingEarlierHistory
-        historyRequestID = nil
-        isLoadingEarlierHistory = false
-        guard wasLoading else { return }
-        historyLoadCompletionRevision &+= 1
-        if succeeded {
-            historyLoadSuccessRevision &+= 1
-        } else {
-            historyLoadFailureRevision &+= 1
-        }
-    }
-
-    func restoreSession(_ sessionID: String) {
-        flushStreamDeltas()
-        guard sessionID == selectedSessionID,
-              let sequence = latestSequence
-        else {
-            requestSessionOpen(sessionID, lastSequence: nil)
-            return
-        }
-        let base = CachedTranscript(
-            sequence: sequence,
-            nextBeforeSequence: nextHistoryBeforeSequence,
-            transcript: transcript,
-            currentUsage: currentUsage,
-            lastUsage: lastUsage
-        )
-        let presentation = CachedTranscript(
-            sequence: sequence,
-            nextBeforeSequence: nextHistoryBeforeSequence,
-            transcript: displayedTranscript,
-            currentUsage: currentUsage,
-            lastUsage: lastUsage
-        ).transcript
-        requestSessionOpen(
-            sessionID,
-            lastSequence: sequence,
-            cachedTranscript: base,
-            presentedTranscript: presentation
-        )
-    }
-
-    func requestSessionOpen(
-        _ sessionID: String,
-        lastSequence: UInt64?,
-        cachedTranscript: CachedTranscript? = nil,
-        presentedTranscript: [TranscriptEntry]? = nil,
-        requestID: String? = nil
-    ) {
-        transcriptLoadGeneration = UUID()
-        replayCompletionSubmissionIDs.removeAll(keepingCapacity: true)
-        replayUserMessages.removeAll(keepingCapacity: true)
-        completedComposerEditReplay = false
-        if sessionID != selectedSessionID {
-            transcriptWindowAnchor = .tail
-            discardComposerAttachments()
-            discardFilePresentation()
-            cancelSessionFileThumbnailDownloads()
-        }
-        sessionToRestoreID = nil
-        sessionOpeningID = sessionID
-        sessionOpenCursor = lastSequence
-        pendingCachedTranscript = cachedTranscript
-        pendingPresentedTranscript = presentedTranscript
-        let id = requestID ?? self.requestID("open")
-        sessionRequestID = id
-        gateway.connectionState = .loading
-        gateway.transmit(.openSession(
-            requestID: id,
-            sessionID: sessionID,
-            lastSequence: lastSequence
-        )) { [weak self] _ in
-            guard self?.sessionRequestID == id else { return }
-            self?.sessionRequestID = nil
-            self?.sessionOpeningID = nil
-            self?.sessionOpenCursor = nil
-            self?.pendingCachedTranscript = nil
-            self?.pendingPresentedTranscript = nil
-            self?.gateway.connectionState = .ready
-        }
-    }
-
     // Renaming, pinning and deleting address a session by id, so they work on any chat in the
     // catalogue rather than only the open one.
     @discardableResult
     func renameSession(_ session: SessionRecord, title: String) -> String? {
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { return nil }
-        guard sessionMutationRequestID == nil else {
+        guard chat.sessionMutationRequestID == nil else {
             showToast("Another chat update is finishing.", tone: .info)
             return nil
         }
-        cancelChatTitle(session.sessionId)
-        return requestSessionRename(sessionID: session.sessionId, title: title)
-    }
-
-    @discardableResult
-    func requestSessionRename(
-        sessionID: String,
-        title: String,
-        generatedTitleSessionID: String? = nil
-    ) -> String? {
-        guard sessionMutationRequestID == nil else { return nil }
-        let id = requestID("session-rename")
-        sessionMutationRequestID = id
-        gateway.transmit(.renameSession(
-            requestID: id,
-            sessionID: sessionID,
-            title: title
-        )) { [weak self] _ in
-            guard let self else { return }
-            if self.sessionMutationRequestID == id { self.sessionMutationRequestID = nil }
-            if let generatedTitleSessionID,
-               self.pendingChatTitles[generatedTitleSessionID]?.renameRequestID == id {
-                self.cancelChatTitle(generatedTitleSessionID)
-            }
-        }
-        return id
-    }
-
-    func setSessionPinned(_ session: SessionRecord, pinned: Bool) {
-        guard sessionMutationRequestID == nil else { return }
-        let id = requestID("session-pin")
-        sessionMutationRequestID = id
-        gateway.transmit(.setSessionPinned(
-            requestID: id,
-            sessionID: session.sessionId,
-            pinned: pinned
-        )) { [weak self] _ in
-            if self?.sessionMutationRequestID == id { self?.sessionMutationRequestID = nil }
-        }
+        chat.cancelChatTitle(session.sessionId)
+        return chat.requestSessionRename(sessionID: session.sessionId, title: title)
     }
 
     func attachFolder(_ selectedPath: String) {
         let path = selectedPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canModifySelectedSession,
-              let sessionID = selectedSessionID,
-              sessionMutationRequestID == nil,
+              let sessionID = chat.selectedSessionID,
+              chat.sessionMutationRequestID == nil,
               !path.isEmpty
         else { return }
         let id = requestID("session-attach-folder")
-        sessionMutationRequestID = id
+        chat.sessionMutationRequestID = id
         gateway.transmit(.attachSessionFolder(
             requestID: id,
             sessionID: sessionID,
             folder: path
         )) { [weak self] _ in
-            if self?.sessionMutationRequestID == id { self?.sessionMutationRequestID = nil }
+            if self?.chat.sessionMutationRequestID == id { self?.chat.sessionMutationRequestID = nil }
         }
     }
 
@@ -684,34 +453,34 @@ extension AppModel {
     }
 
     func deleteSessions(_ sessions: [SessionRecord]) {
-        guard sessionMutationRequestID == nil else { return }
+        guard chat.sessionMutationRequestID == nil else { return }
         var seen = Set<String>()
         let sessionIDs = sessions.map(\.sessionId).filter { seen.insert($0).inserted }
         guard !sessionIDs.isEmpty else { return }
-        let deletesSelectedSession = selectedSessionID.map(sessionIDs.contains) == true
+        let deletesSelectedSession = chat.selectedSessionID.map(sessionIDs.contains) == true
         let deletedPresentedSessionID = presentedChatSessionID.flatMap { presented in
             sessionIDs.contains(presented) ? presented : nil
         }
         if let accountID = gateway.selectedAccountID {
-            enqueueTranscriptIO { [store] in
+            chat.enqueueTranscriptIO { [store] in
                 for sessionID in sessionIDs {
                     await store.removeTranscript(accountID: accountID, sessionID: sessionID)
                 }
             }
         }
         let id = requestID("session-delete")
-        sessionMutationRequestID = id
-        pendingDeletedSessionIDs = sessionIDs
-        pendingDeletedPresentedSessionID = deletedPresentedSessionID
+        chat.sessionMutationRequestID = id
+        chat.pendingDeletedSessionIDs = sessionIDs
+        chat.pendingDeletedPresentedSessionID = deletedPresentedSessionID
         gateway.transmit(.deleteSessions(
             requestID: id,
             sessionIDs: sessionIDs
         )) { [weak self] _ in
-            guard let self, self.sessionMutationRequestID == id else { return }
-            let sessionID = self.pendingDeletedPresentedSessionID
-            self.sessionMutationRequestID = nil
-            self.pendingDeletedSessionIDs = []
-            self.pendingDeletedPresentedSessionID = nil
+            guard let self, self.chat.sessionMutationRequestID == id else { return }
+            let sessionID = self.chat.pendingDeletedPresentedSessionID
+            self.chat.sessionMutationRequestID = nil
+            self.chat.pendingDeletedSessionIDs = []
+            self.chat.pendingDeletedPresentedSessionID = nil
             self.restoreDeletedPresentedSession(sessionID)
         }
         if deletesSelectedSession { clearSelectedSession() }
@@ -723,7 +492,7 @@ extension AppModel {
               navigationPath.isEmpty
         else { return }
         navigationPath = [.chat(.session(sessionID))]
-        restoreSession(sessionID)
+        chat.restoreSession(sessionID)
     }
 
     func createSwarm(title rawTitle: String, leaderBotID: String, memberBotIDs: Set<String>) {
@@ -833,7 +602,7 @@ extension AppModel {
     }
 
     func refreshGitDiff(_ scope: GitDiffScope = .unstaged) {
-        guard gateway.connectionState.isReady, let sessionID = selectedSessionID else { return }
+        guard gateway.connectionState.isReady, let sessionID = chat.selectedSessionID else { return }
         let id = requestID("git-diff")
         gitDiffs[scope, default: GitDiffState()].requestID = id
         gateway.transmit(.getGitDiff(requestID: id, sessionID: sessionID, scope: scope)) { [weak self] _ in
@@ -856,7 +625,7 @@ extension AppModel {
 
     func refreshWorkspaceFiles() {
         guard gateway.connectionState.isReady,
-              let sessionID = selectedSessionID
+              let sessionID = chat.selectedSessionID
         else { return }
         let id = requestID("workspace-files")
         workspaceFilesRequestID = id
@@ -875,7 +644,7 @@ extension AppModel {
 
     func switchGitBranch(to branch: String) {
         guard canModifySelectedSession,
-              let sessionID = selectedSessionID,
+              let sessionID = chat.selectedSessionID,
               let gitStatus,
               branch != gitStatus.currentBranch,
               gitStatus.branches.contains(branch)
@@ -889,7 +658,7 @@ extension AppModel {
 
     func importAttachments(_ urls: [URL]) async {
         guard canImportAttachments else { return }
-        let available = max(0, attachmentReferenceLimit - composerAttachments.count)
+        let available = max(0, attachmentReferenceLimit - chat.composerAttachments.count)
         let selectedURLs = Array(urls.prefix(available))
         if urls.count > selectedURLs.count {
             showToast(
@@ -910,7 +679,7 @@ extension AppModel {
     @discardableResult
     func reserveComposerAttachment(named name: String) -> UUID? {
         guard canImportAttachments else { return nil }
-        guard composerAttachments.count < attachmentReferenceLimit else {
+        guard chat.composerAttachments.count < attachmentReferenceLimit else {
             showToast(
                 "You can attach up to \(attachmentReferenceLimit) files to a message.",
                 tone: .warning
@@ -918,7 +687,7 @@ extension AppModel {
             return nil
         }
         let id = UUID()
-        composerAttachments.append(ComposerAttachment(
+        chat.composerAttachments.append(ComposerAttachment(
             id: id,
             name: name,
             size: 0,
@@ -929,23 +698,23 @@ extension AppModel {
     }
 
     func completeComposerAttachmentImport(_ url: URL, reservedID: UUID) async {
-        guard composerAttachments.contains(where: {
+        guard chat.composerAttachments.contains(where: {
             $0.id == reservedID && $0.state == .preparing
         }) else { return }
         do {
-            let imported = try await Self.loadImportedAttachment(
+            let imported = try await ChatSessionModel.loadImportedAttachment(
                 url,
                 maximumBytes: attachmentFileByteLimit
             )
             guard canImportAttachments,
-                  let index = composerAttachments.firstIndex(where: {
+                  let index = chat.composerAttachments.firstIndex(where: {
                       $0.id == reservedID && $0.state == .preparing
                   })
             else {
                 cancelComposerAttachmentImport(reservedID)
                 return
             }
-            let currentBytes = composerAttachments.reduce(Int64(0)) { total, attachment in
+            let currentBytes = chat.composerAttachments.reduce(Int64(0)) { total, attachment in
                 let (sum, overflow) = total.addingReportingOverflow(attachment.size)
                 return overflow || attachment.size < 0 ? .max : sum
             }
@@ -958,15 +727,15 @@ extension AppModel {
                 )
                 return
             }
-            sessionFileData[reservedID] = imported.data
+            chat.sessionFileData[reservedID] = imported.data
             if let thumbnail = imported.thumbnail {
-                cacheFileThumbnail(thumbnail, for: .composer(reservedID))
+                chat.cacheFileThumbnail(thumbnail, for: .composer(reservedID))
             }
-            composerAttachments[index].name = imported.name
-            composerAttachments[index].size = Int64(imported.data.count)
-            composerAttachments[index].mediaType = imported.mediaType
-            composerAttachments[index].state = .queued
-            startNextSessionFileUpload()
+            chat.composerAttachments[index].name = imported.name
+            chat.composerAttachments[index].size = Int64(imported.data.count)
+            chat.composerAttachments[index].mediaType = imported.mediaType
+            chat.composerAttachments[index].state = .queued
+            chat.startNextSessionFileUpload()
         } catch {
             guard cancelComposerAttachmentImport(reservedID) else { return }
             if let error = error as? AttachmentImportError {
@@ -979,41 +748,29 @@ extension AppModel {
 
     @discardableResult
     func cancelComposerAttachmentImport(_ id: UUID) -> Bool {
-        guard let index = composerAttachments.firstIndex(where: {
+        guard let index = chat.composerAttachments.firstIndex(where: {
             $0.id == id && $0.state == .preparing
         }) else { return false }
-        composerAttachments.remove(at: index)
+        chat.composerAttachments.remove(at: index)
         return true
     }
 
     func removeComposerAttachment(_ id: UUID) {
-        guard let attachment = composerAttachments.first(where: { $0.id == id }) else { return }
-        discardComposerAttachment(attachment)
-        startNextSessionFileUpload()
-        if pendingNewChatBotID != nil, pendingDrafts.count == 1 {
-            submitPendingNewChatDraft(requestID: pendingDrafts.keys.first)
+        guard let attachment = chat.composerAttachments.first(where: { $0.id == id }) else { return }
+        chat.discardComposerAttachment(attachment)
+        chat.startNextSessionFileUpload()
+        if chat.pendingNewChatBotID != nil, chat.pendingDrafts.count == 1 {
+            submitPendingNewChatDraft(requestID: chat.pendingDrafts.keys.first)
         }
     }
 
     func retryComposerAttachment(_ id: UUID) {
-        guard sessionFileData[id] != nil,
-              let index = composerAttachments.firstIndex(where: { $0.id == id }),
-              case .failed = composerAttachments[index].state
+        guard chat.sessionFileData[id] != nil,
+              let index = chat.composerAttachments.firstIndex(where: { $0.id == id }),
+              case .failed = chat.composerAttachments[index].state
         else { return }
-        composerAttachments[index].state = .queued
-        startNextSessionFileUpload()
-    }
-
-    func refreshSessionFiles() {
-        guard gateway.connectionState.isReady, let sessionID = selectedSessionID else { return }
-        let id = requestID("session-files")
-        sessionFilesRequestID = id
-        isLoadingSessionFiles = true
-        gateway.transmit(.listSessionFiles(requestID: id, sessionID: sessionID)) { [weak self] _ in
-            guard self?.sessionFilesRequestID == id else { return }
-            self?.sessionFilesRequestID = nil
-            self?.isLoadingSessionFiles = false
-        }
+        chat.composerAttachments[index].state = .queued
+        chat.startNextSessionFileUpload()
     }
 
     func previewSessionFile(_ file: SessionFileReference, sessionID: String?) {
@@ -1039,7 +796,7 @@ extension AppModel {
         let id = requestID("session-file-read")
         let generation = UUID()
         filePresentationGeneration = generation
-        sessionFileDownload = SessionFileDownload(
+        chat.sessionFileDownload = SessionFileDownload(
             generation: generation,
             file: file,
             sessionID: sessionID,
@@ -1055,8 +812,8 @@ extension AppModel {
             offset: 0,
             maxBytes: 256 * 1024
         )) { [weak self] message in
-            guard self?.sessionFileDownload?.requestID == id else { return }
-            self?.sessionFileDownload = nil
+            guard self?.chat.sessionFileDownload?.requestID == id else { return }
+            self?.chat.sessionFileDownload = nil
             self?.isLoadingFilePresentation = false
             self?.showToast(verbatim: message, tone: .error)
         }
@@ -1080,7 +837,7 @@ extension AppModel {
     }
 
     func previewWorkspaceFile(_ file: WorkspaceFileRecord) {
-        guard let sessionID = selectedSessionID else { return }
+        guard let sessionID = chat.selectedSessionID else { return }
         guard file.size <= UInt64(maximumPresentedFileBytes) else {
             showToast("Quick Look previews are limited to 50 MiB.", tone: .warning)
             return
@@ -1113,7 +870,7 @@ extension AppModel {
     }
 
     func createWorkspaceFile() {
-        guard canOpenSession, let sessionID = selectedSessionID else { return }
+        guard canOpenSession, let sessionID = chat.selectedSessionID else { return }
         discardFilePresentation()
         returnsToFilesAfterFilePresentation = showsInspector
         revealFilePresentation()
@@ -1130,7 +887,7 @@ extension AppModel {
 
     func saveWorkspaceFile(sessionID: String, path: String, content: String) {
         guard canModifySelectedSession,
-              selectedSessionID == sessionID,
+              chat.selectedSessionID == sessionID,
               workspaceFileWriteRequestID == nil,
               path.utf8.count <= 4_096,
               !path.isEmpty,
@@ -1174,7 +931,7 @@ extension AppModel {
 
     func discardFilePresentation(preservingWorkspaceTextDraft: Bool = false) {
         filePresentationGeneration = UUID()
-        sessionFileDownload = nil
+        chat.sessionFileDownload = nil
         workspaceFilePreviewDownload = nil
         isLoadingFilePresentation = false
         if let previewTemporaryDirectory {
@@ -1204,14 +961,14 @@ extension AppModel {
     @discardableResult
     func sendMessage(delivery requestedDelivery: ActiveMessageDelivery? = nil) -> Bool {
         guard gateway.connectionState.isReady,
-              sessionRequestID == nil
+              chat.sessionRequestID == nil
         else { return false }
-        let text = composer.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = chat.composer.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = uploadedComposerAttachments
-        let reply = composerReply
-        guard composerAttachments.count <= attachmentReferenceLimit else { return false }
-        guard !text.isEmpty || !composerAttachments.isEmpty else { return false }
-        guard composerAttachments.isEmpty || canSubmitAttachments else {
+        let reply = chat.composerReply
+        guard chat.composerAttachments.count <= attachmentReferenceLimit else { return false }
+        guard !text.isEmpty || !chat.composerAttachments.isEmpty else { return false }
+        guard chat.composerAttachments.isEmpty || canSubmitAttachments else {
             showToast(attachmentSubmissionUnavailableMessage, tone: .warning)
             return false
         }
@@ -1220,120 +977,63 @@ extension AppModel {
             showToast("Messages are limited to 1 MiB.", tone: .error)
             return false
         }
-        if pendingWidgetEdit == nil, text.hasPrefix("/") {
+        if chat.pendingWidgetEdit == nil, text.hasPrefix("/") {
             return sendComposerCommand(text)
         }
-        if activeTurnID != nil, !attachments.isEmpty {
+        if chat.activeTurnID != nil, !attachments.isEmpty {
             showToast("Attachments can be sent with a new turn.", tone: .warning)
             return false
         }
-        if selectedSessionID == nil {
+        if chat.selectedSessionID == nil {
             guard let requestID = createPendingSession() else { return false }
-            dismissComposerFocus()
-            pendingDrafts[requestID] = PendingComposerDraft(
+            chat.dismissComposerFocus()
+            chat.pendingDrafts[requestID] = PendingComposerDraft(
                 text: text,
                 attachments: attachments,
                 reply: reply
             )
-            composerDraftSaveTask?.cancel()
-            composerDraftSaveTask = nil
-            suppressesComposerDraftSave = true
-            composer = ""
-            suppressesComposerDraftSave = false
-            composerReply = nil
+            chat.composerDraftSaveTask?.cancel()
+            chat.composerDraftSaveTask = nil
+            chat.suppressesComposerDraftSave = true
+            chat.composer = ""
+            chat.suppressesComposerDraftSave = false
+            chat.composerReply = nil
             return true
         }
         guard !composerHasUnfinishedAttachments else {
             showToast("Wait for attachments to finish uploading.", tone: .warning)
             return false
         }
-        guard let sessionID = selectedSessionID else { return false }
-        let id = requestID("input")
-        let targetTurnID = activeTurnID
-        let delivery = targetTurnID == nil ? nil : requestedDelivery
-        let operation = AgentOperation.message(MessageSubmission(
-            author: .user,
+        return chat.submitExistingSessionMessage(
             text: text,
             attachments: attachments,
             reply: reply,
-            requestedDelivery: delivery,
-            targetTurnId: targetTurnID
-        ))
-        // Past every guard, so a rejected send leaves the keyboard up with the text still
-        // there to fix. The send button and the return key both land here, which is why this
-        // belongs on the model rather than in the composer's own submit path.
-        dismissComposerFocus()
-        if pendingWidgetEdit?.recovery.phase == .editing {
-            submitComposerEdit(
-                sessionID: sessionID,
-                requestID: id,
-                text: text,
-                operation: operation
-            )
-            return true
-        }
-        let stashedText = stashedComposerDraft
-        if targetTurnID == nil {
-            startChatTitle(prompt: text, submissionID: id, sessionID: sessionID)
-        }
-        pendingDrafts[id] = PendingComposerDraft(
-            text: text,
-            attachments: attachments,
-            reply: reply
+            requestedDelivery: requestedDelivery
         )
-        composerDraftSaveTask?.cancel()
-        composerDraftSaveTask = nil
-        if let owner = composerDraftOwner {
-            enqueueComposerDraftSave(
-                ComposerDraft(
-                    text: stashedText ?? text,
-                    reply: stashedText == nil ? reply : nil
-                ),
-                owner: owner
-            )
-        }
-        stashedComposerDraft = nil
-        suppressesComposerDraftSave = true
-        composer = ""
-        suppressesComposerDraftSave = false
-        composerReply = nil
-        composerAttachments = []
-        gateway.transmit(.submit(
-            sessionID: sessionID,
-            submission: Submission(id: id, op: operation)
-        )) { [weak self] _ in
-            guard let self else { return }
-            self.restoreDraft(id: id)
-            self.cancelChatTitle(submissionID: id, rearm: true)
-        }
-        if let stashedText, !stashedText.isEmpty {
-            composer = stashedText
-        }
-        return true
     }
 
     private func sendComposerCommand(_ text: String) -> Bool {
         let parts = text.dropFirst().split(maxSplits: 1, whereSeparator: \.isWhitespace)
         guard let name = parts.first, !name.isEmpty else { return false }
-        guard let contribution = contributions.first(where: {
+        guard let contribution = chat.contributions.first(where: {
             $0.commands.contains { $0.name == name }
         }), let command = contribution.commands.first(where: { $0.name == name }) else {
             showToast("Unknown command /\(name).", tone: .warning)
             return false
         }
-        guard !command.requiresIdle || activeTurnID == nil else {
+        guard !command.requiresIdle || chat.activeTurnID == nil else {
             showToast("/\(name) is available when the agent is idle.", tone: .warning)
             return false
         }
-        guard composerAttachments.isEmpty, composerReply == nil else {
+        guard chat.composerAttachments.isEmpty, chat.composerReply == nil else {
             showToast("Send attachments and replies as a message before using a command.", tone: .warning)
             return false
         }
-        guard let sessionID = selectedSessionID else { return false }
+        guard let sessionID = chat.selectedSessionID else { return false }
         let id = requestID("command")
-        pendingDrafts[id] = PendingComposerDraft(text: composer, attachments: [])
-        composer = ""
-        dismissComposerFocus()
+        chat.pendingDrafts[id] = PendingComposerDraft(text: chat.composer, attachments: [])
+        chat.composer = ""
+        chat.dismissComposerFocus()
         gateway.transmit(.submit(sessionID: sessionID, submission: Submission(
             id: id,
             op: .capabilityCommand(
@@ -1345,7 +1045,7 @@ extension AppModel {
                 target: nil
             )
         ))) { [weak self] _ in
-            self?.restoreDraft(id: id)
+            self?.chat.restoreDraft(id: id)
         }
         return true
     }
@@ -1368,104 +1068,52 @@ extension AppModel {
 
     func editWidgetInputInComposer(_ mounted: MountedWidget) {
         guard gateway.connectionState.isReady,
-              !isLoadingComposerDraft,
-              !isLoadingComposerEditRecovery,
-              let sessionID = selectedSessionID,
+              !chat.isLoadingComposerDraft,
+              !chat.isLoadingComposerEditRecovery,
+              let sessionID = chat.selectedSessionID,
               let accountID = gateway.selectedAccountID,
               let operation = mounted.widget.action,
               let input = operation.capabilityInput
         else { return }
-        guard composerAttachments.isEmpty else {
+        guard chat.composerAttachments.isEmpty else {
             showToast("Finish the attachment draft before editing a queued message.", tone: .warning)
             return
         }
-        guard composerReply == nil else {
+        guard chat.composerReply == nil else {
             showToast("Finish the reply draft before editing a queued message.", tone: .warning)
             return
         }
-        guard pendingWidgetEdit == nil, stashedComposerDraft == nil else { return }
-        flushComposerDraft()
+        guard chat.pendingWidgetEdit == nil, chat.stashedComposerDraft == nil else { return }
+        chat.flushComposerDraft()
         let requestID = requestID("edit")
         let owner = ComposerDraftOwner(accountID: accountID, sessionID: sessionID)
         let recovery = ComposerEditRecovery(
             capability: mounted.capability,
             widgetID: mounted.widget.id,
             originalInput: input,
-            displacedDraft: composer,
+            displacedDraft: chat.composer,
             editedInput: input,
             requestID: requestID,
             submissionBaselineSequence: nil,
             phase: .removingQueuedInput
         )
-        pendingWidgetEdit = PendingWidgetEdit(owner: owner, recovery: recovery)
-        enqueueComposerEditRecoverySave(recovery, owner: owner) { [weak self] result in
+        chat.pendingWidgetEdit = PendingWidgetEdit(owner: owner, recovery: recovery)
+        chat.enqueueComposerEditRecoverySave(recovery, owner: owner) { [weak self] result in
             guard let self,
-                  self.pendingWidgetEdit?.owner == owner,
-                  self.pendingWidgetEdit?.recovery.requestID == requestID
+                  self.chat.pendingWidgetEdit?.owner == owner,
+                  self.chat.pendingWidgetEdit?.recovery.requestID == requestID
             else { return }
             if case .failure(let error) = result {
-                self.pendingWidgetEdit = nil
+                self.chat.pendingWidgetEdit = nil
                 self.showToast(verbatim: self.localizedErrorDescription(error), tone: .error)
                 return
             }
-            guard self.gateway.connectionState.isReady, self.selectedSessionID == sessionID else { return }
+            guard self.gateway.connectionState.isReady, self.chat.selectedSessionID == sessionID else { return }
             guard self.gateway.selectedAccountID == accountID else { return }
             self.gateway.transmit(.submit(
                 sessionID: sessionID,
                 submission: Submission(id: requestID, op: operation)
             ))
-        }
-    }
-
-    private func submitComposerEdit(
-        sessionID: String,
-        requestID: String,
-        text: String,
-        operation: AgentOperation
-    ) {
-        guard var pending = pendingWidgetEdit,
-              let accountID = gateway.selectedAccountID,
-              pending.owner == ComposerDraftOwner(accountID: accountID, sessionID: sessionID),
-              pending.recovery.phase == .editing
-        else { return }
-        pending.recovery.editedInput = text
-        pending.recovery.requestID = requestID
-        pending.recovery.submissionBaselineSequence = latestSequence
-        pending.recovery.phase = .submitting
-        pendingWidgetEdit = pending
-        composerDraftSaveTask?.cancel()
-        composerDraftSaveTask = nil
-        enqueueComposerEditRecoverySave(pending.recovery, owner: pending.owner) { [weak self] result in
-            guard let self,
-                  self.pendingWidgetEdit?.owner == pending.owner,
-                  self.pendingWidgetEdit?.recovery.requestID == requestID,
-                  self.pendingWidgetEdit?.recovery.phase == .submitting
-            else { return }
-            if case .failure(let error) = result {
-                self.restoreComposerEditMode(requestID: requestID)
-                self.showToast(verbatim: self.localizedErrorDescription(error), tone: .error)
-                return
-            }
-            guard self.gateway.connectionState.isReady, self.selectedSessionID == sessionID else {
-                self.restoreComposerEditMode(requestID: requestID)
-                return
-            }
-            guard self.gateway.selectedAccountID == pending.owner.accountID else {
-                self.restoreComposerEditMode(requestID: requestID)
-                return
-            }
-            self.stashedComposerDraft = nil
-            self.suppressesComposerDraftSave = true
-            self.composer = pending.recovery.displacedDraft
-            self.suppressesComposerDraftSave = false
-            self.gateway.transmit(
-                .submit(
-                    sessionID: sessionID,
-                    submission: Submission(id: requestID, op: operation)
-                )
-            ) { [weak self] _ in
-                self?.restoreComposerEditMode(requestID: requestID)
-            }
         }
     }
 
@@ -1476,19 +1124,19 @@ extension AppModel {
 
     func submitWidget(_ mounted: MountedWidget) {
         guard canSubmitFrontendAction(capability: mounted.capability),
-              let sessionID = selectedSessionID,
+              let sessionID = chat.selectedSessionID,
               let action = mounted.widget.action
         else { return }
         let id = requestID("widget")
-        previewWidgetRequestID = id
+        chat.previewWidgetRequestID = id
         gateway.transmit(.submit(sessionID: sessionID, submission: Submission(id: id, op: action))) { [weak self] _ in
-            if self?.previewWidgetRequestID == id { self?.previewWidgetRequestID = nil }
+            if self?.chat.previewWidgetRequestID == id { self?.chat.previewWidgetRequestID = nil }
         }
     }
 
     func submitMessageAction(_ mounted: MountedWidget, target: MessageTarget) {
         guard canSubmitFrontendAction(capability: mounted.capability),
-              let sessionID = selectedSessionID,
+              let sessionID = chat.selectedSessionID,
               let action = mounted.widget.action
         else { return }
         let submittedAction = switch action {
@@ -1516,7 +1164,7 @@ extension AppModel {
             nil
         }
         guard canSubmitFrontendAction(capability: capability),
-              let sessionID = selectedSessionID
+              let sessionID = chat.selectedSessionID
         else { return }
         gateway.transmit(.submit(
             sessionID: sessionID,
@@ -1550,27 +1198,27 @@ extension AppModel {
             nil
         }
         guard canSubmitFrontendAction(capability: capability),
-              let sessionID = selectedSessionID,
-              !isLoadingPreviewPage
+              let sessionID = chat.selectedSessionID,
+              !chat.isLoadingPreviewPage
         else { return }
         let id = requestID("preview-page")
-        previewPageRequestID = id
-        isLoadingPreviewPage = true
+        chat.previewPageRequestID = id
+        chat.isLoadingPreviewPage = true
         gateway.transmit(.submit(
             sessionID: sessionID,
             submission: Submission(id: id, op: operation)
         )) { [weak self] _ in
-            guard self?.previewPageRequestID == id else { return }
-            self?.previewPageRequestID = nil
-            self?.isLoadingPreviewPage = false
+            guard self?.chat.previewPageRequestID == id else { return }
+            self?.chat.previewPageRequestID = nil
+            self?.chat.isLoadingPreviewPage = false
         }
     }
 
     func loadPreviewPageAndWait(_ operation: AgentOperation) async {
-        guard !Task.isCancelled, previewPageRequestID == nil else { return }
+        guard !Task.isCancelled, chat.previewPageRequestID == nil else { return }
         loadPreviewPage(operation)
-        guard previewPageRequestID != nil else { return }
-        for await loading in Observations({ self.isLoadingPreviewPage }) {
+        guard chat.previewPageRequestID != nil else { return }
+        for await loading in Observations({ self.chat.isLoadingPreviewPage }) {
             if !loading { return }
         }
     }
@@ -1582,23 +1230,23 @@ extension AppModel {
             nil
         }
         guard canSubmitFrontendAction(capability: capability),
-              let sessionID = selectedSessionID
+              let sessionID = chat.selectedSessionID
         else { return }
         let id = requestID("picker")
-        pendingPicker = nil
-        if case .capabilityCommand = option.op { previewSelections[id] = option }
+        chat.pendingPicker = nil
+        if case .capabilityCommand = option.op { chat.previewSelections[id] = option }
         gateway.transmit(.submit(
             sessionID: sessionID,
             submission: Submission(id: id, op: option.op)
         )) { [weak self] _ in
-            self?.previewSelections.removeValue(forKey: id)
+            self?.chat.previewSelections.removeValue(forKey: id)
         }
     }
 
     private func canSubmitFrontendAction(capability: String?) -> Bool {
         guard gateway.connectionState.isReady,
-              sessionRequestID == nil,
-              selectedSessionID != nil
+              chat.sessionRequestID == nil,
+              chat.selectedSessionID != nil
         else { return false }
         guard let capability,
               middlewareFeatures.contains(where: { $0.id == capability })

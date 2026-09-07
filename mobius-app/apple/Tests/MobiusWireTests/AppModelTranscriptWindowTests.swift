@@ -7,7 +7,7 @@ import XCTest
 extension AppModelTests {
     func testTranscriptStartsWithABoundedTurnTail() throws {
         let model = try model()
-        model.transcript = (0..<2).map { index in
+        model.chat.transcript = (0..<2).map { index in
             TranscriptEntry(
                 id: "entry-\(index)",
                 text: "\(index)",
@@ -20,20 +20,20 @@ extension AppModelTests {
         }
         model.gateway.connectionState = .ready
 
-        XCTAssertEqual(model.displayedTranscript.count, 1)
-        XCTAssertEqual(model.displayedTranscript.first?.text, "1")
-        XCTAssertEqual(TranscriptProjection.turnCount(in: model.displayedTranscript), 1)
-        XCTAssertTrue(model.hasEarlierHistory)
+        XCTAssertEqual(model.chat.displayedTranscript.count, 1)
+        XCTAssertEqual(model.chat.displayedTranscript.first?.text, "1")
+        XCTAssertEqual(TranscriptProjection.turnCount(in: model.chat.displayedTranscript), 1)
+        XCTAssertTrue(model.chat.hasEarlierHistory)
 
-        model.requestEarlierHistory()
+        model.chat.requestEarlierHistory()
 
-        XCTAssertEqual(model.displayedTranscript.count, 2)
-        XCTAssertFalse(model.hasEarlierHistory)
+        XCTAssertEqual(model.chat.displayedTranscript.count, 2)
+        XCTAssertFalse(model.chat.hasEarlierHistory)
     }
 
     func testTranscriptPaginationKeepsCompletedTurnsWhole() throws {
         let model = try model()
-        model.transcript = (0..<2).flatMap { index in
+        model.chat.transcript = (0..<2).flatMap { index in
             let turnID = "turn-\(index)"
             return [
                 TranscriptEntry(
@@ -66,27 +66,27 @@ extension AppModelTests {
         }
         model.gateway.connectionState = .ready
 
-        XCTAssertEqual(model.displayedTranscript.count, 3)
-        XCTAssertEqual(model.displayedTranscript.first?.id, "user-1")
-        XCTAssertEqual(model.displayedTranscript.prefix(3).map(\.turnID), [
+        XCTAssertEqual(model.chat.displayedTranscript.count, 3)
+        XCTAssertEqual(model.chat.displayedTranscript.first?.id, "user-1")
+        XCTAssertEqual(model.chat.displayedTranscript.prefix(3).map(\.turnID), [
             "turn-1", "turn-1", "turn-1",
         ])
         XCTAssertEqual(
-            model.transcriptProjection(breakBefore: nil).rows.prefix(3).map(\.kind),
+            model.chat.transcriptProjection(breakBefore: nil).rows.prefix(3).map(\.kind),
             [.user, .workedGroup, .narrative]
         )
-        XCTAssertTrue(model.hasEarlierHistory)
+        XCTAssertTrue(model.chat.hasEarlierHistory)
 
-        model.requestEarlierHistory()
+        model.chat.requestEarlierHistory()
 
-        XCTAssertEqual(model.displayedTranscript.count, 6)
-        XCTAssertEqual(model.displayedTranscript.first?.id, "user-0")
-        XCTAssertFalse(model.hasEarlierHistory)
+        XCTAssertEqual(model.chat.displayedTranscript.count, 6)
+        XCTAssertEqual(model.chat.displayedTranscript.first?.id, "user-0")
+        XCTAssertFalse(model.chat.hasEarlierHistory)
     }
 
     func testLiveGrowthKeepsTheVisibleTranscriptStartStable() throws {
         let model = try model()
-        model.transcript = [TranscriptEntry(
+        model.chat.transcript = [TranscriptEntry(
             id: "entry-0",
             text: "0",
             kind: .event,
@@ -95,10 +95,10 @@ extension AppModelTests {
             turnID: "turn-0",
             startsTurn: true
         )]
-        model.activeTurnID = "turn-0"
-        let before = model.transcriptProjection(breakBefore: nil)
+        model.chat.activeTurnID = "turn-0"
+        let before = model.chat.transcriptProjection(breakBefore: nil)
 
-        model.reduce(record: RecordedEvent(
+        model.chat.reduce(record: RecordedEvent(
             sequence: 1,
             recordedAtMs: 1_000,
             event: AgentEventRecord(submissionId: nil, msg: .object([
@@ -122,17 +122,17 @@ extension AppModelTests {
             },
             preview: nil
         ))
-        let after = model.transcriptProjection(breakBefore: nil)
+        let after = model.chat.transcriptProjection(breakBefore: nil)
 
-        XCTAssertEqual(model.displayedTranscript.count, 3)
-        XCTAssertEqual(model.displayedTranscript.first?.presentationID, "entry-0")
+        XCTAssertEqual(model.chat.displayedTranscript.count, 3)
+        XCTAssertEqual(model.chat.displayedTranscript.first?.presentationID, "entry-0")
         XCTAssertEqual(after.rows.last?.id, before.rows.last?.id)
         XCTAssertEqual(after.structuralRevision, before.structuralRevision)
     }
 
     func testWarmTranscriptWindowPublishesStructuralGrowth() async throws {
         let model = try model()
-        model.transcript = [TranscriptEntry(
+        model.chat.transcript = [TranscriptEntry(
             id: "first",
             text: "First",
             kind: .assistant,
@@ -140,15 +140,15 @@ extension AppModelTests {
             pending: false,
             turnID: "turn-1"
         )]
-        XCTAssertEqual(model.displayedTranscript.count, 1)
+        XCTAssertEqual(model.chat.displayedTranscript.count, 1)
 
         let changed = expectation(description: "Observed the appended transcript row")
         withObservationTracking {
-            _ = model.displayedTranscript.count
+            _ = model.chat.displayedTranscript.count
         } onChange: {
             changed.fulfill()
         }
-        model.transcript.append(TranscriptEntry(
+        model.chat.transcript.append(TranscriptEntry(
             id: "second",
             text: "Second",
             kind: .commentary,
@@ -158,7 +158,7 @@ extension AppModelTests {
         ))
 
         await fulfillment(of: [changed], timeout: 1)
-        XCTAssertEqual(model.displayedTranscript.count, 2)
+        XCTAssertEqual(model.chat.displayedTranscript.count, 2)
     }
 
     func testStructuralTranscriptGrowthInvalidatesThePinnedWindow() throws {
@@ -174,11 +174,11 @@ extension AppModelTests {
                 startsTurn: true
             )
         }
-        model.transcript = original
-        XCTAssertEqual(model.displayedTranscript.first?.id, "entry-1")
-        model.activeTurnID = "turn-1"
+        model.chat.transcript = original
+        XCTAssertEqual(model.chat.displayedTranscript.first?.id, "entry-1")
+        model.chat.activeTurnID = "turn-1"
 
-        model.reduce(record: RecordedEvent(
+        model.chat.reduce(record: RecordedEvent(
             sequence: 1,
             recordedAtMs: 100,
             event: AgentEventRecord(submissionId: nil, msg: .object([
@@ -189,7 +189,7 @@ extension AppModelTests {
             preview: nil
         ))
 
-        var rewritten = model.transcript
+        var rewritten = model.chat.transcript
         rewritten[1] = TranscriptEntry(
             id: "replacement-1",
             text: "Replacement",
@@ -207,11 +207,11 @@ extension AppModelTests {
             pending: false,
             turnID: "turn-1"
         ))
-        model.transcript = rewritten
+        model.chat.transcript = rewritten
 
-        XCTAssertTrue(model.displayedTranscript.contains { $0.id == "replacement-1" })
-        XCTAssertFalse(model.displayedTranscript.contains { $0.id == "entry-1" })
-        XCTAssertEqual(model.displayedTranscript.last?.id, "appended")
+        XCTAssertTrue(model.chat.displayedTranscript.contains { $0.id == "replacement-1" })
+        XCTAssertFalse(model.chat.displayedTranscript.contains { $0.id == "entry-1" })
+        XCTAssertEqual(model.chat.displayedTranscript.last?.id, "appended")
     }
 
     func testCachedTranscriptSuppliesTheOpenCursorAndRestoresOnce() async throws {
@@ -273,7 +273,7 @@ extension AppModelTests {
         model.gateway.selectedAccountID = account.id
         model.gateway.connectionState = .ready
 
-        model.openSession("chat-1")
+        model.chat.openSession("chat-1")
         try await Task.sleep(for: .milliseconds(20))
         let requests = await recorder.requests()
         let request = try XCTUnwrap(requests.first)
@@ -282,24 +282,24 @@ extension AppModelTests {
         }
         XCTAssertEqual(sessionID, "chat-1")
         XCTAssertEqual(cursor, 7)
-        XCTAssertFalse(model.isLoadingTranscript)
-        XCTAssertEqual(model.displayedTranscript.map(\.text), ["Already rendered"])
+        XCTAssertFalse(model.chat.isLoadingTranscript)
+        XCTAssertEqual(model.chat.displayedTranscript.map(\.text), ["Already rendered"])
 
         model.gateway.handle(.sessionOpened(requestID: requestID, payload: sessionReady(latestSequence: 7)))
-        XCTAssertEqual(model.transcript.map(\.text), ["Already rendered"])
-        XCTAssertEqual(model.transcript.first?.turnID, "turn-cached")
-        XCTAssertEqual(model.transcript.first?.startsTurn, true)
-        XCTAssertEqual(model.transcript.first?.turnTerminal, true)
-        XCTAssertEqual(model.transcript.first?.turnElapsedMs, 1_250)
-        XCTAssertEqual(model.transcript.first?.reply?.text, "Earlier message")
+        XCTAssertEqual(model.chat.transcript.map(\.text), ["Already rendered"])
+        XCTAssertEqual(model.chat.transcript.first?.turnID, "turn-cached")
+        XCTAssertEqual(model.chat.transcript.first?.startsTurn, true)
+        XCTAssertEqual(model.chat.transcript.first?.turnTerminal, true)
+        XCTAssertEqual(model.chat.transcript.first?.turnElapsedMs, 1_250)
+        XCTAssertEqual(model.chat.transcript.first?.reply?.text, "Earlier message")
         XCTAssertEqual(
-            model.transcript.first?.annotations.first?["content"]?.stringValue,
+            model.chat.transcript.first?.annotations.first?["content"]?.stringValue,
             "Relevant excerpt."
         )
-        XCTAssertFalse(model.isLoadingTranscript)
-        XCTAssertEqual(model.currentUsage.totalTokens, 55)
-        XCTAssertEqual(model.contextTokens, 42)
-        XCTAssertTrue(model.hasEarlierHistory)
+        XCTAssertFalse(model.chat.isLoadingTranscript)
+        XCTAssertEqual(model.chat.currentUsage.totalTokens, 55)
+        XCTAssertEqual(model.chat.contextTokens, 42)
+        XCTAssertTrue(model.chat.hasEarlierHistory)
         model.gateway.handle(.sessionReplayComplete(requestID: requestID, sessionID: "chat-1"))
 
         model.gateway.handle(.agentEvent(
@@ -313,7 +313,7 @@ extension AppModelTests {
             history: nil,
             preview: nil
         ))
-        XCTAssertEqual(model.transcript.map(\.text), ["Already rendered"])
+        XCTAssertEqual(model.chat.transcript.map(\.text), ["Already rendered"])
     }
 
     func testLegacyTranscriptCacheIsRejectedBeforeReplay() async throws {
@@ -372,8 +372,8 @@ extension AppModelTests {
     func testReconnectKeepsTheRetainedTranscriptVisibleWhileReplayLoads() throws {
         let model = try model()
         model.gateway.connectionState = .ready
-        model.selectedSessionID = "chat-1"
-        model.transcript = [TranscriptEntry(
+        model.chat.selectedSessionID = "chat-1"
+        model.chat.transcript = [TranscriptEntry(
             id: "answer-1",
             text: "Already rendered",
             kind: .assistant,
@@ -381,11 +381,11 @@ extension AppModelTests {
             pending: false
         )]
 
-        model.restoreSession("chat-1")
+        model.chat.restoreSession("chat-1")
 
         XCTAssertEqual(model.gateway.connectionState, .loading)
-        XCTAssertFalse(model.isLoadingTranscript)
-        XCTAssertEqual(model.displayedTranscript.map(\.text), ["Already rendered"])
+        XCTAssertFalse(model.chat.isLoadingTranscript)
+        XCTAssertEqual(model.chat.displayedTranscript.map(\.text), ["Already rendered"])
     }
 
     func testOpeningAnotherSessionStillHidesThePreviousTranscript() async throws {
@@ -395,29 +395,49 @@ extension AppModelTests {
         model.gateway.accounts = [account]
         model.gateway.selectedAccountID = account.id
         model.gateway.connectionState = .ready
-        model.selectedSessionID = "chat-1"
-        model.sessions = [
+        model.chat.selectedSessionID = "chat-1"
+        model.chat.sessions = [
             session(sessionID: "chat-2", state: .idle),
             session(sessionID: "chat-3", state: .idle)
         ]
-        model.transcript = [TranscriptEntry(
+        model.chat.transcript = [TranscriptEntry(
             id: "answer-1",
             text: "Previous chat",
             kind: .assistant,
             format: "plain_text",
             pending: false
         )]
+        model.workspace = WorkspaceInfo(id: "workspace-1", path: "/srv/previous")
+        model.previewURL = URL(fileURLWithPath: "/tmp/previous-preview.txt")
+        model.textFilePreview = TextFilePreview(
+            id: UUID(),
+            name: "previous.txt",
+            contents: "previous",
+            workspaceSessionID: "chat-1",
+            workspacePath: "previous.txt"
+        )
+        model.agentSnapshot = VersionedAgentConfig(revision: 1, config: composition())
+        model.agentDraft = composition()
+        model.showsInspector = true
+        let previousFilePresentationGeneration = model.filePresentationGeneration
 
         let requestCount = await recorder.requestCount()
         let gate = AsyncGate()
-        model.transcriptIOTask = Task { await gate.wait() }
+        model.chat.transcriptIOTask = Task { await gate.wait() }
         model.openChat("chat-2")
         model.openChat("chat-3")
-        XCTAssertEqual(model.selectedSessionID, "chat-2")
+        XCTAssertEqual(model.chat.selectedSessionID, "chat-2")
         XCTAssertEqual(model.navigationPath, [.chat(.session("chat-2"))])
-        XCTAssertTrue(model.isLoadingTranscript)
-        XCTAssertTrue(model.displayedTranscript.isEmpty)
+        XCTAssertTrue(model.chat.isLoadingTranscript)
+        XCTAssertTrue(model.chat.displayedTranscript.isEmpty)
         XCTAssertFalse(model.canSendComposer)
+        XCTAssertNil(model.workspace)
+        XCTAssertNil(model.previewURL)
+        XCTAssertNil(model.textFilePreview)
+        XCTAssertNil(model.agentSnapshot)
+        XCTAssertNil(model.agentDraft)
+        XCTAssertFalse(model.showsInspector)
+        XCTAssertNotEqual(model.filePresentationGeneration, previousFilePresentationGeneration)
         await gate.open()
         let request = await recorder.firstRequest(after: requestCount) { request in
             guard case .openSession(_, "chat-2", _) = request else { return false }
@@ -425,8 +445,8 @@ extension AppModelTests {
         }
 
         XCTAssertNotNil(request)
-        XCTAssertTrue(model.isLoadingTranscript)
-        XCTAssertTrue(model.displayedTranscript.isEmpty)
+        XCTAssertTrue(model.chat.isLoadingTranscript)
+        XCTAssertTrue(model.chat.displayedTranscript.isEmpty)
     }
 
     func testCanonicalReplayCompletesAfterTheFrozenCachedTranscript() async throws {
@@ -467,7 +487,7 @@ extension AppModelTests {
         model.gateway.selectedAccountID = account.id
         model.gateway.connectionState = .ready
 
-        model.openSession("chat-1")
+        model.chat.openSession("chat-1")
         try await Task.sleep(for: .milliseconds(20))
         let requests = await recorder.requests()
         guard case .openSession(let requestID, _, _) = try XCTUnwrap(requests.first) else {
@@ -492,7 +512,7 @@ extension AppModelTests {
             history: nil,
             preview: nil
         ))
-        XCTAssertEqual(model.displayedTranscript.map(\.text), ["Cached"])
+        XCTAssertEqual(model.chat.displayedTranscript.map(\.text), ["Cached"])
         model.gateway.handle(.agentEvent(
             sessionID: "chat-1",
             sequence: 9,
@@ -508,11 +528,11 @@ extension AppModelTests {
             history: nil,
             preview: nil
         ))
-        XCTAssertEqual(model.displayedTranscript.map(\.text), ["Cached"])
+        XCTAssertEqual(model.chat.displayedTranscript.map(\.text), ["Cached"])
 
         model.gateway.handle(.sessionReplayComplete(requestID: requestID, sessionID: "chat-1"))
 
-        XCTAssertEqual(model.displayedTranscript.map(\.text), ["Cached", "Canonical"])
+        XCTAssertEqual(model.chat.displayedTranscript.map(\.text), ["Cached", "Canonical"])
     }
 
     func testCursorRestoreKeepsTheReplayBaseAndFrozenPresentation() async throws {
@@ -552,7 +572,7 @@ extension AppModelTests {
         model.gateway.selectedAccountID = account.id
         model.gateway.connectionState = .ready
 
-        model.openSession("chat-1")
+        model.chat.openSession("chat-1")
         try await Task.sleep(for: .milliseconds(20))
         var requests = await recorder.requests()
         guard case .openSession(let firstRequestID, _, _) = try XCTUnwrap(requests.first) else {
@@ -578,7 +598,7 @@ extension AppModelTests {
             preview: nil
         ))
 
-        model.restoreSession("chat-1")
+        model.chat.restoreSession("chat-1")
         try await Task.sleep(for: .milliseconds(20))
         requests = await recorder.requests()
         guard case .openSession(let secondRequestID, _, 8) = try XCTUnwrap(
@@ -588,7 +608,7 @@ extension AppModelTests {
             requestID: secondRequestID,
             payload: sessionReady(latestSequence: 9)
         ))
-        XCTAssertEqual(model.displayedTranscript.map(\.text), ["Cached"])
+        XCTAssertEqual(model.chat.displayedTranscript.map(\.text), ["Cached"])
         model.gateway.handle(.agentEvent(
             sessionID: "chat-1",
             sequence: 9,
@@ -609,7 +629,7 @@ extension AppModelTests {
             sessionID: "chat-1"
         ))
 
-        XCTAssertEqual(model.displayedTranscript.map(\.text), ["Cached updated again"])
+        XCTAssertEqual(model.chat.displayedTranscript.map(\.text), ["Cached updated again"])
     }
 
     func testTranscriptCacheIsProtectedAndEvictsByRecency() async throws {
@@ -755,7 +775,7 @@ extension AppModelTests {
 
     func testTranscriptReplayDoesNotShowStaleErrorToast() throws {
         let model = try model()
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(submissionId: nil, msg: .object([
                 "type": .string("error"),
                 "message": .string("Old error")
@@ -765,7 +785,7 @@ extension AppModelTests {
         )
 
         XCTAssertNil(model.toast)
-        XCTAssertTrue(model.transcript.isEmpty)
+        XCTAssertTrue(model.chat.transcript.isEmpty)
     }
 
 }

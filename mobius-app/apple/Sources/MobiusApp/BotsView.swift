@@ -660,7 +660,7 @@ struct BotDetailView: View {
 
     private var workspaces: [RoutineWorkspace] {
         var seen = Set<String>()
-        return model.sessions.compactMap { session in
+        return model.chat.sessions.compactMap { session in
             guard let path = session.sessionContext.workspaceLabel,
                   seen.insert(path).inserted
             else { return nil }
@@ -691,7 +691,7 @@ struct BotSessionsView: View {
                     detail: "Private Bot conversations stay out of Chats."
                 ) {
                     Section {
-                        if model.isLoadingBotSessions && sessions.isEmpty {
+                        if model.chat.isLoadingBotSessions && sessions.isEmpty {
                             HStack(spacing: MobiusSpace.s) {
                                 MobiusSpinner(
                                     size: MobiusStyle.glyphInline,
@@ -744,8 +744,8 @@ struct BotSessionsView: View {
     private var bot: BotRecord? { model.bots.first { $0.id == botID } }
 
     private var sessions: [SessionRecord] {
-        guard model.botSessionsBotID == botID else { return [] }
-        return model.botSessions.sorted {
+        guard model.chat.botSessionsBotID == botID else { return [] }
+        return model.chat.botSessions.sorted {
             if $0.updatedAt != $1.updatedAt { return $0.updatedAt > $1.updatedAt }
             return $0.sessionId < $1.sessionId
         }

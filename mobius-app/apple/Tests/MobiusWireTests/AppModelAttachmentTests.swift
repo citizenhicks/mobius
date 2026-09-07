@@ -38,7 +38,7 @@ extension AppModelTests {
 
         await model.importAttachments([fileURL])
 
-        XCTAssertEqual(model.composerAttachments.first?.state, .queued)
+        XCTAssertEqual(model.chat.composerAttachments.first?.state, .queued)
         XCTAssertTrue(model.canSendComposer)
         let stagedRequests = await recorder.requests()
         XCTAssertFalse(stagedRequests.contains { request in
@@ -46,7 +46,7 @@ extension AppModelTests {
             return false
         })
 
-        model.composer = "Review this image"
+        model.chat.composer = "Review this image"
         XCTAssertTrue(model.sendMessage())
         let create = await recorder.firstRequest(after: 0) { request in
             if case .createSession = request { return true }
@@ -70,7 +70,7 @@ extension AppModelTests {
             sessionID: "chat-created",
             contributions: [fileAttachmentContribution()]
         )))
-        XCTAssertEqual(model.pendingNewChatBotID, "bot-1")
+        XCTAssertEqual(model.chat.pendingNewChatBotID, "bot-1")
 
         let begin = await recorder.firstRequest(after: 0) { request in
             if case .beginSessionFileUpload = request { return true }
@@ -155,14 +155,14 @@ extension AppModelTests {
 
         let id = try XCTUnwrap(model.reserveComposerAttachment(named: "clip.mp4"))
 
-        XCTAssertEqual(model.composerAttachments.count, 1)
-        XCTAssertEqual(model.composerAttachments.first?.id, id)
-        XCTAssertEqual(model.composerAttachments.first?.state, .preparing)
+        XCTAssertEqual(model.chat.composerAttachments.count, 1)
+        XCTAssertEqual(model.chat.composerAttachments.first?.id, id)
+        XCTAssertEqual(model.chat.composerAttachments.first?.state, .preparing)
 
         await model.completeComposerAttachmentImport(fileURL, reservedID: id)
 
-        XCTAssertEqual(model.composerAttachments.first?.id, id)
-        XCTAssertEqual(model.composerAttachments.first?.state, .queued)
+        XCTAssertEqual(model.chat.composerAttachments.first?.id, id)
+        XCTAssertEqual(model.chat.composerAttachments.first?.state, .queued)
     }
 
     func testRemovingFailedFirstMessageAttachmentContinuesPendingSend() async throws {
@@ -170,14 +170,14 @@ extension AppModelTests {
         let model = try model { request in await recorder.record(request) }
         let attachmentID = UUID()
         model.gateway.connectionState = .ready
-        model.sessions = [session(sessionID: "chat-created", state: .idle)]
-        model.selectedSessionID = "chat-created"
-        model.pendingNewChatBotID = "bot-1"
-        model.pendingDrafts["create-1"] = PendingComposerDraft(
+        model.chat.sessions = [session(sessionID: "chat-created", state: .idle)]
+        model.chat.selectedSessionID = "chat-created"
+        model.chat.pendingNewChatBotID = "bot-1"
+        model.chat.pendingDrafts["create-1"] = PendingComposerDraft(
             text: "Continue without the file",
             attachments: []
         )
-        model.composerAttachments = [ComposerAttachment(
+        model.chat.composerAttachments = [ComposerAttachment(
             id: attachmentID,
             name: "broken.png",
             size: 1,
@@ -211,19 +211,19 @@ extension AppModelTests {
         let model = try model { request in await recorder.record(request) }
         let attachmentID = UUID()
         model.gateway.connectionState = .ready
-        model.composerAttachments = [ComposerAttachment(
+        model.chat.composerAttachments = [ComposerAttachment(
             id: attachmentID,
             name: "local.txt",
             size: 1,
             mediaType: "text/plain",
             state: .queued
         )]
-        model.sessionFileData[attachmentID] = Data([1])
+        model.chat.sessionFileData[attachmentID] = Data([1])
 
         model.removeComposerAttachment(attachmentID)
 
-        XCTAssertTrue(model.composerAttachments.isEmpty)
-        XCTAssertNil(model.sessionFileData[attachmentID])
+        XCTAssertTrue(model.chat.composerAttachments.isEmpty)
+        XCTAssertNil(model.chat.sessionFileData[attachmentID])
         let requests = await recorder.requests()
         XCTAssertTrue(requests.isEmpty)
     }
@@ -233,23 +233,23 @@ extension AppModelTests {
         let model = try model { request in await recorder.record(request) }
         let attachmentID = UUID()
         model.gateway.connectionState = .ready
-        model.selectedSessionID = "chat-1"
-        model.composerAttachments = [ComposerAttachment(
+        model.chat.selectedSessionID = "chat-1"
+        model.chat.composerAttachments = [ComposerAttachment(
             id: attachmentID,
             name: "scan.png",
             size: 3,
             mediaType: "image/png",
             state: .uploading(0)
         )]
-        model.sessionFileData[attachmentID] = Data([1, 2, 3])
-        model.sessionFileUploadRequests["begin-1"] = .begin(
+        model.chat.sessionFileData[attachmentID] = Data([1, 2, 3])
+        model.chat.sessionFileUploadRequests["begin-1"] = .begin(
             localID: attachmentID,
             sessionID: "chat-1"
         )
 
         model.removeComposerAttachment(attachmentID)
-        XCTAssertTrue(model.composerAttachments.isEmpty)
-        XCTAssertNotNil(model.abandonedSessionFileUploadRequests["begin-1"])
+        XCTAssertTrue(model.chat.composerAttachments.isEmpty)
+        XCTAssertNotNil(model.chat.abandonedSessionFileUploadRequests["begin-1"])
         XCTAssertFalse(model.canOpenSession)
 
         model.gateway.handle(.sessionFileUploadReady(
@@ -268,7 +268,7 @@ extension AppModelTests {
         else { return XCTFail("Expected abandoned upload deletion") }
         XCTAssertEqual(sessionID, "chat-1")
         XCTAssertEqual(fileID, "file-1")
-        XCTAssertNotNil(model.sessionFileDeleteRequests[requestID])
+        XCTAssertNotNil(model.chat.sessionFileDeleteRequests[requestID])
         XCTAssertFalse(model.canOpenSession)
         let requests = await recorder.requests()
         XCTAssertFalse(requests.contains {
@@ -286,8 +286,8 @@ extension AppModelTests {
         let abandonedID = UUID()
         let queuedID = UUID()
         model.gateway.connectionState = .ready
-        model.selectedSessionID = "chat-1"
-        model.composerAttachments = [
+        model.chat.selectedSessionID = "chat-1"
+        model.chat.composerAttachments = [
             ComposerAttachment(
                 id: abandonedID,
                 name: "cancelled.bin",
@@ -303,9 +303,9 @@ extension AppModelTests {
                 state: .queued
             ),
         ]
-        model.sessionFileData[abandonedID] = Data([1])
-        model.sessionFileData[queuedID] = Data([2])
-        model.sessionFileUploadRequests["begin-1"] = .begin(
+        model.chat.sessionFileData[abandonedID] = Data([1])
+        model.chat.sessionFileData[queuedID] = Data([2])
+        model.chat.sessionFileUploadRequests["begin-1"] = .begin(
             localID: abandonedID,
             sessionID: "chat-1"
         )
@@ -338,8 +338,8 @@ extension AppModelTests {
             mediaType: "image/png"
         )
         model.gateway.connectionState = .ready
-        model.selectedSessionID = "chat-1"
-        model.composerAttachments = [ComposerAttachment(
+        model.chat.selectedSessionID = "chat-1"
+        model.chat.composerAttachments = [ComposerAttachment(
             id: UUID(),
             name: file.name,
             size: file.size,
@@ -347,7 +347,7 @@ extension AppModelTests {
             state: .uploaded(file)
         )]
 
-        model.removeComposerAttachment(try XCTUnwrap(model.composerAttachments.first?.id))
+        model.removeComposerAttachment(try XCTUnwrap(model.chat.composerAttachments.first?.id))
 
         let request = await recorder.firstRequest(after: 0) {
             if case .deleteSessionFile = $0 { return true }
@@ -355,7 +355,7 @@ extension AppModelTests {
         }
         guard case .deleteSessionFile(let requestID, _, _) = try XCTUnwrap(request)
         else { return XCTFail("Expected uploaded file deletion") }
-        XCTAssertTrue(model.composerAttachments.isEmpty)
+        XCTAssertTrue(model.chat.composerAttachments.isEmpty)
 
         model.gateway.handle(.rejected(GatewayRejection(
             requestId: requestID,
@@ -364,7 +364,7 @@ extension AppModelTests {
             fatal: false
         )))
 
-        XCTAssertEqual(model.composerAttachments.first?.state, .uploaded(file))
+        XCTAssertEqual(model.chat.composerAttachments.first?.state, .uploaded(file))
         XCTAssertEqual(model.toast?.message, "File could not be deleted")
     }
 
@@ -378,8 +378,8 @@ extension AppModelTests {
             mediaType: "text/plain"
         )
         model.gateway.connectionState = .ready
-        model.selectedSessionID = "chat-1"
-        model.composerAttachments = [ComposerAttachment(
+        model.chat.selectedSessionID = "chat-1"
+        model.chat.composerAttachments = [ComposerAttachment(
             id: UUID(),
             name: file.name,
             size: file.size,
@@ -388,7 +388,7 @@ extension AppModelTests {
         )]
         XCTAssertFalse(model.canOpenSession)
 
-        model.discardComposerAttachments()
+        model.chat.discardComposerAttachments()
 
         let request = await recorder.firstRequest(after: 0) {
             if case .deleteSessionFile = $0 { return true }
@@ -399,7 +399,7 @@ extension AppModelTests {
         else { return XCTFail("Expected discarded file deletion") }
         XCTAssertEqual(sessionID, "chat-1")
         XCTAssertEqual(fileID, "file-1")
-        XCTAssertTrue(model.composerAttachments.isEmpty)
+        XCTAssertTrue(model.chat.composerAttachments.isEmpty)
         XCTAssertFalse(model.canOpenSession)
 
         model.gateway.handle(.accepted(requestID: requestID))
@@ -416,19 +416,19 @@ extension AppModelTests {
             state: .uploading(0)
         )
         let removed = RemovedComposerAttachment(sessionID: "chat-1", attachment: attachment)
-        model.abandonedSessionFileUploadRequests["begin-1"] = removed
-        model.sessionFileDeleteRequests["delete-1"] = removed
+        model.chat.abandonedSessionFileUploadRequests["begin-1"] = removed
+        model.chat.sessionFileDeleteRequests["delete-1"] = removed
         let generation = model.gateway.connectionGeneration
 
         model.gateway.connectionEnded(generation: generation, message: "Disconnected")
 
-        XCTAssertTrue(model.abandonedSessionFileUploadRequests.isEmpty)
-        XCTAssertTrue(model.sessionFileDeleteRequests.isEmpty)
+        XCTAssertTrue(model.chat.abandonedSessionFileUploadRequests.isEmpty)
+        XCTAssertTrue(model.chat.sessionFileDeleteRequests.isEmpty)
     }
 
     func testAttachmentComposerUsesAdvertisedPolicyWithinClientSafetyCaps() throws {
         let model = try model()
-        model.sessionFileLimits = SessionFileLimits(
+        model.chat.sessionFileLimits = SessionFileLimits(
             maxAttachmentReferences: 3,
             maxFileBytes: 4 * 1024 * 1024,
             maxSessionFiles: 8,
@@ -441,7 +441,7 @@ extension AppModelTests {
         XCTAssertEqual(model.attachmentDraftByteLimit, 6 * 1024 * 1024)
         XCTAssertEqual(model.uploadChunkByteLimit, 64 * 1024)
 
-        model.sessionFileLimits = SessionFileLimits(
+        model.chat.sessionFileLimits = SessionFileLimits(
             maxAttachmentReferences: .max,
             maxFileBytes: .max,
             maxSessionFiles: .max,
@@ -458,8 +458,8 @@ extension AppModelTests {
             await recorder.record(request)
         })
         model.gateway.connectionState = .ready
-        model.selectedSessionID = "chat-1"
-        model.selectedModelRoute = "openai"
+        model.chat.selectedSessionID = "chat-1"
+        model.chat.selectedModelRoute = "openai"
         let capableChoice = ModelChoice(
             route: "openai",
             group: "OpenAI",
@@ -478,7 +478,7 @@ extension AppModelTests {
             widgets: [],
             references: []
         )
-        model.contributions = [attachmentContribution]
+        model.chat.contributions = [attachmentContribution]
 
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -500,7 +500,7 @@ extension AppModelTests {
         XCTAssertEqual(sessionID, "chat-1")
         XCTAssertEqual(name, "scan.png")
         XCTAssertEqual(size, 3)
-        XCTAssertEqual(model.composerAttachments.first?.state, .uploading(0))
+        XCTAssertEqual(model.chat.composerAttachments.first?.state, .uploading(0))
 
         requestCount = await recorder.requestCount()
         model.gateway.handle(.sessionFileUploadReady(
@@ -529,7 +529,7 @@ extension AppModelTests {
             uploadID: "upload-1",
             nextOffset: 2
         ))
-        XCTAssertEqual(model.composerAttachments.first?.state, .uploading(2))
+        XCTAssertEqual(model.chat.composerAttachments.first?.state, .uploading(2))
         let secondChunkRequest = await recorder.firstRequest(
             after: requestCount
         ) { request in
@@ -550,7 +550,7 @@ extension AppModelTests {
             uploadID: "upload-1",
             nextOffset: 3
         ))
-        XCTAssertEqual(model.composerAttachments.first?.state, .uploading(3))
+        XCTAssertEqual(model.chat.composerAttachments.first?.state, .uploading(3))
         let finishRequest = await recorder.firstRequest(
             after: requestCount
         ) { request in
@@ -572,14 +572,14 @@ extension AppModelTests {
             sessionID: "chat-1",
             file: attachment
         ))
-        XCTAssertEqual(model.sessionFiles, [SessionFileRecord(origin: .user, file: attachment)])
+        XCTAssertEqual(model.chat.sessionFiles, [SessionFileRecord(origin: .user, file: attachment)])
         XCTAssertTrue(model.canSendComposer)
 
-        model.contributions = []
+        model.chat.contributions = []
         XCTAssertFalse(model.canSendComposer)
         XCTAssertFalse(model.sendMessage())
         XCTAssertEqual(model.toast?.message, "File attachments are not enabled for this chat.")
-        model.contributions = [attachmentContribution]
+        model.chat.contributions = [attachmentContribution]
 
         model.modelChoices = [ModelChoice(
             route: "openai",
@@ -611,7 +611,7 @@ extension AppModelTests {
         XCTAssertEqual(message.text, "")
         XCTAssertEqual(message.attachments, [attachment])
 
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(
                 submissionId: nil,
                 msg: testMessageEvent(text: "", attachments: [attachment])
@@ -619,7 +619,7 @@ extension AppModelTests {
             blocks: [],
             preview: nil
         )
-        XCTAssertEqual(model.transcript.last?.files, [attachment])
+        XCTAssertEqual(model.chat.transcript.last?.files, [attachment])
     }
 
     func testImageImportCreatesComposerThumbnailFromLocalBytes() async throws {
@@ -628,8 +628,8 @@ extension AppModelTests {
             await recorder.record(request)
         })
         model.gateway.connectionState = .ready
-        model.selectedSessionID = "chat-1"
-        model.contributions = [fileAttachmentContribution()]
+        model.chat.selectedSessionID = "chat-1"
+        model.chat.contributions = [fileAttachmentContribution()]
 
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -640,8 +640,8 @@ extension AppModelTests {
 
         await model.importAttachments([fileURL])
 
-        let attachment = try XCTUnwrap(model.composerAttachments.first)
-        let thumbnail = try XCTUnwrap(model.fileThumbnail(for: attachment))
+        let attachment = try XCTUnwrap(model.chat.composerAttachments.first)
+        let thumbnail = try XCTUnwrap(model.chat.fileThumbnail(for: attachment))
         XCTAssertEqual(thumbnail.width, 1)
         XCTAssertEqual(thumbnail.height, 1)
     }
@@ -652,8 +652,8 @@ extension AppModelTests {
             await recorder.record(request)
         })
         model.gateway.connectionState = .ready
-        model.selectedSessionID = "chat-1"
-        model.contributions = [fileAttachmentContribution()]
+        model.chat.selectedSessionID = "chat-1"
+        model.chat.contributions = [fileAttachmentContribution()]
 
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -664,8 +664,8 @@ extension AppModelTests {
 
         await model.importAttachments([fileURL])
 
-        let attachment = try XCTUnwrap(model.composerAttachments.first)
-        let thumbnail = try XCTUnwrap(model.fileThumbnail(for: attachment))
+        let attachment = try XCTUnwrap(model.chat.composerAttachments.first)
+        let thumbnail = try XCTUnwrap(model.chat.fileThumbnail(for: attachment))
         XCTAssertGreaterThan(thumbnail.width, 0)
         XCTAssertGreaterThan(thumbnail.height, 0)
     }
@@ -676,8 +676,8 @@ extension AppModelTests {
             await recorder.record(request)
         })
         model.gateway.connectionState = .ready
-        model.selectedSessionID = "chat-1"
-        model.selectedModelRoute = "text-only"
+        model.chat.selectedSessionID = "chat-1"
+        model.chat.selectedModelRoute = "text-only"
         model.modelChoices = [ModelChoice(
             route: "text-only",
             group: "OpenAI",
@@ -687,14 +687,14 @@ extension AppModelTests {
             supportsImageInput: false,
             toolDiscovery: .rebuild
         )]
-        model.contributions = [fileAttachmentContribution()]
+        model.chat.contributions = [fileAttachmentContribution()]
         let attachment = SessionFileReference(
             id: "file-1",
             name: "notes.txt",
             size: 3,
             mediaType: "text/plain"
         )
-        model.composerAttachments = [ComposerAttachment(
+        model.chat.composerAttachments = [ComposerAttachment(
             id: UUID(),
             name: attachment.name,
             size: attachment.size,
@@ -725,8 +725,8 @@ extension AppModelTests {
             await recorder.record(request)
         })
         model.gateway.connectionState = .ready
-        model.selectedSessionID = "chat-1"
-        model.contributions = [fileAttachmentContribution()]
+        model.chat.selectedSessionID = "chat-1"
+        model.chat.contributions = [fileAttachmentContribution()]
         let fileURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension("bin")
@@ -749,7 +749,7 @@ extension AppModelTests {
             nextOffset: 0
         ))
 
-        let item = try XCTUnwrap(model.composerAttachments.first)
+        let item = try XCTUnwrap(model.chat.composerAttachments.first)
         guard case .failed(let message) = item.state else {
             return XCTFail("Expected invalid upload to fail")
         }
@@ -762,8 +762,8 @@ extension AppModelTests {
             await recorder.record(request)
         })
         model.gateway.connectionState = .ready
-        model.selectedSessionID = "chat-1"
-        model.contributions = [fileAttachmentContribution()]
+        model.chat.selectedSessionID = "chat-1"
+        model.chat.contributions = [fileAttachmentContribution()]
         let fileURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension("bin")
@@ -799,7 +799,7 @@ extension AppModelTests {
             nextOffset: 1
         ))
 
-        let item = try XCTUnwrap(model.composerAttachments.first)
+        let item = try XCTUnwrap(model.chat.composerAttachments.first)
         guard case .failed(let message) = item.state else {
             return XCTFail("Expected invalid offset to fail")
         }
@@ -817,8 +817,8 @@ extension AppModelTests {
             await recorder.record(request)
         })
         model.gateway.connectionState = .ready
-        model.selectedSessionID = "chat-1"
-        model.selectedModelRoute = "openai"
+        model.chat.selectedSessionID = "chat-1"
+        model.chat.selectedModelRoute = "openai"
         model.modelChoices = [ModelChoice(
             route: "openai",
             group: "OpenAI",
@@ -828,7 +828,7 @@ extension AppModelTests {
             supportsImageInput: true,
             toolDiscovery: .native
         )]
-        model.contributions = [FrontendContribution(
+        model.chat.contributions = [FrontendContribution(
             capability: "files",
             acceptsFileAttachments: true,
             count: nil,
@@ -837,7 +837,7 @@ extension AppModelTests {
             references: []
         )]
         let fileSize = maximumClientComposerAttachmentBytes / 4
-        model.composerAttachments = (0..<4).map { index in
+        model.chat.composerAttachments = (0..<4).map { index in
             let attachment = SessionFileReference(
                 id: "file-\(index)",
                 name: "file-\(index).bin",
@@ -862,7 +862,7 @@ extension AppModelTests {
 
         await model.importAttachments([fileURL])
 
-        XCTAssertEqual(model.composerAttachments.count, 4)
+        XCTAssertEqual(model.chat.composerAttachments.count, 4)
         let requests = await recorder.requests()
         XCTAssertTrue(requests.isEmpty)
         XCTAssertEqual(model.toast?.message, "Attachments in one message are limited to 250 MiB total.")
@@ -874,8 +874,8 @@ extension AppModelTests {
             await recorder.record(request)
         })
         model.gateway.connectionState = .ready
-        model.selectedSessionID = "chat-1"
-        model.contributions = [fileAttachmentContribution()]
+        model.chat.selectedSessionID = "chat-1"
+        model.chat.contributions = [fileAttachmentContribution()]
 
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -905,8 +905,8 @@ extension AppModelTests {
             await recorder.record(request)
         })
         model.gateway.connectionState = .ready
-        model.selectedSessionID = "chat-1"
-        model.contributions = [fileAttachmentContribution()]
+        model.chat.selectedSessionID = "chat-1"
+        model.chat.contributions = [fileAttachmentContribution()]
 
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -920,7 +920,7 @@ extension AppModelTests {
 
         await model.importAttachments([fileURL])
 
-        XCTAssertTrue(model.composerAttachments.isEmpty)
+        XCTAssertTrue(model.chat.composerAttachments.isEmpty)
         XCTAssertEqual(model.toast?.message, "Attachments are limited to 250 MiB each.")
         let requests = await recorder.requests()
         XCTAssertTrue(requests.isEmpty)

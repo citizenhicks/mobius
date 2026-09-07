@@ -352,7 +352,7 @@ struct SwarmView: View {
     }
 
     private func botIsActive(_ id: String) -> Bool {
-        model.sessions.contains {
+        model.chat.sessions.contains {
             $0.sessionContext.botId == id && $0.activity.state != .idle
         }
     }

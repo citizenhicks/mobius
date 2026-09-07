@@ -49,11 +49,11 @@ extension AppModelTests {
         model.gateway.accounts = [account]
         model.gateway.selectedAccountID = account.id
         model.gateway.connectionState = .ready
-        model.selectedSessionID = "chat-1"
-        model.activeTurnID = "turn-1"
-        model.mountedWidgets = [queued, sibling]
-        model.composer = "Keep this draft"
-        let focusRequest = model.composerFocusRequest
+        model.chat.selectedSessionID = "chat-1"
+        model.chat.activeTurnID = "turn-1"
+        model.chat.mountedWidgets = [queued, sibling]
+        model.chat.composer = "Keep this draft"
+        let focusRequest = model.chat.composerFocusRequest
 
         var requestCount = await recorder.requestCount()
         model.editWidgetInputInComposer(queued)
@@ -78,12 +78,12 @@ extension AppModelTests {
         XCTAssertEqual(submittedTarget, target)
 
         model.gateway.handle(.accepted(requestID: editSubmission.id))
-        XCTAssertEqual(model.composer, "Keep this draft")
+        XCTAssertEqual(model.chat.composer, "Keep this draft")
         XCTAssertFalse(model.canSendComposer)
-        XCTAssertEqual(model.composerFocusRequest, focusRequest)
-        XCTAssertEqual(model.transcriptTailWidgets.map(\.id), [queued.id, sibling.id])
+        XCTAssertEqual(model.chat.composerFocusRequest, focusRequest)
+        XCTAssertEqual(model.chat.transcriptTailWidgets.map(\.id), [queued.id, sibling.id])
 
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(submissionId: editSubmission.id, msg: .object([
                 "type": .string("frontend"),
                 "frontendType": .string("remove_widget"),
@@ -93,12 +93,12 @@ extension AppModelTests {
             blocks: [],
             preview: nil
         )
-        XCTAssertEqual(model.composer, "Original input")
+        XCTAssertEqual(model.chat.composer, "Original input")
         XCTAssertTrue(model.canSendComposer)
-        XCTAssertEqual(model.composerFocusRequest, focusRequest + 1)
-        XCTAssertEqual(model.transcriptTailWidgets.map(\.id), [sibling.id])
+        XCTAssertEqual(model.chat.composerFocusRequest, focusRequest + 1)
+        XCTAssertEqual(model.chat.transcriptTailWidgets.map(\.id), [sibling.id])
 
-        model.composer = "Edited input"
+        model.chat.composer = "Edited input"
         requestCount = await recorder.requestCount()
         model.sendMessage()
         let editedRequest = await recorder.firstRequest(after: requestCount) { request in
@@ -115,9 +115,9 @@ extension AppModelTests {
         XCTAssertNil(message.requestedDelivery)
         XCTAssertEqual(message.targetTurnId, "turn-1")
         XCTAssertEqual(message.text, "Edited input")
-        XCTAssertEqual(model.composer, "Keep this draft")
+        XCTAssertEqual(model.chat.composer, "Keep this draft")
 
-        model.reduce(
+        model.chat.reduce(
             event: AgentEventRecord(submissionId: editedSubmission.id, msg: .object([
                 "type": .string("turn_started"),
                 "turnId": .string("turn-1")
@@ -132,7 +132,7 @@ extension AppModelTests {
             message: "Try again",
             fatal: false
         )))
-        XCTAssertEqual(model.composer, "Edited input")
+        XCTAssertEqual(model.chat.composer, "Edited input")
         XCTAssertTrue(model.canSendComposer)
     }
 
@@ -181,7 +181,7 @@ extension AppModelTests {
         model.gateway.accounts = [account]
         model.gateway.selectedAccountID = account.id
         model.gateway.connectionState = .ready
-        model.openSession("chat-1")
+        model.chat.openSession("chat-1")
         try await Task.sleep(for: .milliseconds(30))
         let openRequests = await recorder.requests()
         let openRequest = try XCTUnwrap(openRequests.last)
@@ -195,7 +195,7 @@ extension AppModelTests {
         model.gateway.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
         try await Task.sleep(for: .milliseconds(100))
 
-        XCTAssertEqual(model.composer, "Edited after relaunch")
+        XCTAssertEqual(model.chat.composer, "Edited after relaunch")
         XCTAssertTrue(model.canSendComposer)
 
         model.sendMessage()
@@ -208,7 +208,7 @@ extension AppModelTests {
             return XCTFail("Expected recovered user message")
         }
         XCTAssertEqual(message.text, "Edited after relaunch")
-        XCTAssertEqual(model.composer, "Displaced draft")
+        XCTAssertEqual(model.chat.composer, "Displaced draft")
     }
 
     func testComposerEditRecoveryRecognizesSubmissionReplayedBeforeItsDiskLoad() async throws {
@@ -257,7 +257,7 @@ extension AppModelTests {
         model.gateway.selectedAccountID = account.id
         model.gateway.connectionState = .ready
         let openRequestCount = await recorder.requestCount()
-        model.openSession("chat-1")
+        model.chat.openSession("chat-1")
         let openRequest = await recorder.firstRequest(after: openRequestCount) { request in
             guard case .openSession(_, "chat-1", _) = request else { return false }
             return true
@@ -287,8 +287,8 @@ extension AppModelTests {
         model.gateway.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))
         try await Task.sleep(for: .milliseconds(150))
 
-        XCTAssertEqual(model.composer, "Displaced draft")
-        XCTAssertEqual(model.transcript.filter { $0.kind == .user }.map(\.text), ["Edited input"])
+        XCTAssertEqual(model.chat.composer, "Displaced draft")
+        XCTAssertEqual(model.chat.transcript.filter { $0.kind == .user }.map(\.text), ["Edited input"])
         XCTAssertTrue(model.canSendComposer)
         let replayedRecovery = await store.loadComposerEditRecovery(
             accountID: account.id,
@@ -388,9 +388,9 @@ extension AppModelTests {
         XCTAssertTrue(removed)
         model.gateway.accounts = [second]
         model.gateway.selectedAccountID = second.id
-        model.selectedSessionID = "chat-1"
+        model.chat.selectedSessionID = "chat-1"
         model.gateway.connectionState = .ready
-        model.composer = "New gateway message"
+        model.chat.composer = "New gateway message"
         model.sendMessage()
         await fulfillment(of: [ordinaryMessageSent], timeout: 1)
 
@@ -410,7 +410,7 @@ extension AppModelTests {
         let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
         try await beginComposerEdit(in: model, recorder: recorder, account: account)
         let selected = session(sessionID: "chat-1", state: .idle)
-        model.sessions = [selected]
+        model.chat.sessions = [selected]
 
         model.deleteSession(selected)
         try await Task.sleep(for: .milliseconds(30))
@@ -421,9 +421,9 @@ extension AppModelTests {
         model.gateway.handle(.accepted(requestID: deleteID))
         model.gateway.handle(.sessions(requestID: deleteID, sessions: []))
 
-        model.selectedSessionID = "chat-1"
+        model.chat.selectedSessionID = "chat-1"
         model.gateway.connectionState = .ready
-        model.composer = "Replacement message"
+        model.chat.composer = "Replacement message"
         model.sendMessage()
         try await Task.sleep(for: .milliseconds(30))
 
@@ -465,7 +465,7 @@ extension AppModelTests {
         model.gateway.selectedAccountID = account.id
         model.gateway.connectionState = .ready
         let openRequestCount = await recorder.requestCount()
-        model.openSession("chat-1")
+        model.chat.openSession("chat-1")
         let openRequest = await recorder.firstRequest(after: openRequestCount) { request in
             guard case .openSession(_, "chat-1", _) = request else { return false }
             return true
@@ -483,11 +483,11 @@ extension AppModelTests {
         try await beginComposerEdit(in: model, recorder: recorder, account: account)
         model.gateway.accounts = [account, second]
 
-        model.composer = "Latest edit before switching"
-        XCTAssertEqual(model.composer, "Latest edit before switching")
+        model.chat.composer = "Latest edit before switching"
+        XCTAssertEqual(model.chat.composer, "Latest edit before switching")
         XCTAssertTrue(model.canSendComposer)
         model.selectAccount(second.id)
-        XCTAssertEqual(model.composer, "")
+        XCTAssertEqual(model.chat.composer, "")
 
         let recoverySaved = await eventually {
             await store.loadComposerEditRecovery(
@@ -511,15 +511,15 @@ extension AppModelTests {
         let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
         model.gateway.accounts = [account]
         model.gateway.selectedAccountID = account.id
-        model.selectedSessionID = "chat-1"
-        model.composer = "Do not lose this"
-        model.contributions = [fileAttachmentContribution()]
+        model.chat.selectedSessionID = "chat-1"
+        model.chat.composer = "Do not lose this"
+        model.chat.contributions = [fileAttachmentContribution()]
 
         model.sendMessage()
         try await Task.sleep(for: .milliseconds(20))
         let disconnectedRequests = await recorder.requests()
         XCTAssertTrue(disconnectedRequests.isEmpty)
-        XCTAssertEqual(model.composer, "Do not lose this")
+        XCTAssertEqual(model.chat.composer, "Do not lose this")
 
         model.gateway.connectionState = .ready
         XCTAssertTrue(model.canImportAttachments)
@@ -539,7 +539,7 @@ extension AppModelTests {
         guard case .submit(_, let submission) = try XCTUnwrap(request),
               case .capabilityCommand = submission.op
         else { return XCTFail("Expected only the edit-removal command") }
-        XCTAssertEqual(model.composer, "Do not lose this")
+        XCTAssertEqual(model.chat.composer, "Do not lose this")
     }
 
 }

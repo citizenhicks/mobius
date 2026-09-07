@@ -82,9 +82,9 @@ extension AppModelTests {
             requestSender: { _ in }
         )
         model.bots = [try JSONDecoder().decode(Mobius.BotRecord.self, from: JSONEncoder().encode(bot(tint: .orange)))]
-        model.pendingNewChatBotID = "bot-1"
+        model.chat.pendingNewChatBotID = "bot-1"
         model.gateway.connectionState = .ready
-        model.composer = "Preserve this draft"
+        model.chat.composer = "Preserve this draft"
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
         let previous = scene.keyWindow
         previous?.isHidden = true
@@ -98,9 +98,9 @@ extension AppModelTests {
                     Mobius.PreviewTranscriptSheet(preview: preview)
                 } else {
                     VStack {
-                        if !model.transcript.isEmpty {
+                        if !model.chat.transcript.isEmpty {
                             Mobius.TranscriptRowsView(
-                                projection: Mobius.TranscriptProjection(entries: model.transcript),
+                                projection: Mobius.TranscriptProjection(entries: model.chat.transcript),
                                 fileSessionID: nil
                             )
                             .padding(.horizontal, Mobius.MobiusSpace.l)
@@ -143,15 +143,15 @@ extension AppModelTests {
         XCTAssertFalse(inputs(in: normal).isEmpty)
         capture(normal, name: "voice-normal-composer")
         // A pending call is sufficient: never request permission or create media.
-        model.mountedWidgets = [Mobius.MountedWidget(capability: "test-preview", widget: Mobius.FrontendWidget(
+        model.chat.mountedWidgets = [Mobius.MountedWidget(capability: "test-preview", widget: Mobius.FrontendWidget(
             id: "voice-preview", slot: .composerFooter, text: "Voice conversation", tone: "neutral",
             symbol: "voice", iconOnly: true, progress: nil, content: nil,
             action: .capabilityCommand(capability: "test-preview", command: "show", arguments: "", input: nil, target: nil)
         ))]
-        model.realtimeVoiceCall = Mobius.RealtimeVoiceCall(requestID: "pending", sessionID: "chat-1")
+        model.chat.realtimeVoiceCall = Mobius.RealtimeVoiceCall(requestID: "pending", sessionID: "chat-1")
         // The wave answers change, so a fixture needs a settled level rather than a first sample.
         func settle(_ levels: Mobius.RealtimeAudioLevels) {
-            for _ in 0..<40 { model.realtimeVoice.updateAudioLevels(levels) }
+            for _ in 0..<40 { model.chat.realtimeVoice.updateAudioLevels(levels) }
         }
         settle(Mobius.RealtimeAudioLevels(microphone: 0.36, playback: 0))
         let microphone = await show(.light)
@@ -160,15 +160,15 @@ extension AppModelTests {
         try await Task.sleep(for: .milliseconds(250))
         capture(microphone, name: "voice-light-microphone-moving")
         // One loud sample against the settled baseline is what lifts the tails.
-        model.realtimeVoice.updateAudioLevels(Mobius.RealtimeAudioLevels(microphone: 0.92, playback: 0))
-        XCTAssertEqual(model.realtimeVoice.levelFlare, 1)
+        model.chat.realtimeVoice.updateAudioLevels(Mobius.RealtimeAudioLevels(microphone: 0.92, playback: 0))
+        XCTAssertEqual(model.chat.realtimeVoice.levelFlare, 1)
         capture(await show(.light), name: "voice-light-microphone-flare")
-        model.realtimeVoice.updateAudioLevels(Mobius.RealtimeAudioLevels())
-        XCTAssertEqual(model.realtimeVoice.levelFlare, 0)
+        model.chat.realtimeVoice.updateAudioLevels(Mobius.RealtimeAudioLevels())
+        XCTAssertEqual(model.chat.realtimeVoice.levelFlare, 0)
         capture(await show(.light), name: "voice-silent")
-        model.realtimeVoice.isMuted = true
+        model.chat.realtimeVoice.isMuted = true
         capture(await show(.light), name: "voice-muted")
-        model.realtimeVoice.isMuted = false
+        model.chat.realtimeVoice.isMuted = false
         capture(await show(.light), name: "voice-unmuted")
         settle(Mobius.RealtimeAudioLevels(microphone: 0, playback: 0.81))
         capture(await show(.light), name: "voice-light-bot")
@@ -177,7 +177,7 @@ extension AppModelTests {
         settle(Mobius.RealtimeAudioLevels(microphone: 0.36, playback: 0.81))
         capture(await show(.dark), name: "voice-dark-both")
         window.frame.size.height = 500
-        model.transcript = [Mobius.TranscriptEntry(
+        model.chat.transcript = [Mobius.TranscriptEntry(
             id: "voice-handoff", text: "Review the launch checklist and fix the remaining issues.",
             kind: .event, capability: "messages", role: .activity,
             title: "Message received from voice agent", symbol: "voice",
@@ -196,10 +196,10 @@ extension AppModelTests {
             ], next: nil
         )
         capture(await show(.light, preview: preview), name: "voice-shared-read-only-transcript")
-        XCTAssertNotNil(model.realtimeVoiceCall)
-        model.stopRealtimeVoice()
+        XCTAssertNotNil(model.chat.realtimeVoiceCall)
+        model.chat.stopRealtimeVoice()
         let restored = await show(.light)
         XCTAssertFalse(inputs(in: restored).isEmpty)
-        XCTAssertEqual(model.composer, "Preserve this draft")
+        XCTAssertEqual(model.chat.composer, "Preserve this draft")
     }
 }

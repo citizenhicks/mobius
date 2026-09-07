@@ -124,7 +124,7 @@ struct SidebarDrawer<Sidebar: View, Detail: View>: View {
             .onChanged { value in
                 guard accepts(value) else { return }
                 if !isOpen, drag == 0, value.translation.width > 0 {
-                    model.dismissComposerFocus()
+                    model.chat.dismissComposerFocus()
                 }
                 drag = value.translation.width
             }
@@ -221,7 +221,7 @@ struct SidebarView: View {
                             contributionNavigationButton(widget, scope: .global)
                         }
                     }
-                    ForEach(model.navigationWidgets.filter { widget in
+                    ForEach(model.chat.navigationWidgets.filter { widget in
                         !globalWidgets.contains { $0.id == widget.id }
                     }) { widget in
                         contributionNavigationButton(widget)

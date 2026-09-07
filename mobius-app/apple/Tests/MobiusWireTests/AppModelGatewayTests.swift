@@ -174,12 +174,12 @@ extension AppModelTests {
             requestSender: { _ in },
             connectionOpener: { _ in AsyncThrowingStream { _ in } }
         )
-        XCTAssertEqual(model.sessionReadCursors, firstCursors)
+        XCTAssertEqual(model.chat.sessionReadCursors, firstCursors)
 
         model.selectAccount(second.id)
 
         XCTAssertEqual(model.gateway.selectedAccountID, second.id)
-        XCTAssertEqual(model.sessionReadCursors, secondCursors)
+        XCTAssertEqual(model.chat.sessionReadCursors, secondCursors)
         await model.gateway.shutdown().value
     }
 
@@ -248,9 +248,9 @@ extension AppModelTests {
         let model = AppModel(client: GatewayClient(), store: store)
         model.gateway.accounts = [account]
         model.gateway.selectedAccountID = account.id
-        model.selectedSessionID = "chat-1"
+        model.chat.selectedSessionID = "chat-1"
         model.gateway.connectionState = .ready
-        model.transcriptIOTask = Task {
+        model.chat.transcriptIOTask = Task {
             await gate.wait()
             await store.saveTranscript(
                 accountID: account.id,
@@ -278,6 +278,58 @@ extension AppModelTests {
         let cached = await store.loadTranscript(accountID: account.id, sessionID: "chat-1")
         XCTAssertTrue(removed)
         XCTAssertNil(cached)
+    }
+
+    func testRemovingInactiveGatewayDrainsItsPendingChatWrites() async throws {
+        let suiteName = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let store = GatewayStore(
+            defaults: defaults,
+            transcriptDirectory: directory
+        )
+        let first = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
+        let second = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9192"))
+        try store.save(first, token: "first-token")
+        try store.save(second, token: "second-token")
+        store.select(first)
+        let model = AppModel(client: GatewayClient(), store: store, settingsDefaults: defaults)
+        model.gateway.accounts = [first, second]
+        model.gateway.selectedAccountID = second.id
+        model.chat.selectedSessionID = "chat-1"
+        let gate = AsyncGate()
+        model.chat.transcriptIOTask = Task {
+            await gate.wait()
+            await store.saveTranscript(
+                accountID: first.id,
+                sessionID: "chat-1",
+                sequence: 1,
+                transcript: [TranscriptEntry(
+                    id: "stale",
+                    text: "Must not resurrect",
+                    kind: .assistant,
+                    format: "plain_text",
+                    pending: false
+                )],
+                currentUsage: TokenUsage(),
+                lastUsage: TokenUsage()
+            )
+        }
+
+        let removal = Task { @MainActor in await model.removeGateway(first) }
+        let removedFromAccountList = await eventually { model.gateway.accounts.count == 1 }
+        XCTAssertTrue(removedFromAccountList)
+        await gate.open()
+        let removed = await removal.value
+        XCTAssertTrue(removed)
+        let cached = await store.loadTranscript(accountID: first.id, sessionID: "chat-1")
+        XCTAssertNil(cached)
+        XCTAssertEqual(model.gateway.selectedAccountID, second.id)
     }
 
     func testConnectionStatePresentation() {
@@ -359,11 +411,11 @@ extension AppModelTests {
 
         await model.start()
 
-        XCTAssertEqual(model.sessions.map(\.sessionId), ["chat-1"])
-        XCTAssertEqual(model.sessions.first?.activity.state, .idle)
-        XCTAssertEqual(model.selectedSessionID, "chat-1")
+        XCTAssertEqual(model.chat.sessions.map(\.sessionId), ["chat-1"])
+        XCTAssertEqual(model.chat.sessions.first?.activity.state, .idle)
+        XCTAssertEqual(model.chat.selectedSessionID, "chat-1")
         XCTAssertEqual(model.navigationPath, [.chat(.session("chat-1"))])
-        XCTAssertEqual(model.displayedTranscript.map(\.text), ["Restored before the network"])
+        XCTAssertEqual(model.chat.displayedTranscript.map(\.text), ["Restored before the network"])
         XCTAssertFalse(model.gateway.connectionState.isReady)
     }
 
@@ -467,9 +519,9 @@ extension AppModelTests {
             await recorder.record(request)
         })
         model.gateway.connectionState = .ready
-        model.selectedSessionID = "chat-1"
-        model.contributions = [fileAttachmentContribution()]
-        model.activeTurnID = "turn-1"
+        model.chat.selectedSessionID = "chat-1"
+        model.chat.contributions = [fileAttachmentContribution()]
+        model.chat.activeTurnID = "turn-1"
 
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -507,7 +559,7 @@ extension AppModelTests {
         let model = AppModel(client: GatewayClient(), store: store)
         model.gateway.accounts = [first, second]
         model.gateway.connectionState = .ready
-        model.composer = "Gateway A draft"
+        model.chat.composer = "Gateway A draft"
         model.providerAPIKey = "gateway-a-secret"
         model.providerActionState = .credentialSaved("Gateway A")
         model.pairingCodeInfo = PairingCodeInfo(code: "1234", expiresAt: .distantFuture)
@@ -528,7 +580,7 @@ extension AppModelTests {
 
         XCTAssertEqual(model.gateway.selectedAccountID, second.id)
         XCTAssertEqual(model.gateway.connectionState, .connecting)
-        XCTAssertEqual(model.composer, "")
+        XCTAssertEqual(model.chat.composer, "")
         XCTAssertEqual(model.providerAPIKey, "")
         XCTAssertEqual(model.providerActionState, .idle)
         XCTAssertNil(model.pairingCodeInfo)
@@ -650,7 +702,7 @@ extension AppModelTests {
         let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
         model.gateway.accounts = [account]
         model.gateway.selectedAccountID = account.id
-        model.selectedSessionID = "chat-1"
+        model.chat.selectedSessionID = "chat-1"
         model.destination = .chats
         model.navigationPath = [.chat(.session("chat-1"))]
         model.gateway.connectionState = .ready
@@ -662,7 +714,7 @@ extension AppModelTests {
         model.setSceneActive(true)
 
         XCTAssertEqual(model.gateway.connectionState, .connecting)
-        XCTAssertEqual(model.selectedSessionID, "chat-1")
+        XCTAssertEqual(model.chat.selectedSessionID, "chat-1")
         XCTAssertEqual(model.navigationPath, [.chat(.session("chat-1"))])
     }
 
@@ -671,7 +723,7 @@ extension AppModelTests {
         let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
         model.gateway.accounts = [account]
         model.gateway.selectedAccountID = account.id
-        model.selectedSessionID = "chat-1"
+        model.chat.selectedSessionID = "chat-1"
         model.destination = .chats
         model.navigationPath = []
         model.gateway.connectionState = .ready
@@ -686,7 +738,7 @@ extension AppModelTests {
         model.setSceneActive(true)
 
         XCTAssertEqual(model.gateway.connectionState, .connecting)
-        XCTAssertNil(model.selectedSessionID)
+        XCTAssertNil(model.chat.selectedSessionID)
         XCTAssertTrue(model.navigationPath.isEmpty)
 
         model.applySessions([session(
@@ -695,7 +747,7 @@ extension AppModelTests {
             message: "the agent stopped",
             sequence: 1
         )])
-        XCTAssertTrue(model.unreadSessionIDs.contains("chat-1"))
+        XCTAssertTrue(model.chat.unreadSessionIDs.contains("chat-1"))
 
         model.applySessions([
             session(
@@ -706,7 +758,7 @@ extension AppModelTests {
             ),
             session(sessionID: "chat-2", state: .idle, outcome: .completed, sequence: 1)
         ])
-        XCTAssertTrue(model.unreadSessionIDs.contains("chat-2"))
+        XCTAssertTrue(model.chat.unreadSessionIDs.contains("chat-2"))
     }
 
     func testAutomaticReconnectRestoresDraftWithoutReplayingSubmission() async throws {
@@ -769,7 +821,7 @@ extension AppModelTests {
             sessionID: "chat-1"
         ))
         try await Task.sleep(for: .milliseconds(50))
-        model.composer = "Run this once"
+        model.chat.composer = "Run this once"
         XCTAssertTrue(model.canSendComposer)
         model.sendMessage()
         try await Task.sleep(for: .milliseconds(30))
@@ -782,7 +834,7 @@ extension AppModelTests {
             return false
         }
         XCTAssertEqual(submissions.count, 1)
-        XCTAssertEqual(model.composer, "Run this once")
+        XCTAssertEqual(model.chat.composer, "Run this once")
         let reconnectAttempts = await harness.attemptCount()
         XCTAssertEqual(reconnectAttempts, 3)
     }
@@ -801,14 +853,14 @@ extension AppModelTests {
             reason: "Run the command?",
             calls: [ApprovalCall(id: "call-1", name: "shell", arguments: "{}")]
         )
-        model.selectedSessionID = "chat-1"
-        model.pendingApproval = approval
+        model.chat.selectedSessionID = "chat-1"
+        model.chat.pendingApproval = approval
 
         model.resolveApproval(.approved)
         let failed = await eventually { model.toast?.tone == .error }
 
         XCTAssertTrue(failed)
-        XCTAssertEqual(model.pendingApproval, approval)
+        XCTAssertEqual(model.chat.pendingApproval, approval)
         XCTAssertEqual(model.toast?.tone, .error)
     }
 
@@ -885,9 +937,9 @@ extension AppModelTests {
         model.gateway.accounts = [account]
         model.gateway.selectedAccountID = account.id
         model.cloudSession = MobiusCloudSession(userID: userID, expiresAt: .distantFuture)
-        model.selectedSessionID = "chat-1"
+        model.chat.selectedSessionID = "chat-1"
         model.navigationPath = [.chat(.session("chat-1"))]
-        model.composer = "Keep my draft"
+        model.chat.composer = "Keep my draft"
         model.gateway.connectionState = .ready
         let suspendedGeneration = model.gateway.connectionGeneration
 
@@ -901,7 +953,7 @@ extension AppModelTests {
         )
         XCTAssertNil(model.toast)
         XCTAssertEqual(model.gateway.connectionState, .disconnected)
-        XCTAssertEqual(model.composer, "Keep my draft")
+        XCTAssertEqual(model.chat.composer, "Keep my draft")
         XCTAssertEqual(model.navigationPath, [.chat(.session("chat-1"))])
         XCTAssertTrue(model.gateway.reconnectsOnActivation)
 
@@ -917,8 +969,8 @@ extension AppModelTests {
     func testReadyKeepsSettingsOpenedWhileThePreviousChatWasReconnecting() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { await recorder.record($0) }
-        model.selectedSessionID = "chat-1"
-        model.sessionToRestoreID = "chat-1"
+        model.chat.selectedSessionID = "chat-1"
+        model.chat.sessionToRestoreID = "chat-1"
         model.gateway.connectionState = .connecting
         model.destination = .providers
         model.navigationPath = [.settings(.provider("my-provider"))]
@@ -927,8 +979,8 @@ extension AppModelTests {
         )))
         XCTAssertEqual(model.destination, .providers)
         XCTAssertEqual(model.navigationPath, [.settings(.provider("my-provider"))])
-        XCTAssertNil(model.sessionToRestoreID)
-        XCTAssertNil(model.selectedSessionID)
+        XCTAssertNil(model.chat.sessionToRestoreID)
+        XCTAssertNil(model.chat.selectedSessionID)
         let requests = await recorder.requests()
         XCTAssertFalse(requests.contains {
             if case .openSession = $0 { return true }

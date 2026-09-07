@@ -470,17 +470,19 @@ extension AppModel {
     func clearDataAndGatewayInformation() async {
         guard !isClearingLocalData else { return }
         isClearingLocalData = true
-        defer { isClearingLocalData = false }
+        chat.isClearingLocalData = true
+        defer {
+            isClearingLocalData = false
+            chat.isClearingLocalData = false
+        }
 
         gateway.blockAutomaticReconnect()
-        discardComposerDraft()
+        chat.quiesce()
         gateway.reset(preservingDrafts: false)
         resetGatewayDependentState(preservingDrafts: false, preservingSession: false)
-        let transcriptIO = transcriptIOTask
-        let composerIO = composerDraftIOTask
-        await gateway.shutdown().value
-        await transcriptIO?.value
-        await composerIO?.value
+        let shutdown = gateway.shutdown()
+        await chat.drainIO()
+        await shutdown.value
 
         _ = try? await unregisterRemoteNotificationsForCloudSignOut()
         var localError: Error?

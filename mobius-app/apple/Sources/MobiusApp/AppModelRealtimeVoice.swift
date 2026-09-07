@@ -14,9 +14,9 @@ struct RealtimeVoiceCall: Equatable {
 
 extension AppModel {
     var selectedRouteSupportsRealtimeVoice: Bool {
-        let route = selectedSessionID == nil
+        let route = chat.selectedSessionID == nil
             ? modelRoute(for: selectedBot?.config.config ?? botDefaultsSnapshot?.config)
-            : selectedModelRoute
+            : chat.selectedModelRoute
         guard let route,
               modelChoices.first(where: { $0.route == route })?.supportsRealtimeVoice == true,
               let instanceID = modelProviders[route],
@@ -28,7 +28,7 @@ extension AppModel {
 
     var canStartRealtimeVoice: Bool {
         gateway.connectionState.isReady && selectedRouteSupportsRealtimeVoice
-            && (selectedSessionID != nil || pendingNewChatBotID != nil)
+            && (chat.selectedSessionID != nil || chat.pendingNewChatBotID != nil)
     }
 
     func openNewVoiceChat() {
@@ -54,16 +54,25 @@ extension AppModel {
     func completePendingVoiceChat(requestID: String?) {
         guard let requestID, newVoiceChatIntent == .openingSession(requestID) else { return }
         cancelVoiceChatIntent()
-        startRealtimeVoice()
+        chat.startRealtimeVoice(eligible: selectedRouteSupportsRealtimeVoice)
     }
 
     func startRealtimeVoice() {
-        guard canStartRealtimeVoice, realtimeVoiceCall == nil else { return }
-        guard let sessionID = selectedSessionID else {
+        guard canStartRealtimeVoice else { return }
+        guard chat.selectedSessionID != nil else {
             newVoiceChatIntent = .selectingBot
             createPendingVoiceChat()
             return
         }
+        chat.startRealtimeVoice(eligible: selectedRouteSupportsRealtimeVoice)
+    }
+
+}
+
+extension ChatSessionModel {
+    func startRealtimeVoice(eligible: Bool) {
+        guard gateway.connectionState.isReady, eligible, realtimeVoiceCall == nil else { return }
+        guard let sessionID = selectedSessionID else { return }
         let requestID = UUID().uuidString.lowercased()
         realtimeVoiceCall = RealtimeVoiceCall(
             requestID: requestID, sessionID: sessionID
@@ -116,13 +125,13 @@ extension AppModel {
         }
     }
 
-    func handleRealtimeVoiceEnvelope(_ envelope: GatewayEnvelope) {
+    func handleRealtimeVoiceEnvelope(_ envelope: GatewayEnvelope, eligible: Bool) {
         switch envelope {
         case .realtimeVoiceStarted(let requestID, let sessionID, let voiceID, let answerSDP):
             guard realtimeVoiceCall?.requestID == requestID,
                   realtimeVoiceCall?.sessionID == sessionID,
                   selectedSessionID == sessionID,
-                  selectedRouteSupportsRealtimeVoice
+                  eligible
             else {
                 gateway.transmit(.endRealtimeVoice(sessionID: sessionID, voiceID: voiceID))
                 return
