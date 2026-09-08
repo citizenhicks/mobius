@@ -72,6 +72,7 @@ struct TranscriptRowsView: View {
             if let entry = row.records.first {
                 TranscriptRow(
                     entry: entry,
+                    files: row.files,
                     isUser: row.kind == .user,
                     fileSessionID: fileSessionID,
                     allowsMessageActions: allowsMessageActions,
@@ -479,6 +480,7 @@ private struct TranscriptRow: View {
     @Environment(\.mobiusPalette) private var palette
     @State private var showsCopyConfirmation = false
     let entry: TranscriptEntry
+    let files: [SessionFileReference]
     /// Activity never reaches this view: a run is a group row, whatever its length. The
     /// projection sends only what the reader wrote and what the agent said back.
     let isUser: Bool
@@ -515,7 +517,7 @@ private struct TranscriptRow: View {
                         )
                     }
                     TranscriptFileCards(
-                        files: entry.files,
+                        files: files,
                         sessionID: fileSessionID,
                         alignsTrailing: true
                     )
@@ -533,7 +535,7 @@ private struct TranscriptRow: View {
             }
         } else {
             VStack(alignment: .leading, spacing: MobiusSpace.s) {
-                TranscriptFileCards(files: entry.files, sessionID: fileSessionID)
+                TranscriptFileCards(files: files, sessionID: fileSessionID)
                 if !entry.text.isEmpty {
                     MobiusMarkdownText(entry.text, streaming: entry.pending)
                         .equatable()

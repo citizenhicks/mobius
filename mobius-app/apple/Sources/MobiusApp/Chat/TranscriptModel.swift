@@ -310,6 +310,12 @@ struct TranscriptPresentationRow: Identifiable {
     let sizing: TranscriptRowSizing
     let kind: Kind
     let elapsedMs: UInt64?
+    var pinnedEntries: [TranscriptEntry] = []
+
+    var files: [SessionFileReference] {
+        var seen = Set<String>()
+        return (pinnedEntries + records).flatMap(\.files).filter { seen.insert($0.id).inserted }
+    }
 
     init(
         id: TranscriptPresentationID,
@@ -642,7 +648,7 @@ struct TranscriptProjection {
         _ rows: [TranscriptPresentationRow],
         turnID: String
     ) -> [TranscriptPresentationRow] {
-        let terminalRows = rows.filter { row in
+        var terminalRows = rows.filter { row in
             row.records.contains(where: \.turnTerminal)
         }
         guard !terminalRows.isEmpty,
@@ -662,6 +668,10 @@ struct TranscriptProjection {
         guard !workRows.isEmpty else { return rows }
 
         let records = workRows.flatMap(\.records)
+        if let finalIndex = terminalRows.lastIndex(where: { $0.records.first?.kind == .assistant })
+        {
+            terminalRows[finalIndex].pinnedEntries = records.filter { $0.kind != .user }
+        }
         let elapsedMs =
             terminalRows
             .flatMap(\.records)

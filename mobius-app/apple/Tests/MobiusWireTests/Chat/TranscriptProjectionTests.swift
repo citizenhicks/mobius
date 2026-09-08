@@ -347,6 +347,43 @@ final class TranscriptProjectionTests: XCTestCase {
             ), 1)
     }
 
+    func testCompletedTurnPinsAgentFilesAboveItsFinalMessage() {
+        let upload = SessionFileReference(
+            id: "upload", name: "input.txt", size: 1, mediaType: "text/plain")
+        let artifact = SessionFileReference(
+            id: "artifact", name: "result.txt", size: 1, mediaType: "text/plain")
+        let user = entry("user", kind: .user, turnID: "turn-1", startsTurn: true)
+        user.files = [upload]
+        let event = entry("artifact-event", turnID: "turn-1")
+        event.role = .artifact
+        event.files = [artifact]
+        let steering = entry("steering", kind: .user, turnID: "turn-1")
+        steering.files = [upload]
+        let final = entry(
+            "final", kind: .assistant, pending: true, turnID: "turn-1", turnTerminal: true)
+        let entries = [user, event, steering, final]
+
+        XCTAssertTrue(TranscriptProjection(entries: entries).rows.last!.files.isEmpty)
+        final.pending = false
+        let completed = TranscriptProjection(entries: entries)
+        XCTAssertEqual(completed.rows.map(\.kind), [.user, .workedGroup, .narrative])
+        XCTAssertEqual(completed.rows.last?.files.map(\.id), [artifact.id])
+        XCTAssertTrue(final.files.isEmpty)
+
+        event.files = []
+        XCTAssertTrue(completed.rows.last!.files.isEmpty)
+        event.files = [artifact]
+
+        final.files = [artifact]
+        XCTAssertEqual(
+            TranscriptProjection(entries: entries).rows.last?.files.map(\.id), [artifact.id])
+        let nextTurn = [
+            entry("next-user", kind: .user, turnID: "turn-2", startsTurn: true),
+            entry("next-final", kind: .assistant, turnID: "turn-2", turnTerminal: true),
+        ]
+        XCTAssertTrue(TranscriptProjection(entries: entries + nextTurn).rows.last!.files.isEmpty)
+    }
+
     func testTurnWindowKeepsSteeringInsideCompletedTurn() {
         let turnID = "turn-1"
         let earlier = [
