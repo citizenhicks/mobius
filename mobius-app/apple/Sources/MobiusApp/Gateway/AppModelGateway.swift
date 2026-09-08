@@ -174,11 +174,15 @@ extension AppModel {
     }
 
     private func applySwarmsResponse(requestID: String?, swarms: [SwarmRecord]) {
-        if requestID == swarmMutationRequestID { swarmMutationRequestID = nil }
+        let completedMutation = requestID != nil && requestID == swarmMutationRequestID
+        if completedMutation { swarmMutationRequestID = nil }
         let posted = requestID != nil && requestID == swarmMessageRequestID
         if posted { swarmMessageRequestID = nil }
-        if applySwarms(swarms), posted {
-            completedSwarmMessageRequestID = requestID
+        if applySwarms(swarms) {
+            if completedMutation { swarmApplyState = .applied }
+            if posted { completedSwarmMessageRequestID = requestID }
+        } else if completedMutation {
+            swarmApplyState = .failed(localizedString("The gateway returned invalid swarm state."))
         }
     }
 
@@ -610,6 +614,7 @@ extension AppModel {
         }
         chat.sessionRequestID = nil
         workspace = payload.workspace
+        chat.attachedFolders = payload.attachedFolders
         gitStatus = payload.git
         workspaceError = nil
         isChangingWorkspace = false
@@ -1246,6 +1251,7 @@ extension AppModel {
     private func handleRejectedCapabilities(_ rejection: GatewayRejection) {
         if rejection.requestId == swarmMutationRequestID {
             swarmMutationRequestID = nil
+            swarmApplyState = configurationApplyState(for: rejection)
         }
         if rejection.requestId == swarmMessageRequestID {
             swarmMessageRequestID = nil

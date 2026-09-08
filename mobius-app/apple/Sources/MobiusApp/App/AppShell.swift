@@ -124,7 +124,9 @@ struct AppShell: View {
         }
         .quickLookPreview($model.previewURL)
         .sheet(isPresented: $model.showsCloudOffer) {
-            MobiusCloudOfferSheet()
+            PairingView(canCancel: true, initialSetup: .cloud)
+                .frame(maxWidth: 560)
+                .padding(MobiusSpace.xl)
                 .mobiusSheet(detents: [.large])
         }
         .sheet(

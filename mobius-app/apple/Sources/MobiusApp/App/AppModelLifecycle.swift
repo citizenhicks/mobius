@@ -74,6 +74,7 @@ extension AppModel {
         chat.isLoadingBotSessions = false
         chat.sessionMutationRequestID = nil
         swarmMutationRequestID = nil
+        swarmApplyState = .idle
         swarmMessageRequestID = nil
         completedSwarmMessageRequestID = nil
         botMutationRequestID = nil

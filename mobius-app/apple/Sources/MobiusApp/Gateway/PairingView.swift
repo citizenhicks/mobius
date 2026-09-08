@@ -5,26 +5,20 @@ struct PairingView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.mobiusPalette) private var palette
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    private enum Setup { case manual, cloud }
+    enum Setup { case manual, cloud }
     @State private var setup: Setup?
     let canCancel: Bool
+    @ScaledMetric(relativeTo: .caption) private var statusHeight = 80.0
+
+    init(canCancel: Bool, initialSetup: Setup? = nil) {
+        self.canCancel = canCancel
+        _setup = State(initialValue: initialSetup)
+    }
 
     var body: some View {
         ScrollView {
             VStack(spacing: MobiusSpace.xl) {
-                HStack {
-                    Text(verbatim: "möbius").font(.title3.weight(.semibold))
-                    Spacer()
-                    if canCancel {
-                        Button("Close", glyph: .x) {
-                            model.showsPairing = false
-                            dismiss()
-                        }
-                        .mobiusIconButton()
-                        .help("Close")
-                        .disabled(model.cloud.cloudAction.isRunning)
-                    }
-                }
+                header
                 SetupArtwork(scene: .gateway)
                     .frame(height: setup == nil ? 248 : 156)
                 VStack(spacing: MobiusSpace.xl) {
@@ -33,7 +27,6 @@ struct PairingView: View {
                             model.showsPairing = false
                             dismiss()
                         }
-                        otherConnectionOptions
                     } else {
                         VStack(spacing: MobiusSpace.s) {
                             Text("Connect a gateway")
@@ -61,11 +54,7 @@ struct PairingView: View {
                                     .tint(palette.panel)
                                     .foregroundStyle(.primary)
                             }
-                            if let error = model.cloud.cloudError {
-                                Text(verbatim: error)
-                                    .font(MobiusStyle.captionFont)
-                                    .foregroundStyle(palette.danger)
-                            }
+
                         }
                     }
                 }
@@ -88,7 +77,9 @@ struct PairingView: View {
         .scrollDismissesKeyboard(.interactively)
         .animation(reduceMotion ? nil : .smooth(duration: 0.35), value: setup)
         .onChange(of: hasPairingDetails, initial: true) { _, hasDetails in
-            if hasDetails && !model.cloud.cloudAction.isRunning { setup = .manual }
+            if hasDetails && setup != .cloud && !model.cloud.cloudAction.isRunning {
+                setup = .manual
+            }
         }
         .task(id: model.cloud.cloudSession?.userID) {
             await model.cloud.refreshCloudAccount()
@@ -142,38 +133,64 @@ struct PairingView: View {
             .help("Paste pairing setup")
             .frame(minHeight: MobiusStyle.rowTouch)
 
-            if let error = gateway.pairingError {
-                MobiusLabel(verbatim: error, glyph: .warning, iconColor: palette.danger)
-                    .foregroundStyle(palette.danger)
-                    .font(MobiusStyle.captionFont)
-            }
-            if isConnecting {
-                HStack(spacing: MobiusSpace.s) {
-                    MobiusSpinner(size: MobiusStyle.glyphLead, foreground: palette.accent)
-                    Text(
-                        gateway.connectionState == .authenticating
-                            ? "Authenticating with gateway" : "Connecting to gateway"
-                    )
-                    .font(MobiusStyle.captionFont)
-                }
-            }
             Button("Connect", action: model.pair)
                 .mobiusProminentButton()
                 .buttonBorderShape(.capsule)
                 .controlSize(.large)
                 .buttonSizing(.flexible)
                 .disabled(isConnecting)
-            otherConnectionOptions
         }
         .onSubmit { if !isConnecting { model.pair() } }
     }
 
-    private var otherConnectionOptions: some View {
-        Button("Other connection options") { setup = nil }
-            .buttonStyle(.mobiusPlain)
+    private var header: some View {
+        ScrollView {
+            Group {
+                if let error = setup == .cloud ? model.cloud.cloudError : model.gateway.pairingError
+                {
+                    Text(verbatim: error).foregroundStyle(palette.danger)
+                } else if isConnecting {
+                    HStack(spacing: MobiusSpace.s) {
+                        MobiusSpinner(size: MobiusStyle.glyphInline, foreground: palette.accent)
+                        Text(
+                            model.gateway.connectionState == .authenticating
+                                ? "Authenticating with gateway" : "Connecting to gateway")
+                    }
+                }
+            }
             .font(MobiusStyle.captionFont)
-            .frame(maxWidth: .infinity, minHeight: MobiusStyle.rowTouch)
-            .disabled(model.cloud.cloudAction.isRunning)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity)
+        }
+        .defaultScrollAnchor(.center, for: .alignment)
+        .scrollBounceBehavior(.basedOnSize)
+        .padding(.horizontal, MobiusStyle.rowTouch + MobiusSpace.s)
+        .frame(height: statusHeight)
+        .overlay(alignment: .topLeading) {
+            if setup != nil {
+                Button {
+                    setup = nil
+                } label: {
+                    MobiusIcon(.caretRight, gutter: false)
+                        .rotationEffect(.degrees(180))
+                }
+                .mobiusIconButton()
+                .accessibilityLabel("Other connection options")
+                .help("Other connection options")
+                .disabled(model.cloud.cloudAction.isRunning || isConnecting)
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            if canCancel {
+                Button("Close", glyph: .x) {
+                    model.showsPairing = false
+                    dismiss()
+                }
+                .mobiusIconButton()
+                .help("Close")
+                .disabled(model.cloud.cloudAction.isRunning)
+            }
+        }
     }
 
 }

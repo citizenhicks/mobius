@@ -68,6 +68,20 @@ extension AppModelTests {
         XCTAssertEqual(sessionID, "chat-1")
         XCTAssertEqual(folder, "/srv/other")
         XCTAssertEqual(model.chat.sessionMutationRequestID, requestID)
+        XCTAssertNil(model.chat.attachedFolders)
+        model.bots = [bot()]
+        model.gateway.handle(
+            .sessionChanged(
+                sessionReady(
+                    latestSequence: 1, attachedFolders: ["/srv/other"])))
+        XCTAssertEqual(model.chat.attachedFolders, ["/srv/other"])
+        model.gateway.handle(
+            .sessionChanged(
+                sessionReady(
+                    latestSequence: 1, sessionID: "chat-2", attachedFolders: ["/srv/unrelated"])))
+        XCTAssertEqual(model.chat.attachedFolders, ["/srv/other"])
+        model.chat.resetSessionState()
+        XCTAssertNil(model.chat.attachedFolders)
     }
 
     func testNewChatBotCanChangeUntilFirstSendCreatesSession() async throws {
@@ -160,6 +174,26 @@ extension AppModelTests {
         XCTAssertEqual(model.toast?.tone, .info)
     }
 
+    func testSwarmMutationFailureIsRetainedUntilRetry() throws {
+        let model = try model { _ in }
+        model.gateway.connectionState = .ready
+        model.bots = [
+            bot(id: "leader", collaborationEnabled: true),
+            bot(id: "member", collaborationEnabled: true),
+        ]
+        model.createSwarm(title: "Team", leaderBotID: "leader", memberBotIDs: ["member"])
+        let first = try XCTUnwrap(model.swarmMutationRequestID)
+        model.gateway.handle(
+            .rejected(
+                GatewayRejection(
+                    requestId: first, code: "invalid_config", message: "Try again", fatal: false)))
+        XCTAssertNil(model.swarmMutationRequestID)
+        XCTAssertEqual(model.swarmApplyState, .invalid("Try again"))
+        model.createSwarm(title: "Team", leaderBotID: "leader", memberBotIDs: ["member"])
+        XCTAssertNotNil(model.swarmMutationRequestID)
+        XCTAssertEqual(model.swarmApplyState, .applying)
+    }
+
     func testCreatingSwarmUsesOptedInUnclaimedBotsAndWaitsForCatalog() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
@@ -201,6 +235,7 @@ extension AppModelTests {
         XCTAssertEqual(leaderBotID, "bot-1")
         XCTAssertEqual(memberBotIDs, ["bot-2"])
         XCTAssertEqual(model.swarmMutationRequestID, requestID)
+        XCTAssertEqual(model.swarmApplyState, .applying)
         XCTAssertFalse(model.canMutateSwarm)
 
         let swarm = SwarmRecord(
@@ -217,6 +252,7 @@ extension AppModelTests {
         model.gateway.handle(.swarms(requestID: requestID, swarms: [swarm]))
 
         XCTAssertNil(model.swarmMutationRequestID)
+        XCTAssertEqual(model.swarmApplyState, .applied)
         XCTAssertTrue(model.canMutateSwarm)
         XCTAssertEqual(model.swarm(containingBot: "bot-2")?.title, "Quiet Foxes")
         XCTAssertEqual(model.availableBotsForSwarm().map(\.id), ["bot-3"])

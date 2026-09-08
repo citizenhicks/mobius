@@ -131,8 +131,11 @@ extension AppModel {
         guard canMutateSwarm else { return }
         let id = requestID(requestPrefix)
         swarmMutationRequestID = id
-        gateway.transmit(request(id)) { [weak self] _ in
-            if self?.swarmMutationRequestID == id { self?.swarmMutationRequestID = nil }
+        swarmApplyState = .applying
+        gateway.transmit(request(id)) { [weak self] message in
+            guard self?.swarmMutationRequestID == id else { return }
+            self?.swarmMutationRequestID = nil
+            self?.swarmApplyState = .failed(message)
         }
     }
 }

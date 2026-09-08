@@ -86,6 +86,7 @@ pub struct SessionReadyPayload {
     pub latest_sequence: u64,
     pub next_before_sequence: Option<u64>,
     pub workspace: WorkspaceInfo,
+    pub attached_folders: Vec<PathBuf>,
     pub git: Option<GitStatus>,
     pub session: SessionConfiguredEvent,
     pub contributions: Vec<FrontendContribution>,

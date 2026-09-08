@@ -1289,6 +1289,7 @@ mod tests {
         SessionReadyPayload {
             latest_sequence: 0,
             next_before_sequence: None,
+            attached_folders: Vec::new(),
             workspace: WorkspaceInfo {
                 id: "workspace".into(),
                 path: "/tmp".into(),

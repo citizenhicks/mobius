@@ -47,48 +47,6 @@ struct MobiusCloudOfferButton: View {
     }
 }
 
-struct MobiusCloudOfferSheet: View {
-    @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.mobiusPalette) private var palette
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: MobiusSpace.xl) {
-                    SetupArtwork(scene: .gateway)
-                        .frame(height: model.cloud.cloudAction.isRunning ? 156 : 220)
-                    MobiusCloudOfferContent { dismiss() }
-                        .padding(MobiusSpace.xl)
-                        .background(palette.raised, in: .rect(cornerRadius: 28))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 28)
-                                .strokeBorder(
-                                    palette.line.opacity(0.6), lineWidth: MobiusStyle.borderWidth)
-                        }
-                        .shadow(color: palette.shadow.opacity(0.05), radius: 20, y: 12)
-                }
-                .frame(maxWidth: 460)
-                .padding(.horizontal, MobiusSpace.xl)
-                .padding(.top, MobiusSpace.l)
-                .padding(.bottom, MobiusSpace.xl)
-                .frame(maxWidth: .infinity)
-            }
-            .scrollIndicators(.hidden)
-            .scrollBounceBehavior(.basedOnSize)
-            .background(palette.canvas)
-            .navigationTitle("möbius Cloud")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Close") { dismiss() }
-                        .disabled(model.cloud.cloudAction.isRunning)
-                }
-            }
-        }
-        .interactiveDismissDisabled(model.cloud.cloudAction.isRunning)
-    }
-}
-
 struct MobiusCloudOfferContent: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
@@ -219,13 +177,6 @@ struct MobiusCloudOfferContent: View {
     /// Keep Apple's branded authorization control and the existing purchase boundaries.
     private var signupBoundary: some View {
         VStack(spacing: MobiusSpace.m) {
-            if let cloudError = model.cloud.cloudError {
-                Text(verbatim: cloudError)
-                    .font(MobiusStyle.captionFont)
-                    .foregroundStyle(palette.danger)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
             if model.cloud.cloudAction.isRunning {
                 EmptyView()
             } else if model.cloud.cloudAccount?.subscribed == true {

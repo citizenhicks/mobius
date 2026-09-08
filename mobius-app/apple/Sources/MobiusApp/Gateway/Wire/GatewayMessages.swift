@@ -1011,6 +1011,7 @@ struct SessionReadyPayload: Decodable, Sendable {
     let latestSequence: UInt64
     let nextBeforeSequence: UInt64?
     let workspace: WorkspaceInfo
+    let attachedFolders: [String]
     let git: GitStatus?
     let session: SessionConfigured
     let contributions: [FrontendContribution]

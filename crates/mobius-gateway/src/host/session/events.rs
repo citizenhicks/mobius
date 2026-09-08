@@ -272,6 +272,7 @@ impl HostState {
             latest_sequence: self.sequence,
             next_before_sequence: self.next_before_sequence,
             workspace: self.spec.workspace_info(),
+            attached_folders: self.spec.attached_folders.clone(),
             git: git_status(&self.running.gateway_sandbox).await,
             session: self.running.session.clone(),
             contributions: self.running.frontend.contributions().to_vec(),

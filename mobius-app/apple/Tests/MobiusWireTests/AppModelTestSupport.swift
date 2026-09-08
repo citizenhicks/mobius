@@ -514,6 +514,7 @@ final class AppModelTests: XCTestCase {
         modelRoute: String = "openai",
         contributions: [FrontendContribution] = [],
         widgets: [SessionWidget] = [],
+        attachedFolders: [String] = [],
         compactionCount: UInt64 = 0,
         runStats: RunStats = RunStats()
     ) -> SessionReadyPayload {
@@ -521,6 +522,7 @@ final class AppModelTests: XCTestCase {
             latestSequence: latestSequence,
             nextBeforeSequence: nextBeforeSequence,
             workspace: WorkspaceInfo(id: "workspace-1", path: "/srv/mobius"),
+            attachedFolders: attachedFolders,
             git: nil,
             session: SessionConfigured(
                 sessionId: sessionID,

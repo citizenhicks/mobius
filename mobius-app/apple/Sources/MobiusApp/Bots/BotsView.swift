@@ -3,6 +3,7 @@ import SwiftUI
 struct BotsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showsNewBot = false
     @State private var showsNewSwarm = false
     @State private var botToDelete: BotRecord?
@@ -21,6 +22,12 @@ struct BotsView: View {
             sharesHeaderBackground: true,
             headerAccessory: { headerActions }
         ) {
+            if showsNewBot {
+                Section {
+                    NewBotForm { showsNewBot = false }
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+            }
             Section("Bots") {
                 if model.bots.isEmpty {
                     Text("No Bots yet.")
@@ -44,6 +51,12 @@ struct BotsView: View {
                 }
             }
 
+            if showsNewSwarm {
+                Section {
+                    NewSwarmForm { showsNewSwarm = false }
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+            }
             Section("Swarms") {
                 if model.swarms.isEmpty {
                     Text("No swarms yet.")
@@ -73,12 +86,10 @@ struct BotsView: View {
             model.refreshBots()
             model.refreshRoutines()
         }
-        .sheet(isPresented: $showsNewBot) {
-            NewBotSheet()
-        }
-        .sheet(isPresented: $showsNewSwarm) {
-            NewSwarmSheet()
-        }
+        .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: showsNewBot)
+        .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: model.bots.map(\.id))
+        .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: showsNewSwarm)
+        .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: model.swarms.map(\.id))
         .sheet(item: $model.presentedRoutineRun, onDismiss: model.closeRoutineRunPreview) { _ in
             RoutineRunTranscriptSheet()
         }
@@ -139,7 +150,7 @@ struct BotsView: View {
             } label: {
                 MobiusIcon(.aiScan, gutter: false)
             }
-            .disabled(!model.canMutateBots)
+            .disabled(!model.canMutateBots || showsNewBot || showsNewSwarm)
             .groupedHeaderAction(prominent: true)
             .accessibilityLabel("New Bot")
             .help("New Bot")
@@ -149,7 +160,7 @@ struct BotsView: View {
                 MobiusIcon(.swarm, gutter: false)
             }
             .disabled(
-                !model.canMutateSwarm
+                !model.canMutateSwarm || showsNewSwarm || showsNewBot
                     || model.bots.contains(where: \.collaborationEnabled)
                         && model.availableBotsForSwarm().count < 2
             )
@@ -309,160 +320,223 @@ struct BotOwnershipLine: View {
     }
 }
 
-private struct NewBotSheet: View {
+struct NewBotForm: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.mobiusPalette) private var palette
     @State private var name = ""
     @State private var description = ""
+    @State private var submitted = false
+    @State private var submittedRequestID: String?
+    let onClose: () -> Void
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    TextField("Name", text: $name)
-                        .textInputAutocapitalization(.words)
-                    TextField(
-                        "Operational description",
-                        text: $description,
-                        axis: .vertical
-                    )
-                    .lineLimit(3...6)
-                } header: {
-                    Text("Identity")
-                } footer: {
-                    Text("möbius assigns the handle, color, and current Bot defaults.")
+        VStack(alignment: .leading, spacing: MobiusSpace.l) {
+            HStack(spacing: MobiusSpace.m) {
+                MobiusIcon(.aiScan, size: 36, foreground: palette.accent)
+                    .padding(MobiusSpace.m)
+                    .background(palette.accentSoft, in: .rect(cornerRadius: 16))
+                VStack(alignment: .leading, spacing: MobiusSpace.xs) {
+                    Text(name.nonEmpty ?? String(localized: "Your Bot"))
+                        .font(.headline)
+                    Text(description.nonEmpty ?? String(localized: "A purpose of its own"))
+                        .font(MobiusStyle.captionFont)
+                        .foregroundStyle(palette.muted)
+                        .lineLimit(2)
+                }
+                Spacer(minLength: 0)
+            }
+            TextField("Name", text: $name)
+                .textInputAutocapitalization(.words)
+                .padding(MobiusSpace.m)
+                .background(palette.recessed, in: MobiusStyle.controlShape)
+                .disabled(isSaving)
+            TextField("Operational description", text: $description, axis: .vertical)
+                .lineLimit(3...6)
+                .padding(MobiusSpace.m)
+                .background(palette.recessed, in: MobiusStyle.controlShape)
+                .disabled(isSaving)
+            Text("möbius assigns the handle, color, and current Bot defaults.")
+                .font(MobiusStyle.captionFont)
+                .foregroundStyle(palette.muted)
+            if submitted {
+                switch model.botApplyState {
+                case .busy(let message), .conflict(let message), .invalid(let message),
+                    .failed(let message):
+                    Text(verbatim: message)
+                        .font(MobiusStyle.captionFont)
+                        .foregroundStyle(palette.danger)
+                default: EmptyView()
                 }
             }
-            .scrollContentBackground(.hidden)
-            .navigationTitle("New Bot")
-            .toolbarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel", action: dismiss.callAsFunction)
+            HStack(spacing: MobiusSpace.m) {
+                Button("Cancel", action: onClose)
+                    .buttonStyle(.mobiusGlass)
+                    .disabled(isSaving)
+                Button(action: create) {
+                    if isSaving {
+                        ProgressView().frame(maxWidth: .infinity)
+                    } else {
+                        Text("Create").frame(maxWidth: .infinity)
+                    }
                 }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Create", action: create)
-                        .disabled(!canCreate)
-                }
+                .mobiusProminentButton()
+                .accessibilityLabel("Create")
+                .disabled(!canCreate)
             }
+            .buttonBorderShape(.capsule)
+            .controlSize(.large)
+            .buttonSizing(.flexible)
         }
-        .mobiusSheet()
+        .padding(.vertical, MobiusSpace.s)
+        .onChange(of: model.botMutationRequestID) { old, new in
+            guard let submittedRequestID, old == submittedRequestID, new == nil else { return }
+            self.submittedRequestID = nil
+            if model.botApplyState == .applied { onClose() }
+        }
+    }
+
+    private var isSaving: Bool {
+        submittedRequestID != nil && submittedRequestID == model.botMutationRequestID
     }
 
     private var canCreate: Bool {
-        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && model.canMutateBots
+        name.nonEmpty != nil && description.nonEmpty != nil && model.canMutateBots
     }
 
     private func create() {
+        guard canCreate else { return }
+        submitted = true
         model.createBot(name: name, description: description)
-        dismiss()
+        submittedRequestID = model.botMutationRequestID
     }
 }
 
-private struct NewSwarmSheet: View {
+struct NewSwarmForm: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.mobiusPalette) private var palette
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var title = ""
     @State private var leaderBotID = ""
     @State private var memberBotIDs: Set<String> = []
+    @State private var submitted = false
+    @State private var submittedRequestID: String?
+    let onClose: () -> Void
 
     var body: some View {
-        NavigationStack {
-            List {
-                Section("Name") {
-                    TextField("Swarm name", text: $title)
+        VStack(alignment: .leading, spacing: MobiusSpace.l) {
+            HStack(spacing: MobiusSpace.m) {
+                MobiusIcon(.swarm, size: 36, foreground: palette.accent)
+                    .padding(MobiusSpace.m)
+                    .background(palette.accentSoft, in: .rect(cornerRadius: 16))
+                VStack(alignment: .leading, spacing: MobiusSpace.xs) {
+                    Text(title.nonEmpty ?? String(localized: "New Swarm")).font(.headline)
+                    Text("Leader and coworkers")
+                        .font(MobiusStyle.captionFont)
+                        .foregroundStyle(palette.muted)
                 }
-                Section("Leader") {
-                    Picker("Leader", selection: $leaderBotID) {
-                        Text("Choose a leader").tag("")
-                        ForEach(availableBots) { bot in
-                            Text(verbatim: "\(bot.name) · @\(bot.handle)").tag(bot.id)
-                        }
-                    }
+            }
+            TextField("Swarm name", text: $title)
+                .textInputAutocapitalization(.words)
+                .padding(MobiusSpace.m)
+                .background(palette.recessed, in: MobiusStyle.controlShape)
+                .disabled(isSaving)
+            Picker("Leader", selection: $leaderBotID) {
+                Text("Choose a leader").tag("")
+                ForEach(availableBots) { bot in
+                    Text(verbatim: "\(bot.name) · @\(bot.handle)").tag(bot.id)
                 }
-                Section {
-                    ForEach(availableBots.filter { $0.id != leaderBotID }) { bot in
-                        Button {
-                            toggle(bot.id)
-                        } label: {
-                            HStack(spacing: MobiusSpace.s) {
-                                MobiusIcon(
-                                    .aiScan,
-                                    foreground: bot.tint.color
-                                )
-                                VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
-                                    MobiusTitleText(verbatim: bot.name)
-                                    Text(verbatim: "@\(bot.handle)")
-                                        .font(MobiusStyle.captionFont)
-                                        .foregroundStyle(palette.muted)
-                                }
-                                Spacer(minLength: 0)
-                                if memberBotIDs.contains(bot.id) {
-                                    MobiusIcon(.check, foreground: palette.accent)
-                                        .accessibilityHidden(true)
-                                }
+            }
+            .pickerStyle(.menu)
+            .disabled(isSaving)
+            VStack(alignment: .leading, spacing: MobiusSpace.s) {
+                Text("Coworkers").font(MobiusStyle.captionFont).foregroundStyle(palette.muted)
+                ForEach(availableBots.filter { $0.id != leaderBotID }) { bot in
+                    Button {
+                        if !memberBotIDs.insert(bot.id).inserted { memberBotIDs.remove(bot.id) }
+                    } label: {
+                        HStack(spacing: MobiusSpace.m) {
+                            SettingsRowLabel(
+                                title: .verbatim(bot.name), detail: .verbatim("@\(bot.handle)")
+                            ) {
+                                MobiusIcon(.aiScan, foreground: bot.tint.color)
                             }
-                            .contentShape(Rectangle())
+                            Spacer(minLength: 0)
+                            if memberBotIDs.contains(bot.id) {
+                                MobiusIcon(.checkCircle, foreground: palette.accent)
+                            } else {
+                                Circle().strokeBorder(palette.line, lineWidth: 1)
+                                    .frame(
+                                        width: MobiusStyle.glyphInline,
+                                        height: MobiusStyle.glyphInline)
+                            }
                         }
-                        .buttonStyle(.mobiusPlain)
-                        .accessibilityValue(
-                            memberBotIDs.contains(bot.id) ? Text("Selected") : Text("Not selected")
-                        )
+                        .frame(minHeight: MobiusStyle.rowTouch)
+                        .contentShape(.rect)
                     }
-                } header: {
-                    Text("Coworkers")
-                } footer: {
-                    Text(
-                        "Enable Swarm collaboration in Bot capabilities to make a Bot available here. Each Bot can belong to one swarm."
-                    )
+                    .buttonStyle(.mobiusPlain)
+                    .accessibilityValue(
+                        memberBotIDs.contains(bot.id) ? Text("Selected") : Text("Not selected"))
                 }
             }
-            .scrollContentBackground(.hidden)
-            .navigationTitle("New Swarm")
-            .toolbarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel", action: dismiss.callAsFunction)
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Create", action: create)
-                        .disabled(!canCreate)
+            .disabled(isSaving)
+            .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: leaderBotID)
+            Text(
+                "Enable Swarm collaboration in Bot capabilities to make a Bot available here. Each Bot can belong to one swarm."
+            )
+            .font(MobiusStyle.captionFont)
+            .foregroundStyle(palette.muted)
+            if submitted {
+                switch model.swarmApplyState {
+                case .busy(let message), .conflict(let message), .invalid(let message),
+                    .failed(let message):
+                    Text(verbatim: message).font(MobiusStyle.captionFont).foregroundStyle(
+                        palette.danger)
+                default: EmptyView()
                 }
             }
+            HStack(spacing: MobiusSpace.m) {
+                Button("Cancel", action: onClose)
+                    .buttonStyle(.mobiusGlass)
+                    .disabled(isSaving)
+                Button(action: create) {
+                    if isSaving {
+                        ProgressView().frame(maxWidth: .infinity)
+                    } else {
+                        Text("Create").frame(maxWidth: .infinity)
+                    }
+                }
+                .mobiusProminentButton()
+                .accessibilityLabel("Create")
+                .disabled(!canCreate)
+            }
+            .buttonBorderShape(.capsule)
+            .controlSize(.large)
+            .buttonSizing(.flexible)
         }
-        .mobiusSheet()
-        .onChange(of: leaderBotID) { _, newValue in
-            memberBotIDs.remove(newValue)
+        .padding(.vertical, MobiusSpace.s)
+        .onChange(of: leaderBotID) { _, newValue in memberBotIDs.remove(newValue) }
+        .onChange(of: model.swarmMutationRequestID) { old, new in
+            guard let submittedRequestID, old == submittedRequestID, new == nil else { return }
+            self.submittedRequestID = nil
+            if model.swarmApplyState == .applied { onClose() }
         }
     }
 
-    private var availableBots: [BotRecord] {
-        model.availableBotsForSwarm()
+    private var availableBots: [BotRecord] { model.availableBotsForSwarm() }
+    private var isSaving: Bool {
+        submittedRequestID != nil && submittedRequestID == model.swarmMutationRequestID
     }
-
     private var canCreate: Bool {
         let allowed = Set(availableBots.map(\.id))
-        return !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && allowed.contains(leaderBotID)
-            && !memberBotIDs.isEmpty
-            && memberBotIDs.isSubset(of: allowed)
-            && model.canMutateSwarm
+        return title.nonEmpty != nil && allowed.contains(leaderBotID)
+            && !memberBotIDs.isEmpty && !memberBotIDs.contains(leaderBotID)
+            && memberBotIDs.isSubset(of: allowed) && model.canMutateSwarm
     }
-
-    private func toggle(_ id: String) {
-        if !memberBotIDs.insert(id).inserted { memberBotIDs.remove(id) }
-    }
-
     private func create() {
-        model.createSwarm(
-            title: title,
-            leaderBotID: leaderBotID,
-            memberBotIDs: memberBotIDs
-        )
-        dismiss()
+        guard canCreate else { return }
+        submitted = true
+        model.createSwarm(title: title, leaderBotID: leaderBotID, memberBotIDs: memberBotIDs)
+        submittedRequestID = model.swarmMutationRequestID
     }
 }
 

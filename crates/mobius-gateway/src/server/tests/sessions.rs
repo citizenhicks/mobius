@@ -1426,6 +1426,7 @@ async fn attached_folder_is_persisted_for_tool_access() {
             ServerMessage::SessionChanged { payload }
                 if payload.session.session_id == session_id =>
             {
+                assert_eq!(payload.attached_folders, vec![attached.clone()]);
                 changed = true;
             }
             _ => {}

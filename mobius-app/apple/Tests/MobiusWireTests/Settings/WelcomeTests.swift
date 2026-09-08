@@ -15,6 +15,7 @@ final class WelcomeTests: XCTestCase {
         let previous = scene.keyWindow
         let window = UIWindow(windowScene: scene)
         window.frame = CGRect(x: 0, y: 0, width: 390, height: 780)
+        window.overrideUserInterfaceStyle = .light
         let host = UIHostingController(
             rootView: PairingView(canCancel: true)
                 .environment(model)
@@ -46,11 +47,23 @@ final class WelcomeTests: XCTestCase {
         XCTAssertTrue(inputs.contains { $0.text == "wss://gateway.example" })
         let code = try XCTUnwrap(inputs.first { $0.isSecureTextEntry })
         XCTAssertEqual(code.text, "TEST-CODE")
+        func scrollView(in view: UIView) -> UIScrollView? {
+            if let scroll = view as? UIScrollView { return scroll }
+            return view.subviews.lazy.compactMap { scrollView(in: $0) }.first
+        }
+        let scroll = try XCTUnwrap(scrollView(in: host.view))
+        let formSize = scroll.contentSize
+        model.gateway.pairingError =
+            "The one-time code has expired. Request a new code from your gateway and try again."
+        try await Task.sleep(for: .milliseconds(50))
+        host.view.layoutIfNeeded()
+        XCTAssertEqual(
+            scroll.contentSize, formSize, "Header messages must not push the form controls")
         let attachment = XCTAttachment(
             image: UIGraphicsImageRenderer(bounds: host.view.bounds).image { _ in
                 host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
             })
-        attachment.name = "Gateway pairing with pasted setup"
+        attachment.name = "Gateway pairing with status above the form"
         attachment.lifetime = .keepAlways
         add(attachment)
     }
@@ -74,8 +87,9 @@ final class WelcomeTests: XCTestCase {
                 || view.subviews.contains { hasAppleButton(in: $0) }
         }
         for dark in [false, true] {
+            window.overrideUserInterfaceStyle = dark ? .dark : .light
             let host = UIHostingController(
-                rootView: MobiusCloudOfferSheet()
+                rootView: PairingView(canCancel: true, initialSetup: .cloud)
                     .environment(model)
                     .environment(\.mobiusPalette, MobiusPalette(dark ? .dark : .light))
                     .environment(\.scenePhase, .inactive)
@@ -94,6 +108,52 @@ final class WelcomeTests: XCTestCase {
                     host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
                 })
             attachment.name = dark ? "Cloud offer dark" : "Cloud offer light"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+    }
+
+    func testInlineSetupFormsRenderAtCompactWidth() async throws {
+        let suite = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let model = AppModel(store: GatewayStore(defaults: defaults), settingsDefaults: defaults)
+        model.workspace = WorkspaceInfo(id: "workspace", path: "/srv/projects/mobius")
+        model.chat.selectedModelRoute = "openai/gpt-5.6-sol"
+        model.chat.attachedFolders = ["/srv/design/assets", "/srv/shared/product-research"]
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let previous = scene.keyWindow
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 350, height: 780)
+        window.overrideUserInterfaceStyle = .light
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previous?.makeKeyAndVisible()
+        }
+        for (name, content) in [
+            ("New Bot", AnyView(NewBotForm {})),
+            ("New Swarm", AnyView(NewSwarmForm {})),
+            ("Install extension", AnyView(InstallExtensionForm {})),
+            ("Chat info", AnyView(ChatInfoView())),
+        ] {
+            let host = UIHostingController(
+                rootView:
+                    content
+                    .padding(24)
+                    .environment(model)
+                    .environment(\.mobiusPalette, MobiusPalette(.light))
+                    .preferredColorScheme(.light))
+            window.rootViewController = host
+            window.makeKeyAndVisible()
+            try await Task.sleep(for: .milliseconds(50))
+            host.view.layoutIfNeeded()
+            XCTAssertGreaterThan(host.view.intrinsicContentSize.height, 100)
+            let attachment = XCTAttachment(
+                image: UIGraphicsImageRenderer(bounds: host.view.bounds).image { _ in
+                    host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
+                })
+            attachment.name = name
             attachment.lifetime = .keepAlways
             add(attachment)
         }

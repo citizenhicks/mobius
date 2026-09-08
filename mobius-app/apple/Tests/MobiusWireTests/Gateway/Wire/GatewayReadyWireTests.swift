@@ -218,6 +218,7 @@ extension GatewayWireTests {
         XCTAssertEqual(payload.compactionCount, 2)
         XCTAssertEqual(payload.contextLimitTokens, 200_000)
         XCTAssertEqual(payload.workspace.path, "/srv/mobius")
+        XCTAssertEqual(payload.attachedFolders, ["/srv/other"])
         XCTAssertEqual(payload.git?.currentBranch, "main")
         XCTAssertEqual(payload.git?.branches, ["feature", "main"])
         XCTAssertEqual(payload.session.sessionId, "chat-1")

@@ -91,12 +91,23 @@ struct ChatView: View {
                     MobiusTitleText(verbatim: chatTitle)
                         .font(MobiusStyle.titleFont)
                         .lineLimit(1)
-                    if !chatSubtitle.isEmpty {
-                        Text(verbatim: chatSubtitle)
-                            .font(MobiusStyle.captionFont)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                    HStack(spacing: MobiusSpace.xs) {
+                        if !chatSubtitle.isEmpty {
+                            Text(verbatim: chatSubtitle)
+                                .lineLimit(1)
+                        }
+                        if let folders = model.chat.attachedFolders, !folders.isEmpty {
+                            HStack(spacing: MobiusSpace.xxs) {
+                                MobiusIcon(.folderPlus, size: 12)
+                                Text(folders.count, format: .number)
+                            }
+                            .fixedSize()
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel(Text("Folders: \(folders.count)"))
+                        }
                     }
+                    .font(MobiusStyle.captionFont)
+                    .foregroundStyle(.secondary)
                 }
                 .accessibilityElement(children: .combine)
             }
@@ -188,31 +199,12 @@ private struct ChatOptionsMenu: View {
     @Binding var presentedWidget: MountedWidget?
     @Binding var presentedBotSettings: BotRecord?
     @Binding var showsFolderAttachmentBrowser: Bool
+    @State private var showsChatInfo = false
 
     var body: some View {
         HeaderOptionsMenu(label: "Chat options") {
-            Section("Details") {
-                Button {
-                } label: {
-                    Text(verbatim: model.workspace?.path ?? "No chat selected")
-                }
-                .disabled(true)
-                if let session = model.selectedSession,
-                    let bot = model.bot(for: session)
-                {
-                    Button {
-                    } label: {
-                        botIdentityLabel(bot)
-                    }
-                    .disabled(true)
-                }
-                if let swarm = model.selectedBotSwarm {
-                    Button {
-                    } label: {
-                        MobiusLabel(verbatim: swarm.title, glyph: .swarm)
-                    }
-                    .disabled(true)
-                }
+            Button("Chat info", glyph: .info) {
+                showsChatInfo = true
             }
             Section("Workspace") {
                 if let git = model.gitStatus, !git.currentBranch.isEmpty {
@@ -323,23 +315,9 @@ private struct ChatOptionsMenu: View {
             }
         }
         .groupedHeaderAction()
-    }
-
-    @ViewBuilder
-    private func botIdentityLabel(_ bot: BotRecord) -> some View {
-        let title = "\(bot.name) (@\(bot.handle))"
-        if let image = MobiusGlyph.aiScan.menuImage(bot.tint.color) {
-            Label {
-                Text(verbatim: title)
-            } icon: {
-                image
-            }
-        } else {
-            MobiusLabel(
-                verbatim: title,
-                glyph: .aiScan,
-                iconColor: bot.tint.color
-            )
+        .popover(isPresented: $showsChatInfo) {
+            ChatInfoView()
+                .presentationCompactAdaptation(.popover)
         }
     }
 
@@ -349,6 +327,67 @@ private struct ChatOptionsMenu: View {
         }
         if widget.widget.content != nil {
             presentedWidget = widget
+        }
+    }
+}
+
+struct ChatInfoView: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: MobiusSpace.l) {
+                Text("Chat info")
+                    .font(MobiusStyle.titleFont)
+                detail("Workspace", value: model.workspace?.path)
+                if let bot = model.selectedBot {
+                    detail("Bot", value: "\(bot.name) (@\(bot.handle))")
+                }
+                detail("Swarm", value: model.selectedBotSwarm?.title)
+                detail("Model", value: model.chat.selectedModelRoute)
+                detail("Gateway", value: model.gateway.gatewayMachineName)
+                Divider()
+                VStack(alignment: .leading, spacing: MobiusSpace.s) {
+                    Text("Attached folders")
+                        .font(MobiusStyle.captionFont)
+                        .foregroundStyle(.secondary)
+                    if let folders = model.chat.attachedFolders {
+                        if folders.isEmpty {
+                            Text("No attached folders")
+                                .foregroundStyle(.secondary)
+                        }
+                        ForEach(folders, id: \.self) { folder in
+                            HStack(alignment: .top, spacing: MobiusSpace.s) {
+                                MobiusIcon(.folderPlus)
+                                Text(verbatim: folder)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                    } else {
+                        Text("Connect to load attached folders.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .font(MobiusStyle.bodyFont)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(MobiusSpace.l)
+        }
+        .frame(width: 300, height: 440)
+    }
+
+    private func detail(_ title: LocalizedStringKey, value: String?) -> some View {
+        VStack(alignment: .leading, spacing: MobiusSpace.xs) {
+            Text(title)
+                .font(MobiusStyle.captionFont)
+                .foregroundStyle(.secondary)
+            if let value, !value.isEmpty {
+                Text(verbatim: value)
+                    .textSelection(.enabled)
+            } else {
+                Text("None")
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 }

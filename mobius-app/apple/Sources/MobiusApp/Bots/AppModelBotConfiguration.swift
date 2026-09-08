@@ -68,6 +68,7 @@ extension AppModel {
         let description = rawDescription.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canMutateBots, !name.isEmpty, !description.isEmpty else { return }
         let id = requestID("bot-create")
+        botApplyState = .applying
         botMutationRequestID = id
         botMutationSuccessMessage = localizedString("Bot created.")
         gateway.transmit(

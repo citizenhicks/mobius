@@ -183,12 +183,28 @@ struct ProviderMark: View {
 private struct AddProviderSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.mobiusPalette) private var palette
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var selection
     @State private var provider: String?
 
     var body: some View {
         NavigationStack {
             Form {
-                if let provider, model.providerDraft != nil {
+                if let provider,
+                    let status = model.providerStatuses.first(where: { $0.provider == provider }),
+                    model.providerDraft != nil
+                {
+                    Section {
+                        Button {
+                            self.provider = nil
+                        } label: {
+                            providerLabel(status)
+                        }
+                        .buttonStyle(.mobiusPlain)
+                        .accessibilityLabel("Choose another provider")
+                        .disabled(model.isApplyingConfiguration)
+                    }
                     ProviderFormSections(provider: provider, isNew: true)
                 } else {
                     Section {
@@ -209,7 +225,9 @@ private struct AddProviderSheet: View {
                     }
                 }
             }
-            .navigationTitle(provider == nil ? "Add provider" : "New setup")
+            .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: provider)
+            .scrollDismissesKeyboard(.interactively)
+            .navigationTitle("Add provider")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -238,19 +256,30 @@ private struct AddProviderSheet: View {
         ForEach(model.providerStatuses.filter { $0.auth == auth }) { status in
             Button {
                 model.addProviderInstance(status.provider)
+                guard model.providerDraft?.provider == status.provider else { return }
                 provider = status.provider
             } label: {
-                SettingsRowLabel(
-                    title: .verbatim(status.label),
-                    detail: .verbatim(
-                        "\(status.description) · \(String(localized: status.toolDiscovery.label))"
-                    )
-                )
-                .contentShape(Rectangle())
+                providerLabel(status)
             }
             .buttonStyle(.plain)
         }
     }
+    private func providerLabel(_ status: ProviderStatus) -> some View {
+        HStack(spacing: MobiusSpace.m) {
+            SettingsRowLabel(
+                title: .verbatim(status.label),
+                detail: .verbatim(status.description)
+            ) {
+                ProviderMark(symbol: status.symbol, tint: .appDefault)
+            }
+            if provider != nil {
+                Text("Change").font(MobiusStyle.captionFont).foregroundStyle(palette.accent)
+            }
+        }
+        .contentShape(.rect)
+        .matchedGeometryEffect(id: status.provider, in: selection, isSource: true)
+    }
+
 }
 
 // MARK: - Detail

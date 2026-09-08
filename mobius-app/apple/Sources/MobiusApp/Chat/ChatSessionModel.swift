@@ -72,6 +72,7 @@ final class ChatSessionModel {
     private(set) var composerBlurRequest = 0
     var composerAttachments: [ComposerAttachment] = []
     var fileThumbnails: [FileThumbnailKey: CGImage] = [:]
+    var attachedFolders: [String]?
     var sessionFiles: [SessionFileRecord] = []
     var isLoadingSessionFiles = false
     var activeTurnID: String?
@@ -521,6 +522,7 @@ final class ChatSessionModel {
         messageNavigationRequest = nil
         if !preservingComposerAttachments { discardComposerAttachments() }
         cancelSessionFileThumbnailDownloads()
+        attachedFolders = nil
         sessionFiles = []
         sessionFilesRequestID = nil
         isLoadingSessionFiles = false

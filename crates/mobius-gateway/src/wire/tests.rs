@@ -1186,6 +1186,7 @@ fn server_frame_decodes_session_opened_with_a_widget_action_tag() {
         "request_id": "request-open",
         "payload": {
             "latest_sequence": 4,
+            "attached_folders": [],
             "next_before_sequence": 2,
             "workspace": { "id": "workspace-a", "path": "/workspace" },
             "git": null,

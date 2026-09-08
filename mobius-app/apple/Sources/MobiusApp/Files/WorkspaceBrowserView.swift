@@ -4,6 +4,9 @@ struct WorkspaceBrowserView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @Environment(\.mobiusPalette) private var palette
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var goingBack = false
+    @State private var chosenPath: String?
     @State private var newFolderName = ""
     @State private var showsNewFolderPrompt = false
     var title: LocalizedStringResource = "Choose a workspace for the new chat"
@@ -17,47 +20,66 @@ struct WorkspaceBrowserView: View {
                         path: listing.path,
                         title: title,
                         parent: listing.parent,
-                        onParent: model.loadDirectory,
+                        onParent: { path in
+                            goingBack = true
+                            model.loadDirectory(path)
+                        },
                         onCreateFolder: {
                             newFolderName = ""
                             showsNewFolderPrompt = true
                         }
                     )
-                    List {
-                        ForEach(listing.entries) { entry in
-                            Button {
-                                model.loadDirectory(entry.path)
-                            } label: {
-                                MobiusLabel(verbatim: entry.name, glyph: .folder)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.mobiusPlain)
-                            .listRowSeparator(.hidden)
-                        }
-                        if listing.entries.isEmpty && !model.isLoadingDirectories {
-                            Text("No folders")
-                                .foregroundStyle(palette.muted)
+                    if chosenPath == nil {
+                        List {
+                            ForEach(listing.entries) { entry in
+                                Button {
+                                    goingBack = false
+                                    model.loadDirectory(entry.path)
+                                } label: {
+                                    MobiusLabel(verbatim: entry.name, glyph: .folder)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.mobiusPlain)
                                 .listRowSeparator(.hidden)
+                            }
+                            if listing.entries.isEmpty && !model.isLoadingDirectories {
+                                Text("No folders")
+                                    .foregroundStyle(palette.muted)
+                                    .listRowSeparator(.hidden)
+                            }
+                            if let error = model.directoryError
+                                ?? (onChoose == nil ? model.workspaceError : nil)
+                            {
+                                MobiusLabel(
+                                    verbatim: error,
+                                    glyph: .warning,
+                                    iconColor: palette.danger
+                                )
+                                .foregroundStyle(palette.danger)
+                                .listRowSeparator(.hidden)
+                            }
                         }
-                        if let error = model.directoryError
-                            ?? (onChoose == nil ? model.workspaceError : nil)
-                        {
-                            MobiusLabel(
-                                verbatim: error,
-                                glyph: .warning,
-                                iconColor: palette.danger
-                            )
-                            .foregroundStyle(palette.danger)
-                            .listRowSeparator(.hidden)
-                        }
+                        .listStyle(.plain)
+                        .scrollContentBackground(.hidden)
+                        .id(listing.path)
+                        .transition(
+                            reduceMotion
+                                ? .opacity
+                                : .asymmetric(
+                                    insertion: .move(edge: goingBack ? .leading : .trailing)
+                                        .combined(with: .opacity),
+                                    removal: .move(edge: goingBack ? .trailing : .leading).combined(
+                                        with: .opacity)))
                     }
-                    .listStyle(.plain)
-                    .scrollContentBackground(.hidden)
                 }
             }
+            .clipped()
+            .animation(
+                reduceMotion ? nil : .smooth(duration: 0.28), value: model.directoryListing?.path
+            )
             .font(MobiusStyle.bodyFont)
-            .disabled(model.isLoadingDirectories || model.isChangingWorkspace)
+            .disabled(model.isLoadingDirectories || model.isChangingWorkspace || chosenPath != nil)
             .overlay {
                 if model.isLoadingDirectories { ProgressView() }
             }
@@ -67,25 +89,20 @@ struct WorkspaceBrowserView: View {
                         if onChoose == nil { model.showsWorkspaceBrowser = false }
                         dismiss()
                     }
+                    .disabled(chosenPath != nil)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Choose") {
-                        guard let path = model.directoryListing?.path else { return }
-                        if let onChoose {
-                            onChoose(path)
-                            dismiss()
-                        } else {
-                            model.chooseWorkspace(path)
-                        }
-                    }
-                    .disabled(
-                        model.directoryListing?.parent == nil
-                            || model.isLoadingDirectories
-                            || model.isChangingWorkspace
-                    )
+                    Button("Choose", action: choose)
+                        .disabled(
+                            model.directoryListing?.parent == nil
+                                || model.isLoadingDirectories
+                                || model.isChangingWorkspace
+                                || chosenPath != nil
+                        )
                 }
             }
         }
+        .interactiveDismissDisabled(chosenPath != nil)
         .alert("New folder", isPresented: $showsNewFolderPrompt) {
             TextField("Folder name", text: $newFolderName)
             Button("Cancel", role: .cancel) {}
@@ -97,6 +114,30 @@ struct WorkspaceBrowserView: View {
             Text("Create a folder inside \(model.directoryListing?.path ?? "this location").")
         }
     }
+    private func choose() {
+        guard let path = model.directoryListing?.path,
+            !model.isLoadingDirectories, !model.isChangingWorkspace, chosenPath == nil
+        else { return }
+        let finish = {
+            if let onChoose {
+                onChoose(path)
+                dismiss()
+            } else {
+                model.chooseWorkspace(path)
+                chosenPath = nil
+            }
+        }
+        if reduceMotion {
+            finish()
+        } else {
+            withAnimation(.smooth(duration: 0.22)) {
+                chosenPath = path
+            } completion: {
+                finish()
+            }
+        }
+    }
+
 }
 
 private struct DirectoryBrowserHeader: View {
@@ -108,12 +149,18 @@ private struct DirectoryBrowserHeader: View {
     let onCreateFolder: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: MobiusSpace.xs) {
-            Text(verbatim: path)
-                .font(MobiusStyle.metadataFont.weight(.bold))
-                .tracking(1)
-                .foregroundStyle(palette.accent)
-                .lineLimit(2)
+        VStack(alignment: .leading, spacing: MobiusSpace.m) {
+            HStack(spacing: MobiusSpace.m) {
+                MobiusIcon(.folderOpen, size: 40, foreground: palette.accent)
+                    .padding(MobiusSpace.m)
+                    .background(palette.accentSoft, in: .rect(cornerRadius: 16))
+                Text(verbatim: path)
+                    .font(MobiusStyle.controlFont)
+                    .foregroundStyle(palette.accent)
+                    .lineLimit(3)
+                    .truncationMode(.middle)
+                    .contentTransition(.opacity)
+            }
             HStack {
                 Text(title)
                     .font(MobiusStyle.controlFont)

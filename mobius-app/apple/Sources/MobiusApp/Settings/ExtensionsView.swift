@@ -3,7 +3,9 @@ import SwiftUI
 struct ExtensionsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isInstalling = false
+    @State private var installingCatalogID: String?
     @State private var uninstalling: ExtensionRecord?
 
     var body: some View {
@@ -19,7 +21,7 @@ struct ExtensionsView: View {
                         MobiusIcon(.plus, gutter: false)
                     }
                     .groupedHeaderAction(prominent: true)
-                    .disabled(!model.canMutateExtensions)
+                    .disabled(!model.canMutateExtensions || isInstalling)
                     .accessibilityLabel("Install extension")
                     .accessibilityHint("Opens the extension installer")
                     .help("Install extension")
@@ -35,6 +37,12 @@ struct ExtensionsView: View {
                 }
             }
         ) {
+            if isInstalling {
+                Section {
+                    InstallExtensionForm { isInstalling = false }
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+            }
             if model.cloud.hasCloudAccount {
                 Section("Available") {
                     availableCatalog
@@ -74,7 +82,8 @@ struct ExtensionsView: View {
                 }
             }
         }
-        .sheet(isPresented: $isInstalling) { InstallExtensionSheet() }
+        .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: isInstalling)
+        .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: model.extensions.map(\.id))
         .alert(
             "Uninstall this extension?",
             isPresented: Binding(
@@ -124,15 +133,18 @@ struct ExtensionsView: View {
         } else {
             ForEach(installableExtensions) { item in
                 Button {
+                    installingCatalogID = item.id
                     model.installExtension(item)
                 } label: {
                     availableCatalogLabel(
                         name: .verbatim(item.name),
-                        description: .verbatim(item.description)
+                        description: .verbatim(item.description),
+                        isInstalling: installingCatalogID == item.id
+                            && model.extensionAction == .installing
                     )
                 }
                 .buttonStyle(.plain)
-                .disabled(!model.canMutateExtensions)
+                .disabled(!model.canMutateExtensions || isInstalling)
                 .accessibilityLabel("Install \(item.name)")
                 .accessibilityHint(item.description)
             }
@@ -141,13 +153,18 @@ struct ExtensionsView: View {
 
     private func availableCatalogLabel(
         name: MobiusText,
-        description: MobiusText
+        description: MobiusText,
+        isInstalling: Bool = false
     ) -> some View {
         HStack(spacing: MobiusSpace.s) {
             SettingsRowLabel(title: name, detail: description) {
                 MobiusIcon(.squaresFour, size: MobiusStyle.glyphLead, foreground: .primary)
             }
-            MobiusIcon(.plus, size: MobiusStyle.glyphInline, foreground: palette.accent)
+            if isInstalling {
+                MobiusSpinner(size: MobiusStyle.glyphInline, foreground: palette.accent)
+            } else {
+                MobiusIcon(.plus, size: MobiusStyle.glyphInline, foreground: palette.accent)
+            }
         }
         .contentShape(Rectangle())
     }
@@ -277,57 +294,73 @@ struct ExtensionsView: View {
 
 // MARK: - Install
 
-private struct InstallExtensionSheet: View {
+struct InstallExtensionForm: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.mobiusPalette) private var palette
+    @State private var submittedRequestID: String?
+    let onClose: () -> Void
 
     var body: some View {
         @Bindable var model = model
-        NavigationStack {
-            Form {
-                Section {
-                    TextField(
-                        "https://github.com/owner/repository.git",
-                        text: $model.extensionInstallSource
-                    )
-                    .textContentType(.URL)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .submitLabel(.go)
-                    .onSubmit(install)
-                } header: {
-                    Text("Git URL")
-                } footer: {
-                    Text(
-                        "An HTTPS Git URL, or a GitHub tree URL pointing at a branch and subdirectory. The gateway clones it, pins an immutable snapshot, and reads its package manifest."
-                    )
-                }
+        VStack(alignment: .leading, spacing: MobiusSpace.l) {
+            SettingsRowLabel(title: "Install extension", detail: "Git URL") {
+                MobiusIcon(.squaresFour, size: 36, foreground: palette.accent)
             }
-            .formStyle(.grouped)
-            .scrollContentBackground(.hidden)
-            .navigationTitle("Install extension")
-            .toolbarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel", role: .cancel) { dismiss() }
+            TextField(
+                "https://github.com/owner/repository.git", text: $model.extensionInstallSource
+            )
+            .textContentType(.URL)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            .submitLabel(.go)
+            .onSubmit(install)
+            .padding(MobiusSpace.m)
+            .background(palette.recessed, in: MobiusStyle.controlShape)
+            .disabled(!model.canMutateExtensions)
+            Text(
+                "An HTTPS Git URL, or a GitHub tree URL pointing at a branch and subdirectory. The gateway clones it, pins an immutable snapshot, and reads its package manifest."
+            )
+            .font(MobiusStyle.captionFont)
+            .foregroundStyle(palette.muted)
+            HStack(spacing: MobiusSpace.m) {
+                Button("Cancel", action: onClose)
+                    .buttonStyle(.mobiusGlass)
+                    .disabled(isSaving)
+                Button(action: install) {
+                    if isSaving {
+                        ProgressView().frame(maxWidth: .infinity)
+                    } else {
+                        Text("Install").frame(maxWidth: .infinity)
+                    }
                 }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Install", action: install).disabled(!canInstall)
-                }
+                .mobiusProminentButton()
+                .accessibilityLabel("Install")
+                .disabled(!canInstall)
             }
+            .buttonBorderShape(.capsule)
+            .controlSize(.large)
+            .buttonSizing(.flexible)
         }
-        .mobiusSheet(detents: [.large])
+        .padding(.vertical, MobiusSpace.s)
+        .onChange(of: model.extensionRequestID) { old, new in
+            guard let submittedRequestID, old == submittedRequestID, new == nil else { return }
+            self.submittedRequestID = nil
+            if model.extensionInstallSource.isEmpty { onClose() }
+        }
+    }
+
+    private var isSaving: Bool {
+        submittedRequestID != nil && submittedRequestID == model.extensionRequestID
     }
 
     private var canInstall: Bool {
-        model.canMutateExtensions
-            && !model.extensionInstallSource.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        model.canMutateExtensions && model.extensionInstallSource.nonEmpty != nil
     }
 
     private func install() {
         guard canInstall else { return }
         model.installExtension()
-        dismiss()
+        submittedRequestID = model.extensionRequestID
     }
 }
 

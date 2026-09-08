@@ -156,6 +156,7 @@ final class AppModel {
     @ObservationIgnored var startedAccountID: UUID?
     @ObservationIgnored var appActivationTask: Task<Void, Never>?
     var swarmMutationRequestID: String?
+    var swarmApplyState: ApplyState = .idle
     var botMutationRequestID: String?
     var botMutationSuccessMessage: String?
     @ObservationIgnored var botDefaultsRequestID: String?

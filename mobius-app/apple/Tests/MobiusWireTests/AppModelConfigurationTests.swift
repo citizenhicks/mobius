@@ -4,6 +4,32 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testBotCreationResetsFailureAndWaitsForItsMatchingResponse() throws {
+        let model = try model { _ in }
+        model.gateway.connectionState = .ready
+        model.botApplyState = .failed("Previous attempt")
+        model.createBot(name: "Writer", description: "Help with writing.")
+        let first = try XCTUnwrap(model.botMutationRequestID)
+        XCTAssertEqual(model.botApplyState, .applying)
+        model.gateway.handle(.bots(requestID: "unrelated", bots: [bot()]))
+        XCTAssertEqual(model.botMutationRequestID, first)
+        XCTAssertEqual(model.botApplyState, .applying)
+        model.gateway.handle(
+            .rejected(
+                GatewayRejection(
+                    requestId: first, code: "invalid_config", message: "Try another name",
+                    fatal: false)))
+        XCTAssertEqual(model.botApplyState, .invalid("Try another name"))
+        XCTAssertNil(model.botMutationRequestID)
+        model.createBot(name: "Editor", description: "Help with writing.")
+        let retry = try XCTUnwrap(model.botMutationRequestID)
+        XCTAssertNotEqual(retry, first)
+        XCTAssertEqual(model.botApplyState, .applying)
+        model.gateway.handle(.bots(requestID: retry, bots: [bot(name: "Editor")]))
+        XCTAssertEqual(model.botApplyState, .applied)
+        XCTAssertNil(model.botMutationRequestID)
+    }
+
     func testReconnectPreservesCatalogNavigationAndSetupDraftsWithoutAnOpenChat() throws {
         let model = try model(requestSender: { _ in })
         let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
