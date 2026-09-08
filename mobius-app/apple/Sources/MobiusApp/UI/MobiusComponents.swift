@@ -448,7 +448,11 @@ extension View {
     }
 
     func promptCard() -> some View {
-        padding(.horizontal, MobiusSpace.l)
+        // Contain text-input scrolling so Form cannot grow the row past the line limit.
+        ScrollView { self }
+            .scrollBounceBehavior(.basedOnSize)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, MobiusSpace.l)
             .padding(.vertical, MobiusSpace.m)
             .mobiusGlass(in: MobiusStyle.cardShape, interactive: true)
             .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))

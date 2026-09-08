@@ -6,6 +6,113 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testPromptCardsKeepTheirRowHeightWhenEditingOverflowingText() async throws {
+        let suite = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let app = Mobius.AppModel(
+            store: Mobius.GatewayStore(defaults: defaults), settingsDefaults: defaults,
+            appLockAuthenticator: Mobius.AppLockAuthenticator(
+                method: { .unavailable }, authenticate: { _ in false }),
+            requestSender: { _ in }
+        )
+        var config = composition()
+        config.systemPrompt = String(repeating: "System prompt line.\n", count: 40)
+        let fixture = bot(
+            description: String(repeating: "Description line.\n", count: 24),
+            config: VersionedAgentConfig(revision: 1, config: config)
+        )
+        app.bots = [
+            try JSONDecoder().decode(Mobius.BotRecord.self, from: JSONEncoder().encode(fixture))
+        ]
+        app.beginEditingBot(app.bots[0])
+        app.gateway.connectionState = .ready
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let previous = scene.keyWindow
+        previous?.isHidden = true
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.effectiveGeometry.coordinateSpace.bounds
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previous?.isHidden = false
+            previous?.makeKeyAndVisible()
+        }
+        let host = UIHostingController(
+            rootView:
+                NavigationStack {
+                    Mobius.AgentSettingsView(scope: .bot(fixture.id))
+                }
+                .modifier(Mobius.MobiusTheme())
+                .environment(app)
+                .environment(\.colorScheme, .light)
+        )
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        func fields(in view: UIView) -> [UITextView] {
+            (view as? UITextView).map { [$0] } ?? view.subviews.flatMap { fields(in: $0) }
+        }
+        func checkRow(_ field: UITextView) throws {
+            var ancestor = field.superview
+            while let view = ancestor, !(view is UICollectionViewCell) { ancestor = view.superview }
+            let row = try XCTUnwrap(ancestor as? UICollectionViewCell)
+            // The card's padding may surround the visible lines, never the hidden text.
+            XCTAssertLessThanOrEqual(row.bounds.height - field.bounds.height, 40)
+            XCTAssertGreaterThanOrEqual(row.bounds.height, field.bounds.height)
+        }
+        let appeared = await eventually {
+            let fields = fields(in: host.view)
+            return fields.count == 2 && fields.allSatisfy { $0.bounds.height > 0 }
+        }
+        XCTAssertTrue(appeared)
+        for index in 0..<2 {
+            let field = try XCTUnwrap(fields(in: host.view).dropFirst(index).first)
+            let maximumHeight = field.bounds.height
+            try checkRow(field)
+            XCTAssertTrue(field.becomeFirstResponder())
+            for text in [
+                String(
+                    repeating:
+                        "A long wrapped prompt with enough text to overflow the visible rows. ",
+                    count: 100),
+                String(repeating: "Explicit line break.\n", count: 30),
+                "Short description 🌿",
+                "",
+            ] {
+                field.selectAll(nil)
+                field.insertText(text)
+                try await Task.sleep(for: .milliseconds(600))
+                try checkRow(field)
+                XCTAssertEqual(field.text, text)
+                XCTAssertLessThanOrEqual(field.bounds.height, maximumHeight + 1)
+                if text.count > 100 {
+                    XCTAssertTrue(field.isScrollEnabled)
+                    XCTAssertGreaterThan(field.contentSize.height, field.bounds.height)
+                    field.setContentOffset(
+                        CGPoint(x: 0, y: field.contentSize.height - field.bounds.height),
+                        animated: false)
+                    try await Task.sleep(for: .milliseconds(100))
+                    XCTAssertGreaterThan(field.contentOffset.y, 0)
+                    try checkRow(field)
+                } else {
+                    XCTAssertLessThan(field.bounds.height, maximumHeight)
+                }
+            }
+            field.resignFirstResponder()
+            try await Task.sleep(for: .milliseconds(600))
+            try checkRow(field)
+        }
+        XCTAssertEqual(app.botDescriptionDraft, "")
+        XCTAssertEqual(app.botDraft?.systemPrompt, "")
+        let image = UIGraphicsImageRenderer(bounds: host.view.bounds).image { _ in
+            host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
+        }
+        let attachment = XCTAttachment(image: image)
+        attachment.name = "prompt-cards-after-editing-and-clearing"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     func testLoadingStatusChangesItsMarkWithoutMovingTheLabel() throws {
         var images: [UIImage] = []
         for isLoading in [false, true] {
