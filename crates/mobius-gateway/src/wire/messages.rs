@@ -328,6 +328,7 @@ pub enum ClientMessage {
     },
     GetProfile {
         request_id: String,
+        include_provider_usage: bool,
     },
     CreateRoutine {
         request_id: String,

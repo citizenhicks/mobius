@@ -522,8 +522,8 @@ pub(super) async fn handle_message(
             return start_provider_login(writer, request_id, provider, client.id, auth, gateway)
                 .await;
         }
-        ClientMessage::GetProfile { request_id } => {
-            return get_profile(writer, request_id, gateway).await;
+        ClientMessage::GetProfile { .. } => {
+            unreachable!("profile messages are handled by connection transport")
         }
         ClientMessage::CreateRoutine {
             request_id,
@@ -1663,26 +1663,6 @@ async fn create_pairing_code(
         Err(error) => {
             write_rejection(writer, request_id, internal_rejection(error.to_string())).await
         }
-    }
-}
-
-async fn get_profile(
-    writer: &mut (impl AsyncWrite + Unpin),
-    request_id: String,
-    gateway: &GatewayHost,
-) -> Result<()> {
-    match gateway.profile().await {
-        Ok(profile) => {
-            write_frame(
-                writer,
-                &ServerFrame::new(ServerMessage::Profile {
-                    request_id,
-                    profile,
-                }),
-            )
-            .await
-        }
-        Err(rejection) => write_rejection(writer, request_id, rejection).await,
     }
 }
 

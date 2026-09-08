@@ -39,8 +39,9 @@ use crate::config::{ConfigStore, CredentialStore, GatewayConfig, TlsConfig};
 use crate::host::{GatewayHost, HostHandle, Rejection};
 use crate::wire::{
     ClientFrame, ClientKind, ClientMessage, ClientStatus, DirectoryEntry, DirectoryListing,
-    FrameReader, MAX_FRAME_BYTES, ServerFrame, ServerMessage, framed_to_websocket, read_frame,
-    read_frame_with_limit, validate_version, websocket_error, websocket_to_framed, write_frame,
+    FrameReader, MAX_FRAME_BYTES, ProfileSnapshot, ServerFrame, ServerMessage, framed_to_websocket,
+    read_frame, read_frame_with_limit, validate_version, websocket_error, websocket_to_framed,
+    write_frame,
 };
 use crate::{Error, Result};
 

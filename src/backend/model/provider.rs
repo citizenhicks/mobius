@@ -46,6 +46,16 @@ pub struct ModelPreset {
     pub tool_discovery: ToolDiscoveryMode,
 }
 
+/// One provider-reported account usage window.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UsageLimit {
+    pub id: String,
+    pub label: String,
+    pub remaining_fraction: f64,
+    pub window_seconds: u64,
+    pub resets_at: Option<i64>,
+}
+
 /// Hosted search modes a provider may expose.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -131,6 +141,7 @@ pub trait DeviceLogin: Send {
 }
 
 type DeviceLoginStart = fn() -> BoxFuture<'static, Result<Box<dyn DeviceLogin>>>;
+type BrowserUsageRead = fn(&Path) -> BoxFuture<'static, Result<Vec<UsageLimit>>>;
 
 /// Provider-owned browser authentication hooks consumed generically by applications.
 pub struct BrowserAuth {
@@ -139,6 +150,7 @@ pub struct BrowserAuth {
     load: fn(&Path) -> Result<ProviderCredential>,
     start: BrowserLoginStart,
     start_device: Option<DeviceLoginStart>,
+    usage_limits: Option<BrowserUsageRead>,
 }
 
 impl BrowserAuth {
@@ -154,6 +166,7 @@ impl BrowserAuth {
             load,
             start,
             start_device: None,
+            usage_limits: None,
         }
     }
 
@@ -161,6 +174,13 @@ impl BrowserAuth {
     #[must_use]
     pub const fn with_device_login(mut self, start: DeviceLoginStart) -> Self {
         self.start_device = Some(start);
+        self
+    }
+
+    /// Adds a passive account-usage reader for this browser-authenticated provider.
+    #[must_use]
+    pub const fn with_usage_limits(mut self, usage_limits: BrowserUsageRead) -> Self {
+        self.usage_limits = Some(usage_limits);
         self
     }
 
@@ -197,6 +217,11 @@ impl BrowserAuth {
                 ))
             }),
         }
+    }
+
+    /// Reads provider-reported account usage, when supported.
+    pub fn usage_limits(&self, path: &Path) -> Option<BoxFuture<'static, Result<Vec<UsageLimit>>>> {
+        self.usage_limits.map(|usage_limits| usage_limits(path))
     }
 }
 

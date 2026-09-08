@@ -2,6 +2,7 @@ import Foundation
 
 extension AppModel {
     func handleGatewayDisconnected(_ message: String) {
+        invalidateProviderUsage()
         cancelVoiceChatIntent()
         chat.stopRealtimeVoice()
         chat.transcriptLoadGeneration = UUID()
@@ -34,6 +35,7 @@ extension AppModel {
         preservingDrafts: Bool,
         preservingSession: Bool = false
     ) {
+        invalidateProviderUsage()
         cancelVoiceChatIntent()
         chat.stopRealtimeVoice()
         cloud.completeCloudPairing(.failure(CancellationError()))

@@ -316,6 +316,7 @@ async fn framed_reader_retains_a_partial_prefix_when_cancelled() {
     });
     let second = ClientFrame::new(ClientMessage::GetProfile {
         request_id: "request-b".into(),
+        include_provider_usage: false,
     });
     let encode = |frame: &ClientFrame| {
         let payload = serde_json::to_vec(frame).expect("encode frame");

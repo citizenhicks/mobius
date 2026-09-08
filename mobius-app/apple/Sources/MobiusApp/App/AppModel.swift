@@ -68,6 +68,7 @@ final class AppModel {
     var workspaceFilesTruncated = false
     var isLoadingWorkspaceFiles = false
     var profile: ProfileSnapshot?
+    @ObservationIgnored var profileRequestID: String?
     var routines: [Routine] = []
     var routineRuns: [RoutineRun] = []
     var routineError: String?

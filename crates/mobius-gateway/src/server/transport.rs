@@ -33,6 +33,11 @@ pub(super) struct ConnectionContext {
     pub(super) admission: PreAuthConnectionAdmission,
 }
 
+struct PendingProfile {
+    request_id: String,
+    future: Pin<Box<dyn Future<Output = std::result::Result<ProfileSnapshot, Rejection>> + Send>>,
+}
+
 impl ConnectionAdmission {
     pub(super) fn new(pre_auth: usize, authenticated: usize) -> Self {
         Self {
@@ -509,49 +514,10 @@ where
         .await?;
         return Ok(());
     };
-    let (client_id, client_kind) = match first.message {
-        PreAuthClientMessage::Pair {
-            code,
-            client_label,
-            client_kind,
-        } => match auth.pair(&code, &client_label) {
-            Ok(issued) => {
-                let client_id = issued.client_id.clone();
-                write_frame(
-                    &mut writer,
-                    &ServerFrame::new(ServerMessage::Paired {
-                        client_id: issued.client_id,
-                        token: issued.token,
-                    }),
-                )
-                .await?;
-                (client_id, client_kind)
-            }
-            Err(_) => {
-                write_server_error(&mut writer, "unauthorized", "pairing failed", true).await?;
-                return Ok(());
-            }
-        },
-        PreAuthClientMessage::Authenticate { token, client_kind } => {
-            match auth.authenticate(&token) {
-                Ok(identity) => (identity.id, client_kind),
-                Err(_) => {
-                    write_server_error(&mut writer, "unauthorized", "authentication failed", true)
-                        .await?;
-                    return Ok(());
-                }
-            }
-        }
-        PreAuthClientMessage::Unsupported => {
-            write_server_error(
-                &mut writer,
-                "authentication_required",
-                "the first frame must authenticate or pair",
-                true,
-            )
-            .await?;
-            return Ok(());
-        }
+    let Some((client_id, client_kind)) =
+        authenticate_client(first.message, &auth, &mut writer).await?
+    else {
+        return Ok(());
     };
 
     let _client_connection = client_connections.register(client_id.clone(), client_kind)?;
@@ -574,16 +540,15 @@ where
     let mut voice = None;
     let session_files = host.session_file_store().await;
     let mut uploads: BTreeMap<(String, String), PendingSessionFileWrite> = BTreeMap::new();
+    let mut pending_profile = None;
+    let mut queued_profile_request = None;
 
     loop {
         let incoming = tokio::select! {
             biased;
             revoked = revocations.recv() => {
-                match revoked {
-                    Ok(revoked) if revoked == client_id => return Ok(()),
-                    Ok(_) => {}
-                    Err(broadcast::error::RecvError::Lagged(_)
-                        | broadcast::error::RecvError::Closed) => return Ok(()),
+                if !matches!(revoked, Ok(revoked) if revoked != client_id) {
+                    return Ok(());
                 }
                 None
             }
@@ -592,38 +557,26 @@ where
                 super::voice::write_update(&mut voice, outgoing, &mut writer).await?;
                 None
             }
+            profile = next_profile(&mut pending_profile) => {
+                complete_profile_request(
+                    profile,
+                    &host,
+                    &mut pending_profile,
+                    &mut queued_profile_request,
+                    &mut writer,
+                )
+                .await?;
+                None
+            }
             outgoing = gateway_broadcasts.recv() => {
-                match outgoing {
-                    Ok(frame) => write_gateway_broadcast(&mut writer, &host, frame).await?,
-                    Err(broadcast::error::RecvError::Lagged(_)) => {
-                        let ready = host
-                            .ready()
-                            .await
-                            .map_err(|rejection| Error::Protocol(rejection.message))?;
-                        write_frame(
-                            &mut writer,
-                            &ServerFrame::new(ServerMessage::Ready { payload: ready }),
-                        )
-                        .await?;
-                    }
-                    Err(broadcast::error::RecvError::Closed) => return Ok(()),
+                if !handle_gateway_broadcast(outgoing, &host, &mut writer).await? {
+                    return Ok(());
                 }
                 None
             }
             outgoing = selected_broadcast(&mut selected) => {
-                match outgoing {
-                    Ok(frame) => write_frame(&mut writer, &frame).await?,
-                    Err(broadcast::error::RecvError::Lagged(_)) => {
-                        write_server_error(
-                            &mut writer,
-                            "client_lagged",
-                            "the client fell behind the event stream; reconnect with the last sequence",
-                            true,
-                        )
-                        .await?;
-                        return Ok(());
-                    }
-                    Err(broadcast::error::RecvError::Closed) => return Ok(()),
+                if !handle_selected_broadcast(outgoing, &mut writer).await? {
+                    return Ok(());
                 }
                 None
             }
@@ -638,13 +591,24 @@ where
             write_server_error(&mut writer, "protocol_version", error.to_string(), true).await?;
             return Ok(());
         }
+        let Some(message) = handle_profile_message(
+            frame.message,
+            &host,
+            &mut pending_profile,
+            &mut queued_profile_request,
+            &mut writer,
+        )
+        .await?
+        else {
+            continue;
+        };
         let client = AuthenticatedClient {
             id: &client_id,
             connections: &client_connections,
             revocations: &client_revocations,
         };
         handle_message(
-            frame.message,
+            message,
             &auth,
             &host,
             &bots,
@@ -659,6 +623,153 @@ where
             &mut writer,
         )
         .await?;
+    }
+}
+
+async fn authenticate_client(
+    message: PreAuthClientMessage,
+    auth: &AuthStore,
+    writer: &mut (impl AsyncWrite + Unpin),
+) -> Result<Option<(String, ClientKind)>> {
+    match message {
+        PreAuthClientMessage::Pair {
+            code,
+            client_label,
+            client_kind,
+        } => match auth.pair(&code, &client_label) {
+            Ok(issued) => {
+                let client_id = issued.client_id.clone();
+                write_frame(
+                    writer,
+                    &ServerFrame::new(ServerMessage::Paired {
+                        client_id: issued.client_id,
+                        token: issued.token,
+                    }),
+                )
+                .await?;
+                Ok(Some((client_id, client_kind)))
+            }
+            Err(_) => {
+                write_server_error(writer, "unauthorized", "pairing failed", true).await?;
+                Ok(None)
+            }
+        },
+        PreAuthClientMessage::Authenticate { token, client_kind } => {
+            match auth.authenticate(&token) {
+                Ok(identity) => Ok(Some((identity.id, client_kind))),
+                Err(_) => {
+                    write_server_error(writer, "unauthorized", "authentication failed", true)
+                        .await?;
+                    Ok(None)
+                }
+            }
+        }
+        PreAuthClientMessage::Unsupported => {
+            write_server_error(
+                writer,
+                "authentication_required",
+                "the first frame must authenticate or pair",
+                true,
+            )
+            .await?;
+            Ok(None)
+        }
+    }
+}
+
+async fn handle_profile_message(
+    message: ClientMessage,
+    host: &GatewayHost,
+    pending: &mut Option<PendingProfile>,
+    queued_request: &mut Option<(String, bool)>,
+    writer: &mut (impl AsyncWrite + Unpin),
+) -> Result<Option<ClientMessage>> {
+    let ClientMessage::GetProfile {
+        request_id,
+        include_provider_usage,
+    } = message
+    else {
+        return Ok(Some(message));
+    };
+    if pending.is_some() {
+        queue_profile_request(writer, queued_request, request_id, include_provider_usage).await?;
+    } else {
+        *pending = Some(profile_request(host, request_id, include_provider_usage));
+    }
+    Ok(None)
+}
+
+async fn next_profile(
+    pending: &mut Option<PendingProfile>,
+) -> (String, std::result::Result<ProfileSnapshot, Rejection>) {
+    let Some(pending) = pending.as_mut() else {
+        return std::future::pending().await;
+    };
+    let request_id = pending.request_id.clone();
+    (request_id, pending.future.as_mut().await)
+}
+
+async fn complete_profile_request(
+    profile: (String, std::result::Result<ProfileSnapshot, Rejection>),
+    host: &GatewayHost,
+    pending: &mut Option<PendingProfile>,
+    queued_request: &mut Option<(String, bool)>,
+    writer: &mut (impl AsyncWrite + Unpin),
+) -> Result<()> {
+    let (request_id, result) = profile;
+    *pending = queued_request
+        .take()
+        .map(|(request_id, include_provider_usage)| {
+            profile_request(host, request_id, include_provider_usage)
+        });
+    match result {
+        Ok(profile) => {
+            write_frame(
+                writer,
+                &ServerFrame::new(ServerMessage::Profile {
+                    request_id,
+                    profile,
+                }),
+            )
+            .await
+        }
+        Err(rejection) => write_rejection(writer, request_id, rejection).await,
+    }
+}
+
+async fn queue_profile_request(
+    writer: &mut (impl AsyncWrite + Unpin),
+    queued_request: &mut Option<(String, bool)>,
+    request_id: String,
+    include_provider_usage: bool,
+) -> Result<()> {
+    if let Some((displaced, _)) = queued_request.replace((request_id, include_provider_usage)) {
+        write_rejection(
+            writer,
+            displaced,
+            Rejection {
+                code: "profile_superseded",
+                message: "profile request superseded by a newer request".into(),
+                fatal: false,
+            },
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+fn profile_request(
+    host: &GatewayHost,
+    request_id: String,
+    include_provider_usage: bool,
+) -> PendingProfile {
+    let gateway = host.clone();
+    PendingProfile {
+        request_id,
+        future: Box::pin(async move {
+            gateway.reconcile_pending_bot_deletion().await?;
+            gateway.profile(include_provider_usage).await
+        }),
     }
 }
 
@@ -684,6 +795,51 @@ async fn write_gateway_broadcast(
         _ => {}
     }
     write_frame(writer, &frame).await
+}
+
+async fn handle_gateway_broadcast(
+    outgoing: std::result::Result<ServerFrame, broadcast::error::RecvError>,
+    host: &GatewayHost,
+    writer: &mut (impl AsyncWrite + Unpin),
+) -> Result<bool> {
+    match outgoing {
+        Ok(frame) => write_gateway_broadcast(writer, host, frame)
+            .await
+            .map(|()| true),
+        Err(broadcast::error::RecvError::Lagged(_)) => {
+            let ready = host
+                .ready()
+                .await
+                .map_err(|rejection| Error::Protocol(rejection.message))?;
+            write_frame(
+                writer,
+                &ServerFrame::new(ServerMessage::Ready { payload: ready }),
+            )
+            .await?;
+            Ok(true)
+        }
+        Err(broadcast::error::RecvError::Closed) => Ok(false),
+    }
+}
+
+async fn handle_selected_broadcast(
+    outgoing: std::result::Result<ServerFrame, broadcast::error::RecvError>,
+    writer: &mut (impl AsyncWrite + Unpin),
+) -> Result<bool> {
+    match outgoing {
+        Ok(frame) => write_frame(writer, &frame).await.map(|()| true),
+        Err(broadcast::error::RecvError::Lagged(_)) => {
+            write_server_error(
+                writer,
+                "client_lagged",
+                "the client fell behind the event stream; reconnect with the last sequence",
+                true,
+            )
+            .await?;
+            Ok(false)
+        }
+        Err(broadcast::error::RecvError::Closed) => Ok(false),
+    }
 }
 
 pub(super) fn tls_acceptor(config: &TlsConfig) -> Result<TlsAcceptor> {
@@ -718,5 +874,64 @@ fn pem_error(error: pem::Error) -> std::io::Error {
     match error {
         pem::Error::Io(error) => error,
         error => std::io::Error::new(std::io::ErrorKind::InvalidData, error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::wire::{FrameReader, RunStats};
+    use tokio::sync::oneshot;
+
+    fn profile() -> ProfileSnapshot {
+        ProfileSnapshot {
+            user_name: None,
+            daily_usage: Vec::new(),
+            provider_usage: Vec::new(),
+            run_stats: RunStats::default(),
+            recent_run_groups: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn profile_queue_rejects_displaced_id_and_preserves_active_and_latest() {
+        let (mut writer, reader) = tokio::io::duplex(4096);
+        let mut reader = FrameReader::new(reader);
+        let (release, wait) = oneshot::channel();
+        let mut pending = Some(PendingProfile {
+            request_id: "profile-1".into(),
+            future: Box::pin(async move {
+                wait.await.expect("active profile release");
+                Ok::<_, Rejection>(profile())
+            }),
+        });
+        let mut queued = None;
+
+        queue_profile_request(&mut writer, &mut queued, "profile-2".into(), false)
+            .await
+            .expect("first queued profile");
+        queue_profile_request(&mut writer, &mut queued, "profile-3".into(), true)
+            .await
+            .expect("latest queued profile");
+
+        let frame = read_frame::<ServerFrame>(&mut reader)
+            .await
+            .expect("superseded response")
+            .expect("superseded frame");
+        assert!(matches!(
+            frame.message,
+            ServerMessage::Rejected {
+                request_id,
+                code,
+                fatal: false,
+                ..
+            } if request_id == "profile-2" && code == "profile_superseded"
+        ));
+        assert_eq!(queued.as_ref(), Some(&("profile-3".into(), true)));
+
+        release.send(()).expect("release active profile");
+        let (request_id, result) = next_profile(&mut pending).await;
+        assert_eq!(request_id, "profile-1");
+        assert!(result.is_ok());
     }
 }

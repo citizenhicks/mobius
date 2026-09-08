@@ -328,6 +328,7 @@ impl GatewayConfig {
                     })
                 })
                 .collect(),
+            provider_usage: Vec::new(),
             run_stats: crate::wire::RunStats::default(),
             recent_run_groups: Vec::new(),
         }

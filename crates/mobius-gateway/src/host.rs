@@ -1010,17 +1010,27 @@ impl GatewayHost {
         self.broadcast_sessions().await
     }
 
-    pub(crate) async fn profile(&self) -> std::result::Result<ProfileSnapshot, Rejection> {
+    pub(crate) async fn profile(
+        &self,
+        include_provider_usage: bool,
+    ) -> std::result::Result<ProfileSnapshot, Rejection> {
         let _access = self.begin_mutation().await?;
-        let (mut profile, checkpoints) = {
+        let (mut profile, checkpoints, config, store) = {
             let state = self.state.lock().await;
-            let profile = state
+            let config = state
                 .config
                 .lock()
                 .map_err(|_| internal("gateway configuration lock is poisoned"))?
-                .profile();
-            (profile, Arc::clone(&state.checkpoints))
+                .clone();
+            let profile = config.profile();
+            (
+                profile,
+                Arc::clone(&state.checkpoints),
+                config,
+                state.store.clone(),
+            )
         };
+        drop(_access);
         let sessions = gateway_session_summaries(&checkpoints)
             .await
             .map_err(internal)?;
@@ -1034,6 +1044,9 @@ impl GatewayHost {
                 .await
                 .map_err(internal)?;
             profile.recent_run_groups = recent_run_groups(recent_runs, &sessions, &metadata);
+        }
+        if include_provider_usage {
+            profile.provider_usage = provider_usage(&config, &store).await.map_err(internal)?;
         }
         Ok(profile)
     }

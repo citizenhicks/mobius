@@ -2,6 +2,25 @@
 import XCTest
 
 final class ProviderUsageChartTests: XCTestCase {
+    func testQuotaWindowsUseTheSelectedLocaleRatherThanTheSystemLocale() {
+        let limit = UsageLimit(
+            id: "codex:primary", label: "Codex", remainingFraction: 0.73,
+            windowSeconds: 18_000, resetsAt: 1_788_822_000
+        )
+        for identifier in ["en_US", "fr_FR", "de_DE"] {
+            let locale = Locale(identifier: identifier)
+            let duration = Duration.seconds(18_000).formatted(
+                .units(allowed: [.weeks, .days, .hours, .minutes, .seconds], width: .abbreviated)
+                    .locale(locale)
+            )
+            let date = Date(timeIntervalSince1970: 1_788_822_000).formatted(
+                Date.FormatStyle(date: .abbreviated, time: .shortened, locale: locale)
+            )
+            XCTAssertEqual(String(localized: limit.title(locale: locale)), "Codex · \(duration)")
+            XCTAssertTrue(String(localized: limit.resetDescription(locale: locale)).contains(date))
+        }
+    }
+
     func testBuildsTopThreeProviderTotalsForTheVisibleRange() {
         let totals = ProviderUsageTotal.top(
             from: [

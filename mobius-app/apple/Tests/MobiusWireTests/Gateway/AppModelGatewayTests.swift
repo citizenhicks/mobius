@@ -4,6 +4,91 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testProviderUsageRequiresSetupAndIgnoresOldProfileResponses() throws {
+        let model = try model()
+        model.gateway.connectionState = .ready
+        model.refreshProfile()
+        let oldID = try XCTUnwrap(model.profileRequestID)
+        model.refreshProfile()
+        let currentID = try XCTUnwrap(model.profileRequestID)
+        let quota = ProviderUsage(
+            provider: "openai_codex",
+            limits: [
+                UsageLimit(
+                    id: "codex:primary", label: "Codex", remainingFraction: 0.73,
+                    windowSeconds: 18_000, resetsAt: nil
+                )
+            ],
+            error: nil
+        )
+        let profile = ProfileSnapshot(
+            userName: nil, dailyUsage: [], providerUsage: [quota],
+            runStats: RunStats(), recentRunGroups: []
+        )
+        model.gateway.handle(.profile(requestID: oldID, profile: profile))
+        XCTAssertNil(model.profile)
+        model.gateway.handle(
+            .rejected(
+                GatewayRejection(
+                    requestId: oldID, code: "profile_superseded",
+                    message: "A newer refresh replaced this request.", fatal: false
+                )
+            )
+        )
+        XCTAssertEqual(model.profileRequestID, currentID)
+        XCTAssertNil(model.toast)
+        model.gateway.handle(.profile(requestID: currentID, profile: profile))
+        XCTAssertEqual(model.profile, profile)
+        XCTAssertTrue(model.providerUsage.isEmpty)
+
+        var selection = composition().provider
+        model.providerInstances = [
+            ProviderInstance(
+                label: "API", tint: .appDefault, configured: true,
+                selection: selection, modelIds: [], reasoningEfforts: []
+            )
+        ]
+        XCTAssertTrue(model.providerUsage.isEmpty)
+        selection.provider = "openai_codex"
+        let subscription = ProviderInstance(
+            label: "Subscription", tint: .appDefault, configured: false,
+            selection: selection, modelIds: [], reasoningEfforts: []
+        )
+        model.providerInstances = [subscription]
+        XCTAssertTrue(model.providerUsage.isEmpty)
+        model.providerInstances[0].configured = true
+        XCTAssertEqual(model.providerUsage, [quota])
+
+        model.refreshProfile()
+        let failedID = try XCTUnwrap(model.profileRequestID)
+        let expired = ProviderUsage(
+            provider: quota.provider, limits: nil,
+            error: "ChatGPT session expired; sign in again"
+        )
+        model.gateway.handle(
+            .profile(
+                requestID: failedID,
+                profile: ProfileSnapshot(
+                    userName: nil, dailyUsage: [], providerUsage: [expired],
+                    runStats: RunStats(), recentRunGroups: []
+                )
+            )
+        )
+        XCTAssertEqual(model.providerUsageError(for: quota.provider), expired.error)
+        XCTAssertNil(model.providerUsageError(for: "other-provider"))
+        model.refreshProfile()
+        let recoveredID = try XCTUnwrap(model.profileRequestID)
+        model.gateway.handle(.profile(requestID: recoveredID, profile: profile))
+        XCTAssertNil(model.providerUsageError(for: quota.provider))
+
+        model.handleGatewayDisconnected("Disconnected")
+        XCTAssertNil(model.profileRequestID)
+        XCTAssertEqual(
+            model.providerUsage, [ProviderUsage(provider: quota.provider, limits: nil, error: nil)])
+        model.providerInstances = []
+        XCTAssertTrue(model.providerUsage.isEmpty)
+    }
+
     func testLateGatewayStreamCannotReplaceTheCurrentAccount() async throws {
         let suiteName = UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

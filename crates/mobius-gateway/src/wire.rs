@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use futures_util::{Sink, SinkExt as _, Stream, StreamExt as _};
 use mobius::backend::checkpoint::StreamMetrics;
-use mobius::backend::model::provider::HostedWebSearch;
+use mobius::backend::model::provider::{HostedWebSearch, UsageLimit};
 use mobius::protocol::{
     Event, EventMsg, FrontendContribution, FrontendPreviewUpdate, FrontendSettingOption,
     FrontendSettingValue, FrontendSymbol, FrontendWidget, MiddlewareFeature, ModelChoice, Op,
@@ -58,7 +58,7 @@ mod base64_bytes {
 }
 
 /// Current gateway protocol version.
-pub const PROTOCOL_VERSION: u16 = 71;
+pub const PROTOCOL_VERSION: u16 = 72;
 /// Maximum encoded JSON payload accepted in one frame.
 pub const MAX_FRAME_BYTES: usize = 50 * 1024 * 1024;
 const WEBSOCKET_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);

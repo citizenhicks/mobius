@@ -64,6 +64,9 @@ struct ProvidersView: View {
         } message: { _ in
             Text("This removes the provider setup from the gateway. This cannot be undone.")
         }
+        .task(id: model.gateway.connectionState.isReady) {
+            await model.refreshProfileWhileVisible()
+        }
     }
 
     private var showsLoadingCatalog: Bool {
@@ -104,11 +107,14 @@ struct ProvidersView: View {
     private var catalogStatus: (label: MobiusText, detail: MobiusText, color: Color) {
         switch model.gateway.connectionState {
         case .ready:
-            let ready = model.providerInstances.filter(\.configured).count
+            let ready = model.providerInstances.filter {
+                $0.configured && model.providerUsageError(for: $0.provider) == nil
+            }.count
             return (
-                .localized("Catalog up to date"),
+                ready == model.providerInstances.count
+                    ? .localized("Catalog up to date") : .localized("Needs attention"),
                 .localized("\(model.providerInstances.count) configured · \(ready) ready"),
-                palette.signal
+                ready == model.providerInstances.count ? palette.signal : palette.warning
             )
         case .failed(let message):
             return (.localized("Needs attention"), .verbatim(message), palette.danger)
@@ -129,7 +135,10 @@ struct ProvidersView: View {
                 model.navigationPath = [.settings(.provider(instance.instance))]
             },
             marks: {
-                if !instance.configured {
+                if model.providerUsageError(for: instance.provider) != nil {
+                    MobiusIcon(.warning, size: MobiusStyle.glyphMark, foreground: palette.warning)
+                        .accessibilityLabel("\(instance.label) needs attention")
+                } else if !instance.configured {
                     MobiusIcon(.key, size: MobiusStyle.glyphMark, foreground: palette.warning)
                         .accessibilityLabel("\(instance.label) needs a credential")
                 }
@@ -286,6 +295,9 @@ struct ProviderDetailView: View {
                 ProviderFormSections(provider: record.provider, isNew: false)
             }
             .toolbarRole(.editor)
+            .task(id: model.gateway.connectionState.isReady) {
+                await model.refreshProfileWhileVisible()
+            }
             .alert(
                 "Remove \(record.label)?",
                 isPresented: $confirmsRemoval
@@ -467,10 +479,18 @@ private struct ProviderFormSections: View {
     private func credentialControls(_ status: ProviderStatus) -> some View {
         @Bindable var model = model
         if !isNew {
-            LabeledContent("Status") {
-                Text(isConfigured ? "Configured on gateway" : "Not configured")
-                    .font(MobiusStyle.controlFont)
-                    .foregroundStyle(isConfigured ? palette.signal : palette.warning)
+            if let error = model.providerUsageError(for: provider) {
+                StatusBanner(
+                    tone: .warning,
+                    title: .localized("Needs attention"),
+                    detail: .verbatim(error)
+                )
+            } else {
+                LabeledContent("Status") {
+                    Text(isConfigured ? "Configured on gateway" : "Not configured")
+                        .font(MobiusStyle.controlFont)
+                        .foregroundStyle(isConfigured ? palette.signal : palette.warning)
+                }
             }
         }
         if status.auth == .apiKey {

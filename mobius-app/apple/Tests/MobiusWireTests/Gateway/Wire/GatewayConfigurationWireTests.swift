@@ -115,6 +115,8 @@ extension GatewayWireTests {
         for (request, type) in requests {
             XCTAssertEqual(try requestObject(request)["type"] as? String, type)
         }
+        let profile = try requestObject(.getProfile(requestID: "profile-2"))
+        XCTAssertEqual(profile["include_provider_usage"] as? Bool, true)
     }
 
     func testGitCredentialRequestsUseOneExactTarget() throws {

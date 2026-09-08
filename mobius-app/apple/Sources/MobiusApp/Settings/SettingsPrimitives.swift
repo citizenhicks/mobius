@@ -1,5 +1,41 @@
 import SwiftUI
 
+struct UsageLimitBar: View {
+    @Environment(\.mobiusPalette) private var palette
+    @Environment(\.locale) private var locale
+    let title: Text
+    let remainingFraction: Double?
+    let resetText: Text
+
+    var body: some View {
+        let percentage = (remainingFraction ?? 0).formatted(
+            .percent.precision(.fractionLength(0)).locale(locale)
+        )
+        let remaining =
+            remainingFraction == nil
+            ? Text("Unavailable")
+            : Text("\(percentage) remaining")
+        VStack(alignment: .leading, spacing: MobiusSpace.s) {
+            HStack(alignment: .firstTextBaseline) {
+                title
+                Spacer(minLength: MobiusSpace.s)
+                remaining
+                    .monospacedDigit()
+            }
+            .font(MobiusStyle.controlFont)
+            .accessibilityHidden(true)
+            ProgressView(value: remainingFraction ?? 0)
+                .progressViewStyle(.linear)
+                .tint(palette.accent)
+                .accessibilityLabel(title)
+                .accessibilityValue(remaining)
+            resetText
+                .font(MobiusStyle.metadataFont)
+                .foregroundStyle(palette.muted)
+        }
+    }
+}
+
 struct SettingsInfoButton: View {
     @Environment(\.mobiusPalette) private var palette
     @State private var showsDetail = false

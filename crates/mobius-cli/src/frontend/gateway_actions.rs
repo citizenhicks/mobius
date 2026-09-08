@@ -12,7 +12,10 @@ pub(super) fn prepare(action: GatewayAction) -> Result<PreparedAction> {
         GatewayAction::Pair => Ok(send(|request_id| ClientMessage::CreatePairingCode {
             request_id,
         })),
-        GatewayAction::Profile => Ok(send(|request_id| ClientMessage::GetProfile { request_id })),
+        GatewayAction::Profile => Ok(send(|request_id| ClientMessage::GetProfile {
+            request_id,
+            include_provider_usage: false,
+        })),
     }
 }
 
@@ -98,6 +101,7 @@ mod tests {
                     ..TokenUsage::default()
                 },
             }],
+            provider_usage: Vec::new(),
             run_stats: RunStats::default(),
             recent_run_groups: Vec::new(),
         };

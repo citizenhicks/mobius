@@ -4,14 +4,19 @@ use mobius::protocol::{
     FrontendPickerOption, FrontendSlot, FrontendSymbol, FrontendTone, FrontendWidget,
     FrontendWidgetContent, Op, SessionContext, TokenUsage,
 };
-use mobius_gateway::wire::{DailyUsage, SessionActivity, SessionActivityState, SessionRecord};
+use std::collections::BTreeMap;
+
+use mobius::middleware::session_files::session_file_limits;
+use mobius_gateway::wire::{
+    DailyUsage, ReadyPayload, ServerMessage, SessionActivity, SessionActivityState, SessionRecord,
+};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::ListState;
 
 use super::runtime::{
-    activate_overlay, handle_action_input_key, moved_index, ordered_sessions,
+    activate_overlay, handle_action_input_key, handle_frame, moved_index, ordered_sessions,
     prepare_overlay_operation,
 };
 use super::state::{CapabilityOverlay, DashboardFocus};
@@ -47,6 +52,24 @@ fn daily_usage_sums_all_providers_on_the_same_day() {
     ];
 
     assert_eq!(token_total_for_day(&usage, 7), 24);
+}
+
+#[test]
+fn superseded_profile_rejection_does_not_set_dashboard_error() {
+    let mut state = dashboard_state();
+
+    handle_frame(
+        &mut state,
+        ServerMessage::Rejected {
+            request_id: "profile-1".into(),
+            code: "profile_superseded".into(),
+            message: "profile request superseded".into(),
+            fatal: false,
+        },
+    )
+    .expect("benign superseded profile rejection");
+
+    assert_eq!(state.error, None);
 }
 
 #[test]
@@ -273,6 +296,44 @@ fn session(id: &str, state: SessionActivityState) -> SessionRecord {
         },
         created_at: 0,
         updated_at: 0,
+    }
+}
+
+fn dashboard_state() -> super::state::DashboardState {
+    super::state::DashboardState {
+        endpoint: String::new(),
+        gateway: ReadyPayload {
+            machine_name: String::new(),
+            bots: Vec::new(),
+            sessions: Vec::new(),
+            background_approvals: Vec::new(),
+            swarm_attentions: Vec::new(),
+            swarms: Vec::new(),
+            providers: Vec::new(),
+            provider_instances: Vec::new(),
+            bot_defaults: None,
+            models: Vec::new(),
+            model_providers: BTreeMap::new(),
+            middleware_features: Vec::new(),
+            extensions: Vec::new(),
+            contributions: Vec::new(),
+            max_active_sessions: 0,
+            session_file_limits: session_file_limits(),
+        },
+        clients: Vec::new(),
+        current_client_id: None,
+        selected_client_id: None,
+        selected_session_id: None,
+        selected_bot_id: None,
+        device_list: ListState::default(),
+        chat_list: ListState::default(),
+        bot_list: ListState::default(),
+        focus: DashboardFocus::Devices,
+        pending_unpair: None,
+        profile: None,
+        pending_open: None,
+        overlay: None,
+        error: None,
     }
 }
 

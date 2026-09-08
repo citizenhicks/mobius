@@ -2,9 +2,43 @@ import Foundation
 import Observation
 
 extension AppModel {
+    var providerUsage: [ProviderUsage] {
+        (profile?.providerUsage ?? []).filter { usage in
+            providerInstances.contains { $0.configured && $0.provider == usage.provider }
+        }
+    }
+
+    func providerUsageError(for provider: String) -> String? {
+        providerUsage.first { $0.provider == provider }?.error
+    }
+
     func refreshProfile() {
         guard gateway.connectionState.isReady else { return }
-        gateway.transmit(.getProfile(requestID: requestID("profile")))
+        let id = requestID("profile")
+        profileRequestID = id
+        gateway.transmit(.getProfile(requestID: id)) { [weak self] _ in
+            guard let self, self.profileRequestID == id else { return }
+            self.invalidateProviderUsage()
+        }
+    }
+
+    func refreshProfileWhileVisible() async {
+        while !Task.isCancelled, gateway.connectionState.isReady {
+            refreshProfile()
+            do {
+                try await Task.sleep(for: .seconds(60))
+            } catch {
+                return
+            }
+        }
+    }
+
+    func invalidateProviderUsage() {
+        profileRequestID = nil
+        let unavailable = (profile?.providerUsage ?? []).map {
+            ProviderUsage(provider: $0.provider, limits: nil, error: nil)
+        }
+        profile?.providerUsage = unavailable
     }
 
     func submitWidget(_ mounted: MountedWidget) {

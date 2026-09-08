@@ -28,6 +28,7 @@ mod manifest {
 const PROVIDER_ID: &str = "openai_codex";
 const HTTP_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 const SOCKET_URL: &str = "wss://chatgpt.com/backend-api/codex/responses";
+pub(super) const USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 
 pub(super) const fn provider() -> ProviderDefinition {
     ProviderDefinition::new(

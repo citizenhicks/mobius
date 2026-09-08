@@ -1,5 +1,11 @@
 use super::*;
+use std::collections::BTreeSet;
+
+use mobius::backend::model::provider::{ProviderAuth, provider};
 use mobius::middleware::session_files::session_file_limits;
+
+use crate::config::{ConfigStore, GatewayConfig};
+use crate::wire::ProviderUsage;
 
 pub(super) async fn gateway_session_summaries(
     checkpoints: &Arc<dyn CheckpointStore>,
@@ -20,6 +26,52 @@ pub(super) async fn gateway_session_summaries(
         };
         cursor = Some(next);
     }
+}
+
+pub(super) async fn provider_usage(
+    config: &GatewayConfig,
+    store: &ConfigStore,
+) -> Result<Vec<ProviderUsage>> {
+    let provider_ids = config
+        .configured_providers
+        .values()
+        .map(|configured| configured.selection.provider.clone())
+        .collect::<BTreeSet<_>>();
+    let auth_path = store.provider_auth_path();
+    let mut requests = Vec::new();
+    for provider_id in provider_ids {
+        let definition = provider(&provider_id)?;
+        let ProviderAuth::Browser(auth) = definition.auth() else {
+            continue;
+        };
+        if !auth
+            .configured(&auth_path)
+            .is_ok_and(|configured| configured)
+        {
+            continue;
+        }
+        let Some(fetch) = auth.usage_limits(&auth_path) else {
+            continue;
+        };
+        requests.push((provider_id, fetch));
+    }
+    Ok(
+        futures_util::future::join_all(requests.into_iter().map(|(provider, fetch)| async move {
+            match fetch.await {
+                Ok(limits) => ProviderUsage {
+                    provider,
+                    limits: Some(limits),
+                    error: None,
+                },
+                Err(error) => ProviderUsage {
+                    provider,
+                    limits: None,
+                    error: Some(error.to_string()),
+                },
+            }
+        }))
+        .await,
+    )
 }
 
 pub(super) fn session_tree_ids(
@@ -235,4 +287,60 @@ pub(super) fn local_machine_name() -> Result<String> {
         return Err(Error::Config("the machine hostname is invalid".into()));
     }
     Ok(name.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::wire::ProviderEndpointAuth;
+
+    #[tokio::test]
+    async fn provider_usage_requires_configured_browser_credentials() {
+        let root = tempfile::tempdir().expect("state directory");
+        let listen = "127.0.0.1:8741".parse().expect("listen address");
+        let (store, config) =
+            ConfigStore::initialize(root.path().join("state"), listen, None).expect("config");
+        let api = ProviderConfig {
+            instance: "openrouter".into(),
+            provider: "openrouter".into(),
+            model: "openai/gpt-5".into(),
+            base_url: Some("https://connector.example/v1".into()),
+            endpoint_auth: ProviderEndpointAuth::Credentialless,
+            reasoning_effort: None,
+            web_search: mobius::backend::model::provider::HostedWebSearch::Off,
+        };
+        let codex = ProviderConfig {
+            instance: "codex".into(),
+            provider: "openai_codex".into(),
+            model: "gpt-5.6-sol".into(),
+            base_url: None,
+            endpoint_auth: ProviderEndpointAuth::ProviderDefault,
+            reasoning_effort: None,
+            web_search: mobius::backend::model::provider::HostedWebSearch::Off,
+        };
+        let config = config
+            .registering_provider(
+                api,
+                "API".into(),
+                Default::default(),
+                vec!["openai/gpt-5".into()],
+                Vec::new(),
+            )
+            .expect("API provider")
+            .registering_provider(
+                codex,
+                "Codex".into(),
+                Default::default(),
+                Vec::new(),
+                Vec::new(),
+            )
+            .expect("Codex provider");
+
+        assert!(
+            provider_usage(&config, &store)
+                .await
+                .expect("usage")
+                .is_empty()
+        );
+    }
 }

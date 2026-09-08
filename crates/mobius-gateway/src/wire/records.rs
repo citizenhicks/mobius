@@ -553,12 +553,21 @@ pub struct RecordedEvent {
 }
 
 /// Gateway-owned profile and aggregate usage information.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProfileSnapshot {
     pub user_name: Option<String>,
     pub daily_usage: Vec<DailyUsage>,
+    pub provider_usage: Vec<ProviderUsage>,
     pub run_stats: RunStats,
     pub recent_run_groups: Vec<SessionRunGroup>,
+}
+
+/// One configured provider's remote subscription usage.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProviderUsage {
+    pub provider: String,
+    pub limits: Option<Vec<UsageLimit>>,
+    pub error: Option<String>,
 }
 
 /// Recent executions grouped under their nearest visible session.

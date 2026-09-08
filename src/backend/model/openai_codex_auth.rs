@@ -1,6 +1,7 @@
 //! ChatGPT OAuth login, credential persistence, and request authorization.
 
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::fs;
 use std::fs::File;
 use std::fs::OpenOptions;
@@ -41,7 +42,9 @@ use super::super::provider::BrowserAuth;
 use super::super::provider::BrowserLogin;
 use super::super::provider::DeviceLogin;
 use super::super::provider::ProviderCredential;
+use super::super::provider::UsageLimit;
 use super::PROVIDER_ID;
+use super::USAGE_URL;
 use super::manifest;
 use crate::BoxFuture;
 use crate::Error;
@@ -66,6 +69,9 @@ const CALLBACK_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const REFRESH_LEEWAY: Duration = Duration::from_secs(60);
 const TOKEN_LIMIT: usize = 64 * 1024;
+const MAX_USAGE_LABEL_BYTES: usize = 128;
+const MAX_USAGE_WINDOW_SECONDS: u64 = 366 * 24 * 60 * 60;
+const MAX_USAGE_RESET_AT: i64 = 253_402_300_799;
 
 pub(super) struct ChatGptAuth {
     path: PathBuf,
@@ -186,6 +192,38 @@ impl ChatGptAuth {
         *credential = refreshed;
         drop(lock);
         Ok(resolved(&credential))
+    }
+
+    async fn usage_limits(&self) -> Result<Vec<UsageLimit>> {
+        self.usage_limits_at(USAGE_URL).await
+    }
+
+    async fn usage_limits_at(&self, url: &str) -> Result<Vec<UsageLimit>> {
+        for attempt in 0..2 {
+            let authorization =
+                <Self as OpenAiAuthorization>::authorize_http(self, false, None).await?;
+            let rejected_token = authorization.token.clone();
+            let mut request = self.client.get(url).bearer_auth(authorization.token);
+            for (name, value) in authorization.headers {
+                request = request.header(name, value);
+            }
+            let response = request.send().await?;
+            if response.status() == StatusCode::UNAUTHORIZED
+                && attempt == 0
+                && <Self as OpenAiAuthorization>::recover_unauthorized(self, &rejected_token)
+                    .await?
+            {
+                continue;
+            }
+            let status = response.status();
+            if !status.is_success() {
+                return Err(Error::Auth(format!(
+                    "ChatGPT usage request failed with HTTP {status}"
+                )));
+            }
+            return parse_usage_limits(bounded_json(response, "usage").await?);
+        }
+        unreachable!("usage authorization retry is bounded")
     }
 }
 
@@ -347,7 +385,126 @@ async fn save_login_credential(path: PathBuf, credential: OAuthCredential) -> Re
 }
 
 fn http_client() -> Result<Client> {
-    Ok(Client::builder().timeout(REQUEST_TIMEOUT).build()?)
+    Ok(Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?)
+}
+
+fn parse_usage_limits(payload: Value) -> Result<Vec<UsageLimit>> {
+    let payload = payload
+        .as_object()
+        .ok_or_else(|| Error::Auth("ChatGPT usage response was not an object".into()))?;
+    let mut limits = parse_usage_bucket(payload.get("rate_limit"), "codex", "Codex")?;
+    let Some(additional) = payload.get("additional_rate_limits") else {
+        return Ok(limits);
+    };
+    let Some(additional) = additional.as_array() else {
+        if additional.is_null() {
+            return Ok(limits);
+        }
+        return Err(Error::Auth(
+            "ChatGPT usage response contained invalid additional limits".into(),
+        ));
+    };
+    for bucket in additional {
+        let bucket = bucket.as_object().ok_or_else(|| {
+            Error::Auth("ChatGPT usage response contained invalid additional limit".into())
+        })?;
+        let id = required_usage_name(bucket.get("metered_feature"), "metered feature")?;
+        let label = required_usage_name(bucket.get("limit_name"), "limit name")?;
+        limits.extend(parse_usage_bucket(bucket.get("rate_limit"), &id, &label)?);
+    }
+    let mut ids = BTreeSet::new();
+    if limits.iter().any(|limit| !ids.insert(&limit.id)) {
+        return Err(Error::Auth(
+            "ChatGPT usage response contained duplicate limit IDs".into(),
+        ));
+    }
+    Ok(limits)
+}
+
+fn parse_usage_bucket(
+    rate_limit: Option<&Value>,
+    bucket_id: &str,
+    label: &str,
+) -> Result<Vec<UsageLimit>> {
+    let Some(rate_limit) = rate_limit else {
+        return Ok(Vec::new());
+    };
+    let Some(rate_limit) = rate_limit.as_object() else {
+        if rate_limit.is_null() {
+            return Ok(Vec::new());
+        }
+        return Err(Error::Auth(
+            "ChatGPT usage response contained invalid rate-limit data".into(),
+        ));
+    };
+    let mut limits = Vec::new();
+    for (field, suffix) in [
+        ("primary_window", "primary"),
+        ("secondary_window", "secondary"),
+    ] {
+        let Some(window) = rate_limit.get(field) else {
+            continue;
+        };
+        if let Some(limit) = parse_usage_window(window, bucket_id, label, suffix)? {
+            limits.push(limit);
+        }
+    }
+    Ok(limits)
+}
+
+fn parse_usage_window(
+    window: &Value,
+    bucket_id: &str,
+    label: &str,
+    suffix: &str,
+) -> Result<Option<UsageLimit>> {
+    if window.is_null() {
+        return Ok(None);
+    }
+    let window = window
+        .as_object()
+        .ok_or_else(|| Error::Auth("ChatGPT usage response contained invalid window".into()))?;
+    let used_percent = window
+        .get("used_percent")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && (0.0..=100.0).contains(value))
+        .ok_or_else(|| Error::Auth("ChatGPT usage response contained invalid percentage".into()))?;
+    let window_seconds = window
+        .get("limit_window_seconds")
+        .and_then(Value::as_u64)
+        .filter(|seconds| (1..=MAX_USAGE_WINDOW_SECONDS).contains(seconds))
+        .ok_or_else(|| {
+            Error::Auth("ChatGPT usage response contained invalid window length".into())
+        })?;
+    let resets_at = match window.get("reset_at") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(
+            value
+                .as_i64()
+                .filter(|reset| (0..=MAX_USAGE_RESET_AT).contains(reset))
+                .ok_or_else(|| {
+                    Error::Auth("ChatGPT usage response contained invalid reset time".into())
+                })?,
+        ),
+    };
+    Ok(Some(UsageLimit {
+        id: format!("{bucket_id}:{suffix}"),
+        label: label.to_string(),
+        remaining_fraction: 1.0 - used_percent / 100.0,
+        window_seconds,
+        resets_at,
+    }))
+}
+
+fn required_usage_name(value: Option<&Value>, field: &str) -> Result<String> {
+    value
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty() && value.len() <= MAX_USAGE_LABEL_BYTES)
+        .map(str::to_string)
+        .ok_or_else(|| Error::Auth(format!("ChatGPT usage response contained invalid {field}")))
 }
 
 fn pkce() -> (String, String) {
@@ -530,9 +687,7 @@ async fn token_request(
         body.extend_from_slice(&chunk);
     }
     if !status.is_success() {
-        return Err(Error::Auth(format!(
-            "ChatGPT token {operation} failed with HTTP {status}"
-        )));
+        return Err(token_failure(status, operation, &body));
     }
     let token: TokenResponse = serde_json::from_slice(&body)
         .map_err(|_| Error::Auth(format!("ChatGPT token {operation} response was invalid")))?;
@@ -548,6 +703,30 @@ async fn token_request(
         expires: now().saturating_add(token.expires_in),
         account_id,
     })
+}
+
+fn token_failure(status: StatusCode, operation: &str, body: &[u8]) -> Error {
+    let payload = serde_json::from_slice::<Value>(body).ok();
+    let code = payload
+        .as_ref()
+        .and_then(|payload| payload.pointer("/error/code"))
+        .and_then(Value::as_str);
+    let reason = match (operation, status, code) {
+        ("refresh", StatusCode::UNAUTHORIZED, Some("refresh_token_expired")) => {
+            "ChatGPT session expired; sign in again"
+        }
+        (
+            "refresh",
+            StatusCode::UNAUTHORIZED,
+            Some("refresh_token_reused" | "refresh_token_invalidated"),
+        ) => "ChatGPT session is no longer valid; sign in again",
+        _ => {
+            return Error::Auth(format!(
+                "ChatGPT token {operation} failed with HTTP {status}"
+            ));
+        }
+    };
+    Error::Auth(reason.into())
 }
 
 fn account_id(access_token: &str) -> Result<String> {
@@ -798,7 +977,8 @@ pub(super) static BROWSER_AUTH: BrowserAuth = BrowserAuth::new(
     browser_credential,
     browser_login,
 )
-.with_device_login(device_login);
+.with_device_login(device_login)
+.with_usage_limits(browser_usage_limits);
 
 fn browser_configured(path: &Path) -> Result<bool> {
     ChatGptAuth::configured(path)
@@ -816,6 +996,14 @@ fn browser_login() -> BoxFuture<'static, Result<Box<dyn BrowserLogin>>> {
 
 fn device_login() -> BoxFuture<'static, Result<Box<dyn DeviceLogin>>> {
     Box::pin(async { Ok(Box::new(ChatGptDeviceLogin::start().await?) as Box<dyn DeviceLogin>) })
+}
+
+fn browser_usage_limits(path: &Path) -> BoxFuture<'static, Result<Vec<UsageLimit>>> {
+    let path = path.to_path_buf();
+    Box::pin(async move {
+        let auth = ChatGptAuth::load(path)?;
+        auth.usage_limits().await
+    })
 }
 
 #[cfg(test)]

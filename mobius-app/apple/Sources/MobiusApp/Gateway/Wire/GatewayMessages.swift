@@ -491,6 +491,7 @@ enum GatewayRequest: Encodable, Sendable {
         case .getProfile(let requestID):
             try container.encode("get_profile", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
+            try container.encode(true, forKey: "includeProviderUsage")
         case .createRoutine(
             let requestID,
             let botID,

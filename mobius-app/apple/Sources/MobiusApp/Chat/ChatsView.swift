@@ -33,6 +33,7 @@ struct ChatsView: View {
 
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
+    @Environment(\.locale) private var locale
     @State private var collapsedWorkspaces: Set<String> = []
     @State private var visibleSessionCounts: [String: Int] = [:]
     @State private var showsAttentionOnly = false
@@ -111,6 +112,9 @@ struct ChatsView: View {
         }
         .task(id: model.cloud.cloudSession?.credentialID) {
             await model.cloud.refreshCloudAccount()
+        }
+        .task(id: model.gateway.connectionState.isReady) {
+            await model.refreshProfileWhileVisible()
         }
     }
 
@@ -252,6 +256,18 @@ struct ChatsView: View {
                 Text(
                     "\(limit.remainingFraction.formatted(.percent.precision(.fractionLength(0)))) usage remaining"
                 )
+            }
+            ForEach(model.providerUsage) { usage in
+                Divider()
+                if let limits = usage.limits, !limits.isEmpty {
+                    ForEach(limits) { limit in
+                        Text(
+                            "\(limit.title(locale: locale)): \(limit.remainingFraction.formatted(.percent.precision(.fractionLength(0)).locale(locale))) remaining"
+                        )
+                    }
+                } else {
+                    Text("\(model.providerLabel(for: usage.provider)) usage unavailable")
+                }
             }
         }
         .accessibilityValue(

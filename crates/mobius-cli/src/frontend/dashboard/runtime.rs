@@ -689,6 +689,7 @@ pub(super) async fn request_snapshot(sender: &GatewaySender) -> Result<()> {
     sender
         .send(ClientMessage::GetProfile {
             request_id: Uuid::new_v4().to_string(),
+            include_provider_usage: false,
         })
         .await
         .map_err(gateway_error)
@@ -749,6 +750,7 @@ pub(super) fn handle_frame(state: &mut DashboardState, message: ServerMessage) -
         }
         ServerMessage::Rejected {
             request_id,
+            code,
             message,
             fatal,
             ..
@@ -759,6 +761,9 @@ pub(super) fn handle_frame(state: &mut DashboardState, message: ServerMessage) -
                 .is_some_and(|(pending, _)| pending == &request_id)
             {
                 state.pending_open = None;
+            }
+            if !fatal && code == "profile_superseded" {
+                return Ok(());
             }
             if fatal {
                 return Err(Error::Stopped(message));

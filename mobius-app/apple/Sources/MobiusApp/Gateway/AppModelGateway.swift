@@ -224,6 +224,8 @@ extension AppModel {
             where providerInstances[index].provider == provider {
                 providerInstances[index].configured = true
             }
+            invalidateProviderUsage()
+            refreshProfile()
         case .gitCredentialStatus(let requestID, let available, let username):
             guard requestID == gitCredentialRequestID else { break }
             let approved = isApprovingGitCredential
@@ -253,7 +255,9 @@ extension AppModel {
                 publicKey: publicKey
             )
             showToast("SSH identity created on the gateway host.", tone: .success)
-        case .profile(_, let profile):
+        case .profile(let requestID, let profile):
+            guard requestID == profileRequestID else { break }
+            profileRequestID = nil
             self.profile = profile
         default:
             break
@@ -1058,6 +1062,12 @@ extension AppModel {
     }
 
     private func handleRejected(_ rejection: GatewayRejection) {
+        if rejection.code == "profile_superseded",
+            rejection.requestId != profileRequestID, !rejection.fatal
+        {
+            return
+        }
+        if rejection.requestId == profileRequestID { invalidateProviderUsage() }
         let rejectedAbandonedUpload = chat.discardAbandonedSessionFileUploadRequest(
             rejection.requestId
         )

@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ProfileView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.locale) private var locale
 
     var body: some View {
         let usage = model.profile?.dailyUsage ?? []
@@ -42,6 +43,23 @@ struct ProfileView: View {
             }
             .listRowSeparator(.hidden)
             Section("Usage") {
+                ForEach(model.providerUsage) { usage in
+                    if let limits = usage.limits, !limits.isEmpty {
+                        ForEach(limits) { limit in
+                            UsageLimitBar(
+                                title: Text(limit.title(locale: locale)),
+                                remainingFraction: limit.remainingFraction,
+                                resetText: Text(limit.resetDescription(locale: locale))
+                            )
+                        }
+                    } else {
+                        UsageLimitBar(
+                            title: Text("\(model.providerLabel(for: usage.provider)) usage limits"),
+                            remainingFraction: nil,
+                            resetText: Text("Unavailable")
+                        )
+                    }
+                }
                 ProfileUsageSection(days: usage)
                 ProfileUsageHistory(
                     days: usage,
@@ -54,12 +72,13 @@ struct ProfileView: View {
         .task(id: model.cloud.cloudSession?.credentialID) {
             await model.cloud.refreshCloudAccount()
         }
-        .task(id: model.gateway.connectionState.isReady) { model.refreshProfile() }
+        .task(id: model.gateway.connectionState.isReady) {
+            await model.refreshProfileWhileVisible()
+        }
     }
 }
 
 private struct CloudAgentUsageLimit: View {
-    @Environment(\.mobiusPalette) private var palette
     let limit: MobiusCloudUsageLimit?
 
     private static let resetFormat = Date.FormatStyle(
@@ -69,37 +88,13 @@ private struct CloudAgentUsageLimit: View {
     )
 
     var body: some View {
-        let percentage = (limit?.remainingFraction ?? 0).formatted(
-            .percent.precision(.fractionLength(0))
+        UsageLimitBar(
+            title: Text("möbius cloud agent usage limits"),
+            remainingFraction: limit?.remainingFraction,
+            resetText: limit.map {
+                Text("Resets \($0.resetsAt.formatted(Self.resetFormat))")
+            } ?? Text("Unavailable")
         )
-        let remaining =
-            limit == nil
-            ? Text("Unavailable")
-            : Text("\(percentage) remaining")
-        VStack(alignment: .leading, spacing: MobiusSpace.s) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("möbius cloud agent usage limits")
-                Spacer(minLength: MobiusSpace.s)
-                remaining
-                    .monospacedDigit()
-            }
-            .font(MobiusStyle.controlFont)
-            .accessibilityHidden(true)
-            ProgressView(value: limit?.remainingFraction ?? 0)
-                .progressViewStyle(.linear)
-                .tint(palette.accent)
-                .accessibilityLabel("möbius Cloud agent usage limits")
-                .accessibilityValue(remaining)
-            if let limit {
-                Text("Resets \(limit.resetsAt.formatted(Self.resetFormat))")
-                    .font(MobiusStyle.metadataFont)
-                    .foregroundStyle(palette.muted)
-            } else {
-                Text("Unavailable")
-                    .font(MobiusStyle.metadataFont)
-                    .foregroundStyle(palette.muted)
-            }
-        }
     }
 }
 

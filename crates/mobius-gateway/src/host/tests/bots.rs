@@ -1160,7 +1160,7 @@ async fn startup_rejects_an_unrecoverable_bot_cascade_before_serving() {
     );
     assert_eq!(
         gateway
-            .profile()
+            .profile(false)
             .await
             .expect_err("pending recovery blocks the profile")
             .code,

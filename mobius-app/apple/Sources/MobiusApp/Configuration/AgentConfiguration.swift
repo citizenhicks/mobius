@@ -410,8 +410,25 @@ struct TokenUsage: Codable, Hashable, Sendable {
 struct ProfileSnapshot: Codable, Equatable, Sendable {
     let userName: String?
     let dailyUsage: [DailyUsage]
+    var providerUsage: [ProviderUsage]
     let runStats: RunStats
     let recentRunGroups: [SessionRunGroup]
+}
+
+struct ProviderUsage: Identifiable, Codable, Equatable, Sendable {
+    var id: String { provider }
+
+    let provider: String
+    let limits: [UsageLimit]?
+    let error: String?
+}
+
+struct UsageLimit: Identifiable, Codable, Equatable, Sendable {
+    let id: String
+    let label: String
+    let remainingFraction: Double
+    let windowSeconds: UInt64
+    let resetsAt: Int64?
 }
 
 struct SessionRunGroup: Identifiable, Codable, Equatable, Sendable {

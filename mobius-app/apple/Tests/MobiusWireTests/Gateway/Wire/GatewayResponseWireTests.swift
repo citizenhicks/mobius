@@ -574,7 +574,7 @@ extension GatewayWireTests {
         XCTAssertEqual(publicKey, "ssh-ed25519 AAAA mobius")
 
         let profileFixture =
-            #"{"version":27,"type":"profile","request_id":"profile-1","profile":{"user_name":"Ada","daily_usage":[{"unix_day":100,"provider":"anthropic","usage":\#(usageJSON)},{"unix_day":100,"provider":"openai_socket","usage":\#(usageJSON)}],"run_stats":\#(runStatsJSON),"recent_run_groups":[{"session_id":"chat-1","title":"Thread title","runs":[{"session_id":"agent-1","submission_id":"input-1","turn_id":"turn-1","started_at_ms":1000,"finished_at_ms":10000,"elapsed_ms":9000,"outcome":"completed","model_calls":2,"tool_calls":3,"failed_tool_calls":0,"usage":\#(usageJSON)}]}]}}"#
+            #"{"version":72,"type":"profile","request_id":"profile-1","profile":{"user_name":"Ada","daily_usage":[{"unix_day":100,"provider":"anthropic","usage":\#(usageJSON)},{"unix_day":100,"provider":"openai_socket","usage":\#(usageJSON)}],"provider_usage":[],"run_stats":\#(runStatsJSON),"recent_run_groups":[{"session_id":"chat-1","title":"Thread title","runs":[{"session_id":"agent-1","submission_id":"input-1","turn_id":"turn-1","started_at_ms":1000,"finished_at_ms":10000,"elapsed_ms":9000,"outcome":"completed","model_calls":2,"tool_calls":3,"failed_tool_calls":0,"usage":\#(usageJSON)}]}]}}"#
         guard case .profile(let profileID, let profile) = try decodeEnvelope(profileFixture) else {
             return XCTFail("Expected profile envelope")
         }
@@ -596,6 +596,23 @@ extension GatewayWireTests {
         }
         XCTAssertEqual(directoryID, "directories-1")
         XCTAssertEqual(listing.path, "/srv")
+    }
+
+    func testProfileCarriesAccountLimitsWithoutInventingMissingWindows() throws {
+        let fixture =
+            #"{"version":72,"type":"profile","request_id":"usage","profile":{"user_name":null,"daily_usage":[],"provider_usage":[{"provider":"openai_codex","limits":[{"id":"codex:primary","label":"Codex","remaining_fraction":0.73,"window_seconds":18000,"resets_at":1788822000},{"id":"extra:secondary","label":"Extra","remaining_fraction":0,"window_seconds":604800,"resets_at":null}]},{"provider":"unavailable","limits":null,"error":"ChatGPT session expired; sign in again"}],"run_stats":\#(runStatsJSON),"recent_run_groups":[]}}"#
+        guard case .profile(_, let profile) = try decodeEnvelope(fixture) else {
+            return XCTFail("Expected profile")
+        }
+        let limits = try XCTUnwrap(profile.providerUsage.first?.limits)
+        XCTAssertEqual(limits.map(\.windowSeconds), [18_000, 604_800])
+        XCTAssertEqual(limits.map(\.remainingFraction), [0.73, 0])
+        XCTAssertEqual(limits.first?.resetsAt, 1_788_822_000)
+        XCTAssertNil(limits.last?.resetsAt)
+        XCTAssertNil(profile.providerUsage.last?.limits)
+        XCTAssertEqual(profile.providerUsage.last?.error, "ChatGPT session expired; sign in again")
+        let roundTrip = try decoder().decode(ProfileSnapshot.self, from: encoder().encode(profile))
+        XCTAssertEqual(roundTrip, profile)
     }
 
     func testSwarmCatalogResponseCarriesOptionalRequestID() throws {
