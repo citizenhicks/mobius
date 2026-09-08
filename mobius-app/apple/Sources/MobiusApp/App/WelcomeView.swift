@@ -54,19 +54,13 @@ struct WelcomeView: View {
             viewportHeight = $0
         }
         .safeAreaInset(edge: .top) {
-            HStack {
-                Text(verbatim: "möbius")
-                    .font(.title2.weight(.semibold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.5)
-                Spacer()
-                Button("Skip", action: model.completeWelcome)
-                    .accessibilityLabel("Skip introduction")
-                    .font(MobiusStyle.captionFont)
-                    .frame(minHeight: MobiusStyle.rowTouch)
-            }
-            .padding(.horizontal, MobiusSpace.xl)
-            .background(palette.canvas)
+            Button("Skip", action: model.completeWelcome)
+                .accessibilityLabel("Skip introduction")
+                .font(MobiusStyle.captionFont)
+                .frame(minHeight: MobiusStyle.rowTouch)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .padding(.horizontal, MobiusSpace.xl)
+                .background(palette.canvas)
         }
         .safeAreaInset(edge: .bottom) {
             navigation.frame(maxWidth: .infinity).background(palette.canvas)
