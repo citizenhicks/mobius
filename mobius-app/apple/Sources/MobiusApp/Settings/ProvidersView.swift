@@ -11,6 +11,7 @@ struct ProvidersView: View {
         PageScaffold(
             title: "Providers",
             detail: pageDetail,
+            manualSection: "providers",
             sharesHeaderBackground: true,
             headerAccessory: {
                 HeaderActionGroup {

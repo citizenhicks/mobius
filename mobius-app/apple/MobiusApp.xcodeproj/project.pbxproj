@@ -32,6 +32,7 @@
 		200000000000000000000056 /* AppModelFilePersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000003F /* AppModelFilePersistence.swift */; };
 		20000000000000000000005D /* AppModelLifecycle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000042 /* AppModelLifecycle.swift */; };
 		200000000000000000000002 /* AppShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000002 /* AppShell.swift */; };
+		94D6FAD46F0D4110809A147C /* WelcomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9879240FE714E0EAC62D7E2 /* WelcomeView.swift */; };
 		200000000000000000000048 /* AppOverlays.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000034 /* AppOverlays.swift */; };
 		200000000000000000000049 /* WorkspaceBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000035 /* WorkspaceBrowserView.swift */; };
 		20000000000000000000004A /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000036 /* SidebarView.swift */; };
@@ -62,6 +63,7 @@
 		20000000000000000000004C /* MobiusTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000038 /* MobiusTheme.swift */; };
 		20000000000000000000004D /* MobiusComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000039 /* MobiusComponents.swift */; };
 		20000000000000000000000A /* SettingsPrimitives.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000000A /* SettingsPrimitives.swift */; };
+		565124FB1C19424DAA4496E6 /* UserManual.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0FCAE497A004C6DA84E4765 /* UserManual.swift */; };
 		200000000000000000000044 /* ModelRoutePicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000030 /* ModelRoutePicker.swift */; };
 		200000000000000000000045 /* AgentSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000031 /* AgentSettingsView.swift */; };
 		200000000000000000000046 /* ProvidersView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000032 /* ProvidersView.swift */; };
@@ -116,6 +118,7 @@
 		20000000000000000000002D /* MobiusCloudOffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000021 /* MobiusCloudOffer.swift */; };
 		20000000000000000000002E /* ProviderUsageChart.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000022 /* ProviderUsageChart.swift */; };
 		200000000000000000000030 /* ProviderUsageChartTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000023 /* ProviderUsageChartTests.swift */; };
+		473634FE026A4C4186F89594 /* WelcomeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1441759BA66F4470B5F3CF46 /* WelcomeTests.swift */; };
 		200000000000000000000031 /* TranscriptWaitingNote.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000024 /* TranscriptWaitingNote.swift */; };
 		200000000000000000000033 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000025 /* AppIcon.icon */; };
 		E20000000000000000000001 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000001 /* Localizable.xcstrings */; };
@@ -178,6 +181,7 @@
 		10000000000000000000003F /* AppModelFilePersistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelFilePersistence.swift; sourceTree = "<group>"; };
 		100000000000000000000042 /* AppModelLifecycle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelLifecycle.swift; sourceTree = "<group>"; };
 		100000000000000000000002 /* AppShell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppShell.swift; sourceTree = "<group>"; };
+		D9879240FE714E0EAC62D7E2 /* WelcomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WelcomeView.swift; sourceTree = "<group>"; };
 		100000000000000000000034 /* AppOverlays.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppOverlays.swift; sourceTree = "<group>"; };
 		100000000000000000000035 /* WorkspaceBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceBrowserView.swift; sourceTree = "<group>"; };
 		100000000000000000000036 /* SidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarView.swift; sourceTree = "<group>"; };
@@ -208,6 +212,7 @@
 		100000000000000000000038 /* MobiusTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobiusTheme.swift; sourceTree = "<group>"; };
 		100000000000000000000039 /* MobiusComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobiusComponents.swift; sourceTree = "<group>"; };
 		10000000000000000000000A /* SettingsPrimitives.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsPrimitives.swift; sourceTree = "<group>"; };
+		F0FCAE497A004C6DA84E4765 /* UserManual.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserManual.swift; sourceTree = "<group>"; };
 		100000000000000000000030 /* ModelRoutePicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelRoutePicker.swift; sourceTree = "<group>"; };
 		100000000000000000000031 /* AgentSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentSettingsView.swift; sourceTree = "<group>"; };
 		100000000000000000000032 /* ProvidersView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProvidersView.swift; sourceTree = "<group>"; };
@@ -262,6 +267,7 @@
 		100000000000000000000021 /* MobiusCloudOffer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobiusCloudOffer.swift; sourceTree = "<group>"; };
 		100000000000000000000022 /* ProviderUsageChart.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderUsageChart.swift; sourceTree = "<group>"; };
 		100000000000000000000023 /* ProviderUsageChartTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderUsageChartTests.swift; sourceTree = "<group>"; };
+		1441759BA66F4470B5F3CF46 /* WelcomeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WelcomeTests.swift; sourceTree = "<group>"; };
 		100000000000000000000024 /* TranscriptWaitingNote.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptWaitingNote.swift; sourceTree = "<group>"; };
 		100000000000000000000025 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = AppIcon.icon; sourceTree = "<group>"; };
 		E10000000000000000000001 /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
@@ -395,6 +401,7 @@
 			children = (
 				100000000000000000000008 /* MobiusApp.swift */,
 				100000000000000000000002 /* AppShell.swift */,
+				D9879240FE714E0EAC62D7E2 /* WelcomeView.swift */,
 				100000000000000000000034 /* AppOverlays.swift */,
 				100000000000000000000040 /* AppState.swift */,
 				100000000000000000000001 /* AppModel.swift */,
@@ -528,6 +535,7 @@
 				100000000000000000000022 /* ProviderUsageChart.swift */,
 				C10000000000000000000002 /* ExtensionsView.swift */,
 				10000000000000000000000A /* SettingsPrimitives.swift */,
+				F0FCAE497A004C6DA84E4765 /* UserManual.swift */,
 				100000000000000000000041 /* AppModelConfiguration.swift */,
 			);
 			path = Settings;
@@ -634,6 +642,7 @@
 			isa = PBXGroup;
 			children = (
 				100000000000000000000023 /* ProviderUsageChartTests.swift */,
+				1441759BA66F4470B5F3CF46 /* WelcomeTests.swift */,
 			);
 			path = Settings;
 			sourceTree = "<group>";
@@ -805,6 +814,7 @@
 				200000000000000000000056 /* AppModelFilePersistence.swift in Sources */,
 				20000000000000000000005D /* AppModelLifecycle.swift in Sources */,
 				200000000000000000000002 /* AppShell.swift in Sources */,
+				94D6FAD46F0D4110809A147C /* WelcomeView.swift in Sources */,
 				200000000000000000000048 /* AppOverlays.swift in Sources */,
 				200000000000000000000049 /* WorkspaceBrowserView.swift in Sources */,
 				20000000000000000000004A /* SidebarView.swift in Sources */,
@@ -842,6 +852,7 @@
 				20000000000000000000001C /* ProfileView.swift in Sources */,
 				20000000000000000000002E /* ProviderUsageChart.swift in Sources */,
 				20000000000000000000000A /* SettingsPrimitives.swift in Sources */,
+				565124FB1C19424DAA4496E6 /* UserManual.swift in Sources */,
 				200000000000000000000044 /* ModelRoutePicker.swift in Sources */,
 				200000000000000000000045 /* AgentSettingsView.swift in Sources */,
 				200000000000000000000046 /* ProvidersView.swift in Sources */,
@@ -905,6 +916,7 @@
 				A20000000000000000000026 /* GatewayResponseWireTests.swift in Sources */,
 				20000000000000000000000D /* GatewayWireTestSupport.swift in Sources */,
 				200000000000000000000030 /* ProviderUsageChartTests.swift in Sources */,
+				473634FE026A4C4186F89594 /* WelcomeTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

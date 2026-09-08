@@ -116,6 +116,7 @@ final class AppModel {
     var pairingCodeInfo: PairingCodeInfo?
 
     var showsPairing = false
+    var showsWelcome = false
     var theme: ThemePreference
     var language: AppLanguage {
         didSet {
@@ -250,6 +251,10 @@ final class AppModel {
         self.appLockEnabled = appLockEnabled
         self.isAppLocked = appLockEnabled
         self.appLockAuthenticationMethod = appLockAuthenticator.method
+        self.showsWelcome =
+            !settingsDefaults.bool(forKey: "welcome-completed")
+            && gateway.accounts.isEmpty && !cloud.hasCloudAccount
+        if !showsWelcome { settingsDefaults.set(true, forKey: "welcome-completed") }
         gateway.locale = language.locale
         restoreSessionReadState(for: gateway.selectedAccountID)
         showsPairing = gateway.accounts.isEmpty

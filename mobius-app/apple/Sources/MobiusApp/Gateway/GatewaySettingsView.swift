@@ -10,6 +10,7 @@ struct GatewayView: View {
         PageScaffold(
             title: "Gateway",
             detail: "Machines paired with this device. Chats run on the selected one.",
+            manualSection: "gateway",
             sharesHeaderBackground: true,
             headerAccessory: {
                 HeaderActionGroup {

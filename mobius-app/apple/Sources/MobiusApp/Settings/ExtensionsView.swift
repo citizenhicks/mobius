@@ -11,6 +11,7 @@ struct ExtensionsView: View {
         PageScaffold(
             title: "Extensions",
             detail: pageDetail,
+            manualSection: "extensions",
             sharesHeaderBackground: true,
             headerAccessory: {
                 HeaderActionGroup {

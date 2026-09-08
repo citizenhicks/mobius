@@ -27,7 +27,9 @@ struct AppShell: View {
         @Bindable var chat = model.chat
         ZStack(alignment: .top) {
             MobiusBackdrop()
-            if model.gateway.accounts.isEmpty {
+            if model.showsWelcome {
+                WelcomeView()
+            } else if model.gateway.accounts.isEmpty {
                 PairingView(canCancel: false)
                     .frame(maxWidth: 620)
                     .padding(MobiusSpace.xl)

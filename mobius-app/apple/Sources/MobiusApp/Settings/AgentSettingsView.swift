@@ -17,6 +17,7 @@ struct AgentSettingsView: View {
         PageScaffold(
             title: pageTitle,
             detail: pageDetail,
+            manualSection: scope == .botDefaults ? "bot-defaults" : "bots",
             sharesHeaderBackground: true,
             showsBackdrop: scope == .botDefaults,
             headerAccessory: { configurationStatusAccessory }

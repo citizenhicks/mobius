@@ -17,6 +17,7 @@ struct BotsView: View {
         PageScaffold(
             title: "Bots",
             detail: "Durable agents, their routines, and the swarms they form.",
+            manualSection: "bots",
             sharesHeaderBackground: true,
             headerAccessory: { headerActions }
         ) {

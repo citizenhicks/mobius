@@ -4,6 +4,7 @@ struct PairingView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @Environment(\.mobiusPalette) private var palette
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let canCancel: Bool
 
     var body: some View {
@@ -12,10 +13,15 @@ struct PairingView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: MobiusSpace.xl) {
                 HStack(alignment: .top) {
-                    SectionHeading(
-                        title: "Pair with a gateway",
-                        detail: "Use the same address and one-time code on iPad or iPhone."
-                    )
+                    VStack(alignment: .leading, spacing: MobiusSpace.s) {
+                        Text("Pair with a gateway")
+                            .font(MobiusStyle.titleFont)
+                        UserManualCaption(
+                            detail: .localized(
+                                "Use the same address and one-time code on iPad or iPhone."),
+                            section: "gateway"
+                        )
+                    }
                     Spacer()
                     if canCancel {
                         Button("Close", glyph: .x) {
@@ -87,12 +93,15 @@ struct PairingView: View {
                     }
                 }
                 .frame(maxWidth: .infinity)
+                if dynamicTypeSize.isAccessibilitySize { pairAction }
             }
         }
         .scrollIndicators(.hidden)
         .scrollBounceBehavior(.basedOnSize)
         .scrollDismissesKeyboard(.interactively)
-        .safeAreaInset(edge: .bottom) { pairAction }
+        .safeAreaInset(edge: .bottom) {
+            if !dynamicTypeSize.isAccessibilitySize { pairAction }
+        }
         .onSubmit { model.pair() }
         .task(id: model.cloud.cloudSession?.userID) {
             await model.cloud.refreshCloudAccount()

@@ -299,6 +299,7 @@ struct SettingsStatusButton: View {
 struct PageScaffold<HeaderAccessory: View, Content: View>: View {
     let title: MobiusText
     let detail: MobiusText
+    let manualSection: String?
     let sharesHeaderBackground: Bool
     let showsBackdrop: Bool
     let headerAccessory: HeaderAccessory
@@ -307,6 +308,7 @@ struct PageScaffold<HeaderAccessory: View, Content: View>: View {
     init(
         title: LocalizedStringResource,
         detail: LocalizedStringResource,
+        manualSection: String? = nil,
         sharesHeaderBackground: Bool = false,
         showsBackdrop: Bool = true,
         @ViewBuilder headerAccessory: () -> HeaderAccessory,
@@ -315,6 +317,7 @@ struct PageScaffold<HeaderAccessory: View, Content: View>: View {
         self.init(
             title: .localized(title),
             detail: .localized(detail),
+            manualSection: manualSection,
             sharesHeaderBackground: sharesHeaderBackground,
             showsBackdrop: showsBackdrop,
             headerAccessory: headerAccessory,
@@ -325,6 +328,7 @@ struct PageScaffold<HeaderAccessory: View, Content: View>: View {
     init(
         title: MobiusText,
         detail: MobiusText,
+        manualSection: String? = nil,
         sharesHeaderBackground: Bool = false,
         showsBackdrop: Bool = true,
         @ViewBuilder headerAccessory: () -> HeaderAccessory,
@@ -332,6 +336,7 @@ struct PageScaffold<HeaderAccessory: View, Content: View>: View {
     ) {
         self.title = title
         self.detail = detail
+        self.manualSection = manualSection
         self.sharesHeaderBackground = sharesHeaderBackground
         self.showsBackdrop = showsBackdrop
         self.headerAccessory = headerAccessory()
@@ -342,8 +347,14 @@ struct PageScaffold<HeaderAccessory: View, Content: View>: View {
         VStack(alignment: .leading, spacing: 0) {
             Form {
                 if !detail.isEmpty {
-                    SettingsCaption(detail)
-                        .listRowBackground(Color.clear)
+                    Group {
+                        if let manualSection {
+                            UserManualCaption(detail: detail, section: manualSection)
+                        } else {
+                            SettingsCaption(detail)
+                        }
+                    }
+                    .listRowBackground(Color.clear)
                 }
                 content
             }
