@@ -100,6 +100,8 @@ private struct CloudAgentUsageLimit: View {
 
 private struct SettingsInformationButton: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.locale) private var locale
+    @Environment(\.openURL) private var openURL
     @State private var showsInformation = false
 
     var body: some View {
@@ -126,28 +128,28 @@ private struct SettingsInformationButton: View {
                 SettingsInformationRow(
                     title: "Acceptable Use Policy",
                     glyph: .shieldCheck,
-                    action: { showPlaceholder("Acceptable Use Policy") }
+                    action: { openInformation(.acceptableUse) }
                 )
                 SettingsInformationRow(
                     title: "Terms of Service",
                     glyph: .doc,
-                    action: { showPlaceholder("Terms of Service") }
+                    action: { openInformation(.terms) }
                 )
                 SettingsInformationRow(
                     title: "Privacy Policy",
                     glyph: .shield02,
-                    action: { showPlaceholder("Privacy Policy") }
+                    action: { openInformation(.privacy) }
                 )
                 SettingsInformationRow(
                     title: "Licenses",
                     glyph: .fileText,
-                    action: { showPlaceholder("Licenses") }
+                    action: { openInformation(.licenses) }
                 )
                 Divider()
                 SettingsInformationRow(
                     title: "Help & Support",
                     glyph: .question,
-                    action: { showPlaceholder("Help & Support") }
+                    action: { openInformation(.support) }
                 )
             }
             .padding(MobiusSpace.l)
@@ -164,9 +166,25 @@ private struct SettingsInformationButton: View {
         return "möbius v\(version) (\(build))"
     }
 
-    private func showPlaceholder(_ title: LocalizedStringResource) {
+    private func openInformation(_ page: SettingsInformationPage) {
         showsInformation = false
-        model.showToast("\(title) will be available before the cloud release.")
+        openURL(page.url(locale: locale)) { accepted in
+            if !accepted {
+                model.showToast("Unable to open this link.", tone: .warning)
+            }
+        }
+    }
+}
+
+enum SettingsInformationPage: String, CaseIterable {
+    case acceptableUse = "acceptable-use"
+    case terms, privacy, licenses, support
+
+    func url(locale: Locale) -> URL {
+        let language = locale.language.languageCode?.identifier ?? "en"
+        let supportedLanguage = ["fr", "de"].contains(language) ? language : "en"
+        return URL(string: "https://mobius.thinkingsand.dev")!
+            .appending(components: "legal", supportedLanguage, rawValue)
     }
 }
 

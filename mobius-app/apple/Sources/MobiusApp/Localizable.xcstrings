@@ -639,22 +639,6 @@
         }
       }
     },
-    "%@ will be available before the cloud release." : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ sera disponible avant le lancement de Cloud."
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ wird vor der Cloud-Veröffentlichung verfügbar sein."
-          }
-        }
-      }
-    },
     "%@, %@" : {
       "localizations" : {
         "en" : {
@@ -14362,6 +14346,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Änderungen umdrehen"
+          }
+        }
+      }
+    },
+    "Unable to open this link." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Impossible d’ouvrir ce lien."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dieser Link kann nicht geöffnet werden."
           }
         }
       }

@@ -6,6 +6,22 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testSettingsInformationLinksUseTheAppLocaleAndPublicCloudPages() {
+        for (identifier, language) in [
+            ("en_US", "en"), ("fr_CA", "fr"), ("de_CH", "de"), ("ja_JP", "en"), ("", "en"),
+        ] {
+            let paths = SettingsInformationPage.allCases.map {
+                $0.url(locale: Locale(identifier: identifier)).absoluteString
+            }
+            XCTAssertEqual(
+                paths,
+                ["acceptable-use", "terms", "privacy", "licenses", "support"].map {
+                    "https://mobius.thinkingsand.dev/legal/\(language)/\($0)"
+                }
+            )
+        }
+    }
+
     func testPromptCardsKeepTheirRowHeightWhenEditingOverflowingText() async throws {
         let suite = UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
