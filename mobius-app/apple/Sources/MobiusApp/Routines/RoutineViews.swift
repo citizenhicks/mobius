@@ -6,30 +6,6 @@ struct RoutineWorkspace: Identifiable {
     let name: String
 }
 
-enum RoutineEditorTarget: Identifiable {
-    case create(String)
-    case edit(Routine)
-
-    var id: String {
-        switch self {
-        case .create(let botID): "create:\(botID)"
-        case .edit(let routine): "edit:\(routine.id)"
-        }
-    }
-
-    var botID: String {
-        switch self {
-        case .create(let botID): botID
-        case .edit(let routine): routine.botId
-        }
-    }
-
-    var routine: Routine? {
-        if case .edit(let routine) = self { return routine }
-        return nil
-    }
-}
-
 struct RoutineRow: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
@@ -283,14 +259,18 @@ func routineDate(
     ) ?? referenceDate
 }
 
-struct RoutineEditorSheet: View {
+struct RoutineForm: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.mobiusPalette) private var palette
     @Environment(\.locale) private var locale
 
     let botID: String
     let routine: Routine?
     let workspaces: [RoutineWorkspace]
+    let onClose: () -> Void
+
+    @State private var submitted = false
+    @State private var submittedRequestID: String?
 
     @State private var workspace: String
     @State private var instructions: String
@@ -309,10 +289,14 @@ struct RoutineEditorSheet: View {
     @State private var endDate: Date
     @State private var enabled: Bool
 
-    init(botID: String, routine: Routine?, workspaces: [RoutineWorkspace]) {
+    init(
+        botID: String, routine: Routine? = nil, workspaces: [RoutineWorkspace],
+        onClose: @escaping () -> Void
+    ) {
         self.botID = botID
         self.routine = routine
         self.workspaces = workspaces
+        self.onClose = onClose
 
         let schedule = routine?.schedule
         let parsedCron = schedule?.expression.flatMap(simpleRoutineSchedule)
@@ -367,103 +351,143 @@ struct RoutineEditorSheet: View {
     }
 
     var body: some View {
-        NavigationStack {
-            PageScaffold(
-                title: .localized(routine == nil ? "New routine" : "Edit routine"),
-                detail: summary,
-                showsBackdrop: false
-            ) {
-                if asksForApproval {
-                    StatusBanner(
-                        tone: .warning,
-                        title: "Routine may pause",
-                        detail:
-                            "This Bot uses Ask. Approval-required actions will wait for you before the routine can continue."
-                    )
-                    .settingsStandaloneRow()
+        VStack(alignment: .leading, spacing: MobiusSpace.l) {
+            HStack(spacing: MobiusSpace.m) {
+                MobiusIcon(.clock, size: 36, foreground: palette.accent)
+                    .padding(MobiusSpace.m)
+                    .background(palette.accentSoft, in: .rect(cornerRadius: 16))
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: MobiusSpace.xs) {
+                    Text(routine == nil ? "New routine" : "Edit routine")
+                        .font(.headline)
+                    summary.text
+                        .font(MobiusStyle.captionFont)
+                        .foregroundStyle(palette.muted)
                 }
-
-                Section("Workspace") {
+            }
+            VStack(alignment: .leading, spacing: MobiusSpace.l) {
+                LabeledContent("Workspace") {
                     Picker("Workspace", selection: $workspace) {
                         ForEach(workspaces) { item in
                             Text(verbatim: item.name).tag(item.path)
                         }
                     }
-                }
-
-                Section("Task") {
-                    TextField(
-                        "Describe what this Bot should do",
-                        text: $instructions,
-                        axis: .vertical
-                    )
-                    .font(MobiusStyle.bodyFont)
-                    .lineLimit(4...8)
-                    .textFieldStyle(.plain)
-                    .textInputAutocapitalization(.sentences)
                     .labelsHidden()
-                    .accessibilityLabel("Task")
-                    .promptCard()
                 }
-
-                Section("Schedule") {
-                    Picker("Repeat", selection: $mode) {
-                        ForEach(RoutineScheduleMode.allCases) { mode in
-                            Text(mode.title).tag(mode)
-                        }
-                    }
-                    scheduleControls
-                    if mode == .daily || mode == .weekly || mode == .advanced {
-                        Picker("Time zone", selection: $timeZoneIdentifier) {
-                            ForEach(TimeZone.knownTimeZoneIdentifiers, id: \.self) { identifier in
-                                Text(verbatim: identifier).tag(identifier)
-                            }
-                        }
-                    }
-                }
-
-                if mode != .once {
-                    Section("End") {
-                        Picker("Ends", selection: $endMode) {
-                            ForEach(RoutineEndMode.allCases) { mode in
-                                Text(mode.title).tag(mode)
-                            }
-                        }
-                        if endMode == .duration {
-                            Stepper(value: $durationValue, in: 1...365) {
-                                Text(durationSummary)
-                            }
-                            Picker("Unit", selection: $durationUnit) {
-                                ForEach(RoutineDurationUnit.allCases) { unit in
-                                    Text(unit.title).tag(unit)
-                                }
-                            }
-                        } else if endMode == .date {
-                            DatePicker(
-                                "Date",
-                                selection: $endDate,
-                                in: Date.now...,
-                                displayedComponents: [.date, .hourAndMinute]
-                            )
-                        }
-                    }
-                }
-
-                if routine != nil {
-                    Section { Toggle("Enabled", isOn: $enabled) }
-                }
+                TextField(
+                    "Describe what this Bot should do", text: $instructions, axis: .vertical
+                )
+                .font(MobiusStyle.bodyFont)
+                .lineLimit(3...6)
+                .textFieldStyle(.plain)
+                .textInputAutocapitalization(.sentences)
+                .accessibilityLabel("Task")
+                .padding(MobiusSpace.m)
+                .background(palette.recessed, in: MobiusStyle.controlShape)
+                scheduleFields
+                if mode != .once { endFields }
+                if routine != nil { Toggle("Enabled", isOn: $enabled) }
             }
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel", action: dismiss.callAsFunction)
+            .pickerStyle(.menu)
+            .disabled(isSaving)
+            if asksForApproval {
+                StatusBanner(
+                    tone: .warning,
+                    title: "Routine may pause",
+                    detail:
+                        "This Bot uses Ask. Approval-required actions will wait for you before the routine can continue."
+                )
+            }
+            if submitted, let error = model.routineError {
+                Text(verbatim: error)
+                    .font(MobiusStyle.captionFont)
+                    .foregroundStyle(palette.danger)
+            }
+            HStack(spacing: MobiusSpace.m) {
+                Button("Cancel", action: onClose)
+                    .buttonStyle(.mobiusGlass)
+                    .disabled(isSaving)
+                Button(action: save) {
+                    if isSaving {
+                        ProgressView().frame(maxWidth: .infinity)
+                    } else {
+                        Text(routine == nil ? "Create" : "Save").frame(maxWidth: .infinity)
+                    }
                 }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(routine == nil ? "Create" : "Save", action: save)
-                        .disabled(!canSave)
+                .mobiusProminentButton()
+                .accessibilityLabel(routine == nil ? "Create" : "Save")
+                .disabled(!canSave)
+            }
+            .buttonBorderShape(.capsule)
+            .controlSize(.large)
+            .buttonSizing(.flexible)
+        }
+        .padding(.vertical, MobiusSpace.s)
+        .onChange(of: model.routineRequestIDs) { old, new in
+            guard let submittedRequestID, old.contains(submittedRequestID),
+                !new.contains(submittedRequestID)
+            else { return }
+            self.submittedRequestID = nil
+            if model.routineError == nil && model.gateway.connectionState.isReady { onClose() }
+        }
+    }
+
+    private var scheduleFields: some View {
+        VStack(alignment: .leading, spacing: MobiusSpace.m) {
+            Text("Schedule")
+                .font(MobiusStyle.captionFont)
+                .foregroundStyle(palette.muted)
+            LabeledContent("Repeat") {
+                Picker("Repeat", selection: $mode) {
+                    ForEach(RoutineScheduleMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .labelsHidden()
+            }
+            scheduleControls
+            if mode == .daily || mode == .weekly || mode == .advanced {
+                LabeledContent("Time zone") {
+                    Picker("Time zone", selection: $timeZoneIdentifier) {
+                        ForEach(TimeZone.knownTimeZoneIdentifiers, id: \.self) { identifier in
+                            Text(verbatim: identifier).tag(identifier)
+                        }
+                    }
+                    .labelsHidden()
                 }
             }
         }
-        .mobiusSheet()
+    }
+
+    private var endFields: some View {
+        VStack(alignment: .leading, spacing: MobiusSpace.m) {
+            LabeledContent("Ends") {
+                Picker("Ends", selection: $endMode) {
+                    ForEach(RoutineEndMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .labelsHidden()
+            }
+            if endMode == .duration {
+                Stepper(value: $durationValue, in: 1...365) {
+                    Text(durationSummary)
+                }
+                LabeledContent("Unit") {
+                    Picker("Unit", selection: $durationUnit) {
+                        ForEach(RoutineDurationUnit.allCases) { unit in
+                            Text(unit.title).tag(unit)
+                        }
+                    }
+                    .labelsHidden()
+                }
+            } else if endMode == .date {
+                DatePicker(
+                    "Date", selection: $endDate, in: Date.now...,
+                    displayedComponents: [.date, .hourAndMinute]
+                )
+            }
+        }
     }
 
     @ViewBuilder
@@ -483,10 +507,13 @@ struct RoutineEditorSheet: View {
             ) {
                 Text(intervalSummary)
             }
-            Picker("Unit", selection: $intervalUnit) {
-                ForEach(RoutineIntervalUnit.allCases) { unit in
-                    Text(unit.title).tag(unit)
+            LabeledContent("Unit") {
+                Picker("Unit", selection: $intervalUnit) {
+                    ForEach(RoutineIntervalUnit.allCases) { unit in
+                        Text(unit.title).tag(unit)
+                    }
                 }
+                .labelsHidden()
             }
             .onChange(of: intervalUnit) { _, unit in
                 if unit == .seconds { intervalValue = max(intervalValue, 60) }
@@ -495,10 +522,13 @@ struct RoutineEditorSheet: View {
             DatePicker("Time", selection: $dailyTime, displayedComponents: [.hourAndMinute])
                 .environment(\.timeZone, selectedTimeZone)
         case .weekly:
-            Picker("Day", selection: $weekday) {
-                ForEach(1...7, id: \.self) { day in
-                    Text(verbatim: weekdayName(day)).tag(day)
+            LabeledContent("Day") {
+                Picker("Day", selection: $weekday) {
+                    ForEach(1...7, id: \.self) { day in
+                        Text(verbatim: weekdayName(day)).tag(day)
+                    }
                 }
+                .labelsHidden()
             }
             DatePicker("Time", selection: $weeklyTime, displayedComponents: [.hourAndMinute])
                 .environment(\.timeZone, selectedTimeZone)
@@ -507,6 +537,9 @@ struct RoutineEditorSheet: View {
                 .font(MobiusStyle.bodyFont.monospaced())
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
+                .accessibilityLabel("Cron expression")
+                .padding(MobiusSpace.m)
+                .background(palette.recessed, in: MobiusStyle.controlShape)
         }
     }
 
@@ -552,8 +585,12 @@ struct RoutineEditorSheet: View {
         }
     }
 
+    private var isSaving: Bool {
+        submittedRequestID.map { model.routineRequestIDs.contains($0) } ?? false
+    }
+
     private var canSave: Bool {
-        !workspace.isEmpty
+        !isSaving && model.gateway.connectionState.isReady && !workspace.isEmpty
             && !instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && schedule != nil
             && (mode != .interval || (schedule?.everySeconds ?? 0) >= 60)
@@ -615,9 +652,10 @@ struct RoutineEditorSheet: View {
     }
 
     private func save() {
-        guard let schedule else { return }
+        guard canSave, let schedule else { return }
+        submitted = true
         if let routine {
-            model.updateRoutine(
+            submittedRequestID = model.updateRoutine(
                 routine,
                 botID: botID,
                 workspace: workspace,
@@ -627,7 +665,7 @@ struct RoutineEditorSheet: View {
                 enabled: enabled
             )
         } else {
-            model.createRoutine(
+            submittedRequestID = model.createRoutine(
                 botID: botID,
                 workspace: workspace,
                 instructions: instructions,
@@ -635,7 +673,6 @@ struct RoutineEditorSheet: View {
                 endsAt: endsAt
             )
         }
-        dismiss()
     }
 }
 

@@ -134,6 +134,14 @@ final class WelcomeTests: XCTestCase {
         for (name, content) in [
             ("New Bot", AnyView(NewBotForm {})),
             ("New Swarm", AnyView(NewSwarmForm {})),
+            (
+                "New routine",
+                AnyView(
+                    RoutineForm(
+                        botID: "bot-1",
+                        workspaces: [RoutineWorkspace(path: "/srv/mobius", name: "möbius")]
+                    ) {})
+            ),
             ("Install extension", AnyView(InstallExtensionForm {})),
             ("Chat info", AnyView(ChatInfoView())),
         ] {

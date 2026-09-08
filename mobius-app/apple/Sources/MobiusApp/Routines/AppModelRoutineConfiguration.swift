@@ -2,17 +2,18 @@ import Foundation
 import Observation
 
 extension AppModel {
+    @discardableResult
     func createRoutine(
         botID: String,
         workspace: String,
         instructions: String,
         schedule: RoutineSchedule,
         endsAt: Int64?
-    ) {
+    ) -> String? {
         let instructions = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
         guard gateway.connectionState.isReady, !botID.isEmpty, !workspace.isEmpty,
             !instructions.isEmpty
-        else { return }
+        else { return nil }
         let id = requestID("routine-create")
         routineRequestIDs.insert(id)
         routineError = nil
@@ -29,8 +30,10 @@ extension AppModel {
             self?.routineRequestIDs.remove(id)
             self?.routineError = message
         }
+        return id
     }
 
+    @discardableResult
     func updateRoutine(
         _ routine: Routine,
         botID: String,
@@ -39,11 +42,11 @@ extension AppModel {
         schedule: RoutineSchedule,
         endsAt: Int64?,
         enabled: Bool
-    ) {
+    ) -> String? {
         let instructions = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
         guard gateway.connectionState.isReady, !botID.isEmpty, !workspace.isEmpty,
             !instructions.isEmpty
-        else { return }
+        else { return nil }
         let id = requestID("routine-update")
         routineRequestIDs.insert(id)
         routineError = nil
@@ -62,6 +65,7 @@ extension AppModel {
             self?.routineRequestIDs.remove(id)
             self?.routineError = message
         }
+        return id
     }
 
     func deleteRoutine(_ routine: Routine) {

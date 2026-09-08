@@ -546,7 +546,9 @@ struct BotDetailView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
     @State private var showsSettings = false
-    @State private var editedRoutine: RoutineEditorTarget?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var showsNewRoutine = false
+    @State private var editedRoutine: Routine?
     @State private var visibleRunCount = runPageSize
     let botID: String
 
@@ -560,11 +562,14 @@ struct BotDetailView: View {
                     headerAccessory: {
                         HeaderActionGroup {
                             Button {
-                                editedRoutine = .create(botID)
+                                showsNewRoutine = true
                             } label: {
                                 MobiusIcon(.plus, gutter: false)
                             }
-                            .disabled(workspaces.isEmpty || !model.gateway.connectionState.isReady)
+                            .disabled(
+                                showsNewRoutine || workspaces.isEmpty
+                                    || !model.gateway.connectionState.isReady
+                            )
                             .groupedHeaderAction(prominent: true)
                             .accessibilityLabel("New routine")
                             .help("New routine")
@@ -598,26 +603,7 @@ struct BotDetailView: View {
                         }
                     }
 
-                    Section("Routines") {
-                        if let error = model.routineError {
-                            StatusBanner(
-                                tone: .error,
-                                title: .localized("Routine rejected"),
-                                detail: .verbatim(error)
-                            )
-                        }
-                        if botRoutines.isEmpty {
-                            Text("No routines yet.")
-                                .foregroundStyle(palette.muted)
-                        } else {
-                            ForEach(botRoutines) { routine in
-                                RoutineRow(
-                                    routine: routine,
-                                    edit: { editedRoutine = .edit(routine) }
-                                )
-                            }
-                        }
-                    }
+                    routineSections
 
                     Section("Run history") {
                         if botRuns.isEmpty {
@@ -716,12 +702,51 @@ struct BotDetailView: View {
             }
             .mobiusSheet(detents: [.large])
         }
-        .sheet(item: $editedRoutine) { target in
-            RoutineEditorSheet(
-                botID: target.botID,
-                routine: target.routine,
-                workspaces: workspaces
-            )
+        .sheet(item: $editedRoutine) { routine in
+            NavigationStack {
+                PageScaffold(title: "Edit routine", detail: "", showsBackdrop: false) {
+                    Section {
+                        RoutineForm(botID: routine.botId, routine: routine, workspaces: workspaces)
+                        {
+                            editedRoutine = nil
+                        }
+                    }
+                }
+            }
+            .mobiusSheet(detents: [.large])
+        }
+        .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: showsNewRoutine)
+    }
+
+    @ViewBuilder
+    private var routineSections: some View {
+        if showsNewRoutine {
+            Section {
+                RoutineForm(botID: botID, workspaces: workspaces) {
+                    showsNewRoutine = false
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        Section("Routines") {
+            if !showsNewRoutine, let error = model.routineError {
+                StatusBanner(
+                    tone: .error,
+                    title: .localized("Routine rejected"),
+                    detail: .verbatim(error)
+                )
+            }
+            if botRoutines.isEmpty {
+                Text("No routines yet.")
+                    .foregroundStyle(palette.muted)
+            } else {
+                ForEach(botRoutines) { routine in
+                    RoutineRow(
+                        routine: routine,
+                        edit: { editedRoutine = routine }
+                    )
+                }
+            }
         }
     }
 

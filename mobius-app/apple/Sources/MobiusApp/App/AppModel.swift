@@ -184,7 +184,7 @@ final class AppModel {
     @ObservationIgnored var providerRegistrationRequestID: String?
     var pendingProviderRemoval: (requestID: String, instance: String)?
     @ObservationIgnored var extensionRequestID: String?
-    @ObservationIgnored var routineRequestIDs: Set<String> = []
+    var routineRequestIDs: Set<String> = []
     @ObservationIgnored var routineRunPreviewRequestID: String?
     @ObservationIgnored var routineRunPreviewRequestBeforeSequence: UInt64?
     @ObservationIgnored var routineRunPreviewPollingTask: Task<Void, Never>?

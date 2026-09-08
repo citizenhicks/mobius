@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 @testable import Mobius
 import XCTest
 
@@ -77,6 +78,46 @@ extension AppModelTests {
             SimpleRoutineSchedule(minute: 0, hour: 9, weekday: 1)
         )
         XCTAssertNil(simpleRoutineSchedule("0 9 * * 1-5"))
+    }
+
+    func testRoutineCreationTracksItsResponseAndRetainsRejectionForRetry() async throws {
+        let model = try model { _ in }
+        model.gateway.connectionState = .ready
+        model.routineError = "Previous attempt"
+        let first = try XCTUnwrap(
+            model.createRoutine(
+                botID: "bot-1", workspace: "/srv/mobius", instructions: "Summarize the updates",
+                schedule: .interval(seconds: 600), endsAt: nil
+            ))
+        XCTAssertNil(model.routineError)
+        XCTAssertTrue(model.routineRequestIDs.contains(first))
+        model.gateway.handle(.accepted(requestID: "unrelated"))
+        XCTAssertTrue(model.routineRequestIDs.contains(first))
+        let changed = expectation(description: "Routine form observes save completion")
+        withObservationTracking {
+            _ = model.routineRequestIDs
+        } onChange: {
+            changed.fulfill()
+        }
+        model.gateway.handle(
+            .rejected(
+                GatewayRejection(
+                    requestId: first, code: "invalid_schedule", message: "Choose a future time",
+                    fatal: false
+                )))
+        await fulfillment(of: [changed], timeout: 1)
+        XCTAssertFalse(model.routineRequestIDs.contains(first))
+        XCTAssertEqual(model.routineError, "Choose a future time")
+        let retry = try XCTUnwrap(
+            model.createRoutine(
+                botID: "bot-1", workspace: "/srv/mobius", instructions: "Summarize the updates",
+                schedule: .interval(seconds: 600), endsAt: nil
+            ))
+        XCTAssertNotEqual(first, retry)
+        XCTAssertNil(model.routineError)
+        model.gateway.handle(.accepted(requestID: retry))
+        XCTAssertFalse(model.routineRequestIDs.contains(retry))
+        XCTAssertNil(model.routineError)
     }
 
     func testRoutineManagementIsBotScoped() async throws {
