@@ -48,8 +48,8 @@ Profile shows the verified current plan, billing dates, any scheduled downgrade,
 and included usage. Apple’s subscription controls handle upgrades, downgrades,
 and cancellation. Credit renews once per verified paid billing period; restore,
 cancellation, and a pending plan change do not create another allowance. Changing
-plans preserves the account, gateway, and chats. Product configuration and rollout
-remain pending review; this source change does not change App Store prices.
+plans preserves the account, gateway, and chats. App Store Connect owns product
+prices and availability; StoreKit supplies the localized offer shown in the app.
 
 The one-time code is only the first pairing credential. A successful pairing
 returns a per-pairing bearer token, which this app stores in device-only Keychain
