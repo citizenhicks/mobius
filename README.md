@@ -1,287 +1,213 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/citizenhicks/mobius/main/mobius-app/apple/Sources/MobiusApp/Assets.xcassets/MobiusLogo.imageset/MobiusLogo.svg" width="160" height="160" alt="möbius">
+  <img src="https://raw.githubusercontent.com/citizenhicks/mobius/main/mobius-app/apple/Sources/MobiusApp/Assets.xcassets/MobiusLogo.imageset/MobiusLogo.svg" width="120" height="120" alt="möbius logo">
 </p>
 
-# möbius
+<h1 align="center">möbius</h1>
 
-möbius is a small, frontend-neutral Rust framework for coding agents. Its shipped
-runtime has one headless composition root: `mobius-gateway`. The terminal and
-Apple apps are thin clients of that gateway; they do not own agent behavior.
+<p align="center"><strong>One home for your agents.</strong></p>
+<p align="center">Coding agents in your terminal, on your iPhone, and on your iPad.<br>Run them on your own hardware or a hosted gateway.</p>
 
-## Architecture
+<p align="center">
+  <a href="https://github.com/citizenhicks/mobius/actions/workflows/ci.yml"><img src="https://github.com/citizenhicks/mobius/actions/workflows/ci.yml/badge.svg?branch=main" alt="Rust CI"></a>
+  <a href="https://github.com/citizenhicks/mobius/actions/workflows/swift.yml"><img src="https://github.com/citizenhicks/mobius/actions/workflows/swift.yml/badge.svg?branch=main" alt="Swift CI"></a>
+  <a href="https://crates.io/crates/mobius"><img src="https://img.shields.io/crates/v/mobius" alt="mobius crate version"></a>
+  <a href="https://github.com/citizenhicks/mobius/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="Apache 2.0 license"></a>
+</p>
 
-```text
-Terminal client ─┐
-SwiftUI client ──┼── versioned gateway protocol ⇄ mobius-gateway ──> Agent
-Other clients ───┘                                     │
-                                                        ├─ model router
-                                                        ├─ sandbox
-                                                        ├─ checkpoints
-                                                        └─ middleware stack
-```
+<p align="center">
+  <a href="#get-started">Get started</a> ·
+  <a href="https://mobius.thinkingsand.dev/how">User guide</a> ·
+  <a href="https://github.com/citizenhicks/mobius/releases">Downloads</a> ·
+  <a href="https://docs.rs/mobius/latest/mobius/">Rust API</a> ·
+  <a href="https://mobius.thinkingsand.dev/">Cloud beta</a>
+</p>
 
-### Core and agent
+möbius is an open-source runtime for coding agents, with terminal and native Apple clients.
+Create **Bots** with their own models, instructions, tools, and approval policies. Work with
+those Bots across devices, schedule recurring jobs, or assemble a team to collaborate.
+Your **gateway** runs the agents and keeps their workspaces and saved conversations together.
 
-The [`mobius`](https://crates.io/crates/mobius) crate is the embeddable core.
-[`src/agent/`](src/agent/) owns one durable session and its linear command,
-model, approval, and tool loop. [`src/protocol/`](src/protocol/) defines the
-frontend-neutral operations, events, and presentation records around that loop.
-A library caller supplies an `AgentConfig`; the core does not select a frontend
-or hide runtime dependencies behind global state.
+Underneath the apps is a small, modular Rust framework you can embed in your own software.
 
-### Middleware
+## What you can do
 
-[`src/middleware/`](src/middleware/) contains optional capabilities. One
-middleware owns its tools, state, prompt section, runtime hooks, commands,
-widgets, references, event rendering, and tests. `MiddlewareStack` validates one
-ordered list, and that declaration order is observable.
+- **Pick up work across devices.** Open the same conversation from your terminal, iPhone,
+  or iPad. Work continues while the gateway is running, even after you close a client.
+- **Give each Bot a job.** Configure a builder, reviewer, or researcher with its own model,
+  capabilities, instructions, and permissions. Each chat keeps its own transcript and workspace selection.
+- **Put repeat work on a schedule.** Run a task once, at an interval, daily, weekly, or on a
+  cron schedule. Each routine run starts a fresh conversation and keeps its results in run history.
+- **Let Bots collaborate.** Swarms bring opted-in Bots together around a leader and a shared
+  chat. Within a task, subagents can take on bounded parallel work.
+- **Keep long tasks moving.** Durable checkpoints, context compaction, and searchable history
+  let agents resume work and recover earlier details.
+- **Choose the tools and boundaries.** Enable capabilities per Bot, add skills, review plugin
+  hooks, and decide which actions require your approval.
 
-The core exposes one typed hook suite directly on `Middleware`:
+## Get started
 
-| Hook | Purpose |
+### 1. Install the terminal client and gateway
+
+Download a **`mobius-cli` release** from [GitHub Releases](https://github.com/citizenhicks/mobius/releases).
+Choose the `mobius-<version>-<target>.tar.gz` archive for your machine:
+
+| Platform | Archive target |
 | --- | --- |
-| `session_start` (`SessionStart`) | Start or resume a main agent or subagent; after compaction, re-establish hidden context. Startup failures unwind completed starts in reverse order. |
-| `user_prompt_submit` (`UserPromptSubmit`) | Inspect, enrich, or reject a prompt before it enters durable context. |
-| `pre_model` (`PreModel`) | Apply durable context changes before a primary model step. |
-| `model_request` (`ModelRequest`) | Add request-only material after every `pre_model` hook has finished. |
-| `pre_tool_use` (`PreToolUse`) | Inspect, enrich, rewrite, or deny each normalized tool call before it is persisted or authorized. |
-| `permission_request` (`PermissionRequest`) | Allow, deny, or defer a sandbox request immediately before the user would be asked. |
-| `post_tool_use` (`PostToolUse`) | Change feedback or add context after a real tool execution, without pretending to undo its side effects. |
-| `pre_compact` (`PreCompact`) | Inspect the exact context and optionally stop the turn before compaction. |
-| `post_compact` (`PostCompact`) | Inspect the committed compacted context and optionally stop before `session_start(compact)`. |
-| `stop` (`Stop`) | Finish normally or request one bounded continuation. The context identifies whether the agent is main or subagent. |
-| `turn_end` (`TurnEnd`) | Clean up transient turn state after either completion or abort. |
-| `session_end` (`SessionEnd`) | Release session resources in reverse declaration order. |
+| macOS, Apple Silicon | `aarch64-apple-darwin` |
+| Linux, Intel / AMD 64-bit | `x86_64-unknown-linux-gnu` |
 
-All hooks run in declaration order except `session_end`. `pre_model` and
-`model_request` are two complete stack passes, so no request-only decoration can
-precede a later durable rewrite. Policy decisions are typed outcomes; hook
-errors remain infrastructure failures. Static prompt sections are composed once
-when the agent is created, and changing its Bot profile recreates the prompt and
-tool catalog without adding either to conversation history.
+Verify the archive with `shasum -a 256 -c FILE.sha256` using its accompanying checksum file,
+then extract it and put the included
+`mobius`, `mobius-gateway`, and `cloudflared` executables together in a directory on your `PATH`.
+The archive also includes the licenses and terminal manual pages.
 
-`continue: false` is a typed core decision at session-start and compaction
-boundaries: it stops a recovered or compacting turn, while an idle startup has
-no turn to stop. Every middleware can use that lifecycle control.
+<details>
+<summary>Install with Cargo or build from source</summary>
 
-The Extensions middleware loads standalone Agent Skills and explicitly activated
-OpenAI plugin snapshots. A plugin is one package rooted at
-`.codex-plugin/plugin.json`; its declared skills are exposed as
-`plugin-name:skill-name`, and its command hooks adapt the OpenAI event contract
-onto the typed lifecycle above. Hooks run synchronously in this slice. MCP and
-app contributions are not yet supported.
-
-The gateway installs skills and plugins from credential-free HTTPS Git sources
-as content-addressed, read-only snapshots. Installation is inactive. An extension
-may be selected independently for the Bot-creation template or one Bot; its skills
-load immediately, while executable hooks stay disabled until their complete
-package digest is reviewed. Selections follow an installed extension across
-updates, and changed executable code requires a new review. Selected extensions
-must be removed from every Bot profile before they can be uninstalled.
-User-level Agent/Codex skill roots and project-local `.agents/skills` and
-`.codex/skills` remain discovered, read-only inputs outside the managed catalog.
-
-### Providers
-
-[`src/backend/model/`](src/backend/model/) owns the `Model` transport contract,
-`ModelRouter`, and built-in `ProviderDefinition` manifests. A manifest supplies
-generic setup metadata, authentication, model choices, and advertised
-capabilities. Each adapter converts its private wire format into `ModelEvent`
-and `ModelOutput` before the agent loop sees it, so setup screens and model
-pickers do not branch on provider IDs.
-
-### Backends
-
-[`src/backend/checkpoint/`](src/backend/checkpoint/) defines `CheckpointStore`
-and owns durable checkpoints, event journals, transcript pages, and the session
-catalog. [`src/backend/sandbox/`](src/backend/sandbox/) defines
-`SandboxBackend`; `Sandbox` wraps an injected backend with approval policy,
-background-process ownership, and frontend contributions.
-
-Protected local modes use Seatbelt on macOS and Bubblewrap on Linux and fail
-closed when the selected platform sandbox is unavailable. Filesystem confinement
-stays active under every approval policy except **Full access**. Full-access
-shell commands can reach anything available to the gateway account, including
-gateway state and credentials; file tools remain workspace-scoped.
-
-### Gateway
-
-[`mobius-gateway`](https://crates.io/crates/mobius-gateway) is the only shipped
-owner of an `Agent`. It explicitly assembles one agent per active conversation
-from its owning Bot and owns authentication, paired clients, workspaces,
-artifacts, Git, usage, Bot profiles and routines, optional Bot swarms, and the
-extension catalog. Its versioned wire protocol translates authenticated client
-requests into core operations and publishes core events plus capability
-contributions. [Bots and context](https://github.com/citizenhicks/mobius/blob/main/crates/mobius-gateway/BOTS.md)
-defines the conversation, history-recovery, handoff, shared-knowledge, and
-collaboration boundaries. Swarms require each Bot to opt in through its native
-`bots.collaboration` capability setting; profiles, chats, and self-routines work
-independently.
-
-### CLI
-
-[`mobius-cli`](https://crates.io/crates/mobius-cli) provides the `mobius`
-Ratatui client and the `mobius-gateway` executable. The terminal frontend sends
-gateway operations and renders gateway events and the capability catalog;
-[`crates/mobius-cli/src/frontend/`](crates/mobius-cli/src/frontend/) owns only
-terminal lifecycle, input, and presentation.
-
-### SwiftUI app
-
-[`mobius-app/apple/`](mobius-app/apple/) is one SwiftUI gateway client for iPhone
-and iPad. It uses the same versioned protocol and capability contributions as the
-CLI, keeps paired client credentials in Keychain, and owns Apple lifecycle,
-storage, navigation, and rendering—not agent, provider, or middleware behavior.
-
-## Install
-
-Download `mobius-<version>-<target>.tar.gz` and its checksum from
-[GitHub Releases](https://github.com/citizenhicks/mobius/releases). The archive
-contains `mobius`, `mobius-gateway`, and `cloudflared`. Rust users can install the
-two möbius commands with Rust 1.98 or newer:
+Rust **1.98 or newer** is required. Install `cloudflared` separately for Quick Connect;
+the Cargo package installs the two möbius commands only.
 
 ```sh
 cargo install --locked mobius-cli
 ```
 
-Cargo does not install `cloudflared`; Quick Connect requires it beside
-`mobius-gateway` or on `PATH`.
-
-Users upgrading from the earlier split packages should run
-`cargo install --force --locked mobius-cli` once so Cargo transfers both commands to the CLI
-package.
-
-Then run `mobius` from the workspace it should own:
+From a checkout of this repository:
 
 ```sh
-cd /path/to/repository
+cargo build --locked -p mobius-cli
+cargo run --locked -p mobius-cli --bin mobius
+```
+
+See the [CLI guide](https://github.com/citizenhicks/mobius/blob/main/crates/mobius-cli/README.md)
+for installation and remote connection options.
+
+</details>
+
+### 2. Open a workspace and connect a model
+
+```sh
+cd /path/to/your/project
 mobius
 ```
 
-On first use, the CLI initializes the machine-wide gateway with a loopback listener
-and Cloudflare Quick Tunnel, provisions its local credential, starts the gateway in
-the background, and opens `/login` when no provider is configured. The first
-configured model becomes the Bot-creation template default. Each CLI invocation
-selects an existing Bot and creates an independent conversation for its current
-directory; other terminal and app frontends can connect to the same gateway and
-open separate or shared conversations. The conversation owns its workspace and
-transcript. Its Bot owns the model, reasoning, capabilities, approval policy,
-extensions, and prompt. The core `mobius` crate is linked into the binaries and
-is not a separate runtime prerequisite.
+First launch starts your local gateway in the background and opens provider setup. Connect a
+provider, choose a model, and start a conversation with the default `@mobius` Bot. You can add
+more Bots and change their models and capabilities later.
 
-Plaintext remains limited to loopback. Run `mobius-gateway connect` to advertise
-both that local TCP endpoint and the Quick Tunnel's public WSS endpoint with one
-single-use pairing code; pairing through either exchanges it for a per-client
-token used on later connections. A direct TLS listener remains available as an advanced
-alternative. See the
-[gateway guide](https://github.com/citizenhicks/mobius/blob/main/crates/mobius-gateway/README.md),
-the [CLI guide](https://github.com/citizenhicks/mobius/blob/main/crates/mobius-cli/README.md),
-and the [Apple guide](https://github.com/citizenhicks/mobius/blob/main/mobius-app/apple/README.md)
-for manual and remote setup.
+Built-in providers include **OpenAI, Codex, Anthropic, DeepSeek, Kimi, and OpenRouter**, plus
+configurable endpoints that implement the OpenAI Responses API. Authentication and available
+features depend on the provider. Use `/login` to configure one and `/bot` to edit your Bot.
 
-To run the Rust binaries from this checkout:
+On Linux, protected command execution requires **Bubblewrap**. Default Quick Connect uses
+`cloudflared`, which is included in the downloadable archives.
+
+### 3. Connect your other devices
 
 ```sh
-cargo build -p mobius-cli
-cargo run -p mobius-cli --bin mobius
+mobius-gateway connect
 ```
 
-## Embed the core
+The gateway displays an address and a single-use pairing code. In the Apple app, choose
+**Use your own gateway** and enter those details. Another terminal can connect with the
+`mobius pair` command shown by the gateway. Once paired, each client can open saved
+conversations or work independently.
 
-möbius requires Rust 1.98 or newer.
+Quick Connect creates an account-free Cloudflare tunnel. Its public address changes when the
+gateway restarts; the [gateway guide](https://github.com/citizenhicks/mobius/blob/main/crates/mobius-gateway/README.md)
+covers stable addresses and direct TLS setup. Keep your gateway machine awake and reachable
+for remote access and scheduled work.
+
+**Apple app:** the iPhone and iPad client is currently in TestFlight beta. The
+[Apple guide](https://github.com/citizenhicks/mobius/blob/main/mobius-app/apple/README.md)
+explains how to build it from source.
+
+**Prefer a hosted gateway?** [möbius Cloud](https://mobius.thinkingsand.dev/) runs the same
+open-source gateway in a dedicated microVM. Cloud is currently in beta and is optional.
+
+## How it fits together
+
+```mermaid
+flowchart LR
+    Terminal["Terminal · mobius"] <--> Gateway["Your gateway"]
+    Apple["iPhone & iPad"] <--> Gateway
+    Gateway --> Agents["Bots · routines · swarms"]
+    Gateway --> Work["Workspaces · Git · saved conversations"]
+    Gateway --> Models["Your model providers"]
+```
+
+The gateway is where files, commands, provider configuration, and agent sessions live.
+Clients send requests and render the same event stream. Model requests go to the provider
+you configure; changing clients preserves the agent's runtime and saved work.
+
+| Concept | What it means |
+| --- | --- |
+| **Gateway** | The runtime on your Mac, Linux machine, or cloud host. It serves all your paired clients. |
+| **Bot** | A reusable agent profile: purpose, model, tools, instructions, and approval policy. |
+| **Chat** | A conversation with one Bot, a selected workspace, and its own durable transcript. |
+| **Routine** | A scheduled task owned by a Bot. Each run gets a fresh conversation. |
+| **Swarm** | A group of collaborating Bots with a leader and shared chat; each Bot keeps its own context. |
+
+Protected execution uses **Seatbelt on macOS** and **Bubblewrap on Linux** and fails closed
+if the selected sandbox is unavailable. Approval policy belongs to the Bot. **Full access**
+allows shell commands to use everything available to the gateway account; file tools remain
+workspace-scoped. The [gateway guide](https://github.com/citizenhicks/mobius/blob/main/crates/mobius-gateway/README.md)
+explains these boundaries in detail.
+
+## Build on möbius
+
+The [`mobius`](https://crates.io/crates/mobius) crate is the embeddable core:
 
 ```toml
 [dependencies]
 mobius = "0.15"
 ```
 
-The caller owns composition:
+Compose an `AgentConfig` with a model router, sandbox, checkpoint store, and ordered
+middleware stack. The core owns one linear session and model/tool loop. Your application
+supplies the dependencies and consumes frontend-neutral events.
 
-```rust,no_run
-use std::path::Path;
-use std::sync::Arc;
+- **Bring a model:** implement `Model`, or register an existing provider with `ModelRouter`.
+- **Add a capability:** implement `Middleware` to own its tools, lifecycle hooks, state,
+  commands, and presentation contributions.
+- **Build a frontend:** submit `protocol::Op` values and render the agent's events and
+  capability catalog.
+- **Choose storage and execution:** inject a `CheckpointStore` and `SandboxBackend`.
 
-use mobius::Result;
-use mobius::agent::{Agent, AgentConfig, create_agent};
-use mobius::backend::checkpoint::{CheckpointStore, sqlite::SqliteCheckpoint};
-use mobius::backend::model::{Model, ModelRouter, openai::OpenAi};
-use mobius::backend::sandbox::{ApprovalPolicy, Sandbox, local::LocalSandbox};
-use mobius::middleware::{Middleware, MiddlewareStack};
-use mobius::middleware::{messages::Messages, tools::Tools};
-use mobius::protocol::SessionContext;
+Start with the [compile-checked composition example](https://docs.rs/mobius/latest/mobius/#embedded-composition)
+and [API documentation](https://docs.rs/mobius/latest/mobius/). The gateway is the shipped
+composition root; the CLI and Apple app contain client behavior and presentation.
 
-async fn build_agent(
-    workspace: &Path,
-    api_key: String,
-    model_id: &str,
-) -> Result<Agent> {
-    let model: Arc<dyn Model> = Arc::new(OpenAi::new(
-        api_key,
-        "https://api.openai.com/v1",
-        model_id,
-    )?);
-    let models = Arc::new(ModelRouter::new("default", model));
-    let sandbox = Arc::new(Sandbox::new(
-        Arc::new(LocalSandbox::new(workspace)?),
-        ApprovalPolicy::Ask,
-    ));
-    let checkpoints: Arc<dyn CheckpointStore> =
-        Arc::new(SqliteCheckpoint::new(workspace.join("mobius.sqlite3"))?);
-    let middleware: Vec<Arc<dyn Middleware>> = vec![
-        Arc::new(Messages::default()),
-        Arc::new(Tools::coding()),
-    ];
+Extensions support standalone **Agent Skills** and **OpenAI-format plugins** with skills and
+command hooks. Installed packages are inactive until selected for a Bot or its creation
+template, and executable hooks require review of the installed package digest. MCP and app
+connectors are not yet supported.
 
-    create_agent(
-        AgentConfig::new(
-            models,
-            sandbox,
-            checkpoints,
-            MiddlewareStack::new(middleware)?,
-            "You are a concise coding agent.",
-        )
-        .session_context(SessionContext {
-            bot_id: "embedded".into(),
-            ..SessionContext::default()
-        }),
-    )
-    .await
-}
-```
+| Package | Role |
+| --- | --- |
+| [`mobius`](https://crates.io/crates/mobius) | Embeddable Rust agent framework. |
+| [`mobius-gateway`](https://crates.io/crates/mobius-gateway) | Headless runtime library: authentication, Bots, chats, routines, and swarms. |
+| [`mobius-cli`](https://crates.io/crates/mobius-cli) | Installs the `mobius` terminal client and `mobius-gateway` executable. |
+| [Apple app](https://github.com/citizenhicks/mobius/tree/main/mobius-app/apple) | Native SwiftUI client for iPhone and iPad. |
 
-The [crate documentation](https://docs.rs/mobius/latest/mobius/) compile-checks this example
-and includes custom model and middleware examples. It documents bounded submissions,
-sender-drop shutdown, atomic checkpoint saves, and middleware ordering. Keep draining agent
-events while commands are active. Sandbox backends own cancellation cleanup for resources they
-launch; gateway hosts signal shutdown through `GatewayServer::serve_until` and await it.
+## Documentation and contributing
 
-Frontends submit
-[`protocol::Op`](https://docs.rs/mobius/latest/mobius/protocol/enum.Op.html) values and consume
-events from `Agent`. Framework capabilities may also contribute frontend-neutral commands,
-references, widgets, and rendered blocks. A frontend decides how those contributions look;
-capability implementations do not depend on terminal code. Interrupts target a specific turn, and
-events carry an optional submission ID so command-driven and unsolicited system events remain
-distinct.
+| Start here | For |
+| --- | --- |
+| [User guide](https://mobius.thinkingsand.dev/how) | Setup, everyday workflows, Bots, and settings. |
+| [Terminal manual](https://mobius.thinkingsand.dev/manual) | Command reference and manual pages. |
+| [CLI guide](https://github.com/citizenhicks/mobius/blob/main/crates/mobius-cli/README.md) | Installation, provider setup, and terminal controls. |
+| [Gateway guide](https://github.com/citizenhicks/mobius/blob/main/crates/mobius-gateway/README.md) | Hosting, pairing, authentication, and sandbox policy. |
+| [Bots and context](https://github.com/citizenhicks/mobius/blob/main/crates/mobius-gateway/BOTS.md) | Routines, swarms, subagents, and memory boundaries. |
+| [Apple guide](https://github.com/citizenhicks/mobius/blob/main/mobius-app/apple/README.md) | Building and testing the iPhone and iPad app. |
 
-## Contributing
+Contributions and [issue reports](https://github.com/citizenhicks/mobius/issues) are welcome.
+Read [AGENTS.md](https://github.com/citizenhicks/mobius/blob/main/AGENTS.md) for module ownership,
+design rules, and required checks.
 
-Read [AGENTS.md](https://github.com/citizenhicks/mobius/blob/main/AGENTS.md) before changing the framework. It defines module ownership,
-capability extension points, required checks, and the no-compatibility rule while
-the public contract remains under active development.
-
-Release tags are intentionally separate:
-
-- `mobius-vX.Y.Z` publishes the framework crate and creates its GitHub Release.
-- `mobius-gateway-vX.Y.Z` publishes the gateway crate and attaches server binaries.
-- `mobius-cli-vX.Y.Z` publishes the CLI crate and attaches downloadable binaries to a GitHub
-  Release.
-
-Publish `mobius`, then `mobius-gateway`, then `mobius-cli`, waiting for each dependency to appear in
-the crates.io index. Creating a tag is a release action; ordinary pushes and pull requests only
-run CI. The release workflow expects a `CARGO_REGISTRY_TOKEN` repository secret for
-crates.io publication.
+The Rust packages have separate versions and release workflows. See
+[release instructions](https://github.com/citizenhicks/mobius/blob/main/AGENTS.md#releases)
+and the [release workflow](https://github.com/citizenhicks/mobius/blob/main/.github/workflows/release.yml).
 
 ## License
 
-Licensed under [Apache-2.0](LICENSE). See [NOTICE](NOTICE) for third-party
-attributions.
+[Apache-2.0](LICENSE). See [NOTICE](NOTICE) for third-party attributions.
