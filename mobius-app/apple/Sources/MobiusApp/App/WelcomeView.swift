@@ -12,6 +12,7 @@ struct WelcomeView: View {
     @Environment(\.mobiusPalette) private var palette
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var step: Int? = 0
+    @State private var hoveredStep: Int?
     @State private var viewportHeight: CGFloat = 0
 
     var body: some View {
@@ -44,6 +45,9 @@ struct WelcomeView: View {
         .scrollPosition(id: $step, anchor: .top)
         .scrollTargetBehavior(.viewAligned)
         .scrollIndicators(.hidden)
+        .overlay(alignment: .trailing) {
+            progressRail.padding(.trailing, MobiusSpace.s)
+        }
         .onGeometryChange(for: CGFloat.self) {
             $0.size.height
         } action: {
@@ -108,37 +112,57 @@ struct WelcomeView: View {
         .fixedSize(horizontal: false, vertical: true)
         .frame(maxWidth: 560, alignment: .leading)
         .padding(MobiusSpace.xl)
+        .padding(.trailing, MobiusSpace.xl)
         .frame(maxWidth: .infinity, minHeight: viewportHeight, alignment: .center)
         .id(number)
     }
 
-    private var navigation: some View {
-        VStack(spacing: MobiusSpace.s) {
-            HStack(spacing: MobiusSpace.xs) {
-                ForEach(0..<3) { index in
+    private var progressRail: some View {
+        VStack(spacing: 0) {
+            ForEach(0..<3) { index in
+                Button {
+                    move(to: index)
+                } label: {
                     Capsule()
-                        .fill(index == (step ?? 0) ? palette.accent : palette.muted.opacity(0.3))
-                        .frame(width: 24, height: 3)
+                        .fill(index == (step ?? 0) ? palette.accent : palette.muted.opacity(0.5))
+                        .frame(width: 24, height: 2)
+                        .scaleEffect(
+                            x: 1 / (1 + Double(abs(index - (hoveredStep ?? step ?? 0))) * 0.8),
+                            anchor: .trailing
+                        )
+                        .frame(
+                            width: MobiusStyle.rowTouch, height: MobiusStyle.rowTouch,
+                            alignment: .trailing
+                        )
+                        .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Step \(index + 1) of 3")
+                .accessibilityAddTraits(index == (step ?? 0) ? .isSelected : [])
+                .onHover { hoveredStep = $0 ? index : nil }
+            }
+        }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: step)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: hoveredStep)
+    }
+
+    private var navigation: some View {
+        HStack(spacing: MobiusSpace.m) {
+            if (step ?? 0) > 0 {
+                Button("Back", glyph: .arrowUp) { move(to: (step ?? 0) - 1) }
+                    .mobiusIconButton()
+            }
+            Button((step ?? 0) == 2 ? "Get started" : "Continue") {
+                if (step ?? 0) == 2 {
+                    model.completeWelcome()
+                } else {
+                    move(to: (step ?? 0) + 1)
                 }
             }
-            .accessibilityHidden(true)
-            HStack(spacing: MobiusSpace.m) {
-                if (step ?? 0) > 0 {
-                    Button("Back", glyph: .arrowUp) { move(to: (step ?? 0) - 1) }
-                        .mobiusIconButton()
-                }
-                Button((step ?? 0) == 2 ? "Get started" : "Continue") {
-                    if (step ?? 0) == 2 {
-                        model.completeWelcome()
-                    } else {
-                        move(to: (step ?? 0) + 1)
-                    }
-                }
-                .mobiusProminentButton()
-                .buttonBorderShape(.capsule)
-                .controlSize(.large)
-                .buttonSizing(.flexible)
-            }
+            .mobiusProminentButton()
+            .buttonBorderShape(.capsule)
+            .controlSize(.large)
+            .buttonSizing(.flexible)
         }
         .frame(maxWidth: 560)
         .padding(.horizontal, MobiusSpace.xl)
