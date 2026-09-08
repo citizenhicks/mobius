@@ -35,6 +35,7 @@ const MAX_COMMAND_BYTES: usize = 8_000;
 const MAX_MATCHER_BYTES: usize = 1_024;
 const MAX_PATH_BYTES: usize = 4_096;
 const MAX_DESCRIPTION_BYTES: usize = 256;
+const MAX_STATUS_BYTES: usize = 256;
 const MAX_INPUT_BYTES: usize = 5 * 1024 * 1024;
 const MAX_OUTPUT_BYTES: usize = 40_000;
 const DEFAULT_CONTEXT_BYTES: usize = 10_000;
@@ -319,7 +320,11 @@ struct RawHookGroup {
 enum RawHookHandler {
     Command {
         command: String,
+        #[serde(rename = "commandWindows")]
+        command_windows: Option<String>,
         timeout: Option<u64>,
+        #[serde(rename = "statusMessage")]
+        status_message: Option<String>,
         #[serde(rename = "additionalContextLimit")]
         additional_context_limit: Option<usize>,
         #[serde(rename = "async")]
@@ -339,7 +344,9 @@ impl CommandHook {
     fn parse(event: HookEvent, matcher: Option<&str>, raw: RawHookHandler) -> Result<Self> {
         let RawHookHandler::Command {
             command,
+            command_windows,
             timeout,
+            status_message,
             additional_context_limit,
             asynchronous,
         } = raw;
@@ -347,6 +354,18 @@ impl CommandHook {
             return Err(Error::Config("asynchronous hooks are not supported".into()));
         }
         validate_text(&command, 1, MAX_COMMAND_BYTES, "hook command")?;
+        // Plugins share hook documents across hosts; these fields do not change Unix execution.
+        if let Some(command_windows) = &command_windows {
+            validate_text(
+                command_windows,
+                1,
+                MAX_COMMAND_BYTES,
+                "Windows hook command",
+            )?;
+        }
+        if let Some(status) = &status_message {
+            validate_text(status, 1, MAX_STATUS_BYTES, "hook status message")?;
+        }
 
         let timeout = Duration::from_secs(timeout.unwrap_or_else(|| {
             if event == HookEvent::SessionEnd {
@@ -1066,12 +1085,50 @@ mod tests {
         for invalid in [
             json!({"Stop":[{"hooks":[{"type":"prompt"}]}]}),
             json!({"Stop":[{"hooks":[{"type":"agent"}]}]}),
-            json!({"Stop":[{"hooks":[{"type":"command","command":"true","commandWindows":"true"}]}]}),
-            json!({"Stop":[{"hooks":[{"type":"command","command":"true","statusMessage":"working"}]}]}),
+            json!({"Stop":[{"hooks":[{"type":"command","command":"true","commandWindows":""}]}]}),
+            json!({"Stop":[{"hooks":[{"type":"command","command":"true","statusMessage":""}]}]}),
             json!({"Stop":[{"hooks":[{"type":"command","command":"true","async":true}]}]}),
             json!({"Stop":[{"hooks":[{"type":"command","command":"true","unknown":true}]}]}),
         ] {
             assert!(HookSet::load(root.path().into(), data.path().into(), Some(&invalid)).is_err());
+        }
+    }
+
+    #[test]
+    fn plugin_hook_documents_accept_and_validate_platform_metadata() {
+        let root = tempfile::tempdir().expect("plugin root");
+        let root = root.path().canonicalize().expect("canonical plugin root");
+        let mut document = json!({"hooks":{"SessionStart":[{"hooks":[{
+            "type":"command",
+            "command":"sh hook.sh",
+            "commandWindows":"powershell -File hook.ps1",
+            "statusMessage":"Loading plugin"
+        }]}]}});
+        let path = root.join("claude-codex-hooks.json");
+        std::fs::write(&path, document.to_string()).expect("hook document");
+        for source in [json!("./claude-codex-hooks.json"), document.clone()] {
+            let hooks = HookDefinitions::load(&root, Some(&source))
+                .expect("plugin metadata is accepted")
+                .inspect();
+            assert_eq!(hooks.len(), 1);
+            assert_eq!(hooks[0].command, "sh hook.sh");
+        }
+
+        for (field, max) in [
+            ("commandWindows", MAX_COMMAND_BYTES),
+            ("statusMessage", MAX_STATUS_BYTES),
+        ] {
+            let original = document["hooks"]["SessionStart"][0]["hooks"][0][field].clone();
+            for invalid in [
+                json!(42),
+                json!(""),
+                json!("bad\0text"),
+                json!("x".repeat(max + 1)),
+            ] {
+                document["hooks"]["SessionStart"][0]["hooks"][0][field] = invalid;
+                assert!(HookDefinitions::load(&root, Some(&document)).is_err());
+            }
+            document["hooks"]["SessionStart"][0]["hooks"][0][field] = original;
         }
     }
 

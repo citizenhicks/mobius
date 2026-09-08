@@ -1,0 +1,1 @@
+Restores validated support for commandWindows and statusMessage in plugin hook documents, fixing imports of plugins such as Ponytail. Unknown fields, malformed values, and oversized metadata remain rejected. Unix hosts continue running the command field.
