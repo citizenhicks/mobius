@@ -242,6 +242,7 @@ struct MobiusGlyph: Hashable {
     static let shieldOff = Self("hi.shieldOff")
     static let signIn = Self("hi.signIn")
     static let slidersHorizontal = Self("hi.slidersHorizontal")
+    static let smartPhone01 = Self("hi.smartPhone01")
     static let setup01 = Self("hi.setup01")
     static let sparkle = Self("hi.sparkle")
     static let squaresFour = Self("hi.squaresFour")

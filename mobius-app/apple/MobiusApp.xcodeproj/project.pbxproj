@@ -32,6 +32,7 @@
 		200000000000000000000056 /* AppModelFilePersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000003F /* AppModelFilePersistence.swift */; };
 		20000000000000000000005D /* AppModelLifecycle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000042 /* AppModelLifecycle.swift */; };
 		200000000000000000000002 /* AppShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000002 /* AppShell.swift */; };
+		212BFDA984C44229A5540E0F /* SetupArtwork.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A7D432EBB2C4F2AB9A2ECFE /* SetupArtwork.swift */; };
 		94D6FAD46F0D4110809A147C /* WelcomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9879240FE714E0EAC62D7E2 /* WelcomeView.swift */; };
 		200000000000000000000048 /* AppOverlays.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000034 /* AppOverlays.swift */; };
 		200000000000000000000049 /* WorkspaceBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000035 /* WorkspaceBrowserView.swift */; };
@@ -181,6 +182,7 @@
 		10000000000000000000003F /* AppModelFilePersistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelFilePersistence.swift; sourceTree = "<group>"; };
 		100000000000000000000042 /* AppModelLifecycle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelLifecycle.swift; sourceTree = "<group>"; };
 		100000000000000000000002 /* AppShell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppShell.swift; sourceTree = "<group>"; };
+		4A7D432EBB2C4F2AB9A2ECFE /* SetupArtwork.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupArtwork.swift; sourceTree = "<group>"; };
 		D9879240FE714E0EAC62D7E2 /* WelcomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WelcomeView.swift; sourceTree = "<group>"; };
 		100000000000000000000034 /* AppOverlays.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppOverlays.swift; sourceTree = "<group>"; };
 		100000000000000000000035 /* WorkspaceBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceBrowserView.swift; sourceTree = "<group>"; };
@@ -402,6 +404,7 @@
 				100000000000000000000008 /* MobiusApp.swift */,
 				100000000000000000000002 /* AppShell.swift */,
 				D9879240FE714E0EAC62D7E2 /* WelcomeView.swift */,
+				4A7D432EBB2C4F2AB9A2ECFE /* SetupArtwork.swift */,
 				100000000000000000000034 /* AppOverlays.swift */,
 				100000000000000000000040 /* AppState.swift */,
 				100000000000000000000001 /* AppModel.swift */,
@@ -815,6 +818,7 @@
 				20000000000000000000005D /* AppModelLifecycle.swift in Sources */,
 				200000000000000000000002 /* AppShell.swift in Sources */,
 				94D6FAD46F0D4110809A147C /* WelcomeView.swift in Sources */,
+				212BFDA984C44229A5540E0F /* SetupArtwork.swift in Sources */,
 				200000000000000000000048 /* AppOverlays.swift in Sources */,
 				200000000000000000000049 /* WorkspaceBrowserView.swift in Sources */,
 				20000000000000000000004A /* SidebarView.swift in Sources */,

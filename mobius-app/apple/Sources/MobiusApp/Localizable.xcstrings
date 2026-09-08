@@ -18784,50 +18784,6 @@
         }
       }
     },
-    "Connect a gateway: the computer where your Bots run and their work stays. Use your own machine, or let möbius Cloud manage one for you." : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Connect a gateway: the computer where your Bots run and their work stays. Use your own machine, or let möbius Cloud manage one for you."
-          }
-        },
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Connectez une passerelle : la machine où vos Bots travaillent et conservent leurs résultats. Utilisez votre propre ordinateur ou confiez sa gestion à möbius Cloud."
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Verbinden Sie ein Gateway: den Rechner, auf dem Ihre Bots arbeiten und ihre Ergebnisse bleiben. Nutzen Sie Ihren eigenen Rechner oder lassen Sie möbius Cloud einen für Sie verwalten."
-          }
-        }
-      }
-    },
-    "Your iPhone and iPad connect to the same work." : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Your iPhone and iPad connect to the same work."
-          }
-        },
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Votre iPhone et votre iPad retrouvent le même travail."
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "iPhone und iPad greifen auf dieselbe Arbeit zu."
-          }
-        }
-      }
-    },
     "Give your Bot a purpose." : {
       "localizations" : {
         "en" : {
@@ -18850,50 +18806,6 @@
         }
       }
     },
-    "Connect a model provider, then create a Bot. Choose its model, describe its role, and decide what it may do. Your Bot keeps that setup across conversations." : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Connect a model provider, then create a Bot. Choose its model, describe its role, and decide what it may do. Your Bot keeps that setup across conversations."
-          }
-        },
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Connectez un fournisseur de modèles, puis créez un Bot. Choisissez son modèle, décrivez son rôle et définissez ses droits. Il conserve ces réglages d’une conversation à l’autre."
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Verbinden Sie einen Modellanbieter und erstellen Sie einen Bot. Wählen Sie sein Modell, beschreiben Sie seine Rolle und legen Sie seine Befugnisse fest. Diese Einrichtung bleibt über Gespräche hinweg erhalten."
-          }
-        }
-      }
-    },
-    "Start with one Bot. Add specialists as you need them." : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Start with one Bot. Add specialists as you need them."
-          }
-        },
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Commencez avec un Bot. Ajoutez des spécialistes selon vos besoins."
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Beginnen Sie mit einem Bot. Ergänzen Sie Spezialisten nach Bedarf."
-          }
-        }
-      }
-    },
     "Make room for real work." : {
       "localizations" : {
         "en" : {
@@ -18912,50 +18824,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Raum für Ihre Arbeit."
-          }
-        }
-      }
-    },
-    "Choose a workspace on your gateway and start a chat. Give your Bot a task, share the files it needs, and review its results and approval requests." : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Choose a workspace on your gateway and start a chat. Give your Bot a task, share the files it needs, and review its results and approval requests."
-          }
-        },
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Choisissez un espace de travail sur votre passerelle et ouvrez une conversation. Confiez une tâche à votre Bot, partagez les fichiers utiles et examinez ses résultats et demandes d’approbation."
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wählen Sie einen Arbeitsbereich auf Ihrem Gateway und starten Sie ein Gespräch. Geben Sie Ihrem Bot eine Aufgabe, teilen Sie benötigte Dateien und prüfen Sie Ergebnisse und Freigabeanfragen."
-          }
-        }
-      }
-    },
-    "The user manual is always close by on the setup screens." : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "The user manual is always close by on the setup screens."
-          }
-        },
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Le manuel reste accessible depuis les écrans de configuration."
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Das Handbuch bleibt auf den Einrichtungsseiten erreichbar."
           }
         }
       }
@@ -19066,6 +18934,315 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Überspringen"
+          }
+        }
+      }
+    },
+    "Your gateway runs your Bots and keeps their work. Connect your own computer, or use möbius Cloud." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Your gateway runs your Bots and keeps their work. Connect your own computer, or use möbius Cloud."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Votre passerelle exécute vos Bots et conserve leur travail. Connectez votre ordinateur ou utilisez möbius Cloud."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ihr Gateway führt Ihre Bots aus und bewahrt ihre Arbeit auf. Verbinden Sie Ihren Computer oder nutzen Sie möbius Cloud."
+          }
+        }
+      }
+    },
+    "Choose a model, give your Bot a role, and decide which tools it can use." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choose a model, give your Bot a role, and decide which tools it can use."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choisissez un modèle, donnez un rôle à votre Bot et décidez des outils qu’il peut utiliser."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wählen Sie ein Modell, geben Sie Ihrem Bot eine Aufgabe und bestimmen Sie, welche Tools er nutzen darf."
+          }
+        }
+      }
+    },
+    "Open a workspace, share a task, and turn the conversation into work you can keep." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open a workspace, share a task, and turn the conversation into work you can keep."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ouvrez un espace de travail, confiez une tâche et transformez la conversation en résultats que vous conservez."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Öffnen Sie einen Arbeitsbereich, stellen Sie eine Aufgabe und machen Sie aus dem Gespräch bleibende Ergebnisse."
+          }
+        }
+      }
+    },
+    "Your Bot" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Your Bot"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Votre Bot"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ihr Bot"
+          }
+        }
+      }
+    },
+    "A purpose of its own" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A purpose of its own"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Un rôle bien à lui"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eine eigene Aufgabe"
+          }
+        }
+      }
+    },
+    "Tools" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tools"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Outils"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tools"
+          }
+        }
+      }
+    },
+    "Review this project." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Review this project."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Examine ce projet."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prüfe dieses Projekt."
+          }
+        }
+      }
+    },
+    "Here’s what I found." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Here’s what I found."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Voici ce que j’ai trouvé."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Das habe ich gefunden."
+          }
+        }
+      }
+    },
+    "Connect a gateway" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connect a gateway"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connecter une passerelle"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gateway verbinden"
+          }
+        }
+      }
+    },
+    "Choose where your Bots run and their work stays." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choose where your Bots run and their work stays."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choisissez où vos Bots travaillent et où leur travail est conservé."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wählen Sie, wo Ihre Bots laufen und ihre Arbeit bleibt."
+          }
+        }
+      }
+    },
+    "Use your own gateway" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Use your own gateway"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Utiliser votre passerelle"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eigenes Gateway verwenden"
+          }
+        }
+      }
+    },
+    "Other connection options" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Other connection options"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Autres options de connexion"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Andere Verbindungsoptionen"
+          }
+        }
+      }
+    },
+    "What’s included" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "What’s included"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ce qui est inclus"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Das ist enthalten"
+          }
+        }
+      }
+    },
+    "Paste" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Paste"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Coller"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Einfügen"
           }
         }
       }

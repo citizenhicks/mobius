@@ -20,24 +20,24 @@ struct WelcomeView: View {
             VStack(spacing: 0) {
                 chapter(
                     number: 0,
+                    scene: .gateway,
                     title: "A home for your agents.",
                     detail:
-                        "Connect a gateway: the computer where your Bots run and their work stays. Use your own machine, or let möbius Cloud manage one for you.",
-                    note: "Your iPhone and iPad connect to the same work."
+                        "Your gateway runs your Bots and keeps their work. Connect your own computer, or use möbius Cloud."
                 )
                 chapter(
                     number: 1,
+                    scene: .bot,
                     title: "Give your Bot a purpose.",
                     detail:
-                        "Connect a model provider, then create a Bot. Choose its model, describe its role, and decide what it may do. Your Bot keeps that setup across conversations.",
-                    note: "Start with one Bot. Add specialists as you need them."
+                        "Choose a model, give your Bot a role, and decide which tools it can use."
                 )
                 chapter(
                     number: 2,
+                    scene: .workspace,
                     title: "Make room for real work.",
                     detail:
-                        "Choose a workspace on your gateway and start a chat. Give your Bot a task, share the files it needs, and review its results and approval requests.",
-                    note: "The user manual is always close by on the setup screens."
+                        "Open a workspace, share a task, and turn the conversation into work you can keep."
                 )
             }
             .scrollTargetLayout()
@@ -52,19 +52,6 @@ struct WelcomeView: View {
             $0.size.height
         } action: {
             viewportHeight = $0
-        }
-        .background(alignment: .top) {
-            Image("MobiusLogo")
-                .resizable()
-                .scaledToFit()
-                .frame(maxWidth: 520)
-                .padding(.horizontal, MobiusSpace.xl)
-                .padding(.top, MobiusSpace.xl * 2)
-                .opacity(0.12)
-                .scaleEffect(reduceMotion ? 1 : 1 + Double(step ?? 0) * 0.06)
-                .animation(reduceMotion ? nil : .easeInOut(duration: 0.5), value: step)
-                .accessibilityHidden(true)
-                .allowsHitTesting(false)
         }
         .safeAreaInset(edge: .top) {
             HStack {
@@ -88,23 +75,29 @@ struct WelcomeView: View {
 
     private func chapter(
         number: Int,
+        scene: SetupArtwork.Scene,
         title: LocalizedStringResource,
-        detail: LocalizedStringResource,
-        note: LocalizedStringResource
+        detail: LocalizedStringResource
     ) -> some View {
         VStack(alignment: .leading, spacing: MobiusSpace.xl) {
-            Text("Step \(number + 1) of 3")
-                .font(MobiusStyle.metadataFont)
-                .foregroundStyle(palette.accent)
-            Text(title)
-                .font(.largeTitle.weight(.medium))
-                .accessibilityAddTraits(.isHeader)
-            Text(detail)
-                .font(.title3)
-                .foregroundStyle(palette.muted)
-            Text(note)
-                .font(MobiusStyle.bodyFont)
-                .foregroundStyle(palette.muted)
+            SetupArtwork(scene: scene, active: (step ?? 0) == number)
+                .frame(height: min(280, max(200, viewportHeight * 0.42)))
+                .scrollTransition(.interactive, axis: .vertical) { [reduceMotion] content, phase in
+                    content
+                        .opacity(reduceMotion || phase.isIdentity ? 1 : 0.6)
+                        .offset(y: reduceMotion ? 0 : phase.value * 18)
+                }
+            VStack(alignment: .leading, spacing: MobiusSpace.m) {
+                Text("Step \(number + 1) of 3")
+                    .font(MobiusStyle.metadataFont)
+                    .foregroundStyle(palette.accent)
+                Text(title)
+                    .font(.largeTitle.weight(.semibold))
+                    .accessibilityAddTraits(.isHeader)
+                Text(detail)
+                    .font(MobiusStyle.bodyFont)
+                    .foregroundStyle(palette.muted)
+            }
             if number == 2 {
                 UserManualCaption(detail: .verbatim(""), section: "start")
             }

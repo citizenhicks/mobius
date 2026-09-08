@@ -21,8 +21,7 @@ xcodebuild -project MobiusApp.xcodeproj -scheme MobiusApp \
   -parallel-testing-enabled NO test
 ```
 
-On an iPhone or iPad, select **Quick Connect** during first-time setup, or request
-a fresh code from an initialized gateway:
+To connect your own gateway, request a fresh code from an initialized gateway:
 
 ```sh
 mobius-gateway init
@@ -30,7 +29,7 @@ mobius-gateway init
 mobius-gateway connect
 ```
 
-Choose **Pair self-hosted gateway** and paste the displayed setup code, or enter
+Choose **Use your own gateway** and paste the displayed setup code, or enter
 the public `wss://` address and one-time code. Pairing still requires confirmation.
 The same one-use code works through the advertised local `tcp://` endpoint.
 Plaintext remote endpoints are rejected; a direct TLS listener remains available

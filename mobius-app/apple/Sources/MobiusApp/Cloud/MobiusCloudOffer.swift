@@ -5,6 +5,8 @@ struct MobiusCloudOfferButton: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
 
+    let action: () -> Void
+
     // A centred label and no chevron: with a leading glyph, a spacer and a caret this read
     // as a list row that happened to be capsule-shaped. The accent tint marks it as the
     // other path rather than a second copy of the pairing button.
@@ -19,9 +21,7 @@ struct MobiusCloudOfferButton: View {
             model.cloud.cloudAccount?.subscribed == true
             ? "Connects this device to your managed Cloud gateway"
             : "Explains the managed möbius Cloud subscription"
-        Button {
-            model.showsCloudOffer = true
-        } label: {
+        Button(action: action) {
             Label {
                 Text(title)
                     // Glass takes a tint from its own material, not from the button's, so
@@ -51,31 +51,31 @@ struct MobiusCloudOfferSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @Environment(\.mobiusPalette) private var palette
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var productDisplayPrice: String?
-    @State private var productLoadFailed = false
-    @State private var stageIsSlow = false
-
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: MobiusSpace.xl) {
-                    hero
-                    if let setupStage {
-                        setupSteps(current: setupStage)
-                    } else {
-                        offerDetails
-                        controlNote
-                    }
+                VStack(spacing: MobiusSpace.xl) {
+                    SetupArtwork(scene: .gateway)
+                        .frame(height: model.cloud.cloudAction.isRunning ? 156 : 220)
+                    MobiusCloudOfferContent { dismiss() }
+                        .padding(MobiusSpace.xl)
+                        .background(palette.raised, in: .rect(cornerRadius: 28))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 28)
+                                .strokeBorder(
+                                    palette.line.opacity(0.6), lineWidth: MobiusStyle.borderWidth)
+                        }
+                        .shadow(color: palette.shadow.opacity(0.05), radius: 20, y: 12)
                 }
-                .animation(reduceMotion ? nil : .smooth(duration: 0.28), value: setupStage)
-                .frame(maxWidth: 680, alignment: .leading)
-                .padding(.horizontal, MobiusSpace.l)
+                .frame(maxWidth: 460)
+                .padding(.horizontal, MobiusSpace.xl)
                 .padding(.top, MobiusSpace.l)
                 .padding(.bottom, MobiusSpace.xl)
                 .frame(maxWidth: .infinity)
             }
             .scrollIndicators(.hidden)
+            .scrollBounceBehavior(.basedOnSize)
+            .background(palette.canvas)
             .navigationTitle("möbius Cloud")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -84,9 +84,36 @@ struct MobiusCloudOfferSheet: View {
                         .disabled(model.cloud.cloudAction.isRunning)
                 }
             }
-            .safeAreaInset(edge: .bottom) { signupBoundary }
         }
         .interactiveDismissDisabled(model.cloud.cloudAction.isRunning)
+    }
+}
+
+struct MobiusCloudOfferContent: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.mobiusPalette) private var palette
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var productDisplayPrice: String?
+    @State private var productLoadFailed = false
+    @State private var stageIsSlow = false
+    let onConnected: () -> Void
+
+    var body: some View {
+        VStack(spacing: MobiusSpace.xl) {
+            hero
+            if let setupStage {
+                setupSteps(current: setupStage)
+            } else {
+                controlNote
+            }
+            signupBoundary
+            if setupStage == nil {
+                DisclosureGroup("What’s included") { offerDetails }
+                    .font(MobiusStyle.captionFont)
+                    .tint(palette.accent)
+            }
+        }
+        .animation(reduceMotion ? nil : .smooth(duration: 0.28), value: setupStage)
         .task { await loadProduct() }
         .task { await model.cloud.refreshCloudAccount() }
     }
@@ -102,20 +129,17 @@ struct MobiusCloudOfferSheet: View {
             running
             ? "Keep this screen open. Nothing here needs your attention until it finishes."
             : "Skip server setup without giving up control. We provision, secure, and maintain a gateway scoped to your account."
-        return VStack(alignment: .leading, spacing: MobiusSpace.l) {
-            // The app's own mark, not a stock globe.
-            MobiusComposingOrb()
-                .frame(width: 64, height: 64)
-                .frame(maxWidth: .infinity)
-                .accessibilityHidden(true)
+        return VStack(spacing: MobiusSpace.s) {
             Text(title)
-                .font(.largeTitle.weight(.bold))
+                .font(.title.weight(.semibold))
+                .accessibilityAddTraits(.isHeader)
                 .fixedSize(horizontal: false, vertical: true)
             Text(detail)
-                .font(MobiusStyle.bodyFont)
+                .font(MobiusStyle.captionFont)
                 .foregroundStyle(palette.muted)
                 .fixedSize(horizontal: false, vertical: true)
         }
+        .multilineTextAlignment(.center)
     }
 
     /// The stage the flow is on, or nil when nothing is running.
@@ -130,14 +154,12 @@ struct MobiusCloudOfferSheet: View {
     }
 
     private func setupSteps(current: CloudSetupStage) -> some View {
-        MobiusCard {
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(CloudSetupStage.allCases) { stage in
-                    if stage != .signIn {
-                        Divider().padding(.leading, MobiusStyle.glyphGutter + MobiusSpace.m)
-                    }
-                    CloudSetupRow(stage: stage, current: current, slow: stageIsSlow)
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(CloudSetupStage.allCases) { stage in
+                if stage != .signIn {
+                    Divider().padding(.leading, MobiusStyle.glyphGutter + MobiusSpace.m)
                 }
+                CloudSetupRow(stage: stage, current: current, slow: stageIsSlow)
             }
         }
         // Explain unusually slow provisioning without declaring failure.
@@ -149,58 +171,52 @@ struct MobiusCloudOfferSheet: View {
     }
 
     private var offerDetails: some View {
-        MobiusCard {
-            VStack(alignment: .leading, spacing: 0) {
-                CloudBenefit(
-                    glyph: .sparkle,
-                    title: "The open-source gateway, hosted for you",
-                    detail:
-                        "Run the same generic möbius gateway in a private, persistent workspace."
-                )
-                Divider().padding(.leading, MobiusStyle.glyphGutter + MobiusSpace.m)
-                CloudBenefit(
-                    glyph: .setup01,
-                    title: "Fast, modular harness",
-                    detail:
-                        "Choose the providers, tools, and capabilities you want while möbius keeps the runtime lean."
-                )
-                Divider().padding(.leading, MobiusStyle.glyphGutter + MobiusSpace.m)
-                CloudBenefit(
-                    glyph: .key,
-                    title: "Bring your own keys",
-                    detail:
-                        "Connect your own model provider account without storing its API key in möbius Cloud or the gateway filesystem."
-                )
-                Divider().padding(.leading, MobiusStyle.glyphGutter + MobiusSpace.m)
-                CloudBenefit(
-                    glyph: .shieldCheck,
-                    title: "Encrypted and user-scoped",
-                    detail:
-                        "Your gateway, credentials, and cloud data stay isolated to your account."
-                )
-            }
+        VStack(alignment: .leading, spacing: 0) {
+            CloudBenefit(
+                glyph: .sparkle,
+                title: "The open-source gateway, hosted for you",
+                detail:
+                    "Run the same generic möbius gateway in a private, persistent workspace."
+            )
+            Divider().padding(.leading, MobiusStyle.glyphGutter + MobiusSpace.m)
+            CloudBenefit(
+                glyph: .setup01,
+                title: "Fast, modular harness",
+                detail:
+                    "Choose the providers, tools, and capabilities you want while möbius keeps the runtime lean."
+            )
+            Divider().padding(.leading, MobiusStyle.glyphGutter + MobiusSpace.m)
+            CloudBenefit(
+                glyph: .key,
+                title: "Bring your own keys",
+                detail:
+                    "Connect your own model provider account without storing its API key in möbius Cloud or the gateway filesystem."
+            )
+            Divider().padding(.leading, MobiusStyle.glyphGutter + MobiusSpace.m)
+            CloudBenefit(
+                glyph: .shieldCheck,
+                title: "Encrypted and user-scoped",
+                detail:
+                    "Your gateway, credentials, and cloud data stay isolated to your account."
+            )
         }
     }
 
     private var controlNote: some View {
-        VStack(alignment: .leading, spacing: MobiusSpace.s) {
-            Text("You stay in control")
-                .font(MobiusStyle.titleFont)
-            Text("Manage your subscription from the möbius app or App Store.")
-                .font(MobiusStyle.bodyFont)
-                .foregroundStyle(palette.muted)
-                .fixedSize(horizontal: false, vertical: true)
+        VStack(spacing: MobiusSpace.s) {
             billingDescription
                 .font(MobiusStyle.controlFont)
                 .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
+            Text("Manage your subscription from the möbius app or App Store.")
+                .font(MobiusStyle.captionFont)
+                .foregroundStyle(palette.muted)
+                .fixedSize(horizontal: false, vertical: true)
         }
+        .multilineTextAlignment(.center)
     }
 
-    /// Sign in with Apple is a branded control: Apple's guidelines allow black, white, or
-    /// outlined only, so it cannot wear the app's accent. White is the variant meant for a
-    /// dark background. The fade underneath is not a bar — it only keeps the last line of
-    /// text from colliding with the capsule as the page scrolls past it.
+    /// Keep Apple's branded authorization control and the existing purchase boundaries.
     private var signupBoundary: some View {
         VStack(spacing: MobiusSpace.m) {
             if let cloudError = model.cloud.cloudError {
@@ -215,11 +231,11 @@ struct MobiusCloudOfferSheet: View {
             } else if model.cloud.cloudAccount?.subscribed == true {
                 Button("Connect gateway") {
                     Task {
-                        if await model.cloud.connectCloudGateway() { dismiss() }
+                        if await model.cloud.connectCloudGateway() { onConnected() }
                     }
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.extraLarge)
+                .mobiusProminentButton()
+                .controlSize(.large)
                 .frame(maxWidth: .infinity)
             } else if !model.cloud.hasCloudAccount {
                 MobiusCloudAppleAuthorizationButton(label: .continue) {
@@ -229,7 +245,7 @@ struct MobiusCloudOfferSheet: View {
                             authorizationCode: authorizationCode,
                             nonce: nonce
                         ) {
-                            dismiss()
+                            onConnected()
                         }
                     }
                 } onFailure: {
@@ -243,7 +259,7 @@ struct MobiusCloudOfferSheet: View {
                         Task { await model.cloud.refreshCloudAccount() }
                     }
                     .buttonStyle(.bordered)
-                    .controlSize(.extraLarge)
+                    .controlSize(.large)
                     .frame(maxWidth: .infinity)
                 }
             } else if model.cloud.cloudIssue == .subscriptionAccountConflict {
@@ -251,8 +267,8 @@ struct MobiusCloudOfferSheet: View {
                     Button("Manage App Store subscription") {
                         Task { await model.cloud.manageCloudSubscription() }
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.extraLarge)
+                    .mobiusProminentButton()
+                    .controlSize(.large)
                     Button("Sign out of Cloud") {
                         Task { await model.cloud.signOutOfCloud() }
                     }
@@ -263,11 +279,11 @@ struct MobiusCloudOfferSheet: View {
             } else if productDisplayPrice != nil {
                 Button("Subscribe") {
                     Task {
-                        if await model.cloud.purchaseCloud() { dismiss() }
+                        if await model.cloud.purchaseCloud() { onConnected() }
                     }
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.extraLarge)
+                .mobiusProminentButton()
+                .controlSize(.large)
                 .frame(maxWidth: .infinity)
             } else if productLoadFailed {
                 VStack(spacing: MobiusSpace.s) {
@@ -285,10 +301,8 @@ struct MobiusCloudOfferSheet: View {
                 waitingButton("Connecting to the App Store…")
             }
         }
-        .frame(maxWidth: 680)
-        .padding(.horizontal, MobiusSpace.l)
-        .padding(.top, MobiusSpace.l)
-        .padding(.bottom, MobiusSpace.s)
+        .buttonBorderShape(.capsule)
+        .buttonSizing(.flexible)
         .frame(maxWidth: .infinity)
     }
 
@@ -302,7 +316,7 @@ struct MobiusCloudOfferSheet: View {
             .frame(maxWidth: .infinity)
         }
         .buttonStyle(.bordered)
-        .controlSize(.extraLarge)
+        .controlSize(.large)
         .disabled(true)
         .frame(maxWidth: .infinity)
     }
@@ -334,6 +348,7 @@ struct MobiusCloudAppleAuthorizationButton: View {
     let label: SignInWithAppleButton.Label
     let onAuthorization: @MainActor (String, String) -> Void
     let onFailure: @MainActor () -> Void
+    @Environment(\.colorScheme) private var colorScheme
     @State private var nonce: MobiusCloudAppleNonce?
 
     var body: some View {
@@ -371,8 +386,9 @@ struct MobiusCloudAppleAuthorizationButton: View {
                 onAuthorization(authorizationCode, nonce.rawValue)
             }
         }
-        .signInWithAppleButtonStyle(.white)
+        .signInWithAppleButtonStyle(colorScheme == .dark ? .white : .black)
         .frame(maxWidth: .infinity, minHeight: 50, maxHeight: 50)
+        .clipShape(.capsule)
     }
 }
 

@@ -4,24 +4,16 @@ struct PairingView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @Environment(\.mobiusPalette) private var palette
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private enum Setup { case manual, cloud }
+    @State private var setup: Setup?
     let canCancel: Bool
 
     var body: some View {
-        @Bindable var model = model
-        @Bindable var gateway = model.gateway
         ScrollView {
-            VStack(alignment: .leading, spacing: MobiusSpace.xl) {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: MobiusSpace.s) {
-                        Text("Pair with a gateway")
-                            .font(MobiusStyle.titleFont)
-                        UserManualCaption(
-                            detail: .localized(
-                                "Use the same address and one-time code on iPad or iPhone."),
-                            section: "gateway"
-                        )
-                    }
+            VStack(spacing: MobiusSpace.xl) {
+                HStack {
+                    Text(verbatim: "möbius").font(.title3.weight(.semibold))
                     Spacer()
                     if canCancel {
                         Button("Close", glyph: .x) {
@@ -30,146 +22,160 @@ struct PairingView: View {
                         }
                         .mobiusIconButton()
                         .help("Close")
+                        .disabled(model.cloud.cloudAction.isRunning)
                     }
                 }
-
-                VStack(spacing: MobiusSpace.m) {
-                    MobiusCard {
-                        VStack(alignment: .leading, spacing: MobiusSpace.l) {
-                            VStack(alignment: .leading, spacing: MobiusSpace.s) {
-                                Text("Gateway address")
-                                    .font(MobiusStyle.controlFont)
-                                TextField("wss://gateway.example", text: $gateway.pairingEndpoint)
-                                    .textFieldStyle(.roundedBorder)
-                                    .textContentType(.URL)
-                                    .autocorrectionDisabled()
-                                    .controlSize(.large)
-                            }
-                            VStack(alignment: .leading, spacing: MobiusSpace.s) {
-                                Text("One-time code")
-                                    .font(MobiusStyle.controlFont)
-                                SecureField("One-time code", text: $gateway.pairingCode)
-                                    .textFieldStyle(.roundedBorder)
-                                    .textInputAutocapitalization(.never)
-                                    .autocorrectionDisabled()
-                                    .controlSize(.large)
-                            }
-                            // One paste fills both fields, so it sits under them rather than beside one.
-                            PasteButton(payloadType: String.self) { values in
-                                if let value = values.first {
-                                    model.applyPairingSetup(value)
-                                }
-                            }
-                            .labelStyle(.iconOnly)
-                            .buttonStyle(.mobiusPlain)
-                            .tint(palette.accent)
-                            .frame(
-                                width: MobiusStyle.iconButtonSize,
-                                height: MobiusStyle.iconButtonSize
+                SetupArtwork(scene: .gateway)
+                    .frame(height: setup == nil ? 248 : 156)
+                VStack(spacing: MobiusSpace.xl) {
+                    if setup == .cloud {
+                        MobiusCloudOfferContent {
+                            model.showsPairing = false
+                            dismiss()
+                        }
+                        otherConnectionOptions
+                    } else {
+                        VStack(spacing: MobiusSpace.s) {
+                            Text("Connect a gateway")
+                                .font(.title.weight(.semibold))
+                                .accessibilityAddTraits(.isHeader)
+                            UserManualCaption(
+                                detail: .localized(
+                                    "Choose where your Bots run and their work stays."),
+                                section: "gateway"
                             )
-                            .frame(maxWidth: .infinity, alignment: .trailing)
-                            .accessibilityLabel("Paste pairing setup")
-                            .help("Paste pairing setup")
+                            .foregroundStyle(palette.muted)
+                        }
+                        .multilineTextAlignment(.center)
+
+                        if setup == .manual {
+                            manualSetup
+                        } else {
+                            VStack(spacing: MobiusSpace.m) {
+                                MobiusCloudOfferButton { setup = .cloud }
+                                Button("Use your own gateway") { setup = .manual }
+                                    .buttonStyle(.mobiusGlass)
+                                    .buttonBorderShape(.capsule)
+                                    .controlSize(.large)
+                                    .buttonSizing(.flexible)
+                                    .tint(palette.panel)
+                                    .foregroundStyle(.primary)
+                            }
+                            if let error = model.cloud.cloudError {
+                                Text(verbatim: error)
+                                    .font(MobiusStyle.captionFont)
+                                    .foregroundStyle(palette.danger)
+                            }
                         }
                     }
-
-                    Text(
-                        "Cloud gateways use wss://. tcp:// is accepted only for localhost; direct remote gateways can use tls://."
-                    )
-                    .font(MobiusStyle.bodyFont)
-                    .foregroundStyle(palette.muted)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, MobiusSpace.s)
-
-                    if let error = model.gateway.pairingError {
-                        MobiusLabel(
-                            verbatim: error,
-                            glyph: .warning,
-                            iconColor: palette.danger
-                        )
-                        .foregroundStyle(palette.danger)
-                        .multilineTextAlignment(.center)
-                    }
                 }
+                .padding(MobiusSpace.xl)
                 .frame(maxWidth: .infinity)
-                if dynamicTypeSize.isAccessibilitySize { pairAction }
+                .background(palette.raised, in: .rect(cornerRadius: 28))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 28)
+                        .strokeBorder(palette.line.opacity(0.6), lineWidth: MobiusStyle.borderWidth)
+                }
+                .shadow(color: palette.shadow.opacity(0.05), radius: 20, y: 12)
             }
+            .frame(maxWidth: 460)
+            .frame(maxWidth: .infinity)
+            .padding(.bottom, MobiusSpace.xl)
         }
+        .interactiveDismissDisabled(model.cloud.cloudAction.isRunning)
         .scrollIndicators(.hidden)
         .scrollBounceBehavior(.basedOnSize)
         .scrollDismissesKeyboard(.interactively)
-        .safeAreaInset(edge: .bottom) {
-            if !dynamicTypeSize.isAccessibilitySize { pairAction }
+        .animation(reduceMotion ? nil : .smooth(duration: 0.35), value: setup)
+        .onChange(of: hasPairingDetails, initial: true) { _, hasDetails in
+            if hasDetails && !model.cloud.cloudAction.isRunning { setup = .manual }
         }
-        .onSubmit { model.pair() }
         .task(id: model.cloud.cloudSession?.userID) {
             await model.cloud.refreshCloudAccount()
         }
     }
 
-    /// The two ways in, then the wire detail. The protocol line led this stack before, which
-    /// put the most technical line on the screen above the decision it belongs under.
-    private var pairAction: some View {
-        VStack(spacing: MobiusSpace.m) {
-            if model.gateway.connectionState == .connecting
-                || model.gateway.connectionState == .authenticating
-            {
-                HStack {
-                    MobiusSpinner(size: MobiusStyle.glyphLead, foreground: palette.accent)
-                }
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(
-                    model.gateway.connectionState == .authenticating
-                        ? Text("Authenticating with gateway")
-                        : Text("Connecting to gateway")
-                )
+    private var hasPairingDetails: Bool {
+        !model.gateway.pairingCode.isEmpty
+            || model.gateway.pairingEndpoint != "wss://"
+            || model.gateway.pairingError != nil
+    }
+
+    private var isConnecting: Bool {
+        model.gateway.connectionState == .connecting
+            || model.gateway.connectionState == .authenticating
+    }
+
+    private var manualSetup: some View {
+        @Bindable var gateway = model.gateway
+        return VStack(alignment: .leading, spacing: MobiusSpace.l) {
+            VStack(alignment: .leading, spacing: MobiusSpace.s) {
+                Text("Gateway address").font(MobiusStyle.captionFont)
+                TextField("wss://gateway.example", text: $gateway.pairingEndpoint)
+                    .textContentType(.URL)
+                    .keyboardType(.URL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .padding(MobiusSpace.m)
+                    .background(palette.recessed, in: MobiusStyle.controlShape)
             }
-            Button("Pair to self-hosted gateway", action: model.pair)
+            VStack(alignment: .leading, spacing: MobiusSpace.s) {
+                Text("One-time code").font(MobiusStyle.captionFont)
+                SecureField("One-time code", text: $gateway.pairingCode)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .padding(MobiusSpace.m)
+                    .background(palette.recessed, in: MobiusStyle.controlShape)
+            }
+            Button {
+                if let value = UIPasteboard.general.string { model.applyPairingSetup(value) }
+            } label: {
+                Text("Paste").frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.mobiusGlass)
+            .buttonBorderShape(.capsule)
+            .controlSize(.large)
+            .buttonSizing(.flexible)
+            .tint(palette.panel)
+            .foregroundStyle(.primary)
+            .accessibilityLabel("Paste pairing setup")
+            .help("Paste pairing setup")
+            .frame(minHeight: MobiusStyle.rowTouch)
+
+            if let error = gateway.pairingError {
+                MobiusLabel(verbatim: error, glyph: .warning, iconColor: palette.danger)
+                    .foregroundStyle(palette.danger)
+                    .font(MobiusStyle.captionFont)
+            }
+            if isConnecting {
+                HStack(spacing: MobiusSpace.s) {
+                    MobiusSpinner(size: MobiusStyle.glyphLead, foreground: palette.accent)
+                    Text(
+                        gateway.connectionState == .authenticating
+                            ? "Authenticating with gateway" : "Connecting to gateway"
+                    )
+                    .font(MobiusStyle.captionFont)
+                }
+            }
+            Button("Connect", action: model.pair)
                 .mobiusProminentButton()
                 .buttonBorderShape(.capsule)
                 .controlSize(.large)
                 .buttonSizing(.flexible)
-            if !model.cloud.hasCloudAccount {
-                MobiusCloudOfferButton()
-            } else if model.cloud.cloudAccount?.subscribed == true, model.cloud.cloudGateway == nil
-            {
-                Button("Connect Cloud gateway", glyph: .cloudServer) {
-                    Task { _ = await model.cloud.connectCloudGateway() }
-                }
-                .buttonStyle(.mobiusGlass)
-                .buttonBorderShape(.capsule)
-                .controlSize(.large)
-                .buttonSizing(.flexible)
-                .tint(palette.accent)
-                .disabled(model.cloud.cloudAction.isRunning)
-            } else if model.cloud.cloudAccount == nil {
-                Button(
-                    model.cloud.cloudError == nil
-                        ? "Checking Cloud account…" : "Retry Cloud account"
-                ) {
-                    Task { await model.cloud.refreshCloudAccount() }
-                }
-                .buttonStyle(.mobiusGlass)
-                .buttonBorderShape(.capsule)
-                .controlSize(.large)
-                .buttonSizing(.flexible)
-                .disabled(model.cloud.cloudError == nil)
-            } else if model.cloud.cloudAccount?.subscribed == false {
-                MobiusCloudOfferButton()
-            }
-            MobiusLabel(
-                title: "4-byte framed JSON · protocol v\(gatewayProtocolVersion)",
-                glyph: .shieldCheck,
-                iconColor: palette.muted
-            )
-            .font(MobiusStyle.metadataFont)
-            .foregroundStyle(palette.muted)
-            .padding(.top, MobiusSpace.xxs)
+                .disabled(isConnecting)
+            otherConnectionOptions
         }
-        .frame(maxWidth: .infinity)
-        .padding(.top, MobiusSpace.l)
+        .onSubmit { if !isConnecting { model.pair() } }
     }
+
+    private var otherConnectionOptions: some View {
+        Button("Other connection options") { setup = nil }
+            .buttonStyle(.mobiusPlain)
+            .font(MobiusStyle.captionFont)
+            .frame(maxWidth: .infinity, minHeight: MobiusStyle.rowTouch)
+            .disabled(model.cloud.cloudAction.isRunning)
+    }
+
 }
 
 extension String {

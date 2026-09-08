@@ -47,7 +47,7 @@ struct GatewayView: View {
             if !model.cloud.hasCloudAccount || model.cloud.cloudAccount?.subscribed == false {
                 Section("möbius Cloud") {
                     SettingsCaption("Let möbius provision and manage a private gateway for you.")
-                    MobiusCloudOfferButton()
+                    MobiusCloudOfferButton { model.showsCloudOffer = true }
                 }
             }
         }

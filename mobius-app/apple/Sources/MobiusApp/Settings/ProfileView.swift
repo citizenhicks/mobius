@@ -309,7 +309,7 @@ private struct CloudAccountSettings: View {
                 if subscriptionExpired
                     || (model.cloud.cloudAccount != nil && model.cloud.cloudGateway == nil)
                 {
-                    MobiusCloudOfferButton()
+                    MobiusCloudOfferButton { model.showsCloudOffer = true }
                 }
                 Button("Manage subscription", glyph: .sealCheck) {
                     Task { await model.cloud.manageCloudSubscription() }
@@ -382,7 +382,7 @@ private struct CloudAccountSettings: View {
             .font(MobiusStyle.bodyFont)
             .foregroundStyle(palette.muted)
             .fixedSize(horizontal: false, vertical: true)
-            MobiusCloudOfferButton()
+            MobiusCloudOfferButton { model.showsCloudOffer = true }
         }
     }
 }
