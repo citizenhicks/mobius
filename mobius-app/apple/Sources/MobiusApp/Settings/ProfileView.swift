@@ -43,22 +43,22 @@ struct ProfileView: View {
             }
             .listRowSeparator(.hidden)
             Section("Usage") {
-                ForEach(model.providerUsage) { usage in
-                    if let limits = usage.limits, !limits.isEmpty {
-                        ForEach(limits) { limit in
-                            UsageLimitBar(
-                                title: Text(limit.title(locale: locale)),
-                                remainingFraction: limit.remainingFraction,
-                                resetText: Text(limit.resetDescription(locale: locale))
-                            )
-                        }
-                    } else {
+                if model.isLoadingCodexWeeklyUsage {
+                    SettingsLoadingRows(label: "Loading Codex weekly usage") {
                         UsageLimitBar(
-                            title: Text("\(model.providerLabel(for: usage.provider)) usage limits"),
-                            remainingFraction: nil,
-                            resetText: Text("Unavailable")
+                            title: Text("Codex · Weekly"),
+                            remainingFraction: 1,
+                            resetText: Text("Resets September 15, 2026")
                         )
                     }
+                } else if !model.providerUsage.isEmpty {
+                    UsageLimitBar(
+                        title: Text("Codex · Weekly"),
+                        remainingFraction: model.codexWeeklyUsage?.remainingFraction,
+                        resetText: model.codexWeeklyUsage.map {
+                            Text($0.resetDescription(locale: locale))
+                        } ?? Text("Unavailable")
+                    )
                 }
                 ProfileUsageSection(days: usage)
                 ProfileUsageHistory(

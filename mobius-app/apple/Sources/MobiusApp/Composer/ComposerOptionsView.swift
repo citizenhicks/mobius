@@ -157,6 +157,7 @@ struct ComposerOptionsView: View {
     let dictation: ComposerDictation
     @Binding var selection: TextSelection?
     let send: (ActiveMessageDelivery?) -> Void
+    var isCompact = false
     @State private var isFileImporterPresented = false
     @State private var isPhotoPickerPresented = false
     @State private var photoSelection: [PhotosPickerItem] = []
@@ -173,11 +174,13 @@ struct ComposerOptionsView: View {
                 // ponytail: overlap 44pt targets by 4pt; split groups if boundary taps misfire.
                 HStack(spacing: -MobiusSpace.xs) {
                     if model.attachmentsEnabled { addAttachmentControl }
-                    ForEach(composerSettings) { item in
-                        ComposerSettingMenu(item: item)
+                    if !isCompact {
+                        ForEach(composerSettings) { item in
+                            ComposerSettingMenu(item: item)
+                        }
                     }
                     Spacer(minLength: MobiusSpace.s)
-                    modelMenu
+                    if !isCompact { modelMenu }
                     actionButtons
                 }
             }

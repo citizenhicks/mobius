@@ -94,9 +94,13 @@ extension AppModelTests {
                 method: { .unavailable }, authenticate: { _ in false }),
             requestSender: { _ in }
         )
+        var config = composition()
+        config.middleware.enabled.insert("attachments")
         model.bots = [
             try JSONDecoder().decode(
-                Mobius.BotRecord.self, from: JSONEncoder().encode(bot(tint: .orange)))
+                Mobius.BotRecord.self,
+                from: JSONEncoder().encode(
+                    bot(tint: .orange, config: VersionedAgentConfig(revision: 1, config: config))))
         ]
         model.chat.pendingNewChatBotID = "bot-1"
         model.gateway.connectionState = .ready
@@ -157,6 +161,33 @@ extension AppModelTests {
             attachment.lifetime = .keepAlways
             add(attachment)
         }
+        model.chat.composer = ""
+        capture(await show(.dark), name: "composer-idle-dark")
+        let idle = await show(.light)
+        let field = try XCTUnwrap(inputs(in: idle).first)
+        let idleWidth = field.bounds.width
+        capture(idle, name: "composer-idle-light")
+        let center = field.convert(CGPoint(x: field.bounds.midX, y: field.bounds.midY), to: window)
+        XCTAssertTrue(window.hitTest(center, with: nil)?.isDescendant(of: field) == true)
+        model.chat.composerFocusRequest &+= 1
+        let focused = await eventually { field.isFirstResponder && field.bounds.width > idleWidth }
+        XCTAssertTrue(focused)
+        XCTAssertTrue(inputs(in: idle).first === field)
+        try await Task.sleep(for: .milliseconds(300))
+        capture(idle, name: "composer-focused")
+        model.chat.composer = "Preserve this draft"
+        model.chat.dismissComposerFocus()
+        let blurred = await eventually { !field.isFirstResponder }
+        XCTAssertTrue(blurred)
+        XCTAssertGreaterThan(field.bounds.width, idleWidth)
+        XCTAssertTrue(inputs(in: idle).first === field)
+        try await Task.sleep(for: .milliseconds(300))
+        capture(idle, name: "composer-unfocused-draft")
+        model.chat.composer = ""
+        let collapsed = await eventually { abs(field.bounds.width - idleWidth) < 1 }
+        XCTAssertTrue(collapsed)
+        XCTAssertTrue(inputs(in: idle).first === field)
+        model.chat.composer = "Preserve this draft"
         let normal = await show(.light)
         XCTAssertFalse(inputs(in: normal).isEmpty)
         capture(normal, name: "voice-normal-composer")

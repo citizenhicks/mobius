@@ -5,6 +5,37 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testComposerCollapsesOnlyWhenEmptyAndNotInUse() throws {
+        let chat = try model().chat
+        func isCompact(focused: Bool = false, dictating: Bool = false) -> Bool {
+            ComposerView.isCompact(chat: chat, isFocused: focused, isDictating: dictating)
+        }
+        XCTAssertTrue(isCompact())
+        XCTAssertFalse(isCompact(focused: true))
+        XCTAssertFalse(isCompact(dictating: true))
+        chat.activeTurnID = "running"
+        XCTAssertTrue(isCompact())
+        chat.composer = "Unsent draft"
+        XCTAssertFalse(isCompact())
+        chat.composer = "\n"
+        XCTAssertFalse(isCompact())
+        chat.composer = ""
+        chat.composerReply = MessageReply(
+            target: MessageTarget(checkpointSequence: 1, batchItemCount: 1), text: "Reply"
+        )
+        XCTAssertFalse(isCompact())
+        chat.composerReply = nil
+        chat.composerAttachments = [
+            ComposerAttachment(
+                id: UUID(), name: "photo.jpg", size: 1, mediaType: "image/jpeg",
+                state: .failed("Upload failed")
+            )
+        ]
+        XCTAssertFalse(isCompact())
+        chat.composerAttachments = []
+        XCTAssertTrue(isCompact())
+    }
+
     func testQueuedWidgetEditIsTakenBeforeTheComposerResubmitsFreshMessage() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model(requestSender: { request in

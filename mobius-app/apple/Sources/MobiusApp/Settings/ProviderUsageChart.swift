@@ -1,14 +1,6 @@
 import Foundation
 
 extension UsageLimit {
-    func title(locale: Locale) -> LocalizedStringResource {
-        let duration = Duration.seconds(windowSeconds).formatted(
-            .units(allowed: [.weeks, .days, .hours, .minutes, .seconds], width: .abbreviated)
-                .locale(locale)
-        )
-        return "\(label) · \(duration)"
-    }
-
     func resetDescription(locale: Locale) -> LocalizedStringResource {
         guard let resetsAt else { return "Unavailable" }
         let date = Date(timeIntervalSince1970: TimeInterval(resetsAt))

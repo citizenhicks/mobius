@@ -251,22 +251,19 @@ struct ChatsView: View {
                 }
                 .disabled(displayedSessions.isEmpty || !model.canRenameSession)
             }
-            if model.cloud.hasCloudAccount, let limit = model.cloud.cloudAccount?.luna {
-                Divider()
-                Text(
-                    "\(limit.remainingFraction.formatted(.percent.precision(.fractionLength(0)))) usage remaining"
-                )
-            }
-            ForEach(model.providerUsage) { usage in
-                Divider()
-                if let limits = usage.limits, !limits.isEmpty {
-                    ForEach(limits) { limit in
+            let cloudLimit = model.cloud.hasCloudAccount ? model.cloud.cloudAccount?.luna : nil
+            if cloudLimit != nil || model.codexWeeklyUsage != nil {
+                Section("Usage") {
+                    if let limit = cloudLimit {
                         Text(
-                            "\(limit.title(locale: locale)): \(limit.remainingFraction.formatted(.percent.precision(.fractionLength(0)).locale(locale))) remaining"
+                            "möbius cloud • \(limit.remainingFraction.formatted(.percent.precision(.fractionLength(0)).locale(locale))) remaining"
                         )
                     }
-                } else {
-                    Text("\(model.providerLabel(for: usage.provider)) usage unavailable")
+                    if let limit = model.codexWeeklyUsage {
+                        Text(
+                            "Codex • \(limit.remainingFraction.formatted(.percent.precision(.fractionLength(0)).locale(locale))) remaining"
+                        )
+                    }
                 }
             }
         }

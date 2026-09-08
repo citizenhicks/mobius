@@ -27,6 +27,14 @@ struct ComposerView: View {
     }
 }
 
+extension ComposerView {
+    static func isCompact(chat: ChatSessionModel, isFocused: Bool, isDictating: Bool) -> Bool {
+        !isFocused && !isDictating && chat.composer.isEmpty
+            && chat.composerAttachments.isEmpty && chat.composerReply == nil
+            && chat.pendingWidgetEdit == nil
+    }
+}
+
 private struct ComposerStack: View {
     @Environment(AppModel.self) private var model
     let showBotSettings: () -> Void
@@ -170,11 +178,13 @@ private struct ComposerSurface: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var dictation: ComposerDictation { model.dictation }
     @State private var selection: TextSelection?
     @FocusState private var isComposerFocused: Bool
     @State private var referenceSuggestions: ReferenceSuggestions?
     @State private var composerHeight: CGFloat = 0
+    @State private var optionsHeight = MobiusStyle.iconButtonSize
     @State private var showsExpandedComposer = false
 
     var body: some View {
@@ -204,7 +214,7 @@ private struct ComposerSurface: View {
                 )
                 .textFieldStyle(.plain)
                 .focused($isComposerFocused)
-                .lineLimit(1...8)
+                .lineLimit(1...(isCompact ? 1 : 8))
                 .scrollDismissesKeyboard(.interactively)
                 .font(MobiusStyle.bodyFont)
                 .accessibilityLabel("Message")
@@ -223,9 +233,16 @@ private struct ComposerSurface: View {
                 } action: { height in
                     composerHeight = height
                 }
-                .padding(.horizontal, MobiusSpace.l)
-                .padding(.top, MobiusSpace.m)
-                .padding(.bottom, MobiusSpace.xs)
+                .frame(minHeight: isCompact ? MobiusStyle.iconButtonSize : nil)
+                .padding(.leading, isCompact ? compactLeadingInset : MobiusSpace.l)
+                .padding(
+                    .trailing,
+                    isCompact
+                        ? MobiusStyle.iconRowPadding + 2 * MobiusStyle.iconButtonSize
+                        : MobiusSpace.l
+                )
+                .padding(.top, isCompact ? MobiusStyle.iconRowPadding : MobiusSpace.m)
+                .padding(.bottom, isCompact ? MobiusStyle.iconRowPadding : MobiusSpace.xs)
                 .overlay(alignment: .topTrailing) {
                     if showsExpansionControl {
                         ComposerSizeButton(expanded: false) {
@@ -233,16 +250,39 @@ private struct ComposerSurface: View {
                         }
                     }
                 }
+                // Keep the editor and toolbar mounted while the idle row shares their height.
+                Color.clear
+                    .frame(
+                        height: isCompact
+                            ? 0 : optionsHeight + MobiusStyle.iconRowPadding
+                    )
+            }
+        }
+        .overlay(alignment: isCompact ? .center : .bottom) {
+            if !showsExpandedComposer {
                 ComposerOptionsView(
                     dictation: dictation,
                     selection: $selection,
-                    send: { _ = submit(delivery: $0) }
+                    send: { _ = submit(delivery: $0) },
+                    isCompact: isCompact
                 )
+                .onGeometryChange(for: CGFloat.self) { geometry in
+                    geometry.size.height
+                } action: { height in
+                    optionsHeight = height
+                }
                 .padding(.horizontal, MobiusStyle.iconRowPadding)
-                .padding(.bottom, MobiusStyle.iconRowPadding)
+                .padding(.bottom, isCompact ? 0 : MobiusStyle.iconRowPadding)
             }
         }
-        .mobiusGlass(in: MobiusStyle.cardShape, interactive: true)
+        .mobiusGlass(
+            in: RoundedRectangle(
+                cornerRadius: isCompact ? MobiusStyle.iconButtonSize : MobiusStyle.cardRadius,
+                style: .continuous
+            ),
+            interactive: true
+        )
+        .animation(reduceMotion ? nil : .smooth(duration: 0.2), value: isCompact)
         .shadow(color: palette.shadow.opacity(0.18), radius: 12, y: 6)
         .overlay(alignment: .top) {
             if !showsExpandedComposer, let suggestions = referenceSuggestions {
@@ -321,6 +361,20 @@ private struct ComposerSurface: View {
         .onDisappear {
             Task { await dictation.cancel() }
         }
+    }
+
+    private var isCompact: Bool {
+        !showsExpandedComposer
+            && ComposerView.isCompact(
+                chat: model.chat,
+                isFocused: isComposerFocused,
+                isDictating: dictation.isActive
+            )
+    }
+
+    private var compactLeadingInset: CGFloat {
+        model.attachmentsEnabled
+            ? MobiusStyle.iconRowPadding + MobiusStyle.iconButtonSize : MobiusSpace.l
     }
 
     private var showsExpansionControl: Bool {

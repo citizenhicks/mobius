@@ -59,6 +59,27 @@ extension AppModelTests {
         model.providerInstances[0].configured = true
         XCTAssertEqual(model.providerUsage, [quota])
 
+        let weekly = UsageLimit(
+            id: "codex:secondary", label: "Codex", remainingFraction: 0.42,
+            windowSeconds: 604_800, resetsAt: nil
+        )
+        let spark = UsageLimit(
+            id: "codex-spark:secondary", label: "Spark", remainingFraction: 0.9,
+            windowSeconds: 604_800, resetsAt: nil
+        )
+        model.profile?.providerUsage = [
+            ProviderUsage(
+                provider: quota.provider, limits: [spark] + (quota.limits ?? []), error: nil)
+        ]
+        XCTAssertNil(model.codexWeeklyUsage)
+        model.refreshProfile()
+        XCTAssertTrue(model.isLoadingCodexWeeklyUsage)
+        model.profile?.providerUsage = [
+            ProviderUsage(provider: quota.provider, limits: [spark, weekly], error: nil)
+        ]
+        XCTAssertEqual(model.codexWeeklyUsage, weekly)
+        XCTAssertFalse(model.isLoadingCodexWeeklyUsage)
+
         model.refreshProfile()
         let failedID = try XCTUnwrap(model.profileRequestID)
         let expired = ProviderUsage(
@@ -83,6 +104,7 @@ extension AppModelTests {
 
         model.handleGatewayDisconnected("Disconnected")
         XCTAssertNil(model.profileRequestID)
+        XCTAssertFalse(model.isLoadingCodexWeeklyUsage)
         XCTAssertEqual(
             model.providerUsage, [ProviderUsage(provider: quota.provider, limits: nil, error: nil)])
         model.providerInstances = []
