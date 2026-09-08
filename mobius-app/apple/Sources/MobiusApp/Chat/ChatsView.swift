@@ -256,7 +256,7 @@ struct ChatsView: View {
                 Section("Usage") {
                     if let limit = cloudLimit {
                         Text(
-                            "möbius cloud • \(limit.remainingFraction.formatted(.percent.precision(.fractionLength(0)).locale(locale))) remaining"
+                            "möbius • \(limit.remainingFraction.formatted(.percent.precision(.fractionLength(0)).locale(locale))) remaining"
                         )
                     }
                     if let limit = model.codexWeeklyUsage {
