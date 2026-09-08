@@ -1,0 +1,1 @@
+Expose the saved attached-folder list when opening or updating a chat, allowing frontends to show confirmed folder access. Uses wire protocol 73; update frontends and gateway together. Stored chat and account formats are unchanged.
