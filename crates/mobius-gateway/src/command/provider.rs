@@ -46,6 +46,7 @@ pub(super) async fn register_provider_with_credential(
             &options.provider,
             base_url.as_deref(),
             api_key,
+            options.credential_expires_at,
         )
         .await?;
     }
@@ -112,6 +113,7 @@ async fn request_provider_credential(
     provider: &str,
     base_url: Option<&str>,
     api_key: String,
+    expires_at: Option<u64>,
 ) -> Result<()> {
     let client = GatewayClient::connect(endpoint, token, ClientKind::GatewayDashboard).await?;
     let (sender, mut events) = client.into_parts();
@@ -123,12 +125,14 @@ async fn request_provider_credential(
             provider: provider.into(),
             base_url: base_url.into(),
             api_key,
+            expires_at,
         },
         None => ClientMessage::SetProviderCredential {
             request_id: request_id.clone(),
             instance: instance.into(),
             provider: provider.into(),
             api_key,
+            expires_at,
         },
     };
     sender.send(message).await?;
@@ -204,4 +208,48 @@ async fn request_provider_registration(
 #[derive(Serialize)]
 struct RegisterProviderOutput<'a> {
     provider: &'a str,
+}
+
+pub(super) async fn clear_provider_credential(
+    state_dir: std::path::PathBuf,
+    instance: String,
+    load_local_client: fn(&Endpoint) -> Result<Option<String>>,
+) -> Result<()> {
+    let (_, config) = ConfigStore::open(state_dir)?;
+    let endpoint = direct_loopback_endpoint(&config)?;
+    let token = load_local_client(&endpoint)?
+        .ok_or_else(|| Error::Config("gateway local control credential is unavailable".into()))?;
+    let client = GatewayClient::connect(&endpoint, &token, ClientKind::GatewayDashboard).await?;
+    let (sender, mut events) = client.into_parts();
+    let request_id = Uuid::new_v4().to_string();
+    sender
+        .send(ClientMessage::ClearProviderCredential {
+            request_id: request_id.clone(),
+            instance: instance.clone(),
+        })
+        .await?;
+    for _ in 0..MAX_PENDING_FRAMES {
+        let frame = events.next().await?.ok_or_else(|| {
+            Error::Protocol("gateway disconnected before clearing the provider credential".into())
+        })?;
+        match frame.message {
+            ServerMessage::ProviderCredentialCleared {
+                request_id: actual,
+                instance: actual_instance,
+            } if actual == request_id && actual_instance == instance => {
+                println!("{}", serde_json::json!({"instance": instance}));
+                return Ok(());
+            }
+            ServerMessage::Rejected {
+                request_id: actual,
+                message,
+                ..
+            } if actual == request_id => return Err(Error::Protocol(message)),
+            ServerMessage::Error { message, .. } => return Err(Error::Protocol(message)),
+            _ => {}
+        }
+    }
+    Err(Error::Protocol(format!(
+        "gateway sent {MAX_PENDING_FRAMES} unrelated frames before the provider credential response"
+    )))
 }

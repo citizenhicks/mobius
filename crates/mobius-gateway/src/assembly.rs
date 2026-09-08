@@ -9,7 +9,9 @@ use mobius::backend::model::provider::{
     HttpClient, ProviderAuth, ProviderBuildConfig, ProviderCredential, ProviderDefinition,
     provider, streaming_client,
 };
-use mobius::backend::model::{Model, ModelEventSink, ModelOutput, ModelRequest, ModelRouter};
+use mobius::backend::model::{
+    Model, ModelCredentialLifetime, ModelEventSink, ModelOutput, ModelRequest, ModelRouter,
+};
 use mobius::backend::sandbox::{ApprovalPolicy, Sandbox, SandboxBackend};
 use mobius::middleware::artifacts::Artifacts;
 use mobius::middleware::attachments::Attachments;
@@ -363,6 +365,7 @@ fn build_models(
         router.register(&route.id, Arc::clone(&route.model))?;
     }
     for route in routes {
+        router.set_credential_lifetime(&route.id, route.lifetime)?;
         router.configure_choice(route.choice)?;
     }
     Ok((Arc::new(router), context_window))
@@ -374,31 +377,35 @@ fn instantiate_routes(
     credentials: &CredentialStore,
 ) -> Result<Vec<RouteValue>> {
     let http = streaming_client()?;
-    let mut provider_credentials = BTreeMap::<String, ProviderCredential>::new();
+    let mut provider_credentials =
+        BTreeMap::<String, (ProviderCredential, ModelCredentialLifetime)>::new();
     let mut routes = Vec::with_capacity(catalog.len());
     for route in catalog {
         let definition = provider(&route.provider.provider)?;
         let base_url = selected_base_url(definition, &route.provider).map(str::to_owned);
-        let credential = if route.provider.endpoint_auth == ProviderEndpointAuth::Credentialless {
-            ProviderCredential::Credentialless
-        } else {
-            match provider_credentials.get(route.provider.instance.as_str()) {
-                Some(credential) => credential.clone(),
-                None => {
-                    let credential = resolve_credential(
-                        &route.provider.instance,
-                        definition,
-                        base_url.as_deref(),
-                        store,
-                        credentials,
-                    )?;
-                    provider_credentials
-                        .insert(route.provider.instance.clone(), credential.clone());
-                    credential
+        let (credential, lifetime) =
+            if route.provider.endpoint_auth == ProviderEndpointAuth::Credentialless {
+                (ProviderCredential::Credentialless, Default::default())
+            } else {
+                match provider_credentials.get(route.provider.instance.as_str()) {
+                    Some(credential) => credential.clone(),
+                    None => {
+                        let credential = resolve_credential(
+                            &route.provider.instance,
+                            definition,
+                            base_url.as_deref(),
+                            store,
+                            credentials,
+                        )?;
+                        provider_credentials
+                            .insert(route.provider.instance.clone(), credential.clone());
+                        credential
+                    }
                 }
-            }
-        };
-        routes.push(build_route(route, definition, credential, base_url, &http)?);
+            };
+        routes.push(build_route(
+            route, definition, credential, lifetime, base_url, &http,
+        )?);
     }
     Ok(routes)
 }
@@ -409,11 +416,11 @@ fn resolve_credential(
     base_url: Option<&str>,
     store: &ConfigStore,
     credentials: &CredentialStore,
-) -> Result<ProviderCredential> {
+) -> Result<(ProviderCredential, ModelCredentialLifetime)> {
     match definition.auth() {
         ProviderAuth::ApiKey(default_env) => {
             if let Some(value) = credentials.get(instance, definition.id(), base_url)? {
-                return Ok(ProviderCredential::ApiKey(value));
+                return Ok((ProviderCredential::ApiKey(value.api_key), value.lifetime));
             }
             if !definition.uses_default_endpoint(base_url) {
                 return Err(Error::Config(format!(
@@ -429,9 +436,12 @@ fn resolve_credential(
                     "credential environment variable {default_env} is empty"
                 )));
             }
-            Ok(ProviderCredential::ApiKey(value))
+            Ok((ProviderCredential::ApiKey(value), Default::default()))
         }
-        ProviderAuth::Browser(auth) => auth.load(&store.provider_auth_path()).map_err(Error::from),
+        ProviderAuth::Browser(auth) => auth
+            .load(&store.provider_auth_path())
+            .map(|credential| (credential, Default::default()))
+            .map_err(Error::from),
     }
 }
 
@@ -439,6 +449,7 @@ fn build_route(
     route: CatalogRoute,
     definition: &'static ProviderDefinition,
     credential: ProviderCredential,
+    lifetime: ModelCredentialLifetime,
     base_url: Option<String>,
     http: &HttpClient,
 ) -> Result<RouteValue> {
@@ -453,10 +464,16 @@ fn build_route(
     let mut choice = route.choice;
     choice.supports_image_input = model.supports_image_input();
     let id = choice.route.clone();
-    Ok(RouteValue { choice, id, model })
+    Ok(RouteValue {
+        choice,
+        id,
+        model,
+        lifetime,
+    })
 }
 
 struct RouteValue {
+    lifetime: ModelCredentialLifetime,
     id: String,
     choice: ModelChoice,
     model: Arc<dyn Model>,

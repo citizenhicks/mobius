@@ -84,12 +84,43 @@ impl GatewayHost {
         Ok(payload)
     }
 
+    pub(crate) async fn clear_credential(
+        &self,
+        instance: String,
+    ) -> std::result::Result<(), Rejection> {
+        let base_url = {
+            let state = self.state.lock().await;
+            state
+                .credentials
+                .remove(&instance)
+                .map_err(invalid_config)?;
+            let config = state
+                .config
+                .lock()
+                .map_err(|_| internal("gateway configuration lock is poisoned"))?;
+            config
+                .configured_providers
+                .get(&instance)
+                .map(|configured| {
+                    provider(&configured.selection.provider).map(|definition| {
+                        selected_base_url(definition, &configured.selection).map(str::to_owned)
+                    })
+                })
+                .transpose()
+                .map_err(invalid_config)?
+                .flatten()
+        };
+        self.refresh_provider_sessions(ProviderRefresh::Instance { instance, base_url })
+            .await
+    }
+
     pub(crate) async fn set_credential(
         &self,
         instance: String,
         provider_id: String,
         api_key: String,
         base_url: Option<String>,
+        expires_at: Option<u64>,
     ) -> std::result::Result<(), Rejection> {
         let (base_url, configured) = {
             let state = self.state.lock().await;
@@ -104,7 +135,13 @@ impl GatewayHost {
                 .map_err(invalid_config)?;
             state
                 .credentials
-                .set(&instance, &provider_id, &api_key, base_url.as_deref())
+                .set(
+                    &instance,
+                    &provider_id,
+                    &api_key,
+                    base_url.as_deref(),
+                    expires_at,
+                )
                 .map_err(invalid_config)?;
             let configured = state
                 .config

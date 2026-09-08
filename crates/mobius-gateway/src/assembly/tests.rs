@@ -116,6 +116,7 @@ fn configured_provider_status_requires_the_selected_credential_endpoint() {
             "openrouter",
             "openrouter-secret",
             Some("https://other.example/v1"),
+            None,
         )
         .expect("mismatched credential");
     let selection = ProviderConfig {
@@ -163,6 +164,7 @@ fn configured_catalog_resolves_manifest_and_opaque_custom_routes() {
             "kimi",
             "kimi-secret",
             Some("https://api.moonshot.ai/v1"),
+            None,
         )
         .expect("Kimi credential");
     credentials
@@ -171,6 +173,7 @@ fn configured_catalog_resolves_manifest_and_opaque_custom_routes() {
             "responses",
             "custom-secret",
             Some("https://example.com/v1"),
+            None,
         )
         .expect("custom credential");
     let kimi = ProviderConfig {
@@ -345,6 +348,7 @@ fn custom_selection_without_reasoning_uses_the_first_configured_effort() {
             "responses",
             "custom-secret",
             Some("http://127.0.0.1:11434/v1"),
+            None,
         )
         .expect("custom credential");
     let selection = ProviderConfig {
@@ -419,6 +423,7 @@ fn custom_responses_requires_an_endpoint_bound_stored_credential() {
             "responses",
             "official-secret",
             Some("https://api.openai.com/v1"),
+            None,
         )
         .expect("store endpoint-bound credential");
     assert!(
@@ -464,7 +469,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
     let credentials =
         Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
     credentials
-        .set("openai_socket", "openai_socket", "test-token", None)
+        .set("openai_socket", "openai_socket", "test-token", None, None)
         .expect("test provider credential");
     let checkpoints: Arc<dyn CheckpointStore> =
         Arc::new(SqliteCheckpoint::new(store.checkpoints_path()).expect("checkpoints"));

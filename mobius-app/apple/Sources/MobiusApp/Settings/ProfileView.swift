@@ -4,6 +4,17 @@ import SwiftUI
 struct ProfileView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.locale) private var locale
+    @Environment(\.mobiusPalette) private var palette
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var expandedSection: SettingsSection?
+
+    enum SettingsSection: String {
+        case account, appearance, data, usage
+    }
+
+    init(expandedSection: SettingsSection? = nil) {
+        _expandedSection = State(initialValue: expandedSection)
+    }
 
     var body: some View {
         let usage = model.profile?.dailyUsage ?? []
@@ -18,31 +29,24 @@ struct ProfileView: View {
             detail: .verbatim(""),
             headerAccessory: SettingsInformationButton.init
         ) {
-            // Settings first, the dashboard last: this page is opened to change something,
-            // and usage is the one section here nobody comes to act on.
-            Section {
-                CloudAccountSettings()
-            } header: {
+            settingsSection(.account, title: "Account", glyph: .userFocus) {
                 HStack(spacing: MobiusSpace.xs) {
-                    MobiusCloudLabel(showsAccount: true)
-                        .textCase(nil)
+                    MobiusCloudLabel(showsAccount: true, tier: model.cloud.currentTier)
                     if model.cloud.isLoadingCloudAccount {
                         MobiusSpinner(size: MobiusStyle.glyphMark)
                     }
                 }
+                CloudAccountSettings()
             }
-            .listRowSeparator(.hidden)
-            Section("Appearance") {
+            settingsSection(.appearance, title: "Appearance", glyph: .paintBoard) {
                 AppearanceSettings()
             }
-            .listRowSeparator(.hidden)
-            Section("Security and Data") {
+            settingsSection(.data, title: "Security and Data", glyph: .shield02) {
                 AppLockSettings()
                 RemoteNotificationSettings()
                 LocalDataSettings()
             }
-            .listRowSeparator(.hidden)
-            Section("Usage") {
+            settingsSection(.usage, title: "Usage", glyph: .chartBarDecreasing) {
                 if model.isLoadingCodexWeeklyUsage {
                     SettingsLoadingRows(label: "Loading Codex weekly usage") {
                         UsageLimitBar(
@@ -67,7 +71,6 @@ struct ProfileView: View {
                     providerTints: providerTints
                 )
             }
-            .listRowSeparator(.hidden)
         }
         .task(id: model.cloud.cloudSession?.credentialID) {
             await model.cloud.refreshCloudAccount()
@@ -76,25 +79,104 @@ struct ProfileView: View {
             await model.refreshProfileWhileVisible()
         }
     }
+
+    private func settingsSection(
+        _ section: SettingsSection,
+        title: LocalizedStringResource,
+        glyph: MobiusGlyph,
+        @ViewBuilder content: () -> some View
+    ) -> some View {
+        let isExpanded = expandedSection == section
+        return Section {
+            Button {
+                withAnimation(reduceMotion ? nil : .smooth(duration: 0.3)) {
+                    expandedSection = isExpanded ? nil : section
+                }
+            } label: {
+                HStack(spacing: MobiusSpace.m) {
+                    MobiusIcon(glyph, size: MobiusStyle.glyphLead, foreground: palette.muted)
+                    Text(title)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    MobiusIcon(.caretRight, size: MobiusStyle.glyphMark, foreground: palette.muted)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                }
+                .font(MobiusStyle.bodyFont)
+                .frame(minHeight: MobiusStyle.iconButtonSize)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.mobiusPlain)
+            .accessibilityIdentifier("settings-\(section.rawValue)")
+            .accessibilityValue(isExpanded ? Text("Expanded") : Text("Collapsed"))
+            .accessibilityHint(isExpanded ? Text("Collapses details") : Text("Expands details"))
+            if isExpanded {
+                content()
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .listRowSeparator(.hidden)
+    }
+
 }
 
 private struct CloudAgentUsageLimit: View {
+    @Environment(\.locale) private var locale
     let limit: MobiusCloudUsageLimit?
-
-    private static let resetFormat = Date.FormatStyle(
-        date: .abbreviated,
-        time: .omitted,
-        timeZone: .gmt
-    )
 
     var body: some View {
         UsageLimitBar(
-            title: Text("möbius cloud agent usage limits"),
+            title: Text("Included Luna usage"),
             remainingFraction: limit?.remainingFraction,
-            resetText: limit.map {
-                Text("Resets \($0.resetsAt.formatted(Self.resetFormat))")
-            } ?? Text("Unavailable")
+            resetText: resetText
         )
+    }
+
+    private var resetText: Text {
+        guard let limit else { return Text("Updating allowance") }
+        guard let date = limit.resetsAt else { return Text("Current billing period") }
+        return Text(
+            "Renews after payment on \(date.formatted(.dateTime.month().day().year().locale(locale)))"
+        )
+    }
+
+}
+
+private struct CloudSubscriptionDetails: View {
+    @Environment(\.locale) private var locale
+    let subscription: MobiusCloudSubscription
+
+    var body: some View {
+        LabeledContent("Current plan") { Text(verbatim: subscription.tier.name) }
+        LabeledContent("Subscription status") { Text(subscription.status.label) }
+        if subscription.autoRenews == true, subscription.status == .active,
+            let date = subscription.billingPeriodEndsAt
+        {
+            LabeledContent("Next payment") { Text(date, format: .dateTime.month().day().year()) }
+        } else {
+            LabeledContent("Access ends") {
+                Text(subscription.accessEndsAt, format: .dateTime.month().day().year())
+            }
+        }
+        if let next = subscription.nextTier, next != subscription.tier,
+            let date = subscription.billingPeriodEndsAt
+        {
+            LabeledContent("Next plan") {
+                if subscription.status == .active {
+                    Text(
+                        "\(next.name) from \(date.formatted(.dateTime.month().day().year().locale(locale)))"
+                    )
+                } else {
+                    Text("\(next.name) after payment")
+                }
+            }
+        }
+        if subscription.autoRenews == false,
+            subscription.status == .active || subscription.status == .gracePeriod
+        {
+            Text(
+                "Renewal is off. Your plan and remaining credits stay available until access ends."
+            )
+            .font(MobiusStyle.captionFont)
+        }
     }
 }
 
@@ -251,8 +333,11 @@ private struct CloudAccountSettings: View {
             if subscriptionExpired {
                 StatusBanner(
                     tone: .warning,
-                    title: "Subscription expired",
-                    detail: "Renew or restore your subscription to reconnect to möbius Cloud."
+                    title: .localized(
+                        model.cloud.cloudAccount?.subscription?.status.label
+                            ?? "Subscription expired"),
+                    detail: .localized(
+                        "Renew or restore your subscription to reconnect to möbius Cloud.")
                 )
             } else if let cloudError = model.cloud.cloudError {
                 StatusBanner(
@@ -295,29 +380,23 @@ private struct CloudAccountSettings: View {
                     )
                 }
             }
-            if !subscriptionExpired {
-                LabeledContent("Subscriber since") {
-                    if let startedAt = model.cloud.cloudAccount?.subscriptionStartedAt {
-                        Text(startedAt, format: .dateTime.month(.wide).day().year())
-                    } else {
-                        Text("Unavailable")
-                    }
-                }
-                CloudAgentUsageLimit(limit: model.cloud.cloudAccount?.luna)
-            }
+            subscriptionDetails
             VStack(spacing: MobiusSpace.s) {
                 if subscriptionExpired
                     || (model.cloud.cloudAccount != nil && model.cloud.cloudGateway == nil)
                 {
                     MobiusCloudOfferButton { model.showsCloudOffer = true }
                 }
-                Button("Manage subscription", glyph: .sealCheck) {
+                Button(
+                    model.cloud.currentTier == .cloud
+                        ? "Upgrade to Cloud Plus" : "Manage subscription", glyph: .sealCheck
+                ) {
                     Task { await model.cloud.manageCloudSubscription() }
                 }
                 .buttonStyle(.mobiusGlass)
                 .tint(palette.accent)
                 .accessibilityHint(
-                    "Opens App Store subscription management, where you can unsubscribe")
+                    "Opens App Store subscription management to change your plan or cancel")
                 Button(
                     model.cloud.cloudAction == .restoring
                         ? "Restoring purchases…" : "Restore purchases",
@@ -385,6 +464,23 @@ private struct CloudAccountSettings: View {
             MobiusCloudOfferButton { model.showsCloudOffer = true }
         }
     }
+    @ViewBuilder
+    private var subscriptionDetails: some View {
+        if let subscription = model.cloud.cloudAccount?.subscription {
+            CloudSubscriptionDetails(subscription: subscription)
+        }
+        if model.cloud.cloudIssue != .subscriptionExpired {
+            LabeledContent("Subscriber since") {
+                if let startedAt = model.cloud.cloudAccount?.subscriptionStartedAt {
+                    Text(startedAt, format: .dateTime.month(.wide).day().year())
+                } else {
+                    Text("Unavailable")
+                }
+            }
+            CloudAgentUsageLimit(limit: model.cloud.cloudAccount?.luna)
+        }
+    }
+
 }
 
 private struct MobiusCloudAccountDeletionSheet: View {

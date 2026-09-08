@@ -82,6 +82,20 @@ final class MobiusCloudModel {
 
     var hasCloudAccount: Bool { cloudSession != nil }
 
+    var currentTier: MobiusCloudTier? {
+        guard let account = cloudAccount, account.subscribed,
+            account.userID == cloudSession?.userID
+        else { return nil }
+        return account.subscription?.tier
+    }
+
+    func gatewayName(_ account: GatewayAccount) -> String {
+        guard let userID = cloudSession?.userID, account.cloudUserID == userID else {
+            return account.machineName
+        }
+        return "möbius \(currentTier?.name ?? "Cloud")"
+    }
+
     var isLoadingCloudAccount: Bool {
         hasCloudAccount && cloudAccount == nil && cloudError == nil
     }

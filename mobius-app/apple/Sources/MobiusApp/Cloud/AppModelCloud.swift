@@ -67,7 +67,7 @@ extension MobiusCloudModel {
         }
     }
 
-    func refreshCloudAccount() async {
+    func refreshCloudAccount(synchronizePurchases: Bool = false) async {
         guard let requestedSession = cloudSession else {
             cloudAccount = nil
             return
@@ -84,6 +84,7 @@ extension MobiusCloudModel {
             activeSession = repairedSession
             let reconciled = try await reconcileActivePurchases(
                 from: account,
+                synchronize: synchronizePurchases,
                 generation: generation
             )
             guard operationGeneration == generation else { return }
@@ -153,7 +154,8 @@ extension MobiusCloudModel {
                 subscribed: account.subscribed,
                 sharesDiagnostics: sharesDiagnostics,
                 subscriptionStartedAt: account.subscriptionStartedAt,
-                luna: account.luna
+                luna: account.luna,
+                subscription: account.subscription
             )
         } catch is CancellationError {
             return
@@ -165,7 +167,8 @@ extension MobiusCloudModel {
 
     func signInAndPurchaseCloud(
         authorizationCode: String,
-        nonce: String
+        nonce: String,
+        tier: MobiusCloudTier = .cloud
     ) async -> Bool {
         guard cloudAction == .idle, cloudAuthenticationRequestTask == nil else { return false }
         let generation = operationGeneration
@@ -191,7 +194,7 @@ extension MobiusCloudModel {
             cloudSession = session
             cloudAccount = nil
             cloudAction = .purchasing
-            return try await continueCloudSignup(generation: generation)
+            return try await continueCloudSignup(tier: tier, generation: generation)
         } catch MobiusCloudPurchaseError.cancelled {
             return false
         } catch MobiusCloudPurchaseError.pending {
@@ -205,7 +208,7 @@ extension MobiusCloudModel {
         }
     }
 
-    func purchaseCloud() async -> Bool {
+    func purchaseCloud(tier: MobiusCloudTier = .cloud) async -> Bool {
         guard cloudAction == .idle else { return false }
         guard cloudIssue != .subscriptionAccountConflict else { return false }
         guard cloudSession != nil else {
@@ -218,7 +221,7 @@ extension MobiusCloudModel {
         defer { cloudAction = .idle }
 
         do {
-            return try await continueCloudSignup(generation: generation)
+            return try await continueCloudSignup(tier: tier, generation: generation)
         } catch MobiusCloudPurchaseError.cancelled {
             return false
         } catch MobiusCloudPurchaseError.pending {
@@ -293,14 +296,14 @@ extension MobiusCloudModel {
         reportCloud(MobiusCloudError.invalidAuthorization)
     }
 
-    func cloudProductDisplayPrice() async throws -> String {
-        try await cloudPurchases.displayPrice()
+    func cloudProductDisplayPrices() async throws -> [MobiusCloudTier: String] {
+        try await cloudPurchases.displayPrices()
     }
 
     func manageCloudSubscription() async {
         do {
             try await cloudPurchases.manage()
-            await refreshCloudAccount()
+            await refreshCloudAccount(synchronizePurchases: true)
         } catch is CancellationError {
             return
         } catch {
@@ -308,7 +311,7 @@ extension MobiusCloudModel {
         }
     }
 
-    private func continueCloudSignup(generation: UUID) async throws -> Bool {
+    private func continueCloudSignup(tier: MobiusCloudTier, generation: UUID) async throws -> Bool {
         let account = try await authoritativeCloudAccount(generation: generation)
         guard operationGeneration == generation else { throw CancellationError() }
         let recoveredAccount = try await reconcileActivePurchases(
@@ -321,7 +324,8 @@ extension MobiusCloudModel {
             return try await provisionCloudGateway(generation: generation)
         }
 
-        let purchase = try await cloudPurchases.purchase(userID: recoveredAccount.userID)
+        let purchase = try await cloudPurchases.purchase(
+            userID: recoveredAccount.userID, tier: tier)
         try await acknowledge(purchase)
         let verifiedAccount = try await authoritativeCloudAccount(generation: generation)
         guard operationGeneration == generation else { throw CancellationError() }

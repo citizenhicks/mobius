@@ -2,7 +2,59 @@ import CryptoKit
 import Foundation
 import Security
 
-let mobiusCloudMonthlyProductID = "app.mobius.client.cloud.monthly.v2"
+enum MobiusCloudTier: String, CaseIterable, Decodable, Identifiable, Sendable {
+    case cloud
+    case cloudPlus = "cloud_plus"
+
+    var id: Self { self }
+    var name: String { self == .cloud ? "Cloud" : "Cloud Plus" }
+    var productID: String {
+        switch self {
+        case .cloud: "app.mobius.client.cloud.monthly.v2"
+        case .cloudPlus: "app.mobius.client.cloud.plus.monthly"
+        }
+    }
+}
+
+struct MobiusCloudSubscription: Decodable, Equatable, Sendable {
+    enum Status: String, Decodable, Sendable {
+        case active
+        case gracePeriod = "grace_period"
+        case billingRetry = "billing_retry"
+        case expired
+        case revoked
+
+        var label: LocalizedStringResource {
+            switch self {
+            case .active: "Active"
+            case .gracePeriod: "Payment issue — access continues"
+            case .billingRetry: "Payment issue — access paused"
+            case .expired: "Expired"
+            case .revoked: "Revoked"
+            }
+        }
+    }
+
+    let tier: MobiusCloudTier
+    let productId: String
+    let status: Status
+    let billingPeriodStartedAt: Date?
+    let billingPeriodEndsAt: Date?
+    let accessEndsAt: Date
+    let autoRenews: Bool?
+    let nextTier: MobiusCloudTier?
+
+    var isValid: Bool {
+        guard productId == tier.productID,
+            nextTier == nil || autoRenews == true
+        else { return false }
+        switch (billingPeriodStartedAt, billingPeriodEndsAt) {
+        case (.none, .none): return true
+        case (.some(let start), .some(let end)): return start < end
+        default: return false
+        }
+    }
+}
 
 struct MobiusCloudSession: Equatable, Sendable {
     let userID: UUID
@@ -19,7 +71,7 @@ struct MobiusCloudSession: Equatable, Sendable {
 struct MobiusCloudUsageLimit: Decodable, Equatable, Sendable {
     let creditMicrousd: Int
     let remainingMicrousd: Int
-    let resetsAt: Date
+    let resetsAt: Date?
 
     var remainingFraction: Double {
         Double(remainingMicrousd) / Double(creditMicrousd)
@@ -33,6 +85,7 @@ struct MobiusCloudAccount: Equatable, Sendable {
     let sharesDiagnostics: Bool
     let subscriptionStartedAt: Date?
     let luna: MobiusCloudUsageLimit?
+    let subscription: MobiusCloudSubscription?
 
     init(
         userID: UUID,
@@ -40,7 +93,8 @@ struct MobiusCloudAccount: Equatable, Sendable {
         subscribed: Bool,
         sharesDiagnostics: Bool,
         subscriptionStartedAt: Date? = nil,
-        luna: MobiusCloudUsageLimit? = nil
+        luna: MobiusCloudUsageLimit? = nil,
+        subscription: MobiusCloudSubscription? = nil
     ) {
         self.userID = userID
         self.email = email
@@ -48,6 +102,7 @@ struct MobiusCloudAccount: Equatable, Sendable {
         self.sharesDiagnostics = sharesDiagnostics
         self.subscriptionStartedAt = subscriptionStartedAt
         self.luna = luna
+        self.subscription = subscription
     }
 }
 
@@ -314,6 +369,7 @@ final class MobiusCloudClient {
         let subscribed: Bool
         let sharesDiagnostics: Bool
         let subscriptionStartedAt: Date?
+        let subscription: MobiusCloudSubscription?
         let luna: MobiusCloudUsageLimit?
     }
 
@@ -476,6 +532,7 @@ final class MobiusCloudClient {
         guard let userID = UUID(uuidString: response.userId),
             (response.subscriptionStartedAt != nil) == response.subscribed,
             response.email.map(Self.isValidEmail) ?? true,
+            response.subscription?.isValid ?? true,
             response.luna.map({
                 response.subscribed && $0.creditMicrousd > 0
                     && (0...$0.creditMicrousd).contains($0.remainingMicrousd)
@@ -489,7 +546,8 @@ final class MobiusCloudClient {
             subscribed: response.subscribed,
             sharesDiagnostics: response.sharesDiagnostics,
             subscriptionStartedAt: response.subscriptionStartedAt,
-            luna: response.luna
+            luna: response.luna,
+            subscription: response.subscription
         )
     }
 

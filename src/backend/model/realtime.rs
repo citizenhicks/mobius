@@ -61,6 +61,28 @@ pub struct RealtimeVoiceCall {
 }
 
 impl RealtimeVoiceCall {
+    pub(super) fn cleanup_deadline(expires_at: std::time::SystemTime) -> std::time::SystemTime {
+        // Closing the socket and authenticating the hangup must finish before key expiry.
+        expires_at
+            .checked_sub(3 * IO_TIMEOUT)
+            .unwrap_or(std::time::UNIX_EPOCH)
+    }
+
+    pub(super) fn limit_credential(&mut self, credential: super::ModelCredentialLifetime) {
+        if credential.expires_at.is_none() && credential.revoked.is_none() {
+            return;
+        }
+        let (cancel, dropped) = oneshot::channel::<()>();
+        let provider_cancel = std::mem::replace(&mut self._cancel, cancel);
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = credential.ended() => {},
+                _ = dropped => {},
+            }
+            drop(provider_cancel);
+        });
+    }
+
     /// Creates a provider call with validated audio SDP and bounded Tokio channels.
     /// The provider must stop and hang up when the cancellation receiver resolves,
     /// including when this value drops its sender without sending a message.

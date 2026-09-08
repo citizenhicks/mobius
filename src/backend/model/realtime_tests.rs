@@ -971,3 +971,33 @@ fn explicit_task_arguments_preserve_requirements_beyond_identifier_length() {
         }]
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn credential_deadline_hangs_up_a_retained_voice_call() {
+    let (commands, _commands) = tokio::sync::mpsc::channel(1);
+    let (_events, events) = tokio::sync::mpsc::channel(1);
+    let (cancel, cancelled) = tokio::sync::oneshot::channel();
+    let mut call = RealtimeVoiceCall::new(SDP.into(), commands, events, cancel).unwrap();
+    call.limit_credential(crate::backend::model::ModelCredentialLifetime {
+        expires_at: Some(std::time::SystemTime::now() + Duration::from_secs(60)),
+        ..Default::default()
+    });
+    assert!(cancelled.await.is_err());
+    assert_eq!(call.answer_sdp, SDP);
+}
+
+#[tokio::test]
+async fn credential_revocation_hangs_up_a_retained_voice_call() {
+    let (commands, _commands) = tokio::sync::mpsc::channel(1);
+    let (_events, events) = tokio::sync::mpsc::channel(1);
+    let (cancel, cancelled) = tokio::sync::oneshot::channel();
+    let (owner, revoked) = tokio::sync::watch::channel(());
+    let mut call = RealtimeVoiceCall::new(SDP.into(), commands, events, cancel).unwrap();
+    call.limit_credential(crate::backend::model::ModelCredentialLifetime {
+        expires_at: None,
+        revoked: Some(revoked),
+    });
+    drop(owner);
+    assert!(cancelled.await.is_err());
+    assert_eq!(call.answer_sdp, SDP);
+}

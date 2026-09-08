@@ -46,10 +46,10 @@ final class MobiusCloudTests: XCTestCase {
     func testCloudPurchasesUsesInjectedAppStoreURL() async throws {
         let url = try XCTUnwrap(URL(string: "https://apps.apple.com/"))
         let purchases = MobiusCloudPurchases(
-            displayPrice: { "$9.99" },
+            displayPrices: { [.cloud: "$5.99", .cloudPlus: "$15.99"] },
             unfinishedPurchases: { MobiusCloudPurchaseScan() },
             currentEntitlements: { _ in MobiusCloudPurchaseScan() },
-            purchase: { _ in throw MobiusCloudPurchaseError.unavailable },
+            purchase: { _, _ in throw MobiusCloudPurchaseError.unavailable },
             appStoreURL: { url }
         )
 
@@ -534,13 +534,13 @@ final class MobiusCloudTests: XCTestCase {
             settingsDefaults: defaults,
             cloudClient: client,
             cloudPurchases: MobiusCloudPurchases(
-                displayPrice: { "$9.99" },
+                displayPrices: { [.cloud: "$5.99", .cloudPlus: "$15.99"] },
                 unfinishedPurchases: { MobiusCloudPurchaseScan() },
                 currentEntitlements: { synchronize in
                     XCTAssertTrue(synchronize)
                     return MobiusCloudPurchaseScan()
                 },
-                purchase: { _ in throw MobiusCloudPurchaseError.unavailable }
+                purchase: { _, _ in throw MobiusCloudPurchaseError.unavailable }
             )
         )
         model.cloud.cloudAccount = MobiusCloudAccount(
@@ -622,13 +622,13 @@ final class MobiusCloudTests: XCTestCase {
             connectionOpener: { _ in AsyncThrowingStream { _ in } },
             cloudClient: client,
             cloudPurchases: MobiusCloudPurchases(
-                displayPrice: { "$9.99" },
+                displayPrices: { [.cloud: "$5.99", .cloudPlus: "$15.99"] },
                 unfinishedPurchases: { MobiusCloudPurchaseScan() },
                 currentEntitlements: { synchronize in
                     XCTAssertTrue(synchronize)
                     return MobiusCloudPurchaseScan()
                 },
-                purchase: { _ in throw MobiusCloudPurchaseError.unavailable }
+                purchase: { _, _ in throw MobiusCloudPurchaseError.unavailable }
             )
         )
         model.cloud.cloudAccount = MobiusCloudAccount(
@@ -697,13 +697,13 @@ final class MobiusCloudTests: XCTestCase {
             settingsDefaults: defaults,
             cloudClient: client,
             cloudPurchases: MobiusCloudPurchases(
-                displayPrice: { "$9.99" },
+                displayPrices: { [.cloud: "$5.99", .cloudPlus: "$15.99"] },
                 unfinishedPurchases: { MobiusCloudPurchaseScan() },
                 currentEntitlements: { _ in
                     readCurrentEntitlements = true
                     return MobiusCloudPurchaseScan()
                 },
-                purchase: { _ in throw MobiusCloudPurchaseError.unavailable }
+                purchase: { _, _ in throw MobiusCloudPurchaseError.unavailable }
             )
         )
         model.cloud.cloudAccount = MobiusCloudAccount(
@@ -755,6 +755,66 @@ final class MobiusCloudTests: XCTestCase {
         } catch let error as MobiusCloudError {
             guard case .invalidAccountResponse = error else {
                 return XCTFail("Expected invalidAccountResponse, got \(error)")
+            }
+        }
+    }
+
+    func testCloudAccountShowsPlusPendingDowngradeAndCancelledCreditPeriod() async throws {
+        let store = MobiusCloudSessionStore(service: "app.mobius.cloud.tests.\(UUID())")
+        defer { try? store.remove() }
+        let cancelledRenewal = CloudTestFlag()
+        let wrongProduct = CloudTestFlag()
+        let client = MobiusCloudClient(store: store) { request in
+            if request.url?.path == "/api/mobile/auth/apple" {
+                return try self.response(
+                    for: request,
+                    json:
+                        #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
+                )
+            }
+            let subscription: [String: Any] = [
+                "tier": "cloud_plus",
+                "productId": wrongProduct.value
+                    ? MobiusCloudTier.cloud.productID : MobiusCloudTier.cloudPlus.productID,
+                "status": "active",
+                "billingPeriodStartedAt": "2098-08-12T08:00:00Z",
+                "billingPeriodEndsAt": "2098-09-12T08:00:00Z",
+                "accessEndsAt": "2098-09-12T08:00:00Z",
+                "autoRenews": !cancelledRenewal.value,
+                "nextTier": !cancelledRenewal.value ? "cloud" as Any : NSNull(),
+            ]
+            let account: [String: Any] = [
+                "userId": "00000000-0000-0000-0000-000000000001", "email": NSNull(),
+                "subscribed": true, "sharesDiagnostics": false,
+                "subscriptionStartedAt": "2098-08-12T08:00:00Z", "subscription": subscription,
+                "luna": [
+                    "creditMicrousd": 10_000_000, "remainingMicrousd": 3_000_000,
+                    "resetsAt": NSNull(),
+                ],
+            ]
+            let json = String(
+                decoding: try JSONSerialization.data(withJSONObject: account), as: UTF8.self)
+            return try self.response(for: request, json: json)
+        }
+        _ = try await client.authenticate(
+            authorizationCode: "apple-code", nonce: String(repeating: "n", count: 43))
+        let pending = try await client.account()
+        XCTAssertEqual(pending.subscription?.tier, .cloudPlus)
+        XCTAssertEqual(pending.subscription?.nextTier, .cloud)
+        XCTAssertEqual(pending.luna?.creditMicrousd, 10_000_000)
+        cancelledRenewal.value = true
+        let cancelled = try await client.account()
+        XCTAssertEqual(cancelled.subscription?.autoRenews, false)
+        XCTAssertNil(cancelled.subscription?.nextTier)
+        XCTAssertNil(cancelled.luna?.resetsAt)
+        XCTAssertEqual(cancelled.luna?.remainingMicrousd, 3_000_000)
+        wrongProduct.value = true
+        do {
+            _ = try await client.account()
+            XCTFail("A mismatched product and tier must be rejected")
+        } catch let error as MobiusCloudError {
+            guard case .invalidAccountResponse = error else {
+                return XCTFail("Unexpected error: \(error)")
             }
         }
     }
@@ -1034,10 +1094,10 @@ final class MobiusCloudTests: XCTestCase {
         }
         let stream = AsyncStream.makeStream(of: MobiusCloudPurchase.self)
         let purchases = MobiusCloudPurchases(
-            displayPrice: { "$9.99" },
+            displayPrices: { [.cloud: "$5.99", .cloudPlus: "$15.99"] },
             unfinishedPurchases: { MobiusCloudPurchaseScan() },
             currentEntitlements: { _ in MobiusCloudPurchaseScan() },
-            purchase: { _ in throw MobiusCloudPurchaseError.unavailable },
+            purchase: { _, _ in throw MobiusCloudPurchaseError.unavailable },
             updates: { stream.stream }
         )
         let suiteName = "app.mobius.cloud.tests.\(UUID())"
@@ -1118,10 +1178,10 @@ final class MobiusCloudTests: XCTestCase {
         var finished = false
         let stream = AsyncStream.makeStream(of: MobiusCloudPurchase.self)
         let purchases = MobiusCloudPurchases(
-            displayPrice: { "$9.99" },
+            displayPrices: { [.cloud: "$5.99", .cloudPlus: "$15.99"] },
             unfinishedPurchases: { MobiusCloudPurchaseScan() },
             currentEntitlements: { _ in MobiusCloudPurchaseScan() },
-            purchase: { _ in throw MobiusCloudPurchaseError.unavailable },
+            purchase: { _, _ in throw MobiusCloudPurchaseError.unavailable },
             updates: { stream.stream }
         )
         let suiteName = "app.mobius.cloud.tests.\(UUID())"
@@ -1194,13 +1254,13 @@ final class MobiusCloudTests: XCTestCase {
             finished = true
         }
         let purchases = MobiusCloudPurchases(
-            displayPrice: { "$9.99" },
+            displayPrices: { [.cloud: "$5.99", .cloudPlus: "$15.99"] },
             unfinishedPurchases: { MobiusCloudPurchaseScan(purchases: [purchase]) },
             currentEntitlements: { _ in
                 XCTFail("A subscribed account must not scan current entitlements")
                 return MobiusCloudPurchaseScan()
             },
-            purchase: { _ in throw MobiusCloudPurchaseError.unavailable }
+            purchase: { _, _ in throw MobiusCloudPurchaseError.unavailable }
         )
         let suiteName = "app.mobius.cloud.tests.\(UUID())"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -1289,7 +1349,7 @@ final class MobiusCloudTests: XCTestCase {
             acceptedFinished = true
         }
         let purchases = MobiusCloudPurchases(
-            displayPrice: { "$9.99" },
+            displayPrices: { [.cloud: "$5.99", .cloudPlus: "$15.99"] },
             unfinishedPurchases: {
                 MobiusCloudPurchaseScan(
                     purchases: [rejected],
@@ -1299,7 +1359,7 @@ final class MobiusCloudTests: XCTestCase {
             currentEntitlements: { _ in
                 MobiusCloudPurchaseScan(purchases: [accepted])
             },
-            purchase: { _ in throw MobiusCloudPurchaseError.unavailable }
+            purchase: { _, _ in throw MobiusCloudPurchaseError.unavailable }
         )
         let suiteName = "app.mobius.cloud.tests.\(UUID())"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -1366,13 +1426,13 @@ final class MobiusCloudTests: XCTestCase {
         }
         var purchaseAttempts = 0
         let purchases = MobiusCloudPurchases(
-            displayPrice: { "$9.99" },
+            displayPrices: { [.cloud: "$5.99", .cloudPlus: "$15.99"] },
             unfinishedPurchases: { MobiusCloudPurchaseScan() },
             currentEntitlements: { synchronize in
                 XCTAssertFalse(synchronize)
                 return MobiusCloudPurchaseScan(purchases: [purchase])
             },
-            purchase: { _ in
+            purchase: { _, _ in
                 purchaseAttempts += 1
                 throw MobiusCloudPurchaseError.unavailable
             }
@@ -1452,7 +1512,7 @@ final class MobiusCloudTests: XCTestCase {
             await withCheckedContinuation { finishContinuation = $0 }
         }
         let purchases = MobiusCloudPurchases(
-            displayPrice: { "$9.99" },
+            displayPrices: { [.cloud: "$5.99", .cloudPlus: "$15.99"] },
             unfinishedPurchases: {
                 scanCount += 1
                 if scanCount == 2 { secondScan.fulfill() }
@@ -1462,7 +1522,7 @@ final class MobiusCloudTests: XCTestCase {
                 XCTFail("A subscribed account must not scan current entitlements")
                 return MobiusCloudPurchaseScan()
             },
-            purchase: { _ in throw MobiusCloudPurchaseError.unavailable }
+            purchase: { _, _ in throw MobiusCloudPurchaseError.unavailable }
         )
         let suiteName = "app.mobius.cloud.tests.\(UUID())"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -1522,14 +1582,15 @@ final class MobiusCloudTests: XCTestCase {
             finished = true
         }
         let purchases = MobiusCloudPurchases(
-            displayPrice: { "$9.99" },
+            displayPrices: { [.cloud: "$5.99", .cloudPlus: "$15.99"] },
             unfinishedPurchases: { MobiusCloudPurchaseScan() },
             currentEntitlements: { synchronize in
                 XCTAssertFalse(synchronize)
                 queriedActivePurchases = true
                 return MobiusCloudPurchaseScan()
             },
-            purchase: { requestedUserID in
+            purchase: { requestedUserID, tier in
+                XCTAssertEqual(tier, .cloudPlus)
                 purchaseStarted = true
                 purchaseUserID = requestedUserID
                 return purchase
@@ -1547,7 +1608,8 @@ final class MobiusCloudTests: XCTestCase {
 
         let connected = await model.cloud.signInAndPurchaseCloud(
             authorizationCode: "apple-code",
-            nonce: String(repeating: "n", count: 43)
+            nonce: String(repeating: "n", count: 43),
+            tier: .cloudPlus
         )
 
         XCTAssertFalse(connected)
@@ -1615,10 +1677,10 @@ final class MobiusCloudTests: XCTestCase {
             settingsDefaults: defaults,
             cloudClient: client,
             cloudPurchases: MobiusCloudPurchases(
-                displayPrice: { "$9.99" },
+                displayPrices: { [.cloud: "$5.99", .cloudPlus: "$15.99"] },
                 unfinishedPurchases: { MobiusCloudPurchaseScan() },
                 currentEntitlements: { _ in MobiusCloudPurchaseScan() },
-                purchase: { _ in throw MobiusCloudPurchaseError.cancelled }
+                purchase: { _, _ in throw MobiusCloudPurchaseError.cancelled }
             )
         )
 
@@ -1672,10 +1734,10 @@ final class MobiusCloudTests: XCTestCase {
                 settingsDefaults: defaults,
                 cloudClient: client,
                 cloudPurchases: MobiusCloudPurchases(
-                    displayPrice: { "$9.99" },
+                    displayPrices: { [.cloud: "$5.99", .cloudPlus: "$15.99"] },
                     unfinishedPurchases: { MobiusCloudPurchaseScan() },
                     currentEntitlements: { _ in MobiusCloudPurchaseScan() },
-                    purchase: { _ in throw purchaseError }
+                    purchase: { _, _ in throw purchaseError }
                 )
             )
 
@@ -1724,10 +1786,10 @@ final class MobiusCloudTests: XCTestCase {
             settingsDefaults: defaults,
             cloudClient: client,
             cloudPurchases: MobiusCloudPurchases(
-                displayPrice: { "$9.99" },
+                displayPrices: { [.cloud: "$5.99", .cloudPlus: "$15.99"] },
                 unfinishedPurchases: { MobiusCloudPurchaseScan() },
                 currentEntitlements: { _ in MobiusCloudPurchaseScan() },
-                purchase: { _ in throw MobiusCloudPurchaseError.pending }
+                purchase: { _, _ in throw MobiusCloudPurchaseError.pending }
             )
         )
 
@@ -1792,13 +1854,13 @@ final class MobiusCloudTests: XCTestCase {
             finished = true
         }
         let purchases = MobiusCloudPurchases(
-            displayPrice: { "$9.99" },
+            displayPrices: { [.cloud: "$5.99", .cloudPlus: "$15.99"] },
             unfinishedPurchases: { MobiusCloudPurchaseScan(purchases: [purchase]) },
             currentEntitlements: { _ in
                 XCTFail("A subscribed account must not scan current entitlements")
                 return MobiusCloudPurchaseScan()
             },
-            purchase: { _ in
+            purchase: { _, _ in
                 XCTFail("An unfinished transaction must be recovered before buying again")
                 throw MobiusCloudPurchaseError.unavailable
             }
@@ -2328,13 +2390,13 @@ final class MobiusCloudTests: XCTestCase {
             finished = true
         }
         let purchases = MobiusCloudPurchases(
-            displayPrice: { "$9.99" },
+            displayPrices: { [.cloud: "$5.99", .cloudPlus: "$15.99"] },
             unfinishedPurchases: { MobiusCloudPurchaseScan() },
             currentEntitlements: { shouldSynchronize in
                 synchronized = shouldSynchronize
                 return MobiusCloudPurchaseScan(purchases: [purchase])
             },
-            purchase: { _ in throw MobiusCloudPurchaseError.unavailable }
+            purchase: { _, _ in throw MobiusCloudPurchaseError.unavailable }
         )
         let model = AppModel(
             store: gatewayStore,
@@ -2659,12 +2721,12 @@ final class MobiusCloudTests: XCTestCase {
             transactionFinished = true
         }
         let purchases = MobiusCloudPurchases(
-            displayPrice: { "$9.99" },
+            displayPrices: { [.cloud: "$5.99", .cloudPlus: "$15.99"] },
             unfinishedPurchases: { MobiusCloudPurchaseScan() },
             currentEntitlements: { _ in
                 MobiusCloudPurchaseScan(purchases: shouldRecover.value ? [purchase] : [])
             },
-            purchase: { _ in throw MobiusCloudPurchaseError.unavailable }
+            purchase: { _, _ in throw MobiusCloudPurchaseError.unavailable }
         )
         let model = AppModel(
             store: gatewayStore,
@@ -3476,7 +3538,7 @@ final class MobiusCloudTests: XCTestCase {
         let scanGate = AsyncGate()
         let scanStarted = expectation(description: "Empty StoreKit scan started")
         let purchases = MobiusCloudPurchases(
-            displayPrice: { throw MobiusCloudPurchaseError.unavailable },
+            displayPrices: { throw MobiusCloudPurchaseError.unavailable },
             unfinishedPurchases: {
                 scanStarted.fulfill()
                 await scanGate.wait()
@@ -3486,7 +3548,7 @@ final class MobiusCloudTests: XCTestCase {
                 await scanGate.wait()
                 return MobiusCloudPurchaseScan()
             },
-            purchase: { _ in throw MobiusCloudPurchaseError.unavailable }
+            purchase: { _, _ in throw MobiusCloudPurchaseError.unavailable }
         )
         let model = AppModel(
             store: gatewayStore,
@@ -3795,10 +3857,10 @@ final class MobiusCloudTests: XCTestCase {
             },
             cloudClient: client,
             cloudPurchases: MobiusCloudPurchases(
-                displayPrice: { throw MobiusCloudPurchaseError.unavailable },
+                displayPrices: { throw MobiusCloudPurchaseError.unavailable },
                 unfinishedPurchases: { MobiusCloudPurchaseScan() },
                 currentEntitlements: { _ in MobiusCloudPurchaseScan() },
-                purchase: { _ in throw MobiusCloudPurchaseError.unavailable },
+                purchase: { _, _ in throw MobiusCloudPurchaseError.unavailable },
                 updates: { updates }
             )
         )
@@ -3945,10 +4007,10 @@ final class MobiusCloudTests: XCTestCase {
 
     private func emptyCloudPurchases() -> MobiusCloudPurchases {
         MobiusCloudPurchases(
-            displayPrice: { throw MobiusCloudPurchaseError.unavailable },
+            displayPrices: { throw MobiusCloudPurchaseError.unavailable },
             unfinishedPurchases: { MobiusCloudPurchaseScan() },
             currentEntitlements: { _ in MobiusCloudPurchaseScan() },
-            purchase: { _ in throw MobiusCloudPurchaseError.unavailable }
+            purchase: { _, _ in throw MobiusCloudPurchaseError.unavailable }
         )
     }
 

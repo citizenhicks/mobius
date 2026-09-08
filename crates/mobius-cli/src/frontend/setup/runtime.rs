@@ -337,6 +337,7 @@ pub(super) async fn set_credential(
             instance: instance.clone(),
             provider: provider.clone(),
             api_key,
+            expires_at: None,
         },
         Some(base_url) => ClientMessage::SetProviderEndpointCredential {
             request_id: request_id.clone(),
@@ -344,6 +345,7 @@ pub(super) async fn set_credential(
             provider: provider.clone(),
             base_url,
             api_key,
+            expires_at: None,
         },
     };
     sender.send(message).await.map_err(gateway_error)?;

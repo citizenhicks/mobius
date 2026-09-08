@@ -1,0 +1,1 @@
+Cancel model requests, compaction, and voice when their credential expires or is revoked. One shared lifetime guard blocks reuse of persistent sessions after revocation; voice begins hangup before native key expiry.

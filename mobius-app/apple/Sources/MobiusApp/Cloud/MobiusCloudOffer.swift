@@ -51,7 +51,8 @@ struct MobiusCloudOfferContent: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var productDisplayPrice: String?
+    @State private var productDisplayPrices: [MobiusCloudTier: String] = [:]
+    @State private var selectedTier: MobiusCloudTier = .cloud
     @State private var productLoadFailed = false
     @State private var stageIsSlow = false
     let onConnected: () -> Void
@@ -162,15 +163,35 @@ struct MobiusCloudOfferContent: View {
 
     private var controlNote: some View {
         VStack(spacing: MobiusSpace.s) {
-            billingDescription
-                .font(MobiusStyle.controlFont)
-                .foregroundStyle(.primary)
-                .fixedSize(horizontal: false, vertical: true)
+            if model.cloud.cloudAccount?.subscribed != true {
+                Picker("Cloud plan", selection: $selectedTier) {
+                    ForEach(MobiusCloudTier.allCases) { tier in
+                        Text(verbatim: tier.name).tag(tier)
+                    }
+                }
+                .pickerStyle(.segmented)
+                billingDescription
+                    .font(MobiusStyle.controlFont)
+                if selectedTier == .cloudPlus {
+                    Text("4× more usage")
+                        .font(MobiusStyle.controlFont)
+                }
+                Text(
+                    "Both plans include the same gateway and features. Included usage renews after each successful monthly payment and does not roll over."
+                )
+                .font(MobiusStyle.captionFont)
+                .foregroundStyle(palette.muted)
+            } else if let subscription = model.cloud.cloudAccount?.subscription {
+                Text(verbatim: subscription.tier.name)
+                    .font(MobiusStyle.controlFont)
+                Text(subscription.status.label)
+                    .font(MobiusStyle.captionFont)
+            }
             Text("Manage your subscription from the möbius app or App Store.")
                 .font(MobiusStyle.captionFont)
                 .foregroundStyle(palette.muted)
-                .fixedSize(horizontal: false, vertical: true)
         }
+        .fixedSize(horizontal: false, vertical: true)
         .multilineTextAlignment(.center)
     }
 
@@ -194,7 +215,8 @@ struct MobiusCloudOfferContent: View {
                     Task {
                         if await model.cloud.signInAndPurchaseCloud(
                             authorizationCode: authorizationCode,
-                            nonce: nonce
+                            nonce: nonce,
+                            tier: selectedTier
                         ) {
                             onConnected()
                         }
@@ -227,10 +249,10 @@ struct MobiusCloudOfferContent: View {
                     .controlSize(.large)
                 }
                 .frame(maxWidth: .infinity)
-            } else if productDisplayPrice != nil {
+            } else if productDisplayPrices[selectedTier] != nil {
                 Button("Subscribe") {
                     Task {
-                        if await model.cloud.purchaseCloud() { onConnected() }
+                        if await model.cloud.purchaseCloud(tier: selectedTier) { onConnected() }
                     }
                 }
                 .mobiusProminentButton()
@@ -273,7 +295,7 @@ struct MobiusCloudOfferContent: View {
     }
 
     private var billingDescription: Text {
-        guard let productDisplayPrice else {
+        guard let productDisplayPrice = productDisplayPrices[selectedTier] else {
             return Text(
                 "Billed monthly. \(Text("Price shown at purchase.").foregroundStyle(palette.muted))"
             )
@@ -284,10 +306,10 @@ struct MobiusCloudOfferContent: View {
     }
 
     private func loadProduct() async {
-        guard productDisplayPrice == nil else { return }
+        guard productDisplayPrices.isEmpty else { return }
         productLoadFailed = false
         do {
-            productDisplayPrice = try await model.cloud.cloudProductDisplayPrice()
+            productDisplayPrices = try await model.cloud.cloudProductDisplayPrices()
         } catch {
             productLoadFailed = true
         }

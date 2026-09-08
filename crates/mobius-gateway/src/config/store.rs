@@ -1,4 +1,5 @@
 use super::*;
+use mobius::backend::model::ModelCredentialLifetime;
 
 /// File owner for gateway configuration and aggregate usage.
 #[derive(Debug, Clone)]
@@ -13,12 +14,24 @@ pub struct CredentialStore {
     values: Mutex<BTreeMap<String, StoredCredential>>,
 }
 
+/// A credential resolved atomically with the lifetime of the same stored secret.
+#[derive(Clone)]
+pub struct ResolvedCredential {
+    /// Secret used only for provider assembly.
+    pub api_key: String,
+    /// Expiry and revocation shared by all routes using this secret.
+    pub lifetime: ModelCredentialLifetime,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StoredCredential {
     provider: String,
     api_key: String,
     base_url: Option<String>,
+    expires_at: Option<u64>,
+    #[serde(skip)]
+    revocation: Option<tokio::sync::watch::Sender<()>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -221,6 +234,7 @@ impl CredentialStore {
         provider_id: &str,
         api_key: &str,
         base_url: Option<&str>,
+        expires_at: Option<u64>,
     ) -> Result<()> {
         let api_key = api_key.trim();
         validate_new_api_key(api_key)?;
@@ -228,6 +242,8 @@ impl CredentialStore {
             provider: provider_id.into(),
             api_key: api_key.into(),
             base_url: base_url.map(str::to_owned),
+            expires_at,
+            revocation: None,
         };
         validate_stored_credential(instance, &credential)?;
         let mut values = self
@@ -242,6 +258,14 @@ impl CredentialStore {
                 credential.provider
             )));
         }
+        if values.get(instance).is_some_and(|current| {
+            current.provider == credential.provider
+                && current.api_key == credential.api_key
+                && current.base_url == credential.base_url
+                && current.expires_at == credential.expires_at
+        }) {
+            return Ok(());
+        }
         let mut next = values.clone();
         next.insert(instance.into(), credential);
         save_private_map(&self.path, &next)?;
@@ -249,23 +273,35 @@ impl CredentialStore {
         Ok(())
     }
 
-    /// Resolves one instance's credential for model assembly without exposing it to clients.
+    /// Resolves a secret and its lifetime under the same lock.
     pub fn get(
         &self,
         instance: &str,
         provider_id: &str,
         base_url: Option<&str>,
-    ) -> Result<Option<String>> {
-        let values = self
+    ) -> Result<Option<ResolvedCredential>> {
+        let mut values = self
             .values
             .lock()
             .map_err(|_| Error::Config("provider credential lock is poisoned".into()))?;
-        Ok(values
-            .get(instance)
-            .filter(|credential| {
-                credential.provider == provider_id && credential.base_url.as_deref() == base_url
-            })
-            .map(|credential| credential.api_key.clone()))
+        let Some(credential) = values.get_mut(instance).filter(|credential| {
+            credential.provider == provider_id && credential.base_url.as_deref() == base_url
+        }) else {
+            return Ok(None);
+        };
+        let revoked = credential
+            .revocation
+            .get_or_insert_with(|| tokio::sync::watch::channel(()).0)
+            .subscribe();
+        Ok(Some(ResolvedCredential {
+            api_key: credential.api_key.clone(),
+            lifetime: ModelCredentialLifetime {
+                expires_at: credential
+                    .expires_at
+                    .map(|seconds| UNIX_EPOCH + std::time::Duration::from_secs(seconds)),
+                revoked: Some(revoked),
+            },
+        }))
     }
 
     /// Returns a non-secret suffix for identifying one stored credential.
@@ -414,6 +450,14 @@ fn validate_private_state_dir(path: &Path) -> Result<()> {
 }
 
 fn validate_stored_credential(instance: &str, credential: &StoredCredential) -> Result<()> {
+    if credential
+        .expires_at
+        .is_some_and(|seconds| seconds == 0 || seconds > 253_402_300_799)
+    {
+        return Err(Error::Config(
+            "credential expiry must be a valid Unix timestamp".into(),
+        ));
+    }
     super::validation::validate_instance_id(instance)?;
     let definition = provider(&credential.provider)?;
     if !matches!(definition.auth(), ProviderAuth::ApiKey(_)) {

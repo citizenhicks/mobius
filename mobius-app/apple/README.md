@@ -37,15 +37,19 @@ as an advanced option in the gateway guide.
 
 ## möbius Cloud beta
 
-The cloud offer uses StoreKit 2 to request `app.mobius.client.cloud.monthly.v2`
-and render its storefront-localized `displayPrice`. Configure that product in App
-Store Connect as a one-month auto-renewable subscription with a seven-day free
-introductory offer before distributing through TestFlight. Sign in with Apple
-creates the Cloud session; the app sends the locally verified transaction and
-AppTransaction JWS values to the Cloud backend and finishes the transaction only
-after backend acceptance.
-The backend account remains the subscription authority before the app waits for
-the hosted gateway and pairs with its one-time grant.
+The cloud offer uses StoreKit 2 to load both monthly products and render their
+storefront-localized prices: `app.mobius.client.cloud.monthly.v2` (Cloud) and
+`app.mobius.client.cloud.plus.monthly` (Cloud Plus). Both have the same features;
+Cloud Plus includes 4× more usage. Sign in with Apple creates
+the Cloud session. The app submits verified transaction and AppTransaction JWS
+values and finishes a transaction only after backend acceptance.
+
+Profile shows the verified current plan, billing dates, any scheduled downgrade,
+and included usage. Apple’s subscription controls handle upgrades, downgrades,
+and cancellation. Credit renews once per verified paid billing period; restore,
+cancellation, and a pending plan change do not create another allowance. Changing
+plans preserves the account, gateway, and chats. Product configuration and rollout
+remain pending review; this source change does not change App Store prices.
 
 The one-time code is only the first pairing credential. A successful pairing
 returns a per-pairing bearer token, which this app stores in device-only Keychain

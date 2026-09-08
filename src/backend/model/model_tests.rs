@@ -456,3 +456,106 @@ fn usage_fields_reject_out_of_range_integers() {
         .is_err()
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn credential_deadline_cancels_in_flight_work_and_blocks_reuse() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    struct PendingModel {
+        started: AtomicUsize,
+        cancelled: AtomicBool,
+    }
+    struct Cancellation<'a>(&'a AtomicBool);
+    impl Drop for Cancellation<'_> {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    impl Model for PendingModel {
+        fn respond<'a>(
+            &'a self,
+            _: ModelRequest<'a>,
+            _: ModelEventSink,
+        ) -> BoxFuture<'a, Result<ModelOutput>> {
+            self.started.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                let _cancellation = Cancellation(&self.cancelled);
+                std::future::pending().await
+            })
+        }
+    }
+    let model = Arc::new(PendingModel {
+        started: AtomicUsize::new(0),
+        cancelled: AtomicBool::new(false),
+    });
+    let mut router = ModelRouter::new("included", model.clone());
+    let request = || ModelRequest {
+        session_id: "same-persistent-session",
+        prompt_cache: None,
+        instructions: "",
+        input: &[],
+        catalog_revision: "test",
+        tools: &[],
+        deferred_tools: &[],
+        allow_hosted_tools: true,
+        allow_continuation: true,
+    };
+    router
+        .set_credential_lifetime(
+            "included",
+            ModelCredentialLifetime {
+                expires_at: Some(SystemTime::now() + Duration::from_secs(60)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let error = router
+        .respond("included", request(), Arc::new(|_| Ok(())))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, Error::Provider(error) if error.status() == Some(401)));
+    assert!(model.cancelled.load(Ordering::SeqCst));
+    router
+        .set_credential_lifetime(
+            "included",
+            ModelCredentialLifetime {
+                expires_at: Some(UNIX_EPOCH),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(
+        router
+            .respond("included", request(), Arc::new(|_| Ok(())))
+            .await
+            .is_err()
+    );
+    assert_eq!(model.started.load(Ordering::SeqCst), 1);
+    let (owner, revoked) = tokio::sync::watch::channel(());
+    router
+        .set_credential_lifetime(
+            "included",
+            ModelCredentialLifetime {
+                expires_at: None,
+                revoked: Some(revoked),
+            },
+        )
+        .unwrap();
+    model.cancelled.store(false, Ordering::SeqCst);
+    let response = router.respond("included", request(), Arc::new(|_| Ok(())));
+    let revoke = async {
+        tokio::task::yield_now().await;
+        drop(owner);
+    };
+    let (result, ()) = tokio::join!(response, revoke);
+    assert!(result.is_err());
+    assert!(model.cancelled.load(Ordering::SeqCst));
+    assert!(
+        router
+            .respond("included", request(), Arc::new(|_| Ok(())))
+            .await
+            .is_err()
+    );
+    assert_eq!(model.started.load(Ordering::SeqCst), 2);
+}

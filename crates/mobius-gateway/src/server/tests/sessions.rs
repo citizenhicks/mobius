@@ -1121,6 +1121,7 @@ async fn shutdown_stops_a_blocked_routine_and_fails_its_durable_run() {
             "responses",
             "test-key",
             Some(&model_base_url),
+            None,
         )
         .expect("store provider credential");
     let (_, grant) = AuthStore::initialize(store.auth_path()).expect("authentication");

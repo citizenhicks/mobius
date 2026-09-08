@@ -455,14 +455,33 @@ pub(super) async fn handle_message(
         } => {
             return list_directories_response(writer, request_id, path, include_files).await;
         }
+        ClientMessage::ClearProviderCredential {
+            request_id,
+            instance,
+        } => {
+            return match gateway.clear_credential(instance.clone()).await {
+                Ok(()) => {
+                    write_frame(
+                        writer,
+                        &ServerFrame::new(ServerMessage::ProviderCredentialCleared {
+                            request_id,
+                            instance,
+                        }),
+                    )
+                    .await
+                }
+                Err(rejection) => write_rejection(writer, request_id, rejection).await,
+            };
+        }
         ClientMessage::SetProviderCredential {
             request_id,
             instance,
             provider,
             api_key,
+            expires_at,
         } => {
             return set_provider_credential(
-                writer, request_id, instance, provider, api_key, None, gateway,
+                writer, request_id, instance, provider, api_key, None, expires_at, gateway,
             )
             .await;
         }
@@ -472,6 +491,7 @@ pub(super) async fn handle_message(
             provider,
             base_url,
             api_key,
+            expires_at,
         } => {
             return set_provider_credential(
                 writer,
@@ -480,6 +500,7 @@ pub(super) async fn handle_message(
                 provider,
                 api_key,
                 Some(base_url),
+                expires_at,
                 gateway,
             )
             .await;
@@ -1615,6 +1636,10 @@ async fn list_directories_response(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "credential wire fields stay explicit"
+)]
 async fn set_provider_credential(
     writer: &mut (impl AsyncWrite + Unpin),
     request_id: String,
@@ -1622,10 +1647,17 @@ async fn set_provider_credential(
     provider: String,
     api_key: String,
     base_url: Option<String>,
+    expires_at: Option<u64>,
     gateway: &GatewayHost,
 ) -> Result<()> {
     match gateway
-        .set_credential(instance.clone(), provider.clone(), api_key, base_url)
+        .set_credential(
+            instance.clone(),
+            provider.clone(),
+            api_key,
+            base_url,
+            expires_at,
+        )
         .await
     {
         Ok(()) => {

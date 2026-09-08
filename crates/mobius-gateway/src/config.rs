@@ -31,7 +31,9 @@ use crate::wire::{
 use crate::{Error, Result};
 
 use self::store::*;
-pub use self::store::{ConfigStore, CredentialStore, load_cloudflare_token, state_dir};
+pub use self::store::{
+    ConfigStore, CredentialStore, ResolvedCredential, load_cloudflare_token, state_dir,
+};
 pub use self::validation::validate_agent_composition;
 use self::validation::*;
 pub(crate) use self::validation::{effective_reasoning_effort, model_route_id};

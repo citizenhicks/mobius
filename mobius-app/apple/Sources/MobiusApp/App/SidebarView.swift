@@ -182,7 +182,7 @@ struct SidebarView: View {
                         .accessibilityHidden(true)
                     Group {
                         if model.selectedGatewayIsMobiusCloud {
-                            MobiusCloudLabel()
+                            MobiusCloudLabel(tier: model.cloud.currentTier)
                         } else {
                             Text("MÖBIUS")
                         }

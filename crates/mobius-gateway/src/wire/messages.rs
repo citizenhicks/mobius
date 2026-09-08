@@ -294,11 +294,16 @@ pub enum ClientMessage {
         path: String,
         content: String,
     },
+    ClearProviderCredential {
+        request_id: String,
+        instance: String,
+    },
     SetProviderCredential {
         request_id: String,
         instance: String,
         provider: String,
         api_key: String,
+        expires_at: Option<u64>,
     },
     SetProviderEndpointCredential {
         request_id: String,
@@ -306,6 +311,7 @@ pub enum ClientMessage {
         provider: String,
         base_url: String,
         api_key: String,
+        expires_at: Option<u64>,
     },
     RegisterProvider {
         request_id: String,
@@ -534,6 +540,10 @@ pub enum ServerMessage {
         request_id: String,
         current_client_id: String,
         clients: Vec<ClientStatus>,
+    },
+    ProviderCredentialCleared {
+        request_id: String,
+        instance: String,
     },
     ProviderCredentialSaved {
         request_id: String,

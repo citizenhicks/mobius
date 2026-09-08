@@ -48,26 +48,27 @@ enum MobiusCloudPurchaseError: LocalizedError {
 
 @MainActor
 struct MobiusCloudPurchases {
-    private let loadDisplayPrice: @MainActor () async throws -> String
+    private let loadDisplayPrices: @MainActor () async throws -> [MobiusCloudTier: String]
     private let loadUnfinishedPurchases: @MainActor () async throws -> MobiusCloudPurchaseScan
     private let loadCurrentEntitlements: @MainActor (Bool) async throws -> MobiusCloudPurchaseScan
-    private let requestPurchase: @MainActor (UUID) async throws -> MobiusCloudPurchase
+    private let requestPurchase:
+        @MainActor (UUID, MobiusCloudTier) async throws -> MobiusCloudPurchase
     private let loadUpdates: @MainActor () -> AsyncStream<MobiusCloudPurchase>
     private let showSubscriptionManagement: @MainActor () async throws -> Void
     private let loadAppStoreURL: @MainActor () async -> URL?
 
     init(
-        displayPrice: @escaping @MainActor () async throws -> String,
+        displayPrices: @escaping @MainActor () async throws -> [MobiusCloudTier: String],
         unfinishedPurchases: @escaping @MainActor () async throws -> MobiusCloudPurchaseScan,
         currentEntitlements: @escaping @MainActor (Bool) async throws -> MobiusCloudPurchaseScan,
-        purchase: @escaping @MainActor (UUID) async throws -> MobiusCloudPurchase,
+        purchase: @escaping @MainActor (UUID, MobiusCloudTier) async throws -> MobiusCloudPurchase,
         updates: @escaping @MainActor () -> AsyncStream<MobiusCloudPurchase> = {
             AsyncStream { $0.finish() }
         },
         manage: @escaping @MainActor () async throws -> Void = {},
         appStoreURL: @escaping @MainActor () async -> URL? = { nil }
     ) {
-        loadDisplayPrice = displayPrice
+        loadDisplayPrices = displayPrices
         loadUnfinishedPurchases = unfinishedPurchases
         loadCurrentEntitlements = currentEntitlements
         requestPurchase = purchase
@@ -79,18 +80,18 @@ struct MobiusCloudPurchases {
     static func live() -> Self {
         let bridge = StoreKitCloudBridge()
         return Self(
-            displayPrice: bridge.displayPrice,
+            displayPrices: bridge.displayPrices,
             unfinishedPurchases: bridge.unfinishedPurchases,
             currentEntitlements: bridge.currentEntitlements(synchronize:),
-            purchase: bridge.purchase(userID:),
+            purchase: bridge.purchase(userID:tier:),
             updates: { bridge.updates },
             manage: bridge.showSubscriptionManagement,
             appStoreURL: bridge.appStoreURL
         )
     }
 
-    func displayPrice() async throws -> String {
-        try await loadDisplayPrice()
+    func displayPrices() async throws -> [MobiusCloudTier: String] {
+        try await loadDisplayPrices()
     }
 
     func unfinishedPurchases() async throws -> MobiusCloudPurchaseScan {
@@ -101,8 +102,8 @@ struct MobiusCloudPurchases {
         try await loadCurrentEntitlements(synchronize)
     }
 
-    func purchase(userID: UUID) async throws -> MobiusCloudPurchase {
-        try await requestPurchase(userID)
+    func purchase(userID: UUID, tier: MobiusCloudTier) async throws -> MobiusCloudPurchase {
+        try await requestPurchase(userID, tier)
     }
 
     func updates() -> AsyncStream<MobiusCloudPurchase> {
@@ -148,8 +149,19 @@ private final class StoreKitCloudBridge {
         updateContinuation.finish()
     }
 
-    func displayPrice() async throws -> String {
-        try await product().displayPrice
+    func displayPrices() async throws -> [MobiusCloudTier: String] {
+        let products = try await Product.products(for: MobiusCloudTier.allCases.map(\.productID))
+        return try Dictionary(
+            uniqueKeysWithValues: MobiusCloudTier.allCases.map { tier in
+                guard
+                    let product = products.first(where: {
+                        $0.id == tier.productID && $0.type == .autoRenewable
+                    })
+                else {
+                    throw MobiusCloudPurchaseError.unavailable
+                }
+                return (tier, product.displayPrice)
+            })
     }
 
     func unfinishedPurchases() async -> MobiusCloudPurchaseScan {
@@ -174,10 +186,10 @@ private final class StoreKitCloudBridge {
         return scan
     }
 
-    func purchase(userID: UUID) async throws -> MobiusCloudPurchase {
+    func purchase(userID: UUID, tier: MobiusCloudTier) async throws -> MobiusCloudPurchase {
         let result: Product.PurchaseResult
         do {
-            result = try await product().purchase(options: [.appAccountToken(userID)])
+            result = try await product(tier).purchase(options: [.appAccountToken(userID)])
         } catch is CancellationError {
             throw CancellationError()
         } catch {
@@ -217,10 +229,10 @@ private final class StoreKitCloudBridge {
         return URL(string: "https://apps.apple.com/app/id\(appID)")
     }
 
-    private func product() async throws -> Product {
+    private func product(_ tier: MobiusCloudTier) async throws -> Product {
         guard
-            let product = try await Product.products(for: [mobiusCloudMonthlyProductID])
-                .first(where: { $0.id == mobiusCloudMonthlyProductID && $0.type == .autoRenewable })
+            let product = try await Product.products(for: [tier.productID])
+                .first(where: { $0.id == tier.productID && $0.type == .autoRenewable })
         else { throw MobiusCloudPurchaseError.unavailable }
         return product
     }
@@ -245,14 +257,18 @@ private final class StoreKitCloudBridge {
     ) async throws -> MobiusCloudPurchase? {
         switch verification {
         case .verified(let transaction):
-            guard transaction.productID == mobiusCloudMonthlyProductID else { return nil }
+            guard
+                MobiusCloudTier.allCases.contains(where: { $0.productID == transaction.productID })
+            else { return nil }
             let jws = verification.jwsRepresentation
             let appTransactionJWS = try await verifiedAppTransactionJWS()
             return MobiusCloudPurchase(jws: jws, appTransactionJWS: appTransactionJWS) {
                 await transaction.finish()
             }
         case .unverified(let transaction, _):
-            guard transaction.productID == mobiusCloudMonthlyProductID else { return nil }
+            guard
+                MobiusCloudTier.allCases.contains(where: { $0.productID == transaction.productID })
+            else { return nil }
             throw MobiusCloudPurchaseError.unavailable
         }
     }

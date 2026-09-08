@@ -1,0 +1,1 @@
+Store credential expiry together with the secret and revoke all routes using a replaced or removed key. Adds expiry to provider registration and a credential-clearing command while preserving provider configuration and chats. Uses protocol 73.

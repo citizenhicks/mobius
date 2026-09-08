@@ -170,6 +170,7 @@ struct MobiusGlyph: Hashable {
     static let caretRight = Self("hi.caretRight")
     static let caretUpDown = Self("hi.caretUpDown")
     static let cellTower = Self("hi.cellTower")
+    static let chartBarDecreasing = Self("hi.chartBarDecreasing")
     static let chatCircle = Self("hi.chatCircle")
     static let chatDots = Self("hi.chatDots")
     static let chatGpt = Self("hi.chatGpt")
@@ -222,6 +223,7 @@ struct MobiusGlyph: Hashable {
     static let neuralNetwork = Self("hi.neuralNetwork")
     static let note01 = Self("hi.note01")
     static let notePencil = Self("hi.notePencil")
+    static let paintBoard = Self("hi.paintBoard")
     static let path = Self("hi.path")
     static let pencilSimple = Self("hi.pencilSimple")
     static let playFill = Self("hi.playFill")
@@ -317,13 +319,18 @@ struct MobiusIcon: View {
 struct MobiusCloudLabel: View {
     @Environment(\.mobiusPalette) private var palette
     var showsAccount = false
+    var tier: MobiusCloudTier?
 
     @ViewBuilder
     var body: some View {
         if showsAccount {
-            Text("MÖBIUS \(Text("CLOUD").foregroundStyle(palette.muted)) account")
+            Text(
+                "MÖBIUS \(Text(verbatim: tier == .cloudPlus ? "CLOUD PLUS" : "CLOUD").foregroundStyle(palette.muted)) account"
+            )
         } else {
-            Text("MÖBIUS \(Text("CLOUD").foregroundStyle(palette.muted))")
+            Text(
+                "MÖBIUS \(Text(verbatim: tier == .cloudPlus ? "CLOUD PLUS" : "CLOUD").foregroundStyle(palette.muted))"
+            )
         }
     }
 }

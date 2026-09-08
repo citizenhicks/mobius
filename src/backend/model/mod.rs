@@ -36,7 +36,7 @@ mod transport;
 pub use self::realtime::{
     RealtimeVoiceCall, RealtimeVoiceCommand, RealtimeVoiceEvent, RealtimeVoiceRequest,
 };
-pub use self::router::ModelRouter;
+pub use self::router::{ModelCredentialLifetime, ModelRouter};
 
 use crate::protocol::ModelInfo;
 use crate::protocol::{

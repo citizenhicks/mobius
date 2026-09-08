@@ -1378,6 +1378,7 @@ fn provider_credentials_are_owner_only_and_absent_from_agent_snapshots() {
             "openrouter",
             "write-only-secret",
             Some("https://openrouter.ai/api/v1"),
+            Some(2_000_000_000),
         )
         .expect("store credential");
     let error = credentials
@@ -1386,8 +1387,29 @@ fn provider_credentials_are_owner_only_and_absent_from_agent_snapshots() {
             "responses",
             "replacement-secret",
             Some("https://example.com/v1"),
+            None,
         )
         .expect_err("an existing instance must keep its provider");
+
+    let reopened = CredentialStore::open(path.clone()).expect("reopen expiring credential");
+    assert_eq!(
+        reopened
+            .get(
+                "openrouter",
+                "openrouter",
+                Some("https://openrouter.ai/api/v1")
+            )
+            .unwrap()
+            .and_then(|credential| credential.lifetime.expires_at),
+        Some(UNIX_EPOCH + std::time::Duration::from_secs(2_000_000_000)),
+    );
+    assert_eq!(
+        reopened
+            .get("openrouter", "openrouter", Some("https://other.example/v1"))
+            .unwrap()
+            .map(|credential| credential.api_key),
+        None
+    );
 
     let mode = fs::metadata(path)
         .expect("credential metadata")
@@ -1408,7 +1430,8 @@ fn provider_credentials_are_owner_only_and_absent_from_agent_snapshots() {
                 "openrouter",
                 Some("https://openrouter.ai/api/v1")
             )
-            .expect("original credential"),
+            .expect("original credential")
+            .map(|credential| credential.api_key),
         Some("write-only-secret".into())
     );
     assert!(!snapshot.contains("write-only-secret"));
@@ -1427,6 +1450,7 @@ fn provider_credentials_normalize_paste_noise_and_reject_non_tokens() {
             "openrouter",
             " \nvalid-token-1234\t",
             Some(base_url),
+            None,
         )
         .expect("trim pasted credential");
     let error = credentials
@@ -1435,13 +1459,15 @@ fn provider_credentials_normalize_paste_noise_and_reject_non_tokens() {
             "openrouter",
             "not an api key",
             Some(base_url),
+            None,
         )
         .expect_err("credential prose must fail");
 
     assert_eq!(
         credentials
             .get("openrouter", "openrouter", Some(base_url))
-            .expect("stored credential"),
+            .expect("stored credential")
+            .map(|credential| credential.api_key),
         Some("valid-token-1234".into())
     );
     assert_eq!(
@@ -1468,6 +1494,7 @@ fn provider_credential_write_limit_is_atomic_and_reopenable() {
                 "openrouter",
                 &api_key,
                 Some("https://openrouter.ai/api/v1"),
+                None,
             ) {
                 Ok(()) => {
                     accepted.push(instance);
@@ -1485,6 +1512,7 @@ fn provider_credential_write_limit_is_atomic_and_reopenable() {
             "openrouter",
             &api_key,
             Some("https://openrouter.ai/api/v1"),
+            None,
         )
         .expect_err("oversized candidate must remain rejected");
     let reopened = CredentialStore::open(path.clone()).expect("reopen credential store");
@@ -1502,7 +1530,8 @@ fn provider_credential_write_limit_is_atomic_and_reopenable() {
                 "openrouter",
                 Some("https://openrouter.ai/api/v1"),
             )
-            .expect("read accepted credential"),
+            .expect("read accepted credential")
+            .map(|credential| credential.api_key),
         Some(api_key)
     );
     assert_eq!(
@@ -1512,7 +1541,8 @@ fn provider_credential_write_limit_is_atomic_and_reopenable() {
                 "openrouter",
                 Some("https://openrouter.ai/api/v1"),
             )
-            .expect("read rejected credential"),
+            .expect("read rejected credential")
+            .map(|credential| credential.api_key),
         None
     );
 }
@@ -1668,4 +1698,46 @@ fn initialization_does_not_repermission_an_existing_directory() {
 
     assert!(error.to_string().contains("already exists"));
     assert_eq!(mode, 0o755);
+}
+
+#[tokio::test]
+async fn replacing_and_removing_credentials_revokes_resolved_routes() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = CredentialStore::open(directory.path().join("credentials.json")).unwrap();
+    store
+        .set("openai_socket", "openai_socket", "secret-one", None, None)
+        .unwrap();
+    let mut first = store
+        .get("openai_socket", "openai_socket", None)
+        .unwrap()
+        .unwrap()
+        .lifetime
+        .revoked
+        .unwrap();
+    store
+        .set("openai_socket", "openai_socket", "secret-one", None, None)
+        .unwrap();
+    assert!(!first.has_changed().unwrap());
+    store
+        .set(
+            "openai_socket",
+            "openai_socket",
+            "secret-two",
+            None,
+            Some(2_000_000_000),
+        )
+        .unwrap();
+    assert!(first.changed().await.is_err());
+    let second = store
+        .get("openai_socket", "openai_socket", None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(second.api_key, "secret-two");
+    assert_eq!(
+        second.lifetime.expires_at,
+        Some(UNIX_EPOCH + std::time::Duration::from_secs(2_000_000_000))
+    );
+    let mut revoked = second.lifetime.revoked.unwrap();
+    store.remove("openai_socket").unwrap();
+    assert!(revoked.changed().await.is_err());
 }

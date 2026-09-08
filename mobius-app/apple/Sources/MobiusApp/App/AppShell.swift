@@ -412,7 +412,7 @@ struct AppShell: View {
                 )
             ) {
                 ForEach(model.gateway.accounts) { account in
-                    Text(verbatim: account.machineName)
+                    Text(verbatim: model.cloud.gatewayName(account))
                         .tag(Optional(account.id))
                 }
             }
@@ -423,7 +423,7 @@ struct AppShell: View {
                     color: model.gateway.connectionState.tone.color(in: palette),
                     isLoading: model.gateway.connectionState.isLoading
                 )
-                Text(verbatim: account.machineName)
+                Text(verbatim: model.cloud.gatewayName(account))
                     .font(MobiusStyle.captionFont)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -440,7 +440,9 @@ struct AppShell: View {
         .buttonStyle(.mobiusPlain)
         .sensoryFeedback(.selection, trigger: model.gateway.selectedAccountID)
         .accessibilityLabel("Gateway")
-        .accessibilityValue(Text("\(account.machineName), \(model.gateway.connectionState.label)"))
+        .accessibilityValue(
+            Text("\(model.cloud.gatewayName(account)), \(model.gateway.connectionState.label)")
+        )
         .help("Switch gateway")
     }
 

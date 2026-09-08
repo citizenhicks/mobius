@@ -49,6 +49,11 @@ enum GatewaySubcommand {
     },
     /// Register a model provider non-interactively.
     RegisterProvider(RegisterProviderArgs),
+    /// Revoke a stored credential and cancel operations that use it.
+    ClearProviderCredential {
+        #[arg(long)]
+        instance: String,
+    },
     /// Connect this installation to a running gateway.
     Connect(ConnectArgs),
     /// Run the gateway server.
@@ -154,6 +159,10 @@ struct RegisterProviderArgs {
     /// Read the provider credential from standard input.
     #[arg(long)]
     credential_stdin: bool,
+
+    /// Expire the piped credential at this Unix timestamp (seconds).
+    #[arg(long, value_name = "TIMESTAMP", requires = "credential_stdin")]
+    credential_expires_at: Option<u64>,
 }
 
 #[derive(Debug, Args)]
@@ -183,6 +192,10 @@ pub(super) enum Command {
         state_dir: PathBuf,
     },
     RegisterProvider(RegisterProviderOptions),
+    ClearProviderCredential {
+        state_dir: PathBuf,
+        instance: String,
+    },
     Connect(ConnectOptions),
     Serve {
         state_dir: PathBuf,
@@ -240,6 +253,7 @@ pub(super) struct RegisterProviderOptions {
     pub(super) base_url: Option<String>,
     pub(super) credentialless: bool,
     pub(super) credential_stdin: bool,
+    pub(super) credential_expires_at: Option<u64>,
 }
 
 impl GatewayCli {
@@ -275,6 +289,12 @@ impl GatewayCli {
             Some(GatewaySubcommand::PairingCode { json: _ }) => {
                 Ok(Command::PairingCode { state_dir })
             }
+            Some(GatewaySubcommand::ClearProviderCredential { instance }) => {
+                Ok(Command::ClearProviderCredential {
+                    state_dir,
+                    instance,
+                })
+            }
             Some(GatewaySubcommand::RegisterProvider(arguments)) => {
                 Ok(Command::RegisterProvider(RegisterProviderOptions {
                     state_dir,
@@ -287,6 +307,7 @@ impl GatewayCli {
                     base_url: arguments.base_url,
                     credentialless: arguments.credentialless,
                     credential_stdin: arguments.credential_stdin,
+                    credential_expires_at: arguments.credential_expires_at,
                 }))
             }
             Some(GatewaySubcommand::Connect(arguments)) => Ok(Command::Connect(ConnectOptions {

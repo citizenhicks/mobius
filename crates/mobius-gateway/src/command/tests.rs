@@ -381,6 +381,7 @@ fn parse_register_provider_accepts_credentialless_endpoint_configuration() {
             base_url: Some(base_url),
             credentialless: true,
             credential_stdin: false,
+            credential_expires_at: None,
         }) if state_dir == std::path::Path::new("/tmp/mobius")
             && provider == "openrouter"
             && model == "openai/gpt-5"
@@ -406,6 +407,7 @@ fn parse_register_provider_accepts_a_piped_credential() {
         Command::RegisterProvider(RegisterProviderOptions {
             credentialless: false,
             credential_stdin: true,
+            credential_expires_at: None,
             ..
         })
     ));
@@ -491,6 +493,7 @@ async fn register_provider_command_is_idempotent() {
             base_url: Some("https://connector.example/v1".into()),
             credentialless: true,
             credential_stdin: false,
+            credential_expires_at: None,
         },
         load_register_provider_test_client,
     )
@@ -554,6 +557,7 @@ async fn register_provider_command_is_idempotent() {
             base_url: Some("https://connector.example/v1".into()),
             credentialless: true,
             credential_stdin: false,
+            credential_expires_at: None,
         },
         load_register_provider_test_client,
     )
@@ -605,13 +609,14 @@ async fn register_provider_command_is_idempotent() {
             base_url: None,
             credentialless: false,
             credential_stdin: true,
+            credential_expires_at: Some(2_000_000_000),
         },
         Some(api_key.into()),
         load_register_provider_test_client,
     )
     .await
     .expect("register provider with piped credential");
-    let (store, config) = ConfigStore::open(state).expect("direct provider config");
+    let (store, config) = ConfigStore::open(state.clone()).expect("direct provider config");
     let configured = &config.configured_providers["mobius-cloud"];
     assert_eq!(
         (
@@ -624,13 +629,51 @@ async fn register_provider_command_is_idempotent() {
                     "openrouter",
                     Some("https://openrouter.ai/api/v1")
                 )
-                .expect("direct credential"),
+                .expect("direct credential")
+                .map(|credential| credential.api_key),
         ),
         (
             crate::wire::ProviderEndpointAuth::ProviderDefault,
             Some("https://openrouter.ai/api/v1"),
             Some(api_key.into()),
         )
+    );
+
+    let stored = crate::config::CredentialStore::open(store.credentials_path()).unwrap();
+    let resolved = stored
+        .get(
+            "mobius-cloud",
+            "openrouter",
+            Some("https://openrouter.ai/api/v1"),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        resolved.lifetime.expires_at,
+        Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(2_000_000_000))
+    );
+    provider::clear_provider_credential(
+        state.clone(),
+        "mobius-cloud".into(),
+        load_register_provider_test_client,
+    )
+    .await
+    .unwrap();
+    let stored = crate::config::CredentialStore::open(store.credentials_path()).unwrap();
+    assert!(
+        stored
+            .get(
+                "mobius-cloud",
+                "openrouter",
+                Some("https://openrouter.ai/api/v1")
+            )
+            .unwrap()
+            .is_none()
+    );
+    let (_, after_clear) = ConfigStore::open(state).unwrap();
+    assert_eq!(
+        after_clear.configured_providers,
+        config.configured_providers
     );
 
     shutdown.send(()).expect("stop gateway");

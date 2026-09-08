@@ -70,6 +70,7 @@ async fn provider_removal_gateway(
             &removable.provider,
             "unused-secret",
             removable.base_url.as_deref(),
+            None,
         )
         .expect("removable credential");
     let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
@@ -121,7 +122,8 @@ async fn provider_removal_rejects_bot_defaults_without_changes() {
                 &secondary.provider,
                 secondary.base_url.as_deref(),
             )
-            .expect("secondary credential"),
+            .expect("secondary credential")
+            .map(|credential| credential.api_key),
         Some("unused-secret".into())
     );
 }
@@ -173,7 +175,8 @@ async fn provider_removal_reloads_idle_bot_chat_and_deletes_credential() {
                 &removable.provider,
                 removable.base_url.as_deref(),
             )
-            .expect("credential"),
+            .expect("credential")
+            .map(|credential| credential.api_key),
         None
     );
     assert!(matches!(
@@ -246,7 +249,8 @@ async fn busy_bot_chat_blocks_provider_removal_without_mutation() {
                 &removable.provider,
                 removable.base_url.as_deref(),
             )
-            .expect("credential"),
+            .expect("credential")
+            .map(|credential| credential.api_key),
         Some("unused-secret".into())
     );
 }
@@ -293,7 +297,8 @@ async fn provider_removal_save_failure_keeps_idle_resident_and_config_usable() {
                 &removable.provider,
                 removable.base_url.as_deref(),
             )
-            .expect("credential"),
+            .expect("credential")
+            .map(|credential| credential.api_key),
         Some("unused-secret".into())
     );
 }
@@ -392,6 +397,7 @@ async fn credential_endpoints_are_validated_and_persisted() {
             "responses".into(),
             "custom-secret".into(),
             Some(custom_endpoint.into()),
+            None,
         )
         .await
         .expect("store custom credential");
@@ -401,6 +407,7 @@ async fn credential_endpoints_are_validated_and_persisted() {
             "openai_socket".into(),
             "fixed-secret".into(),
             Some(custom_endpoint.into()),
+            None,
         )
         .await
         .expect_err("fixed provider endpoint must be rejected");
@@ -408,13 +415,15 @@ async fn credential_endpoints_are_validated_and_persisted() {
     assert_eq!(
         credentials
             .get("responses", "responses", Some(custom_endpoint))
-            .expect("custom credential"),
+            .expect("custom credential")
+            .map(|credential| credential.api_key),
         Some("custom-secret".into())
     );
     assert_eq!(
         credentials
             .get("responses", "openrouter", Some(custom_endpoint))
-            .expect("different provider"),
+            .expect("different provider")
+            .map(|credential| credential.api_key),
         None
     );
     assert_eq!(error.code, "invalid_config");
@@ -422,7 +431,8 @@ async fn credential_endpoints_are_validated_and_persisted() {
     assert_eq!(
         credentials
             .get("openai_socket", "openai_socket", None)
-            .expect("fixed credential"),
+            .expect("fixed credential")
+            .map(|credential| credential.api_key),
         None
     );
 }
@@ -466,6 +476,7 @@ async fn explicit_key_replaces_credentialless_endpoint_auth() {
             "openrouter".into(),
             "user-secret".into(),
             Some(base_url.into()),
+            None,
         )
         .await
         .expect("store explicit key");
@@ -483,7 +494,8 @@ async fn explicit_key_replaces_credentialless_endpoint_auth() {
     assert_eq!(
         credentials
             .get("openrouter-managed", "openrouter", Some(base_url))
-            .expect("credential"),
+            .expect("credential")
+            .map(|credential| credential.api_key),
         Some("user-secret".into())
     );
 }
@@ -504,6 +516,7 @@ async fn credential_update_refreshes_every_matching_resident_chat() {
             "kimi",
             "old-secret",
             Some("https://api.moonshot.ai/v1"),
+            None,
         )
         .expect("initial Kimi credential");
     let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
@@ -543,6 +556,7 @@ async fn credential_update_refreshes_every_matching_resident_chat() {
             "kimi".into(),
             "new-secret".into(),
             Some("https://api.moonshot.ai/v1".into()),
+            None,
         )
         .await
         .expect("replace Kimi credential");
@@ -569,6 +583,7 @@ async fn credential_update_refreshes_every_matching_resident_chat() {
             "kimi".into(),
             "latest-secret".into(),
             Some("https://api.moonshot.ai/v1".into()),
+            None,
         )
         .await
         .expect("replace Kimi credential with stopped cached chat");

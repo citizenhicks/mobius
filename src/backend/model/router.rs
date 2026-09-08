@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use super::CompactOutput;
 use super::CompactRequest;
@@ -31,6 +32,7 @@ pub struct ModelRouter {
 struct ModelRoute {
     choice: ModelChoice,
     provider: Arc<dyn Model>,
+    credential: ModelCredentialLifetime,
 }
 
 impl ModelRouter {
@@ -40,7 +42,11 @@ impl ModelRouter {
         let choice = inferred_choice(&id, provider.as_ref());
         Self {
             default: id,
-            routes: vec![ModelRoute { choice, provider }],
+            routes: vec![ModelRoute {
+                choice,
+                provider,
+                credential: ModelCredentialLifetime::default(),
+            }],
         }
     }
 
@@ -53,7 +59,23 @@ impl ModelRouter {
         self.routes.push(ModelRoute {
             choice: inferred_choice(&id, provider.as_ref()),
             provider,
+            credential: ModelCredentialLifetime::default(),
         });
+        Ok(())
+    }
+
+    /// Cancels paid operations when their credential expires or is revoked.
+    pub fn set_credential_lifetime(
+        &mut self,
+        id: &str,
+        credential: ModelCredentialLifetime,
+    ) -> Result<()> {
+        let route = self
+            .routes
+            .iter_mut()
+            .find(|route| route.choice.route == id)
+            .ok_or_else(|| Error::Unknown(format!("model provider `{id}`")))?;
+        route.credential = credential;
         Ok(())
     }
 
@@ -127,7 +149,11 @@ impl ModelRouter {
         request: ModelRequest<'_>,
         events: ModelEventSink,
     ) -> Result<ModelOutput> {
-        self.provider(provider)?.respond(request, events).await
+        let route = self.route(provider)?;
+        while_valid(&route.credential, || {
+            route.provider.respond(request, events)
+        })
+        .await
     }
 
     /// Reports whether one route has a native compaction endpoint.
@@ -151,7 +177,15 @@ impl ModelRouter {
         provider: &str,
         request: super::RealtimeVoiceRequest,
     ) -> Result<super::RealtimeVoiceCall> {
-        self.provider(provider)?.start_realtime_voice(request).await
+        let route = self.route(provider)?;
+        let mut credential = route.credential.clone();
+        credential.expires_at = credential
+            .expires_at
+            .map(super::RealtimeVoiceCall::cleanup_deadline);
+        let mut call =
+            while_valid(&credential, || route.provider.start_realtime_voice(request)).await?;
+        call.limit_credential(credential);
+        Ok(call)
     }
 
     /// Reports deferred-tool cache behavior for one route.
@@ -243,16 +277,88 @@ impl ModelRouter {
         provider: &str,
         request: CompactRequest<'_>,
     ) -> Result<CompactOutput> {
-        self.provider(provider)?.compact(request).await
+        let route = self.route(provider)?;
+        while_valid(&route.credential, || route.provider.compact(request)).await
     }
 
     fn provider(&self, id: &str) -> Result<&dyn Model> {
+        Ok(self.route(id)?.provider.as_ref())
+    }
+
+    fn route(&self, id: &str) -> Result<&ModelRoute> {
         self.routes
             .iter()
             .find(|route| route.choice.route == id)
-            .map(|route| route.provider.as_ref())
             .ok_or_else(|| Error::Unknown(format!("model provider `{id}`")))
     }
+}
+
+/// The absolute deadline and revocation signal for a model credential.
+/// Dropping the signal's sender revokes every route and call holding a receiver.
+#[derive(Clone, Default)]
+pub struct ModelCredentialLifetime {
+    /// Last instant at which paid operations are allowed.
+    pub expires_at: Option<SystemTime>,
+    /// A credential owner closes or changes this channel on revocation.
+    pub revoked: Option<tokio::sync::watch::Receiver<()>>,
+}
+
+impl ModelCredentialLifetime {
+    pub(super) async fn ended(mut self) {
+        let expiry = async {
+            match self.expires_at {
+                Some(deadline) => {
+                    tokio::time::sleep(
+                        deadline
+                            .duration_since(SystemTime::now())
+                            .unwrap_or_default(),
+                    )
+                    .await
+                }
+                None => std::future::pending().await,
+            }
+        };
+        let revoked = async {
+            match self.revoked.as_mut() {
+                Some(revoked) => {
+                    let _ = revoked.changed().await;
+                }
+                None => std::future::pending().await,
+            }
+        };
+        tokio::select! { _ = expiry => {}, _ = revoked => {} }
+    }
+
+    fn is_valid(&self) -> bool {
+        self.expires_at
+            .is_none_or(|deadline| deadline > SystemTime::now())
+            && self
+                .revoked
+                .as_ref()
+                .is_none_or(|revoked| matches!(revoked.has_changed(), Ok(false)))
+    }
+}
+
+async fn while_valid<T, F: Future<Output = Result<T>>>(
+    credential: &ModelCredentialLifetime,
+    operation: impl FnOnce() -> F,
+) -> Result<T> {
+    if !credential.is_valid() {
+        return Err(expired_credential());
+    }
+    tokio::select! {
+        biased;
+        _ = credential.clone().ended() => Err(expired_credential()),
+        result = async { operation().await } => result,
+    }
+}
+
+fn expired_credential() -> Error {
+    Error::Provider(crate::ProviderError::http(
+        "model credential has expired or been revoked",
+        401,
+        None,
+    ))
 }
 
 fn inferred_choice(route: &str, provider: &dyn Model) -> ModelChoice {

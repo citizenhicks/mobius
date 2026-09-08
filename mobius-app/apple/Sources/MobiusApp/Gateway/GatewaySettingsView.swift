@@ -72,7 +72,8 @@ struct GatewayView: View {
         switch model.gateway.connectionState {
         case .ready:
             let detail: MobiusText
-            if let machineName = model.gateway.selectedAccount?.machineName {
+            if let account = model.gateway.selectedAccount {
+                let machineName = model.cloud.gatewayName(account)
                 detail = .localized(
                     "\(model.gateway.accounts.count) paired · \(machineName) selected")
             } else {
@@ -105,7 +106,7 @@ struct GatewayView: View {
                 }
             }
         ) {
-            SettingsRowLabel(title: .verbatim(account.machineName))
+            SettingsRowLabel(title: .verbatim(model.cloud.gatewayName(account)))
         }
         .swipeActions(edge: .trailing) {
             Button {
@@ -114,7 +115,7 @@ struct GatewayView: View {
                 MobiusIcon(.trash, foreground: palette.danger)
             }
             .tint(palette.panel)
-            .accessibilityLabel("Forget \(account.machineName)")
+            .accessibilityLabel("Forget \(model.cloud.gatewayName(account))")
         }
     }
 }
@@ -192,7 +193,7 @@ struct GatewayDetailView: View {
     private func detail(_ account: GatewayAccount) -> some View {
         let isActive = account.id == model.gateway.selectedAccountID
         return PageScaffold(
-            title: .verbatim(account.machineName),
+            title: .verbatim(model.cloud.gatewayName(account)),
             detail: .verbatim(""),
             sharesHeaderBackground: true,
             headerAccessory: {
