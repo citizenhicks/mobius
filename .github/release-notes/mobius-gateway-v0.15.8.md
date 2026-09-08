@@ -1,0 +1,1 @@
+Update the framework to 0.15.8 so reopening a hidden subagent checkpoint as a standalone chat fails promptly instead of stalling idle-session eviction. Retains protocol 73 and confirmed attached-folder details. Stored chat and account formats are unchanged.

@@ -53,6 +53,36 @@ async fn concurrent_catalog_updates_preserve_both_fields_for_resident_and_stoppe
     }
 }
 
+#[tokio::test]
+async fn capacity_reclaims_real_idle_agents() {
+    let root = tempfile::tempdir().expect("root");
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).expect("workspace");
+    let (store, config) = ConfigStore::initialize(
+        root.path().join("state"),
+        "127.0.0.1:8741".parse().expect("listen"),
+        None,
+    )
+    .expect("config");
+    let credentials =
+        Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
+    let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
+    let gateway = GatewayHost::start(store, config, credentials, bots)
+        .await
+        .expect("gateway");
+    for index in 0..=MAX_ACTIVE_SESSIONS {
+        let host = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            create_test_session(&gateway, &workspace),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("chat {index} timed out"))
+        .expect("chat");
+        drop(host);
+    }
+    gateway.shutdown().await;
+}
+
 struct BlockingStateStore {
     inner: Arc<dyn CheckpointStore>,
     block_next: AtomicBool,

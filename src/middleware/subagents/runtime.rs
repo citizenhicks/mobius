@@ -152,6 +152,11 @@ impl Shared {
             }
             return Ok(());
         }
+        if identity.depth > 0 {
+            return Err(Error::Config(
+                "a subagent must be resumed through its parent".into(),
+            ));
+        }
         let mut tree: Tree = context
             .checkpoints
             .load_state(&root_id, STATE_KEY)

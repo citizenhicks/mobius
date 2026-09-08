@@ -647,3 +647,45 @@ async fn supervised_lifecycle_outlives_a_cancelled_caller() {
         .expect("lifecycle continued after caller cancellation")
         .expect("lifecycle completion signal");
 }
+
+#[tokio::test]
+async fn detached_child_cannot_initialize_a_root_runtime() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let checkpoints = Arc::new(
+        crate::backend::checkpoint::sqlite::SqliteCheckpoint::new(
+            workspace.path().join("checkpoints.sqlite3"),
+        )
+        .expect("checkpoint store"),
+    );
+    let frontend: crate::middleware::FrontendEventSink = Arc::new(|_| Ok(()));
+    let retained = Arc::downgrade(&frontend);
+    let middleware = test_middleware();
+    let result = middleware
+        .shared
+        .session_start(RuntimeContext {
+            sender: crate::agent::test_sender(),
+            checkpoints,
+            session_id: "child".into(),
+            model_route: "test".into(),
+            model: "model".into(),
+            approval_policy: crate::backend::sandbox::ApprovalPolicy::Ask,
+            session_context: Default::default(),
+            metadata: AgentIdentity {
+                root_session_id: "parent".into(),
+                agent_path: "/root/reviewer".into(),
+                depth: 1,
+            }
+            .metadata(BTreeMap::new()),
+            role: crate::agent::AgentRole::Main,
+            frontend,
+        })
+        .await;
+    assert!(
+        matches!(result, Err(Error::Config(_))),
+        "detached child must fail at startup"
+    );
+    assert!(
+        retained.upgrade().is_none(),
+        "failed startup must release its event sink"
+    );
+}
