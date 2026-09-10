@@ -90,9 +90,6 @@ struct BotsView: View {
         .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: model.bots.map(\.id))
         .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: showsNewSwarm)
         .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: model.swarms.map(\.id))
-        .sheet(item: $model.presentedRoutineRun, onDismiss: model.closeRoutineRunPreview) { _ in
-            RoutineRunTranscriptSheet()
-        }
         .alert("Delete this Bot and all its data?", isPresented: botDeletionPresented) {
             Button("Delete Bot and All Data", role: .destructive) {
                 if let botToDelete { model.deleteBot(botToDelete) }

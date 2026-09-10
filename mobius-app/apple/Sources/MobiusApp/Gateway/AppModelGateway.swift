@@ -97,6 +97,7 @@ extension AppModel {
             applySessionResponse(requestID: requestID, sessions: sessions)
         case .backgroundApprovals(let approvals):
             applyBackgroundApprovals(approvals, notifyingNew: true)
+            refreshRoutines()
         case .swarmAttentions(let attentions):
             applySwarmAttentions(attentions, notifyingNew: true)
         case .botSessions(let requestID, let botID, let sessions):

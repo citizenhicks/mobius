@@ -147,6 +147,11 @@
 		930000000000000000000009 /* AppModelCachePersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 920000000000000000000009 /* AppModelCachePersistence.swift */; };
 		93000000000000000000000A /* GatewaySettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92000000000000000000000A /* GatewaySettingsView.swift */; };
 		93000000000000000000000B /* StatusBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92000000000000000000000B /* StatusBanner.swift */; };
+		268831BC10FF4896B6E4E0E0 /* EventCentreItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A35B2E530D94F65931A57F4 /* EventCentreItem.swift */; };
+		C129155822474DC088E39BE4 /* AppModelEventCentre.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2DA6C82614E4F2D8B37A0B5 /* AppModelEventCentre.swift */; };
+		40B7FF5D03BC4620900D4EA9 /* EventCentreView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B54D003D84204815A39CFC89 /* EventCentreView.swift */; };
+		10C531DD2EAA465B95FC0B3C /* ComposerSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5BC0C702B6A44AF8D5D8E31 /* ComposerSurface.swift */; };
+		3C79286E3E68457ABDEF1A77 /* EventCentreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50BC5B39C8E841A5B124F3CE /* EventCentreTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -299,6 +304,11 @@
 		920000000000000000000009 /* AppModelCachePersistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelCachePersistence.swift; sourceTree = "<group>"; };
 		92000000000000000000000A /* GatewaySettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewaySettingsView.swift; sourceTree = "<group>"; };
 		92000000000000000000000B /* StatusBanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusBanner.swift; sourceTree = "<group>"; };
+		1A35B2E530D94F65931A57F4 /* EventCentreItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventCentreItem.swift; sourceTree = "<group>"; };
+		E2DA6C82614E4F2D8B37A0B5 /* AppModelEventCentre.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelEventCentre.swift; sourceTree = "<group>"; };
+		B54D003D84204815A39CFC89 /* EventCentreView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventCentreView.swift; sourceTree = "<group>"; };
+		F5BC0C702B6A44AF8D5D8E31 /* ComposerSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerSurface.swift; sourceTree = "<group>"; };
+		50BC5B39C8E841A5B124F3CE /* EventCentreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventCentreTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -354,6 +364,7 @@
 			isa = PBXGroup;
 			children = (
 				AA0000000000000000000001 /* App */,
+				301CEE9286C24BDCB03F28D4 /* Events */,
 				AA0000000000000000000002 /* Gateway */,
 				AA0000000000000000000004 /* Chat */,
 				AA0000000000000000000005 /* Composer */,
@@ -389,6 +400,7 @@
 			isa = PBXGroup;
 			children = (
 				100000000000000000000011 /* AppModelTestSupport.swift */,
+				50BC5B39C8E841A5B124F3CE /* EventCentreTests.swift */,
 				A10000000000000000000002 /* AppModelCapabilitiesTests.swift */,
 				A10000000000000000000004 /* AppModelConfigurationTests.swift */,
 				A10000000000000000000009 /* AppModelPreferencesTests.swift */,
@@ -469,6 +481,7 @@
 		AA0000000000000000000005 /* Composer */ = {
 			isa = PBXGroup;
 			children = (
+				F5BC0C702B6A44AF8D5D8E31 /* ComposerSurface.swift */,
 				10000000000000000000002E /* ComposerView.swift */,
 				100000000000000000000014 /* ComposerOptionsView.swift */,
 				100000000000000000000013 /* ComposerDictation.swift */,
@@ -677,6 +690,16 @@
 			path = Wire;
 			sourceTree = "<group>";
 		};
+		301CEE9286C24BDCB03F28D4 /* Events */ = {
+			isa = PBXGroup;
+			children = (
+				1A35B2E530D94F65931A57F4 /* EventCentreItem.swift */,
+				E2DA6C82614E4F2D8B37A0B5 /* AppModelEventCentre.swift */,
+				B54D003D84204815A39CFC89 /* EventCentreView.swift */,
+			);
+			path = Events;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -837,6 +860,10 @@
 				20000000000000000000004B /* PairingView.swift in Sources */,
 				200000000000000000000034 /* ChatsView.swift in Sources */,
 				200000000000000000000066 /* SwarmView.swift in Sources */,
+				10C531DD2EAA465B95FC0B3C /* ComposerSurface.swift in Sources */,
+				40B7FF5D03BC4620900D4EA9 /* EventCentreView.swift in Sources */,
+				C129155822474DC088E39BE4 /* AppModelEventCentre.swift in Sources */,
+				268831BC10FF4896B6E4E0E0 /* EventCentreItem.swift in Sources */,
 				200000000000000000000067 /* SwarmStats.swift in Sources */,
 				200000000000000000000003 /* FilesView.swift in Sources */,
 				200000000000000000000050 /* FilePreviewViews.swift in Sources */,
@@ -901,6 +928,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				200000000000000000000015 /* AppModelTestSupport.swift in Sources */,
+				3C79286E3E68457ABDEF1A77 /* EventCentreTests.swift in Sources */,
 				A20000000000000000000001 /* AppModelAttachmentTests.swift in Sources */,
 				A20000000000000000000002 /* AppModelCapabilitiesTests.swift in Sources */,
 				F20000000000000000000104 /* AppModelRealtimeVoiceTests.swift in Sources */,
@@ -1050,7 +1078,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				CODE_SIGN_ENTITLEMENTS = Sources/MobiusApp/MobiusApp.entitlements;
-				CURRENT_PROJECT_VERSION = 327;
+				CURRENT_PROJECT_VERSION = 328;
 				DEVELOPMENT_TEAM = 3T68GZFAR6;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -1089,7 +1117,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				CODE_SIGN_ENTITLEMENTS = Sources/MobiusApp/MobiusApp.entitlements;
-				CURRENT_PROJECT_VERSION = 327;
+				CURRENT_PROJECT_VERSION = 328;
 				DEVELOPMENT_TEAM = 3T68GZFAR6;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Sources/MobiusApp/Info.plist;

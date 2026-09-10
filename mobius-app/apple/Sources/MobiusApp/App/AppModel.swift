@@ -20,6 +20,7 @@ final class AppModel {
     var generatedSshIdentity: GeneratedSshIdentity?
     var gitDiffs: [GitDiffScope: GitDiffState] = [:]
     var bots: [BotRecord] = []
+    var eventReadRevisions: [String: String] = [:]
     var backgroundApprovals: [BackgroundApproval] = []
     var swarmAttentions: [SwarmAttention] = []
     var swarms: [SwarmRecord] = []
@@ -118,6 +119,7 @@ final class AppModel {
     var showsPairing = false
     var showsWelcome = false
     var theme: ThemePreference
+    var simplifiedChatUI: Bool
     var language: AppLanguage {
         didSet {
             gateway.locale = language.locale
@@ -155,6 +157,7 @@ final class AppModel {
     @ObservationIgnored var startupTaskID: UUID?
     @ObservationIgnored var startedAccountID: UUID?
     @ObservationIgnored var appActivationTask: Task<Void, Never>?
+    @ObservationIgnored var eventCentreRefreshTask: Task<Void, Never>?
     var swarmMutationRequestID: String?
     var swarmApplyState: ApplyState = .idle
     var botMutationRequestID: String?
@@ -235,6 +238,7 @@ final class AppModel {
         )
         self.theme =
             ThemePreference(rawValue: settingsDefaults.string(forKey: "theme") ?? "") ?? .system
+        self.simplifiedChatUI = settingsDefaults.bool(forKey: "simplified-chat-ui")
         self.language = language
         let titleWriter = titleWriter ?? ChatTitleWriter()
         self.chat = ChatSessionModel(
@@ -275,6 +279,7 @@ final class AppModel {
             case "extensions": destination = .extensions
             case "bots": destination = .bots
             case "profile": destination = .profile
+            case "event-centre": destination = .eventCentre
             default: break
             }
         #endif
@@ -363,6 +368,7 @@ final class AppModel {
         gateway.shutdown()
         startupTask?.cancel()
         appActivationTask?.cancel()
+        eventCentreRefreshTask?.cancel()
         chat.deltaFlushTask?.cancel()
         chat.composerDraftSaveTask?.cancel()
         pairingCodeExpiryTask?.cancel()
@@ -711,6 +717,11 @@ final class AppModel {
     }
 
     func restoreSessionReadState(for accountID: UUID?) {
+        eventReadRevisions =
+            accountID.flatMap {
+                settingsDefaults.dictionary(forKey: "event-centre-read-\($0.uuidString)")
+                    as? [String: String]
+            } ?? [:]
         guard let accountID else {
             chat.sessionReadCursors = nil
             chat.unreadSessionIDs.removeAll()
@@ -874,7 +885,10 @@ final class AppModel {
         case .swarm(_, let messageID):
             swarmAttentions.first { $0.messageId == messageID }
                 .flatMap { attention in bots.first { $0.id == attention.botId } }
-        case nil:
+        case .routineRun(let runID):
+            routineRuns.first { $0.id == runID }
+                .flatMap { run in bots.first { $0.id == run.botId } }
+        case .extensionPackage, nil:
             nil
         }
     }

@@ -496,6 +496,15 @@ extension AppModel {
             }
         case .swarm(let swarmID, _):
             openSwarmChat(swarmID)
+        case .extensionPackage(let id):
+            destination = .extensions
+            navigationPath = [.settings(.extensionPackage(id))]
+        case .routineRun(let id):
+            if let run = routineRuns.first(where: { $0.id == id }) {
+                destination = .bots
+                navigationPath = [.bot(run.botId)]
+                if run.sessionId != nil { presentRoutineRun(run) }
+            }
         }
     }
 

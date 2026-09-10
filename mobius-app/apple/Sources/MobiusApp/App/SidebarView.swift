@@ -251,10 +251,20 @@ struct SidebarView: View {
         // the page slides over this, so it sits a step under the canvas rather than matching it.
         .background { palette.recessed.ignoresSafeArea() }
         .safeAreaInset(edge: .bottom) {
-            settingsButton
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, MobiusSpace.m)
-                .padding(.vertical, MobiusSpace.s)
+            HStack {
+                settingsButton
+                Spacer()
+                Button("Event Centre", glyph: model.hasUnreadEvents ? .bellDot : .bell) {
+                    showDetail(.eventCentre)
+                }
+                .mobiusIconButton()
+                .accessibilityValue(
+                    model.hasUnreadEvents ? Text("Unread events") : Text("All read")
+                )
+                .help("Event Centre")
+            }
+            .padding(.horizontal, MobiusSpace.m)
+            .padding(.vertical, MobiusSpace.s)
         }
         .toolbarVisibility(.hidden, for: .navigationBar)
     }

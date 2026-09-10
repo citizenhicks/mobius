@@ -168,6 +168,17 @@ extension AppModel {
         settingsDefaults.set(theme.rawValue, forKey: "theme")
     }
 
+    func setSimplifiedChatUI(_ enabled: Bool) {
+        simplifiedChatUI = enabled
+        settingsDefaults.set(enabled, forKey: "simplified-chat-ui")
+    }
+
+    func composerWidgets(in slot: FrontendSlot) -> [MountedWidget] {
+        chat.widgets(in: slot).filter {
+            chat.selectedSessionID == nil || !simplifiedChatUI || $0.widget.symbol == "voice"
+        }
+    }
+
     func setLanguage(_ language: AppLanguage) {
         self.language = language
         settingsDefaults.set(language.rawValue, forKey: "language")
@@ -207,6 +218,8 @@ extension AppModel {
         startupTask?.cancel()
         appActivationTask?.cancel()
         appActivationTask = nil
+        eventCentreRefreshTask?.cancel()
+        eventCentreRefreshTask = nil
         cloud.cancelAuthenticationRefresh()
         messageSpeaker.stop()
         Task { await dictation.cancel() }
@@ -264,6 +277,7 @@ extension AppModel {
     }
 
     func beginAppActivation() {
+        startEventCentreRefresh()
         guard appActivationTask == nil else { return }
         appActivationTask = Task<Void, Never> { [weak self] in
             guard let self else { return }

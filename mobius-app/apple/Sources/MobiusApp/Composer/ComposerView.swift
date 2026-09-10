@@ -1,6 +1,5 @@
 import Foundation
 import SwiftUI
-import UIKit
 @preconcurrency import AVFoundation
 
 struct ComposerView: View {
@@ -9,7 +8,7 @@ struct ComposerView: View {
 
     var body: some View {
         VStack(spacing: MobiusSpace.s) {
-            ForEach(model.chat.composerHeaderWidgets) { widget in
+            ForEach(model.composerWidgets(in: .composerHeader)) { widget in
                 FrontendWidgetView(widget: widget)
             }
             if let approval = model.chat.pendingApproval {
@@ -24,14 +23,6 @@ struct ComposerView: View {
         .frame(maxWidth: .infinity)
         .padding(.horizontal, MobiusSpace.l)
         .padding(.bottom, MobiusSpace.m)
-    }
-}
-
-extension ComposerView {
-    static func isCompact(chat: ChatSessionModel, isFocused: Bool, isDictating: Bool) -> Bool {
-        !isFocused && !isDictating && chat.composer.isEmpty
-            && chat.composerAttachments.isEmpty && chat.composerReply == nil
-            && chat.pendingWidgetEdit == nil
     }
 }
 
@@ -56,7 +47,7 @@ private struct ComposerStack: View {
             if model.chat.realtimeVoiceCall != nil {
                 RealtimeVoiceComposer()
             } else {
-                ComposerSurface()
+                SessionComposerSurface()
             }
         }
     }
@@ -188,168 +179,52 @@ private struct RealtimeVoiceComposer: View {
 
 }
 
-private struct ComposerSurface: View {
+private struct SessionComposerSurface: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.mobiusPalette) private var palette
     @Environment(\.scenePhase) private var scenePhase
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var dictation: ComposerDictation { model.dictation }
-    @State private var selection: TextSelection?
-    @FocusState private var isComposerFocused: Bool
-    @State private var referenceSuggestions: ReferenceSuggestions?
-    @State private var composerHeight: CGFloat = 0
-    @State private var optionsHeight = MobiusStyle.iconButtonSize
-    @State private var showsExpandedComposer = false
 
     var body: some View {
-        @Bindable var model = model
         @Bindable var chat = model.chat
-        VStack(spacing: 0) {
-            if !showsExpandedComposer {
-                if let reply = model.chat.composerReply {
+        ComposerSurface(
+            text: $chat.composer,
+            isDisabled: dictation.isActive,
+            hasContext: chat.hasComposerContext,
+            compactLeadingInset: model.attachmentsEnabled
+                ? MobiusStyle.iconRowPadding + MobiusStyle.iconButtonSize : MobiusSpace.l,
+            focusRequest: chat.composerFocusRequest,
+            blurRequest: chat.composerBlurRequest,
+            referenceRevision: chat.contributionsRevision + model.workspaceFilesRevision,
+            suggestions: referenceSuggestions,
+            send: { model.sendMessage() },
+            context: { close in
+                if let reply = chat.composerReply {
                     ReplyQuoteView(
                         reply: reply,
-                        open: { model.chat.openMessageReply(reply) },
-                        dismiss: { model.chat.composerReply = nil }
+                        open: {
+                            close(); chat.openMessageReply(reply)
+                        },
+                        dismiss: { chat.composerReply = nil }
                     )
                     .padding(.horizontal, MobiusSpace.m)
                     .padding(.top, MobiusSpace.m)
                 }
-                if !model.chat.composerAttachments.isEmpty {
+                if !chat.composerAttachments.isEmpty {
                     ComposerAttachmentsView()
                         .padding(.horizontal, MobiusSpace.m)
                         .padding(.top, MobiusSpace.m)
                 }
-                TextField(
-                    "You can just do things",
-                    text: $chat.composer,
-                    selection: $selection,
-                    axis: .vertical
-                )
-                .textFieldStyle(.plain)
-                .focused($isComposerFocused)
-                .lineLimit(1...(isCompact ? 1 : 8))
-                .scrollDismissesKeyboard(.interactively)
-                .font(MobiusStyle.bodyFont)
-                .accessibilityLabel("Message")
-                .disabled(dictation.isActive)
-                .onSubmit { _ = submit() }
-                .onKeyPress(.return, phases: .down) { keyPress in
-                    if keyPress.modifiers.contains(.shift) {
-                        insertLineBreak()
-                    } else {
-                        _ = submit()
-                    }
-                    return .handled
-                }
-                .onGeometryChange(for: CGFloat.self) { geometry in
-                    geometry.size.height
-                } action: { height in
-                    composerHeight = height
-                }
-                .frame(minHeight: isCompact ? MobiusStyle.iconButtonSize : nil)
-                .padding(.leading, isCompact ? compactLeadingInset : MobiusSpace.l)
-                .padding(
-                    .trailing,
-                    isCompact
-                        ? MobiusStyle.iconRowPadding + 2 * MobiusStyle.iconButtonSize
-                        : MobiusSpace.l
-                )
-                .padding(.top, isCompact ? MobiusStyle.iconRowPadding : MobiusSpace.m)
-                .padding(.bottom, isCompact ? MobiusStyle.iconRowPadding : MobiusSpace.xs)
-                .overlay(alignment: .topTrailing) {
-                    if showsExpansionControl {
-                        ComposerSizeButton(expanded: false) {
-                            showsExpandedComposer = true
-                        }
-                    }
-                }
-                // Keep the editor and toolbar mounted while the idle row shares their height.
-                Color.clear
-                    .frame(
-                        height: isCompact
-                            ? 0 : optionsHeight + MobiusStyle.iconRowPadding
-                    )
-            }
-        }
-        .overlay(alignment: isCompact ? .center : .bottom) {
-            if !showsExpandedComposer {
+            },
+            controls: { selection, compact, didSend in
                 ComposerOptionsView(
-                    dictation: dictation,
-                    selection: $selection,
-                    send: { _ = submit(delivery: $0) },
-                    isCompact: isCompact
+                    dictation: dictation, selection: selection,
+                    send: { delivery in
+                        if !dictation.isActive, model.sendMessage(delivery: delivery) { didSend() }
+                    },
+                    isCompact: compact
                 )
-                .onGeometryChange(for: CGFloat.self) { geometry in
-                    geometry.size.height
-                } action: { height in
-                    optionsHeight = height
-                }
-                .padding(.horizontal, MobiusStyle.iconRowPadding)
-                .padding(.bottom, isCompact ? 0 : MobiusStyle.iconRowPadding)
             }
-        }
-        .mobiusGlass(
-            in: RoundedRectangle(
-                cornerRadius: isCompact ? MobiusStyle.iconButtonSize : MobiusStyle.cardRadius,
-                style: .continuous
-            ),
-            interactive: true
         )
-        .animation(reduceMotion ? nil : .smooth(duration: 0.2), value: isCompact)
-        .shadow(color: palette.shadow.opacity(0.18), radius: 12, y: 6)
-        .overlay(alignment: .top) {
-            if !showsExpandedComposer, let suggestions = referenceSuggestions {
-                ReferenceSuggestionsPopup(suggestions: suggestions) {
-                    complete($0, suggestions: suggestions)
-                }
-                .padding(.horizontal, MobiusSpace.s)
-                .zIndex(2)
-            }
-        }
-        .sheet(isPresented: $showsExpandedComposer) {
-            ExpandedComposerSheet(
-                dictation: dictation,
-                selection: $selection,
-                suggestions: referenceSuggestions,
-                completeReference: complete,
-                submit: submit,
-                insertLineBreak: insertLineBreak
-            )
-        }
-        .task(id: referenceSuggestionRequest) {
-            let request = referenceSuggestionRequest
-            referenceSuggestions = nil
-            guard !request.isDisabled else { return }
-            if let commands = model.commandSuggestions(
-                in: request.text,
-                cursorOffset: request.cursorOffset
-            ) {
-                referenceSuggestions = commands
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(80))
-            guard !Task.isCancelled else { return }
-            let references = model.capabilityReferences
-            let files = model.workspaceFiles
-            let searchTask = Task.detached(priority: .userInitiated) {
-                AppModel.referenceSuggestions(
-                    in: request.text,
-                    cursorOffset: request.cursorOffset,
-                    capabilityReferences: references,
-                    workspaceFiles: files
-                )
-            }
-            let result = await searchTask.value
-            guard !Task.isCancelled else { return }
-            referenceSuggestions = result
-        }
-        .onChange(of: model.chat.composerFocusRequest) { _, _ in
-            isComposerFocused = true
-        }
-        .onChange(of: model.chat.composerBlurRequest) { _, _ in
-            isComposerFocused = false
-        }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .background else { return }
             Task { await dictation.cancel() }
@@ -377,249 +252,19 @@ private struct ComposerSurface: View {
         }
     }
 
-    private var isCompact: Bool {
-        !showsExpandedComposer
-            && ComposerView.isCompact(
-                chat: model.chat,
-                isFocused: isComposerFocused,
-                isDictating: dictation.isActive
-            )
-    }
-
-    private var compactLeadingInset: CGFloat {
-        model.attachmentsEnabled
-            ? MobiusStyle.iconRowPadding + MobiusStyle.iconButtonSize : MobiusSpace.l
-    }
-
-    private var showsExpansionControl: Bool {
-        composerHeight > UIFont.preferredFont(forTextStyle: .body).lineHeight * 2.5
-    }
-
-    private func submit(delivery: ActiveMessageDelivery? = nil) -> Bool {
-        guard !dictation.isActive, model.sendMessage(delivery: delivery) else { return false }
-        selection = nil
-        return true
-    }
-
-    private var referenceSuggestionRequest: ReferenceSuggestionRequest {
-        let isDisabled = dictation.isActive
-        let text = model.chat.composer
-        let cursor: String.Index
-        if let selection,
-            case .selection(let range) = selection.indices,
-            range.isEmpty,
-            text.indices.contains(range.lowerBound) || range.lowerBound == text.endIndex
-        {
-            cursor = range.lowerBound
-        } else {
-            cursor = text.endIndex
+    private func referenceSuggestions(text: String, cursorOffset: Int) async
+        -> ReferenceSuggestions?
+    {
+        if let commands = model.commandSuggestions(in: text, cursorOffset: cursorOffset) {
+            return commands
         }
-        return ReferenceSuggestionRequest(
-            text: text,
-            cursorOffset: text.distance(from: text.startIndex, to: cursor),
-            capabilityRevision: model.chat.contributionsRevision,
-            workspaceFileRevision: model.workspaceFilesRevision,
-            isDisabled: isDisabled
-        )
-    }
-
-    private func complete(_ mounted: MountedReference, suggestions: ReferenceSuggestions) {
-        guard model.chat.composer == suggestions.source else { return }
-        var text = suggestions.source
-        let offset = text.distance(from: text.startIndex, to: suggestions.range.lowerBound)
-        text.replaceSubrange(suggestions.range, with: mounted.replacement)
-        model.chat.composer = text
-        selection = TextSelection(
-            insertionPoint: text.index(
-                text.startIndex,
-                offsetBy: offset + mounted.replacement.count
-            ))
-    }
-
-    private func insertLineBreak() {
-        var text = model.chat.composer
-        let range: Range<String.Index>
-        if let selection, case .selection(let selectedRange) = selection.indices {
-            range = selectedRange
-        } else {
-            range = text.endIndex..<text.endIndex
-        }
-        let offset = text.distance(from: text.startIndex, to: range.lowerBound)
-        text.replaceSubrange(range, with: "\n")
-        model.chat.composer = text
-        self.selection = TextSelection(
-            insertionPoint: text.index(text.startIndex, offsetBy: offset + 1)
-        )
-    }
-}
-
-private struct ExpandedComposerSheet: View {
-    @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
-    let dictation: ComposerDictation
-    @Binding var selection: TextSelection?
-    let suggestions: ReferenceSuggestions?
-    let completeReference: (MountedReference, ReferenceSuggestions) -> Void
-    let submit: (ActiveMessageDelivery?) -> Bool
-    let insertLineBreak: () -> Void
-    @FocusState private var isComposerFocused: Bool
-
-    var body: some View {
-        @Bindable var model = model
-        @Bindable var chat = model.chat
-        VStack(spacing: 0) {
-            if let reply = model.chat.composerReply {
-                ReplyQuoteView(
-                    reply: reply,
-                    open: {
-                        dismiss()
-                        model.chat.openMessageReply(reply)
-                    },
-                    dismiss: { model.chat.composerReply = nil }
-                )
-                .padding(.horizontal, MobiusSpace.m)
-                .padding(.top, MobiusSpace.m)
-            }
-            if !model.chat.composerAttachments.isEmpty {
-                ComposerAttachmentsView()
-                    .padding(.horizontal, MobiusSpace.m)
-                    .padding(.top, MobiusSpace.m)
-            }
-            TextEditor(text: $chat.composer, selection: $selection)
-                .scrollContentBackground(.hidden)
-                .scrollDismissesKeyboard(.interactively)
-                .focused($isComposerFocused)
-                .font(MobiusStyle.bodyFont)
-                .accessibilityLabel("Message")
-                .disabled(dictation.isActive)
-                .onKeyPress(.return, phases: .down) { keyPress in
-                    if keyPress.modifiers.contains(.shift) {
-                        insertLineBreak()
-                    } else {
-                        submitAndDismiss()
-                    }
-                    return .handled
-                }
-                .padding(.horizontal, MobiusSpace.l)
-                .padding(.top, MobiusSpace.m)
-                .padding(.bottom, MobiusSpace.xs)
-                .overlay(alignment: .topTrailing) {
-                    ComposerSizeButton(expanded: true, action: dismiss.callAsFunction)
-                }
-                .frame(maxHeight: .infinity)
-            if let suggestions {
-                ReferenceSuggestionsPopup(suggestions: suggestions, floatsAbove: false) {
-                    completeReference($0, suggestions)
-                }
-                .padding(.horizontal, MobiusSpace.s)
-            }
-            ComposerOptionsView(
-                dictation: dictation,
-                selection: $selection,
-                send: submitAndDismiss
-            )
-            .padding(.horizontal, MobiusStyle.iconRowPadding)
-            .padding(.bottom, MobiusStyle.iconRowPadding)
-        }
-        .frame(maxWidth: MobiusStyle.transcriptWidth, maxHeight: .infinity)
-        .padding(.horizontal, MobiusSpace.l)
-        .padding(.top, MobiusSpace.xl)
-        .padding(.bottom, MobiusSpace.m)
-        .task { isComposerFocused = true }
-        .onChange(of: model.chat.composerFocusRequest) { _, _ in
-            isComposerFocused = true
-        }
-        .onChange(of: model.chat.composerBlurRequest) { _, _ in
-            isComposerFocused = false
-        }
-        .mobiusSheet(detents: [.fraction(0.75)])
-    }
-
-    private func submitAndDismiss(delivery: ActiveMessageDelivery? = nil) {
-        if submit(delivery) { dismiss() }
-    }
-}
-
-private struct ComposerSizeButton: View {
-    let expanded: Bool
-    let action: () -> Void
-
-    var body: some View {
-        let title: LocalizedStringResource = expanded ? "Collapse composer" : "Expand composer"
-        Button(action: action) {
-            MobiusLabel(
-                title: title,
-                glyph: expanded ? .collapse : .expand,
-                iconSize: MobiusStyle.glyphLead
-            )
-        }
-        .labelStyle(.iconOnly)
-        .buttonStyle(MobiusIconButtonStyle(bare: true))
-        .help(Text(title))
-    }
-}
-
-private struct ReferenceSuggestionRequest: Equatable, Sendable {
-    let text: String
-    let cursorOffset: Int
-    let capabilityRevision: Int
-    let workspaceFileRevision: Int
-    let isDisabled: Bool
-}
-
-private struct ReferenceSuggestionsPopup: View {
-    @Environment(\.mobiusPalette) private var palette
-    let suggestions: ReferenceSuggestions
-    var floatsAbove = true
-    let select: (MountedReference) -> Void
-
-    private var height: CGFloat {
-        min(CGFloat(suggestions.matches.count) * 48 + 12, 252)
-    }
-
-    var body: some View {
-        ScrollView {
-            VStack(spacing: 0) {
-                ForEach(suggestions.matches) { mounted in
-                    Button {
-                        select(mounted)
-                    } label: {
-                        HStack(spacing: MobiusSpace.m) {
-                            Text(verbatim: String(mounted.reference.trigger))
-                                .font(MobiusStyle.controlFont.monospaced().weight(.semibold))
-                                .foregroundStyle(palette.accent)
-                                .frame(width: 18, alignment: .center)
-                            VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
-                                Text(verbatim: mounted.reference.value)
-                                    .font(MobiusStyle.controlFont)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                Text(verbatim: mounted.reference.description)
-                                    .font(MobiusStyle.metadataFont)
-                                    .foregroundStyle(palette.muted)
-                                    .lineLimit(1)
-                            }
-                            Spacer(minLength: 0)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, MobiusSpace.m)
-                        .frame(height: 48)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.mobiusPlain)
-                    .help(mounted.reference.description)
-                    .accessibilityLabel(mounted.label)
-                    .accessibilityHint(mounted.reference.description)
-                }
-            }
-            .padding(.vertical, MobiusSpace.s)
-        }
-        .scrollIndicators(.hidden)
-        .frame(height: height)
-        .background(palette.panel, in: MobiusStyle.tileShape)
-        .mobiusGlass(in: MobiusStyle.tileShape)
-        .shadow(color: palette.shadow.opacity(0.2), radius: 16, y: 8)
-        .offset(y: floatsAbove ? -height - 8 : 0)
+        let references = model.capabilityReferences
+        let files = model.workspaceFiles
+        return await Task.detached(priority: .userInitiated) {
+            AppModel.referenceSuggestions(
+                in: text, cursorOffset: cursorOffset,
+                capabilityReferences: references, workspaceFiles: files)
+        }.value
     }
 }
 
@@ -632,10 +277,10 @@ private struct ComposerActivityView: View {
     var body: some View {
         GlassEffectContainer(spacing: MobiusSpace.s) {
             HStack(spacing: MobiusSpace.s) {
-                ForEach(model.chat.composerFooterWidgets) { widget in
+                ForEach(model.composerWidgets(in: .composerFooter)) { widget in
                     FrontendWidgetView(widget: widget)
                 }
-                if totals.added > 0 || totals.removed > 0 {
+                if !model.simplifiedChatUI, totals.added > 0 || totals.removed > 0 {
                     Button {
                         model.showFiles(.unstaged)
                     } label: {
@@ -664,7 +309,7 @@ private struct ComposerActivityView: View {
                 if let bot = model.selectedBot {
                     BotActivityBadge(bot: bot, action: showBotSettings)
                 }
-                SessionStatsBadge()
+                if !model.simplifiedChatUI { SessionStatsBadge() }
             }
             .frame(minHeight: MobiusStyle.iconButtonSize)
             .scrollableRow()

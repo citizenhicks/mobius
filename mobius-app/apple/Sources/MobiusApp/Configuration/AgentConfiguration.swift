@@ -84,6 +84,8 @@ struct ExtensionRecord: Identifiable, Decodable, Equatable, Sendable {
     let skills: [String]
     let hooks: [ExtensionHookRecord]
     let hooksTrusted: Bool
+
+    var needsHookTrust: Bool { !hooks.isEmpty && !hooksTrusted }
 }
 
 struct ProviderConfig: Codable, Equatable, Sendable {

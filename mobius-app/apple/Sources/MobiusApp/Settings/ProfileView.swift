@@ -799,6 +799,16 @@ private struct AppearanceSettings: View {
                 set: { model.setAccentTint($0) }
             ))
 
+        Toggle(
+            "Simplified chat UI",
+            isOn: Binding(
+                get: { model.simplifiedChatUI },
+                set: { model.setSimplifiedChatUI($0) }
+            )
+        )
+        .toggleStyle(.switch)
+        .accessibilityHint("Shows only the Voice and Bot pills above the composer in every chat.")
+
         Picker(
             "Language",
             selection: Binding(

@@ -63,6 +63,9 @@ struct AppShell: View {
                     .environment(\.locale, model.language.locale)
             }
         }
+        .sheet(item: $model.presentedRoutineRun, onDismiss: model.closeRoutineRunPreview) { _ in
+            RoutineRunTranscriptSheet()
+        }
         .alert(
             "Rename chat",
             isPresented: Binding(
@@ -347,6 +350,7 @@ struct AppShell: View {
         case .bots: BotsView()
         case .globalContributions: GlobalContributionsView()
         case .profile: ProfileView()
+        case .eventCentre: EventCentreView()
         case .contribution(let id):
             if let widget = model.chat.navigationWidgets.first(where: { $0.id == id }) {
                 FrontendContributionPage(widget: widget)
@@ -393,6 +397,8 @@ struct AppShell: View {
             }
         case .profile:
             MobiusTitleText(title: "Settings")
+        case .eventCentre:
+            MobiusTitleText(title: "Event Centre")
         case .contribution(let id):
             if let widget = model.chat.navigationWidgets.first(where: { $0.id == id }) {
                 MobiusTitleText(title: frontendPresentationText(widget.title))

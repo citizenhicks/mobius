@@ -603,7 +603,7 @@ extension AppModelTests {
                 )))
 
         XCTAssertEqual(model.chat.mountedWidgets.count, 2)
-        XCTAssertEqual(model.chat.composerFooterWidgets.first?.widget.text, "Running")
+        XCTAssertEqual(model.chat.widgets(in: .composerFooter).first?.widget.text, "Running")
         XCTAssertEqual(model.chat.navigationWidgets.first?.widget.text, "Tasks")
     }
 

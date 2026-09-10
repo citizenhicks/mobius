@@ -584,8 +584,6 @@ private func shellSafe(_ value: String) -> String {
 }
 
 private extension ExtensionRecord {
-    var needsHookTrust: Bool { !hooks.isEmpty && !hooksTrusted }
-
     var qualifiers: MobiusText {
         switch (kind, version) {
         case (.plugin, .some(let version)): .localized("Plugin · \(version)")

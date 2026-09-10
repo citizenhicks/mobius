@@ -382,6 +382,7 @@ struct SwarmView: View {
 struct SwarmChatView: View {
     private static let pageSize = 25
 
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
     @State private var draft = ""
@@ -390,7 +391,6 @@ struct SwarmChatView: View {
     @State private var transcriptScroll = TranscriptScrollState()
     @State private var pendingRequestID: String?
     @State private var pendingText: String?
-    @FocusState private var isComposerFocused: Bool
     let swarmID: String
 
     var body: some View {
@@ -418,6 +418,12 @@ struct SwarmChatView: View {
         }
         .toolbarTitleDisplayMode(.inline)
         .background { MobiusBackdrop() }
+        .task(id: swarm?.messages.last?.id) {
+            if scenePhase == .active { model.markSwarmEventsRead(swarmID) }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { model.markSwarmEventsRead(swarmID) }
+        }
         .onChange(of: model.completedSwarmMessageRequestID) { _, requestID in
             guard requestID == pendingRequestID else { return }
             if draft.trimmingCharacters(in: .whitespacesAndNewlines) == pendingText {
@@ -490,28 +496,20 @@ struct SwarmChatView: View {
     }
 
     private var composer: some View {
-        VStack(spacing: 0) {
-            TextField("Message the Swarm", text: $draft, axis: .vertical)
-                .textFieldStyle(.plain)
-                .focused($isComposerFocused)
-                .lineLimit(1...8)
-                .font(MobiusStyle.bodyFont)
-                .accessibilityLabel("Swarm message")
-                .onSubmit(send)
-                .padding(.horizontal, MobiusSpace.l)
-                .padding(.top, MobiusSpace.m)
-                .padding(.bottom, MobiusSpace.xs)
+        ComposerSurface(
+            text: $draft, suggestions: mentionSuggestions, send: send, context: { _ in }
+        ) {
+            _, _, didSend in
             HStack(spacing: MobiusSpace.xs) {
                 Spacer(minLength: 0)
-                Button(action: send) {
+                Button {
+                    if send() { didSend() }
+                } label: {
                     Label {
                         Text("Send")
                     } icon: {
                         if isPosting {
-                            MobiusSpinner(
-                                size: MobiusStyle.iconSize,
-                                foreground: palette.onAccent
-                            )
+                            MobiusSpinner(size: MobiusStyle.iconSize, foreground: palette.onAccent)
                         } else {
                             MobiusIcon(.arrowUp02)
                         }
@@ -521,15 +519,34 @@ struct SwarmChatView: View {
                 .disabled(!canSend)
                 .accessibilityHint("Posts to Swarm Chat")
             }
-            .padding(.horizontal, MobiusStyle.iconRowPadding)
-            .padding(.bottom, MobiusStyle.iconRowPadding)
         }
         .frame(maxWidth: MobiusStyle.transcriptWidth)
-        .mobiusGlass(in: MobiusStyle.cardShape, interactive: true)
-        .shadow(color: palette.shadow.opacity(0.18), radius: 12, y: 6)
         .frame(maxWidth: .infinity)
         .padding(.horizontal, MobiusSpace.l)
         .padding(.bottom, MobiusSpace.m)
+    }
+
+    private func mentionSuggestions(text: String, cursorOffset: Int) async -> ReferenceSuggestions?
+    {
+        guard let swarm else { return nil }
+        let botIDs = Set(swarm.members.map(\.botId) + [swarm.leaderBotId])
+        let references =
+            model.bots.filter { botIDs.contains($0.id) }.map { bot in
+                MountedReference(
+                    capability: "swarm",
+                    reference: FrontendReference(
+                        trigger: "@", value: bot.handle, description: bot.name
+                    ))
+            } + [
+                MountedReference(
+                    capability: "swarm",
+                    reference: FrontendReference(
+                        trigger: "@", value: "user", description: model.localizedString("You")
+                    ))
+            ]
+        return AppModel.referenceSuggestions(
+            in: text, cursorOffset: cursorOffset,
+            capabilityReferences: references, workspaceFiles: [])
     }
 
     private var canSend: Bool {
@@ -555,16 +572,17 @@ struct SwarmChatView: View {
         visibleMessages += Self.pageSize
     }
 
-    private func send() {
+    private func send() -> Bool {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canSend,
             let requestID = model.postSwarmMessage(
                 to: swarmID,
                 text: text
             )
-        else { return }
+        else { return false }
         pendingRequestID = requestID
         pendingText = text
+        return true
     }
 }
 
@@ -583,7 +601,7 @@ private func swarmTranscriptEntry(_ message: SwarmMessageRecord) -> TranscriptEn
         id: message.id,
         text: message.text,
         kind: isUser ? .user : .assistant,
-        format: "plain_text",
+        format: isUser ? "plain_text" : "markdown",
         pending: false,
         sourceSequence: message.sequence,
         recordedAtMs: message.createdAtMs,

@@ -11,6 +11,7 @@ enum AppDestination: Hashable {
     case bots
     case globalContributions
     case profile
+    case eventCentre
     case contribution(String)
 
     var glyph: MobiusGlyph {
@@ -22,6 +23,7 @@ enum AppDestination: Hashable {
         case .extensions: .squaresFour
         case .bots: .aiScan
         case .globalContributions: .brain
+        case .eventCentre: .bell
         case .profile: .gear
         case .contribution: .squaresFour
         }
@@ -202,6 +204,8 @@ struct AppToast: Identifiable {
 enum AppNotificationTarget: Equatable {
     case session(String)
     case swarm(swarmID: String, messageID: String)
+    case extensionPackage(String)
+    case routineRun(String)
 }
 
 enum ComposerAttachmentState: Equatable {

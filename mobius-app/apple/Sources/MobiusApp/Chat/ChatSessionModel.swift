@@ -68,6 +68,10 @@ final class ChatSessionModel {
     @ObservationIgnored var transcriptWindowCache: TranscriptWindowCache?
     @ObservationIgnored var transcriptProjectionVersion = 0
     @ObservationIgnored var transcriptMutationPreservesPrefix = false
+    var hasComposerContext: Bool {
+        !composerAttachments.isEmpty || composerReply != nil || pendingWidgetEdit != nil
+    }
+
     var composerFocusRequest = 0
     private(set) var composerBlurRequest = 0
     var composerAttachments: [ComposerAttachment] = []
@@ -302,8 +306,6 @@ final class ChatSessionModel {
 
     var headerWidgets: [MountedWidget] { widgets(in: .header) }
     var transcriptTailWidgets: [MountedWidget] { widgets(in: .transcriptTail) }
-    var composerHeaderWidgets: [MountedWidget] { widgets(in: .composerHeader) }
-    var composerFooterWidgets: [MountedWidget] { widgets(in: .composerFooter) }
     var messageActionWidgets: [MountedWidget] {
         widgets(in: .messageActions).filter { $0.widget.action != nil }
     }
