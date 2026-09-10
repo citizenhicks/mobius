@@ -3,7 +3,28 @@
 The gateway's macOS frontend is a 400-point menu bar popover, with the same particle
 waves and native WebRTC media implementation as the iOS composer. Requires macOS 26
 and Xcode 26.6. It contains no agent runtime.
-Icons compile from the iOS asset catalog; surfaces and muted ink use its default Nord palette.
+Icons compile from the iOS asset catalog; controls use its default Nord palette.
+
+Hover over the glass waveform to reveal the chat selectors and call controls, in
+both the menu bar popover and pinned mode. Keyboard navigation and VoiceOver also
+reveal controls; approvals and errors remain visible until handled. Controls fade in place without moving or resizing the waveform. The pinned glass edge
+pulses while connected and unmuted, independently of speech. Reduce Motion keeps a
+steady edge instead.
+
+Choose **Pin to corner** from the options menu, then one of the four corners.
+The floating panel stays above ordinary windows across Spaces. Its glass
+background is more transparent; the unpinned popover uses the system surface.
+**Unpin voice window** returns controls to the menu bar without ending the call.
+Pinning is explicit; reopening the app does not start a call or restore a pinned panel.
+
+While pinned, choose **Mini mode** to show only a circular waveform. Right-click
+the circle and choose **Exit Mini mode** to return. The circle uses the same
+active glow, with more widely spaced waveform dots to keep silence subtle.
+Approvals and errors temporarily expand the panel.
+**Keyboard shortcuts…** lets you record or clear shortcuts for start/stop and
+mute/unmute. They work from other apps and are saved on this Mac. Include Command
+or Control; unavailable combinations leave the previous assignment intact.
+Shortcuts are unassigned until you record them.
 
 Click the möbius logo, choose a chat, and press start on the right. It becomes stop
 during a call; the microphone on the left controls mute. Voice continues when the popover closes. One header row
@@ -11,7 +32,8 @@ contains three pills: Bot icon and name, the workspace's final folder name, and 
 chat title or New chat. Each opens a native menu with an inline picker, matching the
 iOS new-chat controls. The folder menu also has Add new folder. Choosing a Bot or
 folder prepares a new chat; pressing start creates it and starts voice.
-The chat menu lists existing chats for that Bot and folder. Switching chats ends
+The chat menu groups the selected Bot’s chats by project folder, newest first within
+each group. Selecting a chat also selects its folder. Switching chats ends
 the old call before opening and connecting the new one.
 Approval requests show the reason and complete tool
 arguments, with approve-once and decline actions.

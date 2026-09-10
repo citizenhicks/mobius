@@ -55,7 +55,11 @@ impl ConnectionVoice {
                             session_id: session.clone(),
                             voice: model.voice.clone(),
                             offer_sdp,
-                            instructions: instructions(&parent, &voice_context),
+                            instructions: instructions(
+                                &model.bot_instructions,
+                                &parent,
+                                &voice_context,
+                            )?,
                             handoff_tool: handoff_tool(),
                         },
                     )
@@ -265,8 +269,11 @@ async fn drive(
     events: &mut broadcast::Receiver<ServerFrame>,
     stopped: oneshot::Receiver<()>,
 ) -> Result<()> {
-    let mut conversation =
-        VoiceConversation::new(transcript.session_id().into(), model.active_turn_id.clone());
+    let mut conversation = VoiceConversation::new(
+        transcript.session_id().into(),
+        model.active_turn_id.clone(),
+        model.bot_name.clone(),
+    );
     let result = drive_conversation(
         host,
         model,
@@ -348,7 +355,7 @@ async fn drive_conversation(
                         if !needs_context {
                             submit_handoff(host, conversation, id, text).await?
                         } else if pending.len() + resolving.len() >= 32 {
-                            vec![reject_handoff(id, "Too many pending voice requests. Please wait for the Bot's results.")]
+                            vec![reject_handoff(id, "Too many pending voice requests. Please wait for the pending results.")]
                         } else {
                             // Final speech prunes old deltas, so a journal cursor cannot freeze context.
                             pending.push_back(PendingVoiceTask {

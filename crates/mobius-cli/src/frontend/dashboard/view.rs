@@ -425,7 +425,10 @@ pub(super) fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, state: &
         Paragraph::new(vec![
             Line::from(vec![
                 Span::styled(
-                    " MÖBIUS GATEWAY ",
+                    format!(
+                        " MÖBIUS GATEWAY v{} ",
+                        terminal_text(&state.gateway.gateway_version)
+                    ),
                     theme.style(Role::AccentStrong).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(&state.endpoint, theme.style(Role::Muted)),

@@ -1087,7 +1087,8 @@ fn agent_summary(gateway: &ReadyPayload, session: &SessionReadyPayload, bot: &Bo
         .as_deref()
         .unwrap_or("default");
     format!(
-        "MÖBIUS · {bot_label}\nmodel: {} · {reasoning}\nproviders: {}\nmiddleware: {}\n{}tools: {}\nworkspace: {}",
+        "MÖBIUS v{} · {bot_label}\nmodel: {} · {reasoning}\nproviders: {}\nmiddleware: {}\n{}tools: {}\nworkspace: {}",
+        env!("CARGO_PKG_VERSION"),
         super::terminal_text(&session.session.model.model),
         if providers.is_empty() {
             "none"
@@ -1316,6 +1317,7 @@ mod tests {
 
     fn ready_payload() -> ReadyPayload {
         ReadyPayload {
+            gateway_version: env!("CARGO_PKG_VERSION").into(),
             machine_name: String::new(),
             bots: Vec::new(),
             sessions: Vec::new(),

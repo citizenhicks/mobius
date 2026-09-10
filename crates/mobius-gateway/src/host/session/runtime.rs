@@ -152,6 +152,7 @@ impl HostState {
         match command {
             HostCommand::RealtimeModel { reply } => {
                 let result = self.begin_session_mutation().and_then(|_mutation| {
+                    let bot = self.bots.bot(&self.spec.bot_id).map_err(internal)?;
                     let router = &self.running.model_router;
                     let route = &self.running.session.model.route;
                     if !router.supports_realtime_voice(route).map_err(internal)? {
@@ -174,6 +175,13 @@ impl HostState {
                     .remove(route)
                     .ok_or_else(|| internal("voice route is no longer configured"))?;
                     Ok(RealtimeModel {
+                        bot_instructions: format!(
+                            "Your name is {} (@{}).\n\n{}",
+                            bot.name,
+                            bot.handle,
+                            self.spec.bot_instructions()
+                        ),
+                        bot_name: bot.name,
                         router: Arc::clone(router),
                         voice: self.spec.agent.config.realtime_voice.clone(),
                         route: route.clone(),

@@ -405,7 +405,7 @@ struct ComposerOptionsView: View {
                 }
             }
         }
-        .mobiusProminentIconButton()
+        .mobiusProminentIconButton(surfaceSize: 32)
     }
 
     private func importFiles(_ result: Result<[URL], Error>) {

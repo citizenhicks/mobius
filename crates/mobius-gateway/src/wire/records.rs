@@ -3,6 +3,8 @@ use super::*;
 /// Gateway-wide frontend-safe state sent after authentication.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReadyPayload {
+    /// Release version of the connected gateway process.
+    pub gateway_version: String,
     pub machine_name: String,
     pub bots: Vec<BotRecord>,
     pub sessions: Vec<SessionRecord>,

@@ -34,6 +34,7 @@ pub(super) enum RootItem {
 
 #[derive(Clone, Copy)]
 pub(super) enum BotRow {
+    Identity,
     Model,
     Capabilities,
     Conversations,
@@ -137,6 +138,7 @@ impl BotsState {
 
     pub(super) fn bot_rows(&self, gateway: &ReadyPayload, bot_id: &str) -> Vec<BotRow> {
         let mut rows = vec![
+            BotRow::Identity,
             BotRow::Model,
             BotRow::Capabilities,
             BotRow::Conversations,
@@ -370,6 +372,12 @@ impl BotsState {
             return Action::None;
         };
         match row {
+            BotRow::Identity => {
+                if let Some(bot) = gateway.bots.iter().find(|bot| bot.id == id) {
+                    self.form = Some(Form::Bot(BotForm::update(bot)));
+                }
+                Action::None
+            }
             BotRow::Model => Action::Setup {
                 bot_id: id,
                 mode: SetupMode::BotModel,

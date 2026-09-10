@@ -741,6 +741,7 @@ fn transcript_viewport_matches_full_paragraph_for_unicode_scroll_and_resize() {
             }));
         }
         state.push("› user e\u{301} 👩‍💻", TranscriptTone::User);
+        state.push("- **A long item with enough words to wrap onto the next line**\n\n> a quote with enough words to wrap in a narrow terminal\n\n| Name | Count |\n|---|---:|\n| long table value | 12345 |\n\n```rust\nfn main() {\n\n    println!(\"hello\");\n}\n```", TranscriptTone::Assistant);
         state.streaming = "streaming λ界 ".repeat(8);
         state.reasoning = "reasoning e\u{301} 👩‍💻".into();
         state.widgets.push((
@@ -849,5 +850,42 @@ fn transcript_viewport_matches_full_paragraph_for_unicode_scroll_and_resize() {
             scroll,
             "snapshot preview",
         );
+    }
+}
+
+#[test]
+fn markdown_is_rendered_in_chat_and_the_ctrl_t_transcript() {
+    let mut state = state();
+    state.transcript.clear();
+    state.push(
+        "# Result\n\n- [x] **done**\n\n```rust\nfn main() {}\n```",
+        TranscriptTone::Assistant,
+    );
+    let catalog = default_catalog();
+    for preview in [false, true] {
+        if preview {
+            state.handle_key(
+                KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
+                &catalog,
+            );
+            assert!(matches!(
+                state.preview.as_ref().unwrap().content,
+                PreviewContent::LiveTranscript
+            ));
+        }
+        let mut terminal = Terminal::new(TestBackend::new(80, 30)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                if preview {
+                    view::render_preview(frame, &mut state);
+                } else {
+                    view::render(frame, &mut state, &catalog);
+                }
+            })
+            .expect("draw");
+        let text = terminal.backend().to_string();
+        assert!(text.contains("Result") && text.contains("- [x] done"));
+        assert!(text.contains("│ fn main() {}"));
+        assert!(!text.contains("**done**") && !text.contains("```"));
     }
 }

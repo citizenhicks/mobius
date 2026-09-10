@@ -57,10 +57,12 @@ final class MenuBarModel {
         Set(chats.compactMap(\.sessionContext.workspaceLabel) + [workspacePath])
             .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
     }
-    var matchingChats: [VoiceChat] {
-        chats.filter {
-            $0.sessionContext.botId == selectedBot?.id && $0.workspace == workspacePath
-        }
+    var chatGroups: [(workspace: String, chats: [VoiceChat])] {
+        Dictionary(
+            grouping: chats.filter { $0.sessionContext.botId == selectedBot?.id }, by: \.workspace
+        )
+        .map { (workspace: $0.key, chats: $0.value) }
+        .sorted { $0.workspace.localizedStandardCompare($1.workspace) == .orderedAscending }
     }
     var supportsVoice: Bool { models.first { $0.route == route }?.supportsRealtimeVoice == true }
     var canChooseChat: Bool { isReady && opening == nil }
@@ -214,6 +216,15 @@ final class MenuBarModel {
                 self?.message = error.localizedDescription
             }
         }
+    }
+
+    func toggleVoice() {
+        if voiceCall == nil { startVoice() } else { stopVoice() }
+    }
+
+    func toggleMicrophone() {
+        guard voiceCall != nil else { return }
+        voice.isMuted.toggle()
     }
 
     func stopVoice(notifyGateway: Bool = true) {

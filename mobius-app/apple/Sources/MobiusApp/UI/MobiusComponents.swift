@@ -231,13 +231,15 @@ extension PrimitiveButtonStyle where Self == MobiusFeedbackButtonStyle<GlassProm
 struct MobiusIconButtonStyle: ButtonStyle {
     var prominent = false
     var bare = false
+    var surfaceSize = MobiusStyle.iconButtonSize
 
     func makeBody(configuration: Configuration) -> some View {
         IconButton(
             label: configuration.label,
             isPressed: configuration.isPressed,
             prominent: prominent,
-            bare: bare
+            bare: bare,
+            surfaceSize: surfaceSize
         )
     }
 
@@ -249,14 +251,14 @@ struct MobiusIconButtonStyle: ButtonStyle {
         let isPressed: Bool
         let prominent: Bool
         let bare: Bool
+        let surfaceSize: CGFloat
 
         var body: some View {
             let base =
                 label
                 .font(MobiusStyle.controlFont)
                 .foregroundStyle(foreground)
-                .frame(width: MobiusStyle.iconButtonSize, height: MobiusStyle.iconButtonSize)
-                .contentShape(Rectangle())
+                .frame(width: surfaceSize, height: surfaceSize)
             Group {
                 if bare {
                     base
@@ -269,6 +271,8 @@ struct MobiusIconButtonStyle: ButtonStyle {
                     )
                 }
             }
+            .frame(width: MobiusStyle.iconButtonSize, height: MobiusStyle.iconButtonSize)
+            .contentShape(Rectangle())
             .opacity(isPressed ? 0.72 : 1)
             .sensoryFeedback(.impact(weight: .light), trigger: isPressed) { _, pressed in pressed }
         }
@@ -414,9 +418,9 @@ extension View {
             .buttonStyle(MobiusIconButtonStyle())
     }
 
-    func mobiusProminentIconButton() -> some View {
+    func mobiusProminentIconButton(surfaceSize: CGFloat = MobiusStyle.iconButtonSize) -> some View {
         labelStyle(.iconOnly)
-            .buttonStyle(MobiusIconButtonStyle(prominent: true))
+            .buttonStyle(MobiusIconButtonStyle(prominent: true, surfaceSize: surfaceSize))
     }
 
     /// Lets a row of badges scroll instead of squeezing when it outgrows the width.

@@ -345,7 +345,7 @@ fn ensure_rendered(entry: &mut TranscriptEntry, width: u16) {
             .lines()
             .any(|line| Line::from(line).width() > usize::from(width))
     {
-        "MÖBIUS · type / for commands"
+        concat!("MÖBIUS v", env!("CARGO_PKG_VERSION"))
     } else {
         &entry.text
     };
@@ -589,7 +589,11 @@ fn push_lines(
     }
     let first = lines.len();
     if matches!(tone, TranscriptTone::Assistant | TranscriptTone::Reasoning) {
-        lines.extend(markdown::render(text, style));
+        lines.extend(markdown::render(
+            text,
+            style,
+            usize::from(width.saturating_sub(2)),
+        ));
     } else {
         lines.extend(text.split('\n').map(|line| {
             line.strip_prefix(AGENT_MARKER).map_or_else(
@@ -787,7 +791,7 @@ fn responsive_welcome_card(state: &TuiState, width: u16) -> String {
     if card_fits(&compact, width) {
         compact
     } else {
-        "MÖBIUS · type / for commands".into()
+        concat!("MÖBIUS v", env!("CARGO_PKG_VERSION")).into()
     }
 }
 

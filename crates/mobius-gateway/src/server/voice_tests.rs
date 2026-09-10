@@ -81,6 +81,8 @@ async fn queued_voice_tasks_keep_received_context_run_in_order_and_cancel_on_sto
         .expect("discussion");
     let (requests, mut received) = mpsc::channel(2);
     let model = crate::host::RealtimeModel {
+        bot_name: "Builder".into(),
+        bot_instructions: "You are Builder.".into(),
         router: Arc::new(ModelRouter::new(
             "test",
             Arc::new(ExtractionModel(requests)),

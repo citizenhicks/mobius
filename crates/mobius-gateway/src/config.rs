@@ -412,6 +412,13 @@ impl GatewayConfig {
 }
 
 impl ChatSpec {
+    pub(crate) fn bot_instructions(&self) -> String {
+        format!(
+            "{}\n\n{}",
+            self.bot_description, self.agent.config.system_prompt
+        )
+    }
+
     pub(crate) fn for_bot(
         workspace: &Path,
         bot: &crate::wire::BotRecord,

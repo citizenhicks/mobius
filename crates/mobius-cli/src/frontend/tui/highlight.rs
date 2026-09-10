@@ -32,8 +32,9 @@ pub(super) fn lines(code: &str, path: &str) -> Option<Vec<Vec<Span<'static>>>> {
     if code.lines().any(|line| line.len() > MAX_LINE_BYTES) {
         return None;
     }
-    let extension = Path::new(path).extension()?.to_str()?;
-    let syntax = syntaxes().find_syntax_by_extension(extension)?;
+    let syntax = syntaxes()
+        .find_syntax_by_token(path)
+        .or_else(|| syntaxes().find_syntax_by_extension(Path::new(path).extension()?.to_str()?))?;
     let mut highlighter = HighlightLines::new(syntax, theme());
     LinesWithEndings::from(code)
         .map(|line| {

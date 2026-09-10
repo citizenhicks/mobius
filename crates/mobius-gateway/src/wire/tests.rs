@@ -1124,6 +1124,7 @@ fn gateway_ready_contains_no_selected_session() {
     let session_file_limits = mobius::backend::session_files::session_file_limits();
     let frame = ServerFrame::new(ServerMessage::Ready {
         payload: ReadyPayload {
+            gateway_version: env!("CARGO_PKG_VERSION").into(),
             machine_name: "snowwhite.local".into(),
             bots: Vec::new(),
             sessions: Vec::new(),
@@ -1155,6 +1156,10 @@ fn gateway_ready_contains_no_selected_session() {
     });
 
     let encoded = serde_json::to_value(frame).expect("encode gateway ready");
+    assert_eq!(
+        encoded["payload"]["gateway_version"],
+        env!("CARGO_PKG_VERSION")
+    );
     let encoded_limits: mobius::protocol::SessionFileLimits =
         serde_json::from_value(encoded["payload"]["session_file_limits"].clone())
             .expect("decode session file limits");

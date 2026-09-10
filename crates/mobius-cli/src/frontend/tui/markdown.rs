@@ -1,5 +1,6 @@
 //! Small Markdown-to-ratatui renderer for assistant transcript messages.
 
+use pulldown_cmark::Alignment;
 use pulldown_cmark::CodeBlockKind;
 use pulldown_cmark::Event;
 use pulldown_cmark::HeadingLevel;
@@ -15,11 +16,12 @@ use ratatui::text::Span;
 use crate::frontend::theme::Role;
 use crate::frontend::theme::current;
 
-pub(super) fn render(source: &str, base: Style) -> Vec<Line<'static>> {
+pub(super) fn render(source: &str, base: Style, width: usize) -> Vec<Line<'static>> {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TABLES);
-    let mut writer = Writer::new(base);
+    options.insert(Options::ENABLE_TASKLISTS);
+    let mut writer = Writer::new(base, width);
     for event in Parser::new_ext(source, options) {
         writer.event(event);
     }
@@ -34,6 +36,7 @@ struct Item {
 
 #[derive(Default)]
 struct Table {
+    alignments: Vec<Alignment>,
     rows: Vec<(Vec<Vec<Span<'static>>>, bool)>,
     row: Vec<Vec<Span<'static>>>,
     cell: Vec<Span<'static>>,
@@ -42,6 +45,7 @@ struct Table {
 
 struct Writer {
     base: Style,
+    width: usize,
     lines: Vec<Line<'static>>,
     current: Option<Line<'static>>,
     styles: Vec<Style>,
@@ -49,15 +53,18 @@ struct Writer {
     items: Vec<Item>,
     blockquote_depth: usize,
     in_code_block: bool,
+    code_language: String,
+    code_buffer: String,
     needs_blank: bool,
     link: Option<String>,
     table: Option<Table>,
 }
 
 impl Writer {
-    fn new(base: Style) -> Self {
+    fn new(base: Style, width: usize) -> Self {
         Self {
             base,
+            width: width.max(1),
             lines: Vec::new(),
             current: None,
             styles: vec![Style::default()],
@@ -65,6 +72,8 @@ impl Writer {
             items: Vec::new(),
             blockquote_depth: 0,
             in_code_block: false,
+            code_language: String::new(),
+            code_buffer: String::new(),
             needs_blank: false,
             link: None,
             table: None,
@@ -85,7 +94,8 @@ impl Writer {
             Event::End(tag) => self.end(tag),
             Event::Text(text) => self.text(&text),
             Event::Code(code) => self.push_styled(&code, current().style(Role::Code)),
-            Event::SoftBreak | Event::HardBreak => self.flush(),
+            Event::SoftBreak => self.push(" "),
+            Event::HardBreak => self.flush(),
             Event::Rule => {
                 self.start_block();
                 self.push_styled("———", current().style(Role::Border));
@@ -93,7 +103,8 @@ impl Writer {
                 self.needs_blank = true;
             }
             Event::Html(html) | Event::InlineHtml(html) => self.text(&html),
-            Event::FootnoteReference(_) | Event::TaskListMarker(_) => {}
+            Event::TaskListMarker(checked) => self.push(if checked { "[x] " } else { "[ ] " }),
+            Event::FootnoteReference(_) => {}
         }
     }
 
@@ -110,10 +121,19 @@ impl Writer {
             }
             Tag::CodeBlock(kind) => {
                 self.start_block();
-                self.in_code_block = true;
-                if matches!(kind, CodeBlockKind::Indented) {
-                    self.push("    ");
+                self.code_language = match kind {
+                    CodeBlockKind::Fenced(language) => language
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or_default()
+                        .into(),
+                    CodeBlockKind::Indented => String::new(),
+                };
+                if !self.code_language.is_empty() {
+                    self.push_styled(&self.code_language.clone(), current().style(Role::Muted));
+                    self.flush();
                 }
+                self.in_code_block = true;
             }
             Tag::List(start) => {
                 self.start_block();
@@ -129,17 +149,28 @@ impl Writer {
             Tag::Strikethrough => {
                 self.push_style(Style::default().add_modifier(Modifier::CROSSED_OUT));
             }
-            Tag::Link { dest_url, .. } => {
-                self.link = Some(dest_url.into_string());
+            Tag::Link {
+                link_type,
+                dest_url,
+                ..
+            } => {
+                self.link = (!matches!(
+                    link_type,
+                    pulldown_cmark::LinkType::Autolink | pulldown_cmark::LinkType::Email
+                ))
+                .then(|| dest_url.into_string());
                 self.push_style(
                     current()
                         .style(Role::Info)
                         .add_modifier(Modifier::UNDERLINED),
                 );
             }
-            Tag::Table(_) => {
+            Tag::Table(alignments) => {
                 self.start_block();
-                self.table = Some(Table::default());
+                self.table = Some(Table {
+                    alignments,
+                    ..Table::default()
+                });
             }
             Tag::TableHead => {
                 if let Some(table) = self.table.as_mut() {
@@ -171,11 +202,7 @@ impl Writer {
                 self.blockquote_depth = self.blockquote_depth.saturating_sub(1);
                 self.needs_blank = true;
             }
-            TagEnd::CodeBlock => {
-                self.flush();
-                self.in_code_block = false;
-                self.needs_blank = true;
-            }
+            TagEnd::CodeBlock => self.end_code_block(),
             TagEnd::List(_) => {
                 self.lists.pop();
                 self.needs_blank = true;
@@ -254,6 +281,10 @@ impl Writer {
     }
 
     fn text(&mut self, text: &str) {
+        if self.in_code_block {
+            self.code_buffer.push_str(text);
+            return;
+        }
         for (index, part) in text.split('\n').enumerate() {
             if index > 0 {
                 self.flush();
@@ -301,6 +332,9 @@ impl Writer {
             };
             line.push_span(Span::raw(prefix.clone()));
         }
+        if self.in_code_block {
+            line.push_span(Span::styled("│ ", current().style(Role::Border)));
+        }
         self.current = Some(line);
     }
 
@@ -308,7 +342,19 @@ impl Writer {
         if let Some(line) = self.current.take()
             && !line.spans.is_empty()
         {
-            self.lines.push(line);
+            let mut continuation = "> ".repeat(self.blockquote_depth);
+            if let Some(item) = self.items.last() {
+                continuation.push_str(&item.continuation);
+            }
+            if self.in_code_block {
+                continuation.push_str("│ ");
+            }
+            self.lines.extend(wrap_line(
+                line,
+                self.width,
+                &continuation,
+                self.in_code_block,
+            ));
         }
     }
 
@@ -329,31 +375,179 @@ impl Writer {
         }
     }
 
+    fn end_code_block(&mut self) {
+        let code = std::mem::take(&mut self.code_buffer);
+        let lines = super::highlight::lines(&code, &self.code_language).unwrap_or_else(|| {
+            code.lines()
+                .map(|line| vec![Span::styled(line.to_owned(), current().style(Role::Code))])
+                .collect()
+        });
+        for spans in lines {
+            self.ensure_line();
+            if let Some(line) = self.current.as_mut() {
+                line.spans.extend(spans);
+            }
+            self.flush();
+        }
+        self.in_code_block = false;
+        self.needs_blank = true;
+    }
+
     fn end_table(&mut self) {
         let Some(table) = self.table.take() else {
             return;
         };
-        for (row, header) in table.rows {
-            self.ensure_line();
-            for (column, mut cell) in row.into_iter().enumerate() {
-                if header {
-                    for span in &mut cell {
-                        span.style = span
-                            .style
-                            .patch(Style::default().add_modifier(Modifier::BOLD));
-                    }
+        let widths: Vec<usize> = (0..table.alignments.len())
+            .map(|column| {
+                table
+                    .rows
+                    .iter()
+                    .filter_map(|(row, _)| row.get(column))
+                    .map(|cell| cell.iter().map(Span::width).sum())
+                    .max()
+                    .unwrap_or(0)
+            })
+            .collect();
+        let prefix_width =
+            self.blockquote_depth * 2 + self.items.last().map_or(0, |item| item.continuation.len());
+        let stacked =
+            widths.iter().sum::<usize>() + widths.len().saturating_sub(1) * 3 + prefix_width
+                > self.width;
+        if stacked && table.rows.len() > 1 {
+            for (row, header) in &table.rows {
+                if *header {
+                    continue;
                 }
-                if let Some(line) = self.current.as_mut() {
-                    if column > 0 {
-                        line.push_span(Span::styled(" │ ", current().style(Role::Border)));
+                for (column, cell) in row.iter().enumerate() {
+                    if let Some(label) = table.rows.first().and_then(|(row, _)| row.get(column)) {
+                        for span in label {
+                            self.push_styled(
+                                &span.content,
+                                span.style.add_modifier(Modifier::BOLD),
+                            );
+                        }
+                        self.push(": ");
                     }
-                    line.spans.append(&mut cell);
+                    for span in cell {
+                        self.push_styled(&span.content, span.style);
+                    }
+                    self.flush();
+                }
+                self.push_blank();
+            }
+        } else {
+            for (row, header) in table.rows {
+                for (column, cell) in row.into_iter().enumerate() {
+                    if column > 0 {
+                        self.push_styled(" │ ", current().style(Role::Border));
+                    }
+                    let padding = widths[column].saturating_sub(cell.iter().map(Span::width).sum());
+                    let left = match table.alignments[column] {
+                        Alignment::Right => padding,
+                        Alignment::Center => padding / 2,
+                        _ => 0,
+                    };
+                    self.push(&" ".repeat(left));
+                    for span in cell {
+                        let style = if header {
+                            span.style.add_modifier(Modifier::BOLD)
+                        } else {
+                            span.style
+                        };
+                        self.push_styled(&span.content, style);
+                    }
+                    self.push(&" ".repeat(padding - left));
+                }
+                self.flush();
+                if header {
+                    self.push_styled(
+                        &widths
+                            .iter()
+                            .map(|width| "─".repeat(*width))
+                            .collect::<Vec<_>>()
+                            .join("─┼─"),
+                        current().style(Role::Border),
+                    );
+                    self.flush();
                 }
             }
-            self.flush();
         }
         self.needs_blank = true;
     }
+}
+
+fn wrap_line(
+    line: Line<'static>,
+    width: usize,
+    continuation: &str,
+    hard: bool,
+) -> Vec<Line<'static>> {
+    if line.width() <= width {
+        return vec![line];
+    }
+    let graphemes: Vec<_> = line.styled_graphemes(line.style).collect();
+    let continuation = if Span::raw(continuation).width() < width {
+        continuation
+    } else {
+        ""
+    };
+    let mut result = Vec::new();
+    let mut start = 0;
+    while start < graphemes.len() {
+        let prefix = if start == 0
+            || Span::raw(continuation).width() + Span::raw(graphemes[start].symbol).width() > width
+        {
+            ""
+        } else {
+            continuation
+        };
+        let content_start = if start == 0 {
+            continuation.chars().count()
+        } else {
+            start
+        };
+        let mut used = Span::raw(prefix).width();
+        let mut end = start;
+        let mut word_break = None;
+        while end < graphemes.len() {
+            let grapheme = &graphemes[end];
+            let next = used + Span::raw(grapheme.symbol).width();
+            if next > width {
+                break;
+            }
+            used = next;
+            if !hard && grapheme.is_whitespace() && end > content_start {
+                word_break = Some(end);
+            }
+            end += 1;
+        }
+        if end < graphemes.len()
+            && !graphemes[end].is_whitespace()
+            && let Some(boundary) = word_break
+        {
+            end = boundary;
+        }
+        // A terminal narrower than one wide grapheme must still make progress.
+        end = end.max(start + 1);
+        let mut wrapped = Line::styled(prefix.to_owned(), line.style);
+        for grapheme in &graphemes[start..end] {
+            if let Some(last) = wrapped.spans.last_mut()
+                && last.style == grapheme.style
+            {
+                last.content.to_mut().push_str(grapheme.symbol);
+            } else {
+                wrapped.push_span(Span::styled(grapheme.symbol.to_owned(), grapheme.style));
+            }
+        }
+        result.push(wrapped);
+        start = end;
+        if !hard {
+            while start < graphemes.len() && graphemes[start].is_whitespace() {
+                start += 1;
+            }
+        }
+    }
+    result
 }
 
 fn heading_style(level: HeadingLevel) -> Style {

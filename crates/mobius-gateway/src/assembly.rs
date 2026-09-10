@@ -248,10 +248,7 @@ pub(crate) async fn assemble(
     let max_model_steps = usize::try_from(chat.agent.config.max_model_steps).map_err(|_| {
         Error::Config("maximum model steps exceed this platform's supported range".into())
     })?;
-    let system_prompt = format!(
-        "{}\n\n{}",
-        chat.bot_description, chat.agent.config.system_prompt
-    );
+    let system_prompt = chat.bot_instructions();
     let mut agent_config = AgentConfig::new(
         models,
         Arc::clone(&sandbox),

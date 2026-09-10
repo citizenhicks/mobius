@@ -3,15 +3,77 @@ import SwiftUI
 
 struct VoiceMenuView: View {
     @Bindable var model: MenuBarModel
+    @Bindable var presentation: VoicePanelController
+    var isPinned = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
     @Environment(\.colorScheme) private var colorScheme
     @State private var isVisible = false
+    @State private var isHovered = false
+    @State private var isTrackingMenu = false
 
     private var palette: MobiusPalette { MobiusPalette(colorScheme) }
+    private var showsControls: Bool {
+        isHovered || isTrackingMenu || presentation.controlsRequested || voiceOverEnabled
+            || model.approval != nil || model.message != nil
+    }
 
     var body: some View {
+        Group {
+            if isMini { miniSurface } else { fullSurface }
+        }
+        .contentShape(Rectangle())
+        .tint(palette.accent)
+        .background {
+            VoiceHoverArea { hovering in
+                isHovered = hovering
+            }
+        }
+        .focusable()
+        .focusEffectDisabled()
+        .onKeyPress(.tab) {
+            presentation.showControls()
+            return .ignored
+        }
+        .onKeyPress(.escape) {
+            presentation.controlsRequested = false
+            return .handled
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) {
+            _ in
+            presentation.controlsRequested = false
+        }
+        .accessibilityAction(named: "Show voice controls", presentation.showControls)
+        .onReceive(NotificationCenter.default.publisher(for: NSMenu.didBeginTrackingNotification)) {
+            _ in
+            isTrackingMenu = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSMenu.didEndTrackingNotification)) {
+            _ in
+            isTrackingMenu = false
+        }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: showsControls)
+        .onGeometryChange(for: CGSize.self) {
+            $0.size
+        } action: { size in
+            if isPinned { presentation.resize(to: size) }
+        }
+        .onAppear {
+            isVisible = true
+            model.refreshChats()
+        }
+        .onDisappear { isVisible = false }
+    }
+
+    private var isMini: Bool {
+        isPinned && presentation.isMini && model.approval == nil && model.message == nil
+    }
+
+    private var fullSurface: some View {
         VStack(spacing: 0) {
-            VoiceSelectionMenus(model: model).padding([.horizontal, .top], MobiusSpace.m)
+            VoiceSelectionMenus(model: model, presentation: presentation)
+                .padding([.horizontal, .top], MobiusSpace.m)
+                .voiceControlsVisible(showsControls)
             voiceSurface
             if let approval = model.approval {
                 VoiceApprovalView(
@@ -32,33 +94,48 @@ struct VoiceMenuView: View {
             }
         }
         .frame(width: 400)
-        .background(palette.canvas)
-        .tint(palette.accent)
-        .onAppear {
-            isVisible = true
-            model.refreshChats()
+        .fixedSize(horizontal: false, vertical: true)
+        .background {
+            if isPinned {
+                VoiceGlassSurface(
+                    shape: MobiusStyle.cardShape,
+                    isActive: model.voice.isConnected && !model.voice.isMuted,
+                    color: model.selectedBot?.color ?? palette.accent)
+            }
         }
-        .onDisappear { isVisible = false }
+        .padding(isPinned ? 8 : 0)
+    }
+
+    private var miniSurface: some View {
+        waveform
+            .frame(width: 80, height: 80)
+            .clipShape(.circle)
+            .background {
+                VoiceGlassSurface(
+                    shape: Circle(),
+                    isActive: model.voice.isConnected && !model.voice.isMuted,
+                    color: model.selectedBot?.color ?? palette.accent)
+            }
+            .contentShape(.circle)
+            .contextMenu {
+                Button("Exit Mini mode", action: presentation.showControls)
+                Button("Keyboard shortcuts…", action: presentation.showKeyboardShortcuts)
+                Button("Unpin voice window", action: presentation.unpin)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Mini voice")
+            .accessibilityValue(model.status)
+            .help("Right-click to show voice controls.")
+            .padding(8)
     }
 
     private var voiceSurface: some View {
         VStack(spacing: 0) {
-            AudioLevelEqualizer(
-                amplitude: isVisible ? sqrt(model.voice.audioLevels.displayLevel) : 0,
-                flare: model.voice.levelFlare,
-                playbackColor: model.voice.audioLevels.isPlaybackActive ? playbackColor : nil
-            )
-            .frame(height: 80)
-            .padding(.horizontal, MobiusSpace.l)
-            .animation(
-                reduceMotion ? nil : .smooth(duration: 0.09),
-                value: [model.voice.audioLevels.displayLevel, model.voice.levelFlare]
-            )
-            .accessibilityHidden(true)
+            waveform
+                .frame(height: 80)
+                .padding(.horizontal, MobiusSpace.l)
             HStack(spacing: MobiusSpace.s) {
-                Button {
-                    model.voice.isMuted.toggle()
-                } label: {
+                Button(action: model.toggleMicrophone) {
                     VoiceIcon(
                         model.voice.isMuted ? "micOff01" : "mic01", size: MobiusStyle.iconSize
                     )
@@ -81,13 +158,7 @@ struct VoiceMenuView: View {
                         .multilineTextAlignment(.center)
                 }
                 Spacer(minLength: 0)
-                Button {
-                    if model.voiceCall == nil {
-                        model.startVoice()
-                    } else {
-                        model.stopVoice()
-                    }
-                } label: {
+                Button(action: model.toggleVoice) {
                     VoiceIcon(
                         model.voiceCall == nil ? "playFill" : "stopFill", size: MobiusStyle.iconSize
                     )
@@ -103,7 +174,21 @@ struct VoiceMenuView: View {
             }
             .padding(.horizontal, MobiusSpace.s)
             .padding(.bottom, MobiusSpace.s)
+            .voiceControlsVisible(showsControls)
         }
+    }
+
+    private var waveform: some View {
+        AudioLevelEqualizer(
+            amplitude: isVisible ? sqrt(model.voice.audioLevels.displayLevel) : 0,
+            flare: model.voice.levelFlare,
+            playbackColor: model.voice.audioLevels.isPlaybackActive ? playbackColor : nil
+        )
+        .animation(
+            reduceMotion ? nil : .smooth(duration: 0.09),
+            value: [model.voice.audioLevels.displayLevel, model.voice.levelFlare]
+        )
+        .accessibilityHidden(true)
     }
 
     private var microphoneLabel: String {
@@ -120,6 +205,8 @@ struct VoiceMenuView: View {
 
 private struct VoiceSelectionMenus: View {
     @Bindable var model: MenuBarModel
+    let presentation: VoicePanelController
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
 
     private var palette: MobiusPalette { MobiusPalette(colorScheme) }
@@ -215,8 +302,14 @@ private struct VoiceSelectionMenus: View {
                         VoiceIcon.menuImage("plus", color: .primary, scheme: colorScheme)
                     }
                     .tag(nil as String?)
-                    ForEach(model.matchingChats) { chat in
-                        Text(verbatim: chat.name).tag(Optional(chat.id))
+                    ForEach(model.chatGroups, id: \.workspace) { group in
+                        Section {
+                            ForEach(group.chats) { chat in
+                                Text(verbatim: chat.name).tag(Optional(chat.id))
+                            }
+                        } header: {
+                            Text(verbatim: folderName(group.workspace)).help(group.workspace)
+                        }
                     }
                 }
                 .pickerStyle(.inline)
@@ -244,6 +337,17 @@ private struct VoiceSelectionMenus: View {
 
     private var options: some View {
         Menu {
+            if presentation.corner != nil {
+                Button("Mini mode") { presentation.isMini = true }
+                Button("Unpin voice window") { presentation.unpin() }
+            }
+            Menu("Pin to corner") {
+                ForEach(VoiceCorner.allCases) { corner in
+                    Button(corner.title) { pin(to: corner) }
+                }
+            }
+            Divider()
+            Button("Keyboard shortcuts…", action: presentation.showKeyboardShortcuts)
             Button("Refresh chats") { model.refreshChats() }
             Button("Reconnect gateway") { model.connect() }
                 .disabled(model.isConnecting)
@@ -254,11 +358,19 @@ private struct VoiceSelectionMenus: View {
             VoiceIcon.menuImage(
                 "dotsThree", color: .primary, size: MobiusStyle.iconSize, scheme: colorScheme)
         }
-        .frame(width: MobiusStyle.rowCompact, height: MobiusStyle.rowRegular)
-        .menuStyle(.borderlessButton)
+        .menuStyle(.button)
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
+        .controlSize(.small)
         .menuIndicator(.hidden)
         .fixedSize()
         .accessibilityLabel("Gateway voice options")
+    }
+
+    private func pin(to corner: VoiceCorner) {
+        let wasPinned = presentation.corner != nil
+        presentation.pin(to: corner)
+        if !wasPinned { dismiss() }
     }
 
     private func folderName(_ path: String) -> String {
@@ -281,12 +393,50 @@ private struct VoiceSelectionMenus: View {
 
 }
 
-private extension View {
-    func pillSurface(_ palette: MobiusPalette) -> some View {
+extension View {
+    func voiceControlsVisible(_ visible: Bool) -> some View {
+        opacity(visible ? 1 : 0)
+            .allowsHitTesting(visible)
+            .accessibilityHidden(!visible)
+    }
+
+    fileprivate func pillSurface(_ palette: MobiusPalette) -> some View {
         frame(maxWidth: .infinity, minHeight: MobiusStyle.controlHeight)
             .padding(.horizontal, MobiusSpace.s)
             .background(palette.panel, in: .capsule)
             .overlay { Capsule().strokeBorder(palette.line, lineWidth: MobiusStyle.borderWidth) }
             .contentShape(.capsule)
+    }
+}
+
+private struct VoiceGlassSurface<Surface: InsettableShape>: View {
+    let shape: Surface
+    let isActive: Bool
+    let color: Color
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Color.clear
+            .glassEffect(.regular, in: shape)
+            .opacity(0.82)
+            .overlay {
+                TimelineView(
+                    .animation(minimumInterval: 1.0 / 30, paused: !isActive || reduceMotion)
+                ) { timeline in
+                    let phase = timeline.date.timeIntervalSinceReferenceDate * .pi
+                    let glow = reduceMotion ? 0.65 : 0.45 + 0.25 * sin(phase)
+                    shape
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [.white.opacity(0.7), color, color.opacity(0.6)],
+                                startPoint: .topLeading, endPoint: .bottomTrailing),
+                            lineWidth: 1.5
+                        )
+                        .shadow(color: color.opacity(glow), radius: 6)
+                        .opacity(isActive ? glow : 0)
+                }
+            }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 }

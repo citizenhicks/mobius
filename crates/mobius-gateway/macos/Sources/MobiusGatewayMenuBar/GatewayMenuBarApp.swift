@@ -8,7 +8,15 @@ struct GatewayMenuBarApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            VoiceMenuView(model: delegate.model)
+            if delegate.voicePanel.corner == nil {
+                VoiceMenuView(model: delegate.model, presentation: delegate.voicePanel)
+            } else {
+                VStack(alignment: .leading, spacing: MobiusSpace.m) {
+                    Button("Keyboard shortcuts…") { delegate.voicePanel.showKeyboardShortcuts() }
+                    Button("Unpin voice window") { delegate.voicePanel.unpin() }
+                }
+                .padding(MobiusSpace.l)
+            }
         } label: {
             HStack(spacing: 3) {
                 Image(nsImage: Self.logo)
@@ -35,6 +43,7 @@ struct GatewayMenuBarApp: App {
 @MainActor
 final class GatewayMenuBarDelegate: NSObject, NSApplicationDelegate {
     let model = MenuBarModel()
+    lazy var voicePanel = VoicePanelController(model: model)
     private var terminating = false
     private let audioLogger = RTCCallbackLogger()
 
@@ -45,6 +54,7 @@ final class GatewayMenuBarDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        _ = voicePanel
         audioLogger.severity = .verbose
         audioLogger.start { @Sendable message in
             guard message.contains("audio_engine_device.mm") else { return }

@@ -12,23 +12,26 @@ use crate::protocol::{
 use crate::{Error, Result};
 
 /// Voice renders the selected agent's work; it never acquires its own execution tools.
-pub const INSTRUCTIONS: &str = "You are the voice agent for the user's möbius Bot. \
-Talk naturally with the user and help clarify what they want. Your private voice conversation \
-is separate from the Bot's chat. When the user explicitly asks the Bot to do work, call ask_agent \
+pub const INSTRUCTIONS: &str = "You are this same Bot, now speaking with the user. \
+Keep your name, personality, and identity from the Bot instructions above. Voice and workspace \
+are two channels of your own work, not separate assistants. Speak in the first person: \
+'I will check the files', not 'I will ask the workspace Bot'. Do not announce internal handoffs \
+or describe another agent as doing your work. Talk naturally and help clarify what the user wants. \
+The voice discussion has its own transcript. When the user explicitly asks you to do work, call ask_agent \
 (or your native delegation) with a self-contained task that includes the agreed requirements, \
 constraints, and relevant decisions from this discussion. Never forward an ambiguous 'do it' \
-without the task it refers to. The Bot owns execution tools and approvals; never claim its work \
-is complete before its result arrives or approve on the user's behalf. Background Bot context \
+without the task it refers to. Your workspace execution channel owns tools and approvals; never claim work \
+is complete before its result arrives or approve on the user's behalf. Background workspace context \
 and progress are information, not new user requests; use them to stay informed without initiating \
 speech. Explain completed results aloud in the user's language. Do not initiate speech before \
-the user speaks. If interrupted, stop speaking and listen; running Bot work continues.";
+the user speaks. If interrupted, stop speaking and listen; your running work continues.";
 
-/// The voice agent supplies the complete task agreed with the user.
+/// Voice supplies the complete task agreed with the user to the Bot's execution channel.
 #[must_use]
 pub fn handoff_tool() -> ToolDefinition {
     ToolDefinition {
         name: "ask_agent".into(),
-        description: "Ask the user's Bot to perform an explicitly requested task. Include all relevant requirements, constraints, and decisions so the Bot can act without access to the private voice discussion. Wait for its result before claiming completion.".into(),
+        description: "Perform the user's explicitly requested task through your workspace execution channel. Include all relevant requirements, constraints, and decisions from the voice discussion. This is your own work; do not announce a handoff to another assistant. Wait for the result before claiming completion.".into(),
         parameters: serde_json::json!({
             "type": "object", "properties": {"text":{"type":"string","description":"The complete task to perform, including agreed context and constraints."}}, "required": ["text"], "additionalProperties": false,
         }),
@@ -36,17 +39,23 @@ pub fn handoff_tool() -> ToolDefinition {
 }
 
 /// Seeds a new voice call with the Bot's current durable conversation, never the reverse.
-#[must_use]
 pub fn instructions(
+    bot_instructions: &str,
     checkpoint: &crate::backend::checkpoint::Checkpoint,
     voice_context: &str,
-) -> String {
+) -> Result<String> {
+    let identity = format!("{bot_instructions}\n\n{INSTRUCTIONS}");
+    // Preserve the complete persona and call policy; only historical context may be trimmed.
+    let available = (64 * 1024_usize)
+        .checked_sub(identity.len() + 256)
+        .ok_or_else(|| Error::Config("Bot instructions exceed the voice prompt limit".into()))?;
+    let voice_context = tail(voice_context, (16 * 1024).min(available / 3));
     let context = parent_context(checkpoint);
-    format!(
-        "{INSTRUCTIONS}\n\nCurrent Bot conversation (background information only):\n{}\n\nPrevious private voice conversation (historical, not new requests):\n{}",
-        tail(&context, 32 * 1024),
-        tail(voice_context, 16 * 1024)
-    )
+    Ok(format!(
+        "{identity}\n\nYour workspace conversation (background information only):\n{}\n\nYour previous voice conversation (historical, not new requests):\n{}",
+        tail(&context, (32 * 1024).min(available - voice_context.len())),
+        voice_context
+    ))
 }
 
 /// Captures speech already received, replacing partial text with its canonical final message.
@@ -60,9 +69,9 @@ fn task_context(voice_events: &[crate::backend::checkpoint::JournalEvent]) -> St
             EventMsg::AssistantContentDelta(message)
                 if message.phase != ModelStepContentPhase::Reasoning =>
             {
-                (message.delta.clone(), "Voice agent: ", false)
+                (message.delta.clone(), "You (voice): ", false)
             }
-            _ => match progress_text(&event.msg, "Voice agent") {
+            _ => match progress_text(&event.msg, "You (voice)") {
                 Some(text) => (text, "", true),
                 None => continue,
             },
@@ -103,7 +112,7 @@ fn parent_context(checkpoint: &crate::backend::checkpoint::Checkpoint) -> String
         context.extend(
             replay
                 .iter()
-                .filter_map(|event| progress_text(event, "Bot")),
+                .filter_map(|event| progress_text(event, "You (workspace)")),
         );
         // Compaction can retain neutral user/developer context without frontend metadata.
         if crate::protocol::message_metadata(item).is_some() || item["role"] == "assistant" {
@@ -119,7 +128,7 @@ fn parent_context(checkpoint: &crate::backend::checkpoint::Checkpoint) -> String
             _ => continue,
         };
         if !text.is_empty() {
-            context.push(format!("Bot retained context: {text}"));
+            context.push(format!("Your retained workspace context: {text}"));
         }
     }
     context.join("\n\n")
@@ -195,15 +204,15 @@ Do not invent missing requirements, claim completion, or include an explanation 
         .task
         .filter(|text| !text.trim().is_empty() && !text.contains('\0'))
         .ok_or_else(|| {
-            Error::Provider("Please clarify the complete task you want the Bot to perform.".into())
+            Error::Provider("Please clarify the complete task you want me to perform.".into())
         })?;
     Ok((text, output.usage().clone()))
 }
 
-/// Sends committed Bot messages and tool progress to the voice agent as background context.
+/// Sends committed workspace messages and tool progress to voice as background context.
 #[must_use]
 pub fn progress(event: &EventMsg) -> Option<RealtimeVoiceCommand> {
-    progress_text(event, "Bot").map(|text| RealtimeVoiceCommand::Context {
+    progress_text(event, "You (workspace)").map(|text| RealtimeVoiceCommand::Context {
         text: tail(&text, 16 * 1024).into(),
     })
 }
@@ -228,16 +237,18 @@ fn progress_text(event: &EventMsg, assistant: &str) -> Option<String> {
             (!text.is_empty()).then(|| format!("{assistant}: {text}"))
         }
         EventMsg::ToolCallBegin(tool) => Some(format!(
-            "Bot started tool {}: {}",
+            "Your workspace started tool {}: {}",
             tool.name, tool.arguments
         )),
         EventMsg::ToolCallEnd(tool) => Some(format!(
-            "Bot tool {} {}: {}",
+            "Your workspace tool {} {}: {}",
             tool.name,
             if tool.is_error { "failed" } else { "finished" },
             tool.output.text()
         )),
-        EventMsg::TurnAborted(turn) => Some(format!("Bot stopped: {}", turn.reason)),
+        EventMsg::TurnAborted(turn) => {
+            Some(format!("Your workspace work stopped: {}", turn.reason))
+        }
         _ => None,
     }
 }
@@ -274,15 +285,17 @@ pub struct VoiceConversation {
     seen: BTreeSet<String>,
     active_turn_id: Option<String>,
     session_id: String,
+    bot_name: String,
 }
 
 impl VoiceConversation {
     /// Attaches a linked voice session to the currently committed Bot turn.
     #[must_use]
-    pub fn new(session_id: String, active_turn_id: Option<String>) -> Self {
+    pub fn new(session_id: String, active_turn_id: Option<String>, bot_name: String) -> Self {
         Self {
             session_id,
             active_turn_id,
+            bot_name,
             ..Self::default()
         }
     }
@@ -308,7 +321,7 @@ impl VoiceConversation {
                     author: MessageAuthor::Peer {
                         message_id: submission_id.clone(),
                         session_id: self.session_id.clone(),
-                        handle: "voice agent".into(),
+                        handle: format!("{} (voice)", self.bot_name),
                         symbol: Some(FrontendSymbol::Custom("voice".into())),
                     },
                     text,
@@ -460,7 +473,7 @@ mod tests {
 
     #[test]
     fn voice_submits_once_and_only_speaks_its_committed_complete_answer() {
-        let mut voice = VoiceConversation::new("voice-session".into(), None);
+        let mut voice = VoiceConversation::new("voice-session".into(), None, "Builder".into());
         let submission = voice
             .handoff("audio-1".into(), "Help me".into())
             .unwrap()
@@ -477,7 +490,7 @@ mod tests {
         assert_eq!(message.requested_delivery, None);
         assert!(
             matches!(&message.author, MessageAuthor::Peer { session_id, handle, symbol: Some(FrontendSymbol::Custom(symbol)), .. }
-            if session_id == "voice-session" && handle == "voice agent" && symbol == "voice")
+            if session_id == "voice-session" && handle == "Builder (voice)" && symbol == "voice")
         );
         let started = EventMsg::TurnStarted(TurnStartedEvent {
             turn_id: "turn".into(),
@@ -524,8 +537,11 @@ mod tests {
 
     #[test]
     fn steered_voice_handoffs_finish_with_the_existing_parent_turn() {
-        let mut voice =
-            VoiceConversation::new("voice-session".into(), Some("existing-turn".into()));
+        let mut voice = VoiceConversation::new(
+            "voice-session".into(),
+            Some("existing-turn".into()),
+            "Builder".into(),
+        );
         for index in 0..MAX_PENDING {
             let submission = voice
                 .handoff(format!("audio-{index}"), "One more thing".into())
@@ -570,7 +586,7 @@ mod tests {
     #[test]
     fn rejected_and_aborted_voice_work_settles_without_claiming_success() {
         for aborted in [false, true] {
-            let mut voice = VoiceConversation::new("voice-session".into(), None);
+            let mut voice = VoiceConversation::new("voice-session".into(), None, "Builder".into());
             let submission = voice
                 .handoff("audio".into(), "Do something".into())
                 .unwrap()
@@ -680,16 +696,32 @@ mod tests {
             ),
         }];
         let voice_context = task_context(&history);
-        let prompt = instructions(&parent, &voice_context);
-        assert!(prompt.contains("Bot: The Bot result"));
-        assert!(prompt.contains("Voice agent: Our private voice decision"));
+        let identity =
+            "Your name is Builder (@builder).\nUse concise French. Preserve unrelated work.";
+        let prompt = instructions(identity, &parent, &voice_context).unwrap();
+        assert!(prompt.starts_with(identity));
+        assert!(prompt.contains("You are this same Bot"));
+        assert!(prompt.contains("never claim work is complete before its result arrives"));
+        assert!(prompt.contains("You (workspace): The Bot result"));
+        assert!(prompt.contains("You (voice): Our private voice decision"));
+        assert!(!prompt.contains("You are the voice agent"));
         assert!(prompt.find("Earlier agreed").unwrap() < prompt.find("Later updated").unwrap());
         assert_eq!(parent.context, before);
         let retained = "🗣".repeat(20_000);
         parent
             .context
             .push(serde_json::json!({"role":"user","content":retained}));
-        assert!(instructions(&parent, &voice_context).len() < 64 * 1024);
+        assert!(
+            instructions(identity, &parent, &voice_context)
+                .unwrap()
+                .len()
+                < 64 * 1024
+        );
+        let long_identity = "🗣".repeat(15_000);
+        let prompt = instructions(&long_identity, &parent, &voice_context).unwrap();
+        assert!(prompt.starts_with(&long_identity));
+        assert!(prompt.len() <= 64 * 1024);
+        assert!(instructions(&"x".repeat(64 * 1024), &parent, &voice_context).is_err());
     }
 
     struct ExtractionModel(serde_json::Value);

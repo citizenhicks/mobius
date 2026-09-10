@@ -303,6 +303,7 @@ fn dashboard_state() -> super::state::DashboardState {
     super::state::DashboardState {
         endpoint: String::new(),
         gateway: ReadyPayload {
+            gateway_version: env!("CARGO_PKG_VERSION").into(),
             machine_name: String::new(),
             bots: Vec::new(),
             sessions: Vec::new(),
@@ -409,4 +410,20 @@ fn widget(content: FrontendWidgetContent) -> FrontendWidget {
         content: Some(content),
         action: None,
     }
+}
+
+#[test]
+fn dashboard_header_shows_the_connected_gateway_version() {
+    let mut state = dashboard_state();
+    state.gateway.gateway_version = "9.8.7".into();
+    let mut terminal = Terminal::new(TestBackend::new(80, 3)).expect("terminal");
+    terminal
+        .draw(|frame| super::view::render_header(frame, frame.area(), &state))
+        .expect("draw header");
+    assert!(
+        terminal
+            .backend()
+            .to_string()
+            .contains("MÖBIUS GATEWAY v9.8.7")
+    );
 }

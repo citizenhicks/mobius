@@ -107,6 +107,8 @@ pub(super) struct ProviderCutoverStatus {
 }
 
 pub(crate) struct RealtimeModel {
+    pub(crate) bot_name: String,
+    pub(crate) bot_instructions: String,
     pub(crate) router: Arc<ModelRouter>,
     pub(crate) voice: Option<String>,
     pub(crate) route: String,

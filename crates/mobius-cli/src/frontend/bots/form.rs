@@ -67,13 +67,14 @@ impl TextForm {
 
 pub(super) enum BotFormMode {
     Create,
-    Update(String),
+    Update { id: String, revision: u64 },
 }
 
 pub(super) struct BotForm {
     pub(super) mode: BotFormMode,
     pub(super) name: TextForm,
     pub(super) description: TextForm,
+    pub(super) prompt: Option<TextForm>,
     pub(super) row: usize,
     pub(super) error: Option<String>,
 }
@@ -84,6 +85,7 @@ impl BotForm {
             mode: BotFormMode::Create,
             name: TextForm::new("", MAX_BOT_NAME_BYTES),
             description: TextForm::new("", MAX_BOT_DESCRIPTION_BYTES),
+            prompt: None,
             row: 0,
             error: None,
         }
@@ -91,9 +93,16 @@ impl BotForm {
 
     pub(super) fn update(bot: &BotRecord) -> Self {
         Self {
-            mode: BotFormMode::Update(bot.id.clone()),
+            mode: BotFormMode::Update {
+                id: bot.id.clone(),
+                revision: bot.config.revision,
+            },
             name: TextForm::new(&bot.name, MAX_BOT_NAME_BYTES),
             description: TextForm::new(&bot.description, MAX_BOT_DESCRIPTION_BYTES),
+            prompt: Some(TextForm::multiline(
+                &bot.config.config.system_prompt,
+                64 * 1024,
+            )),
             row: 0,
             error: None,
         }
@@ -232,11 +241,11 @@ impl Form {
 
     pub(super) fn paste(&mut self, value: &str) {
         match self {
-            Self::Bot(form) => match form.row {
-                0 => form.name.push(value),
-                1 => form.description.push(value),
-                _ => {}
-            },
+            Self::Bot(form) => {
+                if let Some(field) = form.selected_text_field() {
+                    field.push(value);
+                }
+            }
             Self::CreateSwarm(form) if form.row == 0 => form.title.push(value),
             Self::RenameSwarm { title, .. } => title.push(value),
             Self::Routine(form) => form.paste(value),
@@ -246,29 +255,51 @@ impl Form {
 }
 
 impl BotForm {
+    pub(super) fn save_row(&self) -> usize {
+        2 + usize::from(self.prompt.is_some())
+    }
+
+    fn selected_text_field(&mut self) -> Option<&mut TextForm> {
+        match self.row {
+            0 => Some(&mut self.name),
+            1 => Some(&mut self.description),
+            2 => self.prompt.as_mut(),
+            _ => None,
+        }
+    }
+
     fn handle_key(&mut self, key: KeyEvent, gateway: &ReadyPayload) -> FormFlow {
         match key.code {
-            KeyCode::Up | KeyCode::BackTab => self.row = moved(self.row, 3, -1),
-            KeyCode::Down | KeyCode::Tab => self.row = moved(self.row, 3, 1),
-            KeyCode::Enter if self.row < 2 => self.row += 1,
+            KeyCode::Up | KeyCode::BackTab => self.row = moved(self.row, self.save_row() + 1, -1),
+            KeyCode::Down | KeyCode::Tab => self.row = moved(self.row, self.save_row() + 1, 1),
+            KeyCode::Enter if self.row == 2 && key.modifiers.contains(KeyModifiers::SHIFT) => {
+                if let Some(prompt) = self.prompt.as_mut() {
+                    prompt.push("\n");
+                }
+            }
+            KeyCode::Enter if self.row < self.save_row() => self.row += 1,
             KeyCode::Enter => return self.submit(gateway),
             KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 return self.submit(gateway);
             }
-            KeyCode::Backspace => match self.row {
-                0 => self.name.backspace(),
-                1 => self.description.backspace(),
-                _ => {}
-            },
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(field) = self.selected_text_field() {
+                    field.value.clear();
+                    field.error = None;
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(field) = self.selected_text_field() {
+                    field.backspace();
+                }
+            }
             KeyCode::Char(character)
                 if !key
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
-                match self.row {
-                    0 => self.name.push(&character.to_string()),
-                    1 => self.description.push(&character.to_string()),
-                    _ => {}
+                if let Some(field) = self.selected_text_field() {
+                    field.push(&character.to_string());
                 }
             }
             _ => {}
@@ -294,22 +325,26 @@ impl BotForm {
                     }
                 }))
             }
-            BotFormMode::Update(id) => {
+            BotFormMode::Update { id, revision } => {
                 let Some(bot) = gateway.bots.iter().find(|bot| bot.id == *id) else {
                     self.error = Some("The selected Bot is no longer available.".into());
                     return FormFlow::Stay;
                 };
+                let mut config = bot.config.config.clone();
+                if let Some(prompt) = &self.prompt {
+                    config.system_prompt.clone_from(&prompt.value);
+                }
                 FormFlow::Send(request_action(
-                    "Update Bot identity",
+                    "Update Bot identity and prompt",
                     FollowUp::None,
                     |request_id| ClientMessage::UpdateBot {
                         request_id,
                         id: id.clone(),
-                        expected_revision: bot.config.revision,
+                        expected_revision: *revision,
                         name,
                         description,
                         tint: bot.tint,
-                        config: bot.config.config.clone(),
+                        config,
                     },
                 ))
             }

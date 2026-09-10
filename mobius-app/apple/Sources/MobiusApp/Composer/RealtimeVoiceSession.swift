@@ -297,15 +297,22 @@ struct AudioLevelEqualizer: View {
     var flare: Double
     @AnimatableIgnored var playbackColor: Color?
 
+    private var isPaused: Bool {
+        #if os(macOS)
+            reduceMotion || amplitude == 0
+        #else
+            reduceMotion || scenePhase != .active || amplitude == 0
+        #endif
+    }
+
     var body: some View {
         TimelineView(
             .animation(
                 minimumInterval: 1.0 / 60.0,
-                paused: reduceMotion || scenePhase != .active || amplitude == 0
+                paused: isPaused
             )
         ) { _ in
-            let time =
-                reduceMotion || scenePhase != .active ? 0 : ProcessInfo.processInfo.systemUptime
+            let time = isPaused ? 0 : ProcessInfo.processInfo.systemUptime
             particles(at: time)
         }
     }
@@ -317,7 +324,7 @@ struct AudioLevelEqualizer: View {
             let ceiling = (size.height - 8) / (1 + reflection)
             let baseline = size.height - 4 - ceiling * reflection
             let step = 4.0
-            let columns = 96
+            let columns = min(96, max(2, Int(size.width / step)))
             // One mountain that widens outward from the centre as the voice grows.
             // Smaller variance is a sharper peak.
             let variance = 0.02 + 0.12 * amplitude + 0.05 * flare

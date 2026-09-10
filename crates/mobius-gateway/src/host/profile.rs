@@ -253,6 +253,7 @@ pub(super) async fn gateway_ready(
             .map_err(internal)?,
     );
     Ok(ReadyPayload {
+        gateway_version: env!("CARGO_PKG_VERSION").into(),
         machine_name: local_machine_name().map_err(internal)?,
         bots: state.bots.bots().map_err(internal)?,
         sessions: session_catalog(&state.checkpoints, &state.activities)

@@ -69,19 +69,37 @@ fn render_form(frame: &mut ratatui::Frame<'_>, area: Rect, form: &Form, gateway:
         Form::Bot(form) => {
             let title = match form.mode {
                 BotFormMode::Create => "Create Bot",
-                BotFormMode::Update(_) => "Edit Bot",
+                BotFormMode::Update { .. } => "Edit Bot",
             };
+            let mut lines = vec![
+                form_line("Name", &form.name.value, form.row == 0),
+                form_line("Description", &form.description.value, form.row == 1),
+            ];
+            if let Some(prompt) = &form.prompt {
+                lines.push(form_line("System prompt", "", form.row == 2));
+                let role = if form.row == 2 {
+                    Role::Selection
+                } else {
+                    Role::Text
+                };
+                lines.extend(
+                    terminal_text(&prompt.value)
+                        .split('\n')
+                        .map(|line| Line::styled(format!("  {line}"), current().style(role))),
+                );
+            }
+            lines.push(choice_line("Save", form.row == form.save_row()));
             (
                 title,
-                vec![
-                    form_line("Name", &form.name.value, form.row == 0),
-                    form_line("Description", &form.description.value, form.row == 1),
-                    choice_line("Save", form.row == 2),
-                ],
+                lines,
                 form.error
                     .as_deref()
                     .or(form.name.error.as_deref())
-                    .or(form.description.error.as_deref()),
+                    .or(form.description.error.as_deref())
+                    .or(form
+                        .prompt
+                        .as_ref()
+                        .and_then(|prompt| prompt.error.as_deref())),
             )
         }
         Form::CreateSwarm(form) => {
@@ -197,10 +215,18 @@ fn render_form(frame: &mut ratatui::Frame<'_>, area: Rect, form: &Form, gateway:
             current().style(Role::Error),
         ));
     }
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let scroll = if matches!(form, Form::Bot(bot) if bot.row >= 2) {
+        paragraph
+            .line_count(area.width.saturating_sub(2))
+            .saturating_sub(usize::from(area.height.saturating_sub(2)))
+    } else {
+        0
+    };
     frame.render_widget(
-        Paragraph::new(lines)
+        paragraph
             .block(panel(title))
-            .wrap(Wrap { trim: false }),
+            .scroll((u16::try_from(scroll).unwrap_or(u16::MAX), 0)),
         area,
     );
 }
@@ -400,6 +426,7 @@ fn render_bot(
         .filter(|routine| routine.bot_id == bot_id)
         .count();
     let lines = rows.iter().map(|row| match row {
+        BotRow::Identity => Line::from(" Identity & system prompt"),
         BotRow::Model => Line::from(" Model & reasoning"),
         BotRow::Capabilities => Line::from(" Capabilities"),
         BotRow::Conversations => Line::from(format!(" Conversations · {chats}")),
@@ -690,6 +717,9 @@ fn confirmation_text(confirmation: &Confirmation) -> String {
 }
 
 fn footer_text(state: &BotsState) -> &'static str {
+    if matches!(state.form, Some(Form::Bot(_))) {
+        return "tab select · ctrl+u clear · shift+enter newline · ctrl+s save · esc cancel";
+    }
     if state.form.is_some() {
         return "tab/↑↓ select · type edit · enter continue/save · esc cancel";
     }
@@ -698,7 +728,7 @@ fn footer_text(state: &BotsState) -> &'static str {
     }
     match state.page {
         Page::Root => "↑↓ select · n new Bot · s new Swarm · e edit · x delete · q close",
-        Page::Bot(_) => "↑↓ select · enter open · e edit identity · esc back",
+        Page::Bot(_) => "↑↓ select · enter open · e edit identity/prompt · esc back",
         Page::Conversations(_) => "↑↓ inspect · esc back",
         Page::Routines(_) => {
             "↑↓ select · n new · enter open · e edit · space enable · r run · x delete"

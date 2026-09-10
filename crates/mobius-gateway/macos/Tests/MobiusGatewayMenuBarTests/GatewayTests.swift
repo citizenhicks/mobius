@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import Foundation
 import Network
 import Observation
@@ -6,6 +7,117 @@ import Synchronization
 import SwiftUI
 import Testing
 @testable import MobiusGatewayMenuBar
+
+@Test @MainActor func pinnedVoiceKeepsItsCornerWhenControlsExpand() {
+    let screen = CGRect(x: -1600, y: 40, width: 1600, height: 900)
+    for corner in VoiceCorner.allCases {
+        let compact = corner.frame(for: CGSize(width: 416, height: 96), in: screen)
+        let expanded = corner.frame(for: CGSize(width: 416, height: 240), in: screen)
+        #expect(screen.contains(compact) && screen.contains(expanded))
+        #expect(compact.minX == expanded.minX)
+        if corner == .topLeft || corner == .topRight {
+            #expect(compact.maxY == expanded.maxY)
+            #expect(expanded.maxY == screen.maxY - MobiusSpace.l)
+        } else {
+            #expect(compact.minY == expanded.minY)
+            #expect(expanded.minY == screen.minY + MobiusSpace.l)
+        }
+    }
+    let oversized = VoiceCorner.bottomRight.frame(
+        for: CGSize(width: 3000, height: 2000), in: screen)
+    #expect(screen.contains(oversized))
+}
+
+@Test @MainActor func pinnedControlsAndMiniModeKeepTheirCornerAndAllowMenuFocus() async throws {
+    _ = NSApplication.shared
+    // SwiftPM tests do not carry the app's compiled asset catalog.
+    for name in ["aiScan", "folder", "chatCircle", "dotsThree", "mic01", "playFill", "plus"] {
+        NSImage(size: NSSize(width: 16, height: 16)).setName("hi.\(name)")
+    }
+    let model = MenuBarModel()
+    let suite = "mobius-mini-test-\(UUID())"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let presentation = VoicePanelController(model: model, defaults: defaults)
+    presentation.pin(to: .bottomRight)
+    defer { presentation.unpin() }
+    let panel = try #require(
+        NSApplication.shared.windows.first { $0.delegate === presentation } as? NSPanel)
+    let controls = NSHostingView(
+        rootView: Text("Options").frame(height: 44).voiceControlsVisible(false))
+    let hiddenSize = controls.fittingSize
+    controls.rootView = Text("Options").frame(height: 44).voiceControlsVisible(true)
+    #expect(controls.fittingSize == hiddenSize)
+    #expect(hiddenSize.height == 44)
+    #expect(panel.canBecomeKey && !panel.becomesKeyOnlyIfNeeded)
+    try await eventually { panel.frame.width == 416 }
+    let expandedFrame = panel.frame
+    presentation.isMini = true
+    try await eventually { panel.frame.size == CGSize(width: 96, height: 96) }
+    #expect(panel.frame.maxX == expandedFrame.maxX && panel.frame.minY == expandedFrame.minY)
+    model.message = "Voice needs attention"
+    try await eventually { panel.frame.width == 416 }
+    model.message = nil
+    try await eventually { panel.frame.width == 96 }
+    presentation.showControls()
+    try await eventually { panel.frame.width == 416 }
+    #expect(!presentation.isMini)
+    presentation.windowWillClose(
+        Notification(name: NSWindow.willCloseNotification, object: NSWindow()))
+    #expect(presentation.corner == .bottomRight)
+    model.toggleMicrophone()
+    model.toggleVoice()
+    #expect(!model.voice.isMuted && model.voiceCall == nil)
+}
+
+@Test @MainActor func voiceShortcutsRejectConflictsAndPersistAssignments() throws {
+    _ = NSApplication.shared
+    let suite = "mobius-shortcuts-test-\(UUID())"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let shortcuts = VoiceShortcuts(defaults: defaults) { _ in
+        Issue.record("Recording triggered a voice control")
+    }
+    func event(code: Int, character: Int, modifiers: NSEvent.ModifierFlags) throws -> NSEvent {
+        let text = String(try #require(UnicodeScalar(character)))
+        return try #require(
+            NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
+                windowNumber: 0, context: nil, characters: text, charactersIgnoringModifiers: text,
+                isARepeat: false, keyCode: UInt16(code)))
+    }
+    let modifiers: NSEvent.ModifierFlags = [.command, .control, .option]
+    let combined = try VoiceShortcut(
+        event: event(code: kVK_ANSI_K, character: 107, modifiers: modifiers))
+    #expect(combined.label == "⌃⌥⌘K")
+    #expect(combined.modifiers == UInt32(controlKey | optionKey | cmdKey))
+    let first = try VoiceShortcut(
+        event: event(code: kVK_F18, character: NSF18FunctionKey, modifiers: modifiers))
+    let second = try VoiceShortcut(
+        event: event(code: kVK_F19, character: NSF19FunctionKey, modifiers: modifiers))
+    #expect(first.label == "⌃⌥⌘F18")
+    #expect(throws: VoiceShortcutError.self) {
+        try VoiceShortcut(event: event(code: kVK_ANSI_V, character: 118, modifiers: []))
+    }
+    try shortcuts.set(first, for: .call)
+    #expect(throws: VoiceShortcutError.self) { try shortcuts.set(first, for: .microphone) }
+    #expect(shortcuts.shortcut(for: .call) == first && shortcuts.shortcut(for: .microphone) == nil)
+    var blocker: EventHotKeyRef?
+    #expect(
+        RegisterEventHotKey(
+            second.keyCode, second.modifiers, EventHotKeyID(signature: 0x74657374, id: 1),
+            GetApplicationEventTarget(), OptionBits(kEventHotKeyExclusive), &blocker) == noErr)
+    defer { if let blocker { UnregisterEventHotKey(blocker) } }
+    #expect(throws: VoiceShortcutError.self) { try shortcuts.set(second, for: .call) }
+    #expect(shortcuts.shortcut(for: .call) == first)
+    shortcuts.beginRecording(.call)
+    let restored = VoiceShortcuts(defaults: defaults) { _ in Issue.record("Unexpected shortcut") }
+    #expect(restored.shortcut(for: .call) == first && restored.error == nil)
+    try restored.set(nil, for: .call)
+    #expect(restored.shortcut(for: .call) == nil)
+    shortcuts.cancelRecording()
+    #expect(shortcuts.recording == nil && shortcuts.error == nil)
+}
 
 @Test @MainActor func voiceUsesTheAudioEngineBackendWithoutStartingHardware() throws {
     let factory = try #require(RealtimeVoiceSession.factory)
@@ -82,19 +194,20 @@ import Testing
     try await eventually { model.chatIsReady }
     #expect(model.selectedChatID == "one")
     #expect(model.canStartVoice)
-    #expect(model.chats.count == 2)  // Voice/subagent child sessions stay out of the picker.
+    #expect(model.chats.count == 4)  // Voice/subagent child sessions stay out of the picker.
     #expect(model.selectedBot?.handle == "builder")
     // Same folder names keep distinct workspace identities.
     #expect(model.workspacePaths.count == 2)
     #expect(model.workspaceName == "möbius")
-    #expect(model.matchingChats.map(\.id) == ["one"])
+    #expect(model.chatGroups.map(\.workspace) == ["/work/one/möbius", "/work/two/möbius"])
+    #expect(model.chatGroups.map { $0.chats.map(\.id) } == [["one", "older"], ["other"]])
     model.beginNewChat(botID: "writer")
     #expect(model.selectedChatID == nil)
     #expect(model.selectedBot?.id == "writer")
     #expect(model.workspacePath == "/work/one/möbius")
-    #expect(model.matchingChats.isEmpty)
+    #expect(model.chatGroups.flatMap(\.chats).map(\.id) == ["two"])
     model.beginNewChat(workspace: "/work/two/möbius")
-    #expect(model.matchingChats.map(\.id) == ["two"])
+    #expect(model.chatGroups.flatMap(\.chats).map(\.id) == ["two"])
     #expect(model.canStartVoice)
     model.beginNewChat(botID: "missing")
     #expect(model.selectedBot?.id == "writer")
@@ -340,15 +453,22 @@ private final class GatewayFixture {
     }
 
     private static var chats: [JSONValue] {
-        ["one", "two", "child"].enumerated().map { index, id in
-            .object([
+        ["one", "two", "child", "other", "older"].enumerated().map { index, id in
+            let workspace =
+                switch id {
+                case "other": "two"
+                case "older": "one"
+                default: id
+                }
+            return .object([
                 "sessionId": .string(id),
                 "title": .string(id == "one" ? "Computer use" : "Release notes"),
                 "parentSessionId": id == "child" ? .string("one") : .null,
                 "updatedAt": .integer(Int64(10 - index)),
                 "sessionContext": .object([
                     "botId": .string(id == "two" ? "writer" : "bot"), "workspaceId": .string(id),
-                    "workspaceLabel": .string("/work/\(id)/möbius"),
+                    "workspaceLabel": .string(
+                        "/work/\(workspace)/möbius"),
                 ]),
                 "activity": .object(["state": .string("idle")]),
             ])

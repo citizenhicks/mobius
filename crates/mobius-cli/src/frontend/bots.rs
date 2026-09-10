@@ -76,6 +76,7 @@ mod tests {
 
     fn gateway(bots: Vec<BotRecord>) -> ReadyPayload {
         ReadyPayload {
+            gateway_version: env!("CARGO_PKG_VERSION").into(),
             machine_name: "test".into(),
             bots,
             sessions: Vec::new(),
@@ -200,6 +201,81 @@ mod tests {
                 ..
             } if name == "Renamed" && config == bot.config.config
         ));
+    }
+
+    #[test]
+    fn bot_menu_edits_identity_and_multiline_prompt_with_revision_protection() {
+        let bot = bot("bot-a");
+        let mut gateway = gateway(vec![bot.clone()]);
+        let mut state = BotsState::new(&gateway, None, None);
+        state.page = Page::Bot(bot.id.clone());
+        state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &gateway);
+        let form = state
+            .form
+            .as_mut()
+            .expect("visible identity row opens editor");
+        form.handle_key(
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+            &gateway,
+        );
+        form.paste("Reviewer");
+        form.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &gateway);
+        form.handle_key(
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+            &gateway,
+        );
+        form.paste("Reviews code");
+        form.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &gateway);
+        form.handle_key(
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+            &gateway,
+        );
+        form.paste("Be concise.");
+        form.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT), &gateway);
+        form.paste("Check correctness.\nExplain risks.");
+        gateway.bots[0].config.revision += 1;
+        let FormFlow::Send(action) = form.handle_key(
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+            &gateway,
+        ) else {
+            panic!("expected save");
+        };
+        let ClientMessage::UpdateBot {
+            name,
+            description,
+            expected_revision,
+            tint,
+            config,
+            ..
+        } = message(action)
+        else {
+            panic!("expected update");
+        };
+        assert_eq!(name, "Reviewer");
+        assert_eq!(description, "Reviews code");
+        assert_eq!(expected_revision, 7);
+        assert_eq!(tint, bot.tint);
+        let mut expected = bot.config.config;
+        expected.system_prompt = "Be concise.\nCheck correctness.\nExplain risks.".into();
+        assert_eq!(config, expected);
+    }
+
+    #[test]
+    fn long_bot_prompt_keeps_the_editing_end_and_save_visible() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let bot = bot("bot-a");
+        let gateway = gateway(vec![bot.clone()]);
+        let mut state = BotsState::new(&gateway, None, None);
+        let mut form = BotForm::update(&bot);
+        form.prompt.as_mut().unwrap().value = format!("{}\nPROMPT END", "long prompt ".repeat(200));
+        form.row = 2;
+        state.form = Some(Form::Bot(form));
+        let mut terminal = Terminal::new(TestBackend::new(50, 15)).expect("terminal");
+        terminal
+            .draw(|frame| super::render::render(frame, &state, &gateway))
+            .expect("draw");
+        let screen = terminal.backend().to_string();
+        assert!(screen.contains("PROMPT END") && screen.contains("Save"));
     }
 
     #[test]
