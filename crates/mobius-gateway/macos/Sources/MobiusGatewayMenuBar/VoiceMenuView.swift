@@ -8,7 +8,6 @@ struct VoiceMenuView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
     @Environment(\.colorScheme) private var colorScheme
-    @State private var isVisible = false
     @State private var isHovered = false
     @State private var isTrackingMenu = false
 
@@ -58,11 +57,7 @@ struct VoiceMenuView: View {
         } action: { size in
             if isPinned { presentation.resize(to: size) }
         }
-        .onAppear {
-            isVisible = true
-            model.refreshChats()
-        }
-        .onDisappear { isVisible = false }
+        .onAppear { model.refreshChats() }
     }
 
     private var isMini: Bool {
@@ -107,7 +102,7 @@ struct VoiceMenuView: View {
     }
 
     private var miniSurface: some View {
-        waveform
+        VoiceWaveform(voice: model.voice, playbackColor: model.selectedBot?.color ?? .primary)
             .frame(width: 80, height: 80)
             .clipShape(.circle)
             .background {
@@ -131,7 +126,7 @@ struct VoiceMenuView: View {
 
     private var voiceSurface: some View {
         VStack(spacing: 0) {
-            waveform
+            VoiceWaveform(voice: model.voice, playbackColor: model.selectedBot?.color ?? .primary)
                 .frame(height: 80)
                 .padding(.horizontal, MobiusSpace.l)
             HStack(spacing: MobiusSpace.s) {
@@ -178,24 +173,9 @@ struct VoiceMenuView: View {
         }
     }
 
-    private var waveform: some View {
-        AudioLevelEqualizer(
-            amplitude: isVisible ? sqrt(model.voice.audioLevels.displayLevel) : 0,
-            flare: model.voice.levelFlare,
-            playbackColor: model.voice.audioLevels.isPlaybackActive ? playbackColor : nil
-        )
-        .animation(
-            reduceMotion ? nil : .smooth(duration: 0.09),
-            value: [model.voice.audioLevels.displayLevel, model.voice.levelFlare]
-        )
-        .accessibilityHidden(true)
-    }
-
     private var microphoneLabel: String {
         model.voice.isMuted ? "Unmute microphone" : "Mute microphone"
     }
-
-    private var playbackColor: Color { model.selectedBot?.color ?? .primary }
 
     private var microphoneColor: Color {
         if model.voiceCall == nil { return palette.muted }

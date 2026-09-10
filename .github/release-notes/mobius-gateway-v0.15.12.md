@@ -4,6 +4,8 @@ Enabling Computer control downloads a pinned Node and Playwright runtime automat
 
 The Mac menu bar app is now **möbius-app** (`brew install --cask citizenhicks/mobius/mobius-app`). It adds native Mac app inspection, screenshots, pointer and keyboard actions through the existing authenticated gateway connection. Mac control requires the app's Allow Mac control switch, Accessibility and Screen Recording permissions, and the Bot's Full access policy. Stop, lock, disconnect, cancellation, or lost permissions ends control. Headless Linux gateways provide browser control.
 
+Audio metering now updates only the waveform, keeping native voice menus and hover controls stable in both regular and Mini mode.
+
 Protocol 75 requires matching clients. Checkpoint format 14 is unchanged; upgrading from 0.15.11 requires no conversation conversion. Packages preserve LICENSE and NOTICE.
 
 Validation: Rust workspace checks, fresh runtime download and sandboxed Chromium execution, persistent JavaScript worker tests, and Mac transport, cancellation, observation and Unicode input tests. Native UI interaction still requires an unlocked Mac and granted system permissions.

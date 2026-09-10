@@ -70,6 +70,32 @@ import Testing
     #expect(!model.voice.isMuted && model.voiceCall == nil)
 }
 
+@Test(arguments: [false, true]) @MainActor func audioMeterDoesNotInvalidateVoiceMenus(mini: Bool)
+    throws
+{
+    let model = MenuBarModel()
+    let suite = "mobius-meter-test-\(UUID())"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let presentation = VoicePanelController(model: model, defaults: defaults)
+    presentation.isMini = mini
+    let menuChanged = Mutex(false)
+    withObservationTracking {
+        _ = VoiceMenuView(model: model, presentation: presentation, isPinned: true).body
+    } onChange: {
+        menuChanged.withLock { $0 = true }
+    }
+    let waveformChanged = Mutex(false)
+    withObservationTracking {
+        _ = VoiceWaveform(voice: model.voice, playbackColor: .blue).body
+    } onChange: {
+        waveformChanged.withLock { $0 = true }
+    }
+    model.voice.updateAudioLevels(RealtimeAudioLevels(microphone: 0.4, playback: 0.2))
+    #expect(!menuChanged.withLock { $0 })
+    #expect(waveformChanged.withLock { $0 })
+}
+
 @Test @MainActor func voiceShortcutsRejectConflictsAndPersistAssignments() throws {
     _ = NSApplication.shared
     let suite = "mobius-shortcuts-test-\(UUID())"
