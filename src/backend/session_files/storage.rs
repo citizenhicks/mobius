@@ -306,7 +306,14 @@ pub(crate) fn session_storage_key(session_id: &str) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(session_id.as_bytes()))
 }
 
+#[cfg(test)]
+tokio::task_local! {
+    pub(super) static HASH_FILE_CALLS: std::cell::Cell<usize>;
+}
+
 pub(super) async fn hash_file(path: &Path) -> Result<String> {
+    #[cfg(test)]
+    let _ = HASH_FILE_CALLS.try_with(|calls| calls.set(calls.get() + 1));
     let mut file = tokio::fs::File::open(path).await?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0_u8; 64 * 1024];

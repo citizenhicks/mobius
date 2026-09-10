@@ -1,6 +1,5 @@
 //! Ephemeral voice calls belong to the authenticated connection that opened them.
 
-use std::collections::VecDeque;
 use std::future::Future;
 
 use mobius::backend::model::{
@@ -8,11 +7,11 @@ use mobius::backend::model::{
 };
 use mobius::middleware::messages::voice::transcript::VoiceTranscript;
 use mobius::middleware::messages::voice::{
-    VoiceConversation, handoff_tool, instructions, progress, reject_handoff, resolve_task,
+    VoiceConversation, delegated_task, instructions, progress, reject_handoff,
 };
-use mobius::protocol::{EventMsg, TokenUsage};
+use mobius::protocol::EventMsg;
 use tokio::sync::{broadcast, mpsc, oneshot};
-use tokio::task::{JoinHandle, JoinSet};
+use tokio::task::JoinHandle;
 
 use super::*;
 
@@ -60,7 +59,6 @@ impl ConnectionVoice {
                                 &parent,
                                 &voice_context,
                             )?,
-                            handoff_tool: handoff_tool(),
                         },
                     )
                     .await?;
@@ -284,13 +282,33 @@ async fn drive(
         stopped,
     )
     .await;
-    let finalized = tokio::time::timeout(Duration::from_secs(4), async {
-        transcript.finish().await?;
+    let closed = tokio::time::timeout(Duration::from_secs(2), async {
+        if call
+            .commands
+            .send(RealtimeVoiceCommand::Close)
+            .await
+            .is_ok()
+        {
+            while let Some(event) = call.events.recv().await {
+                if let RealtimeVoiceEvent::Transcript {
+                    id,
+                    role,
+                    text,
+                    complete,
+                } = event?
+                {
+                    transcript.record(&id, role, &text, complete).await?;
+                }
+            }
+        }
         Ok::<_, Error>(())
     })
     .await
-    .map_err(|_| Error::Protocol("voice transcript finalization timed out".into()))?;
-    result.and(finalized)
+    .map_err(|_| Error::Protocol("voice session finalization timed out".into()));
+    let finalized = tokio::time::timeout(Duration::from_secs(2), transcript.finish())
+        .await
+        .map_err(|_| Error::Protocol("voice transcript finalization timed out".into()))?;
+    result.and(closed?).and(finalized.map_err(Into::into))
 }
 
 async fn drive_conversation(
@@ -302,10 +320,7 @@ async fn drive_conversation(
     conversation: &mut VoiceConversation,
     mut stopped: oneshot::Receiver<()>,
 ) -> Result<()> {
-    let mut pending = VecDeque::new();
-    let mut resolving = JoinSet::new();
     loop {
-        start_next_task(&mut resolving, &mut pending, model, host.session_id());
         let replies = tokio::select! {
             biased;
             () = host.wait_terminated() => return Ok(()),
@@ -332,18 +347,6 @@ async fn drive_conversation(
                     _ => Vec::new(),
                 }
             }
-            resolved = resolving.join_next(), if !resolving.is_empty() => {
-                let (id, result) = resolved
-                    .ok_or_else(|| Error::Protocol("voice task extraction disappeared".into()))?
-                    .map_err(|error| Error::Protocol(format!("voice task extraction stopped: {error}")))?;
-                match result {
-                    Ok((text, usage)) => {
-                        host.observe_voice_usage(model.provider_instance.clone(), usage).await.map_err(rejected)?;
-                        submit_handoff(host, conversation, id, text).await?
-                    }
-                    Err(error) => vec![reject_handoff(id, &error.to_string())],
-                }
-            }
             event = call.events.recv() => {
                 let Some(event) = event else { return Ok(()) };
                 match event? {
@@ -351,17 +354,11 @@ async fn drive_conversation(
                         transcript.record(&id, role, &text, complete).await?;
                         Vec::new()
                     }
-                    RealtimeVoiceEvent::Handoff { id, text, needs_context } => {
-                        if !needs_context {
-                            submit_handoff(host, conversation, id, text).await?
-                        } else if pending.len() + resolving.len() >= 32 {
-                            vec![reject_handoff(id, "Too many pending voice requests. Please wait for the pending results.")]
-                        } else {
-                            // Final speech prunes old deltas, so a journal cursor cannot freeze context.
-                            pending.push_back(PendingVoiceTask {
-                                id, text, context: transcript.task_context().await?,
-                            });
-                            Vec::new()
+                    RealtimeVoiceEvent::Handoff { id, text } => {
+                        let context = transcript.task_context().await?;
+                        match delegated_task(text.as_deref(), &context) {
+                            Ok(task) => submit_handoff(host, conversation, id, task).await?,
+                            Err(error) => vec![reject_handoff(id, &error.to_string())],
                         }
                     }
                     RealtimeVoiceEvent::Usage(usage) => {
@@ -380,41 +377,6 @@ async fn drive_conversation(
                 })?;
         }
     }
-}
-
-struct PendingVoiceTask {
-    id: String,
-    text: String,
-    context: String,
-}
-
-fn start_next_task(
-    resolving: &mut JoinSet<(String, Result<(String, TokenUsage)>)>,
-    pending: &mut VecDeque<PendingVoiceTask>,
-    model: &crate::host::RealtimeModel,
-    parent_id: &str,
-) {
-    if !resolving.is_empty() {
-        return;
-    }
-    let Some(task) = pending.pop_front() else {
-        return;
-    };
-    let checkpoints = Arc::clone(&model.checkpoints);
-    let router = Arc::clone(&model.router);
-    let route = model.route.clone();
-    let parent_id = parent_id.to_owned();
-    resolving.spawn(async move {
-        let result = async {
-            let parent = checkpoints
-                .load(&parent_id)
-                .await?
-                .ok_or_else(|| Error::Protocol("voice parent session disappeared".into()))?;
-            Ok(resolve_task(&router, &route, &parent, &task.context, &task.text).await?)
-        }
-        .await;
-        (task.id, result)
-    });
 }
 
 async fn submit_handoff(

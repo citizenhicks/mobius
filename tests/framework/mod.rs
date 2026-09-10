@@ -100,7 +100,11 @@ struct RecordedCompactRequest {
     tools: Vec<ToolDefinition>,
 }
 
-struct PromptExtension(Arc<AtomicUsize>);
+#[derive(Default)]
+struct PromptExtension {
+    prompt_calls: AtomicUsize,
+    registrations: AtomicUsize,
+}
 
 struct StaticPrompt(&'static str);
 
@@ -116,8 +120,17 @@ impl Middleware for PromptExtension {
         "prompt_extension"
     }
 
+    fn register(
+        &self,
+        _catalog: &mut mobius::middleware::tools::Catalog,
+        _runtime: &RuntimeContext,
+    ) -> Result<()> {
+        self.registrations.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
     fn prompt_section(&self, _runtime: &RuntimeContext) -> Result<Option<PromptSection>> {
-        self.0.fetch_add(1, Ordering::SeqCst);
+        self.prompt_calls.fetch_add(1, Ordering::SeqCst);
         Ok(Some(PromptSection::titled(
             "prompt extension",
             "capability prompt",
@@ -304,13 +317,14 @@ impl CheckpointStore for MemoryCheckpoints {
 
     fn save_with_events<'a>(
         &'a self,
-        checkpoint: &'a Checkpoint,
-        transcript_delta: &'a [Value],
-        execution: Option<&'a ExecutionRecord>,
-        events: &'a [TimestampedEvent],
+        checkpoint: Checkpoint,
+        transcript_delta: Vec<Value>,
+        execution: Option<ExecutionRecord>,
+        events: Vec<TimestampedEvent>,
     ) -> BoxFuture<'a, Result<Vec<JournalEvent>>> {
         Box::pin(async move {
-            self.save(checkpoint, transcript_delta, execution).await?;
+            self.save(&checkpoint, &transcript_delta, execution.as_ref())
+                .await?;
             let mut records = Vec::with_capacity(events.len());
             for event in events {
                 records.push(

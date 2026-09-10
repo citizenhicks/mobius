@@ -7,14 +7,18 @@ fn replay_is_bounded_by_event_count() {
         message: String::new(),
         fatal: false,
     });
-    let mut replay = VecDeque::from(vec![frame.clone(); REPLAY_CAPACITY]);
+    let mut replay = VecDeque::from(vec![
+        ReplayEntry::new(frame.clone()).expect("measure frame");
+        REPLAY_CAPACITY
+    ]);
     let mut replay_bytes = serde_json::to_vec(&frame).expect("encode frame").len() * replay.len();
     let (events, _) = broadcast::channel(1);
+    FRAME_SIZE_MEASUREMENTS.with(|count| count.set(0));
     assert!(
-        record_and_publish(&mut replay, &mut replay_bytes, &events, frame, true)
-            .expect("record event")
+        publish_frame(&mut replay, &mut replay_bytes, &events, frame, true).expect("record event")
     );
     assert_eq!(replay.len(), REPLAY_CAPACITY);
+    assert_eq!(FRAME_SIZE_MEASUREMENTS.with(std::cell::Cell::get), 1);
 }
 
 #[test]
@@ -35,11 +39,11 @@ fn replay_is_bounded_by_encoded_bytes() {
     });
 
     assert!(
-        !record_and_publish(&mut replay, &mut replay_bytes, &events, first, true)
+        !publish_frame(&mut replay, &mut replay_bytes, &events, first, true)
             .expect("record first frame")
     );
     assert!(
-        record_and_publish(&mut replay, &mut replay_bytes, &events, second, true)
+        publish_frame(&mut replay, &mut replay_bytes, &events, second, true)
             .expect("record second frame")
     );
 
@@ -57,7 +61,7 @@ fn suppressed_frames_enter_replay_without_broadcasting() {
         message: "recorded only".into(),
         fatal: false,
     });
-    record_and_publish(
+    publish_frame(
         &mut replay,
         &mut replay_bytes,
         &events,
@@ -66,7 +70,7 @@ fn suppressed_frames_enter_replay_without_broadcasting() {
     )
     .expect("record history");
 
-    assert_eq!(replay.back(), Some(&history));
+    assert_eq!(replay.back().map(|entry| &entry.frame), Some(&history));
     assert!(matches!(
         receiver.try_recv(),
         Err(broadcast::error::TryRecvError::Empty)
@@ -130,7 +134,7 @@ fn transient_controls_are_broadcast_without_entering_replay() {
                 preview: None,
             },
         });
-        record_and_publish(
+        publish_frame(
             &mut replay,
             &mut replay_bytes,
             &events,
@@ -163,7 +167,7 @@ fn completed_step_compacts_only_its_progressive_replay_frames() {
             },
         })
     };
-    let mut replay = VecDeque::from([
+    let frames = [
         frame(
             1,
             EventMsg::AssistantContentDelta(mobius::protocol::AssistantContentDeltaEvent {
@@ -194,20 +198,34 @@ fn completed_step_compacts_only_its_progressive_replay_frames() {
                 phase: mobius::protocol::ModelStepContentPhase::FinalAnswer,
             }),
         ),
-    ]);
+    ];
+    let mut replay = frames
+        .into_iter()
+        .map(|frame| ReplayEntry::new(frame).expect("measure frame"))
+        .collect::<VecDeque<_>>();
     let mut replay_bytes = replay
         .iter()
-        .map(|frame| serde_json::to_vec(frame).expect("encode frame").len())
+        .map(|frame| {
+            serde_json::to_vec(&frame.frame)
+                .expect("encode frame")
+                .len()
+        })
         .sum();
 
-    compact_replay_deltas(&mut replay, &mut replay_bytes, "completed")
-        .expect("compact completed step");
+    FRAME_SIZE_MEASUREMENTS.with(|count| count.set(0));
+    compact_replay_deltas(&mut replay, &mut replay_bytes, "completed");
+    assert_eq!(FRAME_SIZE_MEASUREMENTS.with(std::cell::Cell::get), 0);
 
     assert_eq!(replay.len(), 1);
-    assert_eq!(replay.front().and_then(event_sequence), Some(3));
+    assert_eq!(
+        replay
+            .front()
+            .and_then(|entry| event_sequence(&entry.frame)),
+        Some(3)
+    );
     assert_eq!(
         replay_bytes,
-        serde_json::to_vec(replay.front().expect("remaining frame"))
+        serde_json::to_vec(&replay.front().expect("remaining frame").frame)
             .expect("encode remaining frame")
             .len()
     );
@@ -237,4 +255,20 @@ fn replacement_startup_is_published_only_after_ready() {
         receiver.try_recv().expect("startup frame").message,
         ServerMessage::Error { code, .. } if code == "startup"
     ));
+}
+
+fn publish_frame(
+    replay: &mut VecDeque<ReplayEntry>,
+    replay_bytes: &mut usize,
+    events: &broadcast::Sender<ServerFrame>,
+    frame: ServerFrame,
+    suppress_broadcast: bool,
+) -> Result<bool> {
+    Ok(record_and_publish(
+        replay,
+        replay_bytes,
+        events,
+        ReplayEntry::new(frame)?,
+        suppress_broadcast,
+    ))
 }

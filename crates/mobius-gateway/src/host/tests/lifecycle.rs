@@ -128,10 +128,10 @@ impl CheckpointStore for BlockingStateStore {
 
     fn save_with_events<'a>(
         &'a self,
-        checkpoint: &'a mobius::backend::checkpoint::Checkpoint,
-        transcript_delta: &'a [serde_json::Value],
-        execution: Option<&'a ExecutionRecord>,
-        events: &'a [mobius::backend::checkpoint::TimestampedEvent],
+        checkpoint: mobius::backend::checkpoint::Checkpoint,
+        transcript_delta: Vec<serde_json::Value>,
+        execution: Option<ExecutionRecord>,
+        events: Vec<mobius::backend::checkpoint::TimestampedEvent>,
     ) -> mobius::BoxFuture<'a, mobius::Result<Vec<JournalEvent>>> {
         self.inner
             .save_with_events(checkpoint, transcript_delta, execution, events)

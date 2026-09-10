@@ -62,9 +62,9 @@ use crate::wire::{
 use crate::{Error, Result};
 
 use self::catalog::{
-    SessionCatalogMetadata, background_approvals, hidden_bot_session_catalog,
+    SessionCatalogMetadata, activity_catalog, background_approvals, hidden_bot_session_catalog,
     load_session_metadata, restore_pending_approval_activities, save_session_metadata,
-    session_catalog, validate_session_title,
+    session_catalog, update_session_activity, validate_session_title,
 };
 use self::files::{
     WorkspaceFiles, WorkspaceRead, list as list_workspace_files, read as read_workspace_file,
@@ -91,7 +91,7 @@ const MAX_SESSION_DELETE_ROOTS: usize = 1_024;
 const RECENT_RUN_LIMIT: usize = 30;
 pub(crate) const MAX_ACTIVE_SESSIONS: usize = 32;
 
-type SessionActivities = Arc<StdMutex<HashMap<String, SessionActivity>>>;
+type SessionActivities = Arc<Mutex<catalog::SessionCatalog>>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SwarmDeliveryAttempt {
@@ -195,7 +195,7 @@ impl GatewayHost {
         let (swarm, deliveries) = SwarmStore::new(Arc::clone(&checkpoints), Arc::clone(&bots));
         let swarm = Arc::new(swarm);
         let (events, _) = broadcast::channel(BROADCAST_CAPACITY);
-        let activities = Arc::new(StdMutex::new(HashMap::new()));
+        let activities = Arc::new(Mutex::new(catalog::SessionCatalog::default()));
         restore_pending_approval_activities(&checkpoints, &activities).await?;
         let host = Self {
             desktop: Arc::new(DesktopControl::default()),
@@ -440,7 +440,7 @@ impl GatewayHost {
         tint: crate::wire::ProviderTint,
         config: AgentComposition,
     ) -> std::result::Result<crate::wire::BotRecord, Rejection> {
-        let store = {
+        let (store, runtime_changed) = {
             let _access = self.begin_mutation().await?;
             let state = self.state.lock().await;
             validate_bot_config(&state, &config)?;
@@ -455,45 +455,61 @@ impl GatewayHost {
                     fatal: false,
                 });
             }
-            state.store.clone()
+            (
+                state.store.clone(),
+                previous.description != description || previous.config.config != config,
+            )
         };
         // Installation can take minutes. Do not hold gateway locks or save the Bot yet.
-        crate::computer_runtime::prepare(store.state_dir(), &config.middleware)
-            .await
-            .map_err(invalid_config)?;
+        if runtime_changed {
+            crate::computer_runtime::prepare(store.state_dir(), &config.middleware)
+                .await
+                .map_err(invalid_config)?;
+        }
         let _mutation = self.begin_mutation().await?;
         let state = self.state.lock().await;
         validate_bot_config(&state, &config)?;
         let previous = state.bots.bot(id).map_err(invalid_bot)?;
-        let mut candidate = previous.clone();
-        candidate.description = description.into();
-        candidate.config.config = config.clone();
-        let gateway = state
-            .config
-            .lock()
-            .map_err(|_| internal("gateway configuration lock is poisoned"))?
-            .clone();
-        let mut prepared = crate::assembly::prepare_bot(
-            &gateway,
-            candidate,
-            &state.store,
-            &state.credentials,
-            state.session_files.clone(),
-            state.provider_epoch.load(Ordering::Acquire),
-        )
-        .await
-        .map_err(invalid_config)?;
+        let prepared = if runtime_changed {
+            let mut candidate = previous.clone();
+            candidate.description = description.into();
+            candidate.config.config = config.clone();
+            let gateway = state
+                .config
+                .lock()
+                .map_err(|_| internal("gateway configuration lock is poisoned"))?
+                .clone();
+            Some(
+                crate::assembly::prepare_bot(
+                    &gateway,
+                    candidate,
+                    &state.store,
+                    &state.credentials,
+                    state.session_files.clone(),
+                    state.provider_epoch.load(Ordering::Acquire),
+                )
+                .await
+                .map_err(invalid_config)?,
+            )
+        } else {
+            None
+        };
         let bot = state
             .bots
             .update_bot(id, expected_revision, name, description, tint, config)
             .map_err(invalid_bot)?;
-        prepared.bot = bot.clone();
-        state
-            .bots
-            .prepared
-            .lock()
-            .await
-            .insert(id.into(), Arc::new(prepared));
+        if let Some(mut prepared) = prepared {
+            prepared.bot = bot.clone();
+            if let Some(previous) = state
+                .bots
+                .prepared
+                .lock()
+                .await
+                .insert(id.into(), Arc::new(prepared))
+            {
+                previous.invalidate();
+            }
+        }
         let bots = state.bots.bots().map_err(internal)?;
         let swarms = if bot.handle != previous.handle {
             Some(state.swarm.records().await.map_err(internal)?)
@@ -1071,9 +1087,7 @@ impl GatewayHost {
         let sessions = session_catalog(&state.checkpoints, &state.activities)
             .await
             .map_err(internal)?;
-        let approvals = background_approvals(&state.checkpoints, &state.activities)
-            .await
-            .map_err(internal)?;
+        let approvals = background_approvals(&state.activities).await;
         state.swarm.retry_pending();
         drop(state);
         let _ = self.events.send(ServerFrame::new(ServerMessage::Sessions {

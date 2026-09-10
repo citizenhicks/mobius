@@ -39,11 +39,11 @@ impl GatewayHost {
                     .insert(staged.id, staged.installed);
                 next
             };
-            self.commit_extensions(&state, next)?;
-            let sessions = state.sessions.values().cloned().collect();
+            if !self.commit_extensions(&state, next)? {
+                return gateway_ready(&state).await;
+            }
             drop(state);
-            self.finish_extension_mutation(sessions, &id, sessions_guard)
-                .await
+            self.finish_extension_mutation(&id, sessions_guard).await
         }
         .await;
         if result.is_err() {
@@ -118,11 +118,11 @@ impl GatewayHost {
                     .insert(id.clone(), staged.installed);
                 next
             };
-            self.commit_extensions(&state, next)?;
-            let sessions = state.sessions.values().cloned().collect();
+            if !self.commit_extensions(&state, next)? {
+                return gateway_ready(&state).await;
+            }
             drop(state);
-            self.finish_extension_mutation(sessions, &id, sessions_guard)
-                .await
+            self.finish_extension_mutation(&id, sessions_guard).await
         }
         .await;
         if result.is_err() {
@@ -177,11 +177,11 @@ impl GatewayHost {
                 .ok_or_else(|| unknown_extension(&id))?;
             next
         };
-        self.commit_extensions(&state, next)?;
-        let sessions = state.sessions.values().cloned().collect();
+        if !self.commit_extensions(&state, next)? {
+            return gateway_ready(&state).await;
+        }
         drop(state);
-        self.finish_extension_mutation(sessions, &id, sessions_guard)
-            .await
+        self.finish_extension_mutation(&id, sessions_guard).await
     }
 
     pub(crate) async fn set_extension_hooks_trusted(
@@ -222,41 +222,41 @@ impl GatewayHost {
             installed.trusted_hook_digest = trusted.then(|| installed.digest.clone());
             next
         };
-        self.commit_extensions(&state, next)?;
-        let sessions = state.sessions.values().cloned().collect();
+        if !self.commit_extensions(&state, next)? {
+            return gateway_ready(&state).await;
+        }
         drop(state);
-        self.finish_extension_mutation(sessions, &id, sessions_guard)
-            .await
+        self.finish_extension_mutation(&id, sessions_guard).await
     }
 
     fn commit_extensions(
         &self,
         state: &GatewayState,
         next: GatewayConfig,
-    ) -> std::result::Result<(), Rejection> {
-        state.store.save(&next).map_err(internal)?;
-        *state
+    ) -> std::result::Result<bool, Rejection> {
+        let mut current = state
             .config
             .lock()
-            .map_err(|_| internal("gateway configuration lock is poisoned"))? = next;
-        Ok(())
+            .map_err(|_| internal("gateway configuration lock is poisoned"))?;
+        if *current == next {
+            return Ok(false);
+        }
+        state.store.save(&next).map_err(internal)?;
+        *current = next;
+        Ok(true)
     }
 
     async fn finish_extension_mutation(
         &self,
-        sessions: Vec<HostHandle>,
         id: &str,
         _sessions_guard: tokio::sync::OwnedRwLockWriteGuard<()>,
     ) -> std::result::Result<ReadyPayload, Rejection> {
-        self.state.lock().await.bots.prepared.lock().await.clear();
-        for host in sessions {
-            if let Err(rejection) = host.refresh_extension(id.to_owned()).await
-                && rejection.code != "gateway_stopped"
-            {
-                return Err(rejection);
+        let state = self.state.lock().await;
+        for prepared in state.bots.prepared.lock().await.values() {
+            if prepared.bot.config.config.extensions.contains(id) {
+                prepared.invalidate();
             }
         }
-        let state = self.state.lock().await;
         let payload = gateway_ready(&state).await?;
         drop(state);
         let _ = self.events.send(ServerFrame::new(ServerMessage::Ready {
@@ -300,9 +300,6 @@ fn unknown_extension(id: &str) -> Rejection {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
-    use std::sync::atomic::AtomicBool;
-
-    use tokio::sync::{Notify, broadcast, mpsc, oneshot};
 
     use super::*;
     use crate::bots::BotStore;
@@ -374,52 +371,6 @@ mod tests {
         }
     }
 
-    fn fake_extension_race_host(
-        bot_id: &str,
-    ) -> (HostHandle, mpsc::UnboundedReceiver<()>, Arc<Notify>) {
-        let (commands, mut receiver) = mpsc::channel(8);
-        let (events, _) = broadcast::channel(8);
-        let (refresh_started, refresh_started_receiver) = mpsc::unbounded_channel();
-        let release_refresh = Arc::new(Notify::new());
-        let actor_release = Arc::clone(&release_refresh);
-        tokio::spawn(async move {
-            while let Some(command) = receiver.recv().await {
-                match command {
-                    HostCommand::RefreshExtension { reply, .. } => {
-                        let _ = refresh_started.send(());
-                        actor_release.notified().await;
-                        let _ = reply.send(Ok(()));
-                    }
-                    HostCommand::ProviderCutoverStatus { reply } => {
-                        let _ = reply.send(ProviderCutoverStatus { idle: true });
-                    }
-                    HostCommand::RefreshBot { reply } => {
-                        let _ = reply.send(Ok(()));
-                    }
-                    HostCommand::CapacityChanged => {}
-                    _ => panic!("unexpected host command during extension race"),
-                }
-            }
-        });
-        (
-            HostHandle {
-                inner: Arc::new(HostInner {
-                    session_id: Arc::from("extension-race-session"),
-                    bot_id: Arc::from(bot_id),
-                    commands,
-                    events,
-                    alive: Arc::new(AtomicBool::new(true)),
-                    terminated: Arc::new(AtomicBool::new(true)),
-                    termination: Arc::new(tokio::sync::Notify::new()),
-                    session_mutations: Arc::new(tokio::sync::RwLock::new(())),
-                    realtime_voice: Arc::new(tokio::sync::Mutex::new(())),
-                }),
-            },
-            refresh_started_receiver,
-            release_refresh,
-        )
-    }
-
     #[tokio::test]
     async fn startup_rejects_a_bot_with_a_missing_selected_extension() {
         let root = tempfile::tempdir().expect("root");
@@ -484,95 +435,82 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn extension_refresh_releases_gateway_state_while_waiting() {
-        let (_root, gateway) = gateway_with_selected_extension().await;
-        let bot = gateway
-            .state
-            .lock()
-            .await
-            .bots
-            .bots()
-            .expect("Bots")
-            .into_iter()
-            .next()
-            .expect("fixture Bot");
-        let digest = {
+    async fn extension_changes_only_rebuild_dependent_bots_when_used() {
+        let (root, gateway) = gateway_with_selected_extension().await;
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir(&workspace).expect("workspace");
+        let (bot, other, digest, operations) = {
             let state = gateway.state.lock().await;
-            let mut config = state.config.lock().expect("gateway config");
-            let installed = config
-                .installed_extensions
-                .get_mut(EXTENSION_ID)
-                .expect("installed extension");
+            let bots = state.bots.bots().expect("Bots");
+            let bot = bots
+                .iter()
+                .find(|bot| bot.config.config.extensions.contains(EXTENSION_ID))
+                .unwrap()
+                .clone();
+            let other = bots
+                .iter()
+                .find(|bot| !bot.config.config.extensions.contains(EXTENSION_ID))
+                .unwrap()
+                .clone();
+            let mut config = state.config.lock().unwrap();
+            let installed = config.installed_extensions.get_mut(EXTENSION_ID).unwrap();
             installed.hooks.push(ExtensionHookRecord {
                 event: "SessionStart".into(),
                 matcher: None,
                 command: "true".into(),
                 timeout_seconds: 5,
             });
-            installed.digest.clone()
+            (
+                bot,
+                other,
+                installed.digest.clone(),
+                Arc::clone(&state.store.runtime_operations),
+            )
         };
-        let (resident, mut refresh_started, release_refresh) = fake_extension_race_host(&bot.id);
+        let selected = gateway.create_session(&workspace, &bot.id).await.unwrap();
+        let sibling = gateway.create_session(&workspace, &bot.id).await.unwrap();
+        let unrelated = gateway.create_session(&workspace, &other.id).await.unwrap();
+        let before = operations.counts();
         gateway
+            .set_extension_hooks_trusted(EXTENSION_ID.into(), digest, true)
+            .await
+            .unwrap();
+        assert_eq!(
+            operations.counts(),
+            before,
+            "editing an extension does no preparation or assembly"
+        );
+        unrelated.accepts_file_attachments().await.unwrap();
+        assert_eq!(operations.counts(), before, "unrelated Bot stays prepared");
+        selected.accepts_file_attachments().await.unwrap();
+        sibling.accepts_file_attachments().await.unwrap();
+        assert_eq!(
+            operations.counts(),
+            (before.0 + 1, before.1 + 2),
+            "one preparation shared by both dependent chats"
+        );
+        let before_noop = operations.counts();
+        let digest = gateway
             .state
             .lock()
             .await
-            .sessions
-            .insert(resident.session_id().into(), resident);
-
-        let extension_update = tokio::spawn({
-            let gateway = gateway.clone();
-            async move {
-                gateway
-                    .set_extension_hooks_trusted(EXTENSION_ID.into(), digest, true)
-                    .await
-            }
-        });
-        refresh_started
-            .recv()
+            .config
+            .lock()
+            .unwrap()
+            .installed_extensions[EXTENSION_ID]
+            .digest
+            .clone();
+        gateway
+            .set_extension_hooks_trusted(EXTENSION_ID.into(), digest, true)
             .await
-            .expect("extension refresh started");
-
-        let mut next_config = bot.config.config.clone();
-        next_config.system_prompt = "Updated during extension refresh".into();
-        let (bot_started, bot_waiting) = oneshot::channel();
-        let bot_update = tokio::spawn({
-            let gateway = gateway.clone();
-            let bot = bot.clone();
-            async move {
-                let _ = bot_started.send(());
-                gateway
-                    .update_bot(
-                        &bot.id,
-                        bot.config.revision,
-                        "Fixture",
-                        &bot.description,
-                        bot.tint,
-                        next_config,
-                    )
-                    .await
-            }
-        });
-        bot_waiting.await.expect("Bot update started");
-        let state = tokio::time::timeout(std::time::Duration::from_secs(1), gateway.state.lock())
-            .await
-            .expect(
-                "Bot update must release GatewayState while waiting for the session mutation gate",
-            );
-        drop(state);
-        assert!(!bot_update.is_finished());
-
-        release_refresh.notify_one();
-        let (extension_result, bot_result) =
-            tokio::time::timeout(std::time::Duration::from_secs(2), async {
-                tokio::join!(extension_update, bot_update)
-            })
-            .await
-            .expect("extension refresh and Bot update must not deadlock");
-
-        extension_result
-            .expect("extension task")
-            .expect("extension update");
-        bot_result.expect("Bot task").expect("Bot update");
+            .unwrap();
+        selected.accepts_file_attachments().await.unwrap();
+        assert_eq!(
+            operations.counts(),
+            before_noop,
+            "unchanged extension trust does no runtime work"
+        );
+        gateway.shutdown().await;
     }
 
     #[test]

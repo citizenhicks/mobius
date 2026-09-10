@@ -136,6 +136,83 @@ async fn identical_payloads_share_one_content_blob() {
 }
 
 #[tokio::test]
+async fn repeated_chunk_reads_share_one_blob_verification() {
+    let state = tempfile::tempdir().expect("state");
+    let store = SessionFileStore::new(state.path());
+    let file = store
+        .publish_artifact("session", "result.txt".into(), "text/plain".into(), b"safe")
+        .await
+        .expect("artifact");
+    let reader = store.clone();
+
+    storage::HASH_FILE_CALLS
+        .scope(std::cell::Cell::new(0), async {
+            for offset in 0..file.size {
+                let chunk = reader
+                    .read_chunk("session", &file.id, offset, 1)
+                    .await
+                    .expect("chunk");
+                assert_eq!(chunk.data, [b"safe"[offset as usize]]);
+            }
+            store
+                .read_file("session", &file)
+                .await
+                .expect("read through original store");
+            assert_eq!(storage::HASH_FILE_CALLS.with(std::cell::Cell::get), 1);
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn changed_blob_is_reverified_and_failed_verification_is_not_cached() {
+    let state = tempfile::tempdir().expect("state");
+    let store = SessionFileStore::new(state.path());
+    let file = store
+        .publish_artifact("session", "result.txt".into(), "text/plain".into(), b"safe")
+        .await
+        .expect("artifact");
+    let metadata = load_metadata(
+        &store
+            .session_dir("session")
+            .join(&file.id)
+            .join(METADATA_FILE),
+    )
+    .await
+    .expect("metadata");
+    let blob = store.blob_path(&metadata.content_hash);
+    let modified = std::fs::metadata(&blob)
+        .expect("blob metadata")
+        .modified()
+        .expect("modified time");
+
+    storage::HASH_FILE_CALLS
+        .scope(std::cell::Cell::new(0), async {
+            store.read_file("session", &file).await.expect("warm cache");
+            assert_eq!(storage::HASH_FILE_CALLS.with(std::cell::Cell::get), 1);
+            std::fs::write(&blob, b"evil").expect("tamper");
+            std::fs::File::options()
+                .write(true)
+                .open(&blob)
+                .expect("blob")
+                .set_modified(modified + std::time::Duration::from_secs(2))
+                .expect("change verification stamp");
+
+            for expected_hashes in [2, 3] {
+                let error = store
+                    .read_file("session", &file)
+                    .await
+                    .expect_err("tampered blob");
+                assert!(error.to_string().contains("content hash does not match"));
+                assert_eq!(
+                    storage::HASH_FILE_CALLS.with(std::cell::Cell::get),
+                    expected_hashes
+                );
+            }
+        })
+        .await;
+}
+
+#[tokio::test]
 async fn tampered_content_blob_is_rejected() {
     let state = tempfile::tempdir().expect("state");
     let store = SessionFileStore::new(state.path());

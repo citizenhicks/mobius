@@ -1,6 +1,6 @@
 [package]
 name = "mobius-gateway"
-version = "0.15.16"
+version = "0.15.17"
 edition.workspace = true
 rust-version.workspace = true
 description = "Headless authenticated gateway for möbius frontends"

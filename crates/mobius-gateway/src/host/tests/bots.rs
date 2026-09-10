@@ -886,7 +886,8 @@ async fn deleting_a_bot_removes_all_owned_state_and_its_led_swarm() {
         .await
         .activities
         .lock()
-        .expect("activities")
+        .await
+        .activities
         .insert(chat_id.clone(), SessionActivity::default());
 
     let routine = bots
@@ -992,7 +993,8 @@ async fn deleting_a_bot_removes_all_owned_state_and_its_led_swarm() {
             .await
             .activities
             .lock()
-            .expect("activities")
+            .await
+            .activities
             .contains_key(&chat_id)
     );
     assert!(
@@ -1408,4 +1410,47 @@ async fn enabling_computer_control_requires_runtime_before_saving_a_bot_without_
         .find(|item| item.id == bot.id)
         .expect("bot");
     assert_eq!(current.config, bot.config);
+}
+
+#[tokio::test]
+async fn bot_presentation_edits_do_not_prepare_or_reassemble_chats() {
+    let (root, gateway, bot) = gateway_with_bot().await;
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).expect("workspace");
+    let host = gateway.create_session(&workspace, &bot.id).await.unwrap();
+    let operations = Arc::clone(&gateway.state.lock().await.store.runtime_operations);
+    let before = operations.counts();
+    let before_sequence = host.snapshot(None).await.unwrap().ready.latest_sequence;
+    let mut current = bot;
+    for (name, tint) in [
+        ("reviewer", crate::wire::ProviderTint::Purple),
+        ("renamed", crate::wire::ProviderTint::Purple),
+    ] {
+        current = gateway
+            .update_bot(
+                &current.id,
+                current.config.revision,
+                name,
+                &current.description,
+                tint,
+                current.config.config.clone(),
+            )
+            .await
+            .unwrap();
+        host.accepts_file_attachments().await.unwrap();
+    }
+    gateway
+        .create_session(&workspace, &current.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        operations.counts(),
+        (before.0, before.1 + 1),
+        "only the newly created chat needs assembly"
+    );
+    assert_eq!(
+        host.snapshot(None).await.unwrap().ready.latest_sequence,
+        before_sequence
+    );
+    gateway.shutdown().await;
 }

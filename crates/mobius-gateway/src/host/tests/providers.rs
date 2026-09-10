@@ -7,9 +7,8 @@ use tokio::sync::{broadcast, mpsc};
 
 use crate::bots::BotStore;
 use crate::config::{ConfigStore, CredentialStore};
-use crate::host::session::{
-    HostCommand, HostInner, ProviderCutoverStatus, ProviderRefresh, provider_refresh_matches,
-};
+use crate::host::HostHandle;
+use crate::host::session::{HostInner, ProviderRefresh, provider_refresh_matches};
 use crate::host::tests::create_test_session;
 
 use super::*;
@@ -129,7 +128,7 @@ async fn provider_removal_rejects_bot_defaults_without_changes() {
 }
 
 #[tokio::test]
-async fn provider_removal_reloads_idle_bot_chat_and_deletes_credential() {
+async fn provider_removal_defers_chat_rebuild_and_deletes_credential() {
     let root = tempfile::tempdir().expect("root");
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).expect("workspace");
@@ -141,6 +140,8 @@ async fn provider_removal_reloads_idle_bot_chat_and_deletes_credential() {
     let mut events = host.subscribe();
     let mut gateway_events = gateway.subscribe();
 
+    let operations = Arc::clone(&gateway.state.lock().await.store.runtime_operations);
+    let before = operations.counts();
     let ready = gateway
         .remove_provider(removable.instance.clone())
         .await
@@ -179,10 +180,13 @@ async fn provider_removal_reloads_idle_bot_chat_and_deletes_credential() {
             .map(|credential| credential.api_key),
         None
     );
+    assert_eq!(operations.counts(), before);
     assert!(matches!(
-        events.recv().await.expect("reload event").message,
-        ServerMessage::SessionChanged { .. }
+        events.try_recv(),
+        Err(broadcast::error::TryRecvError::Empty)
     ));
+    host.accepts_file_attachments().await.unwrap();
+    assert_eq!(operations.counts(), (before.0 + 1, before.1 + 1));
     assert!(matches!(
         gateway_events.recv().await.expect("ready event").message,
         ServerMessage::Ready { payload } if payload == ready
@@ -190,27 +194,14 @@ async fn provider_removal_reloads_idle_bot_chat_and_deletes_credential() {
 }
 
 #[tokio::test]
-async fn busy_bot_chat_blocks_provider_removal_without_mutation() {
+async fn provider_removal_does_not_contact_resident_chat_actors() {
     let root = tempfile::tempdir().expect("root");
-    let (gateway, credentials, _, removable) = provider_removal_gateway(&root).await;
-    let before = gateway
-        .state
-        .lock()
-        .await
-        .config
-        .lock()
-        .expect("gateway config")
-        .clone();
+    let (gateway, _, _, removable) = provider_removal_gateway(&root).await;
     let (commands, mut receiver) = mpsc::channel(1);
-    tokio::spawn(async move {
-        if let Some(HostCommand::ProviderCutoverStatus { reply }) = receiver.recv().await {
-            let _ = reply.send(ProviderCutoverStatus { idle: false });
-        }
-    });
     let (events, _) = broadcast::channel(1);
     gateway.state.lock().await.sessions.insert(
         "busy".into(),
-        super::super::HostHandle {
+        HostHandle {
             inner: Arc::new(HostInner {
                 session_id: Arc::from("busy"),
                 bot_id: Arc::from("busy-bot"),
@@ -224,34 +215,19 @@ async fn busy_bot_chat_blocks_provider_removal_without_mutation() {
             }),
         },
     );
-
-    let error = gateway
-        .remove_provider(removable.instance.clone())
-        .await
-        .expect_err("busy chat must block provider removal");
-
-    assert_eq!(error.code, "agent_busy");
-    assert_eq!(
-        *gateway
-            .state
-            .lock()
-            .await
-            .config
-            .lock()
-            .expect("gateway config"),
-        before
-    );
-    assert_eq!(
-        credentials
-            .get(
-                &removable.instance,
-                &removable.provider,
-                removable.base_url.as_deref(),
-            )
-            .expect("credential")
-            .map(|credential| credential.api_key),
-        Some("unused-secret".into())
-    );
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        gateway.remove_provider(removable.instance),
+    )
+    .await
+    .expect("provider edits must not wait on chat actors")
+    .unwrap();
+    assert!(matches!(
+        receiver.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+    gateway.state.lock().await.sessions.remove("busy");
+    gateway.shutdown().await;
 }
 
 #[tokio::test]
@@ -500,7 +476,7 @@ async fn explicit_key_replaces_credentialless_endpoint_auth() {
 }
 
 #[tokio::test]
-async fn credential_update_refreshes_every_matching_resident_chat() {
+async fn credential_update_prepares_once_when_matching_chats_are_next_used() {
     let root = tempfile::tempdir().expect("root");
     let workspace = root.path().join("workspace");
     let state = root.path().join("state");
@@ -546,6 +522,8 @@ async fn credential_update_refreshes_every_matching_resident_chat() {
     let second = create_test_session(&gateway, &workspace)
         .await
         .expect("second chat");
+    let operations = Arc::clone(&gateway.state.lock().await.store.runtime_operations);
+    let before = operations.counts();
     let mut first_events = first.subscribe();
     let mut second_events = second.subscribe();
 
@@ -560,20 +538,16 @@ async fn credential_update_refreshes_every_matching_resident_chat() {
         .await
         .expect("replace Kimi credential");
 
+    assert_eq!(operations.counts(), before);
     for events in [&mut first_events, &mut second_events] {
-        tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                if matches!(
-                    events.recv().await.expect("chat event").message,
-                    ServerMessage::SessionChanged { .. }
-                ) {
-                    break;
-                }
-            }
-        })
-        .await
-        .expect("matching chat refresh");
+        assert!(matches!(
+            events.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
     }
+    first.accepts_file_attachments().await.unwrap();
+    second.accepts_file_attachments().await.unwrap();
+    assert_eq!(operations.counts(), (before.0 + 1, before.1 + 2));
 
     assert!(first.stop_if_idle().await);
     gateway
@@ -1072,4 +1046,58 @@ async fn stale_provider_login_success_does_not_refresh_sessions_or_release_anoth
         Err(mpsc::error::TryRecvError::Empty)
     ));
     assert!(reserve_test_login(&gateway, "c").await.is_err());
+}
+
+#[tokio::test]
+async fn provider_presentation_edits_do_not_prepare_or_assemble() {
+    let root = tempfile::tempdir().expect("root");
+    let (gateway, _, primary, _) = provider_removal_gateway(&root).await;
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let host = create_test_session(&gateway, &workspace).await.unwrap();
+    let operations = Arc::clone(&gateway.state.lock().await.store.runtime_operations);
+    let before = operations.counts();
+    let ready = gateway
+        .register_provider(
+            primary.clone(),
+            "Renamed".into(),
+            ProviderTint::Purple,
+            vec![primary.model],
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    host.accepts_file_attachments().await.unwrap();
+    assert!(
+        ready
+            .provider_instances
+            .iter()
+            .any(|provider| provider.label == "Renamed")
+    );
+    assert_eq!(operations.counts(), before);
+    gateway.shutdown().await;
+}
+
+#[tokio::test]
+async fn unrelated_credential_edits_leave_prepared_chats_untouched() {
+    let root = tempfile::tempdir().expect("root");
+    let (gateway, _, _, _) = provider_removal_gateway(&root).await;
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let host = create_test_session(&gateway, &workspace).await.unwrap();
+    let operations = Arc::clone(&gateway.state.lock().await.store.runtime_operations);
+    let before = operations.counts();
+    gateway
+        .set_credential(
+            "not-in-the-catalog".into(),
+            "kimi".into(),
+            "new-secret".into(),
+            Some("https://api.moonshot.ai/v1".into()),
+            None,
+        )
+        .await
+        .unwrap();
+    host.accepts_file_attachments().await.unwrap();
+    assert_eq!(operations.counts(), before);
+    gateway.shutdown().await;
 }

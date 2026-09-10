@@ -259,10 +259,10 @@ async fn event_insert_failure_rolls_back_checkpoint_and_event_batch() {
 
     let error = store
         .save_with_events(
-            &next,
-            &[json!({"role": "assistant"})],
+            next,
+            vec![json!({"role": "assistant"})],
             None,
-            &[warning(10, "first"), warning(-1, "invalid")],
+            vec![warning(10, "first"), warning(-1, "invalid")],
         )
         .await
         .expect_err("invalid event must roll back the transaction");

@@ -4,6 +4,8 @@ use mobius::backend::model::ModelCredentialLifetime;
 /// File owner for gateway configuration and aggregate usage.
 #[derive(Debug, Clone)]
 pub struct ConfigStore {
+    #[cfg(test)]
+    pub(crate) runtime_operations: std::sync::Arc<RuntimeOperations>,
     state_dir: PathBuf,
     path: PathBuf,
 }
@@ -173,7 +175,12 @@ impl ConfigStore {
 
     fn at(state_dir: PathBuf) -> Self {
         let path = state_dir.join(CONFIG_FILE);
-        Self { state_dir, path }
+        Self {
+            state_dir,
+            path,
+            #[cfg(test)]
+            runtime_operations: Default::default(),
+        }
     }
 
     fn save_with_mode(&self, config: &GatewayConfig, create_new: bool) -> Result<()> {
@@ -574,4 +581,22 @@ fn usage_nonnegative(usage: &TokenUsage) -> bool {
         && usage.output_tokens >= 0
         && usage.reasoning_output_tokens >= 0
         && usage.total_tokens >= 0
+}
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(crate) struct RuntimeOperations {
+    pub(crate) preparations: std::sync::atomic::AtomicUsize,
+    pub(crate) assemblies: std::sync::atomic::AtomicUsize,
+}
+
+#[cfg(test)]
+impl RuntimeOperations {
+    pub(crate) fn counts(&self) -> (usize, usize) {
+        use std::sync::atomic::Ordering::Relaxed;
+        (
+            self.preparations.load(Relaxed),
+            self.assemblies.load(Relaxed),
+        )
+    }
 }

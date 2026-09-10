@@ -318,6 +318,9 @@ fn validate_queued_message(message: &QueuedMessage) -> Result<()> {
 /// Versioned state persisted at each durable loop boundary.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Checkpoint {
+    #[cfg(test)]
+    #[serde(skip)]
+    pub(crate) clone_count: CloneCount,
     pub version: u32,
     pub session_id: String,
     pub session_context: SessionContext,
@@ -340,11 +343,34 @@ pub struct Checkpoint {
     pub pending_approval: Option<PendingApproval>,
 }
 
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(crate) struct CloneCount(pub(crate) Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>);
+
+#[cfg(test)]
+impl Clone for CloneCount {
+    fn clone(&self) -> Self {
+        if let Some(count) = &self.0 {
+            count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        Self(self.0.clone())
+    }
+}
+
+#[cfg(test)]
+impl PartialEq for CloneCount {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
 impl Checkpoint {
     /// Creates an empty session checkpoint.
     #[must_use]
     pub fn empty(session_id: impl Into<String>) -> Self {
         Self {
+            #[cfg(test)]
+            clone_count: CloneCount::default(),
             version: CHECKPOINT_VERSION,
             session_id: session_id.into(),
             session_context: SessionContext::default(),
@@ -664,17 +690,19 @@ pub trait CheckpointStore: Send + Sync {
         execution: Option<&'a ExecutionRecord>,
     ) -> BoxFuture<'a, Result<()>>;
 
-    /// Atomically saves one checkpoint and appends its normalized event batch.
+    /// Atomically saves one owned checkpoint and appends its normalized event batch.
+    ///
+    /// Ownership lets storage transfer the snapshot to its worker without copying it.
     ///
     /// The checkpoint, transcript delta, optional execution record, and journal
     /// events form one commit boundary. Return the durably assigned event
     /// sequences only after that commit succeeds.
     fn save_with_events<'a>(
         &'a self,
-        checkpoint: &'a Checkpoint,
-        transcript_delta: &'a [Value],
-        execution: Option<&'a ExecutionRecord>,
-        events: &'a [TimestampedEvent],
+        checkpoint: Checkpoint,
+        transcript_delta: Vec<Value>,
+        execution: Option<ExecutionRecord>,
+        events: Vec<TimestampedEvent>,
     ) -> BoxFuture<'a, Result<Vec<JournalEvent>>>;
 
     /// Assigns a session-local sequence and appends one normalized event atomically.
@@ -691,6 +719,18 @@ pub trait CheckpointStore: Send + Sync {
         session_id: &'a str,
         request: EventPageRequest,
     ) -> BoxFuture<'a, Result<EventPage>>;
+
+    /// Loads catalog metadata for one session without reading its checkpoint context.
+    fn session_summary<'a>(
+        &'a self,
+        _session_id: &'a str,
+    ) -> BoxFuture<'a, Result<Option<SessionSummary>>> {
+        Box::pin(async {
+            Err(Error::Checkpoint(
+                "this checkpoint backend has no session catalog".into(),
+            ))
+        })
+    }
 
     /// Lists one page of the most recently updated sessions, newest first.
     fn list_sessions_page(

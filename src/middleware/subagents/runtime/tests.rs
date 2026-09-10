@@ -232,13 +232,14 @@ impl CheckpointStore for BlockingRetryStore {
 
     fn save_with_events<'a>(
         &'a self,
-        checkpoint: &'a Checkpoint,
-        transcript_delta: &'a [Value],
-        execution: Option<&'a ExecutionRecord>,
-        events: &'a [TimestampedEvent],
+        checkpoint: Checkpoint,
+        transcript_delta: Vec<Value>,
+        execution: Option<ExecutionRecord>,
+        events: Vec<TimestampedEvent>,
     ) -> BoxFuture<'a, Result<Vec<JournalEvent>>> {
         Box::pin(async move {
-            self.save(checkpoint, transcript_delta, execution).await?;
+            self.save(&checkpoint, &transcript_delta, execution.as_ref())
+                .await?;
             let mut records = Vec::with_capacity(events.len());
             for event in events {
                 records.push(
@@ -325,13 +326,14 @@ impl CheckpointStore for FailOnceStore {
 
     fn save_with_events<'a>(
         &'a self,
-        checkpoint: &'a Checkpoint,
-        transcript_delta: &'a [Value],
-        execution: Option<&'a ExecutionRecord>,
-        events: &'a [TimestampedEvent],
+        checkpoint: Checkpoint,
+        transcript_delta: Vec<Value>,
+        execution: Option<ExecutionRecord>,
+        events: Vec<TimestampedEvent>,
     ) -> BoxFuture<'a, Result<Vec<JournalEvent>>> {
         Box::pin(async move {
-            self.save(checkpoint, transcript_delta, execution).await?;
+            self.save(&checkpoint, &transcript_delta, execution.as_ref())
+                .await?;
             let mut records = Vec::with_capacity(events.len());
             for event in events {
                 records.push(

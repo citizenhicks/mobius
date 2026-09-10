@@ -338,24 +338,18 @@ impl GatewayHost {
         &self,
         scope: ProviderRefresh,
     ) -> std::result::Result<(), Rejection> {
-        let sessions = self
-            .state
-            .lock()
-            .await
-            .sessions
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        let mut failure = None;
-        self.state.lock().await.bots.prepared.lock().await.clear();
-        for host in sessions {
-            if let Err(rejection) = host.refresh_provider(scope.clone()).await
-                && rejection.code != "gateway_stopped"
-            {
-                failure.get_or_insert(rejection);
+        let state = self.state.lock().await;
+        for prepared in state.bots.prepared.lock().await.values() {
+            for selection in &prepared.providers {
+                if super::session::provider_refresh_matches(selection, &scope)
+                    .map_err(invalid_config)?
+                {
+                    prepared.invalidate();
+                    break;
+                }
             }
         }
-        failure.map_or(Ok(()), Err)
+        Ok(())
     }
 
     fn broadcast(&self, message: ServerMessage) {
@@ -371,7 +365,7 @@ impl GatewayHost {
         reasoning_efforts: Vec<String>,
     ) -> std::result::Result<ReadyPayload, Rejection> {
         let _mutation = self.begin_exclusive_mutation().await?;
-        let mut state = self.state.lock().await;
+        let state = self.state.lock().await;
         if !credential_is_configured(&selection, &state.store, &state.credentials)
             .map_err(invalid_config)?
         {
@@ -396,7 +390,14 @@ impl GatewayHost {
             .map_err(invalid_config)?;
         let mut bots = state.bots.bots().map_err(internal)?;
         validate_bot_catalog(&state, &next, &bots)?;
-        let catalog_changed = current.configured_providers != next.configured_providers;
+        let catalog_changed = current.configured_providers.len() != next.configured_providers.len()
+            || current.configured_providers.iter().any(|(id, previous)| {
+                next.configured_providers.get(id).is_none_or(|next| {
+                    previous.selection != next.selection
+                        || previous.model_ids != next.model_ids
+                        || previous.reasoning_efforts != next.reasoning_efforts
+                })
+            });
         if current == next {
             return gateway_ready(&state).await;
         }
@@ -409,15 +410,6 @@ impl GatewayHost {
                     .ok_or_else(|| internal("provider catalog epoch overflow"))
             })
             .transpose()?;
-        let residents = provider_cutover_residents(&mut state).await?;
-        if residents.iter().any(|resident| !resident.status.idle) {
-            return Err(Rejection {
-                code: "agent_busy",
-                message: "finish or interrupt active Bot turns before changing gateway providers"
-                    .into(),
-                fatal: false,
-            });
-        }
         commit_provider_registration(
             &state,
             &selection,
@@ -446,13 +438,11 @@ impl GatewayHost {
         if let Some(target_epoch) = target_epoch {
             state.provider_epoch.store(target_epoch, Ordering::Release);
         }
-        let reload_failures = reload_provider_residents(&mut state, residents, &bots).await?;
         let payload = gateway_ready(&state).await?;
         let frame = ServerFrame::new(ServerMessage::Ready {
             payload: payload.clone(),
         });
         let _ = self.events.send(frame);
-        broadcast_reload_failures(self, "provider changed", &reload_failures);
         Ok(payload)
     }
 
@@ -461,7 +451,7 @@ impl GatewayHost {
         instance: String,
     ) -> std::result::Result<ReadyPayload, Rejection> {
         let _mutation = self.begin_exclusive_mutation().await?;
-        let mut state = self.state.lock().await;
+        let state = self.state.lock().await;
         let current = state
             .config
             .lock()
@@ -489,23 +479,12 @@ impl GatewayHost {
             .load(Ordering::Acquire)
             .checked_add(1)
             .ok_or_else(|| internal("provider catalog epoch overflow"))?;
-        let residents = provider_cutover_residents(&mut state).await?;
-        if residents.iter().any(|resident| !resident.status.idle) {
-            return Err(Rejection {
-                code: "agent_busy",
-                message: "finish or interrupt active turns before removing a gateway provider"
-                    .into(),
-                fatal: false,
-            });
-        }
         commit_provider_removal(&state, &instance).map_err(internal)?;
         state.provider_epoch.store(target_epoch, Ordering::Release);
-        let reload_failures = reload_provider_residents(&mut state, residents, &bots).await?;
         let payload = gateway_ready(&state).await?;
         let _ = self.events.send(ServerFrame::new(ServerMessage::Ready {
             payload: payload.clone(),
         }));
-        broadcast_reload_failures(self, "provider removed", &reload_failures);
         Ok(payload)
     }
 }
@@ -551,43 +530,6 @@ fn commit_provider_removal(state: &super::GatewayState, instance: &str) -> crate
     }
     *current = next;
     Ok(())
-}
-
-struct ProviderCutoverResident {
-    session_id: String,
-    host: super::HostHandle,
-    status: super::ProviderCutoverStatus,
-}
-
-async fn provider_cutover_residents(
-    state: &mut super::GatewayState,
-) -> std::result::Result<Vec<ProviderCutoverResident>, Rejection> {
-    let sessions = state
-        .sessions
-        .iter()
-        .map(|(id, host)| (id.clone(), host.clone()))
-        .collect::<Vec<_>>();
-    let mut residents = Vec::new();
-    let mut stopped = Vec::new();
-    for (id, host) in sessions {
-        if !host.is_alive() {
-            stopped.push(id);
-            continue;
-        }
-        match host.provider_cutover_status().await {
-            Ok(status) => residents.push(ProviderCutoverResident {
-                session_id: id,
-                host,
-                status,
-            }),
-            Err(rejection) if rejection.code == "gateway_stopped" => stopped.push(id),
-            Err(rejection) => return Err(rejection),
-        }
-    }
-    for id in stopped {
-        state.sessions.remove(&id);
-    }
-    Ok(residents)
 }
 
 fn validate_bot_catalog(
@@ -637,46 +579,6 @@ fn bot_references_removed_provider(
         }
     }
     Ok(false)
-}
-
-async fn reload_provider_residents(
-    state: &mut super::GatewayState,
-    residents: Vec<ProviderCutoverResident>,
-    bots: &[BotRecord],
-) -> std::result::Result<Vec<String>, Rejection> {
-    let mut failures = Vec::new();
-    for resident in residents {
-        let _bot = bots
-            .iter()
-            .find(|bot| bot.id == resident.host.bot_id())
-            .cloned()
-            .ok_or_else(|| internal("resident chat has no authoritative Bot profile"))?;
-        let result = resident.host.refresh_bot().await;
-        if let Err(error) = result {
-            if !resident.host.stop_if_idle().await {
-                return Err(internal(
-                    "chat became busy after the provider catalog was committed",
-                ));
-            }
-            state.sessions.remove(&resident.session_id);
-            failures.push(format!("{}: {}", resident.session_id, error.message));
-        }
-    }
-    Ok(failures)
-}
-
-fn broadcast_reload_failures(host: &GatewayHost, action: &str, failures: &[String]) {
-    if failures.is_empty() {
-        return;
-    }
-    let _ = host.events.send(ServerFrame::new(ServerMessage::Error {
-        code: "provider_reload".into(),
-        message: format!(
-            "{action}; reopen chats that could not reload: {}",
-            failures.join(", ")
-        ),
-        fatal: false,
-    }));
 }
 
 fn reserve_provider_login(

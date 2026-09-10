@@ -1,27 +1,14 @@
 use super::*;
 
 impl HostState {
-    pub(super) async fn forward_event(&mut self, record: JournalEvent) -> Result<()> {
-        if self.apply_event(record).await? {
-            self.restart_after_turn = false;
-            self.restart("mobius-gateway")
-                .await
-                .map_err(|rejection| Error::Config(rejection.message))?;
-            self.broadcast_changed()
-                .await
-                .map_err(|rejection| Error::Config(rejection.message))?;
-        }
-        Ok(())
-    }
-
-    pub(super) async fn apply_event(&mut self, record: JournalEvent) -> Result<bool> {
+    pub(super) async fn apply_event(&mut self, record: JournalEvent) -> Result<()> {
         let was_active = self.pending_turns > 0;
         let event = record.event.clone();
         if self
             .project_and_publish(record, JournalDelivery::Live)?
             .is_none()
         {
-            return Ok(false);
+            return Ok(());
         }
         match &event.msg {
             EventMsg::TurnStarted(_) => self.last_assistant_text = None,
@@ -71,7 +58,7 @@ impl HostState {
         {
             self.swarm.notify_rejected(submission_id, &self.spec.bot_id);
         }
-        let next_activity = self.activity_for_event(&event.msg)?;
+        let next_activity = self.activity_for_event(&event.msg).await?;
         account_turn_event(&mut self.pending_turns, &mut self.pending_messages, &event);
         match &event.msg {
             EventMsg::ExecApprovalRequest(_) => self.approval_active = true,
@@ -83,31 +70,27 @@ impl HostState {
             self.bots.finish_run(active.run, status, message)?;
         }
         if let Some(activity) = next_activity {
-            self.set_activity(activity)?;
+            self.set_activity(activity).await?;
             self.broadcast_sessions()
                 .await
                 .map_err(|rejection| Error::Config(rejection.message))?;
         }
 
         let became_idle = self.pending_turns == 0 && was_active;
-        let mut restart = false;
-        if became_idle {
-            restart = self.restart_after_turn;
-            if !self.approval_active && self.active_routine.is_none() {
-                for waiter in self.idle_waiters.drain(..) {
-                    let _ = waiter.send(());
-                }
+        if became_idle && !self.approval_active && self.active_routine.is_none() {
+            for waiter in self.idle_waiters.drain(..) {
+                let _ = waiter.send(());
             }
         }
-        Ok(restart)
+        Ok(())
     }
 
     pub(super) async fn reconcile_replayed_swarm_work(&self) -> Result<()> {
         let mut error = None;
         let mut summary = None;
         let mut terminal = None;
-        for frame in &self.replay {
-            let ServerMessage::AgentEvent { record, .. } = &frame.message else {
+        for entry in &self.replay {
+            let ServerMessage::AgentEvent { record, .. } = &entry.frame.message else {
                 continue;
             };
             match &record.event.msg {
@@ -168,7 +151,8 @@ impl HostState {
             session_id: self.running.session_id.clone(),
             record: project_record(&self.running.frontend, journal),
         });
-        validate_event_frame(&frame)?;
+        let entry = ReplayEntry::new(frame)?;
+        let frame = &entry.frame;
         if let ServerMessage::AgentEvent { record, .. } = &frame.message {
             update_widgets(&mut self.widgets, &record.event.msg);
             if let EventMsg::AssistantMessage(message) = &record.event.msg {
@@ -176,7 +160,7 @@ impl HostState {
                     &mut self.replay,
                     &mut self.replay_bytes,
                     &message.model_step_id,
-                )?;
+                );
             }
         }
         if sequence_kind == JournalSequence::AlreadyLoaded {
@@ -186,14 +170,17 @@ impl HostState {
             &mut self.replay,
             &mut self.replay_bytes,
             &self.events,
-            frame.clone(),
+            entry.clone(),
             delivery != JournalDelivery::Live,
-        )?;
+        );
         if truncated {
-            self.next_before_sequence = self.replay.front().and_then(event_sequence);
+            self.next_before_sequence = self
+                .replay
+                .front()
+                .and_then(|entry| event_sequence(&entry.frame));
         }
         self.sequence = sequence;
-        Ok(Some(frame))
+        Ok(Some(entry.frame))
     }
 
     pub(super) fn observe_routine_event(
@@ -320,10 +307,7 @@ impl HostState {
     }
 
     pub(super) async fn broadcast_sessions(&self) -> std::result::Result<(), Rejection> {
-        let sessions = session_catalog(&self.checkpoints, &self.activities)
-            .await
-            .map_err(internal)?;
-        let approvals = background_approvals(&self.checkpoints, &self.activities)
+        let (sessions, approvals) = activity_catalog(&self.checkpoints, &self.activities)
             .await
             .map_err(internal)?;
         self.swarm.retry_pending();
@@ -341,11 +325,10 @@ impl HostState {
         Ok(())
     }
 
-    pub(super) fn activity_for_event(
+    pub(super) async fn activity_for_event(
         &mut self,
         event: &EventMsg,
     ) -> Result<Option<SessionActivity>> {
-        let current = self.activity()?;
         let next = match event {
             EventMsg::TurnStarted(turn) => {
                 self.turn_error = None;
@@ -360,10 +343,16 @@ impl HostState {
                 state: SessionActivityState::AwaitingApproval,
                 turn_id: Some(request.turn_id.clone()),
                 approval_request_id: Some(request.id.clone()),
-                started_at: current.started_at.or_else(|| Some(Utc::now().timestamp())),
+                started_at: self
+                    .activity()
+                    .await?
+                    .started_at
+                    .or_else(|| Some(Utc::now().timestamp())),
                 ..SessionActivity::default()
             }),
-            EventMsg::Error(error) if current.state == SessionActivityState::Idle => {
+            EventMsg::Error(error)
+                if self.activity().await?.state == SessionActivityState::Idle =>
+            {
                 self.turn_error = None;
                 Some(SessionActivity {
                     last_outcome: Some(ExecutionOutcome::Failed),
@@ -397,7 +386,7 @@ impl HostState {
     }
 
     pub(super) async fn resume_activity(&self) -> Result<()> {
-        let current = self.activity()?;
+        let current = self.activity().await?;
         if current.state != SessionActivityState::AwaitingApproval {
             return Ok(());
         }
@@ -406,43 +395,47 @@ impl HostState {
             turn_id: current.turn_id,
             started_at: current.started_at,
             ..SessionActivity::default()
-        })?;
+        })
+        .await?;
         self.broadcast_sessions()
             .await
             .map_err(|rejection| Error::Config(rejection.message))
     }
 
     pub(super) async fn fail_activity(&self, message: &str) -> Result<()> {
-        if self.activity()?.state == SessionActivityState::Idle {
+        if self.activity().await?.state == SessionActivityState::Idle {
             return Ok(());
         }
         self.set_activity(SessionActivity {
             last_outcome: Some(ExecutionOutcome::Failed),
             message: Some(message.into()),
             ..SessionActivity::default()
-        })?;
+        })
+        .await?;
         self.broadcast_sessions()
             .await
             .map_err(|rejection| Error::Config(rejection.message))
     }
 
-    pub(super) fn activity(&self) -> Result<SessionActivity> {
-        let activities = self
+    pub(super) async fn activity(&self) -> Result<SessionActivity> {
+        Ok(self
             .activities
             .lock()
-            .map_err(|_| Error::Config("session activity lock is poisoned".into()))?;
-        Ok(activities
+            .await
+            .activities
             .get(&self.running.session_id)
             .cloned()
             .unwrap_or_default())
     }
 
-    pub(super) fn set_activity(&self, activity: SessionActivity) -> Result<()> {
-        self.activities
-            .lock()
-            .map_err(|_| Error::Config("session activity lock is poisoned".into()))?
-            .insert(self.running.session_id.clone(), activity);
-        Ok(())
+    pub(super) async fn set_activity(&self, activity: SessionActivity) -> Result<()> {
+        update_session_activity(
+            &self.checkpoints,
+            &self.activities,
+            &self.running.session_id,
+            activity,
+        )
+        .await
     }
 
     pub(super) fn broadcast(&self, message: ServerMessage) {

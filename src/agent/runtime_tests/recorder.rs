@@ -527,3 +527,30 @@ async fn recorder_flush_backpressures_until_ordered_delivery_resumes() {
         assert_eq!(warning.message, index.to_string());
     }
 }
+
+#[tokio::test]
+async fn recorder_save_copies_the_checkpoint_once_through_sqlite() {
+    let directory = tempfile::tempdir().expect("checkpoint directory");
+    let checkpoints = Arc::new(
+        SqliteCheckpoint::new(directory.path().join("checkpoints.sqlite3"))
+            .expect("checkpoint store"),
+    );
+    let mut checkpoint = test_checkpoint("session");
+    checkpoint
+        .context
+        .push(serde_json::json!({"role": "user", "content": "retained context"}));
+    let copies = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    checkpoint.clone_count.0 = Some(Arc::clone(&copies));
+    let (recorder, _receiver) = EventRecorder::spawn(checkpoints.clone(), "session".into());
+
+    recorder
+        .save(&checkpoint, &[], None, Vec::new())
+        .await
+        .expect("save snapshot");
+
+    assert_eq!(copies.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert_eq!(
+        checkpoints.load("session").await.expect("load"),
+        Some(checkpoint)
+    );
+}

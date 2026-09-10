@@ -13,12 +13,7 @@ fn request() -> RealtimeVoiceRequest {
         session_id: "session-1".into(),
         voice: None,
         offer_sdp: SDP.into(),
-        instructions: "Delegate coding requests using ask_agent.".into(),
-        handoff_tool: ToolDefinition {
-            name: "ask_agent".into(),
-            description: "Ask the coding agent.".into(),
-            parameters: crate::middleware::messages::voice::handoff_tool().parameters,
-        },
+        instructions: "Delegate requested work to the workspace.".into(),
     }
 }
 
@@ -61,7 +56,12 @@ impl OpenAiAuthorization for Auth {
 async fn transport(api: VoiceApi) -> (RealtimeTransport, TcpListener) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}/v1/realtime", listener.local_addr().unwrap());
-    let mut calls_url = Url::parse(&format!("{base}/calls")).unwrap();
+    let mut calls_url = Url::parse(&if api == VoiceApi::Codex {
+        format!("{base}/calls")
+    } else {
+        base.replace("/realtime", "/live/sessions")
+    })
+    .unwrap();
     if api == VoiceApi::Codex {
         calls_url.set_query(Some("intent=quicksilver&architecture=avas"));
     }
@@ -77,7 +77,7 @@ async fn transport(api: VoiceApi) -> (RealtimeTransport, TcpListener) {
             api_url: Url::parse(&if api == VoiceApi::Codex {
                 base.replace("/realtime", "/live")
             } else {
-                base
+                base.replace("/realtime", "/live/sessions")
             })
             .unwrap(),
         },
@@ -105,7 +105,8 @@ impl tokio_tungstenite::tungstenite::handshake::server::Callback for InspectUpgr
             assert_eq!(request.headers()["openai-alpha"], "quicksilver=v2");
             assert_eq!(request.headers()["x-session-id"], "session-1");
         } else {
-            assert_eq!(request.uri().query(), Some("call_id=rtc_test"));
+            assert_eq!(request.uri().path(), "/v1/live/sessions/live_test/attach");
+            assert_eq!(request.uri().query(), None);
             assert!(!request.headers().contains_key("openai-alpha"));
         }
         Ok(response)
@@ -157,255 +158,135 @@ async fn respond(socket: &mut TcpStream, status: &str, extra: &str, body: &str) 
         .unwrap();
 }
 
-fn completed() -> Value {
-    json!({"type":"response.done","response":{"id":"r1","status":"completed","output":[
-        {"type":"function_call","name":"ask_agent","call_id":"h1","arguments":"{\"text\":\"model paraphrase\"}"}
-    ]}})
+fn live_answer(id: &str, sdp: &str) -> String {
+    json!({"session":{"id":id},"transport":{"type":"webrtc","sdp":sdp}}).to_string()
 }
 
-fn transcript() -> Value {
-    json!({"type":"conversation.item.input_audio_transcription.completed","item_id":"i1","transcript":"Fix the actual bug, please."})
-}
-
-#[test]
-fn self_contained_handoffs_and_actual_asr_are_independent_and_deduplicated() {
-    for asr_first in [true, false] {
-        let mut turns = VoiceTurns::default();
-        for event in [
-            json!({"type":"input_audio_buffer.committed","item_id":"i1"}),
-            json!({"type":"response.created","response":{"id":"r1"}}),
-        ] {
-            assert!(
-                turns
-                    .observe(VoiceApi::OpenAi, "ask_agent", &event)
-                    .unwrap()
-                    .is_empty()
-            );
+fn delegation(api: VoiceApi, id: &str) -> Value {
+    match api {
+        VoiceApi::OpenAi => {
+            json!({"type":"session.delegation.created","offset_ms":1000,"delegation":{"id":id,"type":"delegation","target":"client"}})
         }
-        let pair = if asr_first {
-            [transcript(), completed()]
-        } else {
-            [completed(), transcript()]
-        };
-        let mut observed = turns
-            .observe(VoiceApi::OpenAi, "ask_agent", &pair[0])
-            .unwrap();
-        observed.extend(
-            turns
-                .observe(VoiceApi::OpenAi, "ask_agent", &pair[1])
-                .unwrap(),
-        );
-        if !asr_first {
-            observed.reverse();
-        }
-        assert_eq!(
-            observed,
-            vec![
-                RealtimeVoiceEvent::Transcript {
-                    id: "i1".into(),
-                    role: crate::protocol::ConversationRole::User,
-                    text: "Fix the actual bug, please.".into(),
-                    complete: true
-                },
-                RealtimeVoiceEvent::Handoff {
-                    id: "h1".into(),
-                    text: "model paraphrase".into(),
-                    needs_context: false,
-                },
-            ]
-        );
-        for event in pair {
-            assert!(
-                turns
-                    .observe(VoiceApi::OpenAi, "ask_agent", &event)
-                    .unwrap()
-                    .is_empty()
-            );
+        VoiceApi::Codex => {
+            json!({"type":"delegation.created","item":{"id":id,"type":"delegation","target":"client","content":[{"type":"input_text","text":"Fix the actual bug, please."}]}})
         }
     }
-    let mut turns = VoiceTurns::default();
-    let mut cancelled = completed();
-    cancelled["response"]["status"] = "cancelled".into();
-    assert!(
-        turns
-            .observe(VoiceApi::OpenAi, "ask_agent", &cancelled)
-            .unwrap()
-            .is_empty()
-    );
-    assert!(
-        turns
-            .observe(
-                VoiceApi::OpenAi,
-                "ask_agent",
-                &json!({"type":"error","error":{"message":"voice access denied"}})
-            )
-            .unwrap_err()
-            .to_string()
-            .contains("voice access denied")
-    );
 }
 
 #[tokio::test]
-async fn public_and_codex_calls_use_authenticated_sideband_and_hang_up_on_drop() {
+async fn live_and_codex_wire_contracts_delegate_once_reply_and_close() {
     for api in [VoiceApi::OpenAi, VoiceApi::Codex] {
         let (transport, listener) = transport(api).await;
-        let session = transport.session(&request());
-        if api == VoiceApi::OpenAi {
-            assert_eq!(session["reasoning"]["effort"], "minimal");
-            assert_eq!(
-                session["audio"]["input"]["noise_reduction"]["type"],
-                "near_field"
-            );
-        } else {
-            assert!(session.get("reasoning").is_none());
-        }
-        let handoff_count = if api == VoiceApi::OpenAi { 9 } else { 1 };
-        let reply_text = if api == VoiceApi::Codex {
-            format!("x{}", "🗣".repeat(300))
-        } else {
-            "Fixed it.".into()
-        };
+        let reply_text = format!("x{}", "🗣".repeat(300));
         let expected_reply = reply_text.clone();
-        let (reply_ready, replied) = oneshot::channel();
         let server = tokio::spawn(async move {
             let (mut http, _) = listener.accept().await.unwrap();
             let (headers, body) = read_request(&mut http).await;
             assert!(headers.contains("authorization: bearer secret\r\n"));
-            assert!(headers.contains("chatgpt-account-id: account-1\r\n"));
+            assert!(headers.contains("content-type: application/json\r\n"));
+            let body: Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(body["session"]["delegation"]["type"], "client");
+            assert!(body["session"].get("tools").is_none());
             if api == VoiceApi::Codex {
                 assert!(
                     headers.starts_with(
                         "post /v1/realtime/calls?intent=quicksilver&architecture=avas "
                     )
                 );
-                let body: Value = serde_json::from_str(&body).unwrap();
                 assert_eq!(body["sdp"], SDP);
-                assert!(headers.contains("openai-alpha: quicksilver=v2\r\n"));
-                assert_eq!(body["session"]["delegation"]["type"], "client");
-                assert!(body["session"].get("type").is_none());
-                assert_eq!(body["session"]["audio"]["output"]["voice"], "maple");
-                assert!(body["session"].get("tools").is_none());
                 assert_eq!(body["session"]["model"], "gpt-live-1-codex");
+                assert_eq!(body["session"]["audio"]["output"]["voice"], "maple");
+                respond(
+                    &mut http,
+                    "201 Created",
+                    "Location: /v1/realtime/calls/rtc_test\r\n",
+                    SDP,
+                )
+                .await;
             } else {
-                assert!(headers.contains("multipart/form-data; boundary=mobius-"));
-                assert!(body.contains(SDP));
-                assert!(body.contains("\"model\":\"gpt-realtime-2.1-mini\""));
-                assert!(body.contains("\"transcription\":{\"model\":\"gpt-live-transcribe\"}"));
-                assert!(body.contains("\"name\":\"ask_agent\""));
-                assert!(body.contains("\"voice\":\"ash\""));
-                assert!(body.contains("\"interrupt_response\":true"));
+                assert!(headers.starts_with("post /v1/live/sessions "));
+                assert_eq!(body["transport"], json!({"type":"webrtc","sdp":SDP}));
+                assert_eq!(body["session"]["model"], "gpt-live-1");
+                assert_eq!(body["session"]["audio"]["output"]["voice"], "quartz");
+                respond(
+                    &mut http,
+                    "201 Created",
+                    "Content-Type: application/json\r\n",
+                    &live_answer("live_test", SDP),
+                )
+                .await;
             }
-            respond(
-                &mut http,
-                "201 Created",
-                if api == VoiceApi::Codex {
-                    "Location: /v1/realtime/calls/calls/rtc_test\r\n"
-                } else {
-                    "Location: /v1/realtime/calls/rtc_test\r\n"
-                },
-                SDP,
-            )
-            .await;
             drop(http);
             let (socket, _) = listener.accept().await.unwrap();
             let mut socket = tokio_tungstenite::accept_hdr_async(socket, InspectUpgrade(api))
                 .await
                 .unwrap();
-            if api == VoiceApi::Codex {
-                for _ in 0..2 {
-                    socket.send(Message::text(json!({"type":"delegation.created","offset_ms":1000,"item":{"id":"h1","type":"delegation","target":"client","content":[{"type":"input_text","text":"Fix the actual "},{"type":"input_text","text":"bug, please."}]}}).to_string())).await.unwrap();
-                }
-            } else {
-                for n in 1..=handoff_count {
-                    let mut done = completed();
-                    done["response"]["id"] = format!("r{n}").into();
-                    done["response"]["output"][0]["call_id"] = format!("h{n}").into();
-                    let mut asr = transcript();
-                    asr["item_id"] = format!("i{n}").into();
-                    for event in [
-                        json!({"type":"input_audio_buffer.committed","item_id":format!("i{n}")}),
-                        json!({"type":"response.created","response":{"id":format!("r{n}")}}),
-                        done.clone(),
-                        asr,
-                        done,
-                    ] {
-                        socket.send(Message::text(event.to_string())).await.unwrap();
-                    }
-                }
+            for id in ["h1", "h1", "h2"] {
+                socket
+                    .send(Message::text(delegation(api, id).to_string()))
+                    .await
+                    .unwrap();
             }
             let context: Value =
                 serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap())
                     .unwrap();
             assert_eq!(
                 context,
-                if api == VoiceApi::Codex {
-                    json!({"type":"session.context.append","channel":"commentary","content":[{"type":"input_text","text":"Bot is running tests."}]})
-                } else {
-                    json!({"type":"conversation.item.create","item":{"type":"message","role":"system","content":[{"type":"input_text","text":"Bot is running tests."}]}})
+                match api {
+                    VoiceApi::Codex =>
+                        json!({"type":"session.context.append","channel":"commentary","content":[{"type":"input_text","text":"Bot is running tests."}]}),
+                    VoiceApi::OpenAi =>
+                        json!({"type":"session.thinking.append","delegation_id":null,"content":"Bot is running tests."}),
                 }
             );
-            let reply: Value =
-                serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap())
-                    .unwrap();
-            if api == VoiceApi::Codex {
+            for id in ["h1", "h2"] {
                 let mut full_reply = String::new();
-                let mut reply = reply;
-                loop {
-                    assert_eq!(reply["type"], "delegation.context.append");
-                    assert_eq!(reply["delegation_item_id"], "h1");
-                    assert_eq!(reply["channel"], "speakable");
-                    assert_eq!(reply["content"][0]["type"], "input_text");
-                    let text = reply["content"][0]["text"].as_str().unwrap();
-                    assert!(text.len() <= 500);
-                    full_reply.push_str(text);
-                    if full_reply.len() >= expected_reply.len() {
-                        break;
-                    }
-                    reply = serde_json::from_str(
-                        socket.next().await.unwrap().unwrap().to_text().unwrap(),
-                    )
-                    .unwrap();
-                }
-                assert_eq!(full_reply, expected_reply);
-            } else {
-                assert_eq!(
-                    reply,
-                    json!({"type":"conversation.item.create","item":{"type":"function_call_output","call_id":"h1","output":"Fixed it."}})
-                );
-                for n in 2..=handoff_count {
+                while full_reply.len() < expected_reply.len() {
                     let reply: Value = serde_json::from_str(
                         socket.next().await.unwrap().unwrap().to_text().unwrap(),
                     )
                     .unwrap();
-                    assert_eq!(
-                        reply,
-                        json!({"type":"conversation.item.create","item":{"type":"function_call_output","call_id":format!("h{n}"),"output":"Fixed it."}})
-                    );
+                    let text = match api {
+                        VoiceApi::Codex => {
+                            assert_eq!(reply["type"], "delegation.context.append");
+                            assert_eq!(reply["delegation_item_id"], id);
+                            assert_eq!(reply["channel"], "speakable");
+                            reply["content"][0]["text"].as_str().unwrap()
+                        }
+                        VoiceApi::OpenAi => {
+                            assert_eq!(reply["type"], "session.commentary.append");
+                            assert_eq!(reply["delegation_id"], id);
+                            reply["content"].as_str().unwrap()
+                        }
+                    };
+                    assert!(text.len() <= 500);
+                    full_reply.push_str(text);
                 }
-                let response: Value =
-                    serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap())
-                        .unwrap();
-                assert_eq!(
-                    response,
-                    json!({"type":"response.create","response":{"tool_choice":"none"}})
-                );
+                assert_eq!(full_reply, expected_reply);
             }
-            reply_ready.send(()).unwrap();
-            if api == VoiceApi::Codex {
-                let close: Value =
-                    serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap())
-                        .unwrap();
-                assert_eq!(close, json!({"type":"session.close"}));
+            let close: Value =
+                serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap())
+                    .unwrap();
+            assert_eq!(close, json!({"type":"session.close"}));
+            if api == VoiceApi::OpenAi {
+                for event in [
+                    json!({"type":"session.output_transcript.delta","event_id":"last","delta":"Done.","start_ms":1200,"end_ms":1500}),
+                    json!({"type":"session.closed"}),
+                ] {
+                    socket.send(Message::text(event.to_string())).await.unwrap();
+                }
             }
             assert!(matches!(
                 socket.next().await.unwrap().unwrap(),
                 Message::Close(_)
             ));
             let (mut http, _) = listener.accept().await.unwrap();
-            let (headers, body) = read_request(&mut http).await;
-            assert!(headers.starts_with("post /v1/realtime/calls/rtc_test/hangup "));
+            let (headers, _) = read_request(&mut http).await;
+            assert!(headers.starts_with(match api {
+                VoiceApi::Codex => "post /v1/realtime/calls/rtc_test/hangup ",
+                VoiceApi::OpenAi => "post /v1/live/sessions/live_test/hangup ",
+            }));
             assert!(headers.contains("authorization: bearer secret\r\n"));
-            assert!(body.is_empty());
             respond(&mut http, "200 OK", "", "").await;
         });
         let mut selected = request();
@@ -413,13 +294,13 @@ async fn public_and_codex_calls_use_authenticated_sideband_and_hang_up_on_drop()
             if api == VoiceApi::Codex {
                 "maple"
             } else {
-                "ash"
+                "quartz"
             }
             .into(),
         );
         let mut call = transport.start(selected).await.unwrap();
         assert_eq!(call.answer_sdp, SDP);
-        for n in 1..=handoff_count {
+        for id in ["h1", "h2"] {
             assert_eq!(
                 timeout(Duration::from_secs(2), call.events.recv())
                     .await
@@ -427,31 +308,10 @@ async fn public_and_codex_calls_use_authenticated_sideband_and_hang_up_on_drop()
                     .unwrap()
                     .unwrap(),
                 RealtimeVoiceEvent::Handoff {
-                    id: format!("h{n}"),
-                    needs_context: api == VoiceApi::Codex,
-                    text: if api == VoiceApi::Codex {
-                        "Fix the actual bug, please."
-                    } else {
-                        "model paraphrase"
-                    }
-                    .into()
+                    id: id.into(),
+                    text: (api == VoiceApi::Codex).then(|| "Fix the actual bug, please.".into()),
                 }
             );
-            if api == VoiceApi::OpenAi {
-                assert_eq!(
-                    timeout(Duration::from_secs(2), call.events.recv())
-                        .await
-                        .unwrap()
-                        .unwrap()
-                        .unwrap(),
-                    RealtimeVoiceEvent::Transcript {
-                        id: format!("i{n}"),
-                        role: crate::protocol::ConversationRole::User,
-                        text: "Fix the actual bug, please.".into(),
-                        complete: true
-                    }
-                );
-            }
         }
         call.commands
             .send(RealtimeVoiceCommand::Context {
@@ -459,21 +319,36 @@ async fn public_and_codex_calls_use_authenticated_sideband_and_hang_up_on_drop()
             })
             .await
             .unwrap();
-        for n in 1..=handoff_count {
+        for id in ["h1", "h2"] {
             call.commands
                 .send(RealtimeVoiceCommand::Reply {
-                    handoff_id: format!("h{n}"),
+                    handoff_id: id.into(),
                     text: reply_text.clone(),
                 })
                 .await
                 .unwrap();
         }
-        timeout(Duration::from_secs(2), replied)
+        call.commands
+            .send(RealtimeVoiceCommand::Close)
             .await
-            .unwrap()
             .unwrap();
-        assert!(call.events.try_recv().is_err());
-        drop(call);
+        let final_events = timeout(Duration::from_secs(2), async {
+            let mut events = Vec::new();
+            while let Some(event) = call.events.recv().await {
+                events.push(event.unwrap());
+            }
+            events
+        })
+        .await
+        .unwrap();
+        if api == VoiceApi::OpenAi {
+            assert_eq!(final_events.len(), 2);
+            assert!(
+                matches!(&final_events[1], RealtimeVoiceEvent::Transcript { text, complete: true, .. } if text == "Done.")
+            );
+        } else {
+            assert!(final_events.is_empty());
+        }
         timeout(Duration::from_secs(2), server)
             .await
             .unwrap()
@@ -481,74 +356,157 @@ async fn public_and_codex_calls_use_authenticated_sideband_and_hang_up_on_drop()
     }
 }
 
-#[tokio::test]
-async fn sideband_event_backpressure_preserves_order_and_terminal_errors() {
-    let (transport, listener) = transport(VoiceApi::OpenAi).await;
-    let (sent, sent_signal) = oneshot::channel();
-    let server = tokio::spawn(async move {
-        let (mut http, _) = listener.accept().await.unwrap();
-        read_request(&mut http).await;
-        respond(
-            &mut http,
-            "201 Created",
-            "Location: /v1/realtime/calls/rtc_test\r\n",
-            SDP,
-        )
-        .await;
-        drop(http);
-        let (socket, _) = listener.accept().await.unwrap();
-        let mut socket =
-            tokio_tungstenite::accept_hdr_async(socket, InspectUpgrade(VoiceApi::OpenAi))
-                .await
-                .unwrap();
-        for n in 0..17 {
-            let mut event = transcript();
-            event["item_id"] = format!("i{n}").into();
-            socket.send(Message::text(event.to_string())).await.unwrap();
-        }
-        sent.send(()).unwrap();
-        drop(socket);
-        let (mut http, _) = listener.accept().await.unwrap();
-        let (headers, body) = read_request(&mut http).await;
-        assert!(headers.starts_with("post /v1/realtime/calls/rtc_test/hangup "));
-        assert!(body.is_empty());
-        respond(&mut http, "200 OK", "", "").await;
-    });
+#[test]
+fn live_captions_preserve_both_speakers_deduplicate_and_finalize_before_delegation() {
+    use crate::protocol::ConversationRole::{Assistant, User};
+    let mut turns = VoiceTurns::default();
+    let entry = |id: &str, role, text: &str, complete| RealtimeVoiceEvent::Transcript {
+        id: id.into(),
+        role,
+        text: text.into(),
+        complete,
+    };
+    let input = json!({"type":"session.input_transcript.delta","event_id":"e1","delta":"Fix it","start_ms":0,"end_ms":600});
+    assert_eq!(
+        turns.observe(VoiceApi::OpenAi, &input).unwrap(),
+        [entry("live-0-1", User, "Fix it", false)]
+    );
+    assert!(turns.observe(VoiceApi::OpenAi, &input).unwrap().is_empty());
+    let output = json!({"type":"session.output_transcript.delta","event_id":"e2","delta":"On it.","start_ms":500,"end_ms":900});
+    assert_eq!(
+        turns.observe(VoiceApi::OpenAi, &output).unwrap(),
+        [entry("live-1-2", Assistant, "On it.", false)]
+    );
+    assert_eq!(
+        turns
+            .observe(VoiceApi::OpenAi, &delegation(VoiceApi::OpenAi, "h1"))
+            .unwrap(),
+        [
+            entry("live-0-1", User, "Fix it", true),
+            entry("live-1-2", Assistant, "On it.", true),
+            RealtimeVoiceEvent::Handoff {
+                id: "h1".into(),
+                text: None
+            },
+        ]
+    );
+    assert!(
+        turns
+            .observe(VoiceApi::OpenAi, &delegation(VoiceApi::OpenAi, "h1"))
+            .unwrap()
+            .is_empty()
+    );
+    // Seconds are cumulative Live billing units, never token counts.
+    assert!(
+        turns
+            .observe(
+                VoiceApi::OpenAi,
+                &json!({"type":"session.usage.updated","usage":{"seconds":10}})
+            )
+            .unwrap()
+            .is_empty()
+    );
+    for (start, end) in [(20, 10), (-1, 10)] {
+        assert!(turns.observe(VoiceApi::OpenAi, &json!({"type":"session.input_transcript.delta","delta":"bad","start_ms":start,"end_ms":end})).is_err());
+    }
+}
 
-    let mut call = transport.start(request()).await.unwrap();
-    sent_signal.await.unwrap();
-    timeout(Duration::from_secs(2), async {
-        while call.events.capacity() != 0 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
-    for n in 0..17 {
-        assert_eq!(
-            timeout(Duration::from_secs(2), call.events.recv())
-                .await
+#[test]
+fn live_caption_gaps_and_late_fragments_keep_text_in_separate_groups() {
+    let mut turns = VoiceTurns::default();
+    let fragment = |start, end, text| json!({"type":"session.input_transcript.delta","delta":text,"start_ms":start,"end_ms":end});
+    turns
+        .observe(VoiceApi::OpenAi, &fragment(100, 200, "First"))
+        .unwrap();
+    let events = turns
+        .observe(VoiceApi::OpenAi, &fragment(1300, 1400, "Second"))
+        .unwrap();
+    assert!(
+        matches!(&events[..], [RealtimeVoiceEvent::Transcript { text, complete: true, .. }, RealtimeVoiceEvent::Transcript { complete: false, .. }] if text == "First")
+    );
+    let events = turns
+        .observe(VoiceApi::OpenAi, &fragment(300, 400, "Late"))
+        .unwrap();
+    assert!(
+        matches!(&events[0], RealtimeVoiceEvent::Transcript { text, complete: true, .. } if text == "Second")
+    );
+    let events = turns
+        .observe(VoiceApi::OpenAi, &json!({"type":"session.closed"}))
+        .unwrap();
+    assert!(
+        matches!(&events[0], RealtimeVoiceEvent::Transcript { text, complete: true, .. } if text == "Late")
+    );
+}
+
+#[test]
+fn codex_final_transcripts_replace_drafts_and_deduplicate() {
+    let mut turns = VoiceTurns::default();
+    for (kind, role, draft, final_text) in [
+        ("input_transcript.added", "user", "noise", ""),
+        ("output_transcript.added", "assistant", "Hi", "Hi there!"),
+    ] {
+        let draft = turns
+            .observe(VoiceApi::Codex, &json!({"type":kind,"item":{"text":draft}}))
+            .unwrap();
+        let final_event =
+            json!({"type":"turn.done","turn":{"id":role,"role":role,"transcript":final_text}});
+        let final_events = turns.observe(VoiceApi::Codex, &final_event).unwrap();
+        assert!(
+            matches!((&draft[0], &final_events[0]), (RealtimeVoiceEvent::Transcript { id, complete: false, .. }, RealtimeVoiceEvent::Transcript { id: final_id, text, complete: true, .. }) if id == final_id && text == final_text)
+        );
+        assert!(
+            turns
+                .observe(VoiceApi::Codex, &final_event)
                 .unwrap()
-                .unwrap()
-                .unwrap(),
-            RealtimeVoiceEvent::Transcript {
-                id: format!("i{n}"),
-                role: crate::protocol::ConversationRole::User,
-                text: "Fix the actual bug, please.".into(),
-                complete: true,
-            }
+                .is_empty()
         );
     }
-    let _error = timeout(Duration::from_secs(2), call.events.recv())
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap_err();
-    drop(call);
-    timeout(Duration::from_secs(2), server)
-        .await
-        .unwrap()
-        .unwrap();
+    let mut task = delegation(VoiceApi::Codex, "long");
+    let text = "Preserve all toolbar actions. ".repeat(100);
+    task["item"]["content"][0]["text"] = text.clone().into();
+    assert_eq!(
+        turns.observe(VoiceApi::Codex, &task).unwrap(),
+        [RealtimeVoiceEvent::Handoff {
+            id: "long".into(),
+            text: Some(text)
+        }]
+    );
+}
+
+#[tokio::test]
+async fn public_session_identity_is_validated_and_invalid_sdp_hangs_up() {
+    for id in ["../stolen", "live_invalid_sdp"] {
+        let (transport, listener) = transport(VoiceApi::OpenAi).await;
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            read_request(&mut socket).await;
+            respond(
+                &mut socket,
+                "201 Created",
+                "",
+                &live_answer(id, "invalid SDP"),
+            )
+            .await;
+            drop(socket);
+            if id == "live_invalid_sdp" {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let (headers, _) = read_request(&mut socket).await;
+                assert!(headers.starts_with("post /v1/live/sessions/live_invalid_sdp/hangup "));
+                respond(&mut socket, "200 OK", "", "").await;
+            } else {
+                assert!(
+                    timeout(Duration::from_millis(20), listener.accept())
+                        .await
+                        .is_err()
+                );
+            }
+        });
+        assert!(transport.start(request()).await.is_err());
+        timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
+    }
 }
 
 #[tokio::test]
@@ -589,8 +547,8 @@ async fn cancelling_sideband_setup_hangs_up_allocated_call() {
         respond(
             &mut socket,
             "201 Created",
-            "Location: /v1/realtime/calls/rtc_cancel\r\n",
-            SDP,
+            "Content-Type: application/json\r\n",
+            &live_answer("live_cancel", SDP),
         )
         .await;
         drop(socket);
@@ -598,7 +556,7 @@ async fn cancelling_sideband_setup_hangs_up_allocated_call() {
         connecting.send(()).unwrap();
         let (mut hangup, _) = listener.accept().await.unwrap();
         let (headers, _) = read_request(&mut hangup).await;
-        assert!(headers.starts_with("post /v1/realtime/calls/rtc_cancel/hangup "));
+        assert!(headers.starts_with("post /v1/live/sessions/live_cancel/hangup "));
         respond(&mut hangup, "200 OK", "", "").await;
         drop(socket);
     });
@@ -617,7 +575,7 @@ async fn cancelling_sideband_setup_hangs_up_allocated_call() {
 
 #[tokio::test]
 async fn foreign_call_locations_cannot_redirect_credentials() {
-    let (transport, listener) = transport(VoiceApi::OpenAi).await;
+    let (transport, listener) = transport(VoiceApi::Codex).await;
     let server = tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.unwrap();
         read_request(&mut socket).await;
@@ -643,8 +601,8 @@ async fn sideband_access_rejection_hangs_up_the_allocated_call() {
         respond(
             &mut socket,
             "201 Created",
-            "Location: /v1/realtime/calls/rtc_denied\r\n",
-            SDP,
+            "Content-Type: application/json\r\n",
+            &live_answer("live_denied", SDP),
         )
         .await;
         drop(socket);
@@ -660,7 +618,7 @@ async fn sideband_access_rejection_hangs_up_the_allocated_call() {
         drop(socket);
         let (mut socket, _) = listener.accept().await.unwrap();
         let (headers, _) = read_request(&mut socket).await;
-        assert!(headers.starts_with("post /v1/realtime/calls/rtc_denied/hangup "));
+        assert!(headers.starts_with("post /v1/live/sessions/live_denied/hangup "));
         respond(&mut socket, "200 OK", "", "").await;
     });
     let Err(Error::Provider(error)) = transport.start(request()).await else {
@@ -697,225 +655,6 @@ fn custom_endpoints_do_not_advertise_or_dispatch_realtime_voice() {
             .realtime_voices(Some("http://localhost:11434/v1"))
             .is_empty()
     );
-}
-
-#[test]
-fn usage_is_validated_and_counted_once_for_each_response_and_transcription() {
-    let mut turns = VoiceTurns::default();
-    let response = json!({"type":"response.done","response":{"id":"r1","status":"cancelled","usage":{
-        "input_tokens":12,"output_tokens":3,"total_tokens":15,"input_token_details":{"cached_tokens":4}
-    }}});
-    let events = turns
-        .observe(VoiceApi::OpenAi, "ask_agent", &response)
-        .unwrap();
-    assert_eq!(
-        events,
-        vec![RealtimeVoiceEvent::Usage(TokenUsage {
-            input_tokens: 12,
-            output_tokens: 3,
-            total_tokens: 15,
-            cached_input_tokens: 4,
-            ..TokenUsage::default()
-        })]
-    );
-    assert!(
-        turns
-            .observe(VoiceApi::OpenAi, "ask_agent", &response)
-            .unwrap()
-            .is_empty()
-    );
-    let mut asr = transcript();
-    asr["content_index"] = 0.into();
-    asr["usage"] = json!({"type":"tokens","input_tokens":2,"output_tokens":3,"total_tokens":5});
-    assert_eq!(
-        turns.observe(VoiceApi::OpenAi, "ask_agent", &asr).unwrap(),
-        vec![
-            RealtimeVoiceEvent::Transcript {
-                id: "i1".into(),
-                role: crate::protocol::ConversationRole::User,
-                text: "Fix the actual bug, please.".into(),
-                complete: true
-            },
-            RealtimeVoiceEvent::Usage(TokenUsage {
-                input_tokens: 2,
-                output_tokens: 3,
-                total_tokens: 5,
-                ..TokenUsage::default()
-            })
-        ]
-    );
-    assert!(
-        turns
-            .observe(VoiceApi::OpenAi, "ask_agent", &asr)
-            .unwrap()
-            .is_empty()
-    );
-    for usage in [
-        json!({"input_tokens":-1}),
-        json!({"input_tokens":1,"output_tokens":0,"total_tokens":1,"input_token_details":{"cached_tokens":2}}),
-        json!({"input_tokens":i64::MAX,"output_tokens":1,"total_tokens":i64::MAX}),
-    ] {
-        let mut invalid_response = response.clone();
-        invalid_response["response"]["id"] = "invalid".into();
-        invalid_response["response"]["usage"] = usage;
-        assert!(
-            turns
-                .observe(VoiceApi::OpenAi, "ask_agent", &invalid_response)
-                .is_err()
-        );
-    }
-}
-
-#[test]
-fn replies_wait_for_the_active_response_and_coalesce_before_next_speech() {
-    let mut turns = VoiceTurns::default();
-    turns
-        .observe(
-            VoiceApi::OpenAi,
-            "ask_agent",
-            &json!({"type":"response.created","response":{"id":"r1"}}),
-        )
-        .unwrap();
-    turns.reply_ready = true;
-    assert!(!turns.take_reply_response());
-    turns
-        .observe(
-            VoiceApi::OpenAi,
-            "ask_agent",
-            &json!({"type":"response.done","response":{"id":"r1","status":"cancelled"}}),
-        )
-        .unwrap();
-    assert!(turns.take_reply_response());
-    turns.reply_ready = true;
-    assert!(!turns.take_reply_response());
-    turns
-        .observe(
-            VoiceApi::OpenAi,
-            "ask_agent",
-            &json!({"type":"response.created","response":{"id":"r2"}}),
-        )
-        .unwrap();
-    // A retransmitted older completion must not mark the new response idle.
-    turns
-        .observe(
-            VoiceApi::OpenAi,
-            "ask_agent",
-            &json!({"type":"response.done","response":{"id":"r1","status":"cancelled"}}),
-        )
-        .unwrap();
-    assert!(!turns.take_reply_response());
-    turns
-        .observe(
-            VoiceApi::OpenAi,
-            "ask_agent",
-            &json!({"type":"response.done","response":{"id":"r2","status":"completed"}}),
-        )
-        .unwrap();
-    assert!(turns.take_reply_response());
-    assert!(!turns.take_reply_response());
-}
-
-#[test]
-fn background_noise_with_empty_transcription_does_not_end_the_call() {
-    let mut event = transcript();
-    event["transcript"] = "".into();
-    let mut turns = VoiceTurns::default();
-    assert!(
-        turns
-            .observe(VoiceApi::OpenAi, "ask_agent", &event)
-            .unwrap()
-            .is_empty()
-    );
-}
-
-#[test]
-fn discarded_transcription_clears_draft_words_for_both_voice_apis() {
-    for api in [VoiceApi::OpenAi, VoiceApi::Codex] {
-        let mut turns = VoiceTurns::default();
-        let (draft, final_event) = if api == VoiceApi::Codex {
-            (
-                json!({"type":"input_transcript.added","item":{"id":"noise","text":"safari's"}}),
-                json!({"type":"turn.done","turn":{"id":"noise","role":"user","transcript":""}}),
-            )
-        } else {
-            (
-                json!({"type":"conversation.item.input_audio_transcription.delta","item_id":"noise","delta":"safari's"}),
-                json!({"type":"conversation.item.input_audio_transcription.completed","item_id":"noise","transcript":""}),
-            )
-        };
-        let draft = turns.observe(api, "ask_agent", &draft).unwrap();
-        let final_events = turns.observe(api, "ask_agent", &final_event).unwrap();
-        assert!(matches!((&draft[..], &final_events[..]),
-            ([RealtimeVoiceEvent::Transcript { id, complete: false, .. }],
-             [RealtimeVoiceEvent::Transcript { id: final_id, text, complete: true, .. }])
-            if id == final_id && text.is_empty()));
-    }
-}
-
-#[test]
-fn direct_speech_and_spoken_handoff_results_share_the_same_transcript_path() {
-    use crate::protocol::ConversationRole::{Assistant, User};
-    for api in [VoiceApi::OpenAi, VoiceApi::Codex] {
-        // Even a response requested after a Bot handoff remains visible in voice history.
-        let mut turns = VoiceTurns {
-            response: ResponseState::Requested,
-            ..VoiceTurns::default()
-        };
-        let events = if api == VoiceApi::Codex {
-            vec![
-                json!({"type":"input_transcript.added","item":{"id":"input-1","text":"Hello"}}),
-                json!({"type":"turn.done","turn":{"id":"user-turn","role":"user","transcript":"Hello!"}}),
-                json!({"type":"output_transcript.added","item":{"id":"output-1","text":"Hi"}}),
-                json!({"type":"output_transcript.added","item":{"id":"output-2","text":" there"}}),
-                json!({"type":"turn.done","turn":{"id":"assistant-turn","role":"assistant","transcript":"Hi there!"}}),
-            ]
-        } else {
-            vec![
-                json!({"type":"conversation.item.input_audio_transcription.delta","item_id":"user","delta":"Hello"}),
-                json!({"type":"conversation.item.input_audio_transcription.completed","item_id":"user","transcript":"Hello!"}),
-                json!({"type":"response.created","response":{"id":"response"}}),
-                json!({"type":"response.output_audio_transcript.delta","response_id":"response","item_id":"assistant","content_index":0,"delta":"Hi"}),
-                json!({"type":"response.output_audio_transcript.delta","response_id":"response","item_id":"assistant","content_index":0,"delta":" there"}),
-                json!({"type":"response.output_audio_transcript.done","response_id":"response","item_id":"assistant","content_index":0,"transcript":"Hi there!"}),
-            ]
-        };
-        let mut observed = Vec::new();
-        for event in &events {
-            observed.extend(turns.observe(api, "ask_agent", event).unwrap());
-        }
-        let user = if api == VoiceApi::Codex {
-            "codex-user-1"
-        } else {
-            "user"
-        };
-        let assistant = if api == VoiceApi::Codex {
-            "codex-assistant-2"
-        } else {
-            "assistant:0"
-        };
-        let entry = |id: &str, role, text: &str, complete| RealtimeVoiceEvent::Transcript {
-            id: id.into(),
-            role,
-            text: text.into(),
-            complete,
-        };
-        assert_eq!(
-            observed,
-            [
-                entry(user, User, "Hello", false),
-                entry(user, User, "Hello!", true),
-                entry(assistant, Assistant, "Hi", false),
-                entry(assistant, Assistant, " there", false),
-                entry(assistant, Assistant, "Hi there!", true)
-            ]
-        );
-        assert!(
-            turns
-                .observe(api, "ask_agent", events.last().unwrap())
-                .unwrap()
-                .is_empty()
-        );
-    }
 }
 
 #[tokio::test]
@@ -959,53 +698,6 @@ async fn voice_catalog_default_selection_and_invalid_ids_are_provider_owned() {
     }
 }
 
-#[test]
-fn native_delegation_keeps_agreed_task_separate_from_actual_spoken_words() {
-    let mut turns = VoiceTurns::default();
-    let task = json!({"type":"delegation.created","item":{"id":"task-1","type":"delegation","target":"client","content":[{"type":"input_text","text":"Update the dark theme with the agreed blue accent; preserve all toolbar actions."}]}});
-    assert_eq!(
-        turns.observe(VoiceApi::Codex, "ask_agent", &task).unwrap(),
-        [RealtimeVoiceEvent::Handoff {
-            id: "task-1".into(),
-            text:
-                "Update the dark theme with the agreed blue accent; preserve all toolbar actions."
-                    .into(),
-            needs_context: true,
-        }]
-    );
-    assert!(
-        turns
-            .observe(VoiceApi::Codex, "ask_agent", &task)
-            .unwrap()
-            .is_empty()
-    );
-    let spoken = json!({"type":"turn.done","turn":{"id":"speech-1","role":"user","transcript":"Yes, do it."}});
-    assert!(
-        matches!(&turns.observe(VoiceApi::Codex, "ask_agent", &spoken).unwrap()[0], RealtimeVoiceEvent::Transcript { text, .. } if text == "Yes, do it.")
-    );
-}
-
-#[test]
-fn explicit_task_arguments_preserve_requirements_beyond_identifier_length() {
-    let mut turns = VoiceTurns::default();
-    let text = format!(
-        "Update the interface with these requirements: {}",
-        "preserve actions; ".repeat(100)
-    );
-    let mut event = completed();
-    event["response"]["output"][0]["arguments"] = json!({"text":text}).to_string().into();
-    assert_eq!(
-        turns
-            .observe(VoiceApi::OpenAi, "ask_agent", &event)
-            .unwrap(),
-        [RealtimeVoiceEvent::Handoff {
-            id: "h1".into(),
-            text,
-            needs_context: false,
-        }]
-    );
-}
-
 #[tokio::test(start_paused = true)]
 async fn credential_deadline_hangs_up_a_retained_voice_call() {
     let (commands, _commands) = tokio::sync::mpsc::channel(1);
@@ -1034,4 +726,72 @@ async fn credential_revocation_hangs_up_a_retained_voice_call() {
     drop(owner);
     assert!(cancelled.await.is_err());
     assert_eq!(call.answer_sdp, SDP);
+}
+#[tokio::test]
+async fn sideband_event_backpressure_preserves_order_and_terminal_errors() {
+    let (transport, listener) = transport(VoiceApi::Codex).await;
+    let (sent, sent_signal) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut http, _) = listener.accept().await.unwrap();
+        read_request(&mut http).await;
+        respond(
+            &mut http,
+            "201 Created",
+            "Location: /v1/realtime/calls/rtc_test\r\n",
+            SDP,
+        )
+        .await;
+        drop(http);
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut socket =
+            tokio_tungstenite::accept_hdr_async(socket, InspectUpgrade(VoiceApi::Codex))
+                .await
+                .unwrap();
+        for n in 0..17 {
+            let event = json!({"type":"turn.done","turn":{"id":format!("i{n}"),"role":"user","transcript":"Fix the actual bug, please."}});
+            socket.send(Message::text(event.to_string())).await.unwrap();
+        }
+        sent.send(()).unwrap();
+        drop(socket);
+        let (mut http, _) = listener.accept().await.unwrap();
+        let (headers, body) = read_request(&mut http).await;
+        assert!(headers.starts_with("post /v1/realtime/calls/rtc_test/hangup "));
+        assert!(body.is_empty());
+        respond(&mut http, "200 OK", "", "").await;
+    });
+
+    let mut call = transport.start(request()).await.unwrap();
+    sent_signal.await.unwrap();
+    timeout(Duration::from_secs(2), async {
+        while call.events.capacity() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    for n in 0..17 {
+        assert_eq!(
+            timeout(Duration::from_secs(2), call.events.recv())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+            RealtimeVoiceEvent::Transcript {
+                id: format!("codex-user-{}", n + 1),
+                role: crate::protocol::ConversationRole::User,
+                text: "Fix the actual bug, please.".into(),
+                complete: true,
+            }
+        );
+    }
+    let _error = timeout(Duration::from_secs(2), call.events.recv())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    drop(call);
+    timeout(Duration::from_secs(2), server)
+        .await
+        .unwrap()
+        .unwrap();
 }

@@ -448,11 +448,9 @@ pub(super) async fn remove_session_trees(
         }
         Err(error) => cleanup_errors.push(error.to_string()),
     }
-    match state.activities.lock() {
-        Ok(mut activities) => {
-            activities.retain(|id, _| !session_ids.iter().any(|deleted| deleted == id));
-        }
-        Err(_) => cleanup_errors.push("session activity lock is poisoned".into()),
-    }
+    let mut catalog = state.activities.lock().await;
+    catalog.activities.retain(|id, _| !session_ids.contains(id));
+    catalog.approvals.retain(|id, _| !session_ids.contains(id));
+    catalog.snapshot = None;
     Ok((!cleanup_errors.is_empty()).then(|| internal(cleanup_errors.join("; "))))
 }

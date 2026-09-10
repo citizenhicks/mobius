@@ -1,5 +1,23 @@
 use super::*;
 
+#[derive(Clone)]
+pub(super) struct ReplayEntry {
+    pub(super) frame: ServerFrame,
+    bytes: usize,
+}
+
+impl ReplayEntry {
+    pub(super) fn new(frame: ServerFrame) -> Result<Self> {
+        let bytes = validate_event_frame(&frame)?;
+        Ok(Self { frame, bytes })
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(super) static FRAME_SIZE_MEASUREMENTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub(super) async fn load_replay(
     checkpoints: &dyn CheckpointStore,
     session_id: &str,
@@ -40,13 +58,14 @@ pub(super) async fn load_replay(
             if !replayable(&frame) {
                 continue;
             }
-            let frame_bytes = validate_event_frame(&frame)?;
+            let entry = ReplayEntry::new(frame)?;
+            let frame_bytes = entry.bytes;
             if replay_bytes.saturating_add(frame_bytes) > MAX_REPLAY_BYTES {
                 has_earlier = true;
                 break 'pages;
             }
             replay_bytes = replay_bytes.saturating_add(frame_bytes);
-            newest_first.push_back(frame);
+            newest_first.push_back(entry);
         }
         let Some(cursor) = next_before_sequence else {
             break;
@@ -57,14 +76,14 @@ pub(super) async fn load_replay(
     let next_before_sequence = if has_earlier {
         replay
             .front()
-            .and_then(event_sequence)
+            .and_then(|entry| event_sequence(&entry.frame))
             .or_else(|| latest_sequence.checked_add(1))
     } else {
         None
     };
     let mut widgets = SessionWidgets::new();
-    for frame in &replay {
-        let ServerMessage::AgentEvent { record, .. } = &frame.message else {
+    for entry in &replay {
+        let ServerMessage::AgentEvent { record, .. } = &entry.frame.message else {
             continue;
         };
         update_widgets(&mut widgets, &record.event.msg);
@@ -239,13 +258,16 @@ pub(super) fn update_widgets(widgets: &mut SessionWidgets, event: &EventMsg) {
 }
 
 pub(super) fn record_and_publish(
-    replay: &mut VecDeque<ServerFrame>,
+    replay: &mut VecDeque<ReplayEntry>,
     replay_bytes: &mut usize,
     events: &broadcast::Sender<ServerFrame>,
-    frame: ServerFrame,
+    entry: ReplayEntry,
     suppress_broadcast: bool,
-) -> Result<bool> {
-    let frame_bytes = validate_event_frame(&frame)?;
+) -> bool {
+    let ReplayEntry {
+        frame,
+        bytes: frame_bytes,
+    } = entry;
     let mut truncated = false;
     if replayable(&frame) {
         while replay.len() >= REPLAY_CAPACITY
@@ -254,26 +276,29 @@ pub(super) fn record_and_publish(
             let Some(discarded) = replay.pop_front() else {
                 break;
             };
-            *replay_bytes = replay_bytes.saturating_sub(serde_json::to_vec(&discarded)?.len());
+            *replay_bytes = replay_bytes.saturating_sub(discarded.bytes);
             truncated = true;
         }
         *replay_bytes = replay_bytes.saturating_add(frame_bytes);
-        replay.push_back(frame.clone());
+        replay.push_back(ReplayEntry {
+            frame: frame.clone(),
+            bytes: frame_bytes,
+        });
     }
     if !suppress_broadcast {
         let _ = events.send(frame);
     }
-    Ok(truncated)
+    truncated
 }
 
 pub(super) fn compact_replay_deltas(
-    replay: &mut VecDeque<ServerFrame>,
+    replay: &mut VecDeque<ReplayEntry>,
     replay_bytes: &mut usize,
     model_step_id: &str,
-) -> Result<()> {
-    replay.retain(|frame| {
-        !matches!(
-            &frame.message,
+) {
+    replay.retain(|entry| {
+        let remove = matches!(
+            &entry.frame.message,
             ServerMessage::AgentEvent {
                 record: RecordedEvent {
                     event: Event {
@@ -284,12 +309,12 @@ pub(super) fn compact_replay_deltas(
                 },
                 ..
             } if delta.model_step_id == model_step_id
-        )
+        );
+        if remove {
+            *replay_bytes = replay_bytes.saturating_sub(entry.bytes);
+        }
+        !remove
     });
-    *replay_bytes = replay.iter().try_fold(0_usize, |total, frame| {
-        Ok::<_, Error>(total.saturating_add(serde_json::to_vec(frame)?.len()))
-    })?;
-    Ok(())
 }
 
 pub(super) fn replayable(frame: &ServerFrame) -> bool {
@@ -315,6 +340,8 @@ pub(super) fn replayable(frame: &ServerFrame) -> bool {
 }
 
 pub(super) fn validate_event_frame(frame: &ServerFrame) -> Result<usize> {
+    #[cfg(test)]
+    FRAME_SIZE_MEASUREMENTS.with(|count| count.set(count.get() + 1));
     let frame_bytes = serde_json::to_vec(frame)?.len();
     if frame_bytes > MAX_FRAME_BYTES {
         return Err(Error::Protocol(format!(

@@ -79,7 +79,7 @@ impl HostState {
                 }
                 event = self.running.events.recv() => match event {
                     Some(event) => {
-                        if let Err(error) = self.forward_event(event).await {
+                        if let Err(error) = self.apply_event(event).await {
                             let message = error.to_string();
                             self.broadcast(ServerMessage::Error {
                                 code: "host_error".into(),
@@ -159,7 +159,7 @@ impl HostState {
                 let result = async {
                     let _mutation = self.begin_session_mutation()?;
                     self.bind_bot().await?;
-                    let bot = &self.running.prepared.bot;
+                    let bot = self.bots.bot(&self.spec.bot_id).map_err(internal)?;
                     let router = &self.running.model_router;
                     let route = &self.running.session.model.route;
                     if !router.supports_realtime_voice(route).map_err(internal)? {
@@ -169,6 +169,7 @@ impl HostState {
                             fatal: false,
                         });
                     }
+                    let active_turn_id = self.activity().await.map_err(internal)?.turn_id;
                     let config = self
                         .gateway
                         .lock()
@@ -200,7 +201,7 @@ impl HostState {
                             .clone(),
                         route: route.clone(),
                         provider_instance,
-                        active_turn_id: self.activity().map_err(internal)?.turn_id,
+                        active_turn_id,
                         checkpoints: Arc::clone(&self.checkpoints),
                         frontend: Arc::clone(&self.running.frontend_sink),
                     })
@@ -237,7 +238,10 @@ impl HostState {
             HostCommand::Submit { submission, reply } => {
                 let result = async {
                     let _mutation = self.begin_session_mutation()?;
-                    if matches!(submission.op, Op::Message { .. }) {
+                    if matches!(
+                        submission.op,
+                        Op::Message { .. } | Op::CapabilityCommand { .. }
+                    ) {
                         self.bind_bot().await?;
                     }
                     let resumes_approval = matches!(
@@ -270,10 +274,6 @@ impl HostState {
                     result
                 }
                 .await;
-                let _ = reply.send(result);
-            }
-            HostCommand::RefreshBot { reply } => {
-                let result = self.replace_running(self.spec.clone(), None).await;
                 let _ = reply.send(result);
             }
             HostCommand::AttachFolder { folder, reply } => {
@@ -326,18 +326,6 @@ impl HostState {
                     self.switch_git_branch(&branch).await
                 }
                 .await;
-                let _ = reply.send(result);
-            }
-            HostCommand::RefreshProvider { scope, reply } => {
-                let result = async {
-                    let _mutation = self.begin_session_mutation()?;
-                    self.refresh_provider(&scope).await
-                }
-                .await;
-                let _ = reply.send(result);
-            }
-            HostCommand::RefreshExtension { id, reply } => {
-                let result = self.refresh_extension(&id).await;
                 let _ = reply.send(result);
             }
             HostCommand::ProviderCutoverStatus { reply } => {
@@ -447,7 +435,11 @@ impl HostState {
         last_sequence: Option<u64>,
     ) -> std::result::Result<Vec<ServerFrame>, Rejection> {
         let Some(last_sequence) = last_sequence else {
-            return Ok(self.replay.iter().cloned().collect());
+            return Ok(self
+                .replay
+                .iter()
+                .map(|entry| entry.frame.clone())
+                .collect());
         };
         if last_sequence > self.sequence {
             return Err(Rejection {
@@ -456,7 +448,10 @@ impl HostState {
                 fatal: false,
             });
         }
-        let oldest = self.replay.front().and_then(event_sequence);
+        let oldest = self
+            .replay
+            .front()
+            .and_then(|entry| event_sequence(&entry.frame));
         if last_sequence < self.sequence
             && oldest.is_none_or(|oldest| last_sequence.saturating_add(1) < oldest)
         {
@@ -469,8 +464,10 @@ impl HostState {
         Ok(self
             .replay
             .iter()
-            .filter(|frame| event_sequence(frame).is_some_and(|sequence| sequence > last_sequence))
-            .cloned()
+            .filter(|entry| {
+                event_sequence(&entry.frame).is_some_and(|sequence| sequence > last_sequence)
+            })
+            .map(|entry| entry.frame.clone())
             .collect())
     }
 
@@ -556,7 +553,10 @@ impl HostState {
 
     async fn bind_bot(&mut self) -> std::result::Result<(), Rejection> {
         if !self.is_idle()
-            || (self.bots.bot(&self.spec.bot_id).map_err(internal)? == self.running.prepared.bot
+            || (self
+                .running
+                .prepared
+                .matches_runtime(&self.bots.bot(&self.spec.bot_id).map_err(internal)?)
                 && self.running.prepared.epoch == self.provider_epoch.load(Ordering::Acquire))
         {
             return Ok(());
@@ -716,84 +716,6 @@ impl HostState {
             Ok(())
         })
         .await
-    }
-
-    pub(super) async fn refresh_provider(
-        &mut self,
-        scope: &ProviderRefresh,
-    ) -> std::result::Result<(), Rejection> {
-        if !provider_refresh_matches(&self.running.prepared.bot.config.config.provider, scope)
-            .map_err(invalid_config)?
-        {
-            return Ok(());
-        }
-        self.refresh_runtime().await
-    }
-
-    pub(super) async fn refresh_extension(
-        &mut self,
-        id: &str,
-    ) -> std::result::Result<(), Rejection> {
-        if !self
-            .running
-            .prepared
-            .bot
-            .config
-            .config
-            .extensions
-            .contains(id)
-        {
-            return Ok(());
-        }
-        self.refresh_runtime().await
-    }
-
-    async fn refresh_runtime(&mut self) -> std::result::Result<(), Rejection> {
-        if self.pending_turns > 0 || self.approval_active {
-            self.restart_after_turn = true;
-            return Ok(());
-        }
-        self.restart("mobius-gateway").await?;
-        self.broadcast_changed().await
-    }
-
-    pub(super) async fn restart(
-        &mut self,
-        origin_label: &str,
-    ) -> std::result::Result<(), Rejection> {
-        let session_id = self.running.session_id.clone();
-        self.stop_and_drain_running().await.map_err(internal)?;
-        let replacement = start_agent(
-            Arc::clone(&self.gateway),
-            &self.spec,
-            &self.store,
-            Arc::clone(&self.credentials),
-            Arc::clone(&self.bots),
-            Arc::clone(&self.checkpoints),
-            self.scratchpad.clone(),
-            self.session_files.clone(),
-            Arc::clone(&self.swarm),
-            Arc::clone(&self.discovery_gate),
-            Arc::clone(&self.desktop),
-            session_id,
-            origin_label,
-            true,
-            None,
-            Arc::clone(&self.provider_epoch),
-        )
-        .await
-        .map_err(internal)?;
-        let previous = std::mem::replace(&mut self.running, replacement);
-        self.widgets.clear();
-        drop(previous);
-        self.reconcile_replacement_startup()
-            .await
-            .map_err(internal)?;
-        self.pending_turns = 0;
-        self.pending_messages.clear();
-        self.approval_active = false;
-        self.turn_error = None;
-        Ok(())
     }
 
     pub(super) async fn stop_and_drain_running(&mut self) -> Result<()> {

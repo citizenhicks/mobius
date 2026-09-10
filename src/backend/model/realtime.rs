@@ -13,7 +13,6 @@ use tokio_tungstenite::tungstenite::{
     Message, client::IntoClientRequest, protocol::WebSocketConfig,
 };
 
-use super::ToolDefinition;
 use super::openai_auth::OpenAiAuthorization;
 use super::transport::{read_limited, status_error};
 use crate::protocol::TokenUsage;
@@ -30,6 +29,8 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(3_600);
 
 pub(super) const VOICES: &[&str] = &[
     "marin", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "cedar",
+    "quartz", "ripple", "vesper", "willow", "stone", "gleam", "meridian", "bossa", "tempo",
+    "beacon", "delta", "cinder",
 ];
 
 // AVAS/FramelessBidi uses upstream's V3 transport with the ChatGPT (v1) voice family.
@@ -48,7 +49,6 @@ pub struct RealtimeVoiceRequest {
     pub voice: Option<String>,
     pub offer_sdp: String,
     pub instructions: String,
-    pub handoff_tool: ToolDefinition,
 }
 
 /// A voice call whose provider credentials and call identity remain private.
@@ -104,6 +104,8 @@ impl RealtimeVoiceCall {
 
 /// The coding agent's response to one normalized voice handoff.
 pub enum RealtimeVoiceCommand {
+    /// Close the provider session, draining its final events before disconnecting.
+    Close,
     Reply {
         handoff_id: String,
         text: String,
@@ -117,7 +119,7 @@ pub enum RealtimeVoiceCommand {
 /// Provider-normalized handoffs and usage for one voice call.
 #[derive(Debug, PartialEq, Eq)]
 pub enum RealtimeVoiceEvent {
-    /// Incremental speech text, followed by its authoritative complete transcript.
+    /// Incremental speech text and complete snapshots of provider turns or caption groups.
     Transcript {
         id: String,
         role: crate::protocol::ConversationRole,
@@ -126,9 +128,8 @@ pub enum RealtimeVoiceEvent {
     },
     Handoff {
         id: String,
-        text: String,
-        /// The provider supplied an utterance that needs its private conversation context.
-        needs_context: bool,
+        /// An optional provider utterance; use recent voice context to resolve the task.
+        text: Option<String>,
     },
     /// Provider-reported tokens, without a local estimate of audio pricing.
     Usage(TokenUsage),
@@ -152,7 +153,7 @@ pub(super) struct RealtimeTransport {
 impl RealtimeTransport {
     pub(super) fn new(api: VoiceApi, auth: Arc<dyn OpenAiAuthorization>) -> Result<Self> {
         let calls_url = match api {
-            VoiceApi::OpenAi => "https://api.openai.com/v1/realtime/calls",
+            VoiceApi::OpenAi => "https://api.openai.com/v1/live/sessions",
             VoiceApi::Codex => {
                 "https://chatgpt.com/backend-api/codex/realtime/calls?intent=quicksilver&architecture=avas"
             }
@@ -168,7 +169,7 @@ impl RealtimeTransport {
             calls_url: Url::parse(calls_url)
                 .map_err(|_| invalid("invalid voice calls endpoint"))?,
             api_url: Url::parse(match api {
-                VoiceApi::OpenAi => "https://api.openai.com/v1/realtime",
+                VoiceApi::OpenAi => "https://api.openai.com/v1/live/sessions",
                 VoiceApi::Codex => "https://api.openai.com/v1/live",
             })
             .map_err(|_| invalid("invalid voice sideband endpoint"))?,
@@ -185,7 +186,6 @@ impl RealtimeTransport {
         validate_text(&request.session_id, 256, "session identity")?;
         validate_sdp(&request.offer_sdp)?;
         validate_text(&request.instructions, MAX_TEXT_BYTES, "voice instructions")?;
-        validate_text(&request.handoff_tool.name, 128, "voice tool name")?;
         if let Some(voice) = request.voice.as_deref()
             && !self.voices().contains(&voice)
         {
@@ -194,13 +194,12 @@ impl RealtimeTransport {
             ));
         }
         let session = self.session(&request);
-        let (body, content_type) = match self.api {
-            VoiceApi::Codex => (
-                serde_json::to_vec(&json!({"sdp":request.offer_sdp,"session":session}))?,
-                "application/json".into(),
-            ),
-            VoiceApi::OpenAi => multipart(&request.offer_sdp, &session)?,
-        };
+        let body = serde_json::to_vec(&match self.api {
+            VoiceApi::Codex => json!({"sdp":request.offer_sdp,"session":session}),
+            VoiceApi::OpenAi => {
+                json!({"transport":{"type":"webrtc","sdp":request.offer_sdp},"session":session})
+            }
+        })?;
         if body.len() > 2 * MAX_EVENT_BYTES {
             return Err(invalid("voice request exceeded size limit"));
         }
@@ -208,23 +207,14 @@ impl RealtimeTransport {
             .post(
                 self.calls_url.clone(),
                 body,
-                &content_type,
+                "application/json",
                 &request.session_id,
             )
             .await?;
         if !response.status().is_success() {
             return Err(status_error(response, "Realtime").await);
         }
-        let call_id = self.call_id(&response)?;
-        // The lease also hangs up if negotiation is cancelled after allocation but before return.
-        let cleanup = CallCleanup {
-            transport: self.clone(),
-            call_id,
-            session_id: request.session_id,
-        };
-        let answer_sdp =
-            String::from_utf8(read_limited(response, MAX_SDP_BYTES, "Realtime SDP").await?)
-                .map_err(|_| invalid("voice answer SDP is not UTF-8"))?;
+        let (cleanup, answer_sdp) = self.negotiate(response, &request.session_id).await?;
         validate_sdp(&answer_sdp)?;
         let mut socket = self.connect(&cleanup.call_id, &cleanup.session_id).await?;
         let (commands, command_rx) = mpsc::channel(COMMAND_CAPACITY);
@@ -233,16 +223,16 @@ impl RealtimeTransport {
         let api = self.api;
         tokio::spawn(async move {
             let result = tokio::select! {
-                _ = cancelled => Ok(()),
-                result = timeout(CALL_TIMEOUT, drive(&mut socket, api, &request.handoff_tool.name, command_rx, &event_tx)) => {
+                _ = cancelled => {
+                    let _ = send(&mut socket, json!({"type":"session.close"})).await;
+                    Ok(())
+                },
+                result = timeout(CALL_TIMEOUT, drive(&mut socket, api, command_rx, &event_tx)) => {
                     result.unwrap_or_else(|_| Err(invalid("voice call reached its time limit")))
                 }
             };
             if let Err(error) = result {
                 let _ = event_tx.send(Err(error)).await;
-            }
-            if api == VoiceApi::Codex {
-                let _ = send(&mut socket, json!({"type":"session.close"})).await;
             }
             let _ = timeout(IO_TIMEOUT, socket.close(None)).await;
             drop(cleanup);
@@ -259,20 +249,50 @@ impl RealtimeTransport {
 
     fn session(&self, request: &RealtimeVoiceRequest) -> Value {
         let voice = request.voice.as_deref().unwrap_or(self.voices()[0]);
-        if self.api == VoiceApi::Codex {
-            // AVAS owns native delegation; public Realtime tool/session fields do not apply.
-            return json!({"model":"gpt-live-1-codex","instructions":request.instructions,
-                "audio":{"output":{"voice":voice}},"delegation":{"type":"client"}});
-        }
-        json!({"type":"realtime","model":"gpt-realtime-2.1-mini","instructions":request.instructions,
-            "reasoning":{"effort":"minimal"},
-            "audio":{"input":{"transcription":{"model":"gpt-live-transcribe"},
-                "noise_reduction":{"type":"near_field"},
-                "turn_detection":{"type":"server_vad","create_response":true,"interrupt_response":true}},
-                "output":{"voice":voice}},
-            "tools":[{"type":"function","name":request.handoff_tool.name,"description":request.handoff_tool.description,"parameters":request.handoff_tool.parameters}],
-            "tool_choice":"auto"
-        })
+        let model = match self.api {
+            VoiceApi::OpenAi => "gpt-live-1",
+            VoiceApi::Codex => "gpt-live-1-codex",
+        };
+        json!({"model":model,"instructions":request.instructions,
+            "audio":{"output":{"voice":voice}},"delegation":{"type":"client"}})
+    }
+
+    async fn negotiate(
+        &self,
+        response: reqwest::Response,
+        session_id: &str,
+    ) -> Result<(CallCleanup, String)> {
+        let call_id = match self.api {
+            VoiceApi::Codex => self.call_id(&response)?,
+            VoiceApi::OpenAi => {
+                let body: Value = serde_json::from_slice(
+                    &read_limited(response, MAX_EVENT_BYTES, "Live session").await?,
+                )?;
+                let id = field(&body["session"], "id")?;
+                validate_call_id(id)?;
+                let cleanup = CallCleanup {
+                    transport: self.clone(),
+                    call_id: id.into(),
+                    session_id: session_id.into(),
+                };
+                if body["transport"]["type"] != "webrtc" {
+                    return Err(invalid("voice response omitted its WebRTC transport"));
+                }
+                let sdp = body["transport"]["sdp"]
+                    .as_str()
+                    .ok_or_else(|| invalid("voice response omitted its SDP"))?;
+                return Ok((cleanup, sdp.into()));
+            }
+        };
+        let cleanup = CallCleanup {
+            transport: self.clone(),
+            call_id,
+            session_id: session_id.into(),
+        };
+        let answer =
+            String::from_utf8(read_limited(response, MAX_SDP_BYTES, "Realtime SDP").await?)
+                .map_err(|_| invalid("voice answer SDP is not UTF-8"))?;
+        Ok((cleanup, answer))
     }
 
     async fn post(
@@ -352,7 +372,7 @@ impl RealtimeTransport {
         if self.api == VoiceApi::Codex {
             url.set_path(&format!("{}/{call_id}", url.path()));
         } else {
-            url.query_pairs_mut().append_pair("call_id", call_id);
+            url.set_path(&format!("{}/{call_id}/attach", url.path()));
         }
         for attempt in 0..2 {
             // Reuse the call-create identity, including the signed-in ChatGPT account header.
@@ -428,8 +448,12 @@ impl Drop for CallCleanup {
     fn drop(&mut self) {
         let transport = self.transport.clone();
         let mut url = transport.api_url.clone();
-        let prefix = url.path().rsplit_once('/').map_or("", |(prefix, _)| prefix);
-        url.set_path(&format!("{prefix}/realtime/calls/{}/hangup", self.call_id));
+        if transport.api == VoiceApi::Codex {
+            let prefix = url.path().rsplit_once('/').map_or("", |(prefix, _)| prefix);
+            url.set_path(&format!("{prefix}/realtime/calls/{}/hangup", self.call_id));
+        } else {
+            url.set_path(&format!("{}/{}/hangup", url.path(), self.call_id));
+        }
         let session_id = self.session_id.clone();
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(async move {
@@ -443,10 +467,15 @@ impl Drop for CallCleanup {
     }
 }
 
-fn multipart(sdp: &str, session: &Value) -> Result<(Vec<u8>, String)> {
-    let boundary = format!("mobius-{}", uuid::Uuid::new_v4());
-    let session = serde_json::to_string(session)?;
-    Ok((format!("--{boundary}\r\nContent-Disposition: form-data; name=\"sdp\"\r\nContent-Type: application/sdp\r\n\r\n{sdp}\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"session\"\r\nContent-Type: application/json\r\n\r\n{session}\r\n--{boundary}--\r\n").into_bytes(), format!("multipart/form-data; boundary={boundary}")))
+fn validate_call_id(id: &str) -> Result<()> {
+    validate_text(id, 256, "voice call identity")?;
+    if !id
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    {
+        return Err(invalid("invalid provider voice call identity"));
+    }
+    Ok(())
 }
 
 fn validate_sdp(sdp: &str) -> Result<()> {
@@ -485,7 +514,6 @@ async fn send(socket: &mut Socket, value: Value) -> Result<()> {
 async fn drive(
     socket: &mut Socket,
     api: VoiceApi,
-    tool: &str,
     mut commands: mpsc::Receiver<RealtimeVoiceCommand>,
     events: &mpsc::Sender<Result<RealtimeVoiceEvent>>,
 ) -> Result<()> {
@@ -495,37 +523,31 @@ async fn drive(
             _ = events.closed() => return Ok(()),
             command = commands.recv() => {
                 let Some(command) = command else { return Ok(()); };
-                let mut next = Some(command);
-                // Several handoffs may share one coding reply; append every output before speaking.
-                for index in 0..COMMAND_CAPACITY {
-                    let Some(command) = next else { break; };
-                    match command {
-                        RealtimeVoiceCommand::Context { text } => {
-                            validate_text(&text, MAX_TEXT_BYTES, "voice context")?;
-                            if api == VoiceApi::Codex {
-                                for chunk in context_chunks(&text) {
-                                    send(socket, json!({"type":"session.context.append","channel":"commentary","content":[{"type":"input_text","text":chunk}]})).await?;
-                                }
-                            } else {
-                                send(socket, json!({"type":"conversation.item.create","item":{"type":"message","role":"system","content":[{"type":"input_text","text":text}]}})).await?;
-                            }
-                        }
-                        RealtimeVoiceCommand::Reply { handoff_id, text } => {
-                            validate_text(&text, MAX_TEXT_BYTES, "voice reply")?;
-                            if !turns.reply_pending.remove(&handoff_id) { return Err(invalid("voice reply has no pending handoff")); }
-                            if api == VoiceApi::Codex {
-                                for chunk in context_chunks(&text) {
-                                    send(socket, json!({"type":"delegation.context.append","delegation_item_id":handoff_id,"channel":"speakable","content":[{"type":"input_text","text":chunk}]})).await?;
-                                }
-                            } else {
-                                send(socket, json!({"type":"conversation.item.create","item":{"type":"function_call_output","call_id":handoff_id,"output":text}})).await?;
-                                turns.reply_ready = true;
-                            }
-                        }
+                if matches!(command, RealtimeVoiceCommand::Close) {
+                    send(socket, json!({"type":"session.close"})).await?;
+                    if api == VoiceApi::Codex { return Ok(()); }
+                    return timeout(IO_TIMEOUT, drain_closed(socket, api, &mut turns, events))
+                        .await.map_err(|_| invalid("voice session finalization timed out"))?;
+                }
+                let (handoff_id, text) = match command {
+                    RealtimeVoiceCommand::Reply { handoff_id, text } => {
+                        if !turns.reply_pending.remove(&handoff_id) { return Err(invalid("voice reply has no pending handoff")); }
+                        (Some(handoff_id), text)
                     }
-                    next = if index + 1 < COMMAND_CAPACITY { commands.try_recv().ok() } else { None };
+                    RealtimeVoiceCommand::Context { text } => (None, text),
+                    RealtimeVoiceCommand::Close => unreachable!("handled above"),
+                };
+                validate_text(&text, MAX_TEXT_BYTES, "voice context")?;
+                for chunk in context_chunks(&text) {
+                    let value = match (api, handoff_id.as_deref()) {
+                        (VoiceApi::Codex, Some(id)) => json!({"type":"delegation.context.append","delegation_item_id":id,"channel":"speakable","content":[{"type":"input_text","text":chunk}]}),
+                        (VoiceApi::Codex, None) => json!({"type":"session.context.append","channel":"commentary","content":[{"type":"input_text","text":chunk}]}),
+                        (VoiceApi::OpenAi, id) => json!({"type":if id.is_some() {"session.commentary.append"} else {"session.thinking.append"},"delegation_id":id,"content":chunk}),
+                    };
+                    send(socket, value).await?;
                 }
             }
+
             message = socket.next() => {
                 let Some(message) = message else { return Err(invalid("voice sideband closed")); };
                 let value = match message.map_err(socket_error)? {
@@ -534,25 +556,42 @@ async fn drive(
                     Message::Close(_) => return Ok(()),
                     Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => { timeout(IO_TIMEOUT, socket.flush()).await.map_err(|_| invalid("voice flush timed out"))?.map_err(socket_error)?; continue; }
                 };
-                for event in turns.observe(api, tool, &value)? {
+                for event in turns.observe(api, &value)? {
                     events
                         .send(Ok(event))
                         .await
                         .map_err(|_| invalid("voice event consumer stopped"))?;
                 }
-                if value["type"] == "response.done" && value["response"]["status"] == "failed" {
-                    return Err(invalid(&super::openai::response_error(&value["response"]["status_details"])));
-                }
+                if value["type"] == "session.closed" { return Ok(()); }
             }
         }
-        if turns.take_reply_response() {
-            send(
-                socket,
-                json!({"type":"response.create","response":{"tool_choice":"none"}}),
-            )
-            .await?;
+    }
+}
+
+async fn drain_closed(
+    socket: &mut Socket,
+    api: VoiceApi,
+    turns: &mut VoiceTurns,
+    events: &mpsc::Sender<Result<RealtimeVoiceEvent>>,
+) -> Result<()> {
+    while let Some(message) = socket.next().await {
+        let value: Value = match message.map_err(socket_error)? {
+            Message::Text(text) => serde_json::from_str(&text)?,
+            Message::Binary(bytes) => serde_json::from_slice(&bytes)?,
+            Message::Close(_) => break,
+            _ => continue,
+        };
+        for event in turns.observe(api, &value)? {
+            events
+                .send(Ok(event))
+                .await
+                .map_err(|_| invalid("voice event consumer stopped"))?;
+        }
+        if value["type"] == "session.closed" {
+            return Ok(());
         }
     }
+    Err(invalid("voice disconnected before session finalization"))
 }
 
 fn context_chunks(mut text: &str) -> Vec<&str> {
@@ -565,12 +604,10 @@ fn context_chunks(mut text: &str) -> Vec<&str> {
     chunks
 }
 
-#[derive(Default)]
-enum ResponseState {
-    #[default]
-    Idle,
-    Requested,
-    Active(String),
+struct LiveCaption {
+    id: String,
+    start_ms: u64,
+    end_ms: u64,
 }
 
 #[derive(Default)]
@@ -581,13 +618,12 @@ struct TranscriptState {
 
 #[derive(Default)]
 struct VoiceTurns {
-    response: ResponseState,
-    reply_ready: bool,
     emitted: BTreeSet<String>,
     reply_pending: BTreeSet<String>,
-    usage_recorded: BTreeSet<(&'static str, String, u64)>,
     streams: BTreeMap<String, TranscriptState>,
     seen_events: BTreeSet<String>,
+    live_captions: [Option<LiveCaption>; 2],
+    live_counter: u64,
     codex_input: Option<String>,
     codex_output: Option<String>,
     codex_counter: u64,
@@ -595,12 +631,7 @@ struct VoiceTurns {
 }
 
 impl VoiceTurns {
-    fn observe(
-        &mut self,
-        api: VoiceApi,
-        tool: &str,
-        event: &Value,
-    ) -> Result<Vec<RealtimeVoiceEvent>> {
+    fn observe(&mut self, api: VoiceApi, event: &Value) -> Result<Vec<RealtimeVoiceEvent>> {
         let mut events = Vec::new();
         if let Some(id) = event.get("event_id").and_then(Value::as_str) {
             validate_text(id, 256, "voice event identity")?;
@@ -611,14 +642,11 @@ impl VoiceTurns {
                 return Err(invalid("voice call exceeded its event limit"));
             }
         }
-        if matches!(
-            event["type"].as_str(),
-            Some("error" | "conversation.item.input_audio_transcription.failed")
-        ) {
+        if matches!(event["type"].as_str(), Some("error")) {
             return Err(invalid(&super::openai::response_error(event)));
         }
         match api {
-            VoiceApi::OpenAi => self.observe_public(tool, event, &mut events)?,
+            VoiceApi::OpenAi => self.observe_live(event, &mut events)?,
             VoiceApi::Codex => self.observe_codex(event, &mut events)?,
         }
         if self.streams.len() > MAX_TURNS * 2 || self.codex_completed_turns.len() > MAX_TURNS * 2 {
@@ -627,134 +655,93 @@ impl VoiceTurns {
         Ok(events)
     }
 
-    fn observe_public(
-        &mut self,
-        tool: &str,
-        event: &Value,
-        events: &mut Vec<RealtimeVoiceEvent>,
-    ) -> Result<()> {
-        use crate::protocol::ConversationRole;
+    fn observe_live(&mut self, event: &Value, events: &mut Vec<RealtimeVoiceEvent>) -> Result<()> {
         match event["type"].as_str() {
-            Some("response.created") => {
-                let id = field(&event["response"], "id")?;
-                self.response = ResponseState::Active(id.into());
-            }
-            Some("conversation.item.input_audio_transcription.delta") => {
-                let id = field(event, "item_id")?;
-                self.transcript(
-                    id,
-                    ConversationRole::User,
-                    transcript_field(event, "delta")?,
-                    false,
-                    events,
-                )?;
-            }
-            Some("conversation.item.input_audio_transcription.completed") => {
-                let id = field(event, "item_id")?;
-                let text = transcript_field(event, "transcript")?;
-                self.transcript(id, ConversationRole::User, text, true, events)?;
-                if event["usage"]["type"] == "tokens" {
-                    let index = event["content_index"]
-                        .as_u64()
-                        .ok_or_else(|| invalid("voice transcription omitted its content index"))?;
-                    self.record_usage(("transcript", id.into(), index), &event["usage"], events)?;
+            Some("session.input_transcript.delta") => self.live_transcript(event, 0, events)?,
+            Some("session.output_transcript.delta") => self.live_transcript(event, 1, events)?,
+            Some("session.delegation.created") => {
+                let delegation = &event["delegation"];
+                if delegation["type"] != "delegation" || delegation["target"] != "client" {
+                    return Ok(());
+                }
+                let id = field(delegation, "id")?;
+                if self.emitted.contains(id) {
+                    return Ok(());
+                }
+                let offset = event["offset_ms"]
+                    .as_u64()
+                    .ok_or_else(|| invalid("voice delegation omitted its timestamp"))?;
+                for speaker in 0..2 {
+                    if self.live_captions[speaker]
+                        .as_ref()
+                        .is_some_and(|caption| caption.end_ms <= offset)
+                    {
+                        self.finish_caption(speaker, events)?;
+                    }
+                }
+                if let Some(event) = self.emit(id, None)? {
+                    events.push(event);
                 }
             }
-            Some("response.output_audio_transcript.delta" | "response.output_text.delta") => {
-                self.public_output(event, false, events)?;
+            Some("session.closed") => {
+                for speaker in 0..2 {
+                    self.finish_caption(speaker, events)?;
+                }
             }
-            Some("response.output_audio_transcript.done" | "response.output_text.done") => {
-                self.public_output(event, true, events)?;
-            }
-            Some("response.done") => self.public_response_done(tool, event, events)?,
             _ => {}
         }
         Ok(())
     }
 
-    fn public_output(
+    fn live_transcript(
         &mut self,
         event: &Value,
-        complete: bool,
+        speaker: usize,
         events: &mut Vec<RealtimeVoiceEvent>,
     ) -> Result<()> {
-        let item = field(event, "item_id")?;
-        let index = event["content_index"]
+        let text = transcript_field(event, "delta")?;
+        let start_ms = event["start_ms"]
             .as_u64()
-            .ok_or_else(|| invalid("voice output omitted content index"))?;
-        let id = format!("{item}:{index}");
-        let key = if !complete {
-            "delta"
-        } else if event["type"] == "response.output_text.done" {
-            "text"
-        } else {
-            "transcript"
-        };
-        self.transcript(
-            &id,
-            crate::protocol::ConversationRole::Assistant,
-            transcript_field(event, key)?,
-            complete,
-            events,
-        )
+            .ok_or_else(|| invalid("voice transcript omitted its timestamp"))?;
+        let end_ms = event["end_ms"]
+            .as_u64()
+            .filter(|end| *end >= start_ms)
+            .ok_or_else(|| invalid("invalid voice transcript interval"))?;
+        if text.is_empty() {
+            return Ok(());
+        }
+        // ponytail: caption groups use a one-second gap, not semantic turn detection.
+        // Late fragments get a new group; add revisable timeline rows if needed.
+        if self.live_captions[speaker].as_ref().is_some_and(|caption| {
+            start_ms < caption.start_ms || start_ms > caption.end_ms.saturating_add(1_000)
+        }) {
+            self.finish_caption(speaker, events)?;
+        }
+        let caption = self.live_captions[speaker].get_or_insert_with(|| {
+            self.live_counter += 1;
+            LiveCaption {
+                id: format!("live-{speaker}-{}", self.live_counter),
+                start_ms,
+                end_ms,
+            }
+        });
+        caption.end_ms = caption.end_ms.max(end_ms);
+        let id = caption.id.clone();
+        self.transcript(&id, live_role(speaker), text, false, events)
     }
 
-    fn public_response_done(
+    fn finish_caption(
         &mut self,
-        tool: &str,
-        event: &Value,
+        speaker: usize,
         events: &mut Vec<RealtimeVoiceEvent>,
     ) -> Result<()> {
-        let response = &event["response"];
-        let id = field(response, "id")?;
-        if matches!(&self.response, ResponseState::Active(active) if active == id) {
-            self.response = ResponseState::Idle;
-        }
-        if let Some(usage) = response.get("usage").filter(|usage| !usage.is_null()) {
-            self.record_usage(("response", id.into(), 0), usage, events)?;
-        }
-        for output in response["output"].as_array().into_iter().flatten() {
-            if output["type"] == "function_call"
-                && output["name"] == tool
-                && response["status"] == "completed"
-            {
-                #[derive(serde::Deserialize)]
-                #[serde(deny_unknown_fields)]
-                struct Task {
-                    text: String,
-                }
-                let arguments = output["arguments"]
-                    .as_str()
-                    .ok_or_else(|| invalid("voice handoff omitted its task arguments"))?;
-                let task: Task = serde_json::from_str(arguments)
-                    .map_err(|_| invalid("voice handoff omitted its complete task text"))?;
-                if let Some(event) = self.emit(field(output, "call_id")?, &task.text, false)? {
-                    events.push(event);
-                }
-            } else if output["type"] == "message" && output["role"] == "assistant" {
-                let item = field(output, "id")?;
-                for (index, part) in output["content"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .enumerate()
-                {
-                    let key = match part["type"].as_str() {
-                        Some("output_audio" | "audio") => "transcript",
-                        Some("output_text" | "text") => "text",
-                        _ => continue,
-                    };
-                    if let Some(text) = part.get(key).and_then(Value::as_str) {
-                        self.transcript(
-                            &format!("{item}:{index}"),
-                            crate::protocol::ConversationRole::Assistant,
-                            text,
-                            true,
-                            events,
-                        )?;
-                    }
-                }
-            }
+        if let Some(caption) = self.live_captions[speaker].take() {
+            let text = self
+                .streams
+                .get(&caption.id)
+                .map(|stream| stream.text.clone())
+                .unwrap_or_default();
+            self.transcript(&caption.id, live_role(speaker), &text, true, events)?;
         }
         Ok(())
     }
@@ -818,7 +805,7 @@ impl VoiceTurns {
                     .map(|part| transcript_field(part, "text"))
                     .collect::<Result<Vec<_>>>()?
                     .concat();
-                if let Some(event) = self.emit(id, &text, true)? {
+                if let Some(event) = self.emit(id, Some(&text))? {
                     events.push(event);
                 }
             }
@@ -900,56 +887,11 @@ impl VoiceTurns {
         Ok(())
     }
 
-    fn take_reply_response(&mut self) -> bool {
-        if self.reply_ready && matches!(self.response, ResponseState::Idle) {
-            self.reply_ready = false;
-            self.response = ResponseState::Requested;
-            true
-        } else {
-            false
-        }
-    }
-    fn record_usage(
-        &mut self,
-        key: (&'static str, String, u64),
-        value: &Value,
-        events: &mut Vec<RealtimeVoiceEvent>,
-    ) -> Result<()> {
-        if self.usage_recorded.contains(&key) {
-            return Ok(());
-        }
-        let count = |pointer| {
-            super::usage_i64(Some(value), pointer, "Realtime").map(|n| n.unwrap_or_default())
-        };
-        let usage = TokenUsage {
-            input_tokens: count("/input_tokens")?,
-            cached_input_tokens: count("/input_token_details/cached_tokens")?,
-            output_tokens: count("/output_tokens")?,
-            total_tokens: count("/total_tokens")?,
-            ..TokenUsage::default()
-        };
-        super::validate_usage(&usage)?;
-        if usage.cached_input_tokens > usage.input_tokens
-            || usage.input_tokens.checked_add(usage.output_tokens) != Some(usage.total_tokens)
-        {
-            return Err(invalid("voice provider returned inconsistent token usage"));
-        }
-        if self.usage_recorded.len() == 2 * MAX_TURNS {
-            return Err(invalid("voice call exceeded its usage event limit"));
-        }
-        self.usage_recorded.insert(key);
-        events.push(RealtimeVoiceEvent::Usage(usage));
-        Ok(())
-    }
-
-    fn emit(
-        &mut self,
-        id: &str,
-        text: &str,
-        needs_context: bool,
-    ) -> Result<Option<RealtimeVoiceEvent>> {
+    fn emit(&mut self, id: &str, text: Option<&str>) -> Result<Option<RealtimeVoiceEvent>> {
         validate_text(id, 256, "voice handoff identity")?;
-        validate_text(text, MAX_TEXT_BYTES, "voice transcript")?;
+        if let Some(text) = text {
+            validate_text(text, MAX_TEXT_BYTES, "voice transcript")?;
+        }
         if self.emitted.contains(id) {
             return Ok(None);
         }
@@ -960,9 +902,16 @@ impl VoiceTurns {
         self.reply_pending.insert(id.into());
         Ok(Some(RealtimeVoiceEvent::Handoff {
             id: id.into(),
-            text: text.into(),
-            needs_context,
+            text: text.map(str::to_owned),
         }))
+    }
+}
+
+fn live_role(speaker: usize) -> crate::protocol::ConversationRole {
+    if speaker == 0 {
+        crate::protocol::ConversationRole::User
+    } else {
+        crate::protocol::ConversationRole::Assistant
     }
 }
 

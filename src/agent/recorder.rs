@@ -283,7 +283,7 @@ async fn run_recorder(
                     result,
                 } = *command;
                 let recorded = checkpoints
-                    .save_with_events(&checkpoint, &transcript_delta, execution.as_ref(), &pending)
+                    .save_with_events(checkpoint, transcript_delta, execution, pending)
                     .await;
                 let recorded = match recorded {
                     Ok(recorded) => recorded,

@@ -1,9 +1,11 @@
 use super::*;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct NamedTool {
     name: String,
     description: String,
     exposure: ToolExposure,
+    definitions: AtomicUsize,
 }
 
 impl NamedTool {
@@ -12,12 +14,14 @@ impl NamedTool {
             name: name.into(),
             description: description.into(),
             exposure,
+            definitions: AtomicUsize::new(0),
         }
     }
 }
 
 impl Tool for NamedTool {
     fn definition(&self) -> ToolDefinition {
+        self.definitions.fetch_add(1, Ordering::Relaxed);
         ToolDefinition {
             name: self.name.clone(),
             description: self.description.clone(),
@@ -136,6 +140,57 @@ fn finalization_partitions_exposure_and_adds_search_only_when_needed() {
         .expect("direct tool");
     direct_only.finalize().expect("finalize catalog");
     assert_eq!(names(&direct_only.direct_definitions()), ["read_file"]);
+}
+
+#[test]
+fn model_steps_and_search_reuse_registered_tool_definitions() {
+    let mut catalog = Catalog::default();
+    let direct = Arc::new(NamedTool::new(
+        "direct",
+        "direct work",
+        ToolExposure::Direct,
+    ));
+    let deferred = Arc::new(NamedTool::new(
+        "deferred",
+        "deferred work",
+        ToolExposure::Deferred,
+    ));
+    catalog.register(direct.clone()).expect("direct tool");
+    catalog.register(deferred.clone()).expect("deferred tool");
+    catalog.finalize().expect("finalize");
+    let registered = catalog.registered_definitions();
+    let direct_definitions = catalog.direct_definitions();
+    let deferred_definitions = catalog.deferred_definitions();
+
+    for _ in 0..3 {
+        let prepared = catalog
+            .prepare(&[], catalog.exposed_names())
+            .expect("model step");
+        assert_eq!(names(prepared.direct()), ["direct", TOOLS_SEARCH_NAME]);
+        assert_eq!(names(prepared.deferred()), ["deferred"]);
+        catalog
+            .bind_prepared(function_call("direct"), &prepared)
+            .expect("bind tool");
+        assert_eq!(
+            names(
+                &catalog
+                    .search_deferred("work", &prepared.searchable)
+                    .expect("search")
+            ),
+            ["deferred"]
+        );
+        assert!(Arc::ptr_eq(&registered, &catalog.registered_definitions()));
+        assert!(Arc::ptr_eq(
+            &direct_definitions,
+            &catalog.direct_definitions()
+        ));
+        assert!(Arc::ptr_eq(
+            &deferred_definitions,
+            &catalog.deferred_definitions()
+        ));
+    }
+    assert_eq!(direct.definitions.load(Ordering::Relaxed), 1);
+    assert_eq!(deferred.definitions.load(Ordering::Relaxed), 1);
 }
 
 #[test]

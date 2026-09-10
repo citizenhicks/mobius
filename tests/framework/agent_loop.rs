@@ -47,17 +47,23 @@ async fn loop_executes_tool_and_returns_result_to_model() {
 }
 
 #[tokio::test]
-async fn middleware_prompt_is_composed_once_per_agent() {
+async fn middleware_setup_runs_once_across_model_steps_and_turns() {
     let workspace = TempDir::new().expect("create workspace");
+    std::fs::write(workspace.path().join("note.txt"), "hello").expect("fixture");
     let model = Arc::new(ScriptedModel::new(vec![
+        tool_response("read", "read_file", serde_json::json!({"path": "note.txt"})),
         text_response("first"),
         text_response("second"),
     ]));
-    let calls = Arc::new(AtomicUsize::new(0));
+    let extension = Arc::new(PromptExtension::default());
+    let files = TempDir::new().expect("files");
     let mut agent = create_agent(test_config(
         workspace.path(),
         Arc::clone(&model),
-        vec![Arc::new(PromptExtension(Arc::clone(&calls)))],
+        vec![
+            Arc::new(Tools::coding(SessionFileStore::new(files.path()))),
+            extension.clone(),
+        ],
     ))
     .await
     .expect("create agent");
@@ -70,7 +76,8 @@ async fn middleware_prompt_is_composed_once_per_agent() {
         final_message(&mut agent).await;
     }
 
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(extension.prompt_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(extension.registrations.load(Ordering::SeqCst), 1);
     let platform = if cfg!(target_os = "linux") {
         "Linux"
     } else if cfg!(target_os = "macos") {
@@ -79,7 +86,12 @@ async fn middleware_prompt_is_composed_once_per_agent() {
         "an unsupported operating system"
     };
     let requests = model.requests.lock().expect("requests");
-    assert_eq!(requests[0].instructions, requests[1].instructions);
+    assert_eq!(requests.len(), 3);
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.instructions == requests[0].instructions)
+    );
     assert!(requests[0].instructions.starts_with(&format!(
         "**instructions**\n\ntest system prompt\n\n**sandbox**\n\nmöbius is running on {platform}."
     )));

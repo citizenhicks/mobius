@@ -1,7 +1,7 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use mobius::backend::checkpoint::{CheckpointStore, SessionPageRequest};
+use mobius::backend::checkpoint::{CheckpointStore, SessionPageRequest, SessionSummary};
 use serde::{Deserialize, Serialize};
 
 use crate::wire::{BackgroundApproval, SessionActivity, SessionActivityState, SessionRecord};
@@ -24,11 +24,55 @@ pub(super) struct SessionMetadata {
 
 pub(super) type SessionCatalogMetadata = BTreeMap<String, SessionMetadata>;
 
+#[derive(Default)]
+pub(super) struct SessionCatalog {
+    pub(super) activities: HashMap<String, SessionActivity>,
+    pub(super) approvals: BTreeMap<String, BackgroundApproval>,
+    pub(super) snapshot: Option<CatalogSnapshot>,
+}
+
+pub(super) struct CatalogSnapshot {
+    metadata: SessionCatalogMetadata,
+    sessions: Vec<SessionRecord>,
+}
+
 pub(super) async fn session_catalog(
     checkpoints: &Arc<dyn CheckpointStore>,
     activities: &SessionActivities,
 ) -> Result<Vec<SessionRecord>> {
-    filtered_session_catalog(checkpoints, activities, CatalogFilter::Visible).await
+    let mut catalog = activities.lock().await;
+    refresh_catalog(checkpoints, &mut catalog).await
+}
+
+pub(super) async fn activity_catalog(
+    checkpoints: &Arc<dyn CheckpointStore>,
+    activities: &SessionActivities,
+) -> Result<(Vec<SessionRecord>, Vec<BackgroundApproval>)> {
+    let mut catalog = activities.lock().await;
+    let sessions = match &catalog.snapshot {
+        Some(snapshot) => snapshot.sessions.clone(),
+        None => refresh_catalog(checkpoints, &mut catalog).await?,
+    };
+    Ok((sessions, catalog.approvals.values().cloned().collect()))
+}
+
+async fn refresh_catalog(
+    checkpoints: &Arc<dyn CheckpointStore>,
+    catalog: &mut SessionCatalog,
+) -> Result<Vec<SessionRecord>> {
+    let metadata = load_session_metadata(checkpoints).await?;
+    let sessions = filtered_session_catalog(
+        checkpoints,
+        &catalog.activities,
+        &metadata,
+        CatalogFilter::Visible,
+    )
+    .await?;
+    catalog.snapshot = Some(CatalogSnapshot {
+        metadata,
+        sessions: sessions.clone(),
+    });
+    Ok(sessions)
 }
 
 pub(super) async fn hidden_bot_session_catalog(
@@ -36,15 +80,23 @@ pub(super) async fn hidden_bot_session_catalog(
     activities: &SessionActivities,
     bot_id: &str,
 ) -> Result<Vec<SessionRecord>> {
-    filtered_session_catalog(checkpoints, activities, CatalogFilter::HiddenBot(bot_id)).await
+    let catalog = activities.lock().await;
+    let metadata = load_session_metadata(checkpoints).await?;
+    filtered_session_catalog(
+        checkpoints,
+        &catalog.activities,
+        &metadata,
+        CatalogFilter::HiddenBot(bot_id),
+    )
+    .await
 }
 
 pub(super) async fn restore_pending_approval_activities(
     checkpoints: &Arc<dyn CheckpointStore>,
     activities: &SessionActivities,
 ) -> Result<()> {
+    let mut catalog = activities.lock().await;
     let mut cursor = None;
-    let mut restored = Vec::new();
     loop {
         let page = checkpoints
             .list_sessions_page(SessionPageRequest {
@@ -63,85 +115,100 @@ pub(super) async fn restore_pending_approval_activities(
             else {
                 continue;
             };
-            restored.push((
-                summary.session_id,
-                SessionActivity {
-                    state: SessionActivityState::AwaitingApproval,
-                    turn_id: Some(approval.turn_id),
-                    approval_request_id: Some(approval.request_id),
-                    started_at: checkpoint
-                        .active_execution
-                        .map(|execution| execution.started_at_ms.div_euclid(1_000)),
-                    ..SessionActivity::default()
-                },
-            ));
+            let activity = SessionActivity {
+                state: SessionActivityState::AwaitingApproval,
+                turn_id: Some(approval.turn_id),
+                approval_request_id: Some(approval.request_id),
+                started_at: checkpoint
+                    .active_execution
+                    .map(|execution| execution.started_at_ms.div_euclid(1_000)),
+                ..SessionActivity::default()
+            };
+            catalog.update(summary, activity)?;
         }
         let Some(next) = page.next_cursor else {
             break;
         };
         cursor = Some(next);
     }
-    activities
-        .lock()
-        .map_err(|_| Error::Config("session activity lock is poisoned".into()))?
-        .extend(restored);
     Ok(())
 }
 
 pub(super) async fn background_approvals(
+    activities: &SessionActivities,
+) -> Vec<BackgroundApproval> {
+    activities
+        .lock()
+        .await
+        .approvals
+        .values()
+        .cloned()
+        .collect()
+}
+
+pub(super) async fn update_session_activity(
     checkpoints: &Arc<dyn CheckpointStore>,
     activities: &SessionActivities,
-) -> Result<Vec<BackgroundApproval>> {
-    let mut pending = activities
-        .lock()
-        .map_err(|_| Error::Config("session activity lock is poisoned".into()))?
-        .iter()
-        .filter(|(_, activity)| activity.state == SessionActivityState::AwaitingApproval)
-        .map(|(session_id, activity)| {
-            Ok((
-                session_id.clone(),
-                (
-                    activity
-                        .turn_id
-                        .clone()
-                        .ok_or_else(|| Error::Config("approval activity has no turn id".into()))?,
-                    activity.approval_request_id.clone().ok_or_else(|| {
-                        Error::Config("approval activity has no request id".into())
-                    })?,
-                ),
-            ))
-        })
-        .collect::<Result<BTreeMap<_, _>>>()?;
-    let mut approvals = Vec::new();
-    let mut cursor = None;
-    while !pending.is_empty() {
-        let page = checkpoints
-            .list_sessions_page(SessionPageRequest {
-                bot_id: None,
-                cursor,
-                limit: SESSION_PAGE_SIZE,
+    session_id: &str,
+    activity: SessionActivity,
+) -> Result<()> {
+    let mut catalog = activities.lock().await;
+    let summary = checkpoints
+        .session_summary(session_id)
+        .await?
+        .ok_or_else(|| Error::Config("the running session has no catalog entry".into()))?;
+    catalog.update(summary, activity)
+}
+
+impl SessionCatalog {
+    fn update(&mut self, summary: SessionSummary, activity: SessionActivity) -> Result<()> {
+        let approval = if !summary.catalog_visible
+            && summary.parent_session_id.is_none()
+            && activity.state == SessionActivityState::AwaitingApproval
+        {
+            Some(BackgroundApproval {
+                session_id: summary.session_id.clone(),
+                bot_id: summary.session_context.bot_id.clone(),
+                turn_id: activity
+                    .turn_id
+                    .clone()
+                    .ok_or_else(|| Error::Config("approval activity has no turn id".into()))?,
+                request_id: activity
+                    .approval_request_id
+                    .clone()
+                    .ok_or_else(|| Error::Config("approval activity has no request id".into()))?,
             })
-            .await?;
-        for summary in page.sessions {
-            let Some((turn_id, request_id)) = pending.remove(&summary.session_id) else {
-                continue;
-            };
-            if !summary.catalog_visible && summary.parent_session_id.is_none() {
-                approvals.push(BackgroundApproval {
-                    session_id: summary.session_id,
-                    bot_id: summary.session_context.bot_id,
-                    turn_id,
-                    request_id,
+        } else {
+            None
+        };
+        self.approvals.remove(&summary.session_id);
+        if let Some(approval) = approval {
+            self.approvals.insert(summary.session_id.clone(), approval);
+        }
+        self.activities
+            .insert(summary.session_id.clone(), activity.clone());
+        if let Some(snapshot) = &mut self.snapshot {
+            snapshot
+                .sessions
+                .retain(|record| record.session_id != summary.session_id);
+            let metadata = snapshot.metadata.get(&summary.session_id);
+            if summary.catalog_visible && !metadata.is_some_and(|item| item.hidden) {
+                snapshot
+                    .sessions
+                    .push(session_record(summary, metadata, activity));
+                snapshot.sessions.sort_by(|left, right| {
+                    right
+                        .updated_at
+                        .cmp(&left.updated_at)
+                        .then_with(|| right.sequence.cmp(&left.sequence))
+                        .then_with(|| right.session_id.cmp(&left.session_id))
                 });
+                snapshot.sessions.truncate(SESSION_PAGE_SIZE);
+                sort_sessions(&mut snapshot.sessions);
             }
         }
-        let Some(next) = page.next_cursor else {
-            break;
-        };
-        cursor = Some(next);
+        Ok(())
     }
-    approvals.sort_by(|left, right| left.session_id.cmp(&right.session_id));
-    Ok(approvals)
 }
 
 #[derive(Clone, Copy)]
@@ -152,26 +219,31 @@ enum CatalogFilter<'a> {
 
 async fn filtered_session_catalog(
     checkpoints: &Arc<dyn CheckpointStore>,
-    activities: &SessionActivities,
+    activities: &HashMap<String, SessionActivity>,
+    metadata: &SessionCatalogMetadata,
     filter: CatalogFilter<'_>,
 ) -> Result<Vec<SessionRecord>> {
-    let metadata = load_session_metadata(checkpoints).await?;
     let mut cursor = None;
     let mut sessions = Vec::new();
     while sessions.len() < SESSION_PAGE_SIZE {
         let page = checkpoints
             .list_sessions_page(SessionPageRequest {
-                bot_id: None,
+                bot_id: match filter {
+                    CatalogFilter::Visible => None,
+                    CatalogFilter::HiddenBot(id) => Some(id.into()),
+                },
                 cursor,
                 limit: SESSION_PAGE_SIZE,
             })
             .await?;
         sessions.extend(page.sessions.into_iter().filter(|session| {
-            let manually_hidden = metadata
-                .get(&session.session_id)
-                .is_some_and(|metadata| metadata.hidden);
             match filter {
-                CatalogFilter::Visible => session.catalog_visible && !manually_hidden,
+                CatalogFilter::Visible => {
+                    session.catalog_visible
+                        && !metadata
+                            .get(&session.session_id)
+                            .is_some_and(|item| item.hidden)
+                }
                 CatalogFilter::HiddenBot(bot_id) => {
                     session.session_context.bot_id == bot_id
                         && session.parent_session_id.is_none()
@@ -185,16 +257,6 @@ async fn filtered_session_catalog(
         cursor = Some(next);
     }
     sessions.truncate(SESSION_PAGE_SIZE);
-    for session in &mut sessions {
-        if let Some(message) = &mut session.first_user_message
-            && message.len() > MAX_SESSION_PREVIEW_BYTES
-        {
-            message.truncate(message.floor_char_boundary(MAX_SESSION_PREVIEW_BYTES));
-        }
-    }
-    let activities = activities
-        .lock()
-        .map_err(|_| Error::Config("session activity lock is poisoned".into()))?;
     let mut sessions = sessions
         .into_iter()
         .map(|summary| {
@@ -203,22 +265,39 @@ async fn filtered_session_catalog(
                 .get(&summary.session_id)
                 .cloned()
                 .unwrap_or_default();
-            SessionRecord {
-                session_id: summary.session_id,
-                session_context: summary.session_context,
-                parent_session_id: summary.parent_session_id,
-                parent_sequence: summary.parent_sequence,
-                sequence: summary.sequence,
-                first_user_message: summary.first_user_message,
-                execution_stats: summary.execution_stats,
-                title: metadata.and_then(|metadata| metadata.title.clone()),
-                pinned: metadata.is_some_and(|metadata| metadata.pinned),
-                activity,
-                created_at: summary.created_at,
-                updated_at: summary.updated_at,
-            }
+            session_record(summary, metadata, activity)
         })
         .collect::<Vec<_>>();
+    sort_sessions(&mut sessions);
+    Ok(sessions)
+}
+
+fn session_record(
+    summary: SessionSummary,
+    metadata: Option<&SessionMetadata>,
+    activity: SessionActivity,
+) -> SessionRecord {
+    let mut preview = summary.first_user_message;
+    if let Some(message) = &mut preview {
+        message.truncate(message.floor_char_boundary(MAX_SESSION_PREVIEW_BYTES.min(message.len())));
+    }
+    SessionRecord {
+        session_id: summary.session_id,
+        session_context: summary.session_context,
+        parent_session_id: summary.parent_session_id,
+        parent_sequence: summary.parent_sequence,
+        sequence: summary.sequence,
+        first_user_message: preview,
+        execution_stats: summary.execution_stats,
+        title: metadata.and_then(|metadata| metadata.title.clone()),
+        pinned: metadata.is_some_and(|metadata| metadata.pinned),
+        activity,
+        created_at: summary.created_at,
+        updated_at: summary.updated_at,
+    }
+}
+
+fn sort_sessions(sessions: &mut [SessionRecord]) {
     sessions.sort_by(|left, right| {
         right
             .pinned
@@ -227,7 +306,6 @@ async fn filtered_session_catalog(
             .then_with(|| right.sequence.cmp(&left.sequence))
             .then_with(|| left.session_id.cmp(&right.session_id))
     });
-    Ok(sessions)
 }
 
 pub(super) async fn load_session_metadata(
@@ -278,8 +356,119 @@ mod tests {
 
     use super::*;
 
+    use mobius::backend::checkpoint::{
+        EventPage, EventPageRequest, ExecutionRecord, JournalEvent, SessionPage, TimestampedEvent,
+    };
+    use mobius::{BoxFuture, protocol::Event};
+    use serde_json::Value;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountedStore {
+        inner: Arc<dyn CheckpointStore>,
+        pages: std::sync::Mutex<Vec<Option<String>>>,
+        rows: AtomicUsize,
+        summaries: AtomicUsize,
+        metadata_reads: AtomicUsize,
+    }
+
+    impl CountedStore {
+        fn new(inner: Arc<dyn CheckpointStore>) -> Self {
+            Self {
+                inner,
+                pages: Default::default(),
+                rows: AtomicUsize::new(0),
+                summaries: AtomicUsize::new(0),
+                metadata_reads: AtomicUsize::new(0),
+            }
+        }
+        fn reset(&self) {
+            self.pages.lock().unwrap().clear();
+            self.rows.store(0, Ordering::Relaxed);
+            self.summaries.store(0, Ordering::Relaxed);
+            self.metadata_reads.store(0, Ordering::Relaxed);
+        }
+    }
+
+    impl CheckpointStore for CountedStore {
+        fn load<'a>(&'a self, id: &'a str) -> BoxFuture<'a, mobius::Result<Option<Checkpoint>>> {
+            self.inner.load(id)
+        }
+        fn delete_sessions<'a>(&'a self, ids: &'a [String]) -> BoxFuture<'a, mobius::Result<bool>> {
+            self.inner.delete_sessions(ids)
+        }
+        fn save<'a>(
+            &'a self,
+            checkpoint: &'a Checkpoint,
+            delta: &'a [Value],
+            execution: Option<&'a ExecutionRecord>,
+        ) -> BoxFuture<'a, mobius::Result<()>> {
+            self.inner.save(checkpoint, delta, execution)
+        }
+        fn save_with_events<'a>(
+            &'a self,
+            checkpoint: Checkpoint,
+            delta: Vec<Value>,
+            execution: Option<ExecutionRecord>,
+            events: Vec<TimestampedEvent>,
+        ) -> BoxFuture<'a, mobius::Result<Vec<JournalEvent>>> {
+            self.inner
+                .save_with_events(checkpoint, delta, execution, events)
+        }
+        fn append_event<'a>(
+            &'a self,
+            id: &'a str,
+            at: i64,
+            event: &'a Event,
+        ) -> BoxFuture<'a, mobius::Result<JournalEvent>> {
+            self.inner.append_event(id, at, event)
+        }
+        fn event_page<'a>(
+            &'a self,
+            id: &'a str,
+            request: EventPageRequest,
+        ) -> BoxFuture<'a, mobius::Result<EventPage>> {
+            self.inner.event_page(id, request)
+        }
+        fn load_state<'a>(
+            &'a self,
+            scope: &'a str,
+            key: &'a str,
+        ) -> BoxFuture<'a, mobius::Result<Option<Value>>> {
+            if scope == SESSION_CATALOG_SCOPE && key == SESSION_CATALOG_KEY {
+                self.metadata_reads.fetch_add(1, Ordering::Relaxed);
+            }
+            self.inner.load_state(scope, key)
+        }
+        fn save_state<'a>(
+            &'a self,
+            scope: &'a str,
+            key: &'a str,
+            value: &'a Value,
+        ) -> BoxFuture<'a, mobius::Result<()>> {
+            self.inner.save_state(scope, key, value)
+        }
+        fn session_summary<'a>(
+            &'a self,
+            id: &'a str,
+        ) -> BoxFuture<'a, mobius::Result<Option<SessionSummary>>> {
+            self.summaries.fetch_add(1, Ordering::Relaxed);
+            self.inner.session_summary(id)
+        }
+        fn list_sessions_page(
+            &self,
+            request: SessionPageRequest,
+        ) -> BoxFuture<'_, mobius::Result<SessionPage>> {
+            self.pages.lock().unwrap().push(request.bot_id.clone());
+            Box::pin(async move {
+                let page = self.inner.list_sessions_page(request).await?;
+                self.rows.fetch_add(page.sessions.len(), Ordering::Relaxed);
+                Ok(page)
+            })
+        }
+    }
+
     fn activities() -> SessionActivities {
-        Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()))
+        Arc::new(tokio::sync::Mutex::new(SessionCatalog::default()))
     }
 
     #[tokio::test]
@@ -384,7 +573,7 @@ mod tests {
             .await
             .expect("save session");
         let activities = activities();
-        activities.lock().expect("activities").insert(
+        activities.lock().await.activities.insert(
             "active".into(),
             SessionActivity {
                 state: SessionActivityState::Running,
@@ -493,7 +682,7 @@ mod tests {
         restore_pending_approval_activities(&checkpoints, &activities)
             .await
             .expect("restore approvals");
-        activities.lock().expect("activities").insert(
+        activities.lock().await.activities.insert(
             "background-child".into(),
             SessionActivity {
                 state: SessionActivityState::AwaitingApproval,
@@ -502,9 +691,7 @@ mod tests {
                 ..SessionActivity::default()
             },
         );
-        let approvals = background_approvals(&checkpoints, &activities)
-            .await
-            .expect("background approvals");
+        let approvals = background_approvals(&activities).await;
 
         assert_eq!(
             approvals,
@@ -528,5 +715,176 @@ mod tests {
             "invalid_session_title"
         );
         assert!(validate_session_title(&"x".repeat(MAX_SESSION_TITLE_BYTES + 1)).is_err());
+    }
+
+    #[tokio::test]
+    async fn hidden_bot_listing_fetches_only_that_bots_rows() {
+        let root = tempfile::tempdir().unwrap();
+        let counted = Arc::new(CountedStore::new(Arc::new(
+            SqliteCheckpoint::new(root.path().join("catalog.sqlite")).unwrap(),
+        )));
+        let checkpoints: Arc<dyn CheckpointStore> = counted.clone();
+        for (id, bot) in std::iter::once(("000-target".to_owned(), "target"))
+            .chain((0..101).map(|index| (format!("other-{index:03}"), "other")))
+        {
+            let mut checkpoint = Checkpoint::empty(id);
+            checkpoint.catalog_visible = false;
+            checkpoint.session_context.bot_id = bot.into();
+            checkpoints.save(&checkpoint, &[], None).await.unwrap();
+        }
+        let result = hidden_bot_session_catalog(&checkpoints, &activities(), "target")
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(*counted.pages.lock().unwrap(), [Some("target".into())]);
+        assert_eq!(counted.rows.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn activity_updates_query_only_the_changed_session() {
+        let root = tempfile::tempdir().unwrap();
+        let counted = Arc::new(CountedStore::new(Arc::new(
+            SqliteCheckpoint::new(root.path().join("catalog.sqlite")).unwrap(),
+        )));
+        let checkpoints: Arc<dyn CheckpointStore> = counted.clone();
+        for id in ["chat", "unrelated", "background"] {
+            let mut checkpoint = Checkpoint::empty(id);
+            checkpoint.session_context.bot_id = "bot".into();
+            checkpoint.catalog_visible = id != "background";
+            checkpoints.save(&checkpoint, &[], None).await.unwrap();
+        }
+        let activities = activities();
+        session_catalog(&checkpoints, &activities).await.unwrap();
+        counted.reset();
+        for (id, state) in [
+            ("chat", SessionActivityState::Running),
+            ("background", SessionActivityState::AwaitingApproval),
+            ("chat", SessionActivityState::Idle),
+        ] {
+            update_session_activity(
+                &checkpoints,
+                &activities,
+                id,
+                SessionActivity {
+                    state,
+                    turn_id: Some("turn".into()),
+                    approval_request_id: Some("approval".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            activity_catalog(&checkpoints, &activities).await.unwrap();
+        }
+        let (cached, approvals) = activity_catalog(&checkpoints, &activities).await.unwrap();
+        assert!(counted.pages.lock().unwrap().is_empty());
+        assert_eq!(counted.metadata_reads.load(Ordering::Relaxed), 0);
+        assert_eq!(counted.summaries.load(Ordering::Relaxed), 3);
+        assert_eq!(approvals.len(), 1);
+        assert_eq!(
+            cached,
+            session_catalog(&checkpoints, &activities).await.unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn live_turn_activity_does_not_reload_the_catalog() {
+        use crate::{
+            bots::BotStore,
+            config::{ConfigStore, CredentialStore},
+            host::{GatewayHost, tests::create_test_session},
+            wire::{ServerMessage, SessionActivityState},
+        };
+        use mobius::protocol::{MessageSubmission, Op, Submission};
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let (store, config) = ConfigStore::initialize(
+            root.path().join("state"),
+            "127.0.0.1:8741".parse().unwrap(),
+            None,
+        )
+        .unwrap();
+        let mut selection = crate::wire::AgentComposition::default().provider;
+        selection.instance = "unconfigured-test".into();
+        selection.provider = "openrouter".into();
+        selection.model = "openai/gpt-5".into();
+        selection.reasoning_effort = None;
+        selection.endpoint_auth = crate::wire::ProviderEndpointAuth::ProviderDefault;
+        selection.base_url = Some("https://no-credential.invalid/v1".into());
+        let config = config
+            .registering_provider(
+                selection.clone(),
+                "Unconfigured test".into(),
+                Default::default(),
+                vec![selection.model],
+                Vec::new(),
+            )
+            .unwrap();
+        let credentials = Arc::new(CredentialStore::open(store.credentials_path()).unwrap());
+        let bots = Arc::new(BotStore::open(store.state_dir()).unwrap());
+        let gateway = GatewayHost::start(store, config, credentials, bots)
+            .await
+            .unwrap();
+        let counted = {
+            let mut state = gateway.state.lock().await;
+            let counted = Arc::new(CountedStore::new(Arc::clone(&state.checkpoints)));
+            state.checkpoints = counted.clone();
+            counted
+        };
+        let host = create_test_session(&gateway, &workspace).await.unwrap();
+        let mut events = gateway.subscribe();
+        let mut session_events = host.subscribe();
+        crate::host::replay::FRAME_SIZE_MEASUREMENTS.with(|count| count.set(0));
+        counted.reset();
+        host.submit(Submission {
+            id: "catalog-turn".into(),
+            op: Op::Message {
+                message: MessageSubmission {
+                    author: mobius::protocol::MessageAuthor::User,
+                    text: "hello".into(),
+                    attachments: Vec::new(),
+                    reply: None,
+                    requested_delivery: None,
+                    target_turn_id: None,
+                },
+            },
+        })
+        .await
+        .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut running = false;
+            loop {
+                if let ServerMessage::Sessions { sessions, .. } =
+                    events.recv().await.unwrap().message
+                {
+                    let activity = &sessions
+                        .iter()
+                        .find(|session| session.session_id == host.session_id())
+                        .unwrap()
+                        .activity;
+                    running |= activity.state == SessionActivityState::Running;
+                    if running && activity.state == SessionActivityState::Idle {
+                        break;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("turn must finish without credentials");
+        assert!(counted.pages.lock().unwrap().is_empty());
+        assert_eq!(counted.metadata_reads.load(Ordering::Relaxed), 0);
+        assert_eq!(counted.summaries.load(Ordering::Relaxed), 2);
+        let mut frames = 0;
+        while session_events.try_recv().is_ok() {
+            frames += 1;
+        }
+        assert!(frames > 0);
+        assert_eq!(
+            crate::host::replay::FRAME_SIZE_MEASUREMENTS.with(std::cell::Cell::get),
+            frames,
+            "each live frame is measured once before publication"
+        );
+        gateway.shutdown().await;
     }
 }

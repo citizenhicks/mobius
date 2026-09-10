@@ -58,11 +58,10 @@ struct HostState {
     approval_active: bool,
     turn_error: Option<String>,
     last_assistant_text: Option<String>,
-    restart_after_turn: bool,
     pending_startup: Vec<ServerFrame>,
     active_routine: Option<ActiveRoutine>,
     sequence: u64,
-    pub(super) replay: VecDeque<ServerFrame>,
+    pub(super) replay: VecDeque<ReplayEntry>,
     pub(super) replay_bytes: usize,
     pub(super) next_before_sequence: Option<u64>,
     pub(super) widgets: SessionWidgets,
@@ -74,7 +73,7 @@ struct HostState {
 
 pub(super) struct LoadedReplay {
     pub(super) latest_sequence: u64,
-    pub(super) replay: VecDeque<ServerFrame>,
+    pub(super) replay: VecDeque<ReplayEntry>,
     pub(super) replay_bytes: usize,
     pub(super) next_before_sequence: Option<u64>,
     pub(super) widgets: SessionWidgets,
@@ -143,9 +142,6 @@ pub(super) enum HostCommand {
         submission: Submission,
         reply: oneshot::Sender<std::result::Result<(), Rejection>>,
     },
-    RefreshBot {
-        reply: oneshot::Sender<std::result::Result<(), Rejection>>,
-    },
     AttachFolder {
         folder: PathBuf,
         reply: oneshot::Sender<std::result::Result<(), Rejection>>,
@@ -171,14 +167,6 @@ pub(super) enum HostCommand {
     },
     SwitchGitBranch {
         branch: String,
-        reply: oneshot::Sender<std::result::Result<(), Rejection>>,
-    },
-    RefreshProvider {
-        scope: ProviderRefresh,
-        reply: oneshot::Sender<std::result::Result<(), Rejection>>,
-    },
-    RefreshExtension {
-        id: String,
         reply: oneshot::Sender<std::result::Result<(), Rejection>>,
     },
     ProviderCutoverStatus {
@@ -221,7 +209,7 @@ impl HostHandle {
         clippy::too_many_arguments,
         reason = "one chat actor receives each owned gateway dependency explicitly"
     )]
-    pub(crate) async fn start(
+    pub(super) async fn start(
         store: ConfigStore,
         gateway: Arc<StdMutex<GatewayConfig>>,
         spec: ChatSpec,
@@ -267,7 +255,8 @@ impl HostHandle {
         let loaded = load_replay(checkpoints.as_ref(), &session_id, &running.frontend).await?;
         let awaiting_approval = activities
             .lock()
-            .map_err(|_| Error::Config("session activity lock is poisoned".into()))?
+            .await
+            .activities
             .entry(session_id.clone())
             .or_default()
             .state
@@ -297,7 +286,6 @@ impl HostHandle {
             approval_active: awaiting_approval,
             turn_error: None,
             last_assistant_text: None,
-            restart_after_turn: false,
             pending_startup: Vec::new(),
             active_routine: None,
             sequence: loaded.latest_sequence,
@@ -427,12 +415,6 @@ impl HostHandle {
         receive(receiver).await
     }
 
-    pub(crate) async fn refresh_bot(&self) -> std::result::Result<(), Rejection> {
-        let (reply, receiver) = oneshot::channel();
-        self.send(HostCommand::RefreshBot { reply }).await?;
-        receive(receiver).await
-    }
-
     pub(crate) async fn attach_folder(
         &self,
         folder: PathBuf,
@@ -500,23 +482,6 @@ impl HostHandle {
     ) -> std::result::Result<(), Rejection> {
         let (reply, receiver) = oneshot::channel();
         self.send(HostCommand::SwitchGitBranch { branch, reply })
-            .await?;
-        receive(receiver).await
-    }
-
-    pub(super) async fn refresh_provider(
-        &self,
-        scope: ProviderRefresh,
-    ) -> std::result::Result<(), Rejection> {
-        let (reply, receiver) = oneshot::channel();
-        self.send(HostCommand::RefreshProvider { scope, reply })
-            .await?;
-        receive(receiver).await
-    }
-
-    pub(super) async fn refresh_extension(&self, id: String) -> std::result::Result<(), Rejection> {
-        let (reply, receiver) = oneshot::channel();
-        self.send(HostCommand::RefreshExtension { id, reply })
             .await?;
         receive(receiver).await
     }
@@ -697,7 +662,7 @@ async fn start_agent(
         let mut cache = bots.prepared.lock().await;
         if let Some(prepared) = cache
             .get(&bot.id)
-            .filter(|prepared| prepared.bot == bot && prepared.epoch == epoch)
+            .filter(|prepared| prepared.matches_runtime(&bot) && prepared.epoch == epoch)
         {
             Arc::clone(prepared)
         } else {
@@ -716,7 +681,9 @@ async fn start_agent(
                 )
                 .await?,
             );
-            cache.insert(spec.bot_id.clone(), Arc::clone(&prepared));
+            if let Some(previous) = cache.insert(spec.bot_id.clone(), Arc::clone(&prepared)) {
+                previous.invalidate();
+            }
             prepared
         }
     };

@@ -68,6 +68,8 @@ where
 pub(crate) struct PreparedBot {
     pub(crate) bot: crate::wire::BotRecord,
     pub(crate) epoch: u64,
+    stale: std::sync::atomic::AtomicBool,
+    pub(crate) providers: Vec<ProviderConfig>,
     models: Arc<ModelRouter>,
     context_window: i64,
     model_providers: BTreeMap<String, String>,
@@ -77,6 +79,16 @@ pub(crate) struct PreparedBot {
 }
 
 impl PreparedBot {
+    pub(crate) fn matches_runtime(&self, bot: &crate::wire::BotRecord) -> bool {
+        !self.stale.load(std::sync::atomic::Ordering::Acquire)
+            && self.bot.description == bot.description
+            && self.bot.config.config == bot.config.config
+    }
+
+    pub(crate) fn invalidate(&self) {
+        self.stale.store(true, std::sync::atomic::Ordering::Release);
+    }
+
     pub(crate) fn instructions(&self) -> String {
         format!(
             "{}\n\n{}",
@@ -93,6 +105,11 @@ pub(crate) async fn prepare_bot(
     session_files: SessionFileStore,
     epoch: u64,
 ) -> Result<PreparedBot> {
+    #[cfg(test)]
+    store
+        .runtime_operations
+        .preparations
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let config = &bot.config.config;
     let model_providers = configured_model_providers(gateway, store, credentials)?;
     let (models, context_window) =
@@ -113,7 +130,18 @@ pub(crate) async fn prepare_bot(
     let computer_runtime =
         crate::computer_runtime::prepare(store.state_dir(), &config.middleware).await?;
     let extensions = ExtensionStore::new(store).resolve(gateway, &config.extensions)?;
+    let providers = std::iter::once(config.provider.clone())
+        .chain(
+            gateway
+                .configured_providers
+                .values()
+                .filter(|provider| provider.selection.instance != config.provider.instance)
+                .map(|provider| provider.selection.clone()),
+        )
+        .collect();
     Ok(PreparedBot {
+        stale: std::sync::atomic::AtomicBool::new(false),
+        providers,
         bot,
         epoch,
         models,
@@ -159,6 +187,11 @@ pub(crate) async fn assemble(
     override_saved_model_route: bool,
     prepared: Arc<PreparedBot>,
 ) -> Result<BuiltAgent> {
+    #[cfg(test)]
+    store
+        .runtime_operations
+        .assemblies
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if let Some(session_id) = session_id.as_deref() {
         validate_session_id(session_id)?;
     }

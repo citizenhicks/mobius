@@ -274,23 +274,24 @@ impl CheckpointStore for SqliteCheckpoint {
         execution: Option<&'a ExecutionRecord>,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            self.save_with_events(checkpoint, transcript_delta, execution, &[])
-                .await?;
+            self.save_with_events(
+                checkpoint.clone(),
+                transcript_delta.to_vec(),
+                execution.cloned(),
+                Vec::new(),
+            )
+            .await?;
             Ok(())
         })
     }
 
     fn save_with_events<'a>(
         &'a self,
-        checkpoint: &'a Checkpoint,
-        transcript_delta: &'a [Value],
-        execution: Option<&'a ExecutionRecord>,
-        events: &'a [TimestampedEvent],
+        checkpoint: Checkpoint,
+        transcript_delta: Vec<Value>,
+        execution: Option<ExecutionRecord>,
+        events: Vec<TimestampedEvent>,
     ) -> BoxFuture<'a, Result<Vec<JournalEvent>>> {
-        let checkpoint = checkpoint.clone();
-        let transcript_delta = transcript_delta.to_vec();
-        let execution = execution.cloned();
-        let events = events.to_vec();
         Box::pin(self.run(move |connection| {
             validate_checkpoint(&checkpoint)?;
             if let Some(execution) = &execution {
@@ -436,6 +437,21 @@ impl CheckpointStore for SqliteCheckpoint {
             })
             .await
         })
+    }
+
+    fn session_summary<'a>(
+        &'a self,
+        session_id: &'a str,
+    ) -> BoxFuture<'a, Result<Option<SessionSummary>>> {
+        let session_id = session_id.to_owned();
+        Box::pin(self.run(move |connection| {
+            connection.query_row(
+                "SELECT session_id, parent_session_id, parent_sequence, latest_sequence,
+                        catalog_visible, first_user_message, session_context_json, execution_stats_json,
+                        created_at, updated_at FROM sessions WHERE session_id = ?1",
+                [&session_id], session_row,
+            ).optional()?.map(summary_from_row).transpose()
+        }))
     }
 
     fn list_sessions_page(
