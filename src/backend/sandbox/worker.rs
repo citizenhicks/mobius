@@ -374,6 +374,8 @@ while True:
             ],
         };
         let sandbox = Sandbox::new(Arc::new(TestBackend), ApprovalPolicy::Ask);
+        // Python's cold start on macOS CI can exceed a second; only `wait` tests a deadline.
+        let response_timeout = Duration::from_secs(10);
         let denied = SandboxPermissions::restore(
             "session",
             SandboxMode::WorkspaceWrite,
@@ -396,14 +398,14 @@ while True:
         );
         assert_eq!(
             sandbox
-                .evaluate_worker(&command, &allowed, b"run", Duration::from_secs(1), false)
+                .evaluate_worker(&command, &allowed, b"run", response_timeout, false)
                 .await
                 .expect("first"),
             b"1"
         );
         assert_eq!(
             sandbox
-                .evaluate_worker(&command, &allowed, b"run", Duration::from_secs(1), false)
+                .evaluate_worker(&command, &allowed, b"run", response_timeout, false)
                 .await
                 .expect("second"),
             b"2"
@@ -440,7 +442,7 @@ while True:
         ));
         assert_eq!(
             sandbox
-                .evaluate_worker(&command, &allowed, b"run", Duration::from_secs(1), true)
+                .evaluate_worker(&command, &allowed, b"run", response_timeout, true)
                 .await
                 .expect("reset"),
             b"1"
