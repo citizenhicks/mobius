@@ -57,6 +57,9 @@ pub(crate) struct BotStore {
     state_dir: PathBuf,
     routines_dir: PathBuf,
     storage: BotStorage,
+    pub(crate) prepared: tokio::sync::Mutex<
+        std::collections::BTreeMap<String, std::sync::Arc<crate::assembly::PreparedBot>>,
+    >,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -156,7 +159,17 @@ pub(crate) enum BeginRun {
 pub(crate) struct ActiveRoutineRun {
     run_id: String,
     session_id: String,
-    _lock: File,
+    _lock: RoutineLock,
+}
+
+#[derive(Debug)]
+struct RoutineLock(File);
+
+impl Drop for RoutineLock {
+    fn drop(&mut self) {
+        // Closing alone leaves the lock held while a fork inherits the file descriptor.
+        let _ = self.0.unlock();
+    }
 }
 
 /// Validated Bot deletion whose routine locks stay held through gateway cleanup.
@@ -167,7 +180,7 @@ pub(crate) struct BotDeletion {
     routine_ids: BTreeSet<String>,
     instructions: BTreeSet<PathBuf>,
     state_lock: Option<File>,
-    _routine_locks: Vec<File>,
+    _routine_locks: Vec<RoutineLock>,
 }
 
 impl BotDeletion {
@@ -183,7 +196,7 @@ pub(crate) struct RoutineDeletion {
     session_ids: BTreeSet<String>,
     instructions: PathBuf,
     _state_lock: File,
-    _lock: File,
+    _lock: RoutineLock,
 }
 
 /// Durable forward-recovery record for a cross-owner Bot cascade.
@@ -208,12 +221,6 @@ impl RoutineDeletion {
 impl ActiveRoutineRun {
     pub(crate) fn session_id(&self) -> &str {
         &self.session_id
-    }
-}
-
-impl Drop for ActiveRoutineRun {
-    fn drop(&mut self) {
-        let _ = self._lock.unlock();
     }
 }
 
@@ -248,6 +255,7 @@ impl BotStore {
             state_dir,
             routines_dir,
             storage,
+            prepared: tokio::sync::Mutex::default(),
         };
         let state = store.fresh_state()?;
         if persisted && !state.bots.iter().any(|bot| bot.handle == MOBIUS_HANDLE) {
@@ -573,14 +581,6 @@ impl BotStore {
             let _ = remove_if_present(path);
         }
         Ok(bot)
-    }
-
-    pub(crate) fn restore_bot(&self, bot: BotRecord) -> Result<()> {
-        self.update(|state| {
-            let current = find_bot_mut(state, &bot.id)?;
-            *current = bot;
-            Ok(())
-        })
     }
 
     pub(crate) fn bots(&self) -> Result<Vec<BotRecord>> {
@@ -1088,10 +1088,10 @@ impl BotStore {
             .ok_or_else(|| Error::Config(format!("unknown routine `{id}`")))
     }
 
-    fn try_routine_lock(&self, id: &str) -> Result<Option<File>> {
+    fn try_routine_lock(&self, id: &str) -> Result<Option<RoutineLock>> {
         let file = open_private_lock(self.state_dir.join(format!("routine-{id}.lock")))?;
         match file.try_lock() {
-            Ok(()) => Ok(Some(file)),
+            Ok(()) => Ok(Some(RoutineLock(file))),
             Err(TryLockError::WouldBlock) => Ok(None),
             Err(TryLockError::Error(error)) => Err(error.into()),
         }

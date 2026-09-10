@@ -56,6 +56,7 @@ impl GatewayHost {
         if let Some(deletion) = deletion {
             bot_store.delete_bot(deletion).map_err(invalid_bot)?;
         }
+        bot_store.prepared.lock().await.remove(&intent.bot_id);
         let mut state = self.state.lock().await;
         let file_warning = remove_session_trees(
             &mut state,
@@ -135,6 +136,7 @@ impl GatewayHost {
         let swarm = swarm_store.remove_bot(id).await.map_err(invalid_swarm)?;
 
         bot_store.delete_bot(deletion).map_err(invalid_bot)?;
+        bot_store.prepared.lock().await.remove(id);
         let bots = bot_store.bots().map_err(internal)?;
         let mut state = self.state.lock().await;
         let mut cleanup_errors = Vec::new();

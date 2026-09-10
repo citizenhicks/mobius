@@ -27,7 +27,6 @@ pub(super) struct HostInner {
     pub(super) bot_id: Arc<str>,
     pub(super) commands: mpsc::Sender<HostCommand>,
     pub(super) events: broadcast::Sender<ServerFrame>,
-    pub(super) accepts_file_attachments: Arc<AtomicBool>,
     pub(super) alive: Arc<AtomicBool>,
     pub(super) terminated: Arc<AtomicBool>,
     pub(super) termination: Arc<tokio::sync::Notify>,
@@ -45,7 +44,6 @@ struct HostState {
     scratchpad: ScratchpadStore,
     session_files: SessionFileStore,
     swarm: Arc<SwarmStore>,
-    accepts_file_attachments: Arc<AtomicBool>,
     alive: Arc<AtomicBool>,
     terminated: Arc<AtomicBool>,
     termination: Arc<tokio::sync::Notify>,
@@ -95,12 +93,7 @@ struct RunningAgent {
     subagents: Option<Arc<mobius::middleware::subagents::Subagents>>,
     subagent_template: Option<Arc<OnceLock<AgentConfig>>>,
     tool_count: usize,
-    provider_epoch: u64,
-}
-
-struct ReusableModelRouter {
-    router: Arc<ModelRouter>,
-    provider_epoch: u64,
+    prepared: Arc<crate::assembly::PreparedBot>,
 }
 
 pub(super) struct ProviderCutoverStatus {
@@ -127,6 +120,9 @@ pub(super) struct ActiveRoutine {
 }
 
 pub(super) enum HostCommand {
+    AcceptsFileAttachments {
+        reply: oneshot::Sender<std::result::Result<bool, Rejection>>,
+    },
     RealtimeModel {
         reply: oneshot::Sender<std::result::Result<RealtimeModel, Rejection>>,
     },
@@ -147,8 +143,7 @@ pub(super) enum HostCommand {
         submission: Submission,
         reply: oneshot::Sender<std::result::Result<(), Rejection>>,
     },
-    ReloadBot {
-        bot: crate::wire::BotRecord,
+    RefreshBot {
         reply: oneshot::Sender<std::result::Result<(), Rejection>>,
     },
     AttachFolder {
@@ -204,11 +199,6 @@ pub(super) enum HostCommand {
     Shutdown,
 }
 
-enum Next {
-    Command(Option<HostCommand>),
-    Event(Option<JournalEvent>),
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum JournalSequence {
     AlreadyLoaded,
@@ -255,6 +245,7 @@ impl HostHandle {
             &spec,
             &store,
             Arc::clone(&credentials),
+            Arc::clone(&bots),
             Arc::clone(&checkpoints),
             scratchpad.clone(),
             session_files.clone(),
@@ -268,9 +259,6 @@ impl HostHandle {
             Arc::clone(&provider_epoch),
         )
         .await?;
-        let accepts_file_attachments = Arc::new(AtomicBool::new(runtime_accepts_attachments(
-            &running.frontend,
-        )));
         let alive = Arc::new(AtomicBool::new(true));
         let terminated = Arc::new(AtomicBool::new(false));
         let termination = Arc::new(tokio::sync::Notify::new());
@@ -297,7 +285,6 @@ impl HostHandle {
             swarm,
             discovery_gate,
             desktop,
-            accepts_file_attachments: Arc::clone(&accepts_file_attachments),
             alive: Arc::clone(&alive),
             terminated: Arc::clone(&terminated),
             termination: Arc::clone(&termination),
@@ -332,7 +319,6 @@ impl HostHandle {
                 bot_id: bot_id.into(),
                 commands,
                 events,
-                accepts_file_attachments,
                 alive,
                 terminated,
                 termination,
@@ -384,9 +370,11 @@ impl HostHandle {
         receive(receiver).await
     }
 
-    #[must_use]
-    pub(crate) fn accepts_file_attachments(&self) -> bool {
-        self.inner.accepts_file_attachments.load(Ordering::Relaxed)
+    pub(crate) async fn accepts_file_attachments(&self) -> std::result::Result<bool, Rejection> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(HostCommand::AcceptsFileAttachments { reply })
+            .await?;
+        receive(receiver).await
     }
 
     pub(super) fn is_alive(&self) -> bool {
@@ -439,12 +427,9 @@ impl HostHandle {
         receive(receiver).await
     }
 
-    pub(crate) async fn reload_bot(
-        &self,
-        bot: crate::wire::BotRecord,
-    ) -> std::result::Result<(), Rejection> {
+    pub(crate) async fn refresh_bot(&self) -> std::result::Result<(), Rejection> {
         let (reply, receiver) = oneshot::channel();
-        self.send(HostCommand::ReloadBot { bot, reply }).await?;
+        self.send(HostCommand::RefreshBot { reply }).await?;
         receive(receiver).await
     }
 
@@ -690,6 +675,7 @@ async fn start_agent(
     spec: &ChatSpec,
     store: &ConfigStore,
     credentials: Arc<CredentialStore>,
+    bots: Arc<BotStore>,
     checkpoints: Arc<dyn CheckpointStore>,
     scratchpad: ScratchpadStore,
     session_files: SessionFileStore,
@@ -699,13 +685,41 @@ async fn start_agent(
     session_id: String,
     origin_label: &str,
     override_saved_model_route: bool,
-    reusable_model_router: Option<ReusableModelRouter>,
+    prepared: Option<Arc<crate::assembly::PreparedBot>>,
     provider_epoch: Arc<AtomicU64>,
 ) -> Result<RunningAgent> {
     let swarm: Arc<dyn BotsBackend> = swarm;
-    let reusable_provider_epoch = reusable_model_router
-        .as_ref()
-        .map(|reusable| reusable.provider_epoch);
+    let prepared = if let Some(prepared) = prepared {
+        prepared
+    } else {
+        let bot = bots.bot(&spec.bot_id)?;
+        let epoch = provider_epoch.load(Ordering::Acquire);
+        let mut cache = bots.prepared.lock().await;
+        if let Some(prepared) = cache
+            .get(&bot.id)
+            .filter(|prepared| prepared.bot == bot && prepared.epoch == epoch)
+        {
+            Arc::clone(prepared)
+        } else {
+            let config = gateway
+                .lock()
+                .map_err(|_| Error::Config("gateway configuration lock is poisoned".into()))?
+                .clone();
+            let prepared = Arc::new(
+                crate::assembly::prepare_bot(
+                    &config,
+                    bot,
+                    store,
+                    &credentials,
+                    session_files.clone(),
+                    epoch,
+                )
+                .await?,
+            );
+            cache.insert(spec.bot_id.clone(), Arc::clone(&prepared));
+            prepared
+        }
+    };
     let BuiltAgent {
         agent,
         model_router,
@@ -717,7 +731,6 @@ async fn start_agent(
         gateway,
         spec,
         store,
-        credentials,
         checkpoints,
         scratchpad,
         session_files,
@@ -727,7 +740,7 @@ async fn start_agent(
         Some(session_id),
         origin_label,
         override_saved_model_route,
-        reusable_model_router.map(|reusable| reusable.router),
+        Arc::clone(&prepared),
     )
     .await?;
     let session = agent.session().clone();
@@ -749,24 +762,8 @@ async fn start_agent(
         subagents,
         subagent_template,
         tool_count,
-        provider_epoch: reusable_provider_epoch
-            .unwrap_or_else(|| provider_epoch.load(Ordering::Acquire)),
+        prepared,
     })
-}
-
-fn reusable_model_router(
-    old_spec: &ChatSpec,
-    next_spec: &ChatSpec,
-    running: &RunningAgent,
-) -> Option<ReusableModelRouter> {
-    provider_config_unchanged(old_spec, next_spec).then(|| ReusableModelRouter {
-        router: Arc::clone(&running.model_router),
-        provider_epoch: running.provider_epoch,
-    })
-}
-
-pub(super) fn provider_config_unchanged(old_spec: &ChatSpec, next_spec: &ChatSpec) -> bool {
-    old_spec.agent.config.provider == next_spec.agent.config.provider
 }
 
 pub(super) fn runtime_accepts_attachments(frontend: &FrontendExtensions) -> bool {

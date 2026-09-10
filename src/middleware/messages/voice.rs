@@ -24,7 +24,9 @@ without the task it refers to. Your workspace execution channel owns tools and a
 is complete before its result arrives or approve on the user's behalf. Background workspace context \
 and progress are information, not new user requests; use them to stay informed without initiating \
 speech. Explain completed results aloud in the user's language. Do not initiate speech before \
-the user speaks. If interrupted, stop speaking and listen; your running work continues.";
+the user speaks. Ignore background noise, echoed playback, and incomplete fragments that are not \
+clear requests. Never invent words or a new task from unclear audio. Do not narrate guesses about \
+tool activity or repeat waiting messages. If interrupted, stop speaking and listen; your running work continues.";
 
 /// Voice supplies the complete task agreed with the user to the Bot's execution channel.
 #[must_use]
@@ -168,6 +170,13 @@ Do not invent missing requirements, claim completion, or include an explanation 
     }
     let session_id = uuid::Uuid::new_v4().to_string();
     let input = [user_message(&context)];
+    // Task extraction should not inherit the Bot's expensive reasoning setting.
+    let route = [
+        "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+    ]
+    .into_iter()
+    .find_map(|effort| router.resolve_choice(route, Some(effort)).ok())
+    .map_or(route, |choice| choice.route.as_str());
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(30),
         router.respond(
@@ -236,15 +245,11 @@ fn progress_text(event: &EventMsg, assistant: &str) -> Option<String> {
                 .join("\n");
             (!text.is_empty()).then(|| format!("{assistant}: {text}"))
         }
-        EventMsg::ToolCallBegin(tool) => Some(format!(
-            "Your workspace started tool {}: {}",
-            tool.name, tool.arguments
-        )),
+        EventMsg::ToolCallBegin(tool) => Some(format!("Your workspace started tool {}", tool.name)),
         EventMsg::ToolCallEnd(tool) => Some(format!(
-            "Your workspace tool {} {}: {}",
+            "Your workspace tool {} {}",
             tool.name,
             if tool.is_error { "failed" } else { "finished" },
-            tool.output.text()
         )),
         EventMsg::TurnAborted(turn) => {
             Some(format!("Your workspace work stopped: {}", turn.reason))
@@ -755,6 +760,39 @@ mod tests {
                 )
             })
         }
+    }
+
+    #[tokio::test]
+    async fn task_extraction_uses_the_lowest_supported_effort_without_changing_the_bot() {
+        let model = |answer: &str| {
+            std::sync::Arc::new(ExtractionModel(
+                serde_json::json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":answer}]}),
+            ))
+        };
+        let mut router = crate::backend::model::ModelRouter::new("high", model(r#"{"task":null}"#));
+        router
+            .register(
+                "low",
+                model(r#"{"task":"Use blue accent and preserve toolbar."}"#),
+            )
+            .unwrap();
+        let choices = router.choices().cloned().collect::<Vec<_>>();
+        for mut choice in choices {
+            choice.group = "same model".into();
+            choice.reasoning_effort = Some(choice.route.clone());
+            router.configure_choice(choice).unwrap();
+        }
+        let mut parent = crate::backend::checkpoint::Checkpoint::empty("parent");
+        parent.context =
+            vec![serde_json::json!({"role":"user","content":"blue accent; preserve toolbar"})];
+        assert_eq!(
+            resolve_task(&router, "high", &parent, "", "Do that now")
+                .await
+                .unwrap()
+                .0,
+            "Use blue accent and preserve toolbar."
+        );
+        assert_eq!(router.default_provider(), "high");
     }
 
     #[tokio::test]

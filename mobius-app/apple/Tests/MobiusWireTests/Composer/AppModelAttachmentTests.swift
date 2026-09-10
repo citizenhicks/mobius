@@ -4,6 +4,28 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testIdleChatAttachmentControlUsesUpdatedBotWithoutReopeningChat() throws {
+        let model = try model()
+        model.gateway.connectionState = .ready
+        model.chat.selectedSessionID = "chat-1"
+        model.chat.sessions = [session(state: .idle)]
+        model.chat.contributions = []
+        var config = composition()
+        config.middleware.enabled.remove("attachments")
+        model.bots = [bot(config: VersionedAgentConfig(revision: 1, config: config))]
+        XCTAssertFalse(model.canImportAttachments)
+
+        config.middleware.enabled.insert("attachments")
+        model.bots = [bot(config: VersionedAgentConfig(revision: 2, config: config))]
+        XCTAssertTrue(model.canImportAttachments)
+        XCTAssertTrue(model.chat.contributions.isEmpty)
+
+        model.chat.activeTurnID = "existing-work"
+        XCTAssertFalse(model.canImportAttachments)
+        model.chat.activeTurnID = nil
+        XCTAssertTrue(model.canImportAttachments)
+    }
+
     func testFirstMessageUploadsBeforeSendAndWaitsForCompletion() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model(requestSender: { request in

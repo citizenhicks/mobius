@@ -260,10 +260,21 @@ impl HostState {
                 .map(|active| active_run_summary(&checkpoint.session_id, active)),
         };
         let context_limit_tokens = match self.running.session.model.model_context_window {
-            Some(context_window) if self.spec.agent.config.middleware.enabled("compaction") => {
+            Some(context_window)
+                if self
+                    .running
+                    .prepared
+                    .bot
+                    .config
+                    .config
+                    .middleware
+                    .enabled("compaction") =>
+            {
                 Some(
-                    crate::assembly::configured_compaction(&self.spec.agent.config.middleware)?
-                        .trigger_tokens(context_window),
+                    crate::assembly::configured_compaction(
+                        &self.running.prepared.bot.config.config.middleware,
+                    )?
+                    .trigger_tokens(context_window),
                 )
             }
             context_window => context_window,
@@ -505,6 +516,8 @@ fn account_turn_event(
                 *pending_turns = pending_turns.saturating_add(1);
             }
         }
+        EventMsg::Message(message)
+            if message.delivery == mobius::protocol::MessageDelivery::Queue => {}
         EventMsg::Message(_) | EventMsg::SubmissionRejected(_) => {
             if event
                 .submission_id
@@ -644,6 +657,46 @@ mod accounting_tests {
         );
 
         assert_eq!(pending_turns, 1);
+    }
+
+    #[test]
+    fn queued_message_keeps_the_execution_reserved_until_its_turn_finishes() {
+        let mut pending_turns = 2;
+        let mut messages = HashSet::from(["queued".into()]);
+        for event in [
+            event("queued", message(MessageDelivery::Queue)),
+            event(
+                "active",
+                EventMsg::TurnComplete(TurnCompleteEvent {
+                    turn_id: "active".into(),
+                }),
+            ),
+            event(
+                "queued",
+                EventMsg::TurnStarted(TurnStartedEvent {
+                    turn_id: "next".into(),
+                    model_context_window: None,
+                }),
+            ),
+        ] {
+            account_turn_event(&mut pending_turns, &mut messages, &event);
+            assert!(
+                pending_turns > 0,
+                "queued work must keep the old execution reserved"
+            );
+        }
+        account_turn_event(
+            &mut pending_turns,
+            &mut messages,
+            &event(
+                "queued",
+                EventMsg::TurnComplete(TurnCompleteEvent {
+                    turn_id: "next".into(),
+                }),
+            ),
+        );
+        assert_eq!(pending_turns, 0);
+        assert!(messages.is_empty());
     }
 
     #[test]

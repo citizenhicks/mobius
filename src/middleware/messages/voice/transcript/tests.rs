@@ -7,6 +7,51 @@ use crate::middleware::messages::Messages;
 use crate::middleware::{ActiveCommandContext, MessageQueue, Middleware, SubmissionResult};
 
 #[tokio::test]
+async fn discarded_speech_stays_cleared_in_history_and_resumed_task_context() {
+    let directory = tempfile::tempdir().unwrap();
+    let checkpoints: Arc<dyn CheckpointStore> =
+        Arc::new(SqliteCheckpoint::new(directory.path().join("checkpoints.sqlite3")).unwrap());
+    let mut parent = Checkpoint::empty("parent");
+    parent.session_context.bot_id = "bot".into();
+    checkpoints.save(&parent, &[], None).await.unwrap();
+    let sink: FrontendEventSink = Arc::new(|_| Ok(()));
+    let mut voice = VoiceTranscript::open(Arc::clone(&checkpoints), "parent", Arc::clone(&sink))
+        .await
+        .unwrap();
+    for (input_id, role) in [
+        ("noise", ConversationRole::User),
+        ("reply", ConversationRole::Assistant),
+    ] {
+        voice
+            .record(input_id, role, "safari's", false)
+            .await
+            .unwrap();
+        voice.record(input_id, role, "", true).await.unwrap();
+    }
+    voice.finish().await.unwrap();
+    drop(voice);
+    let voice = VoiceTranscript::open(Arc::clone(&checkpoints), "parent", sink)
+        .await
+        .unwrap();
+    let journal = checkpoints
+        .event_page(
+            voice.session_id(),
+            EventPageRequest {
+                before_sequence: None,
+                limit: PAGE_SIZE,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(!serde_json::to_string(&journal).unwrap().contains("safari"));
+    assert!(!voice.task_context().await.unwrap().contains("safari"));
+    let preview = read_preview(checkpoints.as_ref(), "parent", "")
+        .await
+        .unwrap();
+    assert!(!serde_json::to_string(&preview).unwrap().contains("safari"));
+}
+
+#[tokio::test]
 async fn voice_transcript_is_linked_read_only_and_resumes_without_reusing_message_ids() {
     let directory = tempfile::tempdir().expect("directory");
     let path = directory.path().join("checkpoints.sqlite3");

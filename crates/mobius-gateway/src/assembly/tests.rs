@@ -506,13 +506,25 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
         .into_keys()
         .next()
         .expect("configured model route");
-    let reusable_router = Arc::new(ModelRouter::new(
+    let shared_router = Arc::new(ModelRouter::new(
         usage_route,
         Arc::new(PromptCaptureModel {
             instructions: Arc::clone(&captured_instructions),
             tools: Arc::clone(&captured_tools),
         }),
     ));
+    let mut prepared = prepare_bot(
+        &gateway,
+        original_bot.clone(),
+        &store,
+        &credentials,
+        SessionFileStore::new(store.state_dir()),
+        0,
+    )
+    .await
+    .expect("prepare original Bot");
+    prepared.models = Arc::clone(&shared_router);
+    let prepared = Arc::new(prepared);
     let gateway = Arc::new(Mutex::new(gateway));
     let (swarm, _deliveries) = SwarmStore::new(Arc::clone(&checkpoints), Arc::clone(&bots));
     let swarm: Arc<dyn BotsBackend> = Arc::new(swarm);
@@ -521,7 +533,6 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
             Arc::clone(&gateway),
             &original,
             &store,
-            Arc::clone(&credentials),
             Arc::clone(&checkpoints),
             ScratchpadStore::new(Arc::clone(&checkpoints)),
             SessionFileStore::new(store.state_dir()),
@@ -531,10 +542,32 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
             Some("chat".into()),
             "test",
             true,
-            Some(Arc::clone(&reusable_router)),
+            Arc::clone(&prepared),
         )
         .await
         .expect("assemble default recipe");
+        let sibling = assemble(
+            Arc::clone(&gateway),
+            &original,
+            &store,
+            Arc::clone(&checkpoints),
+            ScratchpadStore::new(Arc::clone(&checkpoints)),
+            SessionFileStore::new(store.state_dir()),
+            Arc::new(tokio::sync::Mutex::new(())),
+            Arc::new(crate::computer_runtime::desktop::DesktopControl::default()),
+            Arc::clone(&swarm),
+            Some("sibling".into()),
+            "test",
+            true,
+            Arc::clone(&prepared),
+        )
+        .await
+        .expect("assemble another chat from the same prepared Bot");
+        assert!(Arc::ptr_eq(&built.model_router, &sibling.model_router));
+        assert!(!Arc::ptr_eq(&built.sandbox, &sibling.sandbox));
+        let (sender, mut events) = sibling.agent.into_parts();
+        drop(sender);
+        while events.recv().await.is_some() {}
         built
             .agent
             .sender()
@@ -560,7 +593,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
         while events.recv().await.is_some() {}
         tools
     };
-    let mut composition = original.agent.config.clone();
+    let mut composition = original_bot.config.config.clone();
     composition.middleware.set_enabled("scratchpad", false);
     composition.middleware.set_setting(
         "bots",
@@ -581,18 +614,30 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
     let updated = ChatSpec::for_bot(&workspace, &updated_bot, store.state_dir(), None)
         .expect("updated chat spec");
     assert!(routine_creation_enabled(
-        updated
-            .agent
+        updated_bot
+            .config
             .config
             .middleware
             .setting("bots", "routine_creation")
     ));
 
+    let gateway_config = gateway.lock().expect("gateway config").clone();
+    let mut prepared = prepare_bot(
+        &gateway_config,
+        updated_bot,
+        &store,
+        &credentials,
+        SessionFileStore::new(store.state_dir()),
+        0,
+    )
+    .await
+    .expect("prepare updated Bot");
+    prepared.models = Arc::clone(&shared_router);
+    let prepared = Arc::new(prepared);
     let mut built = assemble(
         Arc::clone(&gateway),
         &updated,
         &store,
-        credentials,
         Arc::clone(&checkpoints),
         ScratchpadStore::new(Arc::clone(&checkpoints)),
         SessionFileStore::new(store.state_dir()),
@@ -602,7 +647,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
         Some("chat".into()),
         "test",
         true,
-        Some(Arc::clone(&reusable_router)),
+        Arc::clone(&prepared),
     )
     .await
     .expect("assemble chat");
@@ -615,7 +660,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
             .expect("read skill"),
         "---\nname: fixture\ndescription: Fixture skill.\n---\n"
     );
-    assert!(Arc::ptr_eq(&reusable_router, &built.model_router));
+    assert!(Arc::ptr_eq(&prepared.models, &built.model_router));
     built
         .agent
         .sender()
@@ -655,7 +700,11 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
             .lock()
             .expect("captured instructions")
             .as_deref()
-            .is_some_and(|prompt| prompt.contains("Source: `AGENTS.md`\n\nassembly instructions"))
+            .is_some_and(|prompt| {
+                prompt.contains("Source: `AGENTS.md`\n\nassembly instructions")
+                    && prompt.contains("updated instructions")
+                    && prompt.contains("Own updated fixture work.")
+            })
     );
     let scratchpad = built
         .agent
@@ -682,8 +731,13 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
         checkpoint.metadata["capability.test"],
         serde_json::json!({"identity": "preserved"})
     );
-    assert_eq!(saved.agent.revision, 2);
-    assert_eq!(saved.agent.config.system_prompt, "updated instructions");
+    assert_eq!(saved, original);
+    let saved_bot = bots.bot(&saved.bot_id).expect("authoritative Bot");
+    assert_eq!(saved_bot.config.revision, 2);
+    assert_eq!(
+        saved_bot.config.config.system_prompt,
+        "updated instructions"
+    );
 }
 
 #[test]

@@ -461,53 +461,39 @@ impl GatewayHost {
         crate::computer_runtime::prepare(store.state_dir(), &config.middleware)
             .await
             .map_err(invalid_config)?;
-        let _mutation = self.begin_exclusive_mutation().await?;
-        let mut state = self.state.lock().await;
+        let _mutation = self.begin_mutation().await?;
+        let state = self.state.lock().await;
         validate_bot_config(&state, &config)?;
         let previous = state.bots.bot(id).map_err(invalid_bot)?;
-        if previous.config.revision != expected_revision {
-            return Err(Rejection {
-                code: "revision_conflict",
-                message: format!(
-                    "Bot configuration revision is now {}",
-                    previous.config.revision
-                ),
-                fatal: false,
-            });
-        }
-        let residents = bot_update_residents(&mut state, id).await?;
-        if residents.iter().any(|(_, status)| !status.idle) {
-            return Err(Rejection {
-                code: "agent_busy",
-                message: "finish or interrupt active Bot turns before updating its profile".into(),
-                fatal: false,
-            });
-        }
-        let residents = residents
-            .into_iter()
-            .map(|(host, _)| host)
-            .collect::<Vec<_>>();
-        let bot =
-            match state
-                .bots
-                .update_bot(id, expected_revision, name, description, tint, config)
-            {
-                Ok(bot) => bot,
-                Err(error) => return Err(invalid_bot(error)),
-            };
-        for (index, host) in residents.iter().enumerate() {
-            if let Err(rejection) = host.reload_bot(bot.clone()).await {
-                let rejection =
-                    rollback_bot_update(&mut state, &residents, index, &previous, &bot, rejection)
-                        .await;
-                let bots = state.bots.bots();
-                drop(state);
-                if let Ok(bots) = bots {
-                    self.broadcast_bots(&bots);
-                }
-                return Err(rejection);
-            }
-        }
+        let mut candidate = previous.clone();
+        candidate.description = description.into();
+        candidate.config.config = config.clone();
+        let gateway = state
+            .config
+            .lock()
+            .map_err(|_| internal("gateway configuration lock is poisoned"))?
+            .clone();
+        let mut prepared = crate::assembly::prepare_bot(
+            &gateway,
+            candidate,
+            &state.store,
+            &state.credentials,
+            state.session_files.clone(),
+            state.provider_epoch.load(Ordering::Acquire),
+        )
+        .await
+        .map_err(invalid_config)?;
+        let bot = state
+            .bots
+            .update_bot(id, expected_revision, name, description, tint, config)
+            .map_err(invalid_bot)?;
+        prepared.bot = bot.clone();
+        state
+            .bots
+            .prepared
+            .lock()
+            .await
+            .insert(id.into(), Arc::new(prepared));
         let bots = state.bots.bots().map_err(internal)?;
         let swarms = if bot.handle != previous.handle {
             Some(state.swarm.records().await.map_err(internal)?)
@@ -1123,96 +1109,6 @@ impl GatewayHost {
                 attentions: attentions.to_vec(),
             }));
     }
-}
-
-async fn rollback_bot_update(
-    state: &mut GatewayState,
-    residents: &[HostHandle],
-    configured_count: usize,
-    previous: &crate::wire::BotRecord,
-    attempted: &crate::wire::BotRecord,
-    cause: Rejection,
-) -> Rejection {
-    let mut failures = Vec::new();
-    if let Err(error) = state.bots.restore_bot(previous.clone()) {
-        failures.push(format!("restoring the Bot profile failed: {error}"));
-    }
-    let authoritative = match state.bots.bot(&previous.id) {
-        Ok(bot) => Some(bot),
-        Err(error) => {
-            failures.push(format!(
-                "reading the authoritative Bot profile failed: {error}"
-            ));
-            None
-        }
-    };
-    for (index, host) in residents.iter().enumerate() {
-        let proven = authoritative.as_ref().is_some_and(|authoritative| {
-            (index < configured_count && authoritative == attempted)
-                || (index > configured_count && authoritative == previous)
-        });
-        if proven {
-            continue;
-        }
-        let restored = match &authoritative {
-            Some(authoritative) => host.reload_bot(authoritative.clone()).await.is_ok(),
-            None => false,
-        };
-        if restored {
-            continue;
-        }
-        failures.push(format!(
-            "session {} could not be reconciled to the authoritative Bot profile",
-            host.session_id()
-        ));
-        if !host.stop_if_idle().await {
-            failures.push(format!(
-                "session {} could not be stopped after rollback",
-                host.session_id()
-            ));
-        }
-        state.sessions.remove(host.session_id());
-    }
-    if failures.is_empty() {
-        cause
-    } else {
-        internal(format!(
-            "{}; Bot rollback was incomplete: {}",
-            cause.message,
-            failures.join("; ")
-        ))
-    }
-}
-
-async fn bot_update_residents(
-    state: &mut GatewayState,
-    bot_id: &str,
-) -> std::result::Result<Vec<(HostHandle, ProviderCutoverStatus)>, Rejection> {
-    let sessions = state
-        .sessions
-        .iter()
-        .filter(|(_, host)| host.bot_id() == bot_id)
-        .map(|(id, host)| (id.clone(), host.clone()))
-        .collect::<Vec<_>>();
-    let mut sessions = sessions;
-    sessions.sort_by(|left, right| left.0.cmp(&right.0));
-    let mut residents = Vec::new();
-    let mut stopped = Vec::new();
-    for (id, host) in sessions {
-        if !host.is_alive() {
-            stopped.push(id);
-            continue;
-        }
-        match host.provider_cutover_status().await {
-            Ok(status) => residents.push((host, status)),
-            Err(rejection) if rejection.code == "gateway_stopped" => stopped.push(id),
-            Err(rejection) => return Err(rejection),
-        }
-    }
-    for id in stopped {
-        state.sessions.remove(&id);
-    }
-    Ok(residents)
 }
 
 async fn notify_swarm_delivery_after_mutation(

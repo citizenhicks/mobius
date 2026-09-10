@@ -447,16 +447,16 @@ final class AppModel {
     var isSwitchingGitBranch: Bool { gitBranchRequestID != nil }
 
     var attachmentsEnabled: Bool {
-        if chat.selectedSessionID == nil {
-            return selectedBot?.config.config.middleware.enabled.contains("attachments") == true
+        if chat.activeTurnID == nil, let bot = selectedBot {
+            return bot.config.config.middleware.enabled.contains("attachments")
         }
         return chat.contributions.contains { $0.acceptsFileAttachments }
     }
 
     var selectedRouteSupportsImageInput: Bool {
         let route =
-            chat.selectedSessionID == nil
-            ? modelRoute(for: selectedBot?.config.config)
+            chat.activeTurnID == nil
+            ? modelRoute(for: selectedBot?.config.config) ?? chat.selectedModelRoute
             : chat.selectedModelRoute
         return modelChoices.first(where: { $0.route == route })?
             .supportsImageInput == true

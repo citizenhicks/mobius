@@ -31,8 +31,11 @@ cp "$project_dir/Resources/Info.plist" "$app/Contents/Info.plist"
 cp "$bin_dir/MobiusGatewayMenuBar" "$gateway" "$app/Contents/MacOS/"
 cp "$project_dir/Resources/MobiusLogo.svg" "$app/Contents/Resources/"
 xcrun actool "$repo_dir/mobius-app/apple/Sources/MobiusApp/Assets.xcassets" \
+    "$repo_dir/mobius-app/apple/Sources/MobiusApp/AppIcon.icon" \
     --compile "$app/Contents/Resources" --platform macosx \
-    --minimum-deployment-target 26.0 --target-device mac
+    --minimum-deployment-target 26.0 --target-device mac --app-icon AppIcon \
+    --output-partial-info-plist "$output_dir/icon-info.plist"
+/usr/libexec/PlistBuddy -c "Merge '$output_dir/icon-info.plist'" "$app/Contents/Info.plist"
 ditto "$bin_dir/WebRTC.framework" "$app/Contents/Frameworks/WebRTC.framework"
 cp "$repo_dir/LICENSE" "$repo_dir/NOTICE" "$app/Contents/Resources/"
 cp "$project_dir/Resources/WebRTC-LICENSE.txt" "$app/Contents/Resources/"

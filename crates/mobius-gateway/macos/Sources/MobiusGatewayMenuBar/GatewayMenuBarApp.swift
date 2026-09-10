@@ -9,9 +9,6 @@ struct GatewayMenuBarApp: App {
     var body: some Scene {
         MenuBarExtra {
             VStack(spacing: 0) {
-                DesktopControlView(
-                    runtime: delegate.model.desktop, isConnected: delegate.model.isReady)
-                Divider()
                 if delegate.voicePanel.corner == nil {
                     VoiceMenuView(model: delegate.model, presentation: delegate.voicePanel)
                 } else {

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct DesktopControlView: View {
@@ -5,29 +6,36 @@ struct DesktopControlView: View {
     let isConnected: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        Menu("Mac control") {
             Toggle("Allow Mac control", isOn: $runtime.enabled)
                 .disabled(!isConnected || !runtime.hasPermissions)
-            if !runtime.hasPermissions {
-                Button("Grant Accessibility and Screen Recording access…") {
-                    runtime.requestPermissions()
-                }
+            Divider()
+            Button(action: runtime.requestAccessibility) {
+                Label(
+                    "Accessibility",
+                    systemImage: runtime.hasAccessibility ? "checkmark.circle" : "circle")
             }
+            .disabled(runtime.hasAccessibility)
+            Button(action: runtime.requestScreenRecording) {
+                Label(
+                    "Screen Recording",
+                    systemImage: runtime.hasScreenRecording ? "checkmark.circle" : "circle")
+            }
+            .disabled(runtime.hasScreenRecording)
             if runtime.enabled {
-                HStack {
-                    Text(runtime.isActive ? "Bot is controlling this Mac" : "Ready for Mac control")
-                        .font(.caption)
-                    Spacer()
-                    Button("Stop", role: .destructive) { runtime.stop() }
-                }
+                Divider()
+                Text(runtime.isActive ? "Bot is controlling this Mac" : "Ready for Mac control")
+                Button("Stop Mac control", role: .destructive, action: runtime.stop)
             }
             if let message = runtime.message {
-                Text(message).font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                Text(message)
             }
         }
-        .padding()
-        .frame(width: 360)
         .onAppear { runtime.refreshPermissions() }
+        .onReceive(
+            NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
+        ) { _ in
+            runtime.refreshPermissions()
+        }
     }
 }

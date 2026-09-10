@@ -4,7 +4,7 @@ use tokio::sync::{broadcast, mpsc};
 
 use crate::host::deletion::prepare_bot_session_tree_deletion;
 
-use super::super::session::{HostCommand, HostInner, ProviderCutoverStatus};
+use super::super::session::{HostCommand, HostInner};
 use super::*;
 
 async fn gateway_with_bot() -> (tempfile::TempDir, GatewayHost, crate::wire::BotRecord) {
@@ -48,496 +48,99 @@ async fn gateway_with_bot() -> (tempfile::TempDir, GatewayHost, crate::wire::Bot
     (root, gateway, bot)
 }
 
-fn fake_bot_host(
-    bot_id: &str,
-    reject_reload: bool,
-) -> (HostHandle, mpsc::UnboundedReceiver<crate::wire::BotRecord>) {
-    let (commands, mut receiver) = mpsc::channel(8);
-    let (events, _) = broadcast::channel(8);
-    let (updated, updated_receiver) = mpsc::unbounded_channel();
-    let mut reload_rejected = false;
-    tokio::spawn(async move {
-        while let Some(command) = receiver.recv().await {
-            match command {
-                HostCommand::ProviderCutoverStatus { reply } => {
-                    let _ = reply.send(ProviderCutoverStatus { idle: true });
-                }
-                HostCommand::ReloadBot { bot, reply } => {
-                    let _ = updated.send(bot);
-                    let result = if reject_reload && !reload_rejected {
-                        reload_rejected = true;
-                        Err(Rejection {
-                            code: "reload_failed",
-                            message: "fixture reload failure".into(),
-                            fatal: false,
-                        })
-                    } else {
-                        Ok(())
-                    };
-                    let _ = reply.send(result);
-                }
-                HostCommand::CapacityChanged => {}
-                command => panic!("unexpected host command: {}", command_name(&command)),
-            }
-        }
-    });
-    (
-        HostHandle {
-            inner: Arc::new(HostInner {
-                session_id: Arc::from("resident-session"),
-                bot_id: Arc::from(bot_id),
-                commands,
-                events,
-                accepts_file_attachments: Arc::new(AtomicBool::new(false)),
-                alive: Arc::new(AtomicBool::new(true)),
-                terminated: Arc::new(AtomicBool::new(true)),
-                termination: Arc::new(tokio::sync::Notify::new()),
-                session_mutations: Arc::new(tokio::sync::RwLock::new(())),
-                realtime_voice: Arc::new(tokio::sync::Mutex::new(())),
-            }),
-        },
-        updated_receiver,
-    )
-}
-
-fn command_name(command: &HostCommand) -> &'static str {
-    match command {
-        HostCommand::ProviderCutoverStatus { .. } => "provider_cutover_status",
-        HostCommand::ReloadBot { .. } => "reload_bot",
-        HostCommand::CapacityChanged => "capacity_changed",
-        _ => "other",
-    }
-}
-
-fn fake_racing_bot_host(
-    bot_id: &str,
-    mutation_gate: Arc<RwLock<()>>,
-) -> (
-    HostHandle,
-    mpsc::UnboundedReceiver<()>,
-    Arc<tokio::sync::Notify>,
-) {
-    let (commands, mut receiver) = mpsc::channel(8);
-    let (events, _) = broadcast::channel(8);
-    let (reload_started, reload_started_receiver) = mpsc::unbounded_channel();
-    let release_reload = Arc::new(tokio::sync::Notify::new());
-    let actor_release = Arc::clone(&release_reload);
-    tokio::spawn(async move {
-        let mut first_reload = true;
-        while let Some(command) = receiver.recv().await {
-            match command {
-                HostCommand::ProviderCutoverStatus { reply } => {
-                    let _ = reply.send(ProviderCutoverStatus { idle: true });
-                }
-                HostCommand::ReloadBot { reply, .. } if first_reload => {
-                    first_reload = false;
-                    let _ = reload_started.send(());
-                    let release = Arc::clone(&actor_release);
-                    tokio::spawn(async move {
-                        release.notified().await;
-                        let _ = reply.send(Err(Rejection {
-                            code: "reload_failed",
-                            message: "fixture reload failure".into(),
-                            fatal: false,
-                        }));
-                    });
-                }
-                HostCommand::ReloadBot { reply, .. } => {
-                    let _ = reply.send(Ok(()));
-                }
-                HostCommand::Submit { reply, .. } => {
-                    let result = Arc::clone(&mutation_gate)
-                        .try_read_owned()
-                        .map(|_guard| ())
-                        .map_err(|_| Rejection {
-                            code: "gateway_busy",
-                            message: "retry after the gateway update finishes".into(),
-                            fatal: false,
-                        });
-                    let _ = reply.send(result);
-                }
-                HostCommand::CapacityChanged => {}
-                command => panic!("unexpected host command: {}", command_name(&command)),
-            }
-        }
-    });
-    (
-        HostHandle {
-            inner: Arc::new(HostInner {
-                session_id: Arc::from("racing-session"),
-                bot_id: Arc::from(bot_id),
-                commands,
-                events,
-                accepts_file_attachments: Arc::new(AtomicBool::new(false)),
-                alive: Arc::new(AtomicBool::new(true)),
-                terminated: Arc::new(AtomicBool::new(true)),
-                termination: Arc::new(tokio::sync::Notify::new()),
-                session_mutations: Arc::new(tokio::sync::RwLock::new(())),
-                realtime_voice: Arc::new(tokio::sync::Mutex::new(())),
-            }),
-        },
-        reload_started_receiver,
-        release_reload,
-    )
-}
-
-fn fake_rollback_host(
-    session_id: &str,
-    bot_id: &str,
-    reject_reload: bool,
-) -> (HostHandle, mpsc::UnboundedReceiver<crate::wire::BotRecord>) {
-    let (commands, mut receiver) = mpsc::channel(8);
-    let (events, _) = broadcast::channel(8);
-    let (updated, updated_receiver) = mpsc::unbounded_channel();
-    let alive = Arc::new(AtomicBool::new(true));
-    let actor_alive = Arc::clone(&alive);
-    tokio::spawn(async move {
-        while let Some(command) = receiver.recv().await {
-            match command {
-                HostCommand::ProviderCutoverStatus { reply } => {
-                    let _ = reply.send(ProviderCutoverStatus { idle: true });
-                }
-                HostCommand::ReloadBot { bot, reply } => {
-                    let _ = updated.send(bot);
-                    let result = reject_reload.then_some(()).map_or(Ok(()), |_| {
-                        Err(Rejection {
-                            code: "reload_failed",
-                            message: "fixture reload failure".into(),
-                            fatal: false,
-                        })
-                    });
-                    let _ = reply.send(result);
-                }
-                HostCommand::StopIfIdle { reply } => {
-                    actor_alive.store(false, Ordering::Release);
-                    let _ = reply.send(true);
-                }
-                HostCommand::CapacityChanged => {}
-                command => panic!("unexpected host command: {}", command_name(&command)),
-            }
-        }
-    });
-    (
-        HostHandle {
-            inner: Arc::new(HostInner {
-                session_id: Arc::from(session_id),
-                bot_id: Arc::from(bot_id),
-                commands,
-                events,
-                accepts_file_attachments: Arc::new(AtomicBool::new(false)),
-                alive,
-                terminated: Arc::new(AtomicBool::new(true)),
-                termination: Arc::new(tokio::sync::Notify::new()),
-                session_mutations: Arc::new(tokio::sync::RwLock::new(())),
-                realtime_voice: Arc::new(tokio::sync::Mutex::new(())),
-            }),
-        },
-        updated_receiver,
-    )
-}
-
 #[tokio::test]
-async fn updating_bot_reloads_residents_and_broadcasts_current_handles() {
-    let (_root, gateway, bot) = gateway_with_bot().await;
-    let leader = gateway.state.lock().await.bots.mobius().expect("Mobius");
-    gateway
-        .create_swarm("Review team".into(), leader.id, vec![bot.id.clone()])
-        .await
-        .expect("Swarm");
-    let mut events = gateway.subscribe();
-    let (resident, mut updated) = fake_bot_host(&bot.id, false);
-    gateway
-        .state
-        .lock()
-        .await
-        .sessions
-        .insert(resident.session_id().into(), resident);
-    let mut config = bot.config.config.clone();
-    config.system_prompt = "New instructions".into();
-
-    let saved = gateway
-        .update_bot(
-            &bot.id,
-            bot.config.revision,
-            "Code Reviewer",
-            &bot.description,
-            bot.tint,
-            config,
-        )
-        .await
-        .expect("update Bot");
-    let reloaded = updated.recv().await.expect("resident reload");
-
-    assert_eq!(reloaded, saved);
-    assert_eq!(saved.id, bot.id);
-    assert_eq!(saved.handle, "code-reviewer");
-    assert_eq!(saved.config.revision, 2);
-    assert_eq!(
-        gateway
-            .state
-            .lock()
-            .await
-            .bots
-            .bot(&bot.id)
-            .expect("stored Bot"),
-        saved
-    );
-    assert!(matches!(
-        events.try_recv().expect("Bot catalog broadcast").message,
-        ServerMessage::Bots {
-            request_id: None,
-            ..
-        }
+async fn saving_bot_prepares_once_and_chats_bind_it_when_next_used() {
+    let (root, gateway, bot) = gateway_with_bot().await;
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).expect("workspace");
+    let host = gateway.create_session(&workspace, &bot.id).await.unwrap();
+    let bots = Arc::clone(&gateway.state.lock().await.bots);
+    let prepared = Arc::clone(bots.prepared.lock().await.get(&bot.id).unwrap());
+    let sibling = gateway.create_session(&workspace, &bot.id).await.unwrap();
+    assert!(Arc::ptr_eq(
+        &prepared,
+        bots.prepared.lock().await.get(&bot.id).unwrap()
     ));
-    let ServerMessage::Swarms { swarms, .. } =
-        events.try_recv().expect("Swarm catalog broadcast").message
-    else {
-        panic!("expected refreshed Swarms");
+    let mut config = bot.config.config.clone();
+    let attachments = !host.accepts_file_attachments().await.unwrap();
+    config.middleware.set_enabled("attachments", attachments);
+    config.system_prompt = "Updated Bot instructions".into();
+    let before = host.snapshot(None).await.unwrap();
+    let mut events = host.subscribe();
+    let tint = crate::wire::ProviderTint::Purple;
+    assert_ne!(bot.tint, tint);
+    let (commands, mut blocked_commands) = mpsc::channel(1);
+    let (blocked_events, _) = broadcast::channel(1);
+    let blocked = HostHandle {
+        inner: Arc::new(HostInner {
+            session_id: Arc::from("unresponsive-chat"),
+            bot_id: Arc::from(bot.id.as_str()),
+            commands,
+            events: blocked_events,
+            alive: Arc::new(AtomicBool::new(true)),
+            terminated: Arc::new(AtomicBool::new(true)),
+            termination: Arc::new(tokio::sync::Notify::new()),
+            session_mutations: Arc::new(tokio::sync::RwLock::new(())),
+            realtime_voice: Arc::new(tokio::sync::Mutex::new(())),
+        }),
     };
-    let member = swarms[0]
-        .members
-        .iter()
-        .find(|member| member.bot_id == bot.id)
-        .expect("renamed member");
-    assert_eq!(member.handle, saved.handle);
-}
-
-#[tokio::test]
-async fn failed_bot_reload_restores_the_exact_record_including_handle() {
-    let (_root, gateway, bot) = gateway_with_bot().await;
-    let (resident, mut updated) = fake_bot_host(&bot.id, true);
     gateway
         .state
         .lock()
         .await
         .sessions
-        .insert(resident.session_id().into(), resident);
-    let mut config = bot.config.config.clone();
-    config.system_prompt = "Will roll back".into();
-
-    let error = gateway
-        .update_bot(
-            &bot.id,
-            1,
-            "Code Reviewer",
-            &bot.description,
-            bot.tint,
-            config.clone(),
-        )
-        .await
-        .expect_err("reload failure");
-    assert_eq!(error.code, "reload_failed");
-    let attempted = updated
-        .recv()
-        .await
-        .expect("failed replacement reached resident");
-    assert_eq!(attempted.handle, "code-reviewer");
-    assert_eq!(attempted.config.revision, 2);
-    assert_eq!(
-        updated.recv().await.expect("failing resident was restored"),
-        bot
-    );
-    assert_eq!(
-        gateway
-            .state
-            .lock()
-            .await
-            .bots
-            .bot(&bot.id)
-            .expect("restored Bot"),
-        bot
-    );
-
-    gateway.state.lock().await.sessions.clear();
-    assert_eq!(
-        gateway
-            .update_bot(&bot.id, 1, "Reviewer", &bot.description, bot.tint, config,)
-            .await
-            .expect("next update")
-            .config
-            .revision,
-        2
-    );
-}
-
-#[tokio::test]
-async fn bot_rollback_restores_every_recoverable_resident_and_evicts_the_failure() {
-    let (_root, gateway, bot) = gateway_with_bot().await;
-    let (first, mut first_updates) = fake_rollback_host("a-resident", &bot.id, false);
-    let (second, mut second_updates) = fake_rollback_host("z-resident", &bot.id, true);
-    {
-        let mut state = gateway.state.lock().await;
-        state.sessions.insert(first.session_id().into(), first);
-        state.sessions.insert(second.session_id().into(), second);
-    }
-    let mut config = bot.config.config.clone();
-    config.system_prompt = "Rollback across every resident".into();
-
-    let rejection = gateway
-        .update_bot(
+        .insert("unresponsive-chat".into(), blocked);
+    let updated = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        gateway.update_bot(
             &bot.id,
             bot.config.revision,
-            "Reviewer",
+            "Renamed",
             &bot.description,
-            bot.tint,
+            tint,
             config,
-        )
-        .await
-        .expect_err("second resident rejects replacement and rollback");
-
-    assert_eq!(rejection.code, "gateway_error");
-    assert_eq!(
-        [
-            first_updates
-                .recv()
-                .await
-                .expect("first replacement")
-                .config
-                .revision,
-            first_updates
-                .recv()
-                .await
-                .expect("first rollback")
-                .config
-                .revision,
-        ],
-        [2, 1]
-    );
-    assert_eq!(
-        [
-            second_updates
-                .recv()
-                .await
-                .expect("second replacement")
-                .config
-                .revision,
-            second_updates
-                .recv()
-                .await
-                .expect("second rollback")
-                .config
-                .revision,
-        ],
-        [2, 1]
-    );
-    let state = gateway.state.lock().await;
-    assert!(state.sessions.contains_key("a-resident"));
-    assert!(!state.sessions.contains_key("z-resident"));
-    assert_eq!(
-        state
-            .bots
-            .bot(&bot.id)
-            .expect("authoritative Bot")
-            .config
-            .revision,
-        bot.config.revision
-    );
-}
-
-#[tokio::test]
-async fn updating_bot_prunes_a_dead_resident_before_validation() {
-    let (_root, gateway, bot) = gateway_with_bot().await;
-    let (resident, _updated) = fake_bot_host(&bot.id, false);
-    resident.inner.alive.store(false, Ordering::Release);
+        ),
+    )
+    .await
+    .expect("Bot save must never wait for a chat actor")
+    .unwrap();
+    assert!(matches!(
+        blocked_commands.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
     gateway
         .state
         .lock()
         .await
         .sessions
-        .insert(resident.session_id().into(), resident);
-    let mut config = bot.config.config.clone();
-    config.system_prompt = "Updated after pruning".into();
-
-    let updated = gateway
-        .update_bot(
-            &bot.id,
-            bot.config.revision,
-            "Reviewer",
-            &bot.description,
-            bot.tint,
-            config,
-        )
+        .remove("unresponsive-chat");
+    assert_eq!(updated.name, "Renamed");
+    assert_eq!(updated.tint, tint);
+    let after = host
+        .snapshot(Some(before.ready.latest_sequence))
         .await
-        .expect("dead resident must not block Bot update");
-
-    assert_eq!(updated.config.revision, 2);
-    assert!(gateway.state.lock().await.sessions.is_empty());
-}
-
-#[tokio::test]
-async fn bot_update_blocks_submission_from_idle_probe_through_rollback() {
-    let (_root, gateway, bot) = gateway_with_bot().await;
-    let mutation_gate = Arc::clone(&gateway.state.lock().await.session_mutations);
-    let (resident, mut reload_started, release_reload) =
-        fake_racing_bot_host(&bot.id, mutation_gate);
-    gateway
-        .state
-        .lock()
-        .await
-        .sessions
-        .insert(resident.session_id().into(), resident.clone());
-    let mut config = bot.config.config.clone();
-    config.system_prompt = "Will roll back after the race".into();
-    let updating = tokio::spawn({
-        let gateway = gateway.clone();
-        let bot = bot.clone();
-        async move {
-            gateway
-                .update_bot(
-                    &bot.id,
-                    bot.config.revision,
-                    "Reviewer",
-                    &bot.description,
-                    bot.tint,
-                    config,
-                )
-                .await
-        }
-    });
-    reload_started
-        .recv()
-        .await
-        .expect("reload begins after the idle probe");
-
-    let rejection = resident
-        .submit(Submission {
-            id: "racing-submission".into(),
-            op: Op::Message {
-                message: MessageSubmission {
-                    author: MessageAuthor::User,
-                    text: "must not enter the old runtime".into(),
-                    attachments: Vec::new(),
-                    reply: None,
-                    requested_delivery: None,
-                    target_turn_id: None,
-                },
-            },
-        })
-        .await
-        .expect_err("the profile mutation gate must reject a racing submission");
-    assert_eq!(rejection.code, "gateway_busy");
-
-    release_reload.notify_one();
-    assert_eq!(
-        updating
-            .await
-            .expect("update task")
-            .expect_err("fixture reload fails")
-            .code,
-        "reload_failed"
+        .unwrap();
+    assert_eq!(after.ready.latest_sequence, before.ready.latest_sequence);
+    assert!(after.replay.is_empty());
+    assert!(
+        matches!(
+            events.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ),
+        "metadata must not restart/replay the chat"
     );
+    let updated_prepared = Arc::clone(bots.prepared.lock().await.get(&bot.id).unwrap());
+    assert!(!Arc::ptr_eq(&prepared, &updated_prepared));
+    assert_eq!(host.accepts_file_attachments().await.unwrap(), attachments);
     assert_eq!(
-        gateway
-            .state
-            .lock()
-            .await
-            .bots
-            .bot(&bot.id)
-            .expect("rolled-back Bot")
-            .config
-            .revision,
-        bot.config.revision
+        sibling.accepts_file_attachments().await.unwrap(),
+        attachments
     );
+    assert!(Arc::ptr_eq(
+        &updated_prepared,
+        bots.prepared.lock().await.get(&bot.id).unwrap()
+    ));
+    gateway.shutdown().await;
 }
 
 #[tokio::test]
@@ -1557,7 +1160,6 @@ async fn routine_acceptance_keeps_the_gateway_registry_locked() {
             bot_id: Arc::from(bot.id.as_str()),
             commands,
             events,
-            accepts_file_attachments: Arc::new(AtomicBool::new(false)),
             alive: Arc::new(AtomicBool::new(true)),
             terminated: Arc::new(AtomicBool::new(true)),
             termination: Arc::new(tokio::sync::Notify::new()),

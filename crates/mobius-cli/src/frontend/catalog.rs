@@ -19,7 +19,6 @@ pub(crate) struct UiCatalog {
     references: Vec<UiReference>,
     reference_triggers: Vec<char>,
     widgets: Vec<(String, FrontendWidget)>,
-    accepts_file_attachments: bool,
     workspace: PathBuf,
     workspace_references: Vec<UiReference>,
 }
@@ -140,9 +139,6 @@ impl UiCatalog {
             references,
             reference_triggers,
             widgets,
-            accepts_file_attachments: contributions
-                .iter()
-                .any(|contribution| contribution.accepts_file_attachments),
             workspace: workspace.to_path_buf(),
             workspace_references: Vec::new(),
         })
@@ -168,10 +164,6 @@ impl UiCatalog {
 
     pub(crate) fn workspace(&self) -> &Path {
         &self.workspace
-    }
-
-    pub(crate) const fn accepts_file_attachments(&self) -> bool {
-        self.accepts_file_attachments
     }
 
     pub(crate) fn command_suggestions(&self, input: &str, cursor: usize) -> Option<Vec<MenuItem>> {
@@ -579,17 +571,6 @@ mod tests {
             catalog.dispatch("/bot {}", context),
             Some(CommandAction::Print("usage: /bot".into()))
         );
-    }
-
-    #[test]
-    fn retains_file_attachment_capability() {
-        let workspace = tempfile::tempdir().expect("workspace");
-        let mut attachments = contribution("attach");
-        attachments.accepts_file_attachments = true;
-
-        let catalog = UiCatalog::build(&[attachments], workspace.path()).expect("catalog");
-
-        assert!(catalog.accepts_file_attachments());
     }
 
     #[test]

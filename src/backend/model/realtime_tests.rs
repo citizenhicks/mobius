@@ -249,6 +249,16 @@ fn self_contained_handoffs_and_actual_asr_are_independent_and_deduplicated() {
 async fn public_and_codex_calls_use_authenticated_sideband_and_hang_up_on_drop() {
     for api in [VoiceApi::OpenAi, VoiceApi::Codex] {
         let (transport, listener) = transport(api).await;
+        let session = transport.session(&request());
+        if api == VoiceApi::OpenAi {
+            assert_eq!(session["reasoning"]["effort"], "minimal");
+            assert_eq!(
+                session["audio"]["input"]["noise_reduction"]["type"],
+                "near_field"
+            );
+        } else {
+            assert!(session.get("reasoning").is_none());
+        }
         let handoff_count = if api == VoiceApi::OpenAi { 9 } else { 1 };
         let reply_text = if api == VoiceApi::Codex {
             format!("x{}", "🗣".repeat(300))
@@ -816,6 +826,30 @@ fn background_noise_with_empty_transcription_does_not_end_the_call() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[test]
+fn discarded_transcription_clears_draft_words_for_both_voice_apis() {
+    for api in [VoiceApi::OpenAi, VoiceApi::Codex] {
+        let mut turns = VoiceTurns::default();
+        let (draft, final_event) = if api == VoiceApi::Codex {
+            (
+                json!({"type":"input_transcript.added","item":{"id":"noise","text":"safari's"}}),
+                json!({"type":"turn.done","turn":{"id":"noise","role":"user","transcript":""}}),
+            )
+        } else {
+            (
+                json!({"type":"conversation.item.input_audio_transcription.delta","item_id":"noise","delta":"safari's"}),
+                json!({"type":"conversation.item.input_audio_transcription.completed","item_id":"noise","transcript":""}),
+            )
+        };
+        let draft = turns.observe(api, "ask_agent", &draft).unwrap();
+        let final_events = turns.observe(api, "ask_agent", &final_event).unwrap();
+        assert!(matches!((&draft[..], &final_events[..]),
+            ([RealtimeVoiceEvent::Transcript { id, complete: false, .. }],
+             [RealtimeVoiceEvent::Transcript { id: final_id, text, complete: true, .. }])
+            if id == final_id && text.is_empty()));
+    }
 }
 
 #[test]

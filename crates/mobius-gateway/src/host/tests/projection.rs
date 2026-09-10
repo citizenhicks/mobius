@@ -40,51 +40,6 @@ fn projected_preview_drops_the_raw_nested_event_duplicate() {
 }
 
 #[test]
-fn router_reuse_ignores_local_recipe_changes_but_not_provider_changes() {
-    let root = tempfile::tempdir().expect("root");
-    let workspace = root.path().join("workspace");
-    let state_dir = root.path().join("state");
-    std::fs::create_dir(&workspace).expect("workspace");
-    std::fs::create_dir(&state_dir).expect("state directory");
-    let base = ChatSpec::for_bot(
-        &workspace,
-        &crate::wire::BotRecord {
-            id: Uuid::new_v4().to_string(),
-            handle: "fixture".into(),
-            name: "Fixture".into(),
-            description: "Own fixture work.".into(),
-            tint: crate::wire::ProviderTint::default(),
-            config: crate::wire::VersionedAgentConfig {
-                revision: 1,
-                config: AgentComposition::default(),
-            },
-        },
-        &state_dir,
-        None,
-    )
-    .expect("chat spec");
-
-    let changes: [fn(&mut AgentComposition); 2] = [
-        |config: &mut AgentComposition| config.system_prompt.push_str(" updated"),
-        |config: &mut AgentComposition| config.max_model_steps += 1,
-    ];
-    for change in changes {
-        let mut next = base.clone();
-        change(&mut next.agent.config);
-        assert!(provider_config_unchanged(&base, &next));
-    }
-
-    let mut provider_changed = base.clone();
-    provider_changed
-        .agent
-        .config
-        .provider
-        .model
-        .push_str("-changed");
-    assert!(!provider_config_unchanged(&base, &provider_changed));
-}
-
-#[test]
 fn journal_delivery_accepts_loaded_records_and_rejects_gaps() {
     assert_eq!(
         classify_journal_sequence(5, 3, JournalDelivery::LoadedStartup).expect("loaded record"),

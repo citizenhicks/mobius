@@ -612,6 +612,26 @@ fn due_routines_idle_while_bot_deletion_recovery_is_pending() {
 }
 
 #[test]
+#[cfg(unix)]
+fn routine_lock_releases_even_with_an_inherited_descriptor() {
+    let (_root, store, _workspace) = fixture();
+    let lock = store
+        .try_routine_lock("fixture")
+        .expect("lock")
+        .expect("available");
+    // A duplicate shares the open file description just as a fork does.
+    let inherited = lock.0.try_clone().expect("inherited descriptor");
+    drop(lock);
+    assert!(
+        store
+            .try_routine_lock("fixture")
+            .expect("released lock")
+            .is_some()
+    );
+    drop(inherited);
+}
+
+#[test]
 fn routine_start_reloads_an_update_that_wins_before_its_lock() {
     let (_root, store, workspace) = fixture();
     let original_bot = create_bot(&store, "original");

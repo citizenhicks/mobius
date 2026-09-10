@@ -100,7 +100,7 @@ impl VoiceTranscript {
         text: &str,
         complete: bool,
     ) -> Result<()> {
-        if text.is_empty() {
+        if text.is_empty() && (!complete || !self.recordings.contains_key(input_id)) {
             return Ok(());
         }
         if input_id.is_empty()

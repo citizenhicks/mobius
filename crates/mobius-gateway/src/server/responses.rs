@@ -109,12 +109,12 @@ pub(super) fn require_selected<'a>(
     Ok(host)
 }
 
-pub(super) fn require_uploads_enabled<'a>(
+pub(super) async fn require_uploads_enabled<'a>(
     selected: &'a Option<SelectedChat>,
     session_id: &str,
 ) -> std::result::Result<&'a HostHandle, Rejection> {
     let host = require_selected(selected, session_id)?;
-    if !host.accepts_file_attachments() {
+    if !host.accepts_file_attachments().await? {
         return Err(uploads_disabled_rejection());
     }
     Ok(host)

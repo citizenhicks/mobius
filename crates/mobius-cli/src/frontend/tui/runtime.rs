@@ -302,7 +302,7 @@ async fn handle_terminal_input(
         match action {
             UiAction::None => {}
             UiAction::PasteClipboard => {
-                paste_clipboard(catalog, gateway, state, uploads, clipboard_preparation);
+                paste_clipboard(gateway, state, uploads, clipboard_preparation);
             }
             UiAction::Exit => {
                 interrupt_active_turn(sender, session_id, state).await;
@@ -667,19 +667,11 @@ fn terminal_action(
 }
 
 fn paste_clipboard(
-    catalog: &UiCatalog,
     gateway: &ReadyPayload,
     state: &mut TuiState,
     uploads: &mut ClipboardUploads,
     clipboard_preparation: &mut Option<ClipboardPreparation>,
 ) {
-    if !catalog.accepts_file_attachments() {
-        state.push(
-            "file attachments are not enabled for this chat",
-            TranscriptTone::Warning,
-        );
-        return;
-    }
     if state.active_turn.is_some() {
         state.push(
             "files can be pasted when the agent is idle",

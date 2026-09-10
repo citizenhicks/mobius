@@ -72,49 +72,45 @@ impl HostState {
 
     pub(super) async fn run(mut self) {
         loop {
-            let next = tokio::select! {
-                command = self.commands.recv() => Next::Command(command),
-                event = self.running.events.recv() => Next::Event(event),
-            };
-            match next {
-                Next::Command(Some(command)) => {
-                    if !self.handle(command).await {
-                        break;
-                    }
+            tokio::select! {
+                command = self.commands.recv() => {
+                    let Some(command) = command else { break };
+                    if !self.handle(command).await { break; }
                 }
-                Next::Command(None) => break,
-                Next::Event(Some(event)) => {
-                    if let Err(error) = self.forward_event(event).await {
-                        let message = error.to_string();
+                event = self.running.events.recv() => match event {
+                    Some(event) => {
+                        if let Err(error) = self.forward_event(event).await {
+                            let message = error.to_string();
+                            self.broadcast(ServerMessage::Error {
+                                code: "host_error".into(),
+                                message: message.clone(),
+                                fatal: true,
+                            });
+                            if let Err(activity_error) = self.fail_activity(&message).await {
+                                self.broadcast(ServerMessage::Error {
+                                    code: "session_activity".into(),
+                                    message: activity_error.to_string(),
+                                    fatal: false,
+                                });
+                            }
+                            break;
+                        }
+                    }
+                    None => {
                         self.broadcast(ServerMessage::Error {
-                            code: "host_error".into(),
-                            message: message.clone(),
+                            code: "agent_stopped".into(),
+                            message: "the agent stopped".into(),
                             fatal: true,
                         });
-                        if let Err(activity_error) = self.fail_activity(&message).await {
+                        if let Err(error) = self.fail_activity("the agent stopped").await {
                             self.broadcast(ServerMessage::Error {
                                 code: "session_activity".into(),
-                                message: activity_error.to_string(),
+                                message: error.to_string(),
                                 fatal: false,
                             });
                         }
                         break;
                     }
-                }
-                Next::Event(None) => {
-                    self.broadcast(ServerMessage::Error {
-                        code: "agent_stopped".into(),
-                        message: "the agent stopped".into(),
-                        fatal: true,
-                    });
-                    if let Err(error) = self.fail_activity("the agent stopped").await {
-                        self.broadcast(ServerMessage::Error {
-                            code: "session_activity".into(),
-                            message: error.to_string(),
-                            fatal: false,
-                        });
-                    }
-                    break;
                 }
             }
         }
@@ -150,9 +146,20 @@ impl HostState {
 
     pub(super) async fn handle(&mut self, command: HostCommand) -> bool {
         match command {
+            HostCommand::AcceptsFileAttachments { reply } => {
+                let result = async {
+                    let _mutation = self.begin_session_mutation()?;
+                    self.bind_bot().await?;
+                    Ok(runtime_accepts_attachments(&self.running.frontend))
+                }
+                .await;
+                let _ = reply.send(result);
+            }
             HostCommand::RealtimeModel { reply } => {
-                let result = self.begin_session_mutation().and_then(|_mutation| {
-                    let bot = self.bots.bot(&self.spec.bot_id).map_err(internal)?;
+                let result = async {
+                    let _mutation = self.begin_session_mutation()?;
+                    self.bind_bot().await?;
+                    let bot = &self.running.prepared.bot;
                     let router = &self.running.model_router;
                     let route = &self.running.session.model.route;
                     if !router.supports_realtime_voice(route).map_err(internal)? {
@@ -179,18 +186,26 @@ impl HostState {
                             "Your name is {} (@{}).\n\n{}",
                             bot.name,
                             bot.handle,
-                            self.spec.bot_instructions()
+                            self.running.prepared.instructions()
                         ),
-                        bot_name: bot.name,
+                        bot_name: bot.name.clone(),
                         router: Arc::clone(router),
-                        voice: self.spec.agent.config.realtime_voice.clone(),
+                        voice: self
+                            .running
+                            .prepared
+                            .bot
+                            .config
+                            .config
+                            .realtime_voice
+                            .clone(),
                         route: route.clone(),
                         provider_instance,
                         active_turn_id: self.activity().map_err(internal)?.turn_id,
                         checkpoints: Arc::clone(&self.checkpoints),
                         frontend: Arc::clone(&self.running.frontend_sink),
                     })
-                });
+                }
+                .await;
                 let _ = reply.send(result);
             }
             HostCommand::ObserveVoiceUsage {
@@ -222,6 +237,9 @@ impl HostState {
             HostCommand::Submit { submission, reply } => {
                 let result = async {
                     let _mutation = self.begin_session_mutation()?;
+                    if matches!(submission.op, Op::Message { .. }) {
+                        self.bind_bot().await?;
+                    }
                     let resumes_approval = matches!(
                         &submission.op,
                         Op::ExecApproval {
@@ -254,8 +272,8 @@ impl HostState {
                 .await;
                 let _ = reply.send(result);
             }
-            HostCommand::ReloadBot { bot, reply } => {
-                let result = self.reload_bot(bot).await;
+            HostCommand::RefreshBot { reply } => {
+                let result = self.replace_running(self.spec.clone(), None).await;
                 let _ = reply.send(result);
             }
             HostCommand::AttachFolder { folder, reply } => {
@@ -329,7 +347,17 @@ impl HostState {
             }
             HostCommand::RunRoutine { run, input, reply } => {
                 let result = match self.begin_session_mutation() {
-                    Ok(_mutation) => self.run_routine(run, input),
+                    Ok(_mutation) => match self.bind_bot().await {
+                        Ok(()) => self.run_routine(run, input),
+                        Err(rejection) => {
+                            let result = self.bots.finish_run(
+                                run,
+                                RoutineRunStatus::Failed,
+                                Some(rejection.message.clone()),
+                            );
+                            result.map_err(internal).and(Err(rejection))
+                        }
+                    },
                     Err(rejection) => match self.bots.finish_run(
                         run,
                         RoutineRunStatus::Failed,
@@ -526,30 +554,41 @@ impl HostState {
         Ok(())
     }
 
-    async fn reload_bot(
-        &mut self,
-        bot: crate::wire::BotRecord,
-    ) -> std::result::Result<(), Rejection> {
-        self.require_idle()?;
-        if self.spec.bot_id != bot.id {
-            return Err(invalid_config("Bot identity does not own this chat"));
+    async fn bind_bot(&mut self) -> std::result::Result<(), Rejection> {
+        if !self.is_idle()
+            || (self.bots.bot(&self.spec.bot_id).map_err(internal)? == self.running.prepared.bot
+                && self.running.prepared.epoch == self.provider_epoch.load(Ordering::Acquire))
+        {
+            return Ok(());
         }
-        let gateway = self
-            .gateway
-            .lock()
-            .map_err(|_| internal("gateway configuration lock is poisoned"))?
-            .clone();
-        gateway
-            .validate_provider_selection(&bot.config.config.provider)
-            .map_err(invalid_config)?;
-        let mut next = self.spec.clone();
-        next.bot_description = bot.description;
-        next.agent = bot.config;
-        let reusable_router = (self.running.provider_epoch
-            == self.provider_epoch.load(Ordering::Acquire))
-        .then(|| reusable_model_router(&self.spec, &next, &self.running))
-        .flatten();
-        self.replace_running(next, reusable_router).await
+        if let Some(checkpoint) = self
+            .checkpoints
+            .load(&self.running.session_id)
+            .await
+            .map_err(internal)?
+            && (checkpoint.active_execution.is_some()
+                || !checkpoint.pending_messages.is_empty()
+                || checkpoint.pending_approval.is_some())
+        {
+            return Ok(());
+        }
+        if self
+            .running
+            .sandbox
+            .has_background_commands(&self.running.session_id)
+            .map_err(internal)?
+        {
+            return Ok(());
+        }
+        if let Some(subagents) = &self.running.subagents
+            && subagents
+                .has_active_children(&self.running.session_id)
+                .await
+                .map_err(internal)?
+        {
+            return Ok(());
+        }
+        self.replace_running(self.spec.clone(), None).await
     }
 
     async fn attach_folder(&mut self, folder: PathBuf) -> std::result::Result<(), Rejection> {
@@ -592,30 +631,25 @@ impl HostState {
         else {
             return Ok(());
         };
-        let reusable_router = (self.running.provider_epoch
-            == self.provider_epoch.load(Ordering::Acquire))
-        .then(|| reusable_model_router(&self.spec, &next, &self.running))
-        .flatten();
-        self.replace_running(next, reusable_router).await
+        self.replace_running(next, Some(Arc::clone(&self.running.prepared)))
+            .await
     }
 
     async fn replace_running(
         &mut self,
         next: ChatSpec,
-        reusable_router: Option<ReusableModelRouter>,
+        prepared: Option<Arc<crate::assembly::PreparedBot>>,
     ) -> std::result::Result<(), Rejection> {
         let session_id = self.running.session_id.clone();
         let old_spec = self.spec.clone();
-        let old_router = ReusableModelRouter {
-            router: Arc::clone(&self.running.model_router),
-            provider_epoch: self.running.provider_epoch,
-        };
+        let old_prepared = Arc::clone(&self.running.prepared);
         self.stop_and_drain_running().await.map_err(internal)?;
         let replacement = match start_agent(
             Arc::clone(&self.gateway),
             &next,
             &self.store,
             Arc::clone(&self.credentials),
+            Arc::clone(&self.bots),
             Arc::clone(&self.checkpoints),
             self.scratchpad.clone(),
             self.session_files.clone(),
@@ -625,7 +659,7 @@ impl HostState {
             session_id,
             "mobius-gateway",
             true,
-            reusable_router,
+            prepared,
             Arc::clone(&self.provider_epoch),
         )
         .await
@@ -637,6 +671,7 @@ impl HostState {
                     &old_spec,
                     &self.store,
                     Arc::clone(&self.credentials),
+                    Arc::clone(&self.bots),
                     Arc::clone(&self.checkpoints),
                     self.scratchpad.clone(),
                     self.session_files.clone(),
@@ -646,7 +681,7 @@ impl HostState {
                     self.running.session_id.clone(),
                     "mobius-gateway-rollback",
                     true,
-                    Some(old_router),
+                    Some(old_prepared),
                     Arc::clone(&self.provider_epoch),
                 )
                 .await;
@@ -660,10 +695,6 @@ impl HostState {
                     }
                 };
                 self.running = recovery;
-                self.accepts_file_attachments.store(
-                    runtime_accepts_attachments(&self.running.frontend),
-                    Ordering::Relaxed,
-                );
                 if let Err(rollback) = self.reconcile_replacement_startup().await {
                     return Err(internal(mobius::Error::Rollback {
                         primary: Box::new(mobius::Error::Config(primary.to_string())),
@@ -674,10 +705,6 @@ impl HostState {
             }
         };
         let previous = std::mem::replace(&mut self.running, replacement);
-        self.accepts_file_attachments.store(
-            runtime_accepts_attachments(&self.running.frontend),
-            Ordering::Relaxed,
-        );
         self.spec = next;
         drop(previous);
         self.reconcile_replacement_startup()
@@ -691,7 +718,7 @@ impl HostState {
         &mut self,
         scope: &ProviderRefresh,
     ) -> std::result::Result<(), Rejection> {
-        if !provider_refresh_matches(&self.spec.agent.config.provider, scope)
+        if !provider_refresh_matches(&self.running.prepared.bot.config.config.provider, scope)
             .map_err(invalid_config)?
         {
             return Ok(());
@@ -703,7 +730,15 @@ impl HostState {
         &mut self,
         id: &str,
     ) -> std::result::Result<(), Rejection> {
-        if !self.spec.agent.config.extensions.contains(id) {
+        if !self
+            .running
+            .prepared
+            .bot
+            .config
+            .config
+            .extensions
+            .contains(id)
+        {
             return Ok(());
         }
         self.refresh_runtime().await
@@ -729,6 +764,7 @@ impl HostState {
             &self.spec,
             &self.store,
             Arc::clone(&self.credentials),
+            Arc::clone(&self.bots),
             Arc::clone(&self.checkpoints),
             self.scratchpad.clone(),
             self.session_files.clone(),
@@ -737,17 +773,13 @@ impl HostState {
             Arc::clone(&self.desktop),
             session_id,
             origin_label,
-            false,
+            true,
             None,
             Arc::clone(&self.provider_epoch),
         )
         .await
         .map_err(internal)?;
         let previous = std::mem::replace(&mut self.running, replacement);
-        self.accepts_file_attachments.store(
-            runtime_accepts_attachments(&self.running.frontend),
-            Ordering::Relaxed,
-        );
         self.widgets.clear();
         drop(previous);
         self.reconcile_replacement_startup()

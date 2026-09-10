@@ -108,8 +108,11 @@ beside the gateway or on PATH. Release bundles include the pinned tunnel binary.
 
 The default signature is ad hoc for local development. Set `MOBIUS_SIGNING_IDENTITY`
 to a Developer ID Application identity for distribution signing. The release
-workflow notarizes and staples distributable packages when signing credentials
-are configured; it labels other builds as unnotarized.
+workflow requires Developer ID signing and notarization before publishing a Mac app.
+Configure `MACOS_CERTIFICATE_P12_BASE64`, `MACOS_CERTIFICATE_PASSWORD`,
+`MACOS_SIGNING_IDENTITY`, `APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_ISSUER_ID`,
+and `APP_STORE_CONNECT_PRIVATE_KEY` as repository secrets. The app shares the
+Apple client's layered icon.
 
 The Swift target links the existing Apple transport, JSON decoder, wave renderer,
 voice session, palette, and design tokens through source symlinks. Both Apple

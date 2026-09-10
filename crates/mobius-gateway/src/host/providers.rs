@@ -347,6 +347,7 @@ impl GatewayHost {
             .cloned()
             .collect::<Vec<_>>();
         let mut failure = None;
+        self.state.lock().await.bots.prepared.lock().await.clear();
         for host in sessions {
             if let Err(rejection) = host.refresh_provider(scope.clone()).await
                 && rejection.code != "gateway_stopped"
@@ -645,12 +646,12 @@ async fn reload_provider_residents(
 ) -> std::result::Result<Vec<String>, Rejection> {
     let mut failures = Vec::new();
     for resident in residents {
-        let bot = bots
+        let _bot = bots
             .iter()
             .find(|bot| bot.id == resident.host.bot_id())
             .cloned()
             .ok_or_else(|| internal("resident chat has no authoritative Bot profile"))?;
-        let result = resident.host.reload_bot(bot).await;
+        let result = resident.host.refresh_bot().await;
         if let Err(error) = result {
             if !resident.host.stop_if_idle().await {
                 return Err(internal(

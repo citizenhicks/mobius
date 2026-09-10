@@ -65,6 +65,66 @@ where
     .map_err(|error| Error::Config(format!("agent discovery task failed: {error}")))?
 }
 
+pub(crate) struct PreparedBot {
+    pub(crate) bot: crate::wire::BotRecord,
+    pub(crate) epoch: u64,
+    models: Arc<ModelRouter>,
+    context_window: i64,
+    model_providers: BTreeMap<String, String>,
+    approval_policy: ApprovalPolicy,
+    extensions: ResolvedExtensions,
+    computer_runtime: Option<std::path::PathBuf>,
+}
+
+impl PreparedBot {
+    pub(crate) fn instructions(&self) -> String {
+        format!(
+            "{}\n\n{}",
+            self.bot.description, self.bot.config.config.system_prompt
+        )
+    }
+}
+
+pub(crate) async fn prepare_bot(
+    gateway: &GatewayConfig,
+    bot: crate::wire::BotRecord,
+    store: &ConfigStore,
+    credentials: &CredentialStore,
+    session_files: SessionFileStore,
+    epoch: u64,
+) -> Result<PreparedBot> {
+    let config = &bot.config.config;
+    let model_providers = configured_model_providers(gateway, store, credentials)?;
+    let (models, context_window) =
+        if credential_is_configured(&config.provider, store, credentials)? {
+            build_models(gateway, &config.provider, store, credentials, session_files)?
+        } else {
+            unavailable_models(gateway, &config.provider, session_files)?
+        };
+    let choices = models.choices().cloned().collect::<Vec<_>>();
+    crate::middleware_manifest::validate_choices(&config.middleware, &choices)?;
+    let approval_policy = crate::middleware_manifest::string_setting(
+        &config.middleware,
+        "sandbox",
+        "approval_policy",
+    )?
+    .ok_or_else(|| Error::Config("missing middleware setting `sandbox.approval_policy`".into()))?
+    .parse::<ApprovalPolicy>()?;
+    let computer_runtime =
+        crate::computer_runtime::prepare(store.state_dir(), &config.middleware).await?;
+    let extensions = ExtensionStore::new(store).resolve(gateway, &config.extensions)?;
+    Ok(PreparedBot {
+        bot,
+        epoch,
+        models,
+        context_window,
+        model_providers,
+        approval_policy,
+        extensions,
+        computer_runtime,
+    })
+}
+
 pub(crate) struct BuiltAgent {
     pub(crate) agent: Agent,
     pub(crate) model_router: Arc<ModelRouter>,
@@ -88,7 +148,6 @@ pub(crate) async fn assemble(
     gateway: Arc<Mutex<GatewayConfig>>,
     chat: &ChatSpec,
     store: &ConfigStore,
-    credentials: Arc<CredentialStore>,
     checkpoints: Arc<dyn CheckpointStore>,
     scratchpad: ScratchpadStore,
     session_files: SessionFileStore,
@@ -98,7 +157,7 @@ pub(crate) async fn assemble(
     session_id: Option<String>,
     origin_label: &str,
     override_saved_model_route: bool,
-    reusable_model_router: Option<Arc<ModelRouter>>,
+    prepared: Arc<PreparedBot>,
 ) -> Result<BuiltAgent> {
     if let Some(session_id) = session_id.as_deref() {
         validate_session_id(session_id)?;
@@ -107,50 +166,21 @@ pub(crate) async fn assemble(
         .lock()
         .map_err(|_| Error::Config("gateway configuration lock is poisoned".into()))?
         .clone();
-    let model_providers = configured_model_providers(&gateway_config, store, &credentials)?;
-    let (models, context_window) = if let Some(models) = reusable_model_router {
-        let context_window = models
-            .choices()
-            .find(|choice| choice.route == models.default_provider())
-            .and_then(|choice| choice.context_window)
-            .unwrap_or(DEFAULT_CONTEXT_WINDOW);
-        (models, context_window)
-    } else if credential_is_configured(&chat.agent.config.provider, store, &credentials)? {
-        build_models(
-            &gateway_config,
-            &chat.agent.config.provider,
-            store,
-            &credentials,
-            session_files.clone(),
-        )?
-    } else {
-        unavailable_models(
-            &gateway_config,
-            &chat.agent.config.provider,
-            session_files.clone(),
-        )?
-    };
-    let model_choices = models.choices().cloned().collect::<Vec<_>>();
-    crate::middleware_manifest::validate_choices(&chat.agent.config.middleware, &model_choices)?;
-    let approval_policy = crate::middleware_manifest::string_setting(
-        &chat.agent.config.middleware,
-        "sandbox",
-        "approval_policy",
-    )?
-    .ok_or_else(|| Error::Config("missing middleware setting `sandbox.approval_policy`".into()))?
-    .parse::<ApprovalPolicy>()?;
-    let settings = chat.agent.config.middleware.clone();
+    let models = Arc::clone(&prepared.models);
+    let context_window = prepared.context_window;
+    let model_providers = prepared.model_providers.clone();
+    let approval_policy = prepared.approval_policy;
+    let settings = prepared.bot.config.config.middleware.clone();
     let workspace_path = chat.workspace.clone();
     let bot_id = chat.bot_id.clone();
     let attached_folders = chat.attached_folders.clone();
     let state_dir = store.state_dir().to_path_buf();
-    let computer_runtime = crate::computer_runtime::prepare(&state_dir, &settings).await?;
+    let computer_runtime = prepared.computer_runtime.clone();
     let tls_key = gateway_config
         .tls
         .as_ref()
         .map(|tls| tls.private_key.clone());
-    let extension_store = ExtensionStore::new(store);
-    let selected_extensions = chat.agent.config.extensions.clone();
+    let resources = Arc::clone(&prepared);
     let catalog_visible = chat.catalog_visible;
     let gateway_for_middleware = Arc::clone(&gateway);
     let (
@@ -162,7 +192,7 @@ pub(crate) async fn assemble(
             subagents,
         },
     ) = run_discovery(discovery_gate, move || {
-        let resolved_extensions = extension_store.resolve(&gateway_config, &selected_extensions)?;
+        let resolved_extensions = &resources.extensions;
         let extensions = (EXTENSIONS_MANIFEST.required || settings.enabled(EXTENSIONS_MANIFEST.id))
             .then(|| {
                 Extensions::discover_installed(
@@ -220,7 +250,7 @@ pub(crate) async fn assemble(
             swarm,
             backend,
             instructions,
-            &resolved_extensions,
+            resolved_extensions,
             extensions,
             computer_runtime.as_deref(),
         )?;
@@ -238,10 +268,11 @@ pub(crate) async fn assemble(
     metadata.extend(chat.metadata()?);
     let workspace = chat.workspace_info();
     let usage_store = store.clone();
-    let max_model_steps = usize::try_from(chat.agent.config.max_model_steps).map_err(|_| {
-        Error::Config("maximum model steps exceed this platform's supported range".into())
-    })?;
-    let system_prompt = chat.bot_instructions();
+    let max_model_steps =
+        usize::try_from(prepared.bot.config.config.max_model_steps).map_err(|_| {
+            Error::Config("maximum model steps exceed this platform's supported range".into())
+        })?;
+    let system_prompt = prepared.instructions();
     let mut agent_config = AgentConfig::new(
         models,
         Arc::clone(&sandbox),

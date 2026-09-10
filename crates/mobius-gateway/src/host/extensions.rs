@@ -248,6 +248,7 @@ impl GatewayHost {
         id: &str,
         _sessions_guard: tokio::sync::OwnedRwLockWriteGuard<()>,
     ) -> std::result::Result<ReadyPayload, Rejection> {
+        self.state.lock().await.bots.prepared.lock().await.clear();
         for host in sessions {
             if let Err(rejection) = host.refresh_extension(id.to_owned()).await
                 && rejection.code != "gateway_stopped"
@@ -392,7 +393,7 @@ mod tests {
                     HostCommand::ProviderCutoverStatus { reply } => {
                         let _ = reply.send(ProviderCutoverStatus { idle: true });
                     }
-                    HostCommand::ReloadBot { reply, .. } => {
+                    HostCommand::RefreshBot { reply } => {
                         let _ = reply.send(Ok(()));
                     }
                     HostCommand::CapacityChanged => {}
@@ -407,7 +408,6 @@ mod tests {
                     bot_id: Arc::from(bot_id),
                     commands,
                     events,
-                    accepts_file_attachments: Arc::new(AtomicBool::new(false)),
                     alive: Arc::new(AtomicBool::new(true)),
                     terminated: Arc::new(AtomicBool::new(true)),
                     termination: Arc::new(tokio::sync::Notify::new()),

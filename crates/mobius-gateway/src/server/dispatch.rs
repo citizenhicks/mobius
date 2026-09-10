@@ -1095,8 +1095,12 @@ async fn submit(
     if let Some(message) = user_message
         && !message.attachments.is_empty()
     {
-        if !host.accepts_file_attachments() {
-            return write_rejection(writer, request_id, uploads_disabled_rejection()).await;
+        match host.accepts_file_attachments().await {
+            Ok(true) => {}
+            Ok(false) => {
+                return write_rejection(writer, request_id, uploads_disabled_rejection()).await;
+            }
+            Err(rejection) => return write_rejection(writer, request_id, rejection).await,
         }
         for reference in &message.attachments {
             if let Err(error) = connection
@@ -1153,7 +1157,7 @@ async fn begin_session_file_upload(
     size: u64,
     media_type: String,
 ) -> Result<()> {
-    let host = match require_uploads_enabled(connection.selected, &session_id) {
+    let host = match require_uploads_enabled(connection.selected, &session_id).await {
         Ok(host) => host,
         Err(rejection) => return write_rejection(writer, request_id, rejection).await,
     };
@@ -1206,7 +1210,7 @@ async fn upload_session_file_chunk(
     data: Vec<u8>,
 ) -> Result<()> {
     let key = (session_id.clone(), upload_id.clone());
-    let host = match require_uploads_enabled(connection.selected, &session_id) {
+    let host = match require_uploads_enabled(connection.selected, &session_id).await {
         Ok(host) => host,
         Err(rejection) => {
             connection.uploads.remove(&key);
@@ -1257,7 +1261,7 @@ async fn finish_session_file_upload(
     upload_id: String,
 ) -> Result<()> {
     let key = (session_id.clone(), upload_id);
-    let host = match require_uploads_enabled(connection.selected, &session_id) {
+    let host = match require_uploads_enabled(connection.selected, &session_id).await {
         Ok(host) => host,
         Err(rejection) => {
             connection.uploads.remove(&key);

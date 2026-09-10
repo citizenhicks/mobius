@@ -16,7 +16,9 @@ final class DesktopRuntime {
             publishAvailability()
         }
     }
-    private(set) var hasPermissions = false
+    private(set) var hasAccessibility = false
+    private(set) var hasScreenRecording = false
+    var hasPermissions: Bool { hasAccessibility && hasScreenRecording }
     var isActive: Bool { executionID != nil }
     var message: String?
 
@@ -74,15 +76,20 @@ final class DesktopRuntime {
         registrationID = nil
     }
 
-    func requestPermissions() {
+    func requestAccessibility() {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
         _ = AXIsProcessTrustedWithOptions(options as CFDictionary)
+        refreshPermissions()
+    }
+
+    func requestScreenRecording() {
         if !CGPreflightScreenCaptureAccess() { _ = CGRequestScreenCaptureAccess() }
         refreshPermissions()
     }
 
     func refreshPermissions() {
-        hasPermissions = AXIsProcessTrusted() && CGPreflightScreenCaptureAccess()
+        hasAccessibility = AXIsProcessTrusted()
+        hasScreenRecording = CGPreflightScreenCaptureAccess()
         if !hasPermissions { enabled = false } else { publishAvailability() }
     }
 

@@ -91,8 +91,14 @@ final class RealtimeVoiceSession: NSObject {
             )
         else { throw VoiceError.connection }
         self.peer = peer
+        // Keep echo/noise removal active without amplifying quiet room noise into speech.
+        let audioConstraints = RTCMediaConstraints(
+            mandatoryConstraints: [
+                "googEchoCancellation": "true", "googNoiseSuppression": "true",
+                "googAutoGainControl": "false", "googHighpassFilter": "true",
+            ], optionalConstraints: nil)
         let track = factory.audioTrack(
-            with: factory.audioSource(with: constraints), trackId: "voice"
+            with: factory.audioSource(with: audioConstraints), trackId: "voice"
         )
         audioTrack = track
         track.isEnabled = !isMuted

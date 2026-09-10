@@ -921,7 +921,11 @@ fn saving_defaults_is_revisioned_and_does_not_change_existing_chat_specs() {
         updated.bot_defaults.as_ref().expect("Bot defaults").config,
         replacement
     );
-    assert_eq!(chat.agent.revision, 1);
+    assert_eq!(
+        chat,
+        ChatSpec::for_bot(workspace.path(), &bot, state.path(), None).expect("unchanged chat spec")
+    );
+    assert_eq!(bot.config.revision, 1);
     assert!(
         registered
             .replacing_bot_defaults(2, AgentComposition::default())

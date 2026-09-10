@@ -327,6 +327,8 @@ private struct VoiceSelectionMenus: View {
                 }
             }
             Divider()
+            DesktopControlView(runtime: model.desktop, isConnected: model.isReady)
+            Divider()
             Button("Keyboard shortcuts…", action: presentation.showKeyboardShortcuts)
             Button("Refresh chats") { model.refreshChats() }
             Button("Reconnect gateway") { model.connect() }

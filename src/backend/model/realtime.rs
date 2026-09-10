@@ -265,7 +265,9 @@ impl RealtimeTransport {
                 "audio":{"output":{"voice":voice}},"delegation":{"type":"client"}});
         }
         json!({"type":"realtime","model":"gpt-realtime-2.1-mini","instructions":request.instructions,
+            "reasoning":{"effort":"minimal"},
             "audio":{"input":{"transcription":{"model":"gpt-live-transcribe"},
+                "noise_reduction":{"type":"near_field"},
                 "turn_detection":{"type":"server_vad","create_response":true,"interrupt_response":true}},
                 "output":{"voice":voice}},
             "tools":[{"type":"function","name":request.handoff_tool.name,"description":request.handoff_tool.description,"parameters":request.handoff_tool.parameters}],
@@ -872,10 +874,9 @@ impl VoiceTurns {
         if stream.complete {
             return Ok(());
         }
+        let had_draft = !stream.text.is_empty();
         if complete {
-            if !text.trim().is_empty() {
-                stream.text = text.into();
-            }
+            stream.text = text.into();
             stream.complete = true;
         } else {
             if stream.text.len() + text.len() > MAX_TEXT_BYTES {
@@ -888,7 +889,7 @@ impl VoiceTurns {
         } else {
             text.into()
         };
-        if !text.is_empty() {
+        if !text.is_empty() || complete && had_draft {
             events.push(RealtimeVoiceEvent::Transcript {
                 id: id.into(),
                 role,

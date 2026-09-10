@@ -114,15 +114,13 @@ pub(crate) struct ConfiguredProvider {
     pub(crate) reasoning_efforts: Vec<String>,
 }
 
-/// Runtime recipe resolved from one durable Bot profile and chat workspace.
+/// Chat ownership and workspace, independent of Bot configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ChatSpec {
     version: u32,
     pub(crate) workspace: PathBuf,
     pub(crate) attached_folders: Vec<PathBuf>,
     pub(crate) bot_id: String,
-    pub(crate) bot_description: String,
-    pub(crate) agent: VersionedAgentConfig,
     pub(crate) catalog_visible: bool,
 }
 
@@ -412,13 +410,6 @@ impl GatewayConfig {
 }
 
 impl ChatSpec {
-    pub(crate) fn bot_instructions(&self) -> String {
-        format!(
-            "{}\n\n{}",
-            self.bot_description, self.agent.config.system_prompt
-        )
-    }
-
     pub(crate) fn for_bot(
         workspace: &Path,
         bot: &crate::wire::BotRecord,
@@ -430,8 +421,6 @@ impl ChatSpec {
             workspace: validate_chat_workspace(workspace, state_dir, tls)?,
             attached_folders: Vec::new(),
             bot_id: bot.id.clone(),
-            bot_description: bot.description.clone(),
-            agent: bot.config.clone(),
             catalog_visible: true,
         };
         spec.validate(state_dir, tls)?;
@@ -469,8 +458,6 @@ impl ChatSpec {
                 .filter(|folder| folder.is_dir())
                 .collect(),
             bot_id: bot.id,
-            bot_description: bot.description,
-            agent: bot.config,
             catalog_visible: true,
         };
         spec.validate(state_dir, tls)?;
@@ -525,12 +512,7 @@ impl ChatSpec {
                 self.version
             )));
         }
-        if self.agent.revision == 0 {
-            return Err(Error::Config(
-                "chat configuration revision must be positive".into(),
-            ));
-        }
-        if self.bot_id.is_empty() || self.bot_description.trim().is_empty() {
+        if self.bot_id.is_empty() {
             return Err(Error::Config("chat Bot ownership is invalid".into()));
         }
         let workspace = validate_chat_workspace(&self.workspace, state_dir, tls)?;
@@ -556,7 +538,7 @@ impl ChatSpec {
                 return Err(Error::Config("chat folders must be unique".into()));
             }
         }
-        validate_agent_composition(&self.agent.config)
+        Ok(())
     }
 }
 
