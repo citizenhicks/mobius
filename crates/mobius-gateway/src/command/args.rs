@@ -60,6 +60,12 @@ enum GatewaySubcommand {
     Serve(ServeArgs),
     #[command(name = "__serve", hide = true)]
     ServeChild,
+    /// Open the installed macOS gateway menu bar app.
+    #[cfg(target_os = "macos")]
+    MenuBar,
+    #[cfg(target_os = "macos")]
+    #[command(name = "__menu-bar-connect", hide = true)]
+    MenuBarConnect,
     /// Stop a background gateway.
     Exit,
 }
@@ -204,6 +210,14 @@ pub(super) enum Command {
     ServeChild {
         state_dir: PathBuf,
     },
+    #[cfg(target_os = "macos")]
+    MenuBar {
+        state_dir: PathBuf,
+    },
+    #[cfg(target_os = "macos")]
+    MenuBarConnect {
+        state_dir: PathBuf,
+    },
     Exit {
         state_dir: PathBuf,
     },
@@ -319,6 +333,10 @@ impl GatewayCli {
                 background: arguments.background,
             }),
             Some(GatewaySubcommand::ServeChild) => Ok(Command::ServeChild { state_dir }),
+            #[cfg(target_os = "macos")]
+            Some(GatewaySubcommand::MenuBar) => Ok(Command::MenuBar { state_dir }),
+            #[cfg(target_os = "macos")]
+            Some(GatewaySubcommand::MenuBarConnect) => Ok(Command::MenuBarConnect { state_dir }),
             Some(GatewaySubcommand::Exit) => Ok(Command::Exit { state_dir }),
             None | Some(GatewaySubcommand::Provider) => Err(Error::Config(
                 "an executable gateway command is required".into(),

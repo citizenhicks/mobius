@@ -332,6 +332,10 @@ impl Model for Anthropic {
         }
     }
 
+    fn supports_tool_image_input(&self) -> bool {
+        self.supports_image_input()
+    }
+
     fn supports_image_input(&self) -> bool {
         true
     }
@@ -863,46 +867,14 @@ fn translate_messages(
                     );
                     push_message(&mut messages, role, content.clone());
                 } else {
-                    let mut blocks = Vec::new();
-                    for part in item
+                    let blocks = item
                         .get("content")
                         .and_then(Value::as_array)
                         .into_iter()
                         .flatten()
-                    {
-                        match part.get("type").and_then(Value::as_str) {
-                            Some("input_text" | "output_text") => {
-                                let mut block = serde_json::json!({
-                                    "type": "text",
-                                    "text": part.get("text").and_then(Value::as_str).unwrap_or_default()
-                                });
-                                if part
-                                    .get(PROMPT_CACHE_BREAKPOINT_FIELD)
-                                    .and_then(Value::as_bool)
-                                    .unwrap_or(false)
-                                {
-                                    block["cache_control"] =
-                                        serde_json::json!({"type": "ephemeral"});
-                                }
-                                blocks.push(block);
-                            }
-                            Some("input_image") => {
-                                let Some((media_type, data)) = image_input(part, "Anthropic")?
-                                else {
-                                    continue;
-                                };
-                                blocks.push(serde_json::json!({
-                                    "type": "image",
-                                    "source": {
-                                        "type": "base64",
-                                        "media_type": media_type,
-                                        "data": data
-                                    }
-                                }));
-                            }
-                            None | Some(_) => {}
-                        }
-                    }
+                        .map(content_block)
+                        .filter_map(Result::transpose)
+                        .collect::<Result<Vec<_>>>()?;
                     push_message(&mut messages, role, blocks);
                 }
             }
@@ -959,6 +931,44 @@ fn remember_search_call(search_calls: &mut BTreeSet<String>, call_id: &str, name
     }
 }
 
+fn content_block(part: &Value) -> Result<Option<Value>> {
+    let mut block = match part.get("type").and_then(Value::as_str) {
+        Some("input_text" | "output_text") => {
+            serde_json::json!({"type":"text", "text": required_string(part, "text")?})
+        }
+        Some("input_image") => {
+            let Some((media_type, data)) = image_input(part, "Anthropic")? else {
+                return Ok(None);
+            };
+            serde_json::json!({"type":"image", "source":{"type":"base64", "media_type":media_type,"data":data}})
+        }
+        Some("file") => {
+            serde_json::json!({"type":"text", "text":format!("Stored file: {}", part["file"])})
+        }
+        _ => return Ok(None),
+    };
+    if part
+        .get(PROMPT_CACHE_BREAKPOINT_FIELD)
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
+        block["cache_control"] = serde_json::json!({"type":"ephemeral"});
+    }
+    Ok(Some(block))
+}
+
+fn tool_content_blocks(output: &Value) -> Result<Vec<Value>> {
+    output
+        .as_array()
+        .ok_or_else(|| Error::Provider("tool result content must be an array".into()))?
+        .iter()
+        .map(|part| {
+            content_block(part)?
+                .ok_or_else(|| Error::Provider("unsupported tool result content".into()))
+        })
+        .collect()
+}
+
 fn tool_result_block(
     item: &Value,
     next: Option<&Value>,
@@ -975,7 +985,9 @@ fn tool_result_block(
             tool_references(load, catalog_revision, deferred_tool_names)
         });
     let content = if references.is_empty() {
-        Value::String(string_field(item, "output")?.to_string())
+        Value::Array(tool_content_blocks(item.get("output").ok_or_else(
+            || Error::Provider("tool result omitted content".into()),
+        )?)?)
     } else {
         Value::Array(references)
     };

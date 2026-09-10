@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use mobius::backend::checkpoint::SessionSummary;
-use mobius::middleware::session_files::SessionFileDeletion;
+use mobius::backend::session_files::SessionFileDeletion;
 
 use super::*;
 

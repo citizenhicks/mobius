@@ -250,6 +250,7 @@ impl AgentIdentity {
 
 #[derive(Clone)]
 struct AgentScope {
+    files: Option<crate::backend::session_files::SessionFileStore>,
     checkpoints: Arc<dyn CheckpointStore>,
     launch_agent: SubagentLauncher,
     session_id: String,
@@ -264,6 +265,7 @@ impl AgentScope {
     fn new(runtime: &RuntimeContext, launch_agent: SubagentLauncher) -> Result<Self> {
         let identity = AgentIdentity::read(&runtime.session_id, &runtime.metadata)?;
         Ok(Self {
+            files: None,
             checkpoints: Arc::clone(&runtime.checkpoints),
             launch_agent,
             session_id: runtime.session_id.clone(),
@@ -318,6 +320,13 @@ impl AgentScope {
         .metadata(self.metadata.clone());
         metadata.insert(SPAWN_CONTEXT_KEY.into(), Value::String(turns.label()));
         checkpoint.metadata.clone_from(&metadata);
+        crate::backend::session_files::grant_context(
+            self.files.as_ref(),
+            &self.session_id,
+            &session_id,
+            &checkpoint.context,
+        )
+        .await?;
         self.checkpoints
             .fork(&self.session_id, parent_sequence, &checkpoint)
             .await?;
@@ -366,6 +375,7 @@ impl AgentScope {
 
 /// Contributes asynchronous collaboration tools.
 pub struct Subagents {
+    files: Option<crate::backend::session_files::SessionFileStore>,
     max_depth: u8,
     launch_agent: SubagentLauncher,
     default_model: Option<String>,
@@ -375,6 +385,13 @@ pub struct Subagents {
 }
 
 impl Subagents {
+    /// Injects durable media storage used for child observation grants.
+    #[must_use]
+    pub fn session_files(mut self, files: crate::backend::session_files::SessionFileStore) -> Self {
+        self.files = Some(files);
+        self
+    }
+
     /// Creates a child-agent capability with hard depth, concurrency, and agent limits.
     ///
     /// `max_concurrency` counts active agents and `max_agents` counts retained agents;
@@ -402,6 +419,7 @@ impl Subagents {
         }
         Ok(Self {
             max_depth,
+            files: None,
             launch_agent,
             default_model: None,
             default_reasoning: None,
@@ -575,7 +593,9 @@ impl Middleware for Subagents {
     }
 
     fn register(&self, catalog: &mut Catalog, runtime: &RuntimeContext) -> Result<()> {
-        let scope = Arc::new(AgentScope::new(runtime, Arc::clone(&self.launch_agent))?);
+        let mut scope = AgentScope::new(runtime, Arc::clone(&self.launch_agent))?;
+        scope.files = self.files.clone();
+        let scope = Arc::new(scope);
         if scope.depth < self.max_depth {
             catalog.register(Arc::new(SpawnAgent {
                 default_model: self.default_model.clone(),

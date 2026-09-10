@@ -41,13 +41,95 @@ private struct ComposerStack: View {
 
     var body: some View {
         VStack(spacing: MobiusSpace.xs) {
-            ComposerActivityView(showBotSettings: showBotSettings)
+            if model.chat.selectedSessionID == nil, let path = model.chat.pendingNewChatWorkspace {
+                VStack(alignment: .leading, spacing: 0) {
+                    NewChatFolderPicker(path: path)
+                    NewChatBotPicker()
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .menuIndicator(.hidden)
+                .buttonStyle(.mobiusPlain)
+                .disabled(!model.canCreateSession)
+            } else {
+                ComposerActivityView(showBotSettings: showBotSettings)
+            }
             if model.chat.realtimeVoiceCall != nil {
                 RealtimeVoiceComposer()
             } else {
                 ComposerSurface()
             }
         }
+    }
+}
+
+private struct NewChatFolderPicker: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.mobiusPalette) private var palette
+    let path: String
+
+    var body: some View {
+        Menu {
+            Picker("Folder", selection: Binding(get: { path }, set: { model.chooseWorkspace($0) }))
+            {
+                ForEach(model.newChatWorkspacePaths, id: \.self) { folder in
+                    MobiusLabel(verbatim: name(folder), glyph: .folder).tag(folder)
+                }
+            }
+            .pickerStyle(.inline)
+            Divider()
+            Button("Add new folder", glyph: .plus) { model.openWorkspaceBrowser() }
+        } label: {
+            MobiusMenuLabel(verbatim: name(path), glyph: .folder, glyphColor: palette.muted)
+                .frame(minHeight: MobiusStyle.iconButtonSize)
+        }
+        .accessibilityLabel("Folder")
+        .accessibilityValue(path == "." ? name(path) : path)
+        .accessibilityHint("Choose a project folder or add a new folder")
+    }
+
+    private func name(_ path: String) -> String {
+        if path == "." {
+            return model.localizedString("Default folder")
+        }
+        return WorkspaceSessions.workspaceName(path)
+    }
+}
+
+private struct NewChatBotPicker: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.mobiusPalette) private var palette
+
+    var body: some View {
+        Menu {
+            Picker(
+                "Bot",
+                selection: Binding(
+                    get: { model.chat.pendingNewChatBotID },
+                    set: { id in
+                        if let bot = model.bots.first(where: { $0.id == id }) {
+                            model.selectBotForNewChat(bot)
+                        }
+                    }
+                )
+            ) {
+                ForEach(model.bots) { bot in
+                    MobiusLabel(verbatim: bot.name, glyph: .aiScan, iconColor: bot.tint.color)
+                        .tag(Optional(bot.id))
+                }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            MobiusMenuLabel(
+                text: model.selectedBot.map { .verbatim($0.name) } ?? .localized("Choose Bot"),
+                glyph: .aiScan,
+                glyphColor: model.selectedBot?.tint.color ?? palette.muted
+            )
+            .frame(minHeight: MobiusStyle.iconButtonSize)
+        }
+        .accessibilityLabel("Bot")
+        .accessibilityValue(model.selectedBot?.name ?? model.localizedString("Choose Bot"))
+        .accessibilityHint("Choose the Bot for this chat")
+        .sensoryFeedback(.selection, trigger: model.chat.pendingNewChatBotID)
     }
 }
 
@@ -104,74 +186,6 @@ private struct RealtimeVoiceComposer: View {
         .shadow(color: palette.shadow.opacity(0.18), radius: 12, y: 6)
     }
 
-}
-
-/// The composing orb's shaded particle lanes, opened into a horizontal live-volume field.
-@Animatable
-private struct AudioLevelEqualizer: View {
-    @AnimatableIgnored @Environment(\.colorScheme) private var colorScheme
-    @AnimatableIgnored @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @AnimatableIgnored @Environment(\.scenePhase) private var scenePhase
-    var amplitude: Double
-    var flare: Double
-    @AnimatableIgnored var playbackColor: Color?
-
-    var body: some View {
-        TimelineView(
-            .animation(
-                minimumInterval: 1.0 / 60.0,
-                paused: reduceMotion || scenePhase != .active || amplitude == 0
-            )
-        ) { _ in
-            let time =
-                reduceMotion || scenePhase != .active ? 0 : ProcessInfo.processInfo.systemUptime
-            particles(at: time)
-        }
-    }
-
-    private func particles(at time: Double) -> some View {
-        Canvas(rendersAsynchronously: true) { context, size in
-            // A shallow reflection under the line keeps the field from reading as floored.
-            let reflection = 0.2
-            let ceiling = (size.height - 8) / (1 + reflection)
-            let baseline = size.height - 4 - ceiling * reflection
-            let step = 4.0
-            let columns = 96
-            // One mountain that widens outward from the centre as the voice grows.
-            // Smaller variance is a sharper peak.
-            let variance = 0.02 + 0.12 * amplitude + 0.05 * flare
-            for column in 0..<columns {
-                let x = Double(column) / Double(columns - 1)
-                let centered = x * 2 - 1
-                let hump = exp(-centered * centered / (2 * variance))
-                // Stable phases and speeds let each needle jitter without frame-to-frame randomness.
-                let phase = Double(column) * 2.39996
-                let needle =
-                    0.15 + 0.85 * pow(abs(sin(time * (2.1 + 0.9 * sin(phase)) + phase)), 1.6)
-                let dots = Int(min(1, amplitude * 1.45) * hump * needle * ceiling / step)
-                for dot in -Int(Double(dots) * reflection)...dots {
-                    let fade = dots == 0 ? 0 : abs(Double(dot)) / Double(dots)
-                    let ink =
-                        playbackColor
-                        ?? MobiusPalette.composingOrbInk(
-                            white: 0.08 + 0.44 * fade,
-                            scheme: colorScheme
-                        )
-                    let radius = 0.95 - 0.4 * fade
-                    let sway = sin(time * 1.3 + phase) * 1.6 * fade
-                    let rect = CGRect(
-                        x: x * (size.width - 4) + 2 + sway - radius,
-                        y: baseline - Double(dot) * step - radius,
-                        width: radius * 2, height: radius * 2
-                    )
-                    context.fill(
-                        Path(ellipseIn: rect),
-                        with: .color(ink.opacity((0.35 + 0.65 * (1 - fade)) * (0.3 + 0.7 * hump)))
-                    )
-                }
-            }
-        }
-    }
 }
 
 private struct ComposerSurface: View {
@@ -618,49 +632,41 @@ private struct ComposerActivityView: View {
     var body: some View {
         GlassEffectContainer(spacing: MobiusSpace.s) {
             HStack(spacing: MobiusSpace.s) {
-                if showsBotChoices {
-                    ForEach(model.bots) { bot in
-                        BotChoiceBadge(bot: bot)
-                            .transition(.opacity)
-                    }
-                } else {
-                    ForEach(model.chat.composerFooterWidgets) { widget in
-                        FrontendWidgetView(widget: widget)
-                    }
-                    if totals.added > 0 || totals.removed > 0 {
-                        Button {
-                            model.showFiles(.unstaged)
-                        } label: {
-                            HStack(spacing: MobiusSpace.s) {
-                                Text("+\(totals.added)").foregroundStyle(palette.signal)
-                                Text("−\(totals.removed)").foregroundStyle(palette.danger)
-                            }
-                            .font(MobiusStyle.badgeFont)
-                            .padding(.horizontal, MobiusSpace.m)
-                            .frame(height: MobiusStyle.badgeHeight)
-                            .mobiusGlass(in: Capsule(), interactive: true)
-                            .frame(
-                                minWidth: MobiusStyle.iconButtonSize,
-                                minHeight: MobiusStyle.iconButtonSize
-                            )
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.mobiusPlain)
-                        .accessibilityLabel("Code changes")
-                        .accessibilityValue(
-                            "\(totals.added) additions, \(totals.removed) deletions"
-                        )
-                        .accessibilityHint("Opens modified files")
-                    }
-
-                    if let bot = model.selectedBot {
-                        BotActivityBadge(bot: bot, action: showBotSettings)
-                    }
-                    SessionStatsBadge()
+                ForEach(model.chat.composerFooterWidgets) { widget in
+                    FrontendWidgetView(widget: widget)
                 }
+                if totals.added > 0 || totals.removed > 0 {
+                    Button {
+                        model.showFiles(.unstaged)
+                    } label: {
+                        HStack(spacing: MobiusSpace.s) {
+                            Text("+\(totals.added)").foregroundStyle(palette.signal)
+                            Text("−\(totals.removed)").foregroundStyle(palette.danger)
+                        }
+                        .font(MobiusStyle.badgeFont)
+                        .padding(.horizontal, MobiusSpace.m)
+                        .frame(height: MobiusStyle.badgeHeight)
+                        .mobiusGlass(in: Capsule(), interactive: true)
+                        .frame(
+                            minWidth: MobiusStyle.iconButtonSize,
+                            minHeight: MobiusStyle.iconButtonSize
+                        )
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.mobiusPlain)
+                    .accessibilityLabel("Code changes")
+                    .accessibilityValue(
+                        "\(totals.added) additions, \(totals.removed) deletions"
+                    )
+                    .accessibilityHint("Opens modified files")
+                }
+
+                if let bot = model.selectedBot {
+                    BotActivityBadge(bot: bot, action: showBotSettings)
+                }
+                SessionStatsBadge()
             }
             .frame(minHeight: MobiusStyle.iconButtonSize)
-            .animation(.easeInOut(duration: 0.2), value: showsBotChoices)
             .scrollableRow()
         }
         .frame(maxWidth: .infinity)
@@ -676,37 +682,6 @@ private struct ComposerActivityView: View {
         }
     }
 
-    private var showsBotChoices: Bool {
-        model.chat.selectedSessionID == nil && model.chat.pendingNewChatWorkspace != nil
-    }
-}
-
-private struct BotChoiceBadge: View {
-    @Environment(AppModel.self) private var model
-    let bot: BotRecord
-
-    var body: some View {
-        let selected = model.chat.pendingNewChatBotID == bot.id
-        Button {
-            model.selectBotForNewChat(bot)
-        } label: {
-            MobiusBadge(
-                text: .verbatim(bot.name),
-                glyph: .aiScan,
-                glyphColor: bot.tint.color,
-                interactive: true,
-                selected: selected
-            )
-            .frame(minWidth: MobiusStyle.iconButtonSize, minHeight: MobiusStyle.iconButtonSize)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.mobiusPlain)
-        .disabled(model.chat.sessionRequestID != nil)
-        .accessibilityLabel(Text("Start with Bot \(bot.name)"))
-        .accessibilityValue(selected ? Text("Selected") : Text("Not selected"))
-        .accessibilityAddTraits(selected ? .isSelected : [])
-        .sensoryFeedback(.selection, trigger: selected)
-    }
 }
 
 private struct BotActivityBadge: View {

@@ -7,7 +7,7 @@ use mobius::protocol::{FrontendSettingOption, FrontendTone, ModelChoice};
 
 use crate::config::{
     ConfigStore, ConfiguredProvider, CredentialStore, DEFAULT_CONTEXT_WINDOW, GatewayConfig,
-    effective_reasoning_effort, model_route_id,
+    model_route_id,
 };
 use crate::wire::{
     ProviderAuthKind, ProviderConfig, ProviderEndpointAuth, ProviderInstance, ProviderModel,
@@ -142,15 +142,7 @@ pub(crate) fn catalog_routes(
 
     let mut routes = Vec::new();
     for (model, preset) in models {
-        let catalog_default = preset
-            .and_then(|preset| preset.default_reasoning)
-            .or_else(|| configured.reasoning_efforts.first().map(String::as_str));
-        let preferred = if model == selection.model {
-            effective_reasoning_effort(definition, configured, selection)
-        } else {
-            catalog_default
-        };
-        let mut efforts = vec![preferred];
+        let mut efforts = Vec::new();
         for reasoning in preset.into_iter().flat_map(|preset| preset.reasoning) {
             let effort = Some(reasoning.id);
             if !efforts.contains(&effort) {
@@ -164,6 +156,9 @@ pub(crate) fn catalog_routes(
                     efforts.push(effort);
                 }
             }
+        }
+        if efforts.is_empty() {
+            efforts.push(None);
         }
         for effort in efforts {
             let mut provider = selection.clone();
@@ -337,6 +332,43 @@ mod tests {
     }
 
     #[test]
+    fn catalog_reasoning_follows_manifest_order_even_when_another_level_is_selected() {
+        let status = provider_status(provider("openai_socket").expect("provider"));
+        let configured = ConfiguredProvider {
+            selection: ProviderConfig {
+                instance: "openai_socket".into(),
+                provider: "openai_socket".into(),
+                model: "gpt-5.6-sol".into(),
+                reasoning_effort: Some("max".into()),
+                ..crate::wire::AgentComposition::default().provider
+            },
+            label: "OpenAI".into(),
+            tint: Default::default(),
+            model_ids: Vec::new(),
+            reasoning_efforts: Vec::new(),
+        };
+        let routes = catalog_routes(
+            provider("openai_socket").expect("provider"),
+            &configured,
+            &configured.selection,
+        );
+        for model in &status.models {
+            assert_eq!(
+                routes
+                    .iter()
+                    .filter(|route| route.choice.model == model.id)
+                    .filter_map(|route| route.choice.reasoning_effort.as_deref())
+                    .collect::<Vec<_>>(),
+                model
+                    .reasoning
+                    .iter()
+                    .map(|effort| effort.id.as_str())
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
     fn provider_status_uses_manifest_defaults() {
         let status = provider_status(provider("openai_socket").expect("provider"));
 
@@ -427,7 +459,7 @@ mod tests {
             selection.provider = id.into();
             selection.model = model.into();
             selection.base_url = definition.default_base_url().map(str::to_owned);
-            selection.reasoning_effort = Some("medium".into());
+            selection.reasoning_effort = Some("max".into());
             let config = GatewayConfig::new("127.0.0.1:8741".parse().expect("listen"), None)
                 .expect("config")
                 .registering_provider(
@@ -440,6 +472,14 @@ mod tests {
                 .expect("register custom catalog");
             let configured = &config.configured_providers[id];
             let routes = catalog_routes(definition, configured, &configured.selection);
+            assert_eq!(
+                routes
+                    .iter()
+                    .filter(|route| route.choice.model == model)
+                    .filter_map(|route| route.choice.reasoning_effort.as_deref())
+                    .collect::<Vec<_>>(),
+                ["medium", "max"]
+            );
             assert!(
                 routes
                     .iter()

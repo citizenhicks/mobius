@@ -123,7 +123,11 @@ private struct AgentEventValidator {
                 throw GatewayWireError.invalidFrame("tool_call_begin has invalid arguments")
             }
         case "tool_call_end":
-            try requireStrings(["turnId", "callId", "name", "output"])
+            try requireStrings(["turnId", "callId", "name"])
+            guard let output = msg["output"]?.arrayValue else {
+                throw GatewayWireError.invalidFrame("tool_call_end has invalid output")
+            }
+            _ = try output.map(ContentPart.init(json:))
             try requireBool("isError")
         case "tool_load":
             try requireStrings(["turnId", "loadId", "catalogRevision"])

@@ -2,10 +2,14 @@ use std::process::Stdio;
 
 use crate::{Error, Result};
 
-/// Reaps every process in one Seatbelt instance when the host-owned stdin lease closes.
+/// Reaps every process in one Seatbelt instance when the host-owned lease closes.
 #[cfg(target_os = "macos")]
 pub const MACOS_COMMAND_WRAPPER: &str = r#"
-exec 3<&0
+lease=$1
+input=$2
+shift 2
+exec 3<&"$lease"
+if test "$lease" = 2; then exec 2>/dev/null; fi
 (
   trap '' HUP INT TERM
   while IFS= read -r _ <&3; do :; done
@@ -13,7 +17,7 @@ exec 3<&0
 ) &
 test -n "$!" || exit 125
 exec 3<&-
-exec "$@" </dev/null
+exec "$@" <"$input"
 "#;
 
 /// Kills one command's process group when execution completes or is cancelled.

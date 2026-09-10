@@ -467,8 +467,8 @@ impl Tool for UnrenderedTool {
         &'a self,
         _context: ToolContext,
         _arguments: Value,
-    ) -> BoxFuture<'a, Result<String>> {
-        Box::pin(async { Ok(String::new()) })
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
+        Box::pin(async { Ok(String::new().into()) })
     }
 }
 
@@ -502,6 +502,7 @@ impl Middleware for CatchAllRenderer {
             text: String::new(),
             symbol: None,
             files: Vec::new(),
+            content: Default::default(),
             format: crate::protocol::FrontendBlockFormat::PlainText,
             tone: FrontendTone::Neutral,
         })

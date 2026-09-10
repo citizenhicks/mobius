@@ -2,7 +2,7 @@ use super::*;
 use std::collections::BTreeSet;
 
 use mobius::backend::model::provider::{ProviderAuth, provider};
-use mobius::middleware::session_files::session_file_limits;
+use mobius::backend::session_files::session_file_limits;
 
 use crate::config::{ConfigStore, GatewayConfig};
 use crate::wire::ProviderUsage;

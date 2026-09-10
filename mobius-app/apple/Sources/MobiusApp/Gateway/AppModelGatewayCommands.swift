@@ -148,6 +148,13 @@ extension AppModel {
         }
         guard canCreateSession else { return }
         if newVoiceChatIntent == .selectingWorkspace { newVoiceChatIntent = .selectingBot }
+        if chat.selectedSessionID == nil, case .chat(.new)? = navigationPath.last {
+            chat.pendingNewChatWorkspace = path
+            workspaceError = nil
+            showsWorkspaceBrowser = false
+            createPendingVoiceChat()
+            return
+        }
         chat.changeComposerDraftOwner(to: nil)
         chat.discardComposerAttachments()
         resetRootSessionState()

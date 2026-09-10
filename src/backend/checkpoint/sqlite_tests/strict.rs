@@ -6,8 +6,8 @@ async fn checkpoint_version_hard_rejects_previous_generations() {
     let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
         .expect("open checkpoint database");
     let mut checkpoint = checkpoint("session");
-    assert_eq!(checkpoint.version, 13);
-    for version in [9, 11, 12] {
+    assert_eq!(checkpoint.version, 14);
+    for version in [9, 11, 12, 13] {
         checkpoint.version = version;
         let error = store
             .save(&checkpoint, &[], None)

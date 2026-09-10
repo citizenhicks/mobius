@@ -782,7 +782,7 @@ extension AppModelTests {
             provider: "openai_socket",
             model: "gpt-5.6-sol",
             baseUrl: nil,
-            reasoningEffort: "medium",
+            reasoningEffort: "brief",
             webSearch: .cached
         )
         let personal = ProviderConfig(
@@ -790,58 +790,100 @@ extension AppModelTests {
             provider: work.provider,
             model: work.model,
             baseUrl: nil,
-            reasoningEffort: "medium",
+            reasoningEffort: "brief",
             webSearch: .cached
         )
         let choices = [
             ModelChoice(
-                route: "work-medium",
+                route: "work-brief",
                 group: "Work · Sol",
                 model: work.model,
-                reasoningEffort: "medium",
+                reasoningEffort: "brief",
                 contextWindow: nil,
                 supportsImageInput: true,
                 toolDiscovery: .native
             ),
             ModelChoice(
-                route: "work-high",
+                route: "work-thorough",
                 group: "Work · Sol",
                 model: work.model,
-                reasoningEffort: "high",
+                reasoningEffort: "thorough",
                 contextWindow: nil,
                 supportsImageInput: true,
                 toolDiscovery: .native
             ),
             ModelChoice(
-                route: "personal-medium",
+                route: "personal-brief",
                 group: "Personal · Sol",
                 model: personal.model,
-                reasoningEffort: "medium",
+                reasoningEffort: "brief",
                 contextWindow: nil,
                 supportsImageInput: true,
                 toolDiscovery: .native
             ),
         ]
+        model.providerInstances = [work, personal].map {
+            ProviderInstance(
+                label: $0.instance, tint: .teal, configured: true, selection: $0,
+                modelIds: [], reasoningEfforts: ["brief", "thorough"]
+            )
+        }
         model.modelChoices = choices
         model.modelProviders = [
-            "work-medium": work.instance,
-            "work-high": work.instance,
-            "personal-medium": personal.instance,
+            "work-brief": work.instance,
+            "work-thorough": work.instance,
+            "personal-brief": personal.instance,
         ]
 
         XCTAssertEqual(
             model.distinctModels(in: choices).map(\.route),
-            ["work-medium", "personal-medium"]
+            ["work-brief", "personal-brief"]
         )
         XCTAssertEqual(
             model.modelChoices(matching: choices[0], in: choices).map(\.route),
-            ["work-medium", "work-high"]
+            ["work-brief", "work-thorough"]
+        )
+        XCTAssertEqual(
+            model.modelChoices(matching: choices[0], in: choices.reversed()).map(\.route),
+            ["work-thorough", "work-brief"]
+        )
+        XCTAssertEqual(
+            model.modelRoute(selecting: choices[0], preserving: choices[1], in: choices),
+            "work-thorough")
+        XCTAssertEqual(
+            model.modelRoute(selecting: choices[2], preserving: choices[1], in: choices),
+            "personal-brief")
+        XCTAssertEqual(model.reasoningFraction(for: choices[0]), 0)
+        XCTAssertEqual(model.reasoningFraction(for: choices[1]), 1)
+        XCTAssertEqual(model.reasoningLabel(for: choices[0]), "brief")
+        model.providerStatuses = [
+            providerStatus(
+                for: work,
+                models: [
+                    ProviderModel(
+                        id: work.model, label: "Advertised model", description: "",
+                        contextWindow: 128_000,
+                        reasoning: [
+                            ReasoningChoice(
+                                id: "thorough", label: "Full analysis", description: ""),
+                            ReasoningChoice(id: "brief", label: "Quick answer", description: ""),
+                        ],
+                        defaultReasoning: "brief", toolDiscovery: .native
+                    )
+                ])
+        ]
+        XCTAssertEqual(model.reasoningLabel(for: choices[0]), "brief")
+        model.modelChoices = choices.reversed()
+        XCTAssertEqual(model.reasoningFraction(for: choices[0]), 1)
+        XCTAssertEqual(
+            model.modelChoices(matching: choices[0], in: model.modelChoices).map(\.route),
+            ["work-thorough", "work-brief"]
         )
 
         var draft = composition()
         draft.provider = personal
         model.botDefaultsDraft = draft
-        XCTAssertEqual(model.botDefaultsDraftModelRoute, "personal-medium")
+        XCTAssertEqual(model.botDefaultsDraftModelRoute, "personal-brief")
     }
 
     func testModelLabelUsesProviderFriendlyName() throws {
@@ -882,7 +924,7 @@ extension AppModelTests {
                 models: [
                     ProviderModel(
                         id: config.model,
-                        label: "Sol",
+                        label: "5.6 Sol",
                         description: "Coding model",
                         contextWindow: 128_000,
                         reasoning: [],
@@ -891,7 +933,7 @@ extension AppModelTests {
                     ),
                     ProviderModel(
                         id: "gpt-5.6-luna",
-                        label: "Luna",
+                        label: "5.6 Luna",
                         description: "Fast coding model",
                         contextWindow: 128_000,
                         reasoning: [],
@@ -911,9 +953,12 @@ extension AppModelTests {
             )
         ]
 
-        XCTAssertEqual(model.modelLabel(for: choice), "Sol")
-        XCTAssertEqual(model.modelLabel(for: canonicalChoice), "Luna")
-        XCTAssertEqual(model.modelGroupLabel(for: canonicalChoice), "OpenRouter · Luna")
+        XCTAssertEqual(model.modelLabel(for: choice), "5.6 Sol")
+        XCTAssertEqual(model.modelLabel(for: canonicalChoice), "5.6 Luna")
+        XCTAssertEqual(model.modelGroupLabel(for: canonicalChoice), "OpenRouter · 5.6 Luna")
+        model.modelChoices = [choice]
+        model.chat.selectedModelRoute = choice.route
+        XCTAssertEqual(model.chatModelLabel, "5.6 Sol")
         XCTAssertEqual(canonicalChoice.model, "openai/gpt-5.6-luna")
         XCTAssertEqual(
             model.modelLabel(provider: config.instance, modelID: "acme/custom-model"),

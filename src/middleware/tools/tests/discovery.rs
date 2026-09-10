@@ -36,7 +36,7 @@ impl Tool for NamedTool {
         &'a self,
         _context: ToolContext,
         _arguments: Value,
-    ) -> BoxFuture<'a, Result<String>> {
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         Box::pin(async { Ok("executed".into()) })
     }
 }
@@ -56,8 +56,8 @@ impl Tool for DefaultDeferredTool {
         &'a self,
         _context: ToolContext,
         _arguments: Value,
-    ) -> BoxFuture<'a, Result<String>> {
-        Box::pin(async { Ok(String::new()) })
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
+        Box::pin(async { Ok(String::new().into()) })
     }
 }
 
@@ -81,7 +81,12 @@ fn only_core_tools_are_direct_by_default() {
     assert_eq!(DefaultDeferredTool.exposure(), ToolExposure::Deferred);
     for exposure in [
         ReadFile.exposure(),
-        ViewImage.exposure(),
+        ViewImage {
+            store: crate::backend::session_files::SessionFileStore::new(std::path::Path::new(
+                "unused",
+            )),
+        }
+        .exposure(),
         WriteFile.exposure(),
         ApplyPatch.exposure(),
         Bash.exposure(),
@@ -421,7 +426,10 @@ async fn dispatch_rechecks_exposure_in_the_current_catalog() {
 
     assert!(result.is_error);
     assert!(!result.handler_executed);
-    assert_eq!(result.output, "tool `changing` is hidden from the model");
+    assert_eq!(
+        result.output.text(),
+        "tool `changing` is hidden from the model"
+    );
 }
 
 #[tokio::test]
@@ -463,5 +471,5 @@ async fn tools_search_executes_as_a_normal_bound_tool_and_reports_loaded_names()
         .expect("tool load");
     assert_eq!(load.tools, ["swarm_post"]);
     assert!(matches!(result.events.as_slice(), [EventMsg::ToolLoad(_)]));
-    assert_eq!(result.output, r#"{"loaded_tools":["swarm_post"]}"#);
+    assert_eq!(result.output.text(), r#"{"loaded_tools":["swarm_post"]}"#);
 }

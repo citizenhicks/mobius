@@ -3,6 +3,31 @@ import Foundation
 import XCTest
 
 extension GatewayWireTests {
+    func testOrderedObservationsRoundTripAndRejectStringOutput() throws {
+        let content =
+            #"[{"type":"input_text","text":"before"},{"type":"input_image","image":{"file":{"id":"screen","name":"screen.png","size":100,"media_type":"image/png"},"width":10,"height":20,"detail":"high"}},{"type":"input_text","text":"after"}]"#
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let parts = try decoder.decode([ContentPart].self, from: Data(content.utf8))
+        XCTAssertEqual(parts.count, 3)
+        XCTAssertEqual(parts[0], .text("before"))
+        XCTAssertEqual(parts[2], .text("after"))
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        XCTAssertEqual(try decoder.decode([ContentPart].self, from: encoder.encode(parts)), parts)
+        let fixture =
+            #"{"version":74,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1234,"event":{"msg":{"type":"tool_call_end","turn_id":"turn","call_id":"call","name":"computer_control","output":\#(content),"is_error":true}},"stream_metrics":[],"blocks":[],"preview":null}}"#
+        XCTAssertNoThrow(try decodeEnvelope(fixture))
+        XCTAssertThrowsError(
+            try decodeEnvelope(fixture.replacingOccurrences(of: content, with: #""legacy string""#))
+        )
+        XCTAssertThrowsError(
+            try decoder.decode(
+                [ContentPart].self,
+                from: Data(
+                    content.replacingOccurrences(of: #""width":10"#, with: #""width":0"#).utf8)))
+    }
+
     func testMessageDeltaRequiresItsStableSubmissionIdentity() throws {
         let fixture =
             #"{"version":70,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1234,"event":{"submission_id":"spoken-1","msg":{"type":"message_delta","text":"Hello"}},"stream_metrics":[],"blocks":[],"preview":null}}"#
@@ -205,7 +230,7 @@ extension GatewayWireTests {
 
     func testUnknownRenderedPresentationValuesAreRejected() {
         let outerBlock =
-            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"turn_complete","turn_id":"turn-1"}},"stream_metrics":[],"blocks":[{"capability":"tools","block":{"id":null,"group":null,"update":"replace","state":"complete","role":"tool","title":"Done","text":"","symbol":null,"format":"future_format","tone":"neutral","files":[]}}],"preview":null}}"#
+            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"turn_complete","turn_id":"turn-1"}},"stream_metrics":[],"blocks":[{"capability":"tools","block":{"id":null,"group":null,"update":"replace","state":"complete","role":"tool","title":"Done","text":"","symbol":null,"format":"future_format","tone":"neutral","content":[],"files":[]}}],"preview":null}}"#
         XCTAssertThrowsError(try decodeEnvelope(outerBlock))
 
         let invalidWidgetPayload = sessionReadyPayloadJSON.replacingOccurrences(

@@ -55,7 +55,7 @@ impl Tool for WriteScratchpad {
         &'a self,
         _context: ToolContext,
         arguments: Value,
-    ) -> BoxFuture<'a, Result<String>> {
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let arguments: WriteArgs = serde_json::from_value(arguments)?;
             let access = self.store.lock_access().await;

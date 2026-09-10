@@ -20,6 +20,8 @@ use crate::protocol::{
 };
 use crate::{Error, Result};
 
+mod images;
+pub use images::grant_context;
 mod storage;
 
 #[cfg(test)]
@@ -109,6 +111,7 @@ struct SessionFileReservation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum SessionFileOrigin {
+    Observation,
     Upload,
     Artifact,
 }
@@ -199,22 +202,14 @@ impl SessionFileStore {
         media_type: String,
         bytes: &[u8],
     ) -> Result<SessionFileReference> {
-        let size = u64::try_from(bytes.len())
-            .map_err(|_| Error::Tool("artifact size is unsupported".into()))?;
-        let mut pending = self
-            .begin(
-                session_id,
-                name,
-                size,
-                media_type,
-                SessionFileOrigin::Artifact,
-            )
-            .await?;
-        for chunk in bytes.chunks(MAX_UPLOAD_CHUNK_BYTES) {
-            let offset = pending.written;
-            pending.append(offset, chunk).await?;
-        }
-        pending.finish().await
+        self.publish_bytes(
+            session_id,
+            name,
+            media_type,
+            bytes,
+            SessionFileOrigin::Artifact,
+        )
+        .await
     }
 
     /// Lists completed user uploads for one session.
@@ -237,12 +232,15 @@ impl SessionFileStore {
             list_completed(&self.session_dir(session_id), &self.blob_dir())
                 .await?
                 .into_iter()
-                .map(|record| SessionFileRecord {
-                    origin: match record.origin {
-                        SessionFileOrigin::Upload => ProtocolFileOrigin::User,
-                        SessionFileOrigin::Artifact => ProtocolFileOrigin::Agent,
-                    },
-                    file: record.file,
+                .filter_map(|record| {
+                    Some(SessionFileRecord {
+                        origin: match record.origin {
+                            SessionFileOrigin::Upload => ProtocolFileOrigin::User,
+                            SessionFileOrigin::Artifact => ProtocolFileOrigin::Agent,
+                            SessionFileOrigin::Observation => return None,
+                        },
+                        file: record.file,
+                    })
                 })
                 .collect(),
         )
@@ -418,12 +416,6 @@ impl SessionFileStore {
         Ok(record.content_hash)
     }
 
-    /// Reads a content-addressed blob after validating its size and SHA-256 identity.
-    pub(crate) async fn read_content_blob(&self, content_hash: &str, size: u64) -> Result<Vec<u8>> {
-        let path = self.content_blob_path(content_hash, size).await?;
-        Ok(tokio::fs::read(path).await?)
-    }
-
     /// Resolves a validated content blob for workspace staging.
     pub(crate) async fn content_blob_path(&self, content_hash: &str, size: u64) -> Result<PathBuf> {
         validate_content_hash(content_hash)?;
@@ -476,6 +468,25 @@ impl SessionFileStore {
             file: Some(tokio::fs::File::from_std(file)),
             path: Some(path),
         })
+    }
+
+    async fn publish_bytes(
+        &self,
+        session_id: &str,
+        name: String,
+        media_type: String,
+        bytes: &[u8],
+        origin: SessionFileOrigin,
+    ) -> Result<SessionFileReference> {
+        let size = u64::try_from(bytes.len())
+            .map_err(|_| Error::Tool("file size is unsupported".into()))?;
+        let mut pending = self
+            .begin(session_id, name, size, media_type, origin)
+            .await?;
+        for chunk in bytes.chunks(MAX_UPLOAD_CHUNK_BYTES) {
+            pending.append(pending.written, chunk).await?;
+        }
+        pending.finish().await
     }
 
     async fn list_origin(

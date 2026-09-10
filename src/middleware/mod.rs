@@ -30,15 +30,14 @@ pub mod artifacts;
 pub mod attachments;
 pub mod bots;
 pub mod compaction;
+pub mod computer_control;
 mod context;
 pub mod context_offloading;
 pub mod extensions;
-mod image_input;
 pub mod instructions;
 pub mod manifest;
 pub mod messages;
 pub mod scratchpad;
-pub mod session_files;
 pub mod sessions;
 pub mod subagents;
 pub mod tasks;
@@ -52,12 +51,6 @@ pub use context::{
     SubmissionResult, ToolExposureContext, TurnEndContext, TurnIdentity,
 };
 pub(crate) use context::{MessageSubmitResult, PreparedMessage};
-#[cfg(test)]
-pub(crate) use image_input::MAX_IMAGE_INPUT_BYTES;
-pub(crate) use image_input::{
-    checked_image_input_bytes, model_input_image_bytes, model_input_image_stats,
-};
-
 use tools::Catalog;
 
 const ESTIMATED_BYTES_PER_TOKEN: usize = 4;
@@ -136,6 +129,7 @@ impl MiddlewareCommandOutput {
                 text: String::new(),
                 symbol: None,
                 files: Vec::new(),
+                content: Default::default(),
                 format: crate::protocol::FrontendBlockFormat::PlainText,
                 tone,
             },
@@ -695,10 +689,11 @@ impl MiddlewareStack {
         &self,
         mut context: ModelContext<'_>,
     ) -> Result<Option<Vec<Value>>> {
-        let supports_image_input = context.model.supports_image_input(context.provider)?;
+        let supports_tool_image_input =
+            context.model.supports_tool_image_input(context.provider)?;
         self.resolve_tool_exposure(
             context.session_id,
-            supports_image_input,
+            supports_tool_image_input,
             context.durable_input,
             context.available_tools,
         )
@@ -730,7 +725,7 @@ impl MiddlewareStack {
     pub(crate) async fn resolve_tool_exposure(
         &self,
         session_id: &str,
-        supports_image_input: bool,
+        supports_tool_image_input: bool,
         input: &[Value],
         available: &mut BTreeSet<String>,
     ) -> Result<()> {
@@ -738,7 +733,7 @@ impl MiddlewareStack {
             entry
                 .tool_exposure(&mut ToolExposureContext {
                     session_id,
-                    supports_image_input,
+                    supports_tool_image_input,
                     input,
                     available,
                 })
@@ -870,7 +865,7 @@ fn validate_tool_rendering(
                 turn_id: "validation".into(),
                 call_id: "validation".into(),
                 name: tool_name.into(),
-                output: String::new(),
+                output: String::new().into(),
                 is_error: false,
             }),
         ),
@@ -1019,11 +1014,30 @@ pub(crate) const fn approximate_tokens(bytes: usize) -> usize {
 
 pub(crate) fn approximate_item_tokens(item: &Value) -> usize {
     let mut item = item.clone();
+    let mut image_tokens = 0usize;
+    if let Some(parts) = crate::protocol::content_parts_mut(&mut item) {
+        for part in parts {
+            if part.get("type").and_then(Value::as_str) == Some("input_image") {
+                let width = part["image"]["width"].as_u64().unwrap_or(2048);
+                let height = part["image"]["height"].as_u64().unwrap_or(2048);
+                // Conservative tile estimate; observed provider usage also drives compaction.
+                let tokens = width
+                    .div_ceil(512)
+                    .saturating_mul(height.div_ceil(512))
+                    .saturating_mul(256)
+                    .saturating_add(256);
+                image_tokens =
+                    image_tokens.saturating_add(usize::try_from(tokens).unwrap_or(usize::MAX));
+                *part = Value::Null;
+            }
+        }
+    }
     if let Some(fields) = item.as_object_mut() {
         fields.retain(|name, _| !name.starts_with('_'));
     }
     serde_json::to_vec(&item)
         .map_or(0, |bytes| approximate_tokens(bytes.len()))
+        .saturating_add(image_tokens)
         .max(1)
 }
 

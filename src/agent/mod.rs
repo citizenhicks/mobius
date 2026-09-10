@@ -21,11 +21,11 @@ use crate::backend::checkpoint::ExecutionRecord;
 use crate::backend::checkpoint::JournalEvent;
 use crate::backend::model::ModelRouter;
 use crate::backend::sandbox::Sandbox;
+use crate::backend::session_files::session_file_limits;
 use crate::middleware::FrontendExtensions;
 use crate::middleware::MiddlewareCommandContext;
 use crate::middleware::MiddlewareStack;
 use crate::middleware::RuntimeContext;
-use crate::middleware::session_files::session_file_limits;
 use crate::middleware::tools::Catalog;
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
@@ -127,6 +127,12 @@ impl AgentConfig {
             max_model_steps: DEFAULT_MAX_MODEL_STEPS,
             role: AgentRole::Main,
         }
+    }
+
+    /// Gives a child agent its own sandbox temporary files and execution lifetime.
+    pub fn isolated_execution(mut self) -> Result<Self> {
+        self.sandbox = Arc::new(self.sandbox.isolated_execution()?);
+        Ok(self)
     }
 
     /// Sets a stable ID used to resume a checkpointed session.

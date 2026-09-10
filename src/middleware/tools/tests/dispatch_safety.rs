@@ -21,7 +21,7 @@ impl Tool for PanickingTool {
         &'a self,
         _context: ToolContext,
         _arguments: Value,
-    ) -> BoxFuture<'a, Result<String>> {
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         panic!("intentional tool panic")
     }
 }
@@ -43,7 +43,7 @@ impl Tool for ApprovalRequiredTool {
         &'a self,
         _context: ToolContext,
         _arguments: Value,
-    ) -> BoxFuture<'a, Result<String>> {
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         Box::pin(async { Ok("executed".into()) })
     }
 }
@@ -63,12 +63,18 @@ impl Tool for PermissionEchoTool {
         ExecutionMode::Parallel
     }
 
-    fn call<'a>(&'a self, context: ToolContext, arguments: Value) -> BoxFuture<'a, Result<String>> {
+    fn call<'a>(
+        &'a self,
+        context: ToolContext,
+        arguments: Value,
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         let label = arguments["label"]
             .as_str()
             .expect("permission echo label")
             .to_string();
-        Box::pin(async move { Ok(format!("{label}:{}", context.permissions.allows_mutation())) })
+        Box::pin(
+            async move { Ok(format!("{label}:{}", context.permissions.allows_mutation()).into()) },
+        )
     }
 }
 
@@ -195,7 +201,7 @@ async fn approval_required_handler_cannot_run_without_exact_call_authority() {
         (
             result.is_error,
             result.handler_executed,
-            result.output.as_str()
+            result.output.text().as_str()
         ),
         (true, false, "tool call is not authorized to mutate state")
     );

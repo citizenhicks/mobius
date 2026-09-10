@@ -120,6 +120,7 @@ impl Approval {
                 text: format!("{}\n{}", request.reason, approval_tools(&request.calls)),
                 symbol: None,
                 files: Vec::new(),
+                content: Default::default(),
                 format: crate::protocol::FrontendBlockFormat::PlainText,
                 tone: FrontendTone::Warning,
             }),

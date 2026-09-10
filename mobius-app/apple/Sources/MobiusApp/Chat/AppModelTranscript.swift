@@ -434,6 +434,8 @@ extension ChatSessionModel {
             entries[index].recordedAtMs = recordedAtMs
             entries[index].format = block.format
             entries[index].tone = block.tone
+            entries[index].content =
+                appending ? entries[index].content + block.content : block.content
             let currentFiles = entries[index].files
             entries[index].files = mergedFiles(
                 currentFiles,
@@ -459,7 +461,8 @@ extension ChatSessionModel {
                     turnID: turnID,
                     sourceSequence: sequence,
                     recordedAtMs: recordedAtMs,
-                    files: block.files
+                    files: block.files,
+                    content: block.content
                 ))
         }
     }
@@ -557,6 +560,7 @@ extension ChatSessionModel {
                 if entry.update == .append {
                     entry.text = appendingBlockText(entry.text, to: previous.text)
                     entry.files = mergedFiles(previous.files, with: entry.files, appending: true)
+                    entry.content = previous.content + entry.content
                     if entry.group == nil { entry.group = previous.group }
                     entry.update = previous.update == .append ? .append : .replace
                 } else if entry.modelStepID != nil, entry.pending, previous.pending {

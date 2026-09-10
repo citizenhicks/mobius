@@ -158,6 +158,9 @@ struct ComposerOptionsView: View {
     @Binding var selection: TextSelection?
     let send: (ActiveMessageDelivery?) -> Void
     var isCompact = false
+    @State private var showsModelSettings = false
+    @State private var opensModelSelection = false
+    @State private var showsModelSelection = false
     @State private var isFileImporterPresented = false
     @State private var isPhotoPickerPresented = false
     @State private var photoSelection: [PhotosPickerItem] = []
@@ -184,6 +187,15 @@ struct ComposerOptionsView: View {
                     actionButtons
                 }
             }
+        }
+        .sheet(isPresented: $showsModelSelection) {
+            ModelSelectionSheet(
+                choices: model.modelChoices,
+                isEnabled: model.canMutateSelectedBot,
+                route: selectedModelBinding,
+                voices: model.realtimeVoices(for: model.selectedBot?.config.config),
+                voice: selectedVoiceBinding
+            )
         }
         .fileImporter(
             isPresented: $isFileImporterPresented,
@@ -241,76 +253,83 @@ struct ComposerOptionsView: View {
     }
 
     private var modelMenu: some View {
-        Menu {
-            Section("Model") { modelMenuContent }
-            Section("Reasoning") { reasoningMenuContent }
+        let progress = currentChoice.map { model.reasoningFraction(for: $0) } ?? 0
+        let sweep = 250.0
+        let start = 90 + (360 - sweep) / 2
+        let endpoint = (start + sweep * progress) * .pi / 180
+        return Button {
+            showsModelSettings = true
         } label: {
-            MobiusMenuLabel(
-                text: currentChoice.map { .verbatim(model.modelLabel(for: $0)) }
-                    ?? .localized("Model"),
-                glyph: providerGlyph,
-                detail: displayedReasoningLabel,
-                glyphSize: MobiusStyle.glyphLead,
-                glyphColor: providerTint?.color
-            )
-            .frame(minHeight: MobiusStyle.iconButtonSize)
+            ZStack {
+                Circle()
+                    .trim(from: 0, to: sweep / 360)
+                    .stroke(
+                        palette.muted.opacity(0.2),
+                        style: StrokeStyle(lineWidth: 2.5, lineCap: .round)
+                    )
+                    .rotationEffect(.degrees(start))
+                Circle()
+                    .trim(from: 0, to: progress * sweep / 360)
+                    .stroke(
+                        providerTint?.color ?? palette.accent,
+                        style: StrokeStyle(lineWidth: 2.5, lineCap: .round)
+                    )
+                    .rotationEffect(.degrees(start))
+                Circle()
+                    .fill(providerTint?.color ?? palette.accent)
+                    .frame(width: 4.5, height: 4.5)
+                    .offset(
+                        x: MobiusStyle.rowCompact / 2 * cos(endpoint),
+                        y: MobiusStyle.rowCompact / 2 * sin(endpoint)
+                    )
+                MobiusIcon(
+                    providerGlyph ?? .aiScan, size: MobiusStyle.glyphInline,
+                    foreground: providerTint?.color)
+            }
+            .frame(width: MobiusStyle.rowCompact, height: MobiusStyle.rowCompact)
+            .frame(width: MobiusStyle.iconButtonSize, height: MobiusStyle.iconButtonSize)
             .contentShape(Rectangle())
         }
         .buttonStyle(.mobiusPlain)
-        .sensoryFeedback(.selection, trigger: selectedBotModelRoute)
         .disabled(!model.canMutateSelectedBot)
         .accessibilityLabel("Model and reasoning")
         .accessibilityValue(modelLabel.text)
-    }
-
-    @ViewBuilder
-    private var modelMenuContent: some View {
-        Picker("Model", selection: modelPickerSelection) {
-            ForEach(distinctModels, id: \.route) { choice in
-                modelMenuOptionLabel(
-                    model.modelLabel(for: choice),
-                    providerSymbol: model.providerSymbol(for: choice),
-                    tint: model.providerTint(for: choice)
-                )
-                .tag(choice.route)
-            }
-        }
-        .labelsHidden()
-    }
-
-    @ViewBuilder
-    private var reasoningMenuContent: some View {
-        Picker("Reasoning", selection: reasoningPickerSelection) {
-            ForEach(reasoningChoices, id: \.route) { choice in
-                if let effort = choice.reasoningEffort {
-                    Text(verbatim: effort.capitalized).tag(choice.route)
-                } else {
-                    Text("Default").tag(choice.route)
+        .popover(isPresented: $showsModelSettings, arrowEdge: .bottom) {
+            ModelRoutePicker(
+                label: "Model and reasoning",
+                detail: "Choose the model and reasoning effort used by this Bot.",
+                choices: model.modelChoices,
+                isEnabled: model.canMutateSelectedBot,
+                route: selectedModelBinding,
+                onSelectModel: {
+                    opensModelSelection = true
+                    showsModelSettings = false
+                }
+            )
+            .padding(MobiusSpace.l)
+            .frame(width: 300)
+            .presentationCompactAdaptation(.popover)
+            .onDisappear {
+                if opensModelSelection {
+                    opensModelSelection = false
+                    showsModelSelection = true
                 }
             }
         }
-        .labelsHidden()
     }
 
-    private func modelMenuOptionLabel(
-        _ title: String,
-        providerSymbol: String?,
-        tint: AccentTint
-    ) -> some View {
-        Group {
-            if let providerSymbol,
-                let glyph = MobiusSymbol.knownGlyph(for: providerSymbol),
-                let image = glyph.menuImage(tint.color)
-            {
-                Label {
-                    Text(verbatim: title)
-                } icon: {
-                    image
-                }
-            } else {
-                Text(verbatim: title)
-            }
-        }
+    private var selectedModelBinding: Binding<String?> {
+        Binding(
+            get: { selectedBotModelRoute },
+            set: { if let route = $0 { model.selectModelForSelectedBot(route) } }
+        )
+    }
+
+    private var selectedVoiceBinding: Binding<String?> {
+        Binding(
+            get: { model.selectedBot?.config.config.realtimeVoice },
+            set: { if let voice = $0 { model.setSelectedBotVoice(voice) } }
+        )
     }
 
     @ViewBuilder
@@ -319,7 +338,10 @@ struct ComposerOptionsView: View {
             Button {
                 model.startRealtimeVoice()
             } label: {
-                MobiusLabel(title: "Start voice chat", glyph: .audioWave01)
+                MobiusLabel(
+                    title: "Start voice chat", glyph: .audioWave01,
+                    iconSize: MobiusStyle.glyphLead
+                )
             }
             .buttonStyle(MobiusIconButtonStyle(bare: true))
             .labelStyle(.iconOnly)
@@ -348,8 +370,13 @@ struct ComposerOptionsView: View {
 
         Group {
             if model.chat.activeTurnID != nil && !canSend {
-                Button("Stop", glyph: .stopFill) { model.interrupt() }
-                    .help("Stop")
+                Button {
+                    model.interrupt()
+                } label: {
+                    MobiusLabel(
+                        title: "Stop", glyph: .stopFill, iconSize: MobiusStyle.glyphLead)
+                }
+                .help("Stop")
             } else {
                 Button(action: { send(nil) }) {
                     Label {
@@ -357,11 +384,11 @@ struct ComposerOptionsView: View {
                     } icon: {
                         if isWaitingForGateway {
                             MobiusSpinner(
-                                size: MobiusStyle.iconSize,
+                                size: MobiusStyle.glyphLead,
                                 foreground: palette.onAccent
                             )
                         } else {
-                            MobiusIcon(sendGlyph)
+                            MobiusIcon(sendGlyph, size: MobiusStyle.glyphLead)
                         }
                     }
                 }
@@ -446,39 +473,6 @@ struct ComposerOptionsView: View {
         return model.modelChoices.first { $0.route == selectedBotModelRoute }
     }
 
-    private var modelPickerSelection: Binding<String> {
-        Binding {
-            guard let currentChoice else { return "" }
-            return distinctModels.first { model.sameModel($0, currentChoice) }?.route
-                ?? currentChoice.route
-        } set: { route in
-            guard let choice = distinctModels.first(where: { $0.route == route }) else { return }
-            let effort = currentChoice?.reasoningEffort
-            let target =
-                model.modelChoices.first {
-                    model.sameModel($0, choice) && $0.reasoningEffort == effort
-                } ?? choice
-            model.selectModelForSelectedBot(target.route)
-        }
-    }
-
-    private var reasoningPickerSelection: Binding<String> {
-        Binding {
-            selectedBotModelRoute ?? ""
-        } set: { route in
-            model.selectModelForSelectedBot(route)
-        }
-    }
-
-    private var distinctModels: [ModelChoice] {
-        model.distinctModels(in: model.modelChoices)
-    }
-
-    private var reasoningChoices: [ModelChoice] {
-        guard let currentChoice else { return [] }
-        return model.modelChoices(matching: currentChoice, in: model.modelChoices)
-    }
-
     private var composerSettings: [ComposerSettingItem] {
         model.middlewareFeatures.flatMap { feature in
             feature.settings.compactMap { setting in
@@ -498,18 +492,7 @@ struct ComposerOptionsView: View {
     private var modelLabel: MobiusText {
         guard let currentChoice else { return .localized("Model") }
         let modelName = model.modelLabel(for: currentChoice)
-        if let effort = currentChoice.reasoningEffort {
-            return .localized("\(modelName) · \(effort.capitalized)")
-        }
-        return .localized("\(modelName) · Default")
-    }
-
-    private var displayedReasoningLabel: MobiusText? {
-        guard let currentChoice else { return nil }
-        if let effort = currentChoice.reasoningEffort {
-            return .verbatim("• \(effort.capitalized)")
-        }
-        return .localized("• Default")
+        return .localized("\(modelName) · \(model.reasoningLabel(for: currentChoice))")
     }
 
     private var providerTint: AccentTint? {

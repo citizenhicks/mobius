@@ -6,7 +6,7 @@ use mobius::protocol::{
 };
 use std::collections::BTreeMap;
 
-use mobius::middleware::session_files::session_file_limits;
+use mobius::backend::session_files::session_file_limits;
 use mobius_gateway::wire::{
     DailyUsage, ReadyPayload, ServerMessage, SessionActivity, SessionActivityState, SessionRecord,
 };
@@ -349,6 +349,7 @@ fn blocks(text: &str) -> FrontendWidgetContent {
             title: String::new(),
             text: text.into(),
             symbol: None,
+            content: Default::default(),
             format: FrontendBlockFormat::PlainText,
             tone: FrontendTone::Neutral,
             files: Vec::new(),

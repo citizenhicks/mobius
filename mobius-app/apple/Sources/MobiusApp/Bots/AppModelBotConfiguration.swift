@@ -56,6 +56,16 @@ extension AppModel {
         saveSelectedBot(bot, config: config)
     }
 
+    func setSelectedBotVoice(_ voice: String) {
+        guard let bot = selectedBot,
+            realtimeVoices(for: bot.config.config).contains(voice),
+            bot.config.config.realtimeVoice != voice
+        else { return }
+        var config = bot.config.config
+        config.realtimeVoice = voice
+        saveSelectedBot(bot, config: config)
+    }
+
     private func saveSelectedBot(_ bot: BotRecord, config: AgentComposition) {
         guard canMutateBot(bot.id) else { return }
         beginEditingBot(bot)

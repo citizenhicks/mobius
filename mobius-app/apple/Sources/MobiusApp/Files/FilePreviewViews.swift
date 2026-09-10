@@ -591,6 +591,7 @@ struct PreviewBlockView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: MobiusSpace.s) {
+            ObservationContentView(content: block.content, sessionID: model.chat.selectedSessionID)
             ForEach(block.files) { file in
                 SessionFileCard(file: file, sessionID: model.chat.selectedSessionID)
             }

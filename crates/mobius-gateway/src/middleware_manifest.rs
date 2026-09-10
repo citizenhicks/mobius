@@ -21,6 +21,7 @@ pub(crate) enum BuiltinMiddleware {
     Messages,
     ContextOffloading,
     Compaction,
+    ComputerControl,
     Scratchpad,
     Sessions,
     Bots,
@@ -31,7 +32,7 @@ pub(crate) struct MiddlewareRegistration {
     pub(crate) manifest: &'static MiddlewareManifest,
 }
 
-pub(crate) const MIDDLEWARE: [MiddlewareRegistration; 14] = [
+pub(crate) const MIDDLEWARE: [MiddlewareRegistration; 15] = [
     MiddlewareRegistration {
         kind: BuiltinMiddleware::Sandbox,
         manifest: &mobius::backend::sandbox::MANIFEST,
@@ -71,6 +72,10 @@ pub(crate) const MIDDLEWARE: [MiddlewareRegistration; 14] = [
     MiddlewareRegistration {
         kind: BuiltinMiddleware::ContextOffloading,
         manifest: &mobius::middleware::context_offloading::MANIFEST,
+    },
+    MiddlewareRegistration {
+        kind: BuiltinMiddleware::ComputerControl,
+        manifest: &mobius::middleware::computer_control::MANIFEST,
     },
     MiddlewareRegistration {
         kind: BuiltinMiddleware::Compaction,

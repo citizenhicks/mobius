@@ -93,8 +93,8 @@ struct PairingView: View {
     }
 
     private var isConnecting: Bool {
-        model.gateway.connectionState == .connecting
-            || model.gateway.connectionState == .authenticating
+        setup == .manual
+            && model.gateway.pairingConnectionState?.isConnecting == true
     }
 
     private var manualSetup: some View {
@@ -153,7 +153,7 @@ struct PairingView: View {
                     HStack(spacing: MobiusSpace.s) {
                         MobiusSpinner(size: MobiusStyle.glyphInline, foreground: palette.accent)
                         Text(
-                            model.gateway.connectionState == .authenticating
+                            model.gateway.pairingConnectionState == .authenticating
                                 ? "Authenticating with gateway" : "Connecting to gateway")
                     }
                 }

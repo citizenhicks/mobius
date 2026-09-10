@@ -40,6 +40,12 @@ workspaces. Start the gateway again after the command completes.
 
 The separately versioned `mobius-gateway` crate is the runtime library used by those binaries.
 
+On macOS 26+, the optional **Mobius Gateway.app** adds a compact voice menu in the
+menu bar. It shares the gateway's chats and workspaces and leaves background tasks
+running when closed. Cargo installs the command-line binaries; install the native
+app separately from the gateway release. See the [macOS voice guide](https://github.com/citizenhicks/mobius/blob/main/crates/mobius-gateway/macos/README.md)
+for building, packaging, and local connection requirements.
+
 Library hosts should signal shutdown through `GatewayServer::serve_until` and
 await its return. The server closes connections, finishes routine dispatch, stops
 Swarm delivery, and shuts down resident sessions, including active routines.

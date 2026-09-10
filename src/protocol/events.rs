@@ -411,7 +411,7 @@ pub struct ToolCallEndEvent {
     pub turn_id: String,
     pub call_id: String,
     pub name: String,
-    pub output: String,
+    pub output: super::ToolContent,
     pub is_error: bool,
 }
 

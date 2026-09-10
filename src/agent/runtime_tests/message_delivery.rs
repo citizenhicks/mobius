@@ -129,7 +129,7 @@ impl Tool for BlockingTool {
         &'a self,
         _context: ToolContext,
         _arguments: Value,
-    ) -> BoxFuture<'a, Result<String>> {
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         let finished = Arc::clone(&self.finished);
         let release = Arc::clone(&self.release);
         let started = Arc::clone(&self.started);

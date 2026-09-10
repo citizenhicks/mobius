@@ -361,6 +361,7 @@ struct FrontendBlock: Codable, Hashable, Sendable {
     let format: String
     let tone: String
     let files: [SessionFileReference]
+    var content: [ContentPart] = []
 
     var pending: Bool { state == .pending }
 }
@@ -391,6 +392,7 @@ extension FrontendBlock {
             ["plain_text", "unified_diff"].contains(format),
             let tone = json["tone"]?.stringValue,
             ["neutral", "success", "warning", "error"].contains(tone),
+            let content = json["content"]?.arrayValue,
             let files = json["files"]?.arrayValue,
             files.count <= maximumWireSessionFileReferences
         else {
@@ -407,6 +409,7 @@ extension FrontendBlock {
         self.format = format
         self.tone = tone
         self.files = try files.map(SessionFileReference.init(json:))
+        self.content = try content.map(ContentPart.init(json:))
     }
 }
 

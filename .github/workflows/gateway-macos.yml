@@ -1,0 +1,71 @@
+name: Gateway macOS
+
+on:
+  push:
+    paths:
+      - crates/mobius-gateway/macos/**
+      - crates/mobius-gateway/src/wire/**
+      - crates/mobius-gateway/src/wire.rs
+      - mobius-app/apple/Sources/MobiusApp/UI/MobiusPalette.swift
+      - mobius-app/apple/Sources/MobiusApp/UI/MobiusTokens.swift
+      - mobius-app/apple/Sources/MobiusApp/Composer/**
+      - mobius-app/apple/Sources/MobiusApp/Gateway/GatewayClient.swift
+      - mobius-app/apple/Sources/MobiusApp/Gateway/Wire/JSONValue.swift
+      - mobius-app/apple/Sources/MobiusApp/Assets.xcassets/**
+      - .github/workflows/gateway-macos.yml
+  pull_request:
+    paths:
+      - crates/mobius-gateway/macos/**
+      - crates/mobius-gateway/src/wire/**
+      - crates/mobius-gateway/src/wire.rs
+      - mobius-app/apple/Sources/MobiusApp/UI/MobiusPalette.swift
+      - mobius-app/apple/Sources/MobiusApp/UI/MobiusTokens.swift
+      - mobius-app/apple/Sources/MobiusApp/Composer/**
+      - mobius-app/apple/Sources/MobiusApp/Gateway/GatewayClient.swift
+      - mobius-app/apple/Sources/MobiusApp/Gateway/Wire/JSONValue.swift
+      - mobius-app/apple/Sources/MobiusApp/Assets.xcassets/**
+      - .github/workflows/gateway-macos.yml
+
+permissions:
+  contents: read
+
+jobs:
+  voice:
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      MOBIUS_GATEWAY_NO_MENU_BAR: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check Swift formatting
+        run: >-
+          xcrun swift-format lint --configuration mobius-app/apple/.swift-format --strict
+          --recursive crates/mobius-gateway/macos/Sources crates/mobius-gateway/macos/Tests
+      - name: Check complexity
+        run: |
+          tool_dir="$RUNNER_TEMP/swift-complexity"
+          mkdir -p "$tool_dir"
+          curl --fail --silent --show-error --location \
+            https://github.com/fummicc1/swift-complexity/releases/download/v1.4.0/SwiftComplexityCLI-1.4.0-macos-arm64.tar.gz \
+            -o "$tool_dir/tool.tgz"
+          printf '%s  %s\n' \
+            599ab9d4bf2e12775eb93f4a03ce8b3e3940c349ee63a0131e0c23f9d3941b98 \
+            "$tool_dir/tool.tgz" | shasum -a 256 -c -
+          tar -xzf "$tool_dir/tool.tgz" -C "$tool_dir"
+          "$tool_dir/SwiftComplexityCLI-1.4.0-macos-arm64/SwiftComplexityCLI" \
+            crates/mobius-gateway/macos/Sources crates/mobius-gateway/macos/Tests \
+            --recursive --threshold 21 --report-suppressions
+      - name: Test voice frontend
+        run: swift test --package-path crates/mobius-gateway/macos --disable-automatic-resolution -Xswiftc -warnings-as-errors
+      - name: Build app bundle
+        run: |
+          rustup update stable
+          rustup default stable
+          crates/mobius-gateway/macos/build.sh
+      - name: Archive development app
+        run: ditto -c -k --keepParent 'target/macos/Mobius Gateway.app' target/macos/Mobius-Gateway-unnotarized.zip
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gateway-macos-unnotarized
+          path: target/macos/*.zip

@@ -148,7 +148,11 @@ async fn text_only_routes_do_not_expose_or_execute_view_image() {
             ApprovalPolicy::Ask,
         )),
         checkpoints,
-        test_middleware(vec![Arc::new(Tools::coding())]),
+        test_middleware(vec![Arc::new(Tools::coding(
+            crate::backend::session_files::SessionFileStore::new(
+                tempfile::tempdir().expect("files").path(),
+            ),
+        ))]),
         "test prompt",
     )
     .session_context(test_session_context())
@@ -171,7 +175,12 @@ async fn text_only_routes_do_not_expose_or_execute_view_image() {
     assert!(!model.exposed_image_tool.load(Ordering::SeqCst));
     let result = result.expect("rejected image tool result");
     assert!(result.is_error);
-    assert!(result.output.contains("unavailable for this model step"));
+    assert!(
+        result
+            .output
+            .text()
+            .contains("unavailable for this model step")
+    );
     let inputs = model.inputs.lock().expect("input lock");
     assert_eq!(inputs.len(), 2);
     assert!(

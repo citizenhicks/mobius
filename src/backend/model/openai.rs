@@ -558,6 +558,10 @@ impl Model for OpenAi {
         }
     }
 
+    fn supports_tool_image_input(&self) -> bool {
+        self.supports_image_input()
+    }
+
     fn supports_image_input(&self) -> bool {
         self.image_input
     }
@@ -648,7 +652,7 @@ pub(super) fn wire_input_with_cache(
             fields.retain(|name, _| !name.starts_with('_'));
         }
         strip_replay_wire_metadata(&mut item);
-        let Some(content) = item.get_mut("content").and_then(Value::as_array_mut) else {
+        let Some(content) = crate::protocol::content_parts_mut(&mut item) else {
             wired.push(item);
             continue;
         };
@@ -659,28 +663,31 @@ pub(super) fn wire_input_with_cache(
                 .unwrap_or(false);
             if let Some(fields) = part.as_object_mut() {
                 fields.retain(|name, _| !name.starts_with('_'));
-                if breakpoint && explicit_prompt_cache {
-                    fields.insert(
-                        "prompt_cache_breakpoint".into(),
-                        serde_json::json!({"mode": "explicit"}),
-                    );
+            }
+            match part.get("type").and_then(Value::as_str) {
+                Some("file") => {
+                    *part = serde_json::json!({"type":"input_text", "text":format!("Stored file: {}", part["file"])});
                 }
+                Some("input_image") => {
+                    if !allow_images {
+                        return Err(Error::Provider(
+                            "this model provider does not support image attachments".into(),
+                        ));
+                    }
+                    let Some((media_type, data)) = image_input(part, "Responses")? else {
+                        continue;
+                    };
+                    let detail = part.get("detail").cloned();
+                    *part = serde_json::json!({ "type": "input_image", "image_url": image_data_url(media_type, data) });
+                    if let Some(detail) = detail {
+                        part["detail"] = detail;
+                    }
+                }
+                _ => {}
             }
-            if part.get("type").and_then(Value::as_str) != Some("input_image") {
-                continue;
+            if breakpoint && explicit_prompt_cache {
+                part["prompt_cache_breakpoint"] = serde_json::json!({"mode":"explicit"});
             }
-            if !allow_images {
-                return Err(Error::Provider(
-                    "this model provider does not support image attachments".into(),
-                ));
-            }
-            let Some((media_type, data)) = image_input(part, "Responses")? else {
-                continue;
-            };
-            *part = serde_json::json!({
-                "type": "input_image",
-                "image_url": image_data_url(media_type, data)
-            });
         }
         wired.push(item);
     }
@@ -1051,6 +1058,26 @@ pub(super) fn decode_compact_response(response: Value) -> Result<CompactOutput> 
         .unwrap_or_default();
     for item in &mut output {
         normalize_replay_item(item);
+        if let Some(parts) = crate::protocol::content_parts_mut(item) {
+            for part in parts {
+                if part.get("type").and_then(Value::as_str) != Some("input_image") {
+                    continue;
+                }
+                if let Some(url) = part.get("image_url").and_then(Value::as_str) {
+                    let (media_type, data) = url
+                        .strip_prefix("data:")
+                        .and_then(|url| url.split_once(";base64,"))
+                        .ok_or_else(|| {
+                            Error::Provider("compaction returned an unsupported image URL".into())
+                        })?;
+                    let detail = part
+                        .get("detail")
+                        .cloned()
+                        .unwrap_or_else(|| serde_json::json!("auto"));
+                    *part = serde_json::json!({"type":"input_image", "media_type":media_type,"data":data,"detail":detail});
+                }
+            }
+        }
     }
     CompactOutput::from_output(output, decode_usage(response.get("usage"))?)
 }

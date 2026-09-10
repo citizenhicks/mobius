@@ -445,6 +445,8 @@ private struct EventLine: View {
                     .accessibilityLabel(eventAccessibilityLabel)
             }
             if isExpanded {
+                ObservationContentView(
+                    content: entry.content, sessionID: model.chat.selectedSessionID)
                 if entry.format == "unified_diff" {
                     InlineUnifiedDiffView(source: entry.text)
                 } else if entry.isWebSearch {
@@ -499,7 +501,9 @@ private struct EventLine: View {
                 MobiusIcon(.caretRight, size: MobiusStyle.glyphMark, foreground: palette.muted)
                     .rotationEffect(.degrees(isExpanded ? 90 : 0))
                     .animation(.snappy(duration: 0.18), value: isExpanded)
-            } else if !entry.eventDetail.isEmpty || !entry.webSearchSources.isEmpty {
+            } else if !entry.content.isEmpty || !entry.eventDetail.isEmpty
+                || !entry.webSearchSources.isEmpty
+            {
                 MobiusIcon(.caretUpDown, size: MobiusStyle.glyphMark, foreground: palette.muted)
             }
         }
@@ -546,6 +550,7 @@ private struct EventLine: View {
 
     private var isInteractive: Bool {
         entry.format == "unified_diff"
+            || !entry.content.isEmpty
             || !entry.eventDetail.isEmpty
             || !entry.webSearchSources.isEmpty
     }

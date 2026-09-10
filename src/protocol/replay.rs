@@ -21,6 +21,7 @@ pub(crate) const ATTACHMENT_CONTEXT_MARKER: &str = "attachments";
 pub(crate) const MESSAGE_METADATA_FIELD: &str = "_mobius_message";
 pub(crate) const ATTACHMENTS_FIELD: &str = "_mobius_attachments";
 pub(crate) const REPLAY_REASONING_FIELD: &str = "_mobius_reasoning";
+pub(crate) const PROMPT_CACHE_BREAKPOINT_FIELD: &str = "_mobius_prompt_cache_breakpoint";
 pub(crate) const TOOL_ERROR_FIELD: &str = "_mobius_is_error";
 
 pub(crate) fn internal_message_kind(message: &Value) -> Option<&str> {
@@ -139,7 +140,16 @@ pub fn events(context: &[(MessageTarget, Value)], session_id: &str) -> Vec<Event
             }
             Some("function_call_output") => {
                 let call_id = string(value, "call_id");
-                let output = value_text(value.get("output"));
+                let Some(output) = value.get("output").cloned().and_then(|mut output| {
+                    for part in output.as_array_mut()? {
+                        if let Some(fields) = part.as_object_mut() {
+                            fields.remove(PROMPT_CACHE_BREAKPOINT_FIELD);
+                        }
+                    }
+                    serde_json::from_value(output).ok()
+                }) else {
+                    continue;
+                };
                 let (name, turn_id) = tools
                     .get(&call_id)
                     .cloned()
@@ -254,14 +264,6 @@ fn arguments(value: Option<&Value>) -> Value {
         }
         Some(value) => value.clone(),
         None => serde_json::json!({}),
-    }
-}
-
-fn value_text(value: Option<&Value>) -> String {
-    match value {
-        Some(Value::String(value)) => value.clone(),
-        Some(value) => value.to_string(),
-        None => String::new(),
     }
 }
 
@@ -495,7 +497,8 @@ mod tests {
                 serde_json::json!({
                     "type": "function_call_output",
                     "call_id": "call-1",
-                    "output": "done"
+                    "output": [{"type": "input_text", "text": "done", (PROMPT_CACHE_BREAKPOINT_FIELD): true},
+                        {"type":"input_image", "image":{"file":{"id":"screen","name":"screen.png","media_type":"image/png","size":100},"width":10,"height":10,"detail":"high"}, (PROMPT_CACHE_BREAKPOINT_FIELD): true}]
                 }),
             ),
         ];
@@ -506,6 +509,8 @@ mod tests {
             replayed.as_slice(),
             [EventMsg::ToolCallBegin(begin), EventMsg::ToolCallEnd(end)]
                 if begin.turn_id == "history-7-1" && end.turn_id == begin.turn_id
+                    && end.output.0.len() == 2
+                    && matches!(&end.output.0[1], crate::protocol::ContentPart::Image { image } if image.file.id == "screen")
         ));
     }
 

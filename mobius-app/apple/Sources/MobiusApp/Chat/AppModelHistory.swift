@@ -64,6 +64,7 @@ extension ChatSessionModel {
                 messageTarget: entry.messageTarget,
                 reply: entry.reply,
                 files: entry.files,
+                content: entry.content,
                 annotations: entry.annotations,
                 messageMetadata: entry.messageMetadata
             )

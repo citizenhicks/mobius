@@ -28,8 +28,8 @@ use mobius::backend::checkpoint::{
     JournalEvent, SessionPageRequest, SessionSummary, event_turn_page, sqlite::SqliteCheckpoint,
 };
 use mobius::backend::model::ModelRouter;
+use mobius::backend::session_files::SessionFileStore;
 use mobius::middleware::scratchpad::ScratchpadStore;
-use mobius::middleware::session_files::SessionFileStore;
 use mobius::middleware::{FrontendExtensions, Middleware as _};
 use mobius::protocol::{
     Event, EventMsg, FrontendContribution, FrontendEvent, FrontendPreviewEvent, MessageAuthor,

@@ -19,7 +19,10 @@ fn tool_prompts_match_installed_capabilities() {
         PromptSection::new(safety)
     );
     assert_eq!(
-        Tools::coding().section(),
+        Tools::coding(crate::backend::session_files::SessionFileStore::new(
+            tempfile::tempdir().expect("files").path()
+        ))
+        .section(),
         PromptSection::new(format!("{safety} {coding}"))
     );
     assert_eq!(
@@ -64,8 +67,8 @@ impl Tool for InterruptibleTool {
         &'a self,
         _context: ToolContext,
         _arguments: Value,
-    ) -> BoxFuture<'a, Result<String>> {
-        Box::pin(async { Ok(String::new()) })
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
+        Box::pin(async { Ok(String::new().into()) })
     }
 }
 
@@ -80,8 +83,8 @@ impl Tool for DefinitionTool {
         &'a self,
         _context: ToolContext,
         _arguments: Value,
-    ) -> BoxFuture<'a, Result<String>> {
-        Box::pin(async { Ok(String::new()) })
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
+        Box::pin(async { Ok(String::new().into()) })
     }
 }
 

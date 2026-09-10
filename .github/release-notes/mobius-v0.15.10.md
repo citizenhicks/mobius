@@ -1,0 +1,1 @@
+Add durable text, image, and file tool responses, a shared session file store, and session-scoped image inspection. Introduce sandboxed workers and optional computer control while keeping provider image mapping inside each model adapter. Checkpoint records now use format 14; existing format-13 state requires offline conversion before use.

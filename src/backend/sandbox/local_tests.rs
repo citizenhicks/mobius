@@ -473,9 +473,7 @@ async fn binary_range_rejects_symlinked_files_and_parents() {
 async fn isolated_home_is_private_and_writable() {
     let workspace = tempfile::tempdir().expect("workspace");
     let sandbox = local_sandbox(workspace.path()).isolated_home();
-    let expected = platform::command_home(sandbox.temp.path())
-        .to_string_lossy()
-        .into_owned();
+    let expected = sandbox.temp.path().to_string_lossy().into_owned();
 
     let output = sandbox
         .execute(
@@ -951,11 +949,14 @@ async fn filesystem_handles_reject_a_replaced_workspace_root() {
     let displaced = parent.path().join("displaced");
     std::fs::create_dir(&workspace).expect("workspace");
     let sandbox = local_sandbox(&workspace);
+    let child = sandbox.isolated_execution().expect("child sandbox");
     std::fs::rename(&workspace, &displaced).expect("displace workspace");
     std::fs::create_dir(&workspace).expect("replacement workspace");
     std::fs::write(workspace.join("bait.txt"), "replacement").expect("replacement file");
 
     assert!(sandbox.read("bait.txt").await.is_err());
+    assert!(child.read("bait.txt").await.is_err());
+    assert!(sandbox.isolated_execution().is_err());
     assert!(sandbox.write("new.txt", "escaped").await.is_err());
     assert!(!workspace.join("new.txt").exists());
     assert!(!displaced.join("new.txt").exists());
@@ -1016,4 +1017,120 @@ fn bwrap_discovery_rejects_workspace_path_aliases() {
     symlink(&binaries, &alias).expect("create path alias");
 
     assert!(find_executable_in("bwrap", &workspace, &[], alias.as_os_str()).is_none());
+}
+
+#[tokio::test]
+async fn temporary_files_survive_calls_and_are_isolated_from_child_execution() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let sandbox = LocalSandbox::new(workspace.path()).expect("sandbox");
+    let child = sandbox.isolated_execution().expect("child");
+    let path = sandbox.temporary_directory().join("observation.txt");
+    let name = path.to_str().expect("path");
+    let output = sandbox
+        .execute(
+            "printf before > \"$TMPDIR/observation.txt\"",
+            SandboxMode::WorkspaceWrite,
+            NetworkAccess::Denied,
+            CommandMode::Foreground,
+            CommandOutputSink::default(),
+        )
+        .await
+        .expect("write");
+    assert_eq!(output.exit_code, 0, "{}", output.stderr);
+    assert_eq!(sandbox.read(name).await.expect("read"), "before");
+    sandbox.write(name, "after").await.expect("replace");
+    for mode in [SandboxMode::WorkspaceWrite, SandboxMode::DangerFullAccess] {
+        let output = sandbox
+            .execute(
+                "cat \"$TMPDIR/observation.txt\"",
+                mode,
+                NetworkAccess::Denied,
+                CommandMode::Foreground,
+                CommandOutputSink::default(),
+            )
+            .await
+            .expect("read command");
+        assert_eq!(output.exit_code, 0, "{}", output.stderr);
+        assert_eq!(output.stdout, "after");
+    }
+    assert!(child.read(name).await.is_err());
+    let protected = tempfile::tempdir().expect("protected path");
+    let guarded_child = sandbox
+        .isolated_execution()
+        .expect("guarded child")
+        .deny_read(protected.path())
+        .expect("guarded path");
+    for (child, mode) in [
+        (&child, SandboxMode::WorkspaceWrite),
+        (&child, SandboxMode::DangerFullAccess),
+        (&guarded_child, SandboxMode::DangerFullAccess),
+    ] {
+        let output = child
+            .execute(
+                &format!(
+                    "cat '{}'",
+                    sandbox.temp.path().join("observation.txt").display()
+                ),
+                mode,
+                NetworkAccess::Denied,
+                CommandMode::Foreground,
+                CommandOutputSink::default(),
+            )
+            .await
+            .expect("child command");
+        if mode == SandboxMode::DangerFullAccess {
+            assert_eq!(output.exit_code, 0, "{}", output.stderr);
+            assert_eq!(output.stdout, "after");
+        } else {
+            assert_ne!(output.exit_code, 0, "sibling temporary files leaked");
+        }
+    }
+    let escape = sandbox.temporary_directory().join("../escape");
+    assert!(
+        sandbox
+            .write(escape.to_str().expect("path"), "no")
+            .await
+            .is_err()
+    );
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(workspace.path(), sandbox.temp.path().join("escape"))
+            .expect("symlink");
+        assert!(
+            sandbox
+                .write(
+                    sandbox
+                        .temporary_directory()
+                        .join("escape/file")
+                        .to_str()
+                        .expect("path"),
+                    "no"
+                )
+                .await
+                .is_err()
+        );
+    }
+    let physical = sandbox.temp.path().to_path_buf();
+    drop(sandbox);
+    assert!(!physical.exists());
+}
+
+#[test]
+fn private_temporary_storage_cannot_be_exposed_as_a_workspace_or_read_root() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let sandbox = LocalSandbox::new(workspace.path()).expect("sandbox");
+    let private_parent = sandbox.temp.path().parent().expect("private parent");
+    assert!(LocalSandbox::new(private_parent).is_err());
+    assert!(
+        LocalSandbox::new(workspace.path())
+            .expect("sandbox")
+            .allow_workspace_root(private_parent)
+            .is_err()
+    );
+    assert!(
+        LocalSandbox::new(workspace.path())
+            .expect("sandbox")
+            .allow_read_root(private_parent)
+            .is_err()
+    );
 }

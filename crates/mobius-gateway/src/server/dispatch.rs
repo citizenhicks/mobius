@@ -1,5 +1,5 @@
 use super::*;
-use mobius::middleware::session_files::session_file_limits;
+use mobius::backend::session_files::session_file_limits;
 use mobius::protocol::{MessageAuthor, Submission};
 
 use crate::wire::{GitDiffScope, WorkspaceFileScope};
@@ -856,24 +856,8 @@ async fn create_workspace_directory(
     name: String,
     gateway: &GatewayHost,
 ) -> Result<()> {
-    let result = match gateway.create_workspace_directory(&parent, &name).await {
-        Ok(path) => tokio::task::spawn_blocking(move || list_directories(&path, false))
-            .await
-            .map_err(|error| internal_rejection(error.to_string()))
-            .and_then(std::convert::identity),
-        Err(rejection) => Err(rejection),
-    };
-    match result {
-        Ok(listing) => {
-            write_frame(
-                writer,
-                &ServerFrame::new(ServerMessage::Directories {
-                    request_id,
-                    listing,
-                }),
-            )
-            .await
-        }
+    match gateway.create_workspace_directory(&parent, &name).await {
+        Ok(path) => list_directories_response(writer, request_id, path, false).await,
         Err(rejection) => write_rejection(writer, request_id, rejection).await,
     }
 }
@@ -1617,10 +1601,14 @@ async fn list_directories_response(
     path: PathBuf,
     include_files: bool,
 ) -> Result<()> {
-    let result = tokio::task::spawn_blocking(move || list_directories(&path, include_files))
-        .await
-        .map_err(|error| internal_rejection(error.to_string()))
-        .and_then(std::convert::identity);
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        tokio::task::spawn_blocking(move || list_directories(&path, include_files)),
+    )
+    .await
+    .map_err(|_| directory_rejection("folder access timed out; check filesystem availability and allow any folder-access prompt on the gateway computer"))
+    .and_then(|result| result.map_err(|error| internal_rejection(error.to_string())))
+    .and_then(std::convert::identity);
     match result {
         Ok(listing) => {
             write_frame(

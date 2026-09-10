@@ -310,7 +310,7 @@ extension GatewayWireTests {
 
     func testFrontendRenderAgentEventIsAccepted() throws {
         let fixture =
-            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"submission_id":"input-1","msg":{"type":"frontend","frontend_type":"render","capability":"tools","block":{"id":"call-1","group":"turn-1","update":"replace","state":"complete","role":"tool","title":"Read file","text":"Done","symbol":"task","format":"plain_text","tone":"neutral","files":[]}}},"stream_metrics":[],"blocks":[{"capability":"tools","block":{"id":"call-1","group":"turn-1","update":"replace","state":"complete","role":"tool","title":"Read file","text":"Done","symbol":"task","format":"plain_text","tone":"neutral","files":[]}}],"preview":null}}"#
+            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"submission_id":"input-1","msg":{"type":"frontend","frontend_type":"render","capability":"tools","block":{"id":"call-1","group":"turn-1","update":"replace","state":"complete","role":"tool","title":"Read file","text":"Done","symbol":"task","format":"plain_text","tone":"neutral","content":[],"files":[]}}},"stream_metrics":[],"blocks":[{"capability":"tools","block":{"id":"call-1","group":"turn-1","update":"replace","state":"complete","role":"tool","title":"Read file","text":"Done","symbol":"task","format":"plain_text","tone":"neutral","content":[],"files":[]}}],"preview":null}}"#
         let envelope = try decodeEnvelope(fixture)
 
         guard case .agentEvent(_, let record) = envelope else {

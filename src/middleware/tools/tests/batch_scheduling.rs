@@ -89,7 +89,7 @@ impl Tool for SchedulerTool {
         &'a self,
         _context: ToolContext,
         arguments: Value,
-    ) -> BoxFuture<'a, Result<String>> {
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         let arguments: ScheduledCall =
             serde_json::from_value(arguments).expect("scheduled call arguments");
         let release = Arc::clone(
@@ -125,7 +125,7 @@ impl Tool for SchedulerTool {
             events
                 .send(SchedulerEvent::Finished(arguments.id.clone()))
                 .expect("record scheduled call completion");
-            Ok(arguments.id)
+            Ok(arguments.id.into())
         })
     }
 }

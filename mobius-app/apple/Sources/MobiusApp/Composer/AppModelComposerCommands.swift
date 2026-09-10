@@ -84,6 +84,9 @@ extension AppModel {
             chat.composerAttachments[index].size = Int64(imported.data.count)
             chat.composerAttachments[index].mediaType = imported.mediaType
             chat.composerAttachments[index].state = .queued
+            if chat.selectedSessionID == nil, chat.sessionRequestID == nil {
+                createPendingSession()
+            }
             chat.startNextSessionFileUpload()
         } catch {
             guard cancelComposerAttachmentImport(reservedID) else { return }
@@ -112,9 +115,6 @@ extension AppModel {
         }
         chat.discardComposerAttachment(attachment)
         chat.startNextSessionFileUpload()
-        if chat.pendingNewChatBotID != nil, chat.pendingDrafts.count == 1 {
-            submitPendingNewChatDraft(requestID: chat.pendingDrafts.keys.first)
-        }
     }
 
     func retryComposerAttachment(_ id: UUID) {

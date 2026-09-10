@@ -49,7 +49,11 @@ async fn external_skill_resources_use_the_generic_read_tool() {
             Arc::new(MemoryCheckpoints::default()),
             MiddlewareStack::new(vec![
                 Arc::new(Messages::default()),
-                Arc::new(Tools::coding()),
+                Arc::new(Tools::coding(
+                    mobius::backend::session_files::SessionFileStore::new(
+                        tempfile::tempdir().expect("files").path(),
+                    ),
+                )),
                 Arc::new(extensions),
             ])
             .expect("middleware"),
@@ -87,14 +91,22 @@ async fn external_skill_resources_use_the_generic_read_tool() {
         requests[1]
             .input
             .iter()
-            .filter_map(|item| item.get("output").and_then(Value::as_str))
+            .filter_map(|item| item
+                .get("output")
+                .and_then(|output| output.get(0))
+                .and_then(|part| part.get("text"))
+                .and_then(Value::as_str))
             .any(|output| output.contains("Read references/details.md."))
     );
     assert!(
         requests[2]
             .input
             .iter()
-            .filter_map(|item| item.get("output").and_then(Value::as_str))
+            .filter_map(|item| item
+                .get("output")
+                .and_then(|output| output.get(0))
+                .and_then(|part| part.get("text"))
+                .and_then(Value::as_str))
             .any(|output| output.contains("Always inspect every caller."))
     );
 }

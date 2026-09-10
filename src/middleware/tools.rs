@@ -3,7 +3,6 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bm25::Document;
@@ -69,7 +68,7 @@ mod text {
         "Stop an owned background command and consume its ID.";
     pub const TOOL_VIEW_IMAGE_DESCRIPTION: &str =
         "View a local PNG, JPEG, WebP, or GIF image when visual inspection is needed.";
-    pub const TOOL_VIEW_IMAGE_PARAMETER_PATH_DESCRIPTION: &str = "Workspace-relative image path; absolute paths work only for explicitly allowed read roots.";
+    pub const TOOL_VIEW_IMAGE_PARAMETER_PATH_DESCRIPTION: &str = "Workspace-relative image path, or an authorized absolute workspace, read-root, or private temporary path.";
     pub const TOOL_WRITE_FILE_DESCRIPTION: &str =
         "Write a UTF-8 workspace file. Use an absolute path for an attached workspace.";
 }
@@ -136,7 +135,6 @@ pub struct ToolContext {
     pub sandbox: Arc<Sandbox>,
     pub permissions: ToolPermissions,
     pub turn_id: String,
-    image_input: ImageInputBudget,
     input: ToolInput,
 }
 
@@ -150,32 +148,13 @@ impl ToolContext {
             sandbox,
             permissions,
             turn_id: turn_id.into(),
-            image_input: ImageInputBudget::default(),
             input: ToolInput::default(),
         }
-    }
-
-    fn claim_image_input(&self) -> Result<()> {
-        self.image_input.claim()
     }
 
     /// Adds provider-neutral context immediately after this tool output.
     pub fn push_input(&self, item: Value) -> Result<()> {
         self.input.push(item)
-    }
-}
-
-#[derive(Clone, Default)]
-pub(crate) struct ImageInputBudget(Arc<AtomicBool>);
-
-impl ImageInputBudget {
-    fn claim(&self) -> Result<()> {
-        if self.0.swap(true, Ordering::AcqRel) {
-            return Err(Error::Tool(
-                "only one image may be added to model input per tool batch".into(),
-            ));
-        }
-        Ok(())
     }
 }
 
@@ -248,7 +227,11 @@ pub trait Tool: Send + Sync {
     }
 
     /// Executes one validated provider call.
-    fn call<'a>(&'a self, context: ToolContext, arguments: Value) -> BoxFuture<'a, Result<String>>;
+    fn call<'a>(
+        &'a self,
+        context: ToolContext,
+        arguments: Value,
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>>;
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -869,7 +852,7 @@ fn object_hook_input(input: Value) -> Result<Value> {
 pub struct ToolResult {
     pub call_id: String,
     pub name: String,
-    pub output: String,
+    pub output: crate::protocol::ToolContent,
     pub is_error: bool,
     pub(crate) handler_executed: bool,
     pub(crate) additional_input: Vec<Value>,
@@ -881,7 +864,7 @@ impl ToolResult {
         Self {
             call_id: call.call_id.clone(),
             name: call.name.clone(),
-            output: capped(output.as_ref(), MAX_TOOL_OUTPUT_BYTES),
+            output: capped(output.as_ref(), MAX_TOOL_OUTPUT_BYTES).into(),
             is_error: true,
             handler_executed: false,
             additional_input: Vec::new(),
@@ -890,7 +873,7 @@ impl ToolResult {
     }
 
     pub(crate) fn replace(&mut self, output: impl AsRef<str>) {
-        self.output = capped(output.as_ref(), MAX_TOOL_OUTPUT_BYTES);
+        self.output = capped(output.as_ref(), MAX_TOOL_OUTPUT_BYTES).into();
     }
 }
 
@@ -904,7 +887,6 @@ pub(crate) async fn execute_batch(
     turn_id: &str,
 ) -> Vec<ToolResult> {
     let mut results = Vec::with_capacity(calls.len());
-    let image_input = ImageInputBudget::default();
     let mut index = 0;
     while index < calls.len() {
         if is_parallel(catalog, &calls[index]) {
@@ -914,16 +896,12 @@ pub(crate) async fn execute_batch(
                 .map_or(calls.len(), |offset| index + offset);
             // ModelOutput validation bounds every batch to 128 calls.
             results.extend(
-                join_all(calls[index..end].iter().cloned().map(|call| {
-                    execute_call(
-                        catalog,
-                        call,
-                        &sandbox,
-                        permissions,
-                        turn_id,
-                        image_input.clone(),
-                    )
-                }))
+                join_all(
+                    calls[index..end]
+                        .iter()
+                        .cloned()
+                        .map(|call| execute_call(catalog, call, &sandbox, permissions, turn_id)),
+                )
                 .await,
             );
             index = end;
@@ -935,7 +913,6 @@ pub(crate) async fn execute_batch(
                     &sandbox,
                     permissions,
                     turn_id,
-                    image_input.clone(),
                 )
                 .await,
             );
@@ -955,19 +932,17 @@ pub(crate) async fn execute_call(
     sandbox: &Arc<Sandbox>,
     permissions: &SandboxPermissions,
     turn_id: &str,
-    image_input: ImageInputBudget,
 ) -> ToolResult {
     let BoundToolCall {
         call,
         materialized,
         search_scope,
     } = call;
-    let mut context = ToolContext::new(
+    let context = ToolContext::new(
         Arc::clone(sandbox),
         permissions.for_call(&call.call_id),
         turn_id,
     );
-    context.image_input = image_input;
     let pending_input = context.input.clone();
     let Some(tool) = catalog.get(&call.name) else {
         return ToolResult::error(&call, format!("unknown tool `{}`", call.name));
@@ -1008,7 +983,7 @@ pub(crate) async fn execute_call(
             RegisteredHandler::Tool(handler) => handler
                 .call(context, arguments)
                 .await
-                .map(ToolOutput::content),
+                .map(DispatchOutput::content),
             RegisteredHandler::Search => {
                 let Some(search_scope) = search_scope else {
                     return Err(Error::Tool("tools_search scope is unavailable".into()));
@@ -1027,7 +1002,7 @@ pub(crate) async fn execute_call(
                     return ToolResult {
                         call_id,
                         name,
-                        output: capped(&error.to_string(), MAX_TOOL_OUTPUT_BYTES),
+                        output: capped(&error.to_string(), MAX_TOOL_OUTPUT_BYTES).into(),
                         is_error: true,
                         handler_executed: true,
                         additional_input: Vec::new(),
@@ -1042,8 +1017,8 @@ pub(crate) async fn execute_call(
                     ToolResult {
                         call_id,
                         name,
-                        output: capped(&output.content, MAX_TOOL_OUTPUT_BYTES),
-                        is_error: false,
+                        output: cap_content(output.content.content),
+                        is_error: output.content.is_error,
                         handler_executed: true,
                         additional_input,
                         events: effects.events,
@@ -1052,7 +1027,7 @@ pub(crate) async fn execute_call(
                 Err(error) => ToolResult {
                     call_id,
                     name,
-                    output: capped(&error.to_string(), MAX_TOOL_OUTPUT_BYTES),
+                    output: capped(&error.to_string(), MAX_TOOL_OUTPUT_BYTES).into(),
                     is_error: true,
                     handler_executed: true,
                     additional_input: Vec::new(),
@@ -1063,7 +1038,7 @@ pub(crate) async fn execute_call(
         Ok(Err(error)) => ToolResult {
             call_id,
             name,
-            output: capped(&error.to_string(), MAX_TOOL_OUTPUT_BYTES),
+            output: capped(&error.to_string(), MAX_TOOL_OUTPUT_BYTES).into(),
             is_error: true,
             handler_executed: true,
             additional_input: Vec::new(),
@@ -1081,13 +1056,13 @@ pub(crate) async fn execute_call(
     }
 }
 
-struct ToolOutput {
-    content: String,
+struct DispatchOutput {
+    content: crate::protocol::ToolResponse,
     loaded_tools: Vec<String>,
 }
 
-impl ToolOutput {
-    fn content(content: String) -> Self {
+impl DispatchOutput {
+    fn content(content: crate::protocol::ToolResponse) -> Self {
         Self {
             content,
             loaded_tools: Vec::new(),
@@ -1099,7 +1074,7 @@ fn tools_search(
     catalog: &Catalog,
     arguments: Value,
     searchable: &BTreeSet<String>,
-) -> Result<ToolOutput> {
+) -> Result<DispatchOutput> {
     let Some(arguments) = arguments.as_object() else {
         return Err(Error::Tool(
             "tools_search arguments must be an object".into(),
@@ -1122,10 +1097,21 @@ fn tools_search(
     let content = serde_json::to_string(&serde_json::json!({
         "loaded_tools": &loaded_tools
     }))?;
-    Ok(ToolOutput {
-        content,
+    Ok(DispatchOutput {
+        content: content.into(),
         loaded_tools,
     })
+}
+
+fn cap_content(mut content: crate::protocol::ToolContent) -> crate::protocol::ToolContent {
+    let mut remaining = MAX_TOOL_OUTPUT_BYTES;
+    for part in &mut content.0 {
+        if let crate::protocol::ContentPart::Text { text } = part {
+            *text = capped(text, remaining);
+            remaining = remaining.saturating_sub(text.len());
+        }
+    }
+    content
 }
 
 fn capped(output: &str, limit: usize) -> String {
@@ -1133,16 +1119,15 @@ fn capped(output: &str, limit: usize) -> String {
         return output.to_string();
     }
 
-    let left_budget = limit / 2;
-    let right_budget = limit - left_budget;
+    const MARKER: &str = "…truncated…";
+    let Some(budget) = limit.checked_sub(MARKER.len()) else {
+        return crate::truncate_utf8(output, limit).to_owned();
+    };
+    let left_budget = budget / 2;
+    let right_budget = budget - left_budget;
     let left = crate::truncate_utf8(output, left_budget);
     let right_start = output.ceil_char_boundary(output.len() - right_budget);
-    let removed = output[left.len()..right_start].chars().count();
-    format!(
-        "{}…{removed} chars truncated…{}",
-        left,
-        &output[right_start..]
-    )
+    format!("{left}{MARKER}{}", &output[right_start..])
 }
 
 fn formatted_tool_text(text: &str) -> String {
@@ -1216,10 +1201,10 @@ impl Tools {
 
     /// Creates the default file, foreground command, and background command tools.
     #[must_use]
-    pub fn coding() -> Self {
+    pub fn coding(files: crate::backend::session_files::SessionFileStore) -> Self {
         Self::new(vec![
             Arc::new(ReadFile),
-            Arc::new(ViewImage),
+            Arc::new(ViewImage { store: files }),
             Arc::new(WriteFile),
             Arc::new(ApplyPatch),
             Arc::new(Bash),
@@ -1259,7 +1244,7 @@ impl Middleware for Tools {
         context: &'a mut ToolExposureContext<'_>,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            if !context.supports_image_input() {
+            if !context.supports_tool_image_input() {
                 context.hide(&["view_image"]);
             }
             Ok(())
@@ -1285,6 +1270,7 @@ impl Middleware for Tools {
                 text: load.tools.join("\n"),
                 symbol: None,
                 files: Vec::new(),
+                content: Default::default(),
                 format: FrontendBlockFormat::PlainText,
                 tone: FrontendTone::Success,
             });
@@ -1300,11 +1286,11 @@ impl Middleware for Tools {
             EventMsg::ToolCallEnd(result)
                 if !result.is_error
                     && result.name == "apply_patch"
-                    && Patch::from_str(&result.output).is_ok() =>
+                    && Patch::from_str(&result.output.text()).is_ok() =>
             {
                 block.update = FrontendBlockUpdate::Replace;
                 block.title = tool_heading(&result.name, &Value::Null).title;
-                block.text = result.output.clone();
+                block.text = result.output.text();
                 block.format = FrontendBlockFormat::UnifiedDiff;
             }
             _ => {}
@@ -1331,12 +1317,13 @@ pub(crate) fn render_tool_event(
                 text: formatted_tool_text(&heading.detail),
                 symbol: None,
                 files: Vec::new(),
+                content: Default::default(),
                 format: FrontendBlockFormat::PlainText,
                 tone: FrontendTone::Neutral,
             })
         }
         EventMsg::ToolCallEnd(result) if owns(&result.name) => {
-            let output = formatted_tool_text(&compact_output(&result.output));
+            let output = formatted_tool_text(&compact_output(&result.output.text()));
             Some(FrontendBlock {
                 id: Some(format!("{}/{}", result.turn_id, result.call_id)),
                 group: None,
@@ -1344,9 +1331,18 @@ pub(crate) fn render_tool_event(
                 state: FrontendBlockState::Complete,
                 role: FrontendBlockRole::Tool,
                 title: heading(&result.name, &Value::Null).title,
-                text: output,
+                text: if result.output.files().next().is_some() {
+                    String::new()
+                } else {
+                    output
+                },
                 symbol: None,
                 files: Vec::new(),
+                content: if result.output.files().next().is_some() {
+                    result.output.clone()
+                } else {
+                    Default::default()
+                },
                 format: FrontendBlockFormat::PlainText,
                 tone: if result.is_error {
                     FrontendTone::Error

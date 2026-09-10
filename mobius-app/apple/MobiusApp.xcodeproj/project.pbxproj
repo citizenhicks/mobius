@@ -46,6 +46,7 @@
 		200000000000000000000004 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000004 /* ChatView.swift */; };
 		200000000000000000000041 /* TranscriptView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000002D /* TranscriptView.swift */; };
 		200000000000000000000064 /* TranscriptContentViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000045 /* TranscriptContentViews.swift */; };
+		A20B00000000000000000002 /* ObservationContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10B00000000000000000002 /* ObservationContentView.swift */; };
 		200000000000000000000065 /* TranscriptEventViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000046 /* TranscriptEventViews.swift */; };
 		20000000000000000000005E /* MarkdownView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000043 /* MarkdownView.swift */; };
 		200000000000000000000042 /* ComposerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000002E /* ComposerView.swift */; };
@@ -56,11 +57,14 @@
 		200000000000000000000035 /* GatewayOperation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000027 /* GatewayOperation.swift */; };
 		200000000000000000000036 /* GatewayMessages.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000028 /* GatewayMessages.swift */; };
 		200000000000000000000037 /* FrontendWire.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000029 /* FrontendWire.swift */; };
+		A20B00000000000000000001 /* ContentPart.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10B00000000000000000001 /* ContentPart.swift */; };
 		200000000000000000000038 /* AgentEventWire.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000002A /* AgentEventWire.swift */; };
 		200000000000000000000039 /* AgentConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000002B /* AgentConfiguration.swift */; };
 		20000000000000000000003A /* JSONValue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000002C /* JSONValue.swift */; };
 		200000000000000000000008 /* MobiusApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000008 /* MobiusApp.swift */; };
 		200000000000000000000009 /* MobiusStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000009 /* MobiusStyle.swift */; };
+		09F6AFE0A9E84C2E91831641 /* MobiusPalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1F2343EA8384F87B12AB093 /* MobiusPalette.swift */; };
+		A45F833CC6B14DA999B4B228 /* MobiusTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E9A8262D71A43258E3F7B01 /* MobiusTokens.swift */; };
 		20000000000000000000004C /* MobiusTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000038 /* MobiusTheme.swift */; };
 		20000000000000000000004D /* MobiusComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000039 /* MobiusComponents.swift */; };
 		20000000000000000000000A /* SettingsPrimitives.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000000A /* SettingsPrimitives.swift */; };
@@ -196,6 +200,7 @@
 		100000000000000000000004 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
 		10000000000000000000002D /* TranscriptView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptView.swift; sourceTree = "<group>"; };
 		100000000000000000000045 /* TranscriptContentViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptContentViews.swift; sourceTree = "<group>"; };
+		A10B00000000000000000002 /* ObservationContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObservationContentView.swift; sourceTree = "<group>"; };
 		100000000000000000000046 /* TranscriptEventViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptEventViews.swift; sourceTree = "<group>"; };
 		100000000000000000000043 /* MarkdownView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownView.swift; sourceTree = "<group>"; };
 		10000000000000000000002E /* ComposerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerView.swift; sourceTree = "<group>"; };
@@ -206,11 +211,14 @@
 		100000000000000000000027 /* GatewayOperation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayOperation.swift; sourceTree = "<group>"; };
 		100000000000000000000028 /* GatewayMessages.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayMessages.swift; sourceTree = "<group>"; };
 		100000000000000000000029 /* FrontendWire.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FrontendWire.swift; sourceTree = "<group>"; };
+		A10B00000000000000000001 /* ContentPart.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentPart.swift; sourceTree = "<group>"; };
 		10000000000000000000002A /* AgentEventWire.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentEventWire.swift; sourceTree = "<group>"; };
 		10000000000000000000002B /* AgentConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentConfiguration.swift; sourceTree = "<group>"; };
 		10000000000000000000002C /* JSONValue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONValue.swift; sourceTree = "<group>"; };
 		100000000000000000000008 /* MobiusApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobiusApp.swift; sourceTree = "<group>"; };
 		100000000000000000000009 /* MobiusStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobiusStyle.swift; sourceTree = "<group>"; };
+		F1F2343EA8384F87B12AB093 /* MobiusPalette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobiusPalette.swift; sourceTree = "<group>"; };
+		0E9A8262D71A43258E3F7B01 /* MobiusTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobiusTokens.swift; sourceTree = "<group>"; };
 		100000000000000000000038 /* MobiusTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobiusTheme.swift; sourceTree = "<group>"; };
 		100000000000000000000039 /* MobiusComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobiusComponents.swift; sourceTree = "<group>"; };
 		10000000000000000000000A /* SettingsPrimitives.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsPrimitives.swift; sourceTree = "<group>"; };
@@ -441,6 +449,7 @@
 				10000000000000000000003B /* TranscriptModel.swift */,
 				10000000000000000000002D /* TranscriptView.swift */,
 				100000000000000000000045 /* TranscriptContentViews.swift */,
+				A10B00000000000000000002 /* ObservationContentView.swift */,
 				100000000000000000000046 /* TranscriptEventViews.swift */,
 				100000000000000000000024 /* TranscriptWaitingNote.swift */,
 				100000000000000000000043 /* MarkdownView.swift */,
@@ -549,6 +558,8 @@
 			children = (
 				100000000000000000000039 /* MobiusComponents.swift */,
 				100000000000000000000009 /* MobiusStyle.swift */,
+				F1F2343EA8384F87B12AB093 /* MobiusPalette.swift */,
+				0E9A8262D71A43258E3F7B01 /* MobiusTokens.swift */,
 				100000000000000000000038 /* MobiusTheme.swift */,
 				10000000000000000000002F /* FrontendWidgetView.swift */,
 				92000000000000000000000B /* StatusBanner.swift */,
@@ -573,6 +584,7 @@
 				100000000000000000000028 /* GatewayMessages.swift */,
 				10000000000000000000002A /* AgentEventWire.swift */,
 				100000000000000000000029 /* FrontendWire.swift */,
+				A10B00000000000000000001 /* ContentPart.swift */,
 				10000000000000000000002C /* JSONValue.swift */,
 			);
 			path = Wire;
@@ -831,6 +843,7 @@
 				200000000000000000000004 /* ChatView.swift in Sources */,
 				200000000000000000000041 /* TranscriptView.swift in Sources */,
 				200000000000000000000064 /* TranscriptContentViews.swift in Sources */,
+				A20B00000000000000000002 /* ObservationContentView.swift in Sources */,
 				200000000000000000000065 /* TranscriptEventViews.swift in Sources */,
 				20000000000000000000005E /* MarkdownView.swift in Sources */,
 				200000000000000000000042 /* ComposerView.swift in Sources */,
@@ -845,11 +858,14 @@
 				200000000000000000000035 /* GatewayOperation.swift in Sources */,
 				200000000000000000000036 /* GatewayMessages.swift in Sources */,
 				200000000000000000000037 /* FrontendWire.swift in Sources */,
+				A20B00000000000000000001 /* ContentPart.swift in Sources */,
 				200000000000000000000038 /* AgentEventWire.swift in Sources */,
 				200000000000000000000039 /* AgentConfiguration.swift in Sources */,
 				20000000000000000000003A /* JSONValue.swift in Sources */,
 				200000000000000000000008 /* MobiusApp.swift in Sources */,
 				200000000000000000000009 /* MobiusStyle.swift in Sources */,
+				09F6AFE0A9E84C2E91831641 /* MobiusPalette.swift in Sources */,
+				A45F833CC6B14DA999B4B228 /* MobiusTokens.swift in Sources */,
 				20000000000000000000004C /* MobiusTheme.swift in Sources */,
 				20000000000000000000004D /* MobiusComponents.swift in Sources */,
 				200000000000000000000031 /* TranscriptWaitingNote.swift in Sources */,
@@ -1034,7 +1050,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				CODE_SIGN_ENTITLEMENTS = Sources/MobiusApp/MobiusApp.entitlements;
-				CURRENT_PROJECT_VERSION = 320;
+				CURRENT_PROJECT_VERSION = 323;
 				DEVELOPMENT_TEAM = 3T68GZFAR6;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -1073,7 +1089,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				CODE_SIGN_ENTITLEMENTS = Sources/MobiusApp/MobiusApp.entitlements;
-				CURRENT_PROJECT_VERSION = 320;
+				CURRENT_PROJECT_VERSION = 323;
 				DEVELOPMENT_TEAM = 3T68GZFAR6;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Sources/MobiusApp/Info.plist;

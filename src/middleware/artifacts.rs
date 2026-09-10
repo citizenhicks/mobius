@@ -3,28 +3,27 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 
 use super::manifest::MiddlewareManifest;
-use super::session_files::SessionFileStore;
 use super::tools::{
     ApprovalRequirement, Catalog, Tool, ToolContext, labeled_tool_heading, render_tool_event,
 };
 use super::{Middleware, PromptSection, RuntimeContext};
 use crate::backend::model::ToolDefinition;
 use crate::backend::sandbox::MAX_BINARY_FILE_BYTES;
-use crate::protocol::{EventMsg, FrontendBlock, FrontendContribution, SessionFileReference};
+use crate::backend::session_files::SessionFileStore;
+use crate::protocol::{EventMsg, FrontendBlock, FrontendContribution};
 use crate::{BoxFuture, Error, Result};
 
 mod text {
     pub const MANIFEST_DESCRIPTION: &str =
         "Let the agent publish workspace files to the current chat";
     pub const MANIFEST_LABEL: &str = "Artifacts";
-    pub const PROMPT_MAIN: &str = "To send a generated file to the user, first create it in the workspace with another tool, then call `send_artifact` with its relative path.";
+    pub const PROMPT_MAIN: &str = "To send a generated file to the user, first create it in the workspace with another tool, then call `send_artifact` with its path or an authorized stored file_id.";
     pub const RENDER_SEND: &str = "Send";
     pub const RENDER_SENT_PREFIX: &str = "Sent ";
-    pub const RENDER_UNAVAILABLE_PREFIX: &str = "Artifact unavailable in this session: ";
     pub const TOOL_SEND_ARTIFACT_DESCRIPTION: &str =
         "Send one existing workspace file to the user.";
     pub const TOOL_SEND_ARTIFACT_PARAMETER_PATH_DESCRIPTION: &str =
@@ -75,7 +74,7 @@ impl Middleware for Artifacts {
         }
     }
 
-    fn render(&self, event: &EventMsg, session_id: &str) -> Option<FrontendBlock> {
+    fn render(&self, event: &EventMsg, _session_id: &str) -> Option<FrontendBlock> {
         let mut block = render_tool_event(
             event,
             |name| name == "send_artifact",
@@ -93,20 +92,16 @@ impl Middleware for Artifacts {
         if result.is_error {
             return Some(block);
         }
-        let Ok(output) = serde_json::from_str::<ArtifactOutput>(&result.output) else {
+        let Some(file) = result.output.files().next().cloned() else {
             return Some(block);
         };
         block.update = crate::protocol::FrontendBlockUpdate::Replace;
         block.state = crate::protocol::FrontendBlockState::Complete;
         block.role = crate::protocol::FrontendBlockRole::Artifact;
-        if session_id == output.session_id {
-            block.title = format!("{}{}", text::RENDER_SENT_PREFIX, output.file.name);
-            block.text.clear();
-            block.files = vec![output.file];
-        } else {
-            block.title = format!("{}{}", text::RENDER_UNAVAILABLE_PREFIX, output.file.name);
-            block.text.clear();
-        }
+        block.title = format!("{}{}", text::RENDER_SENT_PREFIX, file.name);
+        block.text.clear();
+        block.content = Default::default();
+        block.files = vec![file];
         Some(block)
     }
 }
@@ -114,14 +109,8 @@ impl Middleware for Artifacts {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SendArtifactArgs {
-    path: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ArtifactOutput {
-    session_id: String,
-    file: SessionFileReference,
+    path: Option<String>,
+    file_id: Option<String>,
 }
 
 struct SendArtifact {
@@ -137,12 +126,13 @@ impl Tool for SendArtifact {
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
+                    "file_id": {"type":"string", "description":"Authorized stored file ID to publish without copying bytes."},
                     "path": {
                         "type": "string",
                         "description": text::TOOL_SEND_ARTIFACT_PARAMETER_PATH_DESCRIPTION
                     }
                 },
-                "required": ["path"],
+                "oneOf": [{"required":["path"]},{"required":["file_id"]}],
                 "additionalProperties": false
             }),
         }
@@ -152,31 +142,47 @@ impl Tool for SendArtifact {
         ApprovalRequirement::Always
     }
 
-    fn call<'a>(&'a self, context: ToolContext, arguments: Value) -> BoxFuture<'a, Result<String>> {
+    fn call<'a>(
+        &'a self,
+        context: ToolContext,
+        arguments: Value,
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let arguments: SendArtifactArgs = serde_json::from_value(arguments)?;
-            let name = Path::new(&arguments.path)
-                .file_name()
-                .and_then(|name| name.to_str())
-                .ok_or_else(|| Error::Tool("artifact path must name one file".into()))?
-                .to_string();
-            let bytes = context
-                .sandbox
-                .read_bytes(&arguments.path, MAX_BINARY_FILE_BYTES)
-                .await?;
-            let file = self
-                .store
-                .publish_artifact(
-                    &self.session_id,
-                    name.clone(),
-                    media_type(&name).into(),
-                    &bytes,
-                )
-                .await?;
-            Ok(serde_json::to_string(&ArtifactOutput {
-                session_id: self.session_id.clone(),
-                file,
-            })?)
+            let file = match (arguments.path, arguments.file_id) {
+                (Some(path), None) => {
+                    let name = Path::new(&path)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .ok_or_else(|| Error::Tool("artifact path must name one file".into()))?
+                        .to_string();
+                    let bytes = context
+                        .sandbox
+                        .read_bytes(&path, MAX_BINARY_FILE_BYTES)
+                        .await?;
+                    self.store
+                        .publish_artifact(
+                            &self.session_id,
+                            name.clone(),
+                            media_type(&name).into(),
+                            &bytes,
+                        )
+                        .await?
+                }
+                (None, Some(id)) => {
+                    let file = self.store.file_reference(&self.session_id, &id).await?;
+                    self.store
+                        .publish_reference(&self.session_id, &file)
+                        .await?
+                }
+                _ => return Err(Error::Tool("provide exactly one of path or file_id".into())),
+            };
+            Ok(crate::protocol::ToolResponse {
+                content: crate::protocol::ToolContent(vec![crate::protocol::ContentPart::File {
+                    file,
+                }]),
+                is_error: false,
+            })
         })
     }
 }
@@ -207,6 +213,7 @@ fn media_type(name: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::SessionFileReference;
     use std::collections::BTreeMap;
 
     use crate::backend::checkpoint::{CheckpointStore, sqlite::SqliteCheckpoint};
@@ -281,7 +288,7 @@ mod tests {
             )
             .await
             .expect("send artifact");
-        let output: ArtifactOutput = serde_json::from_str(&output).expect("output");
+        let file = output.content.files().next().expect("published file");
 
         assert_eq!(tool.approval(), ApprovalRequirement::Always);
         assert!(
@@ -293,7 +300,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .read_chunk("session-a", &output.file.id, 0, 16)
+                .read_chunk("session-a", &file.id, 0, 16)
                 .await
                 .expect("read")
                 .data,
@@ -311,11 +318,9 @@ mod tests {
             size: 4,
             media_type: "image/svg+xml".into(),
         };
-        let output = serde_json::to_string(&ArtifactOutput {
-            session_id: "session-a".into(),
+        let output = crate::protocol::ToolContent(vec![crate::protocol::ContentPart::File {
             file: file.clone(),
-        })
-        .expect("output");
+        }]);
 
         let block = middleware
             .render(
@@ -334,37 +339,5 @@ mod tests {
         assert_eq!(block.title, "Sent diagram.svg");
         assert!(block.text.is_empty());
         assert_eq!(block.files, [file]);
-    }
-
-    #[test]
-    fn replay_in_another_session_keeps_the_card_without_a_download_reference() {
-        let state = tempfile::tempdir().expect("state");
-        let middleware = Artifacts::new(SessionFileStore::new(state.path()));
-        let output = serde_json::to_string(&ArtifactOutput {
-            session_id: "source-session".into(),
-            file: SessionFileReference {
-                id: uuid::Uuid::new_v4().to_string(),
-                name: "report.xlsx".into(),
-                size: 4,
-                media_type: media_type("report.xlsx").into(),
-            },
-        })
-        .expect("output");
-
-        let block = middleware
-            .render(
-                &EventMsg::ToolCallEnd(ToolCallEndEvent {
-                    turn_id: "turn".into(),
-                    call_id: "call".into(),
-                    name: "send_artifact".into(),
-                    output,
-                    is_error: false,
-                }),
-                "fork-session",
-            )
-            .expect("block");
-
-        assert!(block.files.is_empty());
-        assert!(block.title.contains("unavailable"));
     }
 }

@@ -72,7 +72,11 @@ impl Tool for SpawnAgent {
         })
     }
 
-    fn call<'a>(&'a self, context: ToolContext, arguments: Value) -> BoxFuture<'a, Result<String>> {
+    fn call<'a>(
+        &'a self,
+        context: ToolContext,
+        arguments: Value,
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let arguments: SpawnArgs = serde_json::from_value(arguments)?;
             validate_task_name(&arguments.task_name)?;
@@ -154,6 +158,7 @@ impl Tool for SpawnAgent {
                 Ok(serde_json::json!({"task_name": path}).to_string())
             })
             .await
+            .map(Into::into)
         })
     }
 }
@@ -190,7 +195,11 @@ impl Tool for SendMessage {
         }
     }
 
-    fn call<'a>(&'a self, context: ToolContext, arguments: Value) -> BoxFuture<'a, Result<String>> {
+    fn call<'a>(
+        &'a self,
+        context: ToolContext,
+        arguments: Value,
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let arguments: MessageArgs = serde_json::from_value(arguments)?;
             let message = peer_submission(
@@ -270,6 +279,7 @@ impl Tool for SendMessage {
                 Ok(String::new())
             })
             .await
+            .map(Into::into)
         })
     }
 }
@@ -302,7 +312,7 @@ impl Tool for ListAgents {
         &'a self,
         _context: ToolContext,
         arguments: Value,
-    ) -> BoxFuture<'a, Result<String>> {
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let arguments: ListArgs = serde_json::from_value(arguments)?;
             let agents = self
@@ -312,7 +322,7 @@ impl Tool for ListAgents {
                     arguments.path_prefix.as_deref(),
                 )
                 .await?;
-            Ok(serde_json::json!({"agents": agents}).to_string())
+            Ok((serde_json::json!({"agents": agents}).to_string()).into())
         })
     }
 }
@@ -351,14 +361,14 @@ impl Tool for InterruptAgent {
         &'a self,
         _context: ToolContext,
         arguments: Value,
-    ) -> BoxFuture<'a, Result<String>> {
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let arguments: TargetArgs = serde_json::from_value(arguments)?;
             let previous_status = self
                 .shared
                 .interrupt(&self.scope.root_session_id, &arguments.target)
                 .await?;
-            Ok(serde_json::json!({"previous_status": previous_status}).to_string())
+            Ok((serde_json::json!({"previous_status": previous_status}).to_string()).into())
         })
     }
 }
@@ -391,7 +401,7 @@ impl Tool for WaitAgent {
         &'a self,
         _context: ToolContext,
         arguments: Value,
-    ) -> BoxFuture<'a, Result<String>> {
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let arguments: WaitArgs = serde_json::from_value(arguments)?;
             let timeout = wait_timeout(arguments.timeout_ms)?;
@@ -399,11 +409,12 @@ impl Tool for WaitAgent {
                 .shared
                 .wait(&self.scope.root_session_id, &self.scope.agent_path, timeout)
                 .await?;
-            Ok(serde_json::json!({
+            Ok((serde_json::json!({
                 "updated": !agents.is_empty(),
                 "agents": agents
             })
             .to_string())
+            .into())
         })
     }
 }

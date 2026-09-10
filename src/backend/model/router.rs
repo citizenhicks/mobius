@@ -27,6 +27,8 @@ use crate::protocol::ToolDiscoveryMode;
 pub struct ModelRouter {
     default: String,
     routes: Vec<ModelRoute>,
+    files: Option<crate::backend::session_files::SessionFileStore>,
+    image_limits: super::ImageInputLimits,
 }
 
 struct ModelRoute {
@@ -42,12 +44,37 @@ impl ModelRouter {
         let choice = inferred_choice(&id, provider.as_ref());
         Self {
             default: id,
+            files: None,
+            image_limits: super::ImageInputLimits::default(),
             routes: vec![ModelRoute {
                 choice,
                 provider,
                 credential: ModelCredentialLifetime::default(),
             }],
         }
+    }
+
+    /// Injects the same durable file store used by image-producing capabilities.
+    #[must_use]
+    pub fn session_files(mut self, files: crate::backend::session_files::SessionFileStore) -> Self {
+        self.files = Some(files);
+        self
+    }
+
+    /// Sets request image limits independently from file storage limits.
+    pub fn image_input_limits(mut self, limits: super::ImageInputLimits) -> Result<Self> {
+        if limits.max_images == 0 || limits.max_encoded_bytes == 0 {
+            return Err(Error::Config(
+                "image request limits must be positive".into(),
+            ));
+        }
+        self.image_limits = limits;
+        Ok(self)
+    }
+
+    /// Reports whether the route accepts images associated with a tool call.
+    pub fn supports_tool_image_input(&self, provider: &str) -> Result<bool> {
+        Ok(self.provider(provider)?.supports_tool_image_input())
     }
 
     /// Registers another provider.
@@ -150,10 +177,40 @@ impl ModelRouter {
         events: ModelEventSink,
     ) -> Result<ModelOutput> {
         let route = self.route(provider)?;
+        let input = super::media::hydrate(
+            self.files.as_ref(),
+            request.session_id,
+            request.input,
+            route.provider.as_ref(),
+            self.image_limits,
+        )
+        .await?;
+        let request = ModelRequest {
+            input: &input,
+            ..request
+        };
         while_valid(&route.credential, || {
             route.provider.respond(request, events)
         })
         .await
+    }
+
+    /// Validates media before an active-context rewrite is committed.
+    pub async fn validate_media(
+        &self,
+        provider: &str,
+        session_id: &str,
+        input: &[serde_json::Value],
+    ) -> Result<()> {
+        super::media::hydrate(
+            self.files.as_ref(),
+            session_id,
+            input,
+            self.provider(provider)?,
+            self.image_limits,
+        )
+        .await
+        .map(|_| ())
     }
 
     /// Reports whether one route has a native compaction endpoint.
@@ -278,7 +335,22 @@ impl ModelRouter {
         request: CompactRequest<'_>,
     ) -> Result<CompactOutput> {
         let route = self.route(provider)?;
-        while_valid(&route.credential, || route.provider.compact(request)).await
+        let original = request.input;
+        let input = super::media::hydrate(
+            self.files.as_ref(),
+            request.session_id,
+            original,
+            route.provider.as_ref(),
+            self.image_limits,
+        )
+        .await?;
+        let request = CompactRequest {
+            input: &input,
+            ..request
+        };
+        let mut output = while_valid(&route.credential, || route.provider.compact(request)).await?;
+        super::media::restore_references(&mut output.output, original, &input)?;
+        Ok(output)
     }
 
     fn provider(&self, id: &str) -> Result<&dyn Model> {

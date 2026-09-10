@@ -1,7 +1,7 @@
 //! Agent input-boundary validation tests.
 
 use crate::agent::validate_submission;
-use crate::middleware::session_files::session_file_limits;
+use crate::backend::session_files::session_file_limits;
 use crate::protocol::{
     MAX_MESSAGE_BYTES, MessageAuthor, MessageReply, MessageSubmission, MessageTarget, Op,
     SessionFileReference, Submission,

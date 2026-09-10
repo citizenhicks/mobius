@@ -66,12 +66,13 @@ struct AgentSettingsView: View {
                         route: Binding(
                             get: { selectedModelRoute },
                             set: { if let route = $0 { selectModel(route) } }
+                        ),
+                        voices: model.realtimeVoices(for: draft),
+                        voice: Binding(
+                            get: { draft?.realtimeVoice },
+                            set: { value in updateDraft { $0.realtimeVoice = value } }
                         )
                     )
-
-                    if !model.realtimeVoices(for: draft).isEmpty {
-                        voicePicker
-                    }
 
                     HStack(spacing: MobiusSpace.xs) {
                         // Hundreds: this ceiling is set in the thousands, and stepping by one
@@ -477,16 +478,21 @@ struct AgentSettingsView: View {
         where options.allSatisfy({ option in
             model.modelChoices.contains { $0.route == option.value }
         }) && !options.isEmpty:
-            ModelRoutePicker(
-                verbatimLabel: setting.label,
-                detail: setting.description,
-                choices: options.compactMap { option in
-                    model.modelChoices.first { $0.route == option.value }
-                },
-                unsetLabel: unsetLabel,
-                isEnabled: middlewareEnabled(feature),
-                route: selectSetting(feature, setting)
-            )
+            VStack(alignment: .leading, spacing: MobiusSpace.s) {
+                Text(verbatim: setting.label)
+                    .font(MobiusStyle.captionFont)
+                    .foregroundStyle(palette.muted)
+                ModelRoutePicker(
+                    verbatimLabel: setting.label,
+                    detail: setting.description,
+                    choices: options.compactMap { option in
+                        model.modelChoices.first { $0.route == option.value }
+                    },
+                    unsetLabel: unsetLabel,
+                    isEnabled: middlewareEnabled(feature),
+                    route: selectSetting(feature, setting)
+                )
+            }
         case .select(let options, let unsetLabel):
             let selection = selectSetting(feature, setting)
             let selectedDescription = selection.wrappedValue.flatMap { selected in
@@ -540,39 +546,6 @@ struct AgentSettingsView: View {
             get: { draft?.systemPrompt ?? "" },
             set: { value in updateDraft { $0.systemPrompt = value } }
         )
-    }
-
-    private var voicePicker: some View {
-        let voices = model.realtimeVoices(for: draft)
-        let selected = draft?.realtimeVoice ?? voices.first ?? ""
-        return LabeledContent("Voice") {
-            Menu {
-                Picker(
-                    "Voice",
-                    selection: Binding(
-                        get: { selected },
-                        set: { voice in updateDraft { $0.realtimeVoice = voice } }
-                    )
-                ) {
-                    ForEach(voices, id: \.self) { voice in
-                        Text(verbatim: voice.capitalized).tag(voice)
-                    }
-                }
-                .labelsHidden()
-            } label: {
-                MobiusMenuLabel(
-                    text: .verbatim(selected.capitalized),
-                    glyph: .audioWave01,
-                    font: MobiusStyle.bodyFont
-                )
-                .foregroundStyle(palette.accent)
-            }
-            .menuIndicator(.hidden)
-            .buttonStyle(.mobiusPlain)
-            .accessibilityLabel("Voice")
-            .accessibilityValue(Text(verbatim: selected.capitalized))
-        }
-        .sensoryFeedback(.selection, trigger: selected)
     }
 
     private var maxModelSteps: Binding<UInt64> {

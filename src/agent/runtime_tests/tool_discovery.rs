@@ -77,7 +77,7 @@ impl Tool for OptionalTool {
         &'a self,
         _context: ToolContext,
         _arguments: Value,
-    ) -> BoxFuture<'a, Result<String>> {
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         self.0.fetch_add(1, Ordering::SeqCst);
         Box::pin(async { Ok("optional work complete".into()) })
     }
@@ -104,7 +104,7 @@ impl Tool for ApprovalTool {
         &'a self,
         _context: ToolContext,
         _arguments: Value,
-    ) -> BoxFuture<'a, Result<String>> {
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         self.0.fetch_add(1, Ordering::SeqCst);
         Box::pin(async { Ok("approval work complete".into()) })
     }
@@ -383,7 +383,7 @@ async fn tool_hidden_after_inference_never_reaches_approval() {
         match agent.next_event().await.expect("agent event").msg {
             EventMsg::ExecApprovalRequest(_) => approval_requested = true,
             EventMsg::ToolCallEnd(result) if result.call_id == "approval" => {
-                unavailable = result.is_error && result.output.contains("unavailable");
+                unavailable = result.is_error && result.output.text().contains("unavailable");
             }
             EventMsg::TurnComplete(_) => break,
             _ => {}

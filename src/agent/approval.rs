@@ -98,17 +98,11 @@ impl Runner {
         inbox: &mut SubmissionInbox,
         pending: PendingApproval,
     ) -> Result<()> {
-        let input_image_bytes = self.pending_tool_input_image_bytes(&pending.calls)?;
         let Some(results) = self.resolve_pending(inbox, &pending, true).await? else {
             return Ok(());
         };
-        self.complete_tool_step(
-            &pending.submission_id,
-            &pending.turn_id,
-            input_image_bytes,
-            results,
-        )
-        .await?;
+        self.complete_tool_step(&pending.submission_id, &pending.turn_id, results)
+            .await?;
         self.continue_turn(inbox, pending.submission_id, pending.turn_id)
             .await
     }

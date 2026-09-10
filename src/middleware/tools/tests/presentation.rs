@@ -2,31 +2,82 @@ use super::*;
 
 #[test]
 fn output_capping_keeps_complete_characters_at_both_ends() {
-    assert_eq!(capped("é🗣é🗣", 7), "é…2 chars truncated…🗣");
-    assert_eq!(capped("🗣é", 1), "…2 chars truncated…");
+    assert_eq!(capped(&"é🗣".repeat(20), 27), "é🗣…truncated…é🗣");
+    assert_eq!(capped("🗣é", 1), "");
     assert_eq!(capped("é", 2), "é");
 }
 
 #[test]
+fn observation_capping_bounds_all_text_without_dropping_files() {
+    use crate::protocol::{ContentPart, SessionFileReference, ToolContent};
+
+    let file = ContentPart::File {
+        file: SessionFileReference {
+            id: "observation".into(),
+            name: "screen.png".into(),
+            media_type: "image/png".into(),
+            size: 100,
+        },
+    };
+    let output = cap_content(ToolContent(vec![
+        ContentPart::Text {
+            text: "é🗣".repeat(MAX_TOOL_OUTPUT_BYTES),
+        },
+        file.clone(),
+        ContentPart::Text {
+            text: "tail".repeat(MAX_TOOL_OUTPUT_BYTES),
+        },
+        ContentPart::Text {
+            text: "no remaining budget".into(),
+        },
+    ]));
+    let bytes: usize = output
+        .0
+        .iter()
+        .filter_map(|part| match part {
+            ContentPart::Text { text } => Some(text.len()),
+            _ => None,
+        })
+        .sum();
+    assert!(bytes <= MAX_TOOL_OUTPUT_BYTES);
+    assert_eq!(output.0[1], file);
+    assert_eq!(
+        output.0[3],
+        ContentPart::Text {
+            text: String::new()
+        }
+    );
+}
+
+#[test]
 fn tools_do_not_claim_footer_space() {
-    assert!(Tools::coding().frontend().widgets.is_empty());
+    assert!(
+        Tools::coding(crate::backend::session_files::SessionFileStore::new(
+            tempfile::tempdir().expect("files").path()
+        ))
+        .frontend()
+        .widgets
+        .is_empty()
+    );
 }
 
 #[test]
 fn coding_renderer_preserves_patch_diff_blocks() {
     let diff = "--- a/note.txt\n+++ b/note.txt\n@@ -1 +1 @@\n-old\n+new\n";
-    let block = Tools::coding()
-        .render(
-            &EventMsg::ToolCallEnd(crate::protocol::ToolCallEndEvent {
-                turn_id: "turn".into(),
-                call_id: "call".into(),
-                name: "apply_patch".into(),
-                output: diff.into(),
-                is_error: false,
-            }),
-            "session",
-        )
-        .expect("patch rendering");
+    let block = Tools::coding(crate::backend::session_files::SessionFileStore::new(
+        tempfile::tempdir().expect("files").path(),
+    ))
+    .render(
+        &EventMsg::ToolCallEnd(crate::protocol::ToolCallEndEvent {
+            turn_id: "turn".into(),
+            call_id: "call".into(),
+            name: "apply_patch".into(),
+            output: diff.into(),
+            is_error: false,
+        }),
+        "session",
+    )
+    .expect("patch rendering");
 
     assert_eq!(block.format, FrontendBlockFormat::UnifiedDiff);
     assert_eq!(block.update, crate::protocol::FrontendBlockUpdate::Replace);
@@ -35,7 +86,9 @@ fn coding_renderer_preserves_patch_diff_blocks() {
 
 #[test]
 fn coding_renderer_groups_read_lifecycle() {
-    let tools = Tools::coding();
+    let tools = Tools::coding(crate::backend::session_files::SessionFileStore::new(
+        tempfile::tempdir().expect("files").path(),
+    ));
     let begin = tools
         .render(
             &EventMsg::ToolCallBegin(crate::protocol::ToolCallBeginEvent {
@@ -79,18 +132,20 @@ fn tool_blocks_format_json_before_appending_and_preserve_plain_text_whitespace()
     crate::protocol::FrontendBlockUpdate::Append.apply(&mut body, "");
     assert_eq!(body, "input\n  output\n");
     let json = serde_json::json!({"a": 1, "b": 2, "c": 3, "d": 4});
-    let end = Tools::coding()
-        .render(
-            &EventMsg::ToolCallEnd(crate::protocol::ToolCallEndEvent {
-                turn_id: "turn".into(),
-                call_id: "call".into(),
-                name: "read_file".into(),
-                output: json.to_string(),
-                is_error: false,
-            }),
-            "session",
-        )
-        .expect("end rendering");
+    let end = Tools::coding(crate::backend::session_files::SessionFileStore::new(
+        tempfile::tempdir().expect("files").path(),
+    ))
+    .render(
+        &EventMsg::ToolCallEnd(crate::protocol::ToolCallEndEvent {
+            turn_id: "turn".into(),
+            call_id: "call".into(),
+            name: "read_file".into(),
+            output: json.to_string().into(),
+            is_error: false,
+        }),
+        "session",
+    )
+    .expect("end rendering");
     assert_eq!(serde_json::from_str::<Value>(&end.text).unwrap(), json);
 }
 
@@ -118,17 +173,19 @@ fn generic_tool_renderer_does_not_infer_coding_presentation() {
 
 #[test]
 fn tool_load_uses_the_standard_tool_presentation() {
-    let block = Tools::coding()
-        .render(
-            &EventMsg::ToolLoad(crate::protocol::ToolLoadEvent {
-                turn_id: "turn".into(),
-                load_id: "step".into(),
-                catalog_revision: "catalog".into(),
-                tools: vec!["swarm_post".into(), "swarm_read".into()],
-            }),
-            "session",
-        )
-        .expect("tool load rendering");
+    let block = Tools::coding(crate::backend::session_files::SessionFileStore::new(
+        tempfile::tempdir().expect("files").path(),
+    ))
+    .render(
+        &EventMsg::ToolLoad(crate::protocol::ToolLoadEvent {
+            turn_id: "turn".into(),
+            load_id: "step".into(),
+            catalog_revision: "catalog".into(),
+            tools: vec!["swarm_post".into(), "swarm_read".into()],
+        }),
+        "session",
+    )
+    .expect("tool load rendering");
 
     assert_eq!(
         (

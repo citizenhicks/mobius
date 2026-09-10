@@ -37,6 +37,7 @@ use mobius::backend::sandbox::Sandbox;
 use mobius::backend::sandbox::SandboxBackend;
 use mobius::backend::sandbox::SandboxMode;
 use mobius::backend::sandbox::local::LocalSandbox;
+use mobius::backend::session_files::{SessionFileStore, session_file_limits};
 use mobius::middleware::Middleware;
 use mobius::middleware::MiddlewareStack;
 use mobius::middleware::PromptSection;
@@ -45,7 +46,6 @@ use mobius::middleware::attachments::Attachments;
 use mobius::middleware::compaction::Compaction;
 use mobius::middleware::extensions::Extensions;
 use mobius::middleware::messages::Messages;
-use mobius::middleware::session_files::{SessionFileStore, session_file_limits};
 use mobius::middleware::subagents::SubagentLaunch;
 use mobius::middleware::subagents::SubagentLauncher;
 use mobius::middleware::subagents::Subagents;
@@ -159,6 +159,9 @@ impl ScriptedModel {
 }
 
 impl Model for ScriptedModel {
+    fn supports_tool_image_input(&self) -> bool {
+        self.image_input
+    }
     fn supports_image_input(&self) -> bool {
         self.image_input
     }
@@ -399,7 +402,7 @@ fn test_config_with_router(
         ApprovalPolicy::Ask,
     ));
     AgentConfig::new(
-        Arc::new(model),
+        Arc::new(model.session_files(SessionFileStore::new(workspace))),
         sandbox,
         checkpoints,
         MiddlewareStack::new(middleware).expect("middleware"),

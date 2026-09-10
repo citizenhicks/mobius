@@ -14,7 +14,7 @@ use crate::agent::{Runner, SubmissionInbox, send_event};
 use crate::backend::model::{ModelOutput, ToolCall};
 use crate::backend::sandbox::{SandboxAuthorization, SandboxPermissions};
 use crate::middleware::tools::{
-    BoundToolCall, ExecutionMode, ImageInputBudget, PreparedToolSet, ToolResult, execute_call,
+    BoundToolCall, ExecutionMode, PreparedToolSet, ToolResult, execute_call,
 };
 use crate::protocol::{EventMsg, ToolCallBeginEvent};
 use crate::{BoxFuture, Error, Result};
@@ -30,7 +30,6 @@ pub(super) struct StreamedTools {
     running: FuturesOrdered<BoxFuture<'static, Result<ToolResult>>>,
     results: Vec<ToolResult>,
     gate: Arc<RwLock<()>>,
-    image_input: ImageInputBudget,
     deferred: bool,
 }
 
@@ -162,7 +161,6 @@ impl Runner {
         let parallel = catalog.execution_mode(&call.name) == ExecutionMode::Parallel;
         let sandbox = Arc::clone(&self.config.sandbox);
         let gate = Arc::clone(&streamed.gate);
-        let image_input = streamed.image_input.clone();
         let events = self.events.clone();
         let submission_id = submission_id.to_owned();
         let turn_id = turn_id.to_owned();
@@ -189,15 +187,7 @@ impl Runner {
                 ),
             )
             .await?;
-            Ok(execute_call(
-                &catalog,
-                bound,
-                &sandbox,
-                &permissions,
-                &turn_id,
-                image_input,
-            )
-            .await)
+            Ok(execute_call(&catalog, bound, &sandbox, &permissions, &turn_id).await)
         }));
         Ok(())
     }

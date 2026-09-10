@@ -119,7 +119,7 @@ fn renders_every_subagent_tool_call() {
                     turn_id: "turn".into(),
                     call_id: "call".into(),
                     name: name.into(),
-                    output: String::new(),
+                    output: String::new().into(),
                     is_error: false,
                 }),
                 "session",

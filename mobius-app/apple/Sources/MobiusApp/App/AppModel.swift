@@ -478,7 +478,7 @@ final class AppModel {
 
     var canImportAttachments: Bool {
         attachmentsEnabled
-            && gateway.connectionState.isReady
+            && (gateway.connectionState.isReady || isChangingWorkspace)
             && (chat.selectedSessionID != nil
                 || chat.pendingNewChatWorkspace != nil && selectedBot != nil)
             && chat.sessionFileLimits != nil
@@ -528,15 +528,7 @@ final class AppModel {
             && chat.pendingNewChatBotID.map { botID in bots.contains { $0.id == botID } } == true
         guard sessionID != nil || hasPendingSession else { return false }
         guard sessionID == nil || chat.pendingNewChatBotID == nil else { return false }
-        guard
-            chat.composerAttachments.allSatisfy({ attachment in
-                switch attachment.state {
-                case .uploaded: true
-                case .queued: sessionID == nil
-                case .preparing, .uploading, .failed: false
-                }
-            })
-        else { return false }
+        guard !composerHasUnfinishedAttachments else { return false }
         if let pending = chat.pendingWidgetEdit {
             guard let sessionID,
                 let accountID = gateway.selectedAccountID,
@@ -556,14 +548,7 @@ final class AppModel {
         }
     }
 
-    var composerHasUnfinishedAttachments: Bool {
-        chat.composerAttachments.contains { item in
-            switch item.state {
-            case .uploaded: false
-            case .preparing, .queued, .uploading, .failed: true
-            }
-        }
-    }
+    var composerHasUnfinishedAttachments: Bool { chat.composerHasUnfinishedAttachments }
 
     var runningSessionIDs: Set<String> {
         Set(chat.sessions.lazy.filter { $0.activity.state != .idle }.map(\.sessionId))

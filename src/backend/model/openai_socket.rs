@@ -75,7 +75,7 @@ mod manifest {
     pub const MODELS: &[ModelPreset] = &[
         ModelPreset {
             id: "gpt-5.6-sol",
-            label: "Sol",
+            label: "5.6 Sol",
             description: "Frontier capability for complex work",
             context_window: 1050000,
             reasoning: &[
@@ -115,7 +115,7 @@ mod manifest {
         },
         ModelPreset {
             id: "gpt-5.6-terra",
-            label: "Terra",
+            label: "5.6 Terra",
             description: "Balance intelligence and cost",
             context_window: 1050000,
             reasoning: &[
@@ -155,7 +155,7 @@ mod manifest {
         },
         ModelPreset {
             id: "gpt-5.6-luna",
-            label: "Luna",
+            label: "5.6 Luna",
             description: "Efficient, high-volume workloads",
             context_window: 1050000,
             reasoning: &[
@@ -195,7 +195,7 @@ mod manifest {
         },
         ModelPreset {
             id: "gpt-6-astra",
-            label: "Astra",
+            label: "6 Astra",
             description: "Advanced reasoning and complex end-to-end work",
             context_window: 1050000,
             reasoning: &[
@@ -659,6 +659,10 @@ impl Model for OpenAiSocket {
             model: self.model.clone(),
             reasoning_effort: self.reasoning_effort.clone(),
         }
+    }
+
+    fn supports_tool_image_input(&self) -> bool {
+        self.supports_image_input()
     }
 
     fn supports_image_input(&self) -> bool {

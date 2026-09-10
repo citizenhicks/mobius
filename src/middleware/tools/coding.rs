@@ -1,16 +1,15 @@
-use base64::Engine as _;
 use diffy::DiffOptions;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::super::image_input::{MAX_IMAGE_INPUT_BYTES, raster_media_type};
 use super::patch::{apply_patch_document, parse_patch_document};
 use super::{
     ApprovalRequirement, ExecutionMode, HookIdentity, MAX_MUTATION_BYTES, MAX_TOOL_OUTPUT_BYTES,
     Tool, ToolContext, ToolExposure, text,
 };
 use crate::backend::model::ToolDefinition;
-use crate::protocol::INTERNAL_MESSAGE_FIELD;
+use crate::backend::session_files::SessionFileStore;
+use crate::protocol::{ContentPart, ImageDetail, ToolContent, ToolResponse};
 use crate::{BoxFuture, Error, Result};
 
 #[derive(Deserialize)]
@@ -47,15 +46,36 @@ impl Tool for ReadFile {
         ExecutionMode::Parallel
     }
 
-    fn call<'a>(&'a self, context: ToolContext, arguments: Value) -> BoxFuture<'a, Result<String>> {
+    fn call<'a>(
+        &'a self,
+        context: ToolContext,
+        arguments: Value,
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let arguments: PathArgs = serde_json::from_value(arguments)?;
-            context.sandbox.read(&arguments.path).await
+            context.sandbox.read(&arguments.path).await.map(Into::into)
         })
     }
 }
 
-pub(super) struct ViewImage;
+pub(super) struct ViewImage {
+    pub(super) store: SessionFileStore,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ViewImageArgs {
+    images: Vec<ImageSource>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImageSource {
+    path: Option<String>,
+    file_id: Option<String>,
+    #[serde(default)]
+    detail: ImageDetail,
+}
 
 impl Tool for ViewImage {
     fn definition(&self) -> ToolDefinition {
@@ -64,14 +84,16 @@ impl Tool for ViewImage {
             description: text::TOOL_VIEW_IMAGE_DESCRIPTION.into(),
             parameters: serde_json::json!({
                 "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": text::TOOL_VIEW_IMAGE_PARAMETER_PATH_DESCRIPTION
-                    }
-                },
-                "required": ["path"],
-                "additionalProperties": false
+                "properties": {"images": {
+                    "type": "array", "minItems": 1, "maxItems": 16,
+                    "items": {"type": "object", "properties": {
+                        "path": {"type": "string", "description": text::TOOL_VIEW_IMAGE_PARAMETER_PATH_DESCRIPTION},
+                        "file_id": {"type": "string", "description": "An image file ID authorized in this session; provide either path or file_id."},
+                        "detail": {"type": "string", "enum": ["auto", "low", "high"]}
+                    }, "additionalProperties": false,
+                    "oneOf": [{"required": ["path"]}, {"required": ["file_id"]}]}
+                }},
+                "required": ["images"], "additionalProperties": false
             }),
         }
     }
@@ -81,28 +103,67 @@ impl Tool for ViewImage {
     }
 
     fn execution_mode(&self) -> ExecutionMode {
-        ExecutionMode::Exclusive
+        ExecutionMode::Parallel
     }
 
-    fn call<'a>(&'a self, context: ToolContext, arguments: Value) -> BoxFuture<'a, Result<String>> {
+    fn call<'a>(
+        &'a self,
+        context: ToolContext,
+        arguments: Value,
+    ) -> BoxFuture<'a, Result<ToolResponse>> {
         Box::pin(async move {
-            let arguments: PathArgs = serde_json::from_value(arguments)?;
-            let bytes = context
-                .sandbox
-                .read_bytes(&arguments.path, MAX_IMAGE_INPUT_BYTES)
-                .await?;
-            let media_type = raster_media_type(&bytes)?;
-            context.claim_image_input()?;
-            context.push_input(serde_json::json!({
-                "role": "user",
-                "content": [{
-                    "type": "input_image",
-                    "media_type": media_type,
-                    "data": base64::engine::general_purpose::STANDARD.encode(bytes)
-                }],
-                (INTERNAL_MESSAGE_FIELD): "view_image"
-            }))?;
-            Ok(format!("viewed image {}", arguments.path))
+            let arguments: ViewImageArgs = serde_json::from_value(arguments)?;
+            if arguments.images.is_empty() || arguments.images.len() > 16 {
+                return Err(Error::Tool("view_image requires 1–16 images".into()));
+            }
+            let mut content = Vec::new();
+            for source in arguments.images {
+                let image = match (source.path, source.file_id) {
+                    (Some(path), None) => {
+                        let bytes = context
+                            .sandbox
+                            .read_bytes(&path, crate::backend::sandbox::MAX_BINARY_FILE_BYTES)
+                            .await?;
+                        let name = std::path::Path::new(&path)
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .ok_or_else(|| Error::Tool("image path must name a file".into()))?;
+                        self.store
+                            .ingest_image(
+                                context.permissions.session_id(),
+                                name.into(),
+                                bytes,
+                                source.detail,
+                            )
+                            .await?
+                    }
+                    (None, Some(file_id)) => {
+                        let file = self
+                            .store
+                            .file_reference(context.permissions.session_id(), &file_id)
+                            .await?;
+                        self.store
+                            .inspect_image(context.permissions.session_id(), &file, source.detail)
+                            .await?
+                    }
+                    _ => {
+                        return Err(Error::Tool(
+                            "each image requires exactly one of path or file_id".into(),
+                        ));
+                    }
+                };
+                content.push(ContentPart::Text {
+                    text: format!(
+                        "{}: {} × {} pixels; file_id={}",
+                        image.file.name, image.width, image.height, image.file.id
+                    ),
+                });
+                content.push(ContentPart::Image { image });
+            }
+            Ok(ToolResponse {
+                content: ToolContent(content),
+                is_error: false,
+            })
         })
     }
 }
@@ -140,7 +201,11 @@ impl Tool for WriteFile {
         ApprovalRequirement::Always
     }
 
-    fn call<'a>(&'a self, context: ToolContext, arguments: Value) -> BoxFuture<'a, Result<String>> {
+    fn call<'a>(
+        &'a self,
+        context: ToolContext,
+        arguments: Value,
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let arguments: WriteArgs = serde_json::from_value(arguments)?;
             if arguments.content.len() > MAX_MUTATION_BYTES {
@@ -152,11 +217,12 @@ impl Tool for WriteFile {
                 .sandbox
                 .write(&arguments.path, &arguments.content, &context.permissions)
                 .await?;
-            Ok(format!(
+            Ok((format!(
                 "wrote {} bytes to {}",
                 arguments.content.len(),
                 arguments.path
             ))
+            .into())
         })
     }
 }
@@ -217,7 +283,11 @@ impl Tool for ApplyPatch {
         Ok(serde_json::json!({"patch": command}))
     }
 
-    fn call<'a>(&'a self, context: ToolContext, arguments: Value) -> BoxFuture<'a, Result<String>> {
+    fn call<'a>(
+        &'a self,
+        context: ToolContext,
+        arguments: Value,
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let arguments: ApplyPatchArgs = serde_json::from_value(arguments)?;
             if arguments.patch.len() > MAX_MUTATION_BYTES {
@@ -242,11 +312,12 @@ impl Tool for ApplyPatch {
                 .sandbox
                 .write(&document.path, &updated, &context.permissions)
                 .await?;
-            Ok(if diff.len() <= MAX_TOOL_OUTPUT_BYTES {
+            Ok((if diff.len() <= MAX_TOOL_OUTPUT_BYTES {
                 diff
             } else {
                 format!("patched {} (diff too large to display)", document.path)
             })
+            .into())
         })
     }
 }

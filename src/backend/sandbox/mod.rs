@@ -31,6 +31,8 @@ mod approval;
 mod background;
 pub mod local;
 mod process_group;
+mod worker;
+pub use worker::{WorkerCommand, WorkerProcess};
 
 pub(crate) const MAX_FILE_BYTES: usize = 1024 * 1024;
 pub(crate) const MAX_BINARY_FILE_BYTES: usize = 50 * 1024 * 1024;
@@ -217,6 +219,30 @@ impl CommandOutputSink {
 /// dropping a future must not leave unmanaged commands running. [`Sandbox`]
 /// owns approval and background-command tracking, not arbitrary backend cleanup.
 pub trait SandboxBackend: Send + Sync {
+    /// Creates an independent temporary area and execution lifetime for a child agent.
+    fn isolated_execution(&self) -> Result<Arc<dyn SandboxBackend>> {
+        Err(Error::Sandbox(
+            "backend does not support isolated child execution".into(),
+        ))
+    }
+
+    /// Reports the private temporary path visible to command and file tools.
+    fn temporary_directory(&self) -> Option<PathBuf> {
+        None
+    }
+
+    /// Launches a persistent framed runtime inside this backend's execution boundary.
+    fn start_worker(
+        &self,
+        _command: &WorkerCommand,
+        _sandbox_mode: SandboxMode,
+        _network_access: NetworkAccess,
+    ) -> Result<WorkerProcess> {
+        Err(Error::Sandbox(
+            "persistent execution is unavailable on this backend".into(),
+        ))
+    }
+
     /// Reads a UTF-8 file.
     fn read<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<String>>;
 
@@ -257,6 +283,7 @@ pub struct Sandbox {
     backend: Arc<dyn SandboxBackend>,
     approval: Approval,
     background: BackgroundCommands,
+    workers: worker::Workers,
     workspace_prompt: Option<String>,
 }
 
@@ -268,8 +295,16 @@ impl Sandbox {
             backend,
             approval: Approval::new(policy),
             background: BackgroundCommands::default(),
+            workers: worker::Workers::default(),
             workspace_prompt: None,
         }
+    }
+
+    /// Creates a child execution boundary with independent temporary files and workers.
+    pub fn isolated_execution(&self) -> Result<Self> {
+        let mut scoped = Self::new(self.backend.isolated_execution()?, self.approval_policy());
+        scoped.workspace_prompt = self.workspace_prompt.clone();
+        Ok(scoped)
     }
 
     /// Adds the primary workspace and attached folder paths to the model prompt.
@@ -363,6 +398,27 @@ impl Sandbox {
         )
     }
 
+    /// Evaluates one authorized request, preserving runtime state until explicit reset or loss.
+    pub async fn evaluate_worker(
+        &self,
+        command: &WorkerCommand,
+        permissions: &ToolPermissions,
+        request: &[u8],
+        timeout: std::time::Duration,
+        reset: bool,
+    ) -> Result<Vec<u8>> {
+        self.workers
+            .evaluate(
+                self.backend.as_ref(),
+                command,
+                permissions,
+                request,
+                timeout,
+                reset,
+            )
+            .await
+    }
+
     pub(crate) fn start_background(
         &self,
         command: String,
@@ -440,6 +496,7 @@ impl Sandbox {
     pub(crate) async fn session_end(&self, session_id: &str) -> Result<()> {
         let approval = self.approval.session_end(session_id);
         let background = self.background.shutdown(session_id).await;
+        self.workers.shutdown(session_id).await;
         approval.and(background)
     }
 }
@@ -458,6 +515,9 @@ impl Middleware for Sandbox {
         if let Some(workspace) = &self.workspace_prompt {
             prompt.push_str("\n\n");
             prompt.push_str(workspace);
+        }
+        if let Some(temp) = self.backend.temporary_directory() {
+            prompt.push_str(&format!("\nPrivate temporary directory: {}. Shell and file tools share it across calls; child agents have separate temporary files. It is removed when this execution lifetime ends. Recorded images remain in history.", temp.display()));
         }
         Ok(Some(PromptSection::new(prompt)))
     }
@@ -554,6 +614,10 @@ pub struct ToolPermissions {
 }
 
 impl ToolPermissions {
+    pub(crate) fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
     pub(crate) fn allows_mutation(&self) -> bool {
         self.mutation
     }

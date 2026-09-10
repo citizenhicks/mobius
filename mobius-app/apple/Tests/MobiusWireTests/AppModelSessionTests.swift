@@ -122,14 +122,74 @@ extension AppModelTests {
             })
 
         model.chat.composer = "Start here"
+        model.openWorkspaceBrowser()
+        model.chooseWorkspace("/srv/final-project")
+        XCTAssertFalse(model.showsWorkspaceBrowser)
+        XCTAssertEqual(model.chat.composer, "Start here")
+        XCTAssertEqual(model.chat.pendingNewChatBotID, reviewer.id)
         XCTAssertTrue(model.sendMessage())
         let request = await recorder.firstRequest(after: 0) { request in
-            guard case .createSession(_, "/srv/another-project", "bot-2") = request else {
+            guard case .createSession(_, "/srv/final-project", "bot-2") = request else {
                 return false
             }
             return true
         }
         XCTAssertNotNil(request)
+    }
+
+    func testNewChatOpensImmediatelyAndListsDistinctProjectFolders() throws {
+        let model = try model { _ in }
+        model.gateway.connectionState = .ready
+        model.bots = [bot()]
+        model.workspace = WorkspaceInfo(id: "current", path: "/srv/current")
+        model.chat.selectedSessionID = "chat-1"
+        model.chat.sessions = [
+            session(sessionID: "one", state: .idle, workspaceLabel: "/srv/project"),
+            session(sessionID: "two", state: .idle, workspaceLabel: "/srv/project"),
+            session(sessionID: "three", state: .idle, workspaceLabel: "/srv/other"),
+        ]
+
+        model.openNewSession()
+
+        XCTAssertEqual(model.navigationPath, [.chat(.new)])
+        XCTAssertFalse(model.showsWorkspaceBrowser)
+        XCTAssertNil(model.chat.sessionRequestID)
+        XCTAssertEqual(model.chat.pendingNewChatWorkspace, "/srv/current")
+        XCTAssertEqual(model.chat.pendingNewChatBotID, "bot-1")
+        XCTAssertEqual(model.newChatWorkspacePaths, ["/srv/current", "/srv/other", "/srv/project"])
+    }
+
+    func testNewChatResolvesGatewayDefaultFolderWithoutOpeningBrowser() throws {
+        let model = try model { _ in }
+        model.gateway.connectionState = .ready
+        model.bots = [bot()]
+
+        model.openNewSession()
+
+        XCTAssertFalse(model.showsWorkspaceBrowser)
+        XCTAssertEqual(model.chat.pendingNewChatWorkspace, ".")
+        let requestID = try XCTUnwrap(model.directoryRequestID)
+        model.gateway.handle(
+            .directories(
+                requestID: requestID,
+                listing: DirectoryListing(
+                    path: "/srv/default", parent: "/srv",
+                    entries: [])))
+        XCTAssertEqual(model.chat.pendingNewChatWorkspace, "/srv/default")
+        XCTAssertEqual(model.newChatWorkspacePaths, ["/srv/default"])
+
+        model.openNewSession()
+        XCTAssertEqual(model.chat.pendingNewChatWorkspace, "/srv/default")
+        model.loadDirectory(".")
+        let staleRequestID = try XCTUnwrap(model.directoryRequestID)
+        model.chooseWorkspace("/srv/project")
+        model.gateway.handle(
+            .directories(
+                requestID: staleRequestID,
+                listing: DirectoryListing(
+                    path: "/srv/default", parent: "/srv",
+                    entries: [])))
+        XCTAssertEqual(model.chat.pendingNewChatWorkspace, "/srv/project")
     }
 
     func testNewSessionInOpenChatInheritsWorkspaceAndBotWithoutPickers() async throws {
@@ -723,7 +783,7 @@ extension AppModelTests {
         XCTAssertEqual(model.toast?.message, "The gateway returned invalid swarm state.")
     }
 
-    func testNewWorkspaceBrowserUsesCloudWorkingDirectoryOnly() async throws {
+    func testNewWorkspaceBrowserUsesGatewayWorkingDirectory() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
         model.gateway.connectionState = .ready
@@ -732,7 +792,7 @@ extension AppModelTests {
         model.openWorkspaceBrowser()
 
         let localRequest = await recorder.firstRequest(after: requestCount) { request in
-            guard case .listDirectories(_, "/", false) = request else { return false }
+            guard case .listDirectories(_, ".", false) = request else { return false }
             return true
         }
         XCTAssertNotNil(localRequest)

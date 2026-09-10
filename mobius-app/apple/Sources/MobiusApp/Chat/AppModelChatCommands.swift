@@ -45,7 +45,18 @@ extension AppModel {
         chat.stopRealtimeVoice()
         destination = .chats
         navigationPath = []
-        openWorkspaceBrowser()
+        let path = workspace?.path ?? newChatWorkspacePaths.first ?? "."
+        chooseWorkspace(path)
+        if path == "." { loadDirectory(path) }
+    }
+
+    var newChatWorkspacePaths: [String] {
+        let paths =
+            chat.sessions.compactMap(\.sessionContext.workspaceLabel)
+            + [chat.pendingNewChatWorkspace, workspace?.path].compactMap { $0 }
+        return Set(paths.filter { !$0.isEmpty }).sorted {
+            $0.localizedStandardCompare($1) == .orderedAscending
+        }
     }
 
     func openNewSessionInCurrentWorkspace() {

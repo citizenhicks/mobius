@@ -49,7 +49,11 @@ impl Tool for Bash {
         rewrite_command_input(&input)
     }
 
-    fn call<'a>(&'a self, context: ToolContext, arguments: Value) -> BoxFuture<'a, Result<String>> {
+    fn call<'a>(
+        &'a self,
+        context: ToolContext,
+        arguments: Value,
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let arguments: BashArgs = serde_json::from_value(arguments)?;
             validate_command(&arguments.command)?;
@@ -57,10 +61,11 @@ impl Tool for Bash {
                 .sandbox
                 .execute(&arguments.command, &context.permissions)
                 .await?;
-            Ok(format!(
+            Ok((format!(
                 "exit code: {}\nstdout:\n{}\nstderr:\n{}",
                 output.exit_code, output.stdout, output.stderr
             ))
+            .into())
         })
     }
 }
@@ -100,14 +105,18 @@ impl Tool for StartCommand {
         rewrite_command_input(&input)
     }
 
-    fn call<'a>(&'a self, context: ToolContext, arguments: Value) -> BoxFuture<'a, Result<String>> {
+    fn call<'a>(
+        &'a self,
+        context: ToolContext,
+        arguments: Value,
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let arguments: BashArgs = serde_json::from_value(arguments)?;
             validate_command(&arguments.command)?;
             let id = context
                 .sandbox
                 .start_background(arguments.command, &context.permissions)?;
-            Ok(serde_json::json!({"command_id": id, "status": "running"}).to_string())
+            Ok((serde_json::json!({"command_id": id, "status": "running"}).to_string()).into())
         })
     }
 }
@@ -132,7 +141,11 @@ impl Tool for PollCommand {
         ToolExposure::Direct
     }
 
-    fn call<'a>(&'a self, context: ToolContext, arguments: Value) -> BoxFuture<'a, Result<String>> {
+    fn call<'a>(
+        &'a self,
+        context: ToolContext,
+        arguments: Value,
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let arguments: CommandIdArgs = serde_json::from_value(arguments)?;
             validate_command_id(&arguments.command_id)?;
@@ -140,7 +153,7 @@ impl Tool for PollCommand {
                 .sandbox
                 .poll_background(&arguments.command_id, &context.permissions)
                 .await?;
-            Ok(background_output(output))
+            Ok((background_output(output)).into())
         })
     }
 }
@@ -160,7 +173,11 @@ impl Tool for StopCommand {
         ToolExposure::Direct
     }
 
-    fn call<'a>(&'a self, context: ToolContext, arguments: Value) -> BoxFuture<'a, Result<String>> {
+    fn call<'a>(
+        &'a self,
+        context: ToolContext,
+        arguments: Value,
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let arguments: CommandIdArgs = serde_json::from_value(arguments)?;
             validate_command_id(&arguments.command_id)?;
@@ -168,7 +185,7 @@ impl Tool for StopCommand {
                 .sandbox
                 .stop_background(&arguments.command_id, &context.permissions)
                 .await?;
-            Ok(background_output(output))
+            Ok((background_output(output)).into())
         })
     }
 }

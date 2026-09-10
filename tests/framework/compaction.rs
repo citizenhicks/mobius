@@ -36,7 +36,11 @@ async fn native_compaction_survives_recreation_with_current_prompt_and_tools() {
             Arc::new(StaticPrompt(section)),
         ];
         if coding_tools {
-            middleware.push(Arc::new(Tools::coding()));
+            middleware.push(Arc::new(Tools::coding(
+                mobius::backend::session_files::SessionFileStore::new(
+                    tempfile::tempdir().expect("files").path(),
+                ),
+            )));
         }
         middleware.push(Arc::new(
             Compaction::new(1_000).expect("compaction middleware"),
@@ -352,25 +356,45 @@ async fn native_compaction_uses_fresh_usage_after_a_retained_user() {
 #[tokio::test]
 async fn compaction_falls_back_to_a_model_summary_and_keeps_recent_context() {
     let workspace = TempDir::new().expect("create workspace");
+    let files = SessionFileStore::new(workspace.path());
+    let attachment = upload_attachment(
+        &files,
+        "summary-media",
+        "screen.png",
+        "image/png",
+        &super::attachments::png(),
+    )
+    .await;
     let first = text_response_with_usage("draft", usage(40_000));
-    let model = Arc::new(ScriptedModel::new(vec![
-        first,
-        text_response("## Goal\nContinue the task."),
-        text_response("done"),
-    ]));
-    let mut agent = create_agent(test_config(
-        workspace.path(),
-        Arc::clone(&model),
-        vec![Arc::new(
-            Compaction::new(30_000).expect("compaction middleware"),
-        )],
-    ))
+    let model = Arc::new(
+        ScriptedModel::new(vec![
+            first,
+            text_response("## Goal\nContinue the task."),
+            text_response("done"),
+        ])
+        .with_image_input(),
+    );
+    let mut agent = create_agent(
+        test_config(
+            workspace.path(),
+            Arc::clone(&model),
+            vec![
+                Arc::new(Tools::new(Vec::new())),
+                Arc::new(Attachments::new(files)),
+                Arc::new(Compaction::new(30_000).expect("compaction middleware")),
+            ],
+        )
+        .session_id("summary-media"),
+    )
     .await
     .expect("create agent");
 
     agent
         .sender()
-        .submit(user_message("x".repeat(80_000)))
+        .submit(user_message_with_attachments(
+            "x".repeat(80_000),
+            vec![attachment],
+        ))
         .expect("submit first turn");
     assert_eq!(final_message(&mut agent).await, "draft");
     agent
@@ -381,6 +405,10 @@ async fn compaction_falls_back_to_a_model_summary_and_keeps_recent_context() {
 
     let requests = model.requests.lock().expect("requests");
     assert_eq!(requests.len(), 3);
+    assert_eq!(request_image_count(&requests[1].input), 1);
+    let summary_evidence = serde_json::to_string(&requests[1].input).expect("summary evidence");
+    assert!(summary_evidence.contains("screen.png"));
+    assert!(summary_evidence.contains("file"));
     assert!(requests[1].instructions.contains("Summarize coding-agent"));
     assert_eq!(requests[2].instructions, requests[0].instructions);
     assert_eq!(

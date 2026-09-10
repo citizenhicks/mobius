@@ -1172,7 +1172,7 @@ mod tests {
                 turn_id: "turn-1".into(),
                 call_id: "call-1".into(),
                 name: "write".into(),
-                output: String::new(),
+                output: String::new().into(),
                 is_error: false,
             }),
         ] {

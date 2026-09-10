@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use tokio::process::Command;
 
 use super::Invocation;
@@ -37,6 +35,7 @@ pub(super) fn append_invocation(
         Invocation::Argv {
             executable,
             arguments,
+            ..
         } => {
             command.arg(executable).args(arguments.iter().copied());
         }
@@ -57,30 +56,11 @@ pub(super) fn host_command(invocation: &Invocation<'_>, isolated_home: bool) -> 
         Invocation::Argv {
             executable,
             arguments,
+            ..
         } => {
             let mut command = Command::new(executable);
             command.args(arguments.iter().copied());
             command
         }
     }
-}
-
-#[cfg(target_os = "linux")]
-pub(super) fn command_temp(_private_temp: &Path) -> &Path {
-    Path::new("/tmp")
-}
-
-#[cfg(not(target_os = "linux"))]
-pub(super) fn command_temp(private_temp: &Path) -> &Path {
-    private_temp
-}
-
-#[cfg(target_os = "linux")]
-pub(super) fn command_home(_private_temp: &Path) -> &Path {
-    Path::new(super::ISOLATED_HOME)
-}
-
-#[cfg(not(target_os = "linux"))]
-pub(super) fn command_home(private_temp: &Path) -> &Path {
-    private_temp
 }

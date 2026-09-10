@@ -405,7 +405,7 @@ pub struct ModelContext<'a> {
 /// Live capability state used to hide registered tools at a model boundary.
 pub struct ToolExposureContext<'a> {
     pub session_id: &'a str,
-    pub(crate) supports_image_input: bool,
+    pub(crate) supports_tool_image_input: bool,
     pub(crate) input: &'a [Value],
     pub(crate) available: &'a mut BTreeSet<String>,
 }
@@ -413,8 +413,8 @@ pub struct ToolExposureContext<'a> {
 impl ToolExposureContext<'_> {
     /// Reports whether the active model accepts image input.
     #[must_use]
-    pub fn supports_image_input(&self) -> bool {
-        self.supports_image_input
+    pub fn supports_tool_image_input(&self) -> bool {
+        self.supports_tool_image_input
     }
 
     /// Returns the most recent typed conversation message in model context.
@@ -444,7 +444,11 @@ impl ModelContext<'_> {
     }
 
     /// Replaces active model context and advances its rewrite epoch once per boundary.
-    pub fn rewrite_input(&mut self, reason: ContextRewriteReason, input: Vec<Value>) -> Result<()> {
+    pub fn rewrite_input(
+        &mut self,
+        reason: ContextRewriteReason,
+        mut input: Vec<Value>,
+    ) -> Result<()> {
         if *self.durable_input == input {
             return Ok(());
         }
@@ -457,6 +461,7 @@ impl ModelContext<'_> {
         if !self.rewrite_reasons.contains(&reason) {
             self.rewrite_reasons.push(reason);
         }
+        crate::backend::model::reset_prompt_cache_breakpoint(&mut input);
         *self.durable_input = input;
         self.last_usage = None;
         *self.checkpoint_changed = true;

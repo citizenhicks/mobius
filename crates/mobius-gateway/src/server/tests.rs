@@ -163,13 +163,17 @@ async fn create_bot_chat_with_config(
         .await
         .expect("create chat");
     loop {
-        if let ServerMessage::SessionOpened {
-            request_id: actual,
-            payload,
-        } = next_gateway_message(events).await
-            && actual == request_id
-        {
-            return (payload.session.session_id, bot_id);
+        match next_gateway_message(events).await {
+            ServerMessage::SessionOpened {
+                request_id: actual,
+                payload,
+            } if actual == request_id => return (payload.session.session_id, bot_id),
+            ServerMessage::Rejected {
+                request_id: actual,
+                message,
+                ..
+            } if actual == request_id => panic!("chat creation rejected: {message}"),
+            _ => {}
         }
     }
 }

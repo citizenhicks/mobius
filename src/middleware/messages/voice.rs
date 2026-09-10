@@ -235,7 +235,7 @@ fn progress_text(event: &EventMsg, assistant: &str) -> Option<String> {
             "Bot tool {} {}: {}",
             tool.name,
             if tool.is_error { "failed" } else { "finished" },
-            tool.output
+            tool.output.text()
         )),
         EventMsg::TurnAborted(turn) => Some(format!("Bot stopped: {}", turn.reason)),
         _ => None,

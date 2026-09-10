@@ -1,0 +1,1 @@
+Ship typed observation records and session file storage through gateway protocol 74. Add optional computer control and a native macOS voice menu that shares the Apple transport, voice implementation, palette, and design tokens. Update existing clients and convert format-13 checkpoints offline before restarting an existing gateway.

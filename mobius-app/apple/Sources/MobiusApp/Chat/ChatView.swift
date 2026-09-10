@@ -344,7 +344,7 @@ struct ChatInfoView: View {
                     detail("Bot", value: "\(bot.name) (@\(bot.handle))")
                 }
                 detail("Swarm", value: model.selectedBotSwarm?.title)
-                detail("Model", value: model.chat.selectedModelRoute)
+                detail("Model", value: model.chatModelLabel)
                 detail("Gateway", value: model.gateway.gatewayMachineName)
                 Divider()
                 VStack(alignment: .leading, spacing: MobiusSpace.s) {

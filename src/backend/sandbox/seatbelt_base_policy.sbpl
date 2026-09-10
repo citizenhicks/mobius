@@ -7,6 +7,10 @@
 (allow signal (target same-sandbox))
 (allow process-info* (target same-sandbox))
 
+; Chromium's child processes rendezvous through a named Mach service.
+(allow mach-register mach-lookup
+  (global-name-prefix "org.chromium.Chromium.MachPortRendezvousServer."))
+
 (allow file-write-data
   (require-all
     (path "/dev/null")

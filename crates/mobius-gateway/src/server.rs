@@ -15,7 +15,7 @@ use std::time::Duration;
 use chrono::Utc;
 use futures_util::StreamExt as _;
 use mobius::agent::validate_submission;
-use mobius::middleware::session_files::{PendingSessionFileWrite, SessionFileStore};
+use mobius::backend::session_files::{PendingSessionFileWrite, SessionFileStore};
 use mobius::protocol::Op;
 use rustls::ServerConfig;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};

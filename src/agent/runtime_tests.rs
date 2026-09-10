@@ -8,8 +8,6 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
-use base64::Engine as _;
-
 use super::Agent;
 use super::AgentConfig;
 use super::EVENT_QUEUE_CAPACITY;
@@ -146,18 +144,11 @@ struct ScriptedModel {
 
 struct RequestOnlyMiddleware;
 
-struct RequestOnlyImageMiddleware {
-    data: Arc<str>,
-    calls: Arc<AtomicUsize>,
-}
-
 struct DurableBeforeModel;
 
 struct FailingBeforeModel;
 
 struct ApprovalRequiredTestTool;
-
-struct ApprovalRequiredImageTool;
 
 struct ToolHookContext;
 
@@ -316,32 +307,6 @@ impl Middleware for RequestOnlyMiddleware {
                 "request_only",
                 "temporary",
             ));
-            context.replace_input(input);
-            Ok(())
-        })
-    }
-}
-
-impl Middleware for RequestOnlyImageMiddleware {
-    fn name(&self) -> &'static str {
-        "request_only_image"
-    }
-
-    fn model_request<'a>(
-        &'a self,
-        context: &'a mut ModelRequestContext<'_>,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            let mut input = context.input().to_vec();
-            input.push(serde_json::json!({
-                "role": "user",
-                "content": [{
-                    "type": "input_image",
-                    "media_type": "image/png",
-                    "data": &*self.data
-                }]
-            }));
             context.replace_input(input);
             Ok(())
         })
@@ -641,44 +606,8 @@ impl Tool for ApprovalRequiredTestTool {
         &'a self,
         _context: ToolContext,
         _arguments: serde_json::Value,
-    ) -> BoxFuture<'a, Result<String>> {
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         Box::pin(async { Ok("executed".into()) })
-    }
-}
-
-impl Tool for ApprovalRequiredImageTool {
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "approval_required_image".into(),
-            description: "adds one reviewed image".into(),
-            parameters: serde_json::json!({"type": "object"}),
-        }
-    }
-
-    fn exposure(&self) -> ToolExposure {
-        ToolExposure::Direct
-    }
-
-    fn approval(&self) -> ApprovalRequirement {
-        ApprovalRequirement::Always
-    }
-
-    fn call<'a>(
-        &'a self,
-        context: ToolContext,
-        _arguments: serde_json::Value,
-    ) -> BoxFuture<'a, Result<String>> {
-        Box::pin(async move {
-            context.push_input(serde_json::json!({
-                "role": "user",
-                "content": [{
-                    "type": "input_image",
-                    "media_type": "image/png",
-                    "data": "AA=="
-                }]
-            }))?;
-            Ok("image added".into())
-        })
     }
 }
 

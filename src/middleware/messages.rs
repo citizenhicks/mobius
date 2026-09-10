@@ -242,6 +242,7 @@ impl Middleware for Messages {
             text: message.text.clone(),
             symbol: Some(symbol.clone().unwrap_or(FrontendSymbol::Chat)),
             files: Vec::new(),
+            content: Default::default(),
             format: FrontendBlockFormat::PlainText,
             tone: FrontendTone::Neutral,
         })

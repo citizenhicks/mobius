@@ -193,6 +193,7 @@ final class TranscriptEntry: Identifiable {
     var messageTarget: MessageTarget?
     var reply: MessageReply?
     var files: [SessionFileReference]
+    var content: [ContentPart]
     var annotations: [JSONValue]
     var messageMetadata: TranscriptMessageMetadata?
 
@@ -220,6 +221,7 @@ final class TranscriptEntry: Identifiable {
         messageTarget: MessageTarget? = nil,
         reply: MessageReply? = nil,
         files: [SessionFileReference] = [],
+        content: [ContentPart] = [],
         annotations: [JSONValue] = [],
         messageMetadata: TranscriptMessageMetadata? = nil
     ) {
@@ -246,6 +248,7 @@ final class TranscriptEntry: Identifiable {
         self.messageTarget = messageTarget
         self.reply = reply
         self.files = files
+        self.content = content
         self.annotations = annotations
         self.messageMetadata = messageMetadata
     }

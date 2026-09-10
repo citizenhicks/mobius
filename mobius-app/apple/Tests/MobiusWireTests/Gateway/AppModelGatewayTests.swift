@@ -4,6 +4,60 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testWorkspaceRequestsWaitForAuthenticationWithoutInterruptingTheConnection() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try model(requestSender: { await recorder.record($0) })
+        for state: ConnectionState in [.connecting, .authenticating] {
+            model.gateway.connectionState = state
+            model.loadDirectory("/Users/test")
+            let finished = await eventually { !model.isLoadingDirectories }
+            XCTAssertTrue(finished)
+            XCTAssertNotNil(model.directoryError)
+            XCTAssertEqual(model.gateway.connectionState, state)
+        }
+        let prematureRequests = await recorder.requestCount()
+        XCTAssertEqual(prematureRequests, 0)
+
+        model.gateway.connectionState = .loading
+        model.loadDirectory("/Users/test")
+        let request = await recorder.firstRequest(after: 0) {
+            if case .listDirectories = $0 { return true }
+            return false
+        }
+        XCTAssertNotNil(request)
+    }
+
+    func testPairingProgressBelongsOnlyToThePendingPairing() async throws {
+        let suite = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = GatewayStore(defaults: defaults)
+        let account = GatewayAccount(endpoint: try GatewayEndpoint("wss://existing.example"))
+        try store.save(account, token: "existing-token")
+        addTeardownBlock { try await store.remove(account) }
+        let model = AppModel(
+            store: store, settingsDefaults: defaults,
+            requestSender: { _ in },
+            connectionOpener: { _ in AsyncThrowingStream { _ in } }
+        )
+        model.connect(to: account)
+        XCTAssertNil(model.gateway.pairingConnectionState)
+        let authenticated = await eventually { model.gateway.connectionState == .authenticating }
+        XCTAssertTrue(authenticated)
+        XCTAssertNil(model.gateway.pairingConnectionState)
+
+        model.applyPairingSetup(
+            try GatewayPairingSetup(endpoint: "wss://new.example", code: "new-code"))
+        XCTAssertNil(model.gateway.pairingConnectionState)
+        model.pair()
+        XCTAssertEqual(model.gateway.pairingConnectionState, .connecting)
+        let pairing = await eventually { model.gateway.pairingConnectionState == .authenticating }
+        XCTAssertTrue(pairing)
+        model.gateway.cancelPendingPairing()
+        XCTAssertNil(model.gateway.pairingConnectionState)
+        await model.gateway.shutdown().value
+    }
+
     func testProviderUsageRequiresSetupAndIgnoresOldProfileResponses() throws {
         let model = try model()
         model.gateway.connectionState = .ready

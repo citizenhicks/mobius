@@ -220,6 +220,76 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  gateway-menubar:
+    name: Gateway macOS menu bar
+    if: startsWith(github.ref_name, 'mobius-gateway-v')
+    needs: gateway-binaries
+    runs-on: macos-26
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+      MOBIUS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: gateway-binary-macOS
+          path: gateway-release
+      - name: Import signing identity
+        if: env.MACOS_CERTIFICATE != ''
+        env:
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/gateway-signing.keychain-db"
+          password="$(openssl rand -hex 32)"
+          printf '%s' "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/gateway.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/gateway.p12" -P "$CERTIFICATE_PASSWORD" -k "$keychain" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain"
+          test -n "$MOBIUS_SIGNING_IDENTITY"
+      - name: Build menu bar app
+        run: |
+          mkdir -p "$RUNNER_TEMP/gateway-binaries"
+          tar -xzf gateway-release/*.tar.gz -C "$RUNNER_TEMP/gateway-binaries"
+          MOBIUS_GATEWAY_BINARY="$RUNNER_TEMP/gateway-binaries/mobius-gateway" \
+          MOBIUS_CLOUDFLARED_BINARY="$RUNNER_TEMP/gateway-binaries/cloudflared" \
+            crates/mobius-gateway/macos/build.sh "$RUNNER_TEMP/menu-bar"
+      - name: Notarize and staple
+        if: env.MACOS_CERTIFICATE != ''
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          app="$RUNNER_TEMP/menu-bar/Mobius Gateway.app"
+          ditto -c -k --keepParent "$app" "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" --wait \
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_PASSWORD"
+          xcrun stapler staple "$app"
+          spctl --assess --type execute --verbose "$app"
+      - name: Archive app
+        run: |
+          version="${GITHUB_REF_NAME#mobius-gateway-v}"
+          suffix=""
+          if [[ -z "$MACOS_CERTIFICATE" ]]; then suffix="-unnotarized"; fi
+          mkdir dist
+          archive="dist/mobius-gateway-menubar-${version}-macos-${RUNNER_ARCH}${suffix}.zip"
+          ditto -c -k --keepParent "$RUNNER_TEMP/menu-bar/Mobius Gateway.app" "$archive"
+          shasum -a 256 "$archive" > "$archive.sha256"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gateway-menubar-macOS
+          path: dist/*
+          if-no-files-found: error
+      - name: Remove temporary signing material
+        if: always() && env.MACOS_CERTIFICATE != ''
+        run: |
+          security delete-keychain "$RUNNER_TEMP/gateway-signing.keychain-db"
+          rm -f "$RUNNER_TEMP/gateway.p12"
+
   cli-binaries:
     name: CLI binary (${{ matrix.os }})
     if: startsWith(github.ref_name, 'mobius-cli-v')
@@ -331,6 +401,7 @@ jobs:
     needs:
       - publish-gateway
       - gateway-binaries
+      - gateway-menubar
     runs-on: ubuntu-latest
     permissions:
       contents: write

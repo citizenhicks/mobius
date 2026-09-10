@@ -36,6 +36,7 @@ extension AppModel {
         guard canCreateSession, selectedRouteSupportsRealtimeVoice else { return }
         openNewSession()
         newVoiceChatIntent = .selectingWorkspace
+        openWorkspaceBrowser()
     }
 
     func cancelVoiceChatIntent() {

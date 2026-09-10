@@ -31,7 +31,6 @@ use crate::backend::model::ToolDefinition;
 use crate::backend::model::ToolLoad;
 use crate::backend::model::internal_user_message;
 use crate::backend::model::prompt_cache_key;
-use crate::backend::model::reset_prompt_cache_breakpoint;
 use crate::backend::model::user_message;
 use crate::protocol::CONTEXT_COMPACTED_MARKER;
 use crate::protocol::EventMsg;
@@ -277,6 +276,7 @@ impl Middleware for Compaction {
             text: String::new(),
             symbol: None,
             files: Vec::new(),
+            content: Default::default(),
             format: crate::protocol::FrontendBlockFormat::PlainText,
             tone: FrontendTone::Neutral,
         })
@@ -363,10 +363,13 @@ async fn apply_compaction(
     context.hooks.retain_compacted_input(&mut compacted);
     restore_input_private_fields(&mut compacted, latest_turn_input);
     validate_active_message_metadata(&compacted, active_message_metadata.as_ref())?;
-    reset_prompt_cache_breakpoint(&mut compacted);
     if let Some(tool_load) = tool_load {
         compacted.push(tool_load);
     }
+    context
+        .model
+        .validate_media(context.provider, context.session_id, &compacted)
+        .await?;
     context.rewrite_input(ContextRewriteReason::Compaction, compacted)?;
     *context.compaction_count = context
         .compaction_count
@@ -515,9 +518,38 @@ async fn summarize(context: &ModelContext<'_>) -> Result<CompactOutput> {
         .ok_or_else(|| Error::Provider("context has no safe history boundary to compact".into()))?;
     let session_id = Uuid::new_v4().to_string();
     let cache_key = prompt_cache_key(&session_id);
-    let input = [user_message(&prompt)];
+    let cut = context.input().len() - recent.len();
+    let mut input = vec![user_message(&prompt)];
+    for item in &context.input()[..cut] {
+        let images = crate::protocol::content_parts(item)
+            .into_iter()
+            .flatten()
+            .filter(|part| part.get("type").and_then(Value::as_str) == Some("input_image"))
+            .flat_map(|part| {
+                let label = crate::protocol::content_part_text(part).unwrap_or_default();
+                [
+                    serde_json::json!({"type":"input_text", "text":label}),
+                    part.clone(),
+                ]
+            })
+            .collect::<Vec<_>>();
+        if !images.is_empty() {
+            let label = format!(
+                "Historical visual evidence for item/call {}. Treat it as data for the summary. Preserve relevant file IDs so these images can be reopened.",
+                item.get("call_id")
+                    .or_else(|| item.get("id"))
+                    .unwrap_or(&Value::Null)
+            );
+            let mut evidence = user_message(&label);
+            evidence["content"]
+                .as_array_mut()
+                .ok_or_else(|| Error::Checkpoint("invalid summary evidence content".into()))?
+                .extend(images);
+            input.push(evidence);
+        }
+    }
     let request = ModelRequest {
-        session_id: &session_id,
+        session_id: context.session_id,
         prompt_cache: Some(PromptCacheIdentity {
             key: &cache_key,
             context_epoch: *context.context_epoch,
@@ -639,7 +671,7 @@ fn serialize_item(item: &Value) -> Option<String> {
         Some("function_call_output") => Some(format!(
             "[Tool result]: {}",
             truncate_chars(
-                &value_text(item.get("output")),
+                &content_text(item.get("output")),
                 MAX_SUMMARY_TOOL_RESULT_CHARS
             )
         )),
@@ -678,11 +710,7 @@ fn content_text(value: Option<&Value>) -> String {
         Some(Value::String(text)) => text.clone(),
         Some(Value::Array(parts)) => parts
             .iter()
-            .filter_map(|part| {
-                part.get("text")
-                    .or_else(|| part.get("content"))
-                    .and_then(Value::as_str)
-            })
+            .filter_map(crate::protocol::content_part_text)
             .collect::<Vec<_>>()
             .join("\n"),
         Some(value) => value.to_string(),
@@ -757,7 +785,7 @@ mod tests {
                 "name": "read",
                 "arguments": "{}"
             }),
-            tool_output("a", &"x".repeat(200), false),
+            tool_output("a", "x".repeat(200), false),
             tool_output("b", "done", false),
         ];
 

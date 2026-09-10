@@ -1121,7 +1121,7 @@ fn extension_lifecycle_requests_are_gateway_scoped() {
 
 #[test]
 fn gateway_ready_contains_no_selected_session() {
-    let session_file_limits = mobius::middleware::session_files::session_file_limits();
+    let session_file_limits = mobius::backend::session_files::session_file_limits();
     let frame = ServerFrame::new(ServerMessage::Ready {
         payload: ReadyPayload {
             machine_name: "snowwhite.local".into(),

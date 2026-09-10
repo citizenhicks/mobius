@@ -58,8 +58,8 @@ fn responses_history_becomes_kimi_messages_and_tools() {
             "name": "read",
             "arguments": "{\"path\":\"b.rs\"}"
         }),
-        json!({"type": "function_call_output", "call_id": "call-a", "output": "A"}),
-        json!({"type": "function_call_output", "call_id": "call-b", "output": "B"}),
+        json!({"type": "function_call_output", "call_id": "call-a", "output": [{"type": "input_text", "text": "A"}]}),
+        json!({"type": "function_call_output", "call_id": "call-b", "output": [{"type": "input_text", "text": "B"}]}),
     ];
     let tools = [ToolDefinition {
         name: "read".into(),

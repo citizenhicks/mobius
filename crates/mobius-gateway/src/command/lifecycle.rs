@@ -41,6 +41,8 @@ pub(super) async fn serve(
     let Some(mut tunnel) = CloudflareTunnel::start(&store, &config)? else {
         let _process_record = ProcessRecordGuard::create(&state_dir, None)?;
         drop(startup);
+        #[cfg(target_os = "macos")]
+        menu_bar::open_if_installed(&state_dir);
         println!("gateway serving in foreground");
         print_listener(&config, None);
         return server.serve().await;
@@ -50,6 +52,8 @@ pub(super) async fn serve(
     tokio::pin!(server);
     let _process_record = ProcessRecordGuard::create(&state_dir, Some(&endpoint))?;
     drop(startup);
+    #[cfg(target_os = "macos")]
+    menu_bar::open_if_installed(&state_dir);
     println!("gateway serving in foreground");
     print_listener(&config, Some(&endpoint));
     tokio::select! {

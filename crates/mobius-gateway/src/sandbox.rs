@@ -117,7 +117,9 @@ impl GatewaySandbox {
             .command_timeout(timeout)?
             .deny_read(&state_dir)?
             .deny_read(&tls_key)?;
-        let mut full_access_delegate = LocalSandbox::new(&root)?.command_timeout(timeout)?;
+        let mut full_access_delegate = LocalSandbox::new(&root)?
+            .command_timeout(timeout)?
+            .share_temporary_directory(&delegate)?;
         #[cfg(target_os = "linux")]
         if empty_proc_configured(std::env::var_os(SANDBOX_PROC_ENVIRONMENT).as_deref())? {
             delegate = delegate.empty_proc();
@@ -134,6 +136,13 @@ impl GatewaySandbox {
             delegate,
             full_access_delegate,
         })
+    }
+
+    fn command_delegate(&self, sandbox_mode: SandboxMode) -> &LocalSandbox {
+        match sandbox_mode {
+            SandboxMode::WorkspaceWrite => &self.delegate,
+            SandboxMode::DangerFullAccess => &self.full_access_delegate,
+        }
     }
 
     pub(crate) fn allow_read_roots(
@@ -198,6 +207,32 @@ impl GatewaySandbox {
 }
 
 impl SandboxBackend for GatewaySandbox {
+    fn start_worker(
+        &self,
+        command: &mobius::backend::sandbox::WorkerCommand,
+        sandbox_mode: SandboxMode,
+        network_access: NetworkAccess,
+    ) -> Result<mobius::backend::sandbox::WorkerProcess> {
+        self.command_delegate(sandbox_mode)
+            .start_worker(command, sandbox_mode, network_access)
+    }
+
+    fn isolated_execution(&self) -> Result<std::sync::Arc<dyn SandboxBackend>> {
+        let delegate = self.delegate.isolated_execution()?;
+        let full_access_delegate = self
+            .full_access_delegate
+            .isolated_execution()?
+            .share_temporary_directory(&delegate)?;
+        Ok(std::sync::Arc::new(Self {
+            delegate,
+            full_access_delegate,
+        }))
+    }
+
+    fn temporary_directory(&self) -> Option<PathBuf> {
+        Some(self.delegate.temporary_directory().into())
+    }
+
     fn read<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<String>> {
         self.delegate.read(path)
     }
@@ -218,11 +253,13 @@ impl SandboxBackend for GatewaySandbox {
         mode: CommandMode,
         output: CommandOutputSink,
     ) -> BoxFuture<'a, Result<CommandOutput>> {
-        let delegate = match sandbox_mode {
-            SandboxMode::WorkspaceWrite => &self.delegate,
-            SandboxMode::DangerFullAccess => &self.full_access_delegate,
-        };
-        delegate.execute(script, sandbox_mode, network_access, mode, output)
+        self.command_delegate(sandbox_mode).execute(
+            script,
+            sandbox_mode,
+            network_access,
+            mode,
+            output,
+        )
     }
 
     fn execute_authorized<'a>(
@@ -234,11 +271,7 @@ impl SandboxBackend for GatewaySandbox {
         output: CommandOutputSink,
         authorization: &'a CommandAuthorization,
     ) -> BoxFuture<'a, Result<Option<CommandOutput>>> {
-        let delegate = match sandbox_mode {
-            SandboxMode::WorkspaceWrite => &self.delegate,
-            SandboxMode::DangerFullAccess => &self.full_access_delegate,
-        };
-        delegate.execute_authorized(
+        self.command_delegate(sandbox_mode).execute_authorized(
             script,
             sandbox_mode,
             network_access,

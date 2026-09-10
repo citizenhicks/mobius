@@ -141,7 +141,7 @@ fn stream_failures_do_not_enable_http_fallback() {
 fn continuation_ignores_searchable_inventory_and_resets_on_catalog_change() {
     let known = vec![
         serde_json::json!({"role": "user", "content": "one"}),
-        serde_json::json!({"role": "assistant", "content": "two"}),
+        serde_json::json!({"type":"function_call_output", "call_id":"screenshot-1", "output":[{"type":"input_text","text":"before"},{"type":"input_image","media_type":"image/png","data":"immutable-encoded-pixels","detail":"high"}]}),
     ];
     let mut state = SocketState {
         connection: None,

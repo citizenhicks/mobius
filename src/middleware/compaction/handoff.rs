@@ -86,7 +86,7 @@ impl Tool for HandoffTool {
         &'a self,
         _context: ToolContext,
         arguments: Value,
-    ) -> BoxFuture<'a, Result<String>> {
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             if self.write {
                 let args: WriteNotes = serde_json::from_value(arguments)?;

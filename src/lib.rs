@@ -25,6 +25,7 @@
 //!
 //! async fn build_agent(
 //!     workspace: &Path,
+//!     state_dir: &Path,
 //!     api_key: String,
 //!     model_id: &str,
 //! ) -> Result<Agent> {
@@ -33,16 +34,17 @@
 //!         "https://api.openai.com/v1",
 //!         model_id,
 //!     )?);
-//!     let models = Arc::new(ModelRouter::new("default", model));
+//!     let files = mobius::backend::session_files::SessionFileStore::new(state_dir);
+//!     let models = Arc::new(ModelRouter::new("default", model).session_files(files.clone()));
 //!     let sandbox = Arc::new(Sandbox::new(
 //!         Arc::new(LocalSandbox::new(workspace)?),
 //!         ApprovalPolicy::Ask,
 //!     ));
 //!     let checkpoints: Arc<dyn CheckpointStore> =
-//!         Arc::new(SqliteCheckpoint::new(workspace.join("mobius.sqlite3"))?);
+//!         Arc::new(SqliteCheckpoint::new(state_dir.join("mobius.sqlite3"))?);
 //!     let middleware: Vec<Arc<dyn Middleware>> = vec![
 //!         Arc::new(Messages::default()),
-//!         Arc::new(Tools::coding()),
+//!         Arc::new(Tools::coding(files)),
 //!     ];
 //!
 //!     create_agent(

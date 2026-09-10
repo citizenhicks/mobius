@@ -162,7 +162,7 @@ impl Tool for ParallelStreamingTool {
         &'a self,
         _context: ToolContext,
         _arguments: Value,
-    ) -> BoxFuture<'a, Result<String>> {
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         let calls = Arc::clone(&self.calls);
         let started = Arc::clone(&self.started);
         let started_count = Arc::clone(&self.started_count);
@@ -249,7 +249,7 @@ impl Tool for BarrierStreamingTool {
         &'a self,
         _context: ToolContext,
         _arguments: Value,
-    ) -> BoxFuture<'a, Result<String>> {
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         let barrier = Arc::clone(&self.barrier);
         let name = self.name;
         Box::pin(async move {
@@ -338,7 +338,7 @@ impl Tool for StreamingTool {
         &'a self,
         _context: ToolContext,
         _arguments: Value,
-    ) -> BoxFuture<'a, Result<String>> {
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let finished = Arc::clone(&self.finished);
         let release = self.release.clone();
@@ -810,6 +810,8 @@ async fn streaming_tool_error_or_mismatch_does_not_retry_and_records_unknown_res
             .iter()
             .find(|item| item.get("type").and_then(Value::as_str) == Some("function_call_output"))
             .and_then(|item| item.get("output"))
+            .and_then(|output| output.get(0))
+            .and_then(|part| part.get("text"))
             .and_then(Value::as_str)
             .expect("unknown tool output");
         assert!(output.contains("result unknown"));

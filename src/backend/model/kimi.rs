@@ -361,7 +361,7 @@ fn wire_messages(instructions: &str, input: &[Value]) -> Result<Vec<Value>> {
             Some("function_call_output") => messages.push(serde_json::json!({
                 "role": "tool",
                 "tool_call_id": required_string(item, "call_id")?,
-                "content": value_text(item.get("output"))
+                "content": super::media::output_text(item.get("output").ok_or_else(|| Error::Provider("tool result omitted content".into()))?)?
             })),
             Some("message") | None if item.get("role").is_some() => {
                 push_history_message(&mut messages, item)?
@@ -515,14 +515,6 @@ fn argument_text(arguments: Option<&Value>) -> Result<String> {
         }
         Some(arguments) => Ok(serde_json::to_string(arguments)?),
         None => Err(Error::Provider("function call omitted arguments".into())),
-    }
-}
-
-fn value_text(value: Option<&Value>) -> String {
-    match value {
-        Some(Value::String(value)) => value.clone(),
-        Some(value) => value.to_string(),
-        None => String::new(),
     }
 }
 

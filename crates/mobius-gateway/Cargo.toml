@@ -1,12 +1,13 @@
 [package]
 name = "mobius-gateway"
-version = "0.15.9"
+version = "0.15.10"
 edition.workspace = true
 rust-version.workspace = true
 description = "Headless authenticated gateway for möbius frontends"
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
+exclude = ["macos/**"]
 publish.workspace = true
 keywords = ["agent", "ai", "gateway", "llm", "server"]
 categories = ["command-line-utilities", "development-tools"]

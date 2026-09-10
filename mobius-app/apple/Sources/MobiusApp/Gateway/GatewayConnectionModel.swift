@@ -27,7 +27,7 @@ final class GatewayConnectionModel {
     @ObservationIgnored private var disconnectTask: Task<Void, Never>?
     @ObservationIgnored private(set) var reconnectAttempt = 0
     @ObservationIgnored private(set) var automaticReconnectBlocked = false
-    @ObservationIgnored private var pendingPairingAccount: GatewayAccount?
+    private var pendingPairingAccount: GatewayAccount?
     @ObservationIgnored private(set) var reconnectsOnActivation = false
     @ObservationIgnored private var reconnectsUntilReady = false
     @ObservationIgnored private(set) var connectionGeneration = UUID()
@@ -211,6 +211,10 @@ final class GatewayConnectionModel {
 
     var hasPendingPairing: Bool { pendingPairingAccount != nil }
 
+    var pairingConnectionState: ConnectionState? {
+        hasPendingPairing ? connectionState : nil
+    }
+
     func reloadAccounts() {
         accounts = store.loadAccounts()
         selectedAccountID = store.selectedAccountID() ?? accounts.first?.id
@@ -301,7 +305,9 @@ final class GatewayConnectionModel {
                 guard generation == self.connectionGeneration else { return }
                 let message = GatewayWireError.disconnected.localizedDescription
                 onFailure?(message)
-                self.connectionEnded(generation: generation, message: message)
+                if !self.connectionState.isConnecting {
+                    self.connectionEnded(generation: generation, message: message)
+                }
             }
         }
     }
@@ -397,7 +403,9 @@ final class GatewayConnectionModel {
     }
 
     private func send(_ request: GatewayRequest, generation: UUID) async throws {
-        guard generation == connectionGeneration else { throw GatewayWireError.disconnected }
+        guard generation == connectionGeneration, !connectionState.isConnecting else {
+            throw GatewayWireError.disconnected
+        }
         try await requestSender(request)
         guard generation == connectionGeneration else { throw GatewayWireError.disconnected }
     }

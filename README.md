@@ -150,7 +150,9 @@ you configure; changing clients preserves the agent's runtime and saved work.
 Protected execution uses **Seatbelt on macOS** and **Bubblewrap on Linux** and fails closed
 if the selected sandbox is unavailable. Approval policy belongs to the Bot. **Full access**
 allows shell commands to use everything available to the gateway account; file tools remain
-workspace-scoped. The [gateway guide](https://github.com/citizenhicks/mobius/blob/main/crates/mobius-gateway/README.md)
+scoped to the workspace, attached folders, and the execution’s private temporary area.
+Commands receive that directory in `$TMPDIR`, shared across calls. Workspace isolation
+protects sibling temporary files; full-access commands use the host filesystem. The [gateway guide](https://github.com/citizenhicks/mobius/blob/main/crates/mobius-gateway/README.md)
 explains these boundaries in detail.
 
 ## Build on möbius
@@ -172,6 +174,26 @@ supplies the dependencies and consumes frontend-neutral events.
 - **Build a frontend:** submit `protocol::Op` values and render the agent's events and
   capability catalog.
 - **Choose storage and execution:** inject a `CheckpointStore` and `SandboxBackend`.
+
+Tool results contain ordered `ContentPart` text, image, and file observations. Inject the
+same `backend::session_files::SessionFileStore` into `ModelRouter` and media-capable
+middleware. Images are validated and stored immutably; checkpoints hold references,
+and model requests resolve their bytes without changing earlier observations. Use
+`view_image` with an `images` array of paths or authorized `file_id` values, and
+`send_artifact` to publish a stored reference. The CLI shows image metadata; the Apple
+app provides previews.
+
+Optional `ComputerControl` runs Chromium on macOS and Linux through a persistent,
+sandbox-owned JavaScript worker. Enable `computer_control` on the Bot after installing
+the runtime (`node`, `worker.cjs`, Playwright dependencies and browsers, and
+`computer-control.md`) in `/usr/local/lib/mobius-computer`, or set
+`MOBIUS_COMPUTER_RUNTIME` to its absolute directory. Sprite bootstrap installs it.
+Browser state survives compaction. An overall evaluation deadline, cancellation,
+reset, or runtime restart loses interpreter state. Action timeouts can retain state;
+follow the reported status and never automatically repeat an uncertain action.
+The worker uses the same sandbox
+approval, filesystem, network, and process cleanup policy as commands: Seatbelt on
+macOS and Bubblewrap on Linux.
 
 Start with the [compile-checked composition example](https://docs.rs/mobius/latest/mobius/#embedded-composition)
 and [API documentation](https://docs.rs/mobius/latest/mobius/). The gateway is the shipped

@@ -33,6 +33,17 @@ pub(crate) fn sandboxed_command(
         "/dev",
     ]);
     command.args(["--tmpfs", "/tmp"]);
+    let private_parent = std::fs::canonicalize(sandbox.temp.path())?
+        .parent()
+        .ok_or_else(|| Error::Sandbox("temporary storage has no parent".into()))?
+        .to_path_buf();
+    if !private_parent.starts_with("/tmp") {
+        command.arg("--tmpfs").arg(private_parent);
+    }
+    command
+        .arg("--bind")
+        .arg(sandbox.temp.path())
+        .arg(sandbox.temp.path());
     if let Some(socket) = ssh_agent_socket(sandbox)
         && let Ok(relative) = socket.strip_prefix("/tmp")
     {
@@ -48,9 +59,6 @@ pub(crate) fn sandboxed_command(
         }
         command.arg("--ro-bind").arg(&socket).arg(&socket);
         command.env("SSH_AUTH_SOCK", socket);
-    }
-    if sandbox.isolated_home {
-        command.args(["--dir", super::super::ISOLATED_HOME]);
     }
     if network_access == NetworkAccess::Denied && Path::new("/run").is_dir() {
         command.args(["--tmpfs", "/run"]);

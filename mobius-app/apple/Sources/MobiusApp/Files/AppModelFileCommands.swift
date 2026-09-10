@@ -5,7 +5,8 @@ extension AppModel {
     func openWorkspaceBrowser() {
         guard canCreateSession else { return }
         showsWorkspaceBrowser = true
-        loadDirectory(workspace?.path ?? (selectedGatewayIsMobiusCloud ? "." : "/"))
+        loadDirectory(
+            chat.pendingNewChatWorkspace ?? workspace?.path ?? ".")
     }
 
     func loadDirectory(_ path: String) {

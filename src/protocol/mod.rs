@@ -10,9 +10,14 @@ use crate::backend::model::ToolCall;
 pub use self::replay::events as replay_events;
 pub(crate) use self::replay::{
     ATTACHMENT_CONTEXT_MARKER, ATTACHMENTS_FIELD, CONTEXT_COMPACTED_MARKER, INTERNAL_MESSAGE_FIELD,
-    MESSAGE_METADATA_FIELD, REPLAY_REASONING_FIELD, TOOL_ERROR_FIELD, internal_message_kind,
-    is_internal_message, message_metadata, tool_complete_boundaries,
+    MESSAGE_METADATA_FIELD, PROMPT_CACHE_BREAKPOINT_FIELD, REPLAY_REASONING_FIELD,
+    TOOL_ERROR_FIELD, internal_message_kind, is_internal_message, message_metadata,
+    tool_complete_boundaries,
 };
+
+mod content;
+pub use content::{ContentPart, ImageDetail, ImageReference, ToolContent, ToolResponse};
+pub(crate) use content::{content_part_text, content_parts, content_parts_mut};
 
 mod events;
 mod frontend;

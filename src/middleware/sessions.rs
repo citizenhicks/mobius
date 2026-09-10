@@ -100,9 +100,17 @@ pub const MANIFEST: MiddlewareManifest = MiddlewareManifest {
 /// Adds chat discovery and branching without changing the core loop.
 pub struct Sessions {
     page_size: usize,
+    files: Option<crate::backend::session_files::SessionFileStore>,
 }
 
 impl Sessions {
+    /// Injects durable media storage used when granting a fork its observations.
+    #[must_use]
+    pub fn session_files(mut self, files: crate::backend::session_files::SessionFileStore) -> Self {
+        self.files = Some(files);
+        self
+    }
+
     /// Creates session middleware with a bounded catalog page size.
     pub fn new(page_size: usize) -> Result<Self> {
         if page_size == 0 || page_size > MAX_PAGE_SIZE {
@@ -110,7 +118,10 @@ impl Sessions {
                 "chat catalog page size must be between 1 and {MAX_PAGE_SIZE}"
             )));
         }
-        Ok(Self { page_size })
+        Ok(Self {
+            page_size,
+            files: None,
+        })
     }
 }
 
@@ -118,6 +129,7 @@ impl Default for Sessions {
     fn default() -> Self {
         Self {
             page_size: DEFAULT_PAGE_SIZE,
+            files: None,
         }
     }
 }
@@ -207,7 +219,7 @@ impl Middleware for Sessions {
         Box::pin(async move {
             match context.command {
                 "resume" => resume(context, self.page_size).await,
-                "fork" => fork(context).await,
+                "fork" => fork(context, self.files.as_ref()).await,
                 command => Err(Error::Unknown(format!("sessions command `{command}`"))),
             }
         })
@@ -317,8 +329,13 @@ impl Tool for SearchHistory {
         &'a self,
         _context: ToolContext,
         arguments: Value,
-    ) -> BoxFuture<'a, Result<String>> {
-        Box::pin(async move { self.0.search(serde_json::from_value(arguments)?).await })
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
+        Box::pin(async move {
+            self.0
+                .search(serde_json::from_value(arguments)?)
+                .await
+                .map(Into::into)
+        })
     }
 }
 
@@ -359,8 +376,13 @@ impl Tool for ReadHistory {
         &'a self,
         _context: ToolContext,
         arguments: Value,
-    ) -> BoxFuture<'a, Result<String>> {
-        Box::pin(async move { self.0.read(serde_json::from_value(arguments)?).await })
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
+        Box::pin(async move {
+            self.0
+                .read(serde_json::from_value(arguments)?)
+                .await
+                .map(Into::into)
+        })
     }
 }
 
@@ -667,7 +689,12 @@ fn history_text(item: &Value) -> Option<(&'static str, String)> {
         return Some(("user", message.text));
     }
     if crate::protocol::is_internal_message(item) {
-        return None;
+        let images = crate::protocol::content_parts(item)?
+            .iter()
+            .filter(|part| part.get("type").and_then(Value::as_str) == Some("input_image"))
+            .filter_map(crate::protocol::content_part_text)
+            .collect::<Vec<_>>();
+        return (!images.is_empty()).then(|| ("user", images.join("\n")));
     }
     match item.get("type").and_then(Value::as_str) {
         Some("function_call") => Some((
@@ -678,9 +705,15 @@ fn history_text(item: &Value) -> Option<(&'static str, String)> {
                 history_value_text(item.get("arguments")?)
             ),
         )),
-        Some("function_call_output") => {
-            Some(("tool_result", history_value_text(item.get("output")?)))
-        }
+        Some("function_call_output") => Some((
+            "tool_result",
+            item.get("output")?
+                .as_array()?
+                .iter()
+                .filter_map(crate::protocol::content_part_text)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )),
         Some("reasoning" | "compaction") => None,
         _ => {
             let kind = match item.get("role")?.as_str()? {
@@ -693,7 +726,7 @@ fn history_text(item: &Value) -> Option<(&'static str, String)> {
                 Value::String(text) => text.clone(),
                 Value::Array(parts) => parts
                     .iter()
-                    .filter_map(|part| part.get("text")?.as_str())
+                    .filter_map(crate::protocol::content_part_text)
                     .collect::<Vec<_>>()
                     .join("\n"),
                 _ => return None,
@@ -738,7 +771,10 @@ fn history_excerpt(text: &str, query: &str) -> (usize, String) {
     )
 }
 
-async fn fork(context: MiddlewareCommandContext<'_>) -> Result<MiddlewareCommandOutput> {
+async fn fork(
+    context: MiddlewareCommandContext<'_>,
+    files: Option<&crate::backend::session_files::SessionFileStore>,
+) -> Result<MiddlewareCommandOutput> {
     if !context.arguments.trim().is_empty() {
         return Ok(MiddlewareCommandOutput::render(
             "sessions",
@@ -771,6 +807,13 @@ async fn fork(context: MiddlewareCommandContext<'_>) -> Result<MiddlewareCommand
     };
     let transcript = fork_prefix(items, &target, context.session_id)?;
     let checkpoint = manual_fork_checkpoint(context.checkpoint, transcript);
+    crate::backend::session_files::grant_context(
+        files,
+        context.session_id,
+        &checkpoint.session_id,
+        &checkpoint.context,
+    )
+    .await?;
     context
         .checkpoints
         .fork(
@@ -1066,6 +1109,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn history_preserves_ordered_image_references_even_on_internal_materializations() {
+        let image = serde_json::json!({"type":"input_image","image":{"file":{"id":"screen-id","name":"screen.png","size":100,"media_type":"image/png"},"width":10,"height":10,"detail":"high"}});
+        let result = serde_json::json!({"type":"function_call_output","output":[{"type":"input_text","text":"before"},image,{"type":"input_text","text":"after"}]});
+        let (_, text) = history_text(&result).expect("tool history");
+        assert!(text.starts_with("before\nImage:"));
+        assert!(text.contains("screen-id"));
+        assert!(text.ends_with("\nafter"));
+        let mut materialization =
+            crate::backend::model::internal_user_message("attachments", "private instructions");
+        materialization["content"]
+            .as_array_mut()
+            .expect("content")
+            .push(image);
+        let (_, text) = history_text(&materialization).expect("image history");
+        assert!(text.contains("screen-id"));
+        assert!(!text.contains("private instructions"));
+    }
+
+    #[test]
     fn history_tools_are_directly_available_for_the_required_bot() {
         let state = tempfile::tempdir().expect("state");
         let checkpoints: Arc<dyn crate::backend::checkpoint::CheckpointStore> = Arc::new(
@@ -1148,7 +1210,8 @@ mod tests {
             serde_json::json!({"type":"function_call", "call_id":"call-1", "name":"read_file", "arguments":"{\"path\":\"earlier.rs\"}"}),
             crate::backend::model::tool_output("call-1", &output, false),
         ]).await;
-        checkpoint.context[2]["output"] = Value::String("[offloaded]".into());
+        checkpoint.context[2]["output"] =
+            serde_json::json!([{"type":"input_text", "text":"[offloaded]"}]);
         for sequence in 2..=70 {
             checkpoint.sequence = sequence;
             history
@@ -1486,7 +1549,7 @@ mod tests {
             })
             .expect("message input"),
             serde_json::json!({"type": "function_call", "call_id": "call-1", "name": "read"}),
-            serde_json::json!({"type": "function_call_output", "call_id": "call-1", "output": "done"}),
+            serde_json::json!({"type": "function_call_output", "call_id": "call-1", "output": [{"type": "input_text", "text": "done"}]}),
             serde_json::json!({"role": "assistant", "content": "Finished"}),
         ]
         .into_iter()

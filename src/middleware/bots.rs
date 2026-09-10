@@ -355,10 +355,10 @@ impl Tool for SwarmRoster {
         &'a self,
         _context: ToolContext,
         arguments: Value,
-    ) -> BoxFuture<'a, Result<String>> {
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             require_no_arguments(arguments)?;
-            self.0.backend.roster(&self.0.bot_id).await
+            self.0.backend.roster(&self.0.bot_id).await.map(Into::into)
         })
     }
 }
@@ -378,10 +378,10 @@ impl Tool for SwarmRead {
         &'a self,
         _context: ToolContext,
         arguments: Value,
-    ) -> BoxFuture<'a, Result<String>> {
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             require_no_arguments(arguments)?;
-            self.0.backend.read(&self.0.bot_id).await
+            self.0.backend.read(&self.0.bot_id).await.map(Into::into)
         })
     }
 }
@@ -474,7 +474,7 @@ impl Tool for CreateRoutine {
         &'a self,
         _context: ToolContext,
         arguments: Value,
-    ) -> BoxFuture<'a, Result<String>> {
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let arguments: CreateRoutineArgs = serde_json::from_value(arguments)?;
             self.0
@@ -488,6 +488,7 @@ impl Tool for CreateRoutine {
                     arguments.ends_at,
                 )
                 .await
+                .map(Into::into)
         })
     }
 }
@@ -521,7 +522,7 @@ impl Tool for SwarmPost {
         &'a self,
         _context: ToolContext,
         arguments: Value,
-    ) -> BoxFuture<'a, Result<String>> {
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let arguments: PostArgs = serde_json::from_value(arguments)?;
             let in_reply_to_message_id = self.0.reply_to_message_id.lock().await.clone();
@@ -534,6 +535,7 @@ impl Tool for SwarmPost {
                     in_reply_to_message_id,
                 )
                 .await
+                .map(Into::into)
         })
     }
 }
@@ -845,7 +847,9 @@ mod tests {
                 }),
             )
             .await
-            .expect("create routine"),
+            .expect("create routine")
+            .content
+            .text(),
             "created-routine"
         );
         assert_eq!(
@@ -956,7 +960,7 @@ mod tests {
         hidden
             .tool_exposure(&mut ToolExposureContext {
                 session_id: "chat",
-                supports_image_input: true,
+                supports_tool_image_input: true,
                 input: &[],
                 available: &mut unavailable,
             })
@@ -976,7 +980,7 @@ mod tests {
         active
             .tool_exposure(&mut ToolExposureContext {
                 session_id: "chat",
-                supports_image_input: true,
+                supports_tool_image_input: true,
                 input: &[],
                 available: &mut available,
             })
@@ -1002,7 +1006,7 @@ mod tests {
         active
             .tool_exposure(&mut ToolExposureContext {
                 session_id: "chat",
-                supports_image_input: true,
+                supports_tool_image_input: true,
                 input: std::slice::from_ref(&peer),
                 available: &mut peer_available,
             })
@@ -1022,7 +1026,7 @@ mod tests {
         bounded
             .tool_exposure(&mut ToolExposureContext {
                 session_id: "chat",
-                supports_image_input: true,
+                supports_tool_image_input: true,
                 input: std::slice::from_ref(&peer),
                 available: &mut bounded_available,
             })

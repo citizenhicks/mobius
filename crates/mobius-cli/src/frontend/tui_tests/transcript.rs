@@ -102,6 +102,7 @@ fn commentary_is_committed_before_a_tool_block() {
             title: "Read src/lib.rs".into(),
             text: String::new(),
             symbol: None,
+            content: Default::default(),
             format: FrontendBlockFormat::PlainText,
             tone: FrontendTone::Neutral,
             files: Vec::new(),

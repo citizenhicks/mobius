@@ -350,6 +350,33 @@ fn responses_converts_neutral_images_and_rejects_them_when_disabled() {
 }
 
 #[test]
+fn responses_applies_cache_markers_after_mapping_each_observation_kind() {
+    let input = [serde_json::json!({
+        "type": "function_call_output", "call_id": "call",
+        "output": [
+            {"type": "input_text", "text": "before", (PROMPT_CACHE_BREAKPOINT_FIELD): true},
+            {"type": "file", "file": {"id": "report"}, (PROMPT_CACHE_BREAKPOINT_FIELD): true},
+            {"type": "input_image", "media_type": "image/png", "data": "aGVsbG8=", "detail": "high", (PROMPT_CACHE_BREAKPOINT_FIELD): true}
+        ]
+    })];
+    for explicit in [false, true] {
+        let wired = wire_input_with_cache(&input, true, explicit, "catalog", &[])
+            .expect("wire observations");
+        let parts = wired[0]["output"].as_array().expect("ordered content");
+        for part in parts {
+            assert!(part.get(PROMPT_CACHE_BREAKPOINT_FIELD).is_none());
+            assert_eq!(
+                part.get("prompt_cache_breakpoint"),
+                explicit.then_some(&serde_json::json!({"mode": "explicit"}))
+            );
+        }
+        assert_eq!(parts[1]["type"], "input_text");
+        assert_eq!(parts[2]["image_url"], "data:image/png;base64,aGVsbG8=");
+        assert_eq!(parts[2]["detail"], "high");
+    }
+}
+
+#[test]
 fn hosted_tools_can_be_disabled_per_request() {
     let hosted = [serde_json::json!({"type": "web_search"})];
 

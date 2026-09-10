@@ -212,7 +212,7 @@ impl Tool for WriteTodos {
         &'a self,
         _context: ToolContext,
         arguments: Value,
-    ) -> BoxFuture<'a, Result<String>> {
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let mut arguments: WriteTodosArgs = serde_json::from_value(arguments)?;
             validate_todos(&mut arguments.todos).map_err(Error::Tool)?;
@@ -224,7 +224,7 @@ impl Tool for WriteTodos {
                 )
                 .await?;
             (self.frontend)(widget_event(&arguments.todos))?;
-            Ok(format!("updated {} todos", arguments.todos.len()))
+            Ok((format!("updated {} todos", arguments.todos.len())).into())
         })
     }
 }
@@ -350,7 +350,7 @@ mod tests {
             turn_id: "turn".into(),
             call_id: "call".into(),
             name: "write_todos".into(),
-            output: String::new(),
+            output: String::new().into(),
             is_error: true,
         });
         assert_eq!(
@@ -425,7 +425,7 @@ mod tests {
         .pop()
         .expect("tool result");
 
-        assert!(!result.is_error, "{}", result.output);
+        assert!(!result.is_error, "{}", result.output.text());
         assert_eq!(
             load_todos(&checkpoints, "session-a")
                 .await
@@ -517,7 +517,7 @@ mod tests {
             .await
             .pop()
             .expect("clear result");
-        assert!(!result.is_error, "{}", result.output);
+        assert!(!result.is_error, "{}", result.output.text());
         assert!(matches!(
             frontend_events.lock().expect("events").last(),
             Some(FrontendEvent::RemoveWidget { .. })

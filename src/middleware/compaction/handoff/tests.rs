@@ -50,7 +50,10 @@ fn fresh_input_preserves_the_active_request_steers_attachments_and_mixed_batch()
         call("reset", "new_context"),
         tool_output("reset", "reset requested", false),
         internal_user_message(REQUEST, ""),
-        tool_output("work", "result that arrived after the checkpoint", false),
+        serde_json::json!({"type":"function_call_output", "call_id":"work", "output":[
+            {"type":"input_text", "text":"result that arrived after the checkpoint"},
+            {"type":"input_image", "image":{"file":{"id":"screen", "name":"screen.png", "size":100, "media_type":"image/png"}, "width":10, "height":10, "detail":"high"}}
+        ]}),
     ];
     let mut input = vec![
         message("previous task", MessageDelivery::Turn),

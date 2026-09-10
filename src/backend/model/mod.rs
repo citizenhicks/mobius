@@ -23,6 +23,7 @@ use crate::protocol::{
 pub mod anthropic;
 pub mod deepseek;
 pub mod kimi;
+pub(crate) mod media;
 pub mod openai;
 mod openai_auth;
 pub mod openai_codex;
@@ -31,6 +32,7 @@ pub mod openrouter;
 pub mod provider;
 pub mod realtime;
 mod router;
+pub use media::ImageInputLimits;
 mod transport;
 
 pub use self::realtime::{
@@ -43,14 +45,15 @@ use crate::protocol::{
     ATTACHMENTS_FIELD, INTERNAL_MESSAGE_FIELD, MESSAGE_METADATA_FIELD, MessageAuthor, MessageEvent,
     SessionFileReference,
 };
-pub(crate) use crate::protocol::{REPLAY_REASONING_FIELD, TOOL_ERROR_FIELD};
+pub(crate) use crate::protocol::{
+    PROMPT_CACHE_BREAKPOINT_FIELD, REPLAY_REASONING_FIELD, TOOL_ERROR_FIELD,
+};
 // Leaves room for typed lifecycle metadata inside the frontend envelope.
 const MAX_MODEL_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const MAX_TOOL_CALLS: usize = 128;
 const MAX_TOOL_ARGUMENT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_TOOL_CALL_ID_BYTES: usize = 4 * 1024;
 const MAX_TOOL_NAME_BYTES: usize = 256;
-pub(crate) const PROMPT_CACHE_BREAKPOINT_FIELD: &str = "_mobius_prompt_cache_breakpoint";
 pub(crate) const STREAM_RETRY_LIMIT: usize = 5;
 /// Stable semantic name of the core deferred-tool discovery function.
 pub const TOOLS_SEARCH_NAME: &str = "tools_search";
@@ -791,6 +794,11 @@ pub trait Model: Send + Sync {
         false
     }
 
+    /// Whether images can remain associated with their originating tool call.
+    fn supports_tool_image_input(&self) -> bool {
+        false
+    }
+
     /// Reports whether this transport can negotiate a provider-owned realtime voice call.
     fn supports_realtime_voice(&self) -> bool {
         false
@@ -1072,26 +1080,26 @@ pub(crate) fn message_input(event: &MessageEvent) -> Result<Value> {
 
 pub(crate) fn has_prompt_cache_breakpoint(input: &[Value]) -> bool {
     input.iter().any(|item| {
-        item.get("content")
-            .and_then(Value::as_array)
-            .is_some_and(|content| {
-                content.iter().any(|part| {
-                    part.get(PROMPT_CACHE_BREAKPOINT_FIELD)
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false)
-                })
+        crate::protocol::content_parts(item).is_some_and(|content| {
+            content.iter().any(|part| {
+                part.get(PROMPT_CACHE_BREAKPOINT_FIELD)
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
             })
+        })
     })
 }
 
 pub(crate) fn mark_prompt_cache_breakpoint(item: &mut Value) -> bool {
-    let Some(content) = item.get_mut("content").and_then(Value::as_array_mut) else {
+    let Some(content) = crate::protocol::content_parts_mut(item) else {
         return false;
     };
-    let Some(part) = content
-        .iter_mut()
-        .find(|part| part.get("type").and_then(Value::as_str) == Some("input_text"))
-    else {
+    let Some(part) = content.iter_mut().rev().find(|part| {
+        matches!(
+            part.get("type").and_then(Value::as_str),
+            Some("input_text" | "input_image")
+        )
+    }) else {
         return false;
     };
     part[PROMPT_CACHE_BREAKPOINT_FIELD] = Value::Bool(true);
@@ -1100,7 +1108,7 @@ pub(crate) fn mark_prompt_cache_breakpoint(item: &mut Value) -> bool {
 
 pub(crate) fn reset_prompt_cache_breakpoint(input: &mut [Value]) {
     for item in input.iter_mut() {
-        let Some(content) = item.get_mut("content").and_then(Value::as_array_mut) else {
+        let Some(content) = crate::protocol::content_parts_mut(item) else {
             continue;
         };
         for part in content {
@@ -1166,7 +1174,12 @@ fn has_visible_output_text(item: &Value) -> bool {
 
 /// Creates a Responses API function-call-output item.
 #[must_use]
-pub fn tool_output(call_id: &str, output: &str, is_error: bool) -> Value {
+pub fn tool_output(
+    call_id: &str,
+    output: impl Into<crate::protocol::ToolContent>,
+    is_error: bool,
+) -> Value {
+    let output = output.into();
     let mut value = serde_json::json!({
         "type": "function_call_output",
         "call_id": call_id,

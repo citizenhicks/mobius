@@ -172,6 +172,8 @@ pub struct FrontendBlock {
     pub symbol: Option<FrontendSymbol>,
     /// Downloadable files owned by the session rendering this block.
     pub files: Vec<SessionFileReference>,
+    /// Ordered observations rendered after the block summary.
+    pub content: super::ToolContent,
     pub format: FrontendBlockFormat,
     pub tone: FrontendTone,
 }
@@ -360,6 +362,7 @@ impl EventMsg {
                 text: error.message.clone(),
                 symbol: None,
                 files: Vec::new(),
+                content: Default::default(),
                 format: FrontendBlockFormat::PlainText,
                 tone: FrontendTone::Error,
             },
@@ -373,6 +376,7 @@ impl EventMsg {
                 text: warning.message.clone(),
                 symbol: None,
                 files: Vec::new(),
+                content: Default::default(),
                 format: FrontendBlockFormat::PlainText,
                 tone: FrontendTone::Warning,
             },
@@ -386,6 +390,7 @@ impl EventMsg {
                 text: turn.reason.clone(),
                 symbol: None,
                 files: Vec::new(),
+                content: Default::default(),
                 format: FrontendBlockFormat::PlainText,
                 tone: FrontendTone::Warning,
             },
@@ -400,6 +405,7 @@ impl EventMsg {
                     text: String::new(),
                     symbol: None,
                     files: Vec::new(),
+                    content: Default::default(),
                     format: FrontendBlockFormat::PlainText,
                     tone: FrontendTone::Warning,
                 }
@@ -414,6 +420,7 @@ impl EventMsg {
                 text: String::new(),
                 symbol: Some(FrontendSymbol::Search),
                 files: Vec::new(),
+                content: Default::default(),
                 format: FrontendBlockFormat::PlainText,
                 tone: FrontendTone::Neutral,
             },
@@ -457,6 +464,7 @@ impl EventMsg {
                     text,
                     symbol: Some(FrontendSymbol::Search),
                     files: Vec::new(),
+                    content: Default::default(),
                     format: FrontendBlockFormat::PlainText,
                     tone,
                 }

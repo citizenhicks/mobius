@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import SwiftUI
 @preconcurrency import AVFoundation
 @preconcurrency import WebRTC
 
@@ -41,9 +42,16 @@ final class RealtimeVoiceSession: NSObject {
             if isMuted { audioLevels.microphone = 0 }
         }
     }
-    @ObservationIgnored private static let factory: RTCPeerConnectionFactory? = {
+    @ObservationIgnored static let factory: RTCPeerConnectionFactory? = {
         guard RTCInitializeSSL() else { return nil }
-        return RTCPeerConnectionFactory(encoderFactory: nil, decoderFactory: nil)
+        #if os(macOS)
+            // AVAudioEngine rebuilds its converters when Bluetooth changes the hardware format.
+            return RTCPeerConnectionFactory(
+                audioDeviceModuleType: .audioEngine, bypassVoiceProcessing: false,
+                encoderFactory: nil, decoderFactory: nil, audioProcessingModule: nil)
+        #else
+            return RTCPeerConnectionFactory(encoderFactory: nil, decoderFactory: nil)
+        #endif
     }()
     @ObservationIgnored var peer: RTCPeerConnection?
     @ObservationIgnored private var audioTrack: RTCAudioTrack?
@@ -63,7 +71,12 @@ final class RealtimeVoiceSession: NSObject {
     func offer() async throws -> String {
         try Task.checkCancellation()
         let generation = generation
-        guard await AVAudioApplication.requestRecordPermission() else {
+        #if os(macOS)
+            let permitted = await AVCaptureDevice.requestAccess(for: .audio)
+        #else
+            let permitted = await AVAudioApplication.requestRecordPermission()
+        #endif
+        guard permitted else {
             throw VoiceError.microphonePermission
         }
         try Task.checkCancellation()
@@ -130,13 +143,15 @@ final class RealtimeVoiceSession: NSObject {
         peer = nil
         isConnected = false
         isMuted = false
-        guard audioIsActive else { return }
-        let audio = RTCAudioSession.sharedInstance()
-        audio.remove(self)
-        audio.lockForConfiguration()
-        defer { audio.unlockForConfiguration() }
-        try? audio.setActive(false)
-        audioIsActive = false
+        #if os(iOS)
+            guard audioIsActive else { return }
+            let audio = RTCAudioSession.sharedInstance()
+            audio.remove(self)
+            audio.lockForConfiguration()
+            defer { audio.unlockForConfiguration() }
+            try? audio.setActive(false)
+            audioIsActive = false
+        #endif
     }
 
     private func startMetering(_ peer: RTCPeerConnection) {
@@ -169,16 +184,18 @@ final class RealtimeVoiceSession: NSObject {
     }
 
     private func activateAudio() throws {
-        let audio = RTCAudioSession.sharedInstance()
-        let configuration = RTCAudioSessionConfiguration.webRTC()
-        configuration.category = AVAudioSession.Category.playAndRecord.rawValue
-        configuration.mode = AVAudioSession.Mode.voiceChat.rawValue
-        configuration.categoryOptions = [.allowBluetoothHFP, .defaultToSpeaker]
-        audio.lockForConfiguration()
-        defer { audio.unlockForConfiguration() }
-        try audio.setConfiguration(configuration, active: true)
-        audioIsActive = true
-        audio.add(self)
+        #if os(iOS)
+            let audio = RTCAudioSession.sharedInstance()
+            let configuration = RTCAudioSessionConfiguration.webRTC()
+            configuration.category = AVAudioSession.Category.playAndRecord.rawValue
+            configuration.mode = AVAudioSession.Mode.voiceChat.rawValue
+            configuration.categoryOptions = [.allowBluetoothHFP, .defaultToSpeaker]
+            audio.lockForConfiguration()
+            defer { audio.unlockForConfiguration() }
+            try audio.setConfiguration(configuration, active: true)
+            audioIsActive = true
+            audio.add(self)
+        #endif
     }
 
     private func scheduleDisconnectedRecovery(for peer: RTCPeerConnection) {
@@ -210,7 +227,7 @@ final class RealtimeVoiceSession: NSObject {
     }
 }
 
-extension RealtimeVoiceSession: RTCPeerConnectionDelegate, RTCAudioSessionDelegate {
+extension RealtimeVoiceSession: RTCPeerConnectionDelegate {
     nonisolated func peerConnection(
         _ peerConnection: RTCPeerConnection, didChange newState: RTCPeerConnectionState
     ) {
@@ -230,12 +247,6 @@ extension RealtimeVoiceSession: RTCPeerConnectionDelegate, RTCAudioSessionDelega
             default:
                 break
             }
-        }
-    }
-
-    nonisolated func audioSessionDidBeginInterruption(_ session: RTCAudioSession) {
-        Task { @MainActor [weak self] in
-            self?.failure?(String(localized: "Voice was interrupted by another audio session."))
         }
     }
 
@@ -264,4 +275,80 @@ extension RealtimeVoiceSession: RTCPeerConnectionDelegate, RTCAudioSessionDelega
     nonisolated func peerConnection(
         _ peerConnection: RTCPeerConnection, didOpen dataChannel: RTCDataChannel
     ) {}
+}
+
+#if os(iOS)
+    extension RealtimeVoiceSession: RTCAudioSessionDelegate {
+        nonisolated func audioSessionDidBeginInterruption(_ session: RTCAudioSession) {
+            Task { @MainActor [weak self] in
+                self?.failure?(String(localized: "Voice was interrupted by another audio session."))
+            }
+        }
+    }
+#endif
+
+/// Shared by the iOS composer and the gateway's macOS menu bar.
+@Animatable
+struct AudioLevelEqualizer: View {
+    @AnimatableIgnored @Environment(\.colorScheme) private var colorScheme
+    @AnimatableIgnored @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AnimatableIgnored @Environment(\.scenePhase) private var scenePhase
+    var amplitude: Double
+    var flare: Double
+    @AnimatableIgnored var playbackColor: Color?
+
+    var body: some View {
+        TimelineView(
+            .animation(
+                minimumInterval: 1.0 / 60.0,
+                paused: reduceMotion || scenePhase != .active || amplitude == 0
+            )
+        ) { _ in
+            let time =
+                reduceMotion || scenePhase != .active ? 0 : ProcessInfo.processInfo.systemUptime
+            particles(at: time)
+        }
+    }
+
+    private func particles(at time: Double) -> some View {
+        Canvas(rendersAsynchronously: true) { context, size in
+            // A shallow reflection under the line keeps the field from reading as floored.
+            let reflection = 0.2
+            let ceiling = (size.height - 8) / (1 + reflection)
+            let baseline = size.height - 4 - ceiling * reflection
+            let step = 4.0
+            let columns = 96
+            // One mountain that widens outward from the centre as the voice grows.
+            // Smaller variance is a sharper peak.
+            let variance = 0.02 + 0.12 * amplitude + 0.05 * flare
+            for column in 0..<columns {
+                let x = Double(column) / Double(columns - 1)
+                let centered = x * 2 - 1
+                let hump = exp(-centered * centered / (2 * variance))
+                // Stable phases and speeds let each needle jitter without frame-to-frame randomness.
+                let phase = Double(column) * 2.39996
+                let needle =
+                    0.15 + 0.85 * pow(abs(sin(time * (2.1 + 0.9 * sin(phase)) + phase)), 1.6)
+                let dots = Int(min(1, amplitude * 1.45) * hump * needle * ceiling / step)
+                for dot in -Int(Double(dots) * reflection)...dots {
+                    let fade = dots == 0 ? 0 : abs(Double(dot)) / Double(dots)
+                    let ink =
+                        playbackColor
+                        ?? Color(
+                            white: colorScheme == .dark ? 0.92 - 0.44 * fade : 0.08 + 0.44 * fade)
+                    let radius = 0.95 - 0.4 * fade
+                    let sway = sin(time * 1.3 + phase) * 1.6 * fade
+                    let rect = CGRect(
+                        x: x * (size.width - 4) + 2 + sway - radius,
+                        y: baseline - Double(dot) * step - radius,
+                        width: radius * 2, height: radius * 2
+                    )
+                    context.fill(
+                        Path(ellipseIn: rect),
+                        with: .color(ink.opacity((0.35 + 0.65 * (1 - fade)) * (0.3 + 0.7 * hump)))
+                    )
+                }
+            }
+        }
+    }
 }

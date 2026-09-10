@@ -85,7 +85,7 @@ struct WorkspaceSessions: Identifiable {
             ?? "workspace"
     }
 
-    private static func workspaceName(_ path: String) -> String {
+    static func workspaceName(_ path: String) -> String {
         let name = URL(fileURLWithPath: path).lastPathComponent
         return name.isEmpty ? path : name
     }
@@ -138,6 +138,8 @@ enum ConnectionState: Equatable {
     }
 
     var isReady: Bool { self == .ready }
+
+    var isConnecting: Bool { self == .connecting || self == .authenticating }
 
     var tone: ToastTone {
         switch self {

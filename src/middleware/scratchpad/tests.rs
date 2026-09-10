@@ -286,8 +286,8 @@ async fn compaction_discards_projections_before_a_post_hook_stops_or_fails() {
             .await
             .expect("load")
             .expect("checkpoint");
-        assert_eq!(checkpoint.compaction_count, 1);
-        assert!(!checkpoint.context.iter().any(is_projection_item));
+        assert_eq!(checkpoint.compaction_count, u64::from(!fail));
+        assert_eq!(checkpoint.context.iter().any(is_projection_item), fail);
     }
 }
 

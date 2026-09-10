@@ -657,7 +657,7 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
         }
     }
 
-    let image = b"\x89PNG\r\n\x1a\npayload";
+    let image = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=").expect("PNG");
     sender
         .send(ClientMessage::BeginSessionFileUpload {
             request_id: "begin-upload".into(),
@@ -1067,7 +1067,7 @@ async fn running_one_shot_routine_disables_inactivity_shutdown() {
     drop(active_run);
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn shutdown_stops_a_blocked_routine_and_fails_its_durable_run() {
     let root = tempfile::tempdir().expect("temporary directory");
     let workspace = root.path().join("workspace");
@@ -1158,7 +1158,15 @@ async fn shutdown_stops_a_blocked_routine_and_fails_its_durable_run() {
         let _ = signal.await;
     }));
 
-    model_request.await.expect("routine reached blocked model");
+    tokio::time::timeout(Duration::from_secs(10), model_request)
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "routine did not reach model: {:?}",
+                bots.history(Some(&routine.id))
+            )
+        })
+        .expect("routine reached blocked model");
     let run = bots
         .history(Some(&routine.id))
         .expect("routine history")

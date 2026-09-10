@@ -116,21 +116,21 @@ fn mask_stale_outputs(input: &[Value], stale_after_tokens: usize) -> Option<Vec<
     let mut masked = input.to_vec();
     for item in &mut masked[..block_end] {
         if successful_tool_output(item).is_some() {
-            item["output"] = Value::String(MASKED_TOOL_OUTPUT.into());
+            item["output"] = serde_json::json!([{"type":"input_text", "text": MASKED_TOOL_OUTPUT}]);
         }
     }
     Some(masked)
 }
 
-fn successful_tool_output(item: &Value) -> Option<&str> {
+fn successful_tool_output(item: &Value) -> Option<&Value> {
     if item.get("type").and_then(Value::as_str) != Some("function_call_output")
         || item.get(TOOL_ERROR_FIELD).and_then(Value::as_bool) == Some(true)
     {
         return None;
     }
-    item.get("output")
-        .and_then(Value::as_str)
-        .filter(|output| *output != MASKED_TOOL_OUTPUT)
+    item.get("output").filter(|output| {
+        **output != serde_json::json!([{"type":"input_text", "text": MASKED_TOOL_OUTPUT}])
+    })
 }
 
 #[cfg(test)]
@@ -148,8 +148,8 @@ mod tests {
             serde_json::json!({
                 "type": "function_call", "call_id": "b", "name": "read", "arguments": "{}"
             }),
-            tool_output("a", &"a".repeat(100), false),
-            tool_output("b", &"b".repeat(100), false),
+            tool_output("a", "a".repeat(100), false),
+            tool_output("b", "b".repeat(100), false),
             user_message("latest turn"),
         ];
 
@@ -157,8 +157,8 @@ mod tests {
 
         assert_eq!(masked[1], input[1]);
         assert_eq!(masked[2], input[2]);
-        assert_eq!(masked[3]["output"], MASKED_TOOL_OUTPUT);
-        assert_eq!(masked[4]["output"], MASKED_TOOL_OUTPUT);
+        assert_eq!(masked[3]["output"][0]["text"], MASKED_TOOL_OUTPUT);
+        assert_eq!(masked[4]["output"][0]["text"], MASKED_TOOL_OUTPUT);
     }
 
     #[test]
@@ -180,18 +180,18 @@ mod tests {
             serde_json::json!({
                 "type": "function_call", "call_id": "failed", "name": "read", "arguments": "{}"
             }),
-            tool_output("failed", &"failed".repeat(100), true),
+            tool_output("failed", "failed".repeat(100), true),
             serde_json::json!({
                 "type": "function_call", "call_id": "stale", "name": "read", "arguments": "{}"
             }),
-            tool_output("stale", &"stale".repeat(100), false),
+            tool_output("stale", "stale".repeat(100), false),
             user_message("latest turn"),
         ];
 
         let masked = mask_stale_outputs(&input, 10).expect("stale complete block");
 
         assert_eq!(masked[2], input[2]);
-        assert_eq!(masked[4]["output"], MASKED_TOOL_OUTPUT);
+        assert_eq!(masked[4]["output"][0]["text"], MASKED_TOOL_OUTPUT);
     }
 
     #[test]
@@ -201,7 +201,7 @@ mod tests {
             serde_json::json!({
                 "type": "function_call", "call_id": "failed", "name": "read", "arguments": "{}"
             }),
-            tool_output("failed", &"failed".repeat(100), true),
+            tool_output("failed", "failed".repeat(100), true),
             user_message("latest turn"),
         ];
 
@@ -234,7 +234,7 @@ mod tests {
             serde_json::json!({
                 "type": "function_call", "call_id": "stale", "name": "read", "arguments": "{}"
             }),
-            tool_output("stale", &"stale".repeat(20), false),
+            tool_output("stale", "stale".repeat(20), false),
             serde_json::json!({"role": "assistant", "content": "padding".repeat(20)}),
             user_message("latest turn"),
         ];
@@ -243,7 +243,7 @@ mod tests {
             serde_json::json!({"role": "assistant", "content": "more".repeat(20)}),
         );
         let masked = mask_stale_outputs(&over_high, low).expect("high-water rewrite");
-        assert_eq!(masked[2]["output"], MASKED_TOOL_OUTPUT);
+        assert_eq!(masked[2]["output"][0]["text"], MASKED_TOOL_OUTPUT);
         assert_eq!(masked.last(), over_high.last());
     }
 
@@ -254,7 +254,7 @@ mod tests {
             serde_json::json!({
                 "type": "function_call", "call_id": "stale", "name": "read", "arguments": "{}"
             }),
-            tool_output("stale", &"stale".repeat(100), false),
+            tool_output("stale", "stale".repeat(100), false),
             user_message("latest turn"),
         ];
         let masked = mask_stale_outputs(&input, 10).expect("stale block");

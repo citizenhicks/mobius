@@ -194,13 +194,13 @@ async fn private_content_identity_round_trips_without_wire_changes() {
         .expect("upload");
     pending.append(0, b"hello").await.expect("append");
     let upload = pending.finish().await.expect("finish");
-    let hash = store
+    store
         .upload_content_hash("session", &upload)
         .await
         .expect("private hash");
     assert_eq!(
         store
-            .read_content_blob(&hash, upload.size)
+            .read_file("session", &upload)
             .await
             .expect("private blob"),
         b"hello"
@@ -677,4 +677,23 @@ fn blob_entries(store: &SessionFileStore) -> usize {
     std::fs::read_dir(store.blob_dir())
         .expect("blob directory")
         .count()
+}
+
+#[tokio::test]
+async fn text_forks_need_no_store_and_media_forks_fail_closed() {
+    let text = serde_json::json!({"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]});
+    grant_context(None, "parent", "child", &[text])
+        .await
+        .expect("text fork");
+    for part in [
+        serde_json::json!({"type":"input_image"}),
+        serde_json::json!({"type":"file","file":{}}),
+    ] {
+        let input = serde_json::json!({"type":"message","role":"user","content":[part]});
+        assert!(
+            grant_context(None, "parent", "child", &[input])
+                .await
+                .is_err()
+        );
+    }
 }

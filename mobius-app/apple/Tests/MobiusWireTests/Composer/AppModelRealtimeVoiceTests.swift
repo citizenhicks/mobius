@@ -52,6 +52,24 @@ extension AppModelTests {
         XCTAssertFalse(model.selectedRouteSupportsRealtimeVoice)
     }
 
+    func testComposerVoicePickerValidatesAndSavesThroughBotConfiguration() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try voiceModel(recorder: recorder)
+        model.bots = [bot()]
+        model.chooseWorkspace("/srv/project")
+
+        model.setSelectedBotVoice("unknown")
+        XCTAssertNil(model.botMutationRequestID)
+        model.setSelectedBotVoice("cedar")
+        let request = await recorder.firstRequest(after: 0) {
+            if case .updateBot = $0 { return true }
+            return false
+        }
+        XCTAssertNotNil(request)
+        XCTAssertEqual(model.botDraft?.realtimeVoice, "cedar")
+        XCTAssertEqual(model.botDraft?.provider, model.selectedBot?.config.config.provider)
+    }
+
     func testBotVoiceSelectionUsesEligibleCatalogAndSurvivesConfigurationCoding() throws {
         let model = try voiceModel()
         var config = composition()

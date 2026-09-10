@@ -13,6 +13,7 @@ use mobius::backend::model::{
     Model, ModelCredentialLifetime, ModelEventSink, ModelOutput, ModelRequest, ModelRouter,
 };
 use mobius::backend::sandbox::{ApprovalPolicy, Sandbox, SandboxBackend};
+use mobius::backend::session_files::SessionFileStore;
 use mobius::middleware::artifacts::Artifacts;
 use mobius::middleware::attachments::Attachments;
 use mobius::middleware::bots::{
@@ -24,7 +25,6 @@ use mobius::middleware::extensions::{Extensions, MANIFEST as EXTENSIONS_MANIFEST
 use mobius::middleware::instructions::Instructions;
 use mobius::middleware::messages::Messages;
 use mobius::middleware::scratchpad::{Scratchpad, ScratchpadStore};
-use mobius::middleware::session_files::SessionFileStore;
 use mobius::middleware::sessions::Sessions;
 use mobius::middleware::subagents::{SubagentLaunch, SubagentLauncher, Subagents};
 use mobius::middleware::tasks::Tasks;
@@ -120,9 +120,14 @@ pub(crate) async fn assemble(
             &chat.agent.config.provider,
             store,
             &credentials,
+            session_files.clone(),
         )?
     } else {
-        unavailable_models(&gateway_config, &chat.agent.config.provider)?
+        unavailable_models(
+            &gateway_config,
+            &chat.agent.config.provider,
+            session_files.clone(),
+        )?
     };
     let model_choices = models.choices().cloned().collect::<Vec<_>>();
     crate::middleware_manifest::validate_choices(&chat.agent.config.middleware, &model_choices)?;
@@ -182,6 +187,18 @@ pub(crate) async fn assemble(
                     .iter()
                     .map(|plugin| plugin.root.clone()),
             );
+        }
+        if settings.enabled("computer_control") {
+            let runtime = computer_runtime_directory();
+            for file in ["node", "worker.cjs", "computer-control.md"] {
+                if !runtime.join(file).is_file() {
+                    return Err(Error::Config(format!(
+                        "computer control runtime is missing {} in {}; install the Node/Playwright runtime before enabling computer control",
+                        file, runtime.display()
+                    )));
+                }
+            }
+            read_roots.push(runtime);
         }
         let gateway_sandbox = Arc::new(
             GatewaySandbox::new(
@@ -317,6 +334,7 @@ fn subagent_launcher(template: &Arc<OnceLock<AgentConfig>>) -> SubagentLauncher 
                 .get()
                 .ok_or_else(|| MobiusError::Config("subagent launcher is not ready".into()))?
                 .clone()
+                .isolated_execution()?
                 .session_id(launch.session_id)
                 .metadata(launch.metadata)
                 .role(launch.role)
@@ -331,6 +349,7 @@ fn build_models(
     selection: &ProviderConfig,
     store: &ConfigStore,
     credentials: &CredentialStore,
+    session_files: SessionFileStore,
 ) -> Result<(Arc<ModelRouter>, i64)> {
     gateway.validate_provider_selection(selection)?;
     let definition = provider(&selection.provider)?;
@@ -360,7 +379,8 @@ fn build_models(
         .choice
         .context_window
         .unwrap_or(DEFAULT_CONTEXT_WINDOW);
-    let mut router = ModelRouter::new(&first.id, Arc::clone(&first.model));
+    let mut router =
+        ModelRouter::new(&first.id, Arc::clone(&first.model)).session_files(session_files);
     for route in routes.iter().skip(1) {
         router.register(&route.id, Arc::clone(&route.model))?;
     }
@@ -509,6 +529,7 @@ impl Model for UnavailableModel {
 fn unavailable_models(
     gateway: &GatewayConfig,
     selection: &ProviderConfig,
+    session_files: SessionFileStore,
 ) -> Result<(Arc<ModelRouter>, i64)> {
     let definition = provider(&selection.provider)?;
     let context_window = definition
@@ -533,7 +554,7 @@ fn unavailable_models(
         },
         supports_image_input: definition.supports_image_input(),
     });
-    let mut router = ModelRouter::new(&route, model);
+    let mut router = ModelRouter::new(&route, model).session_files(session_files);
     router.configure_choice(ModelChoice {
         route,
         group: selection.model.clone(),
@@ -594,7 +615,7 @@ fn build_middleware(
                 Arc::new(Attachments::new(session_files.clone()).with_workspace(workspace)?)
             }
             BuiltinMiddleware::Artifacts => Arc::new(Artifacts::new(session_files.clone())),
-            BuiltinMiddleware::Tools => Arc::new(Tools::coding()),
+            BuiltinMiddleware::Tools => Arc::new(Tools::coding(session_files.clone())),
             BuiltinMiddleware::Instructions => Arc::new(
                 instructions
                     .take()
@@ -637,7 +658,8 @@ fn build_middleware(
                     )?,
                     crate::middleware_manifest::usize_setting(settings, "subagents", "max_agents")?,
                     subagent_launcher(&template),
-                )?;
+                )?
+                .session_files(session_files.clone());
                 let middleware = match crate::middleware_manifest::string_setting(
                     settings,
                     "subagents",
@@ -680,10 +702,26 @@ fn build_middleware(
                     "stale_after_tokens",
                 )?,
             )?),
+            BuiltinMiddleware::ComputerControl => {
+                let runtime = computer_runtime_directory();
+                Arc::new(mobius::middleware::computer_control::ComputerControl::new(
+                    session_files.clone(),
+                    mobius::backend::sandbox::WorkerCommand {
+                        executable: runtime.join("node"),
+                        arguments: vec![runtime.join("worker.cjs").to_string_lossy().into_owned()],
+                    },
+                    runtime.join("computer-control.md"),
+                )?)
+            }
             BuiltinMiddleware::Compaction => Arc::new(configured_compaction(settings)?),
-            BuiltinMiddleware::Sessions => Arc::new(Sessions::new(
-                crate::middleware_manifest::usize_setting(settings, "sessions", "page_size")?,
-            )?),
+            BuiltinMiddleware::Sessions => Arc::new(
+                Sessions::new(crate::middleware_manifest::usize_setting(
+                    settings,
+                    "sessions",
+                    "page_size",
+                )?)?
+                .session_files(session_files.clone()),
+            ),
             BuiltinMiddleware::Bots => {
                 let collaboration =
                     collaboration_enabled(settings.setting("bots", "collaboration"));
@@ -711,3 +749,9 @@ fn build_middleware(
 
 #[cfg(test)]
 mod tests;
+
+fn computer_runtime_directory() -> std::path::PathBuf {
+    std::env::var_os("MOBIUS_COMPUTER_RUNTIME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| "/usr/local/lib/mobius-computer".into())
+}

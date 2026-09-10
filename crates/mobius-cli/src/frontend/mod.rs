@@ -43,6 +43,20 @@ fn block_text(block: &FrontendBlock) -> String {
         }
         text.push_str(&block.text);
     }
+    for part in &block.content.0 {
+        text.push('\n');
+        match part {
+            mobius::protocol::ContentPart::Text { text: part } => text.push_str(part),
+            mobius::protocol::ContentPart::Image { image } => text.push_str(&format!(
+                "[image] {} · {} × {} · file_id={}",
+                image.file.name, image.width, image.height, image.file.id
+            )),
+            mobius::protocol::ContentPart::File { file } => text.push_str(&format!(
+                "[file] {} · {} bytes · file_id={}",
+                file.name, file.size, file.id
+            )),
+        }
+    }
     for file in &block.files {
         if !text.is_empty() {
             text.push('\n');

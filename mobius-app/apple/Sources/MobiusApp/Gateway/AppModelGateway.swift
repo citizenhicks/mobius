@@ -47,6 +47,7 @@ extension AppModel {
             }
             let completedRequestID = chat.finishSessionReplay()
             completePendingVoiceChat(requestID: completedRequestID)
+            chat.startNextSessionFileUpload()
             submitPendingNewChatDraft(requestID: completedRequestID)
         case .sessionHistory(
             let requestID,
@@ -320,9 +321,6 @@ extension AppModel {
                 sessionID: sessionID,
                 file: file
             )
-            if chat.pendingNewChatBotID != nil, chat.pendingDrafts.count == 1 {
-                submitPendingNewChatDraft(requestID: chat.pendingDrafts.keys.first)
-            }
         case .sessionFiles(let requestID, let sessionID, let files):
             guard requestID == chat.sessionFilesRequestID, sessionID == chat.selectedSessionID
             else { break }
@@ -349,6 +347,9 @@ extension AppModel {
             guard requestID == directoryRequestID else { break }
             directoryRequestID = nil
             directoryListing = listing
+            if chat.pendingNewChatWorkspace == ".", !showsWorkspaceBrowser {
+                chat.pendingNewChatWorkspace = listing.path
+            }
             directoryError = nil
             isLoadingDirectories = false
         default:
@@ -412,10 +413,6 @@ extension AppModel {
         guard let requestID,
             chat.pendingDrafts[requestID] != nil
         else { return }
-        guard !chat.composerHasUnfinishedAttachments else {
-            chat.startNextSessionFileUpload()
-            return
-        }
         Task { [weak self] in
             guard let self,
                 let draft = await self.chat.takePendingNewChatDraft(requestID: requestID)
@@ -586,7 +583,7 @@ extension AppModel {
                 to: gateway.selectedAccountID.map {
                     ComposerDraftOwner(accountID: $0, sessionID: payload.session.sessionId)
                 })
-            resetSessionState(preservingComposerAttachments: createdWithPendingDraft)
+            resetSessionState(preservingComposerAttachments: createdByThisClient)
         }
         if opened {
             chat.latestSequence = cursor

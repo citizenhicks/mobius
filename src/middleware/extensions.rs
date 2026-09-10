@@ -849,7 +849,7 @@ impl Middleware for Extensions {
                 ("tool_input".into(), tool.input),
                 (
                     "tool_response".into(),
-                    Value::String(context.result().output.clone()),
+                    serde_json::to_value(&context.result().output)?,
                 ),
             ]);
             let subjects = tool.subjects.iter().map(String::as_str).collect::<Vec<_>>();
@@ -1501,9 +1501,11 @@ printf '%s\n' '{"systemMessage":"PONYTAIL:FULL","hookSpecificOutput":{"hookEvent
             frontend: Arc::new(|_| Ok(())),
         };
         let mut catalog = crate::middleware::tools::Catalog::default();
-        Tools::coding()
-            .register(&mut catalog, &runtime)
-            .expect("coding tools");
+        Tools::coding(crate::backend::session_files::SessionFileStore::new(
+            tempfile::tempdir().expect("files").path(),
+        ))
+        .register(&mut catalog, &runtime)
+        .expect("coding tools");
         catalog
     }
 

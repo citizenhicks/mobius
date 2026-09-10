@@ -227,7 +227,7 @@ fn native_discovery_ignores_tool_loads_from_an_old_catalog() {
 
     assert_eq!(
         body["messages"][2]["content"][0]["content"],
-        serde_json::json!("Found swarm_post")
+        serde_json::json!([{"type":"text", "text":"Found swarm_post"}])
     );
 }
 
@@ -253,7 +253,7 @@ fn rebuild_discovery_omits_deferred_schemas_and_internal_markers() {
     assert_eq!(
         (
             body["tools"].as_array().map(Vec::len),
-            body["messages"][2]["content"][0]["content"].as_str(),
+            body["messages"][2]["content"][0]["content"][0]["text"].as_str(),
             body.to_string().contains("tool_load"),
         ),
         (Some(1), Some("Found swarm_post"), false)
@@ -280,7 +280,7 @@ fn discovery_history() -> Vec<Value> {
         serde_json::json!({
             "type": "function_call_output",
             "call_id": "search-1",
-            "output": "Found swarm_post"
+            "output": [{"type": "input_text", "text": "Found swarm_post"}]
         }),
         ToolLoad {
             catalog_revision: "catalog-1".into(),
@@ -416,7 +416,7 @@ fn responses_history_translates_to_anthropic_tool_messages() {
             serde_json::json!({
                 "type": "function_call_output",
                 "call_id": "call_1",
-                "output": "contents"
+                "output": [{"type": "input_text", "text": "contents"}]
             }),
         ],
         ToolDiscoveryMode::Rebuild,
@@ -449,7 +449,7 @@ fn responses_history_translates_to_anthropic_tool_messages() {
                 "content": [{
                     "type": "tool_result",
                     "tool_use_id": "call_1",
-                    "content": "contents",
+                    "content": [{"type":"text", "text":"contents"}],
                     "is_error": false
                 }]
             })
@@ -786,4 +786,32 @@ fn usage_rejects_provider_integer_overflow() {
     };
 
     assert!(usage.finish().is_err());
+}
+
+#[test]
+fn ordered_tool_images_keep_error_status_and_image_cache_marker() {
+    let item = serde_json::json!({
+        "type":"function_call_output", "call_id":"screen", (TOOL_ERROR_FIELD):true,
+        "output":[
+            {"type":"input_text", "text":"before"},
+            {"type":"input_image", "media_type":"image/png", "data":"AA=="},
+            {"type":"input_text", "text":"after"},
+            {"type":"input_image", "media_type":"image/png", "data":"AQ==", (PROMPT_CACHE_BREAKPOINT_FIELD):true}
+        ]
+    });
+    let result = tool_result_block(
+        &item,
+        None,
+        ToolDiscoveryMode::Rebuild,
+        "catalog",
+        &BTreeSet::new(),
+        &BTreeSet::new(),
+    )
+    .expect("native tool result");
+    assert_eq!(result["is_error"], true);
+    assert_eq!(result["content"][0]["text"], "before");
+    assert_eq!(result["content"][1]["source"]["data"], "AA==");
+    assert_eq!(result["content"][2]["text"], "after");
+    assert_eq!(result["content"][3]["source"]["data"], "AQ==");
+    assert_eq!(result["content"][3]["cache_control"]["type"], "ephemeral");
 }

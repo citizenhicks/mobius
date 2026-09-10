@@ -1,0 +1,1 @@
+Bundle möbius and gateway 0.15.10 with protocol-74 observation rendering, durable session images, sandboxed computer control, and macOS voice-menu handoff. Preserve terminal ownership of rendering and gateway ownership of runtime capabilities.

@@ -131,11 +131,36 @@ extension AppModel {
         choices.filter { sameModel($0, selected) }
     }
 
+    func reasoningLabel(for choice: ModelChoice) -> String {
+        choice.reasoningEffort ?? localizedString("Default")
+    }
+
+    func reasoningFraction(for choice: ModelChoice) -> Double {
+        guard choice.reasoningEffort != nil else { return 0 }
+        let levels = modelChoices(matching: choice, in: modelChoices)
+        guard let index = levels.firstIndex(where: { $0.route == choice.route }) else { return 0 }
+        return levels.count == 1 ? 1 : Double(index) / Double(levels.count - 1)
+    }
+
     func sameModel(_ lhs: ModelChoice, _ rhs: ModelChoice) -> Bool {
         guard let lhsInstance = modelProviders[lhs.route],
             let rhsInstance = modelProviders[rhs.route]
         else { return lhs.route == rhs.route }
         return lhsInstance == rhsInstance && lhs.model == rhs.model
+    }
+
+    func modelRoute(
+        selecting choice: ModelChoice, preserving current: ModelChoice?, in choices: [ModelChoice]
+    ) -> String {
+        let levels = modelChoices(matching: choice, in: choices)
+        let defaultEffort = providerStatus(for: choice)?.models
+            .first { $0.id == choice.model }?.defaultReasoning
+        return levels.first { $0.reasoningEffort == current?.reasoningEffort }?.route
+            ?? levels.first { $0.reasoningEffort == defaultEffort }?.route ?? choice.route
+    }
+
+    var chatModelLabel: String? {
+        modelChoices.first { $0.route == chat.selectedModelRoute }.map { modelLabel(for: $0) }
     }
 
     func setTheme(_ theme: ThemePreference) {

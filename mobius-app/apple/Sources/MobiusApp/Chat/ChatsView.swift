@@ -296,7 +296,7 @@ struct ChatsView: View {
         }
         .mobiusProminentIconButton()
         .disabled(!model.canCreateSession)
-        .accessibilityHint("Choose a workspace for the new chat")
+        .accessibilityHint("Start a new chat")
         .help("New chat")
     }
 

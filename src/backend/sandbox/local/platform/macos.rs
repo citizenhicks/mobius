@@ -13,6 +13,13 @@ use crate::backend::sandbox::MACOS_COMMAND_WRAPPER;
 use crate::backend::sandbox::MACOS_SEATBELT_BASE_POLICY;
 use crate::backend::sandbox::MACOS_SEATBELT_NETWORK_POLICY;
 
+const PRIVATE_TEMP_POLICY: &str = r#"
+(deny file-read* file-write*
+  (require-all
+    (subpath (param "TEMP_PARENT"))
+    (require-not (subpath (param "TEMP_ROOT")))))
+"#;
+
 const SEATBELT_POLICY_SUFFIX: &str = r#"
 (allow file-read*)
 (allow file-write*
@@ -56,16 +63,7 @@ pub(crate) fn protected_full_access_command(
             .ok_or_else(|| Error::Sandbox("sandbox path is not UTF-8".into()))?;
         command.arg(format!("-DDENIED_READ_{index}={path}"));
     }
-    command.args([
-        "--",
-        "/bin/bash",
-        "--noprofile",
-        "--norc",
-        "-c",
-        MACOS_COMMAND_WRAPPER,
-        "mobius-command",
-    ]);
-    append_invocation(&mut command, invocation, sandbox.isolated_home);
+    append_isolated_invocation(&mut command, invocation, sandbox.isolated_home);
     Ok(command)
 }
 
@@ -81,9 +79,9 @@ pub(crate) fn sandboxed_command(
             "/usr/bin/sandbox-exec is unavailable".into(),
         ));
     }
-    let temp = std::fs::canonicalize(sandbox.temp.path())?;
     let mut command = Command::new(executable);
-    let mut policy = format!("{MACOS_SEATBELT_BASE_POLICY}{SEATBELT_POLICY_SUFFIX}");
+    let mut policy =
+        format!("{MACOS_SEATBELT_BASE_POLICY}{SEATBELT_POLICY_SUFFIX}{PRIVATE_TEMP_POLICY}");
     for index in 0..sandbox.workspace_roots.len() {
         let parameter = format!("WORKSPACE_ROOT_{index}");
         policy.push_str(&format!(
@@ -120,12 +118,12 @@ pub(crate) fn sandboxed_command(
         }
     }
     command.arg("-p").arg(policy);
-    for (name, path) in [("WRITABLE_ROOT", sandbox.root.clone()), ("TEMP_ROOT", temp)] {
-        let path = path
-            .to_str()
-            .ok_or_else(|| Error::Sandbox("sandbox path is not UTF-8".into()))?;
-        command.arg(format!("-D{name}={path}"));
-    }
+    let root = sandbox
+        .root
+        .to_str()
+        .ok_or_else(|| Error::Sandbox("sandbox path is not UTF-8".into()))?;
+    command.arg(format!("-DWRITABLE_ROOT={root}"));
+    append_temporary_parameters(&mut command, sandbox)?;
     for (index, root) in sandbox.workspace_roots.iter().enumerate() {
         let path = root
             .path
@@ -140,6 +138,36 @@ pub(crate) fn sandboxed_command(
             .ok_or_else(|| Error::Sandbox("sandbox path is not UTF-8".into()))?;
         command.arg(format!("-DDENIED_READ_{index}={path}"));
     }
+    append_isolated_invocation(&mut command, invocation, sandbox.isolated_home);
+    Ok(command)
+}
+
+fn append_temporary_parameters(command: &mut Command, sandbox: &LocalSandbox) -> Result<()> {
+    let temp = std::fs::canonicalize(sandbox.temp.path())?;
+    let parent = temp
+        .parent()
+        .ok_or_else(|| Error::Sandbox("temporary parent unavailable".into()))?;
+    for (name, path) in [("TEMP_PARENT", parent), ("TEMP_ROOT", temp.as_path())] {
+        let path = path
+            .to_str()
+            .ok_or_else(|| Error::Sandbox("sandbox path is not UTF-8".into()))?;
+        command.arg(format!("-D{name}={path}"));
+    }
+    Ok(())
+}
+
+fn append_isolated_invocation(
+    command: &mut Command,
+    invocation: &Invocation<'_>,
+    isolated_home: bool,
+) {
+    let piped = matches!(
+        invocation,
+        Invocation::Argv {
+            piped_input: true,
+            ..
+        }
+    );
     command.args([
         "--",
         "/bin/bash",
@@ -148,7 +176,8 @@ pub(crate) fn sandboxed_command(
         "-c",
         MACOS_COMMAND_WRAPPER,
         "mobius-command",
+        if piped { "2" } else { "0" },
+        if piped { "/dev/stdin" } else { "/dev/null" },
     ]);
-    append_invocation(&mut command, invocation, sandbox.isolated_home);
-    Ok(command)
+    append_invocation(command, invocation, isolated_home);
 }

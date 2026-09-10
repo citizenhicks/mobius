@@ -35,6 +35,13 @@ use self::files::read_binary_file;
 use self::files::read_file;
 use self::files::read_file_range;
 
+static TEMP_PARENT: std::sync::LazyLock<std::io::Result<tempfile::TempDir>> =
+    std::sync::LazyLock::new(|| {
+        tempfile::Builder::new()
+            .prefix("mobius-execution-")
+            .tempdir()
+    });
+
 const MAX_COMMAND_OUTPUT_BYTES: usize = 40_000;
 /// Read-only inspection feeds a UI rather than a model context, so it keeps a larger budget.
 const MAX_READ_ONLY_OUTPUT_BYTES: usize = MAX_BINARY_FILE_BYTES;
@@ -49,8 +56,6 @@ const ISOLATED_ENVIRONMENT: [&str; 8] = [
     "DEVELOPER_DIR",
     "SDKROOT",
 ];
-#[cfg(target_os = "linux")]
-const ISOLATED_HOME: &str = "/tmp/mobius-home";
 
 /// Provides capability-safe file tools and policy-selected command execution.
 pub struct LocalSandbox {
@@ -58,7 +63,8 @@ pub struct LocalSandbox {
     root_dir: Dir,
     workspace_roots: Vec<PinnedRoot>,
     read_roots: Vec<PinnedRoot>,
-    temp: tempfile::TempDir,
+    temp: std::sync::Arc<tempfile::TempDir>,
+    temp_root: Dir,
     command_timeout: Duration,
     denied_reads: Vec<DeniedRead>,
     denied_environment: BTreeSet<String>,
@@ -67,6 +73,7 @@ pub struct LocalSandbox {
     empty_proc: bool,
 }
 
+#[derive(Clone)]
 struct DeniedRead {
     path: PathBuf,
     directory: bool,
@@ -77,11 +84,22 @@ struct PinnedRoot {
     directory: Dir,
 }
 
+impl PinnedRoot {
+    fn try_clone(&self) -> Result<Self> {
+        Ok(Self {
+            path: self.path.clone(),
+            directory: self.directory.try_clone()?,
+        })
+    }
+}
+
 enum Invocation<'a> {
     Shell(&'a str),
     Argv {
         executable: &'a Path,
         arguments: &'a [&'a str],
+        #[cfg(target_os = "macos")]
+        piped_input: bool,
     },
 }
 
@@ -117,15 +135,23 @@ impl LocalSandbox {
                     root.display()
                 )));
             }
+            validate_public_root(&root)?;
             let root_dir = Dir::open_ambient_dir(&root, ambient_authority())?;
             validate_root(&root, &root_dir)?;
-            let temp = tempfile::Builder::new().prefix("mobius-").tempdir()?;
+            let parent = TEMP_PARENT.as_ref().map_err(|error| {
+                Error::Sandbox(format!("temporary storage unavailable: {error}"))
+            })?;
+            let temp = tempfile::Builder::new()
+                .prefix("session-")
+                .tempdir_in(parent.path())?;
+            let temp_root = Dir::open_ambient_dir(temp.path(), ambient_authority())?;
             Ok(Self {
                 root,
                 root_dir,
                 workspace_roots: Vec::new(),
                 read_roots: Vec::new(),
-                temp,
+                temp: std::sync::Arc::new(temp),
+                temp_root,
                 command_timeout: DEFAULT_COMMAND_TIMEOUT,
                 denied_reads: Vec::new(),
                 denied_environment: BTreeSet::new(),
@@ -134,6 +160,58 @@ impl LocalSandbox {
                 empty_proc: false,
             })
         }
+    }
+
+    /// Creates an independent execution lifetime with the same filesystem policy.
+    pub fn isolated_execution(&self) -> Result<Self> {
+        self.validate_workspace_roots()?;
+        let mut scoped = Self::new(&self.root)?;
+        scoped.root_dir = self.root_dir.try_clone()?;
+        scoped.workspace_roots = self
+            .workspace_roots
+            .iter()
+            .map(PinnedRoot::try_clone)
+            .collect::<Result<_>>()?;
+        scoped.read_roots = self
+            .read_roots
+            .iter()
+            .map(PinnedRoot::try_clone)
+            .collect::<Result<_>>()?;
+        scoped.command_timeout = self.command_timeout;
+        scoped.denied_reads = self.denied_reads.clone();
+        scoped.denied_environment = self.denied_environment.clone();
+        scoped.isolated_home = self.isolated_home;
+        #[cfg(target_os = "linux")]
+        {
+            scoped.empty_proc = self.empty_proc;
+        }
+        Ok(scoped)
+    }
+
+    /// Shares temporary files between policy delegates belonging to one runtime.
+    pub fn share_temporary_directory(mut self, owner: &Self) -> Result<Self> {
+        self.temp = std::sync::Arc::clone(&owner.temp);
+        self.temp_root = owner.temp_root.try_clone()?;
+        Ok(self)
+    }
+
+    /// The temporary directory as visible to commands and file tools.
+    pub fn temporary_directory(&self) -> &Path {
+        self.temp.path()
+    }
+
+    fn temporary_target(&self, requested: &Path) -> Result<Option<(Dir, PathBuf)>> {
+        let Ok(relative) = requested.strip_prefix(self.temporary_directory()) else {
+            return Ok(None);
+        };
+        if relative
+            .components()
+            .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
+        {
+            return Err(Error::Sandbox("temporary path escapes its owner".into()));
+        }
+        validate_root(self.temp.path(), &self.temp_root)?;
+        Ok(Some((self.temp_root.try_clone()?, relative.into())))
     }
 
     /// Sets the hard timeout applied to each sandboxed command.
@@ -199,6 +277,7 @@ impl LocalSandbox {
     /// Allows file tools and workspace-isolated commands to use one additional directory.
     pub fn allow_workspace_root(mut self, path: impl AsRef<Path>) -> Result<Self> {
         let path = std::fs::canonicalize(path)?;
+        validate_public_root(&path)?;
         if !path.is_dir() {
             return Err(Error::Config(format!(
                 "workspace root is not a directory: {}",
@@ -226,6 +305,7 @@ impl LocalSandbox {
     /// Allows file tools to read one additional canonical directory without granting writes.
     pub fn allow_read_root(mut self, path: impl AsRef<Path>) -> Result<Self> {
         let path = std::fs::canonicalize(path)?;
+        validate_public_root(&path)?;
         if !path.is_dir() {
             return Err(Error::Config(format!(
                 "read root is not a directory: {}",
@@ -296,6 +376,8 @@ impl LocalSandbox {
             Invocation::Argv {
                 executable: &executable,
                 arguments,
+                #[cfg(target_os = "macos")]
+                piped_input: false,
             },
             CommandIsolation {
                 sandbox_mode: SandboxMode::WorkspaceWrite,
@@ -354,6 +436,8 @@ impl LocalSandbox {
             Invocation::Argv {
                 executable: &executable,
                 arguments,
+                #[cfg(target_os = "macos")]
+                piped_input: false,
             },
             CommandIsolation {
                 sandbox_mode: SandboxMode::WorkspaceWrite,
@@ -383,6 +467,9 @@ impl LocalSandbox {
 
     fn read_target(&self, path: &str) -> Result<(Dir, PathBuf)> {
         let requested = Path::new(path);
+        if let Some(target) = self.temporary_target(requested)? {
+            return Ok(target);
+        }
         if !requested.is_absolute() {
             validate_root(&self.root, &self.root_dir)?;
             return Ok((self.root_dir.try_clone()?, self.relative(path)?));
@@ -405,6 +492,9 @@ impl LocalSandbox {
 
     fn write_target(&self, path: &str) -> Result<(Dir, PathBuf)> {
         let requested = Path::new(path);
+        if let Some(target) = self.temporary_target(requested)? {
+            return Ok(target);
+        }
         if !requested.is_absolute() {
             validate_root(&self.root, &self.root_dir)?;
             return Ok((self.root_dir.try_clone()?, self.relative(path)?));
@@ -443,6 +533,51 @@ impl LocalSandbox {
             .ok_or_else(|| Error::Sandbox(format!("{name} is unavailable outside protected paths")))
     }
 
+    fn command(
+        &self,
+        invocation: &Invocation<'_>,
+        isolation: CommandIsolation,
+        environment: (&[(&str, &str)], &[&str]),
+    ) -> Result<tokio::process::Command> {
+        self.validate_workspace_roots()?;
+        let mut command = match isolation.sandbox_mode {
+            SandboxMode::WorkspaceWrite => platform::sandboxed_command(
+                self,
+                invocation,
+                isolation.network_access,
+                isolation.workspace_access,
+            )?,
+            SandboxMode::DangerFullAccess if self.denied_reads.is_empty() => {
+                platform::host_command(invocation, self.isolated_home)
+            }
+            SandboxMode::DangerFullAccess => {
+                platform::protected_full_access_command(self, invocation)?
+            }
+        };
+        command.current_dir(&self.root);
+        if self.isolated_home {
+            let inherited = ISOLATED_ENVIRONMENT
+                .into_iter()
+                .filter_map(|name| std::env::var_os(name).map(|value| (name, value)));
+            command.env_clear().envs(inherited);
+        }
+        command
+            .envs(environment.0.iter().copied())
+            .env("TMPDIR", self.temp.path());
+        if self.isolated_home {
+            command
+                .env("HOME", self.temp.path())
+                .env("SHELL", "/bin/bash");
+        }
+        for name in environment.1 {
+            command.env_remove(name);
+        }
+        for name in &self.denied_environment {
+            command.env_remove(name);
+        }
+        Ok(command)
+    }
+
     async fn execute_invocation(
         &self,
         invocation: Invocation<'_>,
@@ -455,49 +590,13 @@ impl LocalSandbox {
         if matches!(&invocation, Invocation::Shell(script) if script.trim().is_empty()) {
             return Err(Error::Sandbox("command is empty".into()));
         }
-        self.validate_workspace_roots()?;
         let output_limit = if isolation.workspace_access == WorkspaceAccess::ReadOnly {
             MAX_READ_ONLY_OUTPUT_BYTES
         } else {
             MAX_COMMAND_OUTPUT_BYTES
         };
         async {
-            self.validate_workspace_roots()?;
-            let mut command = match isolation.sandbox_mode {
-                SandboxMode::WorkspaceWrite => platform::sandboxed_command(
-                    self,
-                    &invocation,
-                    isolation.network_access,
-                    isolation.workspace_access,
-                )?,
-                SandboxMode::DangerFullAccess if self.denied_reads.is_empty() => {
-                    platform::host_command(&invocation, self.isolated_home)
-                }
-                SandboxMode::DangerFullAccess => {
-                    platform::protected_full_access_command(self, &invocation)?
-                }
-            };
-            command.current_dir(&self.root);
-            if self.isolated_home {
-                let inherited = ISOLATED_ENVIRONMENT
-                    .into_iter()
-                    .filter_map(|name| std::env::var_os(name).map(|value| (name, value)));
-                command.env_clear().envs(inherited);
-            }
-            command
-                .envs(environment.0.iter().copied())
-                .env("TMPDIR", platform::command_temp(self.temp.path()));
-            if self.isolated_home {
-                command
-                    .env("HOME", platform::command_home(self.temp.path()))
-                    .env("SHELL", "/bin/bash");
-            }
-            for name in environment.1 {
-                command.env_remove(name);
-            }
-            for name in &self.denied_environment {
-                command.env_remove(name);
-            }
+            let mut command = self.command(&invocation, isolation, environment)?;
             command.kill_on_drop(true);
             #[cfg(target_os = "macos")]
             let uses_cleanup_lease = isolation.sandbox_mode == SandboxMode::WorkspaceWrite
@@ -622,6 +721,58 @@ impl LocalSandbox {
 }
 
 impl SandboxBackend for LocalSandbox {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn start_worker(
+        &self,
+        spec: &super::WorkerCommand,
+        sandbox_mode: SandboxMode,
+        network_access: NetworkAccess,
+    ) -> Result<super::WorkerProcess> {
+        self.validate_workspace_roots()?;
+        let executable = std::fs::canonicalize(&spec.executable)?;
+        if !spec.executable.is_absolute()
+            || !executable.is_file()
+            || executable.starts_with(&self.root)
+            || self
+                .denied_reads
+                .iter()
+                .any(|denied| executable.starts_with(&denied.path))
+        {
+            return Err(Error::Sandbox(
+                "worker executable must be a trusted absolute runtime path".into(),
+            ));
+        }
+        let arguments = spec
+            .arguments
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let invocation = Invocation::Argv {
+            executable: &executable,
+            arguments: &arguments,
+            #[cfg(target_os = "macos")]
+            piped_input: true,
+        };
+        let mut command = self.command(
+            &invocation,
+            CommandIsolation {
+                sandbox_mode,
+                network_access,
+                workspace_access: WorkspaceAccess::Writable,
+            },
+            (&[], &[]),
+        )?;
+        super::WorkerProcess::spawn(&mut command)
+    }
+
+    fn isolated_execution(&self) -> Result<std::sync::Arc<dyn SandboxBackend>> {
+        Ok(std::sync::Arc::new(LocalSandbox::isolated_execution(self)?))
+    }
+
+    fn temporary_directory(&self) -> Option<PathBuf> {
+        Some(LocalSandbox::temporary_directory(self).into())
+    }
+
     fn read<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<String>> {
         Box::pin(async move {
             let (root, relative) = self.read_target(path)?;
@@ -729,6 +880,18 @@ fn find_executable_in(
                     .iter()
                     .all(|denied| !candidate.starts_with(&denied.path))
         })
+}
+
+fn validate_public_root(path: &Path) -> Result<()> {
+    let parent = TEMP_PARENT
+        .as_ref()
+        .map_err(|error| Error::Sandbox(format!("temporary storage unavailable: {error}")))?;
+    if paths_overlap(path, &std::fs::canonicalize(parent.path())?) {
+        return Err(Error::Config(
+            "sandbox roots must not overlap private temporary storage".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn paths_overlap(left: &Path, right: &Path) -> bool {

@@ -645,6 +645,7 @@ final class AppModelTests: XCTestCase {
                     "symbol": .null,
                     "format": .string(format),
                     "tone": .string(tone),
+                    "content": .array([]),
                     "files": .array(
                         files.map { file in
                             .object([

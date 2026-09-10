@@ -13,15 +13,11 @@ use crate::backend::model::ToolCall;
 use crate::backend::model::tool_output;
 use crate::backend::sandbox::SandboxPermissions;
 use crate::middleware::tools::{PreparedToolSet, ToolResult, execute_batch};
-use crate::middleware::{
-    PostToolUseContext, PreToolUseContext, checked_image_input_bytes, model_input_image_stats,
-};
+use crate::middleware::{PostToolUseContext, PreToolUseContext};
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
 use crate::protocol::ToolCallBeginEvent;
 use crate::protocol::ToolCallEndEvent;
-
-const MODEL_INPUT_IMAGE_BYTES_FIELD: &str = "_mobius_image_bytes";
 
 #[derive(Default)]
 pub(super) struct ToolCompletion {
@@ -247,32 +243,15 @@ impl Runner {
         &mut self,
         submission_id: &str,
         turn_id: &str,
-        input_image_bytes: usize,
         completion: impl Into<ToolCompletion>,
     ) -> Result<()> {
         let ToolCompletion {
-            mut results,
+            results,
             events: hook_events,
         } = completion.into();
         if results.is_empty() && hook_events.is_empty() {
             return Ok(());
         }
-        // Streamed results can be persisted before the rest of this same batch.
-        let tail = self
-            .state
-            .context
-            .iter()
-            .rposition(|item| {
-                item.get("type").and_then(serde_json::Value::as_str) == Some("function_call")
-                    && self.state.pending_tools.iter().any(|call| {
-                        item.get("call_id").and_then(serde_json::Value::as_str)
-                            == Some(&call.call_id)
-                    })
-            })
-            .map_or(&[][..], |index| &self.state.context[index + 1..]);
-        let previous_images = model_input_image_stats(tail)?;
-        let used = checked_image_input_bytes(input_image_bytes, previous_images.bytes)?;
-        enforce_tool_image_budget(used, previous_images.count, &mut results);
         let mut events = hook_events
             .into_iter()
             .map(|msg| Event {
@@ -302,12 +281,11 @@ impl Runner {
         &mut self,
         submission_id: &str,
         turn_id: &str,
-        input_image_bytes: usize,
         completion: ToolCompletion,
     ) -> Result<()> {
         let pending_approval = self.state.pending_approval.take();
         match self
-            .persist_tool_results(submission_id, turn_id, input_image_bytes, completion)
+            .persist_tool_results(submission_id, turn_id, completion)
             .await
         {
             Ok(()) => Ok(()),
@@ -316,35 +294,6 @@ impl Runner {
                 Err(error)
             }
         }
-    }
-
-    pub(super) fn pending_tool_input_image_bytes(&self, calls: &[ToolCall]) -> Result<usize> {
-        if calls.is_empty() {
-            return Ok(0);
-        }
-        let call_ids = calls
-            .iter()
-            .map(|call| call.call_id.as_str())
-            .collect::<BTreeSet<_>>();
-        let value = self
-            .state
-            .context
-            .iter()
-            .rev()
-            .find(|item| {
-                item.get("type").and_then(serde_json::Value::as_str) == Some("function_call")
-                    && item
-                        .get("call_id")
-                        .and_then(serde_json::Value::as_str)
-                        .is_some_and(|call_id| call_ids.contains(call_id))
-            })
-            .and_then(|item| item.get(MODEL_INPUT_IMAGE_BYTES_FIELD))
-            .and_then(serde_json::Value::as_u64)
-            .ok_or_else(|| {
-                Error::Checkpoint("pending tool batch has no model image budget".into())
-            })?;
-        usize::try_from(value)
-            .map_err(|_| Error::Checkpoint("pending tool image budget is unsupported".into()))
     }
 
     pub(super) fn append_tool_results(&mut self, results: Vec<ToolResult>) -> Result<()> {
@@ -410,29 +359,6 @@ pub(super) fn tool_call_inputs(calls: &[ToolCall]) -> Result<Vec<serde_json::Val
         .collect()
 }
 
-pub(in crate::agent) fn record_model_input_image_bytes(
-    output: &mut [serde_json::Value],
-    calls: &[ToolCall],
-    bytes: usize,
-) -> Result<()> {
-    let bytes = u64::try_from(bytes)
-        .map(serde_json::Value::from)
-        .map_err(|_| Error::Checkpoint("model image budget is unsupported".into()))?;
-    for call in calls {
-        let item = output
-            .iter_mut()
-            .find(|item| {
-                item.get("type").and_then(serde_json::Value::as_str) == Some("function_call")
-                    && item.get("call_id").and_then(serde_json::Value::as_str)
-                        == Some(&call.call_id)
-            })
-            .and_then(serde_json::Value::as_object_mut)
-            .ok_or_else(|| Error::Checkpoint("tool call is missing from model output".into()))?;
-        item.insert(MODEL_INPUT_IMAGE_BYTES_FIELD.into(), bytes.clone());
-    }
-    Ok(())
-}
-
 fn tool_result_events(submission_id: &str, turn_id: &str, results: &[ToolResult]) -> Vec<Event> {
     let mut events = Vec::with_capacity(results.len() * 2);
     for result in results {
@@ -461,32 +387,6 @@ fn interrupted_results(calls: &[ToolCall], message: &str) -> Vec<ToolResult> {
         .collect()
 }
 
-fn enforce_tool_image_budget(mut used: usize, mut used_images: usize, results: &mut [ToolResult]) {
-    for result in results {
-        let additional = model_input_image_stats(&result.additional_input).and_then(|additional| {
-            let images = used_images
-                .checked_add(additional.count)
-                .filter(|count| *count <= 1)
-                .ok_or_else(|| {
-                    Error::Tool("only one image may be added to model input per tool batch".into())
-                })?;
-            Ok((checked_image_input_bytes(used, additional.bytes)?, images))
-        });
-        match additional {
-            Ok((total, images)) => {
-                used = total;
-                used_images = images;
-            }
-            Err(error) => {
-                result.replace(error.to_string());
-                result.is_error = true;
-                result.additional_input.clear();
-                result.events.clear();
-            }
-        }
-    }
-}
-
 pub(super) fn order_results(calls: &[ToolCall], results: Vec<ToolResult>) -> Vec<ToolResult> {
     let mut results = results
         .into_iter()
@@ -512,60 +412,9 @@ mod tests {
 
         let results = interrupted_results(&calls, "execution interrupted; result unknown");
 
-        assert_eq!(results[0].output, "execution interrupted; result unknown");
-    }
-
-    #[test]
-    fn excess_tool_images_become_model_visible_errors() {
-        let mut results = vec![ToolResult {
-            call_id: "call-1".into(),
-            name: "view_image".into(),
-            output: "viewed image".into(),
-            is_error: false,
-            handler_executed: true,
-            additional_input: vec![serde_json::json!({
-                "role": "user",
-                "content": [{
-                    "type": "input_image",
-                    "media_type": "image/png",
-                    "data": "AA=="
-                }]
-            })],
-            events: Vec::new(),
-        }];
-
-        enforce_tool_image_budget(crate::middleware::MAX_IMAGE_INPUT_BYTES, 0, &mut results);
-
-        assert!(results[0].is_error);
-        assert!(results[0].additional_input.is_empty());
-        assert!(results[0].output.contains("8 MiB"));
-    }
-
-    #[test]
-    fn second_tool_image_becomes_a_model_visible_error() {
-        let image = |call_id: &str| ToolResult {
-            call_id: call_id.into(),
-            name: "custom_image".into(),
-            output: "image added".into(),
-            is_error: false,
-            handler_executed: true,
-            additional_input: vec![serde_json::json!({
-                "role": "user",
-                "content": [{
-                    "type": "input_image",
-                    "media_type": "image/png",
-                    "data": "AA=="
-                }]
-            })],
-            events: Vec::new(),
-        };
-        let mut results = vec![image("call-1"), image("call-2")];
-
-        enforce_tool_image_budget(0, 0, &mut results);
-
-        assert!(!results[0].is_error);
-        assert!(results[1].is_error);
-        assert!(results[1].additional_input.is_empty());
-        assert!(results[1].output.contains("only one image"));
+        assert_eq!(
+            results[0].output.text(),
+            "execution interrupted; result unknown"
+        );
     }
 }

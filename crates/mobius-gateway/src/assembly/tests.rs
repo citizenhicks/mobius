@@ -371,8 +371,14 @@ fn custom_selection_without_reasoning_uses_the_first_configured_effort() {
         .expect("register provider");
 
     let choices = configured_model_choices(&config, &store, &credentials).expect("catalog");
-    let (router, _) =
-        build_models(&config, &selection, &store, &credentials).expect("build selected model");
+    let (router, _) = build_models(
+        &config,
+        &selection,
+        &store,
+        &credentials,
+        SessionFileStore::new(tempfile::tempdir().expect("files").path()),
+    )
+    .expect("build selected model");
     let selected = router.choices().next().expect("selected route");
 
     assert_eq!(choices[0].reasoning_effort.as_deref(), Some("high"));

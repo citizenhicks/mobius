@@ -15,7 +15,11 @@ async fn loop_executes_tool_and_returns_result_to_model() {
     let mut agent = create_agent(test_config(
         workspace.path(),
         Arc::clone(&model),
-        vec![Arc::new(Tools::coding())],
+        vec![Arc::new(Tools::coding(
+            mobius::backend::session_files::SessionFileStore::new(
+                tempfile::tempdir().expect("files").path(),
+            ),
+        ))],
     ))
     .await
     .expect("create agent");
@@ -32,7 +36,12 @@ async fn loop_executes_tool_and_returns_result_to_model() {
             .iter()
             .any(|item| {
                 item.get("type").and_then(Value::as_str) == Some("function_call_output")
-                    && item.get("output").and_then(Value::as_str) == Some("hello")
+                    && item
+                        .get("output")
+                        .and_then(|output| output.get(0))
+                        .and_then(|part| part.get("text"))
+                        .and_then(Value::as_str)
+                        == Some("hello")
             })
     );
 }
@@ -69,16 +78,20 @@ async fn middleware_prompt_is_composed_once_per_agent() {
     } else {
         "an unsupported operating system"
     };
-    let expected = format!(
-        "**instructions**\n\ntest system prompt\n\n**sandbox**\n\nmöbius is running on {platform}.\n\n**prompt extension**\n\ncapability prompt"
+    let requests = model.requests.lock().expect("requests");
+    assert_eq!(requests[0].instructions, requests[1].instructions);
+    assert!(requests[0].instructions.starts_with(&format!(
+        "**instructions**\n\ntest system prompt\n\n**sandbox**\n\nmöbius is running on {platform}."
+    )));
+    assert!(
+        requests[0]
+            .instructions
+            .contains("Private temporary directory:")
     );
     assert!(
-        model
-            .requests
-            .lock()
-            .expect("requests")
-            .iter()
-            .all(|request| request.instructions == expected)
+        requests[0]
+            .instructions
+            .ends_with("**prompt extension**\n\ncapability prompt")
     );
 }
 
@@ -135,7 +148,11 @@ async fn approval_allows_an_explicitly_approved_write() {
     let mut agent = create_agent(test_config(
         workspace.path(),
         model,
-        vec![Arc::new(Tools::coding())],
+        vec![Arc::new(Tools::coding(
+            mobius::backend::session_files::SessionFileStore::new(
+                tempfile::tempdir().expect("files").path(),
+            ),
+        ))],
     ))
     .await
     .expect("create agent");
@@ -182,7 +199,11 @@ async fn approval_denial_prevents_command_execution() {
     let mut agent = create_agent(test_config(
         workspace.path(),
         model,
-        vec![Arc::new(Tools::coding())],
+        vec![Arc::new(Tools::coding(
+            mobius::backend::session_files::SessionFileStore::new(
+                tempfile::tempdir().expect("files").path(),
+            ),
+        ))],
     ))
     .await
     .expect("create agent");

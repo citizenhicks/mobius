@@ -100,13 +100,14 @@ async fn apply_patch_edits_an_absolute_path_in_an_attached_folder() {
         .pop()
         .expect("tool result");
 
-    assert!(!result.is_error, "{}", result.output);
-    let patch = diffy::Patch::from_str(&result.output).expect("unified diff");
+    assert!(!result.is_error, "{}", result.output.text());
+    let output = result.output.text();
+    let patch = diffy::Patch::from_str(&output).expect("unified diff");
     assert_eq!(
         (patch.original(), patch.modified()),
         (Some(patch_path), Some(patch_path))
     );
-    assert!(result.output.contains("-old\n+new\n"));
+    assert!(result.output.text().contains("-old\n+new\n"));
     assert_eq!(
         diffy::apply("first\nold\nlast\n", &patch).expect("apply generated patch"),
         "first\nnew\nlast\n"
@@ -135,7 +136,7 @@ async fn apply_patch_edits_an_absolute_path_in_an_attached_folder() {
         .expect("no-op result");
     assert!(no_op.is_error);
     assert_eq!(
-        no_op.output,
+        no_op.output.text(),
         "tool error: Patch rejected: patch applies but makes no changes."
     );
     assert_eq!(
