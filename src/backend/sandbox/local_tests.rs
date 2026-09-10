@@ -273,6 +273,48 @@ async fn absolute_reads_are_confined_to_explicit_read_roots() {
     );
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn sandboxed_commands_can_execute_read_roots_inside_masked_temporary_storage() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let parent = tempfile::tempdir_in("/tmp").expect("masked temporary directory");
+    let resources = parent.path().join("runtime");
+    let workspace = resources.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace");
+    let executable = resources.join("runtime.sh");
+    std::fs::write(&executable, "#!/bin/sh\nprintf runtime").expect("executable");
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))
+        .expect("executable permission");
+    let secret = parent.path().join("secret");
+    std::fs::write(&secret, "private").expect("private sibling");
+    let sandbox = local_sandbox(&workspace)
+        .allow_read_root(&resources)
+        .expect("runtime resources");
+    let output = sandbox
+        .execute(
+            &format!(
+                "'{}' && ! touch '{}' && ! test -e '{}' && printf written > allowed",
+                executable.display(),
+                resources.join("blocked").display(),
+                secret.display(),
+            ),
+            SandboxMode::WorkspaceWrite,
+            NetworkAccess::Denied,
+            CommandMode::Foreground,
+            CommandOutputSink::default(),
+        )
+        .await
+        .expect("sandboxed runtime");
+    assert_eq!(output.exit_code, 0, "{}", output.stderr);
+    assert_eq!(output.stdout, "runtime");
+    assert!(!resources.join("blocked").exists());
+    assert_eq!(
+        sandbox.read("allowed").await.expect("workspace write"),
+        "written"
+    );
+}
+
 #[tokio::test]
 async fn absolute_reads_and_writes_are_confined_to_workspace_roots() {
     let workspace = tempfile::tempdir().expect("workspace");
@@ -373,6 +415,18 @@ async fn absolute_read_roots_reject_replaced_roots() {
     assert!(
         sandbox
             .read(requested.to_str().expect("UTF-8 resource path"))
+            .await
+            .is_err()
+    );
+    assert!(
+        sandbox
+            .execute(
+                "true",
+                SandboxMode::WorkspaceWrite,
+                NetworkAccess::Denied,
+                CommandMode::Foreground,
+                CommandOutputSink::default(),
+            )
             .await
             .is_err()
     );

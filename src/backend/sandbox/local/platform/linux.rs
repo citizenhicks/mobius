@@ -63,6 +63,9 @@ pub(crate) fn sandboxed_command(
     if network_access == NetworkAccess::Denied && Path::new("/run").is_dir() {
         command.args(["--tmpfs", "/run"]);
     }
+    for root in &sandbox.read_roots {
+        command.arg("--ro-bind").arg(&root.path).arg(&root.path);
+    }
     command
         .arg(if workspace_access == WorkspaceAccess::ReadOnly {
             "--ro-bind"

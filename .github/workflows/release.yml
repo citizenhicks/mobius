@@ -49,6 +49,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes bubblewrap
       - run: cargo test --workspace --all-targets --all-features --locked
+      - name: Download and test computer runtime
+        run: cargo test -p mobius-gateway computer_runtime::tests::downloaded_runtime_works --all-features --locked -- --ignored --nocapture
       - name: Test documentation examples
         env:
           RUSTDOCFLAGS: -D warnings

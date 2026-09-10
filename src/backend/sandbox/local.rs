@@ -302,7 +302,7 @@ impl LocalSandbox {
         Ok(self)
     }
 
-    /// Allows file tools to read one additional canonical directory without granting writes.
+    /// Allows file tools and workspace-isolated commands to read one additional directory.
     pub fn allow_read_root(mut self, path: impl AsRef<Path>) -> Result<Self> {
         let path = std::fs::canonicalize(path)?;
         validate_public_root(&path)?;
@@ -517,7 +517,7 @@ impl LocalSandbox {
 
     fn validate_workspace_roots(&self) -> Result<()> {
         validate_root(&self.root, &self.root_dir)?;
-        for root in &self.workspace_roots {
+        for root in self.workspace_roots.iter().chain(&self.read_roots) {
             validate_root(&root.path, &root.directory)?;
         }
         Ok(())
