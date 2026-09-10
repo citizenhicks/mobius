@@ -8,24 +8,33 @@ struct GatewayMenuBarApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            if delegate.voicePanel.corner == nil {
-                VoiceMenuView(model: delegate.model, presentation: delegate.voicePanel)
-            } else {
-                VStack(alignment: .leading, spacing: MobiusSpace.m) {
-                    Button("Keyboard shortcuts…") { delegate.voicePanel.showKeyboardShortcuts() }
-                    Button("Unpin voice window") { delegate.voicePanel.unpin() }
+            VStack(spacing: 0) {
+                DesktopControlView(
+                    runtime: delegate.model.desktop, isConnected: delegate.model.isReady)
+                Divider()
+                if delegate.voicePanel.corner == nil {
+                    VoiceMenuView(model: delegate.model, presentation: delegate.voicePanel)
+                } else {
+                    VStack(alignment: .leading, spacing: MobiusSpace.m) {
+                        Button("Keyboard shortcuts…") {
+                            delegate.voicePanel.showKeyboardShortcuts()
+                        }
+                        Button("Unpin voice window") { delegate.voicePanel.unpin() }
+                    }
+                    .padding(MobiusSpace.l)
                 }
-                .padding(MobiusSpace.l)
             }
         } label: {
             HStack(spacing: 3) {
                 Image(nsImage: Self.logo)
-                if let symbol = delegate.symbol {
+                if delegate.model.desktop.isActive {
+                    Image(systemName: "cursorarrow")
+                } else if let symbol = delegate.symbol {
                     VoiceIcon(symbol)
                 }
             }
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("möbius Gateway")
+            .accessibilityLabel("möbius-app")
             .accessibilityValue(delegate.model.status)
         }
         .menuBarExtraStyle(.window)

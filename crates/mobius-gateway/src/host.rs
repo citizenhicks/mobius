@@ -42,6 +42,7 @@ use uuid::Uuid;
 use crate::assembly::{BuiltAgent, assemble};
 use crate::bots::swarm::{BoardEntry, SwarmDelivery, SwarmRunOutcome, SwarmStore};
 use crate::bots::{ActiveRoutineRun, BeginRun, BotStore};
+use crate::computer_runtime::desktop::DesktopControl;
 use crate::config::{
     ChatSpec, ConfigStore, CredentialStore, GatewayConfig,
     create_workspace_directory as create_workspace_directory_on_disk, prepare_background_workspace,
@@ -109,6 +110,7 @@ impl SwarmDeliveryAttempt {
 /// Machine-wide chat registry. A session has at most one resident agent owner.
 #[derive(Clone)]
 pub(crate) struct GatewayHost {
+    pub(crate) desktop: Arc<DesktopControl>,
     state: Arc<Mutex<GatewayState>>,
     events: broadcast::Sender<ServerFrame>,
 }
@@ -196,6 +198,7 @@ impl GatewayHost {
         let activities = Arc::new(StdMutex::new(HashMap::new()));
         restore_pending_approval_activities(&checkpoints, &activities).await?;
         let host = Self {
+            desktop: Arc::new(DesktopControl::default()),
             state: Arc::new(Mutex::new(GatewayState {
                 store,
                 config,
@@ -437,6 +440,27 @@ impl GatewayHost {
         tint: crate::wire::ProviderTint,
         config: AgentComposition,
     ) -> std::result::Result<crate::wire::BotRecord, Rejection> {
+        let store = {
+            let _access = self.begin_mutation().await?;
+            let state = self.state.lock().await;
+            validate_bot_config(&state, &config)?;
+            let previous = state.bots.bot(id).map_err(invalid_bot)?;
+            if previous.config.revision != expected_revision {
+                return Err(Rejection {
+                    code: "revision_conflict",
+                    message: format!(
+                        "Bot configuration revision is now {}",
+                        previous.config.revision
+                    ),
+                    fatal: false,
+                });
+            }
+            state.store.clone()
+        };
+        // Installation can take minutes. Do not hold gateway locks or save the Bot yet.
+        crate::computer_runtime::prepare(store.state_dir(), &config.middleware)
+            .await
+            .map_err(invalid_config)?;
         let _mutation = self.begin_exclusive_mutation().await?;
         let mut state = self.state.lock().await;
         validate_bot_config(&state, &config)?;
@@ -575,6 +599,7 @@ impl GatewayHost {
             state.swarm.clone(),
             Arc::clone(&state.session_mutations),
             Arc::clone(&state.discovery_gate),
+            Arc::clone(&self.desktop),
             Arc::clone(&state.provider_epoch),
             Arc::clone(&state.activities),
             self.events.clone(),
@@ -684,6 +709,7 @@ impl GatewayHost {
             state.swarm.clone(),
             Arc::clone(&state.session_mutations),
             Arc::clone(&state.discovery_gate),
+            Arc::clone(&self.desktop),
             Arc::clone(&state.provider_epoch),
             Arc::clone(&state.activities),
             self.events.clone(),
@@ -704,6 +730,7 @@ impl GatewayHost {
     ) -> JoinHandle<()> {
         let state = Arc::downgrade(&self.state);
         let events = self.events.clone();
+        let desktop = Arc::clone(&self.desktop);
         tokio::spawn(async move {
             let Some(gateway_state) = state.upgrade() else {
                 return;
@@ -730,6 +757,7 @@ impl GatewayHost {
                 let gateway = Self {
                     state: gateway_state,
                     events: events.clone(),
+                    desktop: Arc::clone(&desktop),
                 };
                 gateway
                     .handle_swarm_delivery(SwarmDelivery::Pending { target_bot_id }, &mut attempts)
@@ -743,6 +771,7 @@ impl GatewayHost {
                 let gateway = Self {
                     state: gateway_state,
                     events: events.clone(),
+                    desktop: Arc::clone(&desktop),
                 };
                 gateway.handle_swarm_delivery(delivery, &mut attempts).await;
             }

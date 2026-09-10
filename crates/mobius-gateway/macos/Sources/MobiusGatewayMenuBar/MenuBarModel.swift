@@ -19,6 +19,7 @@ final class MenuBarModel {
     private(set) var draftBotID: String?
     private(set) var draftWorkspace: String?
     private(set) var voice = RealtimeVoiceSession()
+    let desktop = DesktopRuntime()
 
     @ObservationIgnored private let client = GatewayClient()
     @ObservationIgnored private let defaults: UserDefaults
@@ -284,6 +285,7 @@ final class MenuBarModel {
 
     private func resetConnection() {
         generation = UUID()
+        desktop.disconnected()
         stopVoice(notifyGateway: false)
         outgoing?.cancel()
         outgoing = nil
@@ -323,6 +325,7 @@ final class MenuBarModel {
 extension MenuBarModel {
     func receive(_ envelope: GatewayEnvelope) throws {
         let body = envelope.body
+        try desktop.receive(envelope)
         switch envelope.type {
         case "ready":
             guard let payload = body["payload"] else {
@@ -334,6 +337,7 @@ extension MenuBarModel {
             updateChats(catalog.sessions)
             isReady = true
             isConnecting = false
+            desktop.connected { [weak self] request in self?.send(request) }
             if let chat = chats.first(where: { $0.id == defaults.string(forKey: "voiceChatID") })
                 ?? chats.first
             {

@@ -64,7 +64,7 @@ jobs:
           rustup default stable
           crates/mobius-gateway/macos/build.sh
       - name: Archive development app
-        run: ditto -c -k --keepParent 'target/macos/Mobius Gateway.app' target/macos/Mobius-Gateway-unnotarized.zip
+        run: ditto -c -k --keepParent 'target/macos/möbius-app.app' target/macos/mobius-app-unnotarized.zip
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: gateway-macos-unnotarized

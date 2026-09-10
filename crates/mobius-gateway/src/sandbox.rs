@@ -79,6 +79,7 @@ fn provider_credential_environment() -> impl Iterator<Item = &'static str> {
 pub struct GatewaySandbox {
     delegate: LocalSandbox,
     full_access_delegate: LocalSandbox,
+    desktop: Option<std::sync::Arc<crate::computer_runtime::desktop::DesktopControl>>,
 }
 
 impl GatewaySandbox {
@@ -135,7 +136,16 @@ impl GatewaySandbox {
         Ok(Self {
             delegate,
             full_access_delegate,
+            desktop: None,
         })
+    }
+
+    pub(crate) fn with_desktop(
+        mut self,
+        desktop: std::sync::Arc<crate::computer_runtime::desktop::DesktopControl>,
+    ) -> Self {
+        self.desktop = Some(desktop);
+        self
     }
 
     fn command_delegate(&self, sandbox_mode: SandboxMode) -> &LocalSandbox {
@@ -207,6 +217,29 @@ impl GatewaySandbox {
 }
 
 impl SandboxBackend for GatewaySandbox {
+    fn worker_connection<'a>(
+        &'a self,
+        session_id: &'a str,
+        sandbox_mode: SandboxMode,
+    ) -> BoxFuture<'a, Result<tokio::io::DuplexStream>> {
+        Box::pin(async move {
+            if !cfg!(target_os = "macos") {
+                return Err(Error::Sandbox(
+                    "native desktop control is only available on macOS".into(),
+                ));
+            }
+            if sandbox_mode != SandboxMode::DangerFullAccess {
+                return Err(Error::Sandbox(
+                    "Mac desktop control requires the Bot's Full access sandbox policy".into(),
+                ));
+            }
+            self.desktop
+                .as_ref()
+                .ok_or_else(|| Error::Sandbox("native desktop runtime is unavailable".into()))?
+                .connect(session_id)
+        })
+    }
+
     fn start_worker(
         &self,
         command: &mobius::backend::sandbox::WorkerCommand,
@@ -226,6 +259,7 @@ impl SandboxBackend for GatewaySandbox {
         Ok(std::sync::Arc::new(Self {
             delegate,
             full_access_delegate,
+            desktop: self.desktop.clone(),
         }))
     }
 

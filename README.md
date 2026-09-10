@@ -48,7 +48,21 @@ Underneath the apps is a small, modular Rust framework you can embed in your own
 
 ### 1. Install the terminal client and gateway
 
-Download a **`mobius-cli` release** from [GitHub Releases](https://github.com/citizenhicks/mobius/releases).
+Install with [Homebrew](https://github.com/citizenhicks/homebrew-mobius):
+
+```sh
+brew tap citizenhicks/mobius
+brew trust citizenhicks/mobius
+brew install mobius-cli
+# Optional Mac menu bar app (macOS 26+, Apple Silicon)
+brew install --cask mobius-app
+```
+
+The CLI package installs the gateway as a dependency. To install just the gateway,
+use `brew install mobius-gateway`. The current Mac app release is unnotarized;
+macOS may require first-launch approval in Privacy & Security.
+
+You can also download a **`mobius-cli` release** from [GitHub Releases](https://github.com/citizenhicks/mobius/releases).
 Choose the `mobius-<version>-<target>.tar.gz` archive for your machine:
 
 | Platform | Archive target |
@@ -184,10 +198,23 @@ and model requests resolve their bytes without changing earlier observations. Us
 app provides previews.
 
 Optional `ComputerControl` runs Chromium on macOS and Linux through a persistent,
-sandbox-owned JavaScript worker. Enable `computer_control` on the Bot after installing
-the runtime (`node`, `worker.cjs`, Playwright dependencies and browsers, and
-`computer-control.md`) in `/usr/local/lib/mobius-computer`, or set
-`MOBIUS_COMPUTER_RUNTIME` to its absolute directory. Sprite bootstrap installs it.
+sandbox-owned JavaScript worker. Enabling `computer_control` on a Bot downloads its
+pinned Node/Playwright runtime automatically, including Chromium. Both Cargo and
+native-app installations use this gateway-managed setup; no system Node installation
+is needed. Runtime revisions live beside protected gateway state, normally under
+`~/.mobius/gateway-runtimes/computer-control`. A failed setup leaves the Bot unchanged;
+retry enabling the capability after resolving the reported error. Deployments that
+supply their own complete runtime can set `MOBIUS_COMPUTER_RUNTIME` to its absolute
+directory. Linux hosts still need Chromium's system libraries and Bubblewrap.
+
+On macOS, the same worker's `desktop` API controls native apps through the existing
+menu bar app connection: accessibility inspection and actions, screenshots, app
+activation, mouse input, and keyboard input. Enable **Allow Mac control** in the
+menu bar, grant macOS Accessibility and Screen Recording permissions, and select
+the Bot's **Full access** sandbox policy. Stop, disconnect, or an inactive desktop
+session revokes control. The gateway remains the sole agent and approval owner.
+Headless cloud gateways keep browser control only.
+
 Browser state survives compaction. An overall evaluation deadline, cancellation,
 reset, or runtime restart loses interpreter state. Action timeouts can retain state;
 follow the reported status and never automatically repeat an uncertain action.

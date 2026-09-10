@@ -325,6 +325,7 @@ impl GatewayHost {
             state.swarm.clone(),
             Arc::clone(&state.session_mutations),
             Arc::clone(&state.discovery_gate),
+            Arc::clone(&self.desktop),
             Arc::clone(&state.provider_epoch),
             Arc::clone(&state.activities),
             self.events.clone(),

@@ -266,7 +266,7 @@ impl GatewayServer {
                     let admission = connection_admission.admit().await;
                     self.listener.accept().await.map(|accepted| (accepted, admission))
                 }, if connections.len() < MAX_CONNECTIONS => {
-                    let ((stream, _), admission) = accepted?;
+                    let ((stream, peer), admission) = accepted?;
                     let auth = Arc::clone(&self.auth);
                     let host = self.host.clone();
                     let bots = Arc::clone(&self.bots);
@@ -277,6 +277,7 @@ impl GatewayServer {
                     connections.spawn(async move {
                         let auth_deadline = Instant::now() + PRE_AUTH_TIMEOUT;
                         let connection = ConnectionContext {
+                            local: peer.ip().is_loopback(),
                             auth,
                             host,
                             bots,

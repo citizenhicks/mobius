@@ -281,6 +281,7 @@ async fn websocket_upgrade_and_authentication_share_one_deadline() {
         serve_plaintext_connection(
             stream,
             ConnectionContext {
+                local: true,
                 auth,
                 host,
                 bots,

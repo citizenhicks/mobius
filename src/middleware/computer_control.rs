@@ -1,4 +1,4 @@
-//! Optional browser control over the sandbox's persistent execution channel.
+//! Optional computer control over the sandbox's persistent execution channel.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -22,17 +22,17 @@ use crate::protocol::{
 };
 use crate::{BoxFuture, Error, Result};
 
-/// Optional browser control; deployment supplies the runtime and its documentation.
+/// Optional computer control; deployment supplies the runtime and its documentation.
 pub const MANIFEST: MiddlewareManifest = MiddlewareManifest {
     id: "computer_control",
     label: "Computer control",
-    description: "Operate a sandbox browser with persistent JavaScript and native image observations",
+    description: "Operate a browser and supported native apps with persistent JavaScript and image observations",
     required: false,
     default_enabled: false,
     settings: &[],
 };
 
-/// Owns browser tools and observations; execution and approval remain in the sandbox.
+/// Owns computer tools and observations; execution and approval remain in the sandbox.
 pub struct ComputerControl {
     files: SessionFileStore,
     worker: WorkerCommand,
@@ -155,7 +155,7 @@ enum WorkerPart {
 
 impl Tool for Evaluate {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition { name: "computer_control".into(), description: "Evaluate JavaScript in this session's persistent sandbox browser. Read the installed documentation first. Await every action. Use emitImage(path) for screenshots. Reset explicitly after state loss; never automatically repeat an uncertain action.".into(), parameters: serde_json::json!({
+        ToolDefinition { name: "computer_control".into(), description: "Evaluate JavaScript in this session's persistent computer runtime. Read the installed documentation first. Await every action. Use the documented browser or native desktop APIs and image helpers. Reset explicitly after state loss; never automatically repeat an uncertain action.".into(), parameters: serde_json::json!({
             "type":"object", "properties":{
                 "code":{"type":"string", "maxLength":40000},
                 "reset":{"type":"boolean", "description":"Discard the interpreter and create a new browser context before this evaluation."},

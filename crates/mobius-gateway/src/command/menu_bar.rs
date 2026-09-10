@@ -27,7 +27,7 @@ pub(super) fn open(state_dir: &Path) -> Result<()> {
         .status()?;
     if !status.success() {
         return Err(Error::Config(
-            "install the macOS möbius Gateway app to use the menu bar".into(),
+            "install the macOS möbius-app app to use the menu bar".into(),
         ));
     }
     Ok(())

@@ -6,7 +6,7 @@ repo_dir="$(cd "$project_dir/../../.." && pwd)"
 output_dir="${1:-$repo_dir/target/macos}"
 mkdir -p "$output_dir"
 output_dir="$(cd "$output_dir" && pwd)"
-app="$output_dir/Mobius Gateway.app"
+app="$output_dir/möbius-app.app"
 
 # Keep the small desktop projection on the exact gateway protocol.
 python3 - "$repo_dir" <<'PY'

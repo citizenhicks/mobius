@@ -1773,3 +1773,37 @@ async fn stopped_host_terminalizes_a_queued_unconsumed_routine() {
         RoutineRunStatus::Failed
     );
 }
+
+#[tokio::test]
+async fn enabling_computer_control_requires_runtime_before_saving_a_bot_without_sessions() {
+    let (root, gateway, bot) = gateway_with_bot().await;
+    let runtime = crate::computer_runtime::managed_directory(&root.path().join("state"));
+    std::fs::create_dir_all(&runtime).expect("runtime directory");
+    std::fs::write(runtime.join("ready"), "incomplete").expect("broken installation");
+    let mut config = bot.config.config.clone();
+    config.middleware.set_enabled("computer_control", true);
+    let failure = gateway
+        .update_bot(
+            &bot.id,
+            bot.config.revision,
+            &bot.name,
+            &bot.description,
+            bot.tint,
+            config,
+        )
+        .await
+        .expect_err("installation failure");
+    assert!(
+        failure.message.contains("missing node"),
+        "{}",
+        failure.message
+    );
+    let current = gateway
+        .bots()
+        .await
+        .expect("bots")
+        .into_iter()
+        .find(|item| item.id == bot.id)
+        .expect("bot");
+    assert_eq!(current.config, bot.config);
+}

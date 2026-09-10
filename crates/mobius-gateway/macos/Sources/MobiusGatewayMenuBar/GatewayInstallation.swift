@@ -22,7 +22,7 @@ struct GatewayInstallation: Sendable {
         }
         guard let executable, FileManager.default.isExecutableFile(atPath: executable.path) else {
             throw GatewayWireError.invalidFrame(
-                "Reinstall the möbius Gateway app; its gateway executable is missing.")
+                "Reinstall the möbius-app app; its gateway executable is missing.")
         }
         self.executable = executable
         self.stateDirectory = stateDirectory

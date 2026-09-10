@@ -6,6 +6,7 @@ pub mod bots;
 pub mod client;
 mod cloudflare;
 pub mod command;
+mod computer_runtime;
 pub mod config;
 mod extensions;
 mod host;

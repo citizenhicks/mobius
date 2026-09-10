@@ -11,6 +11,8 @@ pub(super) struct SelectedChat {
 }
 
 pub(super) struct AuthenticatedClient<'a> {
+    pub(super) local: bool,
+    pub(super) kind: ClientKind,
     pub(super) id: &'a str,
     pub(super) connections: &'a ClientConnections,
     pub(super) revocations: &'a broadcast::Sender<String>,
@@ -22,6 +24,7 @@ pub(super) struct ConnectionSessionState<'a> {
     pub(super) bots: &'a BotStore,
     pub(super) uploads: &'a mut BTreeMap<(String, String), PendingSessionFileWrite>,
     pub(super) voice: &'a mut Option<super::voice::ConnectionVoice>,
+    pub(super) desktop: &'a mut Option<crate::computer_runtime::desktop::DesktopConnection>,
 }
 
 pub(super) async fn selected_broadcast(
@@ -607,6 +610,17 @@ pub(super) async fn handle_message(
             before_sequence,
         } => {
             get_routine_run_preview(writer, request_id, id, before_sequence, gateway).await?;
+        }
+        ClientMessage::SetDesktopRuntime { .. } | ClientMessage::DesktopControlReply { .. } => {
+            return crate::computer_runtime::desktop::handle_message(
+                message,
+                &gateway.desktop,
+                connection.desktop,
+                client.local,
+                client.kind,
+                writer,
+            )
+            .await;
         }
         ClientMessage::StartRealtimeVoice { .. } | ClientMessage::EndRealtimeVoice { .. } => {
             unreachable!("voice messages are handled before general dispatch")

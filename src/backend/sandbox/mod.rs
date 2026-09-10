@@ -243,6 +243,20 @@ pub trait SandboxBackend: Send + Sync {
         ))
     }
 
+    /// Opens an authorized host-service channel for one worker evaluation.
+    /// Dropping the channel ends its authority; requests are never replayed.
+    fn worker_connection<'a>(
+        &'a self,
+        _session_id: &'a str,
+        _sandbox_mode: SandboxMode,
+    ) -> BoxFuture<'a, Result<tokio::io::DuplexStream>> {
+        Box::pin(async {
+            Err(Error::Sandbox(
+                "native desktop control is unavailable".into(),
+            ))
+        })
+    }
+
     /// Reads a UTF-8 file.
     fn read<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<String>>;
 

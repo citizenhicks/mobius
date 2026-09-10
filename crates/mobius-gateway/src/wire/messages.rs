@@ -44,6 +44,14 @@ impl ClientFrame {
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ClientMessage {
+    SetDesktopRuntime {
+        request_id: String,
+        enabled: bool,
+    },
+    DesktopControlReply {
+        request_id: String,
+        response: Value,
+    },
     Pair {
         code: String,
         client_label: String,
@@ -416,6 +424,15 @@ impl ServerFrame {
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ServerMessage {
+    DesktopControlRequested {
+        request_id: String,
+        execution_id: String,
+        session_id: String,
+        request: Value,
+    },
+    DesktopControlEnded {
+        execution_id: String,
+    },
     Paired {
         client_id: String,
         token: String,

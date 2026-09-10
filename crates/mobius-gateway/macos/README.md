@@ -1,4 +1,4 @@
-# Gateway voice menu for macOS
+# Gateway menu bar app for macOS
 
 The gateway's macOS frontend is a 400-point menu bar popover, with the same particle
 waves and native WebRTC media implementation as the iOS composer. Requires macOS 26
@@ -38,14 +38,39 @@ the old call before opening and connecting the new one.
 Approval requests show the reason and complete tool
 arguments, with approve-once and decline actions.
 
-Quitting the menu ends its voice call and leaves gateway tasks running. Microphone
+Quitting the menu ends its voice call and native desktop control and leaves gateway tasks running. Microphone
 access is requested only when starting voice. The UI must run in a graphical login
 session. SSH/headless gateways work without the companion; set
 `MOBIUS_GATEWAY_NO_MENU_BAR=1` to suppress automatic launch explicitly.
 
+## Native Mac control
+
+Enable **Computer control** on the Bot; the gateway downloads its pinned runtime
+on first enable. In the menu bar app, grant Accessibility and Screen Recording
+access and turn on **Allow Mac control**. Native control also requires the Bot's
+**Full access** sandbox policy. The switch resets when the app disconnects or the
+desktop session becomes inactive. **Stop** immediately cancels pending local work.
+
+Bots use the same persistent `computer_control` JavaScript tool for Playwright
+browser actions and the `desktop` API for Mac apps. The latter provides app and
+display discovery, accessibility inspection, press/set-value actions, screenshots,
+mouse movement/clicks/dragging/scrolling, and keyboard input. Element IDs and
+screenshot coordinates come from current observations. No separate desktop
+server, token, plugin, or agent runs in the app. Native requests and replies use
+its existing authenticated local gateway connection; remote clients cannot host
+the desktop runtime. Linux and headless cloud hosts retain browser control only.
+
 ## Install and launch
 
-Install the macOS **Mobius Gateway.app** in Applications and open it. The app starts
+```sh
+brew tap citizenhicks/mobius
+brew trust citizenhicks/mobius
+brew install --cask mobius-app
+open -a "Mobius Gateway"
+```
+
+
+Install the macOS **möbius-app.app** in Applications and open it. The app starts
 the configured local gateway if necessary and uses the existing local pairing.
 Initialize an installation with `mobius-gateway init` and configure a provider if
 you have not already done so. This first version uses the local TCP listener
@@ -72,7 +97,7 @@ From the repository root:
 ```sh
 swift test --package-path crates/mobius-gateway/macos -Xswiftc -warnings-as-errors
 crates/mobius-gateway/macos/build.sh
-open 'target/macos/Mobius Gateway.app'
+open 'target/macos/möbius-app.app'
 ```
 
 `build.sh` builds the Rust gateway and Swift release app, embeds WebRTC, and preserves
@@ -92,6 +117,6 @@ targets compile the same palette and token definitions.
 The macOS WebRTC binary uses the AudioEngine device module so Bluetooth sample-rate
 changes rebuild the audio graph. Its release URL and checksum are pinned directly
 because the upstream Swift package manifest declares an unsupported tools version.
-Desktop wire records project only the session/voice/approval fields this UI uses;
+Desktop wire records project the session, voice, approval, and native-control fields this UI uses;
 the build checks its protocol version against the Rust gateway. Swift formatting
 uses the iOS `.swift-format`, and the complexity limit is 21, as in the iOS target.

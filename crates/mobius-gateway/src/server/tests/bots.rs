@@ -163,6 +163,7 @@ async fn bot_catalog_broadcasts_do_not_reintroduce_a_deleted_bot() {
     let serving = tokio::spawn(serve_connection(
         stream,
         ConnectionContext {
+            local: true,
             auth: server.auth,
             host: server.host,
             bots: server.bots,
@@ -278,6 +279,7 @@ async fn swarm_catalog_broadcasts_use_the_latest_renamed_bot_handle() {
     let serving = tokio::spawn(serve_connection(
         stream,
         ConnectionContext {
+            local: true,
             auth: server.auth,
             host: server.host,
             bots: server.bots,

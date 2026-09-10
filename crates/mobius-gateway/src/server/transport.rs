@@ -25,6 +25,7 @@ pub(super) struct PreAuthConnectionAdmission {
 }
 
 pub(super) struct ConnectionContext {
+    pub(super) local: bool,
     pub(super) auth: Arc<AuthStore>,
     pub(super) host: GatewayHost,
     pub(super) bots: Arc<BotStore>,
@@ -374,9 +375,10 @@ pub(super) async fn serve_plaintext_connection(
 
 pub(super) async fn serve_websocket(
     stream: TcpStream,
-    connection: ConnectionContext,
+    mut connection: ConnectionContext,
     handshake: PlaintextHandshake,
 ) -> Result<()> {
+    connection.local = false;
     let PlaintextHandshake {
         expected_websocket_host,
         auth_deadline,
@@ -483,6 +485,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let ConnectionContext {
+        local,
         auth,
         host,
         bots,
@@ -521,9 +524,7 @@ where
     };
 
     let _client_connection = client_connections.register(client_id.clone(), client_kind)?;
-    if let Some(authentication_complete) = authentication_complete {
-        let _ = authentication_complete.send(());
-    }
+    let _ = authentication_complete.map(|complete| complete.send(()));
 
     write_frame(&mut writer, &ServerFrame::new(ServerMessage::Authenticated)).await?;
     let mut gateway_broadcasts = host.subscribe();
@@ -538,6 +539,7 @@ where
     .await?;
     let mut selected: Option<SelectedChat> = None;
     let mut voice = None;
+    let mut desktop = None;
     let session_files = host.session_file_store().await;
     let mut uploads: BTreeMap<(String, String), PendingSessionFileWrite> = BTreeMap::new();
     let mut pending_profile = None;
@@ -553,6 +555,10 @@ where
                 None
             }
             incoming = read_frame::<ClientFrame>(&mut reader) => Some(incoming),
+            outgoing = crate::computer_runtime::desktop::next_update(&mut desktop) => {
+                crate::computer_runtime::desktop::write_update(&mut desktop, outgoing, &mut writer).await?;
+                None
+            }
             outgoing = super::voice::next_update(&mut voice) => {
                 super::voice::write_update(&mut voice, outgoing, &mut writer).await?;
                 None
@@ -603,6 +609,8 @@ where
             continue;
         };
         let client = AuthenticatedClient {
+            local,
+            kind: client_kind,
             id: &client_id,
             connections: &client_connections,
             revocations: &client_revocations,
@@ -619,6 +627,7 @@ where
                 bots: &bots,
                 uploads: &mut uploads,
                 voice: &mut voice,
+                desktop: &mut desktop,
             },
             &mut writer,
         )

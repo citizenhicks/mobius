@@ -526,6 +526,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
             ScratchpadStore::new(Arc::clone(&checkpoints)),
             SessionFileStore::new(store.state_dir()),
             Arc::new(tokio::sync::Mutex::new(())),
+            Arc::new(crate::computer_runtime::desktop::DesktopControl::default()),
             Arc::clone(&swarm),
             Some("chat".into()),
             "test",
@@ -596,6 +597,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
         ScratchpadStore::new(Arc::clone(&checkpoints)),
         SessionFileStore::new(store.state_dir()),
         Arc::new(tokio::sync::Mutex::new(())),
+        Arc::new(crate::computer_runtime::desktop::DesktopControl::default()),
         swarm,
         Some("chat".into()),
         "test",
@@ -798,6 +800,7 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
         None,
         &active,
         Some(active_extensions),
+        None,
     )
     .expect("active middleware")
     .stack;
@@ -814,6 +817,7 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
         None,
         &inactive,
         Some(inactive_extensions),
+        None,
     )
     .expect("inactive middleware")
     .stack;

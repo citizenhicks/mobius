@@ -264,7 +264,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: |
-          app="$RUNNER_TEMP/menu-bar/Mobius Gateway.app"
+          app="$RUNNER_TEMP/menu-bar/möbius-app.app"
           ditto -c -k --keepParent "$app" "$RUNNER_TEMP/notarize.zip"
           xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" --wait \
             --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_PASSWORD"
@@ -276,8 +276,8 @@ jobs:
           suffix=""
           if [[ -z "$MACOS_CERTIFICATE" ]]; then suffix="-unnotarized"; fi
           mkdir dist
-          archive="dist/mobius-gateway-menubar-${version}-macos-${RUNNER_ARCH}${suffix}.zip"
-          ditto -c -k --keepParent "$RUNNER_TEMP/menu-bar/Mobius Gateway.app" "$archive"
+          archive="dist/mobius-app-${version}-macos-${RUNNER_ARCH}${suffix}.zip"
+          ditto -c -k --keepParent "$RUNNER_TEMP/menu-bar/möbius-app.app" "$archive"
           shasum -a 256 "$archive" > "$archive.sha256"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

@@ -14,6 +14,9 @@ use super::{NetworkAccess, ProcessGroupGuard, SandboxBackend, SandboxMode, ToolP
 use crate::{Error, Result};
 
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
+const HOST_REQUEST: u32 = 1 << 31;
+const HOST_ERROR: u32 = 1 << 30;
+const MAX_HOST_REPLY_BYTES: usize = 64 * 1024 * 1024;
 
 /// Trusted runtime command supplied by the owning capability, never by tool arguments.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -75,7 +78,12 @@ impl WorkerProcess {
         ))
     }
 
-    async fn exchange(&mut self, request: &[u8]) -> Result<Vec<u8>> {
+    async fn exchange(
+        &mut self,
+        request: &[u8],
+        backend: &dyn SandboxBackend,
+        permissions: &ToolPermissions,
+    ) -> Result<Vec<u8>> {
         if self.child.try_wait()?.is_some() {
             return Err(state_lost());
         }
@@ -87,15 +95,60 @@ impl WorkerProcess {
             .await?;
         self.stdin.write_all(request).await?;
         self.stdin.flush().await?;
-        let size = self.stdout.read_u32().await? as usize;
-        if size == 0 || size > MAX_FRAME_BYTES {
-            return Err(Error::Sandbox(
-                "worker response exceeded its frame limit".into(),
-            ));
+        let mut host: Option<tokio::io::DuplexStream> = None;
+        loop {
+            let header = self.stdout.read_u32().await?;
+            let size = (header & !HOST_REQUEST) as usize;
+            if size == 0 || size > MAX_FRAME_BYTES {
+                return Err(Error::Sandbox(
+                    "worker response exceeded its frame limit".into(),
+                ));
+            }
+            let mut response = vec![0; size];
+            self.stdout.read_exact(&mut response).await?;
+            if header & HOST_REQUEST == 0 {
+                return Ok(response);
+            }
+            if host.is_none() {
+                match backend
+                    .worker_connection(&permissions.session_id, permissions.sandbox_mode)
+                    .await
+                {
+                    Ok(connection) => host = Some(connection),
+                    Err(error) => {
+                        let message = error.to_string();
+                        self.host_reply(message.as_bytes(), HOST_ERROR).await?;
+                        continue;
+                    }
+                }
+            }
+            let connection = host.as_mut().ok_or_else(state_lost)?;
+            connection
+                .write_u32(u32::try_from(response.len()).map_err(|_| state_lost())?)
+                .await?;
+            connection.write_all(&response).await?;
+            connection.flush().await?;
+            let size = connection.read_u32().await? as usize;
+            if size == 0 || size > MAX_HOST_REPLY_BYTES {
+                return Err(Error::Sandbox(
+                    "host response exceeded its frame limit".into(),
+                ));
+            }
+            let mut response = vec![0; size];
+            connection.read_exact(&mut response).await?;
+            self.host_reply(&response, 0).await?;
         }
-        let mut response = vec![0; size];
-        self.stdout.read_exact(&mut response).await?;
-        Ok(response)
+    }
+
+    async fn host_reply(&mut self, response: &[u8], flags: u32) -> Result<()> {
+        self.stdin
+            .write_u32(
+                HOST_REQUEST | flags | u32::try_from(response.len()).map_err(|_| state_lost())?,
+            )
+            .await?;
+        self.stdin.write_all(response).await?;
+        self.stdin.flush().await?;
+        Ok(())
     }
 }
 
@@ -172,7 +225,7 @@ impl Workers {
         // Leave a tombstone before writing. Dropping this future destroys the process and
         // the next call reports state loss, even when the action may already have completed.
         let mut process = entry.process.take().ok_or_else(state_lost)?;
-        let response = tokio::time::timeout(timeout, process.exchange(request)).await
+        let response = tokio::time::timeout(timeout, process.exchange(request, backend, permissions)).await
             .map_err(|_| Error::Sandbox("overall evaluation deadline expired; session state: lost (worker terminated); action outcome unknown; reset explicitly before continuing; do not repeat automatically".into()))?
             .map_err(|error| Error::Sandbox(format!("worker/interpreter lost; session state: lost; action outcome unknown; reset before continuing: {error}")))?;
         entry.process = Some(process);
@@ -316,6 +369,34 @@ mod tests {
 
     struct TestBackend;
     impl SandboxBackend for TestBackend {
+        fn worker_connection<'a>(
+            &'a self,
+            _: &'a str,
+            mode: SandboxMode,
+        ) -> BoxFuture<'a, Result<tokio::io::DuplexStream>> {
+            Box::pin(async move {
+                if mode != SandboxMode::DangerFullAccess {
+                    return Err(Error::Sandbox("native access denied".into()));
+                }
+                let (worker, mut host) = tokio::io::duplex(4096);
+                tokio::spawn(async move {
+                    while let Ok(size) = host.read_u32().await {
+                        let mut request = vec![0; size as usize];
+                        if host.read_exact(&mut request).await.is_err() {
+                            break;
+                        }
+                        let reply = vec![b'x'; 2 * MAX_FRAME_BYTES];
+                        if host.write_u32(reply.len() as u32).await.is_err()
+                            || host.write_all(&reply).await.is_err()
+                        {
+                            break;
+                        }
+                    }
+                });
+                Ok(worker)
+            })
+        }
+
         fn read<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<String>> {
             Box::pin(async { unreachable!() })
         }
@@ -342,6 +423,59 @@ mod tests {
             _: NetworkAccess,
         ) -> Result<WorkerProcess> {
             WorkerProcess::spawn(Command::new(&spec.executable).args(&spec.arguments))
+        }
+    }
+
+    #[tokio::test]
+    async fn worker_host_requests_obey_policy_and_accept_image_sized_replies() {
+        let script = r#"import sys, struct
+while True:
+    header = sys.stdin.buffer.read(4)
+    if not header: break
+    request = sys.stdin.buffer.read(struct.unpack('>I', header)[0])
+    sys.stdout.buffer.write(struct.pack('>I', 0x80000000 | len(request)) + request)
+    sys.stdout.buffer.flush()
+    header = struct.unpack('>I', sys.stdin.buffer.read(4))[0]
+    assert header & 0x80000000
+    reply = sys.stdin.buffer.read(header & 0x3fffffff)
+    response = reply if header & 0x40000000 else str(len(reply)).encode()
+    sys.stdout.buffer.write(struct.pack('>I', len(response)) + response)
+    sys.stdout.buffer.flush()
+"#;
+        let command = WorkerCommand {
+            executable: "/usr/bin/python3".into(),
+            arguments: vec!["-u".into(), "-c".into(), script.into()],
+        };
+        for mode in [SandboxMode::WorkspaceWrite, SandboxMode::DangerFullAccess] {
+            let sandbox = Sandbox::new(Arc::new(TestBackend), ApprovalPolicy::Ask);
+            let permissions = SandboxPermissions::restore(
+                "session",
+                mode,
+                NetworkAccess::Denied,
+                ["call".into()],
+            )
+            .for_call("call");
+            for _ in 0..2 {
+                let response = sandbox
+                    .evaluate_worker(
+                        &command,
+                        &permissions,
+                        b"apps",
+                        Duration::from_secs(10),
+                        false,
+                    )
+                    .await
+                    .expect("evaluation");
+                assert_eq!(
+                    String::from_utf8(response).expect("text"),
+                    if mode == SandboxMode::WorkspaceWrite {
+                        Error::Sandbox("native access denied".into()).to_string()
+                    } else {
+                        (2 * MAX_FRAME_BYTES).to_string()
+                    }
+                );
+            }
+            sandbox.session_end("session").await.expect("cleanup");
         }
     }
 

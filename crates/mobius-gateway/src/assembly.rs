@@ -93,6 +93,7 @@ pub(crate) async fn assemble(
     scratchpad: ScratchpadStore,
     session_files: SessionFileStore,
     discovery_gate: Arc<tokio::sync::Mutex<()>>,
+    desktop: Arc<crate::computer_runtime::desktop::DesktopControl>,
     swarm: Arc<dyn BotsBackend>,
     session_id: Option<String>,
     origin_label: &str,
@@ -143,6 +144,7 @@ pub(crate) async fn assemble(
     let bot_id = chat.bot_id.clone();
     let attached_folders = chat.attached_folders.clone();
     let state_dir = store.state_dir().to_path_buf();
+    let computer_runtime = crate::computer_runtime::prepare(&state_dir, &settings).await?;
     let tls_key = gateway_config
         .tls
         .as_ref()
@@ -188,18 +190,7 @@ pub(crate) async fn assemble(
                     .map(|plugin| plugin.root.clone()),
             );
         }
-        if settings.enabled("computer_control") {
-            let runtime = computer_runtime_directory();
-            for file in ["node", "worker.cjs", "computer-control.md"] {
-                if !runtime.join(file).is_file() {
-                    return Err(Error::Config(format!(
-                        "computer control runtime is missing {} in {}; install the Node/Playwright runtime before enabling computer control",
-                        file, runtime.display()
-                    )));
-                }
-            }
-            read_roots.push(runtime);
-        }
+        read_roots.extend(computer_runtime.iter().cloned());
         let gateway_sandbox = Arc::new(
             GatewaySandbox::new(
                 &workspace_path,
@@ -207,6 +198,7 @@ pub(crate) async fn assemble(
                 tls_key.as_deref(),
                 COMMAND_TIMEOUT,
             )?
+            .with_desktop(desktop)
             .allow_attached_folders(attached_folders.iter().cloned())?
             .allow_read_roots(read_roots)?,
         );
@@ -230,6 +222,7 @@ pub(crate) async fn assemble(
             instructions,
             &resolved_extensions,
             extensions,
+            computer_runtime.as_deref(),
         )?;
         Ok((gateway_sandbox, Arc::new(sandbox), middleware))
     })
@@ -597,6 +590,7 @@ fn build_middleware(
     mut instructions: Option<Instructions>,
     resolved_extensions: &ResolvedExtensions,
     mut extensions: Option<Extensions>,
+    computer_runtime: Option<&std::path::Path>,
 ) -> Result<BuiltMiddleware> {
     let mut entries: Vec<Arc<dyn Middleware>> = Vec::new();
     let mut subagent_template = None;
@@ -700,7 +694,8 @@ fn build_middleware(
                 )?,
             )?),
             BuiltinMiddleware::ComputerControl => {
-                let runtime = computer_runtime_directory();
+                let runtime = computer_runtime
+                    .ok_or_else(|| Error::Config("computer runtime was not prepared".into()))?;
                 Arc::new(mobius::middleware::computer_control::ComputerControl::new(
                     session_files.clone(),
                     mobius::backend::sandbox::WorkerCommand {
@@ -746,9 +741,3 @@ fn build_middleware(
 
 #[cfg(test)]
 mod tests;
-
-fn computer_runtime_directory() -> std::path::PathBuf {
-    std::env::var_os("MOBIUS_COMPUTER_RUNTIME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| "/usr/local/lib/mobius-computer".into())
-}
