@@ -119,7 +119,7 @@ recorded session files survive interpreter loss.
 
 ## Native Mac apps
 
-Native control requires the local möbius-app app's Allow Mac control switch,
+Native control requires möbius-app's Allow Mac control switch,
 Accessibility and Screen Recording permissions, and the Bot's Full access sandbox
 policy. It controls the real, unlocked Mac desktop. The browser above remains a
 separate session browser. Linux and headless cloud gateways provide browser control only.

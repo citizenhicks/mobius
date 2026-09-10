@@ -177,7 +177,7 @@ final class DesktopRuntime {
         try Task.checkCancellation()
         guard enabled, send != nil, AXIsProcessTrusted(), CGPreflightScreenCaptureAccess() else {
             throw DesktopError(
-                "Enable Mac control and grant Accessibility and Screen Recording access in the möbius-app app."
+                "Enable Mac control and grant Accessibility and Screen Recording access in möbius-app."
             )
         }
         guard let session = CGSessionCopyCurrentDictionary() as? [String: Any],
