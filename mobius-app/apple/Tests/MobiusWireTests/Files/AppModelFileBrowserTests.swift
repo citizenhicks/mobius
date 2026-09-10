@@ -573,7 +573,7 @@ extension AppModelTests {
                 nextOffset: nil
             ))
 
-        let thumbnailLoaded = await eventually {
+        let thumbnailLoaded = await eventually(timeout: .seconds(5)) {
             model.chat.fileThumbnail(for: file, sessionID: "chat-1") != nil
         }
         XCTAssertTrue(thumbnailLoaded)
@@ -627,7 +627,7 @@ extension AppModelTests {
                 nextOffset: nil
             ))
 
-        let thumbnailLoaded = await eventually {
+        let thumbnailLoaded = await eventually(timeout: .seconds(5)) {
             model.chat.fileThumbnail(for: file, sessionID: "routine-session-1") != nil
         }
         XCTAssertTrue(thumbnailLoaded)
