@@ -1,4 +1,4 @@
-# möbius Gateway 0.15.13
+# möbius Gateway 0.15.14
 
 Enabling Computer control downloads a pinned Node and Playwright runtime automatically. Installation verifies the Node checksum, uses the package lock, checks a browser launch, and publishes the completed runtime atomically. Runtime resources remain outside private gateway state.
 
