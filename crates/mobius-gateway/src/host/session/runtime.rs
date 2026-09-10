@@ -75,7 +75,7 @@ impl HostState {
             tokio::select! {
                 command = self.commands.recv() => {
                     let Some(command) = command else { break };
-                    if !self.handle(command).await { break; }
+                    if !Box::pin(self.handle(command)).await { break; }
                 }
                 event = self.running.events.recv() => match event {
                     Some(event) => {
@@ -640,78 +640,82 @@ impl HostState {
         next: ChatSpec,
         prepared: Option<Arc<crate::assembly::PreparedBot>>,
     ) -> std::result::Result<(), Rejection> {
-        let session_id = self.running.session_id.clone();
-        let old_spec = self.spec.clone();
-        let old_prepared = Arc::clone(&self.running.prepared);
-        self.stop_and_drain_running().await.map_err(internal)?;
-        let replacement = match start_agent(
-            Arc::clone(&self.gateway),
-            &next,
-            &self.store,
-            Arc::clone(&self.credentials),
-            Arc::clone(&self.bots),
-            Arc::clone(&self.checkpoints),
-            self.scratchpad.clone(),
-            self.session_files.clone(),
-            Arc::clone(&self.swarm),
-            Arc::clone(&self.discovery_gate),
-            Arc::clone(&self.desktop),
-            session_id,
-            "mobius-gateway",
-            true,
-            prepared,
-            Arc::clone(&self.provider_epoch),
-        )
-        .await
-        {
-            Ok(replacement) => replacement,
-            Err(primary) => {
-                let recovery = start_agent(
-                    Arc::clone(&self.gateway),
-                    &old_spec,
-                    &self.store,
-                    Arc::clone(&self.credentials),
-                    Arc::clone(&self.bots),
-                    Arc::clone(&self.checkpoints),
-                    self.scratchpad.clone(),
-                    self.session_files.clone(),
-                    Arc::clone(&self.swarm),
-                    Arc::clone(&self.discovery_gate),
-                    Arc::clone(&self.desktop),
-                    self.running.session_id.clone(),
-                    "mobius-gateway-rollback",
-                    true,
-                    Some(old_prepared),
-                    Arc::clone(&self.provider_epoch),
-                )
-                .await;
-                let recovery = match recovery {
-                    Ok(recovery) => recovery,
-                    Err(rollback) => {
+        // Keep replacement and rollback futures off every command handler's stack.
+        Box::pin(async {
+            let session_id = self.running.session_id.clone();
+            let old_spec = self.spec.clone();
+            let old_prepared = Arc::clone(&self.running.prepared);
+            self.stop_and_drain_running().await.map_err(internal)?;
+            let replacement = match start_agent(
+                Arc::clone(&self.gateway),
+                &next,
+                &self.store,
+                Arc::clone(&self.credentials),
+                Arc::clone(&self.bots),
+                Arc::clone(&self.checkpoints),
+                self.scratchpad.clone(),
+                self.session_files.clone(),
+                Arc::clone(&self.swarm),
+                Arc::clone(&self.discovery_gate),
+                Arc::clone(&self.desktop),
+                session_id,
+                "mobius-gateway",
+                true,
+                prepared,
+                Arc::clone(&self.provider_epoch),
+            )
+            .await
+            {
+                Ok(replacement) => replacement,
+                Err(primary) => {
+                    let recovery = start_agent(
+                        Arc::clone(&self.gateway),
+                        &old_spec,
+                        &self.store,
+                        Arc::clone(&self.credentials),
+                        Arc::clone(&self.bots),
+                        Arc::clone(&self.checkpoints),
+                        self.scratchpad.clone(),
+                        self.session_files.clone(),
+                        Arc::clone(&self.swarm),
+                        Arc::clone(&self.discovery_gate),
+                        Arc::clone(&self.desktop),
+                        self.running.session_id.clone(),
+                        "mobius-gateway-rollback",
+                        true,
+                        Some(old_prepared),
+                        Arc::clone(&self.provider_epoch),
+                    )
+                    .await;
+                    let recovery = match recovery {
+                        Ok(recovery) => recovery,
+                        Err(rollback) => {
+                            return Err(internal(mobius::Error::Rollback {
+                                primary: Box::new(mobius::Error::Config(primary.to_string())),
+                                rollback: Box::new(mobius::Error::Config(rollback.to_string())),
+                            }));
+                        }
+                    };
+                    self.running = recovery;
+                    if let Err(rollback) = self.reconcile_replacement_startup().await {
                         return Err(internal(mobius::Error::Rollback {
                             primary: Box::new(mobius::Error::Config(primary.to_string())),
                             rollback: Box::new(mobius::Error::Config(rollback.to_string())),
                         }));
                     }
-                };
-                self.running = recovery;
-                if let Err(rollback) = self.reconcile_replacement_startup().await {
-                    return Err(internal(mobius::Error::Rollback {
-                        primary: Box::new(mobius::Error::Config(primary.to_string())),
-                        rollback: Box::new(mobius::Error::Config(rollback.to_string())),
-                    }));
+                    return Err(internal(primary));
                 }
-                return Err(internal(primary));
-            }
-        };
-        let previous = std::mem::replace(&mut self.running, replacement);
-        self.spec = next;
-        drop(previous);
-        self.reconcile_replacement_startup()
-            .await
-            .map_err(internal)?;
-        self.broadcast_changed().await?;
-        Ok(())
+            };
+            let previous = std::mem::replace(&mut self.running, replacement);
+            self.spec = next;
+            drop(previous);
+            self.reconcile_replacement_startup()
+                .await
+                .map_err(internal)?;
+            self.broadcast_changed().await?;
+            Ok(())
+        })
+        .await
     }
 
     pub(super) async fn refresh_provider(
