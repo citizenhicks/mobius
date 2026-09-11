@@ -60,7 +60,24 @@ async fn catalogue_mutations_do_not_require_selecting_the_target_chat() {
     let (sender, mut events) = connection.into_parts();
     wait_gateway_ready(&mut events).await;
     let inactive_session_id = create_chat(&sender, &mut events, &workspace).await;
-    let selected_session_id = create_chat(&sender, &mut events, &workspace).await;
+    let (selected_session_id, target_bot_id) =
+        create_bot_chat(&sender, &mut events, &workspace).await;
+    sender
+        .send(ClientMessage::ReassignSession {
+            request_id: "reassign-inactive".into(),
+            session_id: inactive_session_id.clone(),
+            bot_id: target_bot_id.clone(),
+        })
+        .await
+        .expect("reassign inactive chat");
+    expect_accepted(&mut events, "reassign-inactive").await;
+    let reassigned = SqliteCheckpoint::new(checkpoints_path.clone())
+        .expect("checkpoints")
+        .load(&inactive_session_id)
+        .await
+        .expect("load reassigned chat")
+        .expect("chat");
+    assert_eq!(reassigned.session_context.bot_id, target_bot_id);
 
     sender
         .send(ClientMessage::RenameSession {

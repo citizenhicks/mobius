@@ -4,6 +4,54 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testReassigningChatUsesItsIDAndWaitsForConfirmedOwnership() async throws {
+        let recorder = GatewayRequestRecorder()
+        let app = try model { await recorder.record($0) }
+        app.gateway.connectionState = .ready
+        app.bots = [bot(), bot(id: "bot-2")]
+        let original = session(state: .idle)
+        let other = session(sessionID: "chat-2", state: .running)
+        app.chat.sessions = [original, other]
+        app.chat.selectedSessionID = other.sessionId
+        XCTAssertFalse(app.canReassignSession(other))
+        XCTAssertNil(app.reassignSession(original, to: "missing-bot"))
+        let id = try XCTUnwrap(app.reassignSession(original, to: "bot-2"))
+        let request = await recorder.firstRequest(after: 0) {
+            if case .reassignSession = $0 { return true }
+            return false
+        }
+        guard
+            case .reassignSession(let requestID, let sessionID, let botID) = try XCTUnwrap(request)
+        else { return XCTFail("Expected chat reassignment") }
+        XCTAssertEqual(requestID, id)
+        XCTAssertEqual(sessionID, original.sessionId)
+        XCTAssertEqual(botID, "bot-2")
+        let encoded = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any])
+        XCTAssertEqual(encoded["type"] as? String, "reassign_session")
+        XCTAssertEqual(encoded["botId"] as? String, "bot-2")
+        XCTAssertEqual(app.chat.sessions.first?.sessionContext.botId, "bot-1")
+        XCTAssertFalse(app.canReassignSession(original))
+        app.gateway.handle(.accepted(requestID: id))
+        XCTAssertEqual(app.chat.sessions.first?.sessionContext.botId, "bot-1")
+        app.gateway.handle(
+            .sessions(requestID: id, sessions: [session(state: .idle, botID: "bot-2"), other]))
+        XCTAssertNil(app.chat.sessionMutationRequestID)
+        XCTAssertEqual(app.chat.sessions.first?.sessionContext.botId, "bot-2")
+        XCTAssertEqual(app.chat.selectedSessionID, other.sessionId)
+        XCTAssertNil(app.reassignSession(original, to: "bot-2"))
+        XCTAssertFalse(app.canReassignSession(session(sessionID: "removed", state: .idle)))
+
+        app.chat.selectedSessionID = original.sessionId
+        app.gateway.handle(.sessionChanged(sessionReady(latestSequence: 1, botID: "bot-2")))
+        XCTAssertEqual(app.selectedBot?.id, "bot-2")
+        XCTAssertEqual(app.agentSnapshot, app.bots[1].config)
+        XCTAssertEqual(app.workspace?.path, "/srv/mobius")
+        app.chat.realtimeVoiceCall = RealtimeVoiceCall(
+            requestID: "voice", sessionID: original.sessionId)
+        XCTAssertFalse(app.canReassignSession(app.chat.sessions[0]))
+    }
+
     func testActiveRunAllowsSessionNavigationButNotSelectedSessionMutation() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }

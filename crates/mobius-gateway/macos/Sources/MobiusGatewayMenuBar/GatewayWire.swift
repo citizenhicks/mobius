@@ -1,7 +1,7 @@
 import Foundation
 
 // Checked against the Rust gateway by build.sh. This frontend consumes only voice and session data.
-let gatewayProtocolVersion = 75
+let gatewayProtocolVersion = 76
 let maximumGatewayFrameBytes = 50 * 1024 * 1024
 
 enum GatewayWireError: LocalizedError {

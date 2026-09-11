@@ -95,6 +95,11 @@ pub enum ClientMessage {
         session_id: String,
         before_sequence: Option<u64>,
     },
+    ReassignSession {
+        request_id: String,
+        session_id: String,
+        bot_id: String,
+    },
     RenameSession {
         request_id: String,
         session_id: String,

@@ -356,9 +356,10 @@ extension AppModelTests {
 
         let requests = await recorder.requests()
         guard
-            case .setProviderCredential(_, let credentialInstance, _, _) = try XCTUnwrap(
-                requests.first
-            )
+            case .setProviderCredential(let credentialRequestID, let credentialInstance, _, _) =
+                try XCTUnwrap(
+                    requests.first
+                )
         else {
             return XCTFail("Expected first-provider credential")
         }
@@ -379,6 +380,29 @@ extension AppModelTests {
         XCTAssertEqual(provider, model.providerDraft)
         XCTAssertTrue(modelIDs.isEmpty)
         XCTAssertTrue(reasoningEfforts.isEmpty)
+
+        model.providerLabelDraft = "Previous account"
+        model.providerTintDraft = .blue
+        model.providerModelIDsText = "previous-model"
+        model.providerReasoningEffortsText = "previous-effort"
+        model.providerDraft?.baseUrl = "https://previous.example"
+        model.addProviderInstance("openai_socket")
+        let nextInstance = try XCTUnwrap(model.providerDraft?.instance)
+        XCTAssertNotEqual(nextInstance, instance)
+        XCTAssertEqual(model.providerLabelDraft, "OpenAI")
+        XCTAssertEqual(model.providerTintDraft, .appDefault)
+        XCTAssertEqual(model.providerModelIDsText, "")
+        XCTAssertEqual(model.providerReasoningEffortsText, "")
+        XCTAssertEqual(model.providerAPIKey, "")
+        XCTAssertNil(model.providerDraft?.baseUrl)
+        XCTAssertEqual(model.providerDraft?.model, "gpt-5.6-sol")
+        model.providerAPIKey = "next-account-key"
+        model.gateway.handle(
+            .providerCredentialSaved(
+                requestID: credentialRequestID, instance: instance, provider: "openai_socket"
+            ))
+        XCTAssertEqual(model.providerAPIKey, "next-account-key")
+        XCTAssertEqual(model.providerDraft?.instance, nextInstance)
 
         let botDefaults = VersionedAgentConfig(revision: 1, config: composition())
         model.applyGatewayCatalog(ready(botDefaults: botDefaults))

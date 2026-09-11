@@ -27,6 +27,7 @@ final class ChatSessionModel {
         return sessions.filter { chatBotFilterIDs.contains($0.sessionContext.botId) }
     }
     var chatPresentationRevision = 0
+    var sessionToReassign: SessionRecord?
     var sessionToRename: SessionRecord?
     var sessionRenameDraft = ""
     var sessionToDelete: [SessionRecord]?

@@ -511,6 +511,7 @@ final class AppModelTests: XCTestCase {
         latestSequence: UInt64,
         nextBeforeSequence: UInt64? = nil,
         sessionID: String = "chat-1",
+        botID: String = "bot-1",
         modelRoute: String = "openai",
         contributions: [FrontendContribution] = [],
         widgets: [SessionWidget] = [],
@@ -527,7 +528,7 @@ final class AppModelTests: XCTestCase {
             session: SessionConfigured(
                 sessionId: sessionID,
                 context: SessionContext(
-                    botId: "bot-1",
+                    botId: botID,
                     tenantId: nil,
                     userId: nil,
                     userName: nil,

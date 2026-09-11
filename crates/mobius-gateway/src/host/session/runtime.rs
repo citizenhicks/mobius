@@ -146,6 +146,9 @@ impl HostState {
 
     pub(super) async fn handle(&mut self, command: HostCommand) -> bool {
         match command {
+            HostCommand::BotId { reply } => {
+                let _ = reply.send(self.spec.bot_id.clone());
+            }
             HostCommand::AcceptsFileAttachments { reply } => {
                 let result = async {
                     let _mutation = self.begin_session_mutation()?;
@@ -272,6 +275,20 @@ impl HostState {
                         });
                     }
                     result
+                }
+                .await;
+                let _ = reply.send(result);
+            }
+            HostCommand::ReassignBot { bot_id, reply } => {
+                let result = async {
+                    let _mutation = self.begin_session_mutation()?;
+                    self.require_idle_runtime().await?;
+                    if self.spec.bot_id == bot_id {
+                        return Ok(());
+                    }
+                    let mut next = self.spec.clone();
+                    next.bot_id = bot_id;
+                    self.replace_running(next, None).await
                 }
                 .await;
                 let _ = reply.send(result);
@@ -561,6 +578,13 @@ impl HostState {
         {
             return Ok(());
         }
+        if self.runtime_is_idle().await? {
+            self.replace_running(self.spec.clone(), None).await?;
+        }
+        Ok(())
+    }
+
+    async fn runtime_is_idle(&self) -> std::result::Result<bool, Rejection> {
         if let Some(checkpoint) = self
             .checkpoints
             .load(&self.running.session_id)
@@ -570,7 +594,7 @@ impl HostState {
                 || !checkpoint.pending_messages.is_empty()
                 || checkpoint.pending_approval.is_some())
         {
-            return Ok(());
+            return Ok(false);
         }
         if self
             .running
@@ -578,7 +602,7 @@ impl HostState {
             .has_background_commands(&self.running.session_id)
             .map_err(internal)?
         {
-            return Ok(());
+            return Ok(false);
         }
         if let Some(subagents) = &self.running.subagents
             && subagents
@@ -586,37 +610,25 @@ impl HostState {
                 .await
                 .map_err(internal)?
         {
-            return Ok(());
+            return Ok(false);
         }
-        self.replace_running(self.spec.clone(), None).await
+        Ok(true)
+    }
+
+    async fn require_idle_runtime(&self) -> std::result::Result<(), Rejection> {
+        self.require_idle()?;
+        if !self.runtime_is_idle().await? {
+            return Err(Rejection {
+                code: "agent_busy",
+                message: "wait for background work before changing this chat".into(),
+                fatal: false,
+            });
+        }
+        Ok(())
     }
 
     async fn attach_folder(&mut self, folder: PathBuf) -> std::result::Result<(), Rejection> {
-        self.require_idle()?;
-        if self
-            .running
-            .sandbox
-            .has_background_commands(&self.running.session_id)
-            .map_err(internal)?
-        {
-            return Err(Rejection {
-                code: "agent_busy",
-                message: "stop or poll background commands before attaching a folder".into(),
-                fatal: false,
-            });
-        }
-        if let Some(subagents) = &self.running.subagents
-            && subagents
-                .has_active_children(&self.running.session_id)
-                .await
-                .map_err(internal)?
-        {
-            return Err(Rejection {
-                code: "agent_busy",
-                message: "wait for active subagents before attaching a folder".into(),
-                fatal: false,
-            });
-        }
+        self.require_idle_runtime().await?;
         let _mutation = self.begin_session_mutation()?;
         let tls = self
             .gateway

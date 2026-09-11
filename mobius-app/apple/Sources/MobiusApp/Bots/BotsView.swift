@@ -4,8 +4,8 @@ struct BotsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var showsNewBot = false
-    @State private var showsNewSwarm = false
+    @State private var newBotFormID: UUID?
+    @State private var newSwarmFormID: UUID?
     @State private var botToDelete: BotRecord?
     @State private var botToRename: BotRecord?
     @State private var botRenameDraft = ""
@@ -22,9 +22,10 @@ struct BotsView: View {
             sharesHeaderBackground: true,
             headerAccessory: { headerActions }
         ) {
-            if showsNewBot {
+            if let newBotFormID {
                 Section {
-                    NewBotForm { showsNewBot = false }
+                    NewBotForm { self.newBotFormID = nil }
+                        .id(newBotFormID)
                         .transition(.opacity.combined(with: .move(edge: .top)))
                 }
             }
@@ -51,9 +52,10 @@ struct BotsView: View {
                 }
             }
 
-            if showsNewSwarm {
+            if let newSwarmFormID {
                 Section {
-                    NewSwarmForm { showsNewSwarm = false }
+                    NewSwarmForm { self.newSwarmFormID = nil }
+                        .id(newSwarmFormID)
                         .transition(.opacity.combined(with: .move(edge: .top)))
                 }
             }
@@ -86,9 +88,9 @@ struct BotsView: View {
             model.refreshBots()
             model.refreshRoutines()
         }
-        .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: showsNewBot)
+        .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: newBotFormID)
         .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: model.bots.map(\.id))
-        .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: showsNewSwarm)
+        .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: newSwarmFormID)
         .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: model.swarms.map(\.id))
         .alert("Delete this Bot and all its data?", isPresented: botDeletionPresented) {
             Button("Delete Bot and All Data", role: .destructive) {
@@ -143,21 +145,21 @@ struct BotsView: View {
     private var headerActions: some View {
         HeaderActionGroup {
             Button {
-                showsNewBot = true
+                newBotFormID = UUID()
             } label: {
                 MobiusIcon(.aiScan, gutter: false)
             }
-            .disabled(!model.canMutateBots || showsNewBot || showsNewSwarm)
+            .disabled(!model.canMutateBots || newBotFormID != nil || newSwarmFormID != nil)
             .groupedHeaderAction(prominent: true)
             .accessibilityLabel("New Bot")
             .help("New Bot")
             Button {
-                showsNewSwarm = model.beginCreatingSwarm()
+                if model.beginCreatingSwarm() { newSwarmFormID = UUID() }
             } label: {
                 MobiusIcon(.swarm, gutter: false)
             }
             .disabled(
-                !model.canMutateSwarm || showsNewSwarm || showsNewBot
+                !model.canMutateSwarm || newSwarmFormID != nil || newBotFormID != nil
                     || model.bots.contains(where: \.collaborationEnabled)
                         && model.availableBotsForSwarm().count < 2
             )
@@ -544,7 +546,7 @@ struct BotDetailView: View {
     @Environment(\.mobiusPalette) private var palette
     @State private var showsSettings = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var showsNewRoutine = false
+    @State private var newRoutineFormID: UUID?
     @State private var editedRoutine: Routine?
     @State private var visibleRunCount = runPageSize
     let botID: String
@@ -559,12 +561,12 @@ struct BotDetailView: View {
                     headerAccessory: {
                         HeaderActionGroup {
                             Button {
-                                showsNewRoutine = true
+                                newRoutineFormID = UUID()
                             } label: {
                                 MobiusIcon(.plus, gutter: false)
                             }
                             .disabled(
-                                showsNewRoutine || workspaces.isEmpty
+                                newRoutineFormID != nil || workspaces.isEmpty
                                     || !model.gateway.connectionState.isReady
                             )
                             .groupedHeaderAction(prominent: true)
@@ -712,21 +714,22 @@ struct BotDetailView: View {
             }
             .mobiusSheet(detents: [.large])
         }
-        .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: showsNewRoutine)
+        .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: newRoutineFormID)
     }
 
     @ViewBuilder
     private var routineSections: some View {
-        if showsNewRoutine {
+        if let newRoutineFormID {
             Section {
                 RoutineForm(botID: botID, workspaces: workspaces) {
-                    showsNewRoutine = false
+                    self.newRoutineFormID = nil
                 }
+                .id(newRoutineFormID)
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
         Section("Routines") {
-            if !showsNewRoutine, let error = model.routineError {
+            if newRoutineFormID == nil, let error = model.routineError {
                 StatusBanner(
                     tone: .error,
                     title: .localized("Routine rejected"),

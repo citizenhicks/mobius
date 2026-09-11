@@ -180,7 +180,7 @@ struct MobiusGlyph: Hashable {
 }
 
 extension MobiusGlyph {
-    /// UIKit re-tints menu images, so bake the provider accent into an original image.
+    /// UIKit re-tints menu images, so bake the chosen accent into an original image.
     func menuImage(_ color: Color) -> Image? {
         guard let base = UIImage(named: asset)?.withRenderingMode(.alwaysTemplate) else {
             return nil

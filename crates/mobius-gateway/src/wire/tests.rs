@@ -779,6 +779,15 @@ fn routine_run_deletion_is_correlated() {
 
 #[test]
 fn session_actions_have_flat_authenticated_frames() {
+    let reassign = serde_json::to_value(ClientFrame::new(ClientMessage::ReassignSession {
+        request_id: "request-reassign".into(),
+        session_id: "session-a".into(),
+        bot_id: "bot-b".into(),
+    }))
+    .expect("encode reassignment");
+    assert_eq!(reassign["type"], "reassign_session");
+    assert_eq!(reassign["session_id"], "session-a");
+    assert_eq!(reassign["bot_id"], "bot-b");
     let rename = serde_json::to_value(ClientFrame::new(ClientMessage::RenameSession {
         request_id: "request-a".into(),
         session_id: "session-a".into(),

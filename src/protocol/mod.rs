@@ -87,7 +87,7 @@ pub struct Submission {
 /// backends when it creates the agent.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionContext {
-    /// Immutable identity of the Bot that owns this session.
+    /// Identity of the Bot that currently owns this session.
     pub bot_id: String,
     /// Opaque tenant or organization identifier.
     #[serde(default, skip_serializing_if = "Option::is_none")]

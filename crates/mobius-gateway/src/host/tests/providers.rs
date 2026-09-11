@@ -152,11 +152,12 @@ async fn provider_removal_defers_chat_rebuild_and_deletes_credential() {
         &gateway.state.lock().await.sessions[&session_id].inner,
         &host.inner
     ));
+    let bot_id = host.bot_id().await.expect("Bot owner");
     assert_eq!(
         ready
             .bots
             .iter()
-            .find(|bot| bot.id == host.bot_id())
+            .find(|bot| bot.id == bot_id)
             .expect("chat Bot")
             .config
             .config
@@ -204,7 +205,6 @@ async fn provider_removal_does_not_contact_resident_chat_actors() {
         HostHandle {
             inner: Arc::new(HostInner {
                 session_id: Arc::from("busy"),
-                bot_id: Arc::from("busy-bot"),
                 commands,
                 events,
                 alive: Arc::new(AtomicBool::new(true)),
@@ -1019,7 +1019,6 @@ async fn stale_provider_login_success_does_not_refresh_sessions_or_release_anoth
         super::super::HostHandle {
             inner: Arc::new(HostInner {
                 session_id: Arc::from("observer"),
-                bot_id: Arc::from("observer-bot"),
                 commands,
                 events,
                 alive: Arc::new(AtomicBool::new(true)),

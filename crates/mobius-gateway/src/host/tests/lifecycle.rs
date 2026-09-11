@@ -698,7 +698,6 @@ async fn delete_sessions_preflight_all_roots_before_durable_removal() {
         HostHandle {
             inner: Arc::new(HostInner {
                 session_id: "child".into(),
-                bot_id: "test-bot".into(),
                 commands,
                 events,
                 alive: Arc::new(AtomicBool::new(true)),
@@ -862,7 +861,6 @@ async fn capacity_reclaims_an_unreferenced_idle_chat() {
             HostHandle {
                 inner: Arc::new(HostInner {
                     session_id: id.into(),
-                    bot_id: "test-bot".into(),
                     commands,
                     events,
                     alive: Arc::new(AtomicBool::new(true)),

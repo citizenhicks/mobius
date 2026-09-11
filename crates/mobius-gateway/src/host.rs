@@ -650,7 +650,8 @@ impl GatewayHost {
             .open_session_with_cache(session_id, true)
             .await
             .map(|(host, _)| host)?;
-        self.state.lock().await.swarm.notify_pending(host.bot_id());
+        let bot_id = host.bot_id().await?;
+        self.state.lock().await.swarm.notify_pending(&bot_id);
         Ok(host)
     }
 
@@ -985,6 +986,22 @@ impl GatewayHost {
             }
             Err(rejection) => Err(rejection),
         }
+    }
+
+    pub(crate) async fn reassign_session(
+        &self,
+        session_id: &str,
+        bot_id: &str,
+    ) -> std::result::Result<(), Rejection> {
+        let _mutation = self.begin_mutation().await?;
+        {
+            let state = self.state.lock().await;
+            require_catalog_session(&state, session_id).await?;
+            state.bots.bot(bot_id).map_err(internal)?;
+        }
+        let (host, _) = self.open_session_with_cache(session_id, true).await?;
+        host.reassign_bot(bot_id.to_owned()).await?;
+        self.broadcast_sessions().await
     }
 
     pub(crate) async fn rename_session(

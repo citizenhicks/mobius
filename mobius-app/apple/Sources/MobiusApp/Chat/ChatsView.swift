@@ -725,6 +725,10 @@ struct SessionCatalogRow: View {
             model.chat.setSessionPinned(session, pinned: !session.pinned)
         }
         .disabled(!model.canRenameSession)
+        Button("Reassign Bot", glyph: .aiScan) {
+            model.chat.sessionToReassign = session
+        }
+        .disabled(!model.canReassignSession(session))
         Button("Rename chat", glyph: .pencilSimple) {
             model.beginRenamingSession(session)
         }

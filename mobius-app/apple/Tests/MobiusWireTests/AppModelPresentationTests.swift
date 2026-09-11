@@ -6,6 +6,111 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testCreationFormsReopenWithEmptyDrafts() async throws {
+        let recorder = GatewayRequestRecorder()
+        let app = try model { await recorder.record($0) }
+        app.gateway.connectionState = .ready
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let previous = scene.keyWindow
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 402, height: 874)
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previous?.makeKeyAndVisible()
+        }
+        let host = UIHostingController(
+            rootView: AnyView(NavigationStack { BotsView() }.environment(app)))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        func elements(_ object: NSObject, depth: Int = 0) -> [NSObject] {
+            guard depth < 20 else { return [] }
+            let count = object.accessibilityElementCount()
+            let children =
+                count > 0 && count < 100
+                ? (0..<count).compactMap { object.accessibilityElement(at: $0) as? NSObject } : []
+            return [object]
+                + (children + ((object as? UIView)?.subviews ?? [])).flatMap {
+                    elements($0, depth: depth + 1)
+                }
+        }
+        func activate(_ label: String) async throws {
+            let activated = await eventually {
+                elements(host.view).contains {
+                    $0.accessibilityLabel == label && $0.accessibilityActivate()
+                }
+            }
+            XCTAssertTrue(activated, "Missing action: \(label)")
+            try await Task.sleep(for: .milliseconds(350))
+        }
+        func fields() -> [UIView] {
+            elements(host.view).compactMap { $0 as? UIView }.filter {
+                guard $0 is UITextField || $0 is UITextView else { return false }
+                let center = CGPoint(x: $0.bounds.midX, y: $0.bounds.midY)
+                return window.hitTest($0.convert(center, to: window), with: nil)?.isDescendant(
+                    of: $0) == true
+            }
+        }
+        try await activate("New Bot")
+        let name = try XCTUnwrap(fields().compactMap { $0 as? UITextField }.first)
+        let description = try XCTUnwrap(fields().compactMap { $0 as? UITextView }.first)
+        name.becomeFirstResponder()
+        name.insertText("First Bot")
+        description.becomeFirstResponder()
+        description.insertText("First Bot instructions")
+        description.resignFirstResponder()
+        try await activate("Create")
+        let request = await recorder.firstRequest(after: 0) {
+            if case .createBot = $0 { return true }
+            return false
+        }
+        guard case .createBot(let id, let sentName, let sentDescription) = try XCTUnwrap(request)
+        else { return XCTFail("Expected Bot creation") }
+        XCTAssertEqual(sentName, "First Bot")
+        XCTAssertEqual(sentDescription, "First Bot instructions")
+        app.gateway.handle(.bots(requestID: id, bots: app.bots + [bot(id: "bot-2")]))
+        try await Task.sleep(for: .milliseconds(500))
+        try await activate("New Bot")
+        XCTAssertEqual(fields().compactMap { $0 as? UITextField }.first?.text, "")
+        XCTAssertEqual(fields().compactMap { $0 as? UITextView }.first?.text, "")
+        host.rootView = AnyView(NavigationStack { BotsView() }.environment(app).id(UUID()))
+
+        app.bots = [bot(collaborationEnabled: true), bot(id: "bot-2", collaborationEnabled: true)]
+        try await activate("New Swarm")
+        let title = try XCTUnwrap(
+            fields().compactMap { $0 as? UITextField }.first {
+                $0.placeholder == "Swarm name"
+            })
+        title.becomeFirstResponder()
+        title.insertText("Previous Swarm")
+        title.resignFirstResponder()
+        try await activate("Cancel")
+        try await activate("New Swarm")
+        XCTAssertEqual(
+            fields().compactMap { $0 as? UITextField }.first {
+                $0.placeholder == "Swarm name"
+            }?.text, "")
+        try await activate("Cancel")
+
+        app.chat.sessions = [session(state: .idle)]
+        host.rootView = AnyView(NavigationStack { BotDetailView(botID: "bot-1") }.environment(app))
+        try await activate("New routine")
+        let instructions = try XCTUnwrap(fields().compactMap { $0 as? UITextView }.first)
+        instructions.becomeFirstResponder()
+        instructions.insertText("Previous routine")
+        instructions.resignFirstResponder()
+        try await activate("Create")
+        let routineRequest = await recorder.firstRequest(after: 0) {
+            if case .createRoutine = $0 { return true }
+            return false
+        }
+        XCTAssertNotNil(routineRequest)
+        app.routineRequestIDs.removeAll()
+        try await Task.sleep(for: .milliseconds(500))
+        try await activate("New routine")
+        XCTAssertEqual(fields().compactMap { $0 as? UITextView }.first?.text, "")
+    }
+
     func testSettingsInformationLinksUseTheAppLocaleAndPublicCloudPages() {
         for (identifier, language) in [
             ("en_US", "en"), ("fr_CA", "fr"), ("de_CH", "de"), ("ja_JP", "en"), ("", "en"),

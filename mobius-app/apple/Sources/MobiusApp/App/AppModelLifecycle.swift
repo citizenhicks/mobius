@@ -130,6 +130,7 @@ extension AppModel {
             bots = []
             swarms = []
             navigationPath = []
+            chat.sessionToReassign = nil
             chat.sessionToRename = nil
             chat.sessionRenameDraft = ""
             chat.sessionToDelete = nil

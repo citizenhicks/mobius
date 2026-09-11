@@ -24,7 +24,6 @@ impl Drop for HostHandle {
 
 pub(super) struct HostInner {
     pub(super) session_id: Arc<str>,
-    pub(super) bot_id: Arc<str>,
     pub(super) commands: mpsc::Sender<HostCommand>,
     pub(super) events: broadcast::Sender<ServerFrame>,
     pub(super) alive: Arc<AtomicBool>,
@@ -119,6 +118,9 @@ pub(super) struct ActiveRoutine {
 }
 
 pub(super) enum HostCommand {
+    BotId {
+        reply: oneshot::Sender<String>,
+    },
     AcceptsFileAttachments {
         reply: oneshot::Sender<std::result::Result<bool, Rejection>>,
     },
@@ -140,6 +142,10 @@ pub(super) enum HostCommand {
     },
     Submit {
         submission: Submission,
+        reply: oneshot::Sender<std::result::Result<(), Rejection>>,
+    },
+    ReassignBot {
+        bot_id: String,
         reply: oneshot::Sender<std::result::Result<(), Rejection>>,
     },
     AttachFolder {
@@ -201,8 +207,18 @@ pub(super) enum JournalDelivery {
 }
 
 impl HostHandle {
-    pub(crate) fn bot_id(&self) -> &str {
-        &self.inner.bot_id
+    pub(crate) async fn bot_id(&self) -> std::result::Result<String, Rejection> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(HostCommand::BotId { reply }).await?;
+        receiver.await.map_err(|_| stopped())
+    }
+
+    pub(super) async fn reassign_bot(&self, bot_id: String) -> std::result::Result<(), Rejection> {
+        let _voice = self.claim_realtime_voice()?;
+        let (reply, receiver) = oneshot::channel();
+        self.send(HostCommand::ReassignBot { bot_id, reply })
+            .await?;
+        receive(receiver).await
     }
 
     #[expect(
@@ -261,7 +277,6 @@ impl HostHandle {
             .or_default()
             .state
             == SessionActivityState::AwaitingApproval;
-        let bot_id = spec.bot_id.clone();
         let mut state = HostState {
             store,
             gateway,
@@ -304,7 +319,6 @@ impl HostHandle {
         Ok(Self {
             inner: Arc::new(HostInner {
                 session_id: session_id.into(),
-                bot_id: bot_id.into(),
                 commands,
                 events,
                 alive,
@@ -687,6 +701,17 @@ async fn start_agent(
             prepared
         }
     };
+    if let Some(mut checkpoint) = checkpoints.load(&session_id).await?
+        && checkpoint.session_context.bot_id != spec.bot_id
+    {
+        checkpoint.sequence = checkpoint
+            .sequence
+            .checked_add(1)
+            .ok_or_else(|| Error::Config("checkpoint sequence overflow".into()))?;
+        checkpoint.session_context.bot_id.clone_from(&spec.bot_id);
+        checkpoint.metadata.extend(spec.metadata()?);
+        checkpoints.save(&checkpoint, &[], None).await?;
+    }
     let BuiltAgent {
         agent,
         model_router,

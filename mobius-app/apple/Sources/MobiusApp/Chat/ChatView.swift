@@ -267,6 +267,12 @@ private struct ChatOptionsMenu: View {
                     MobiusLabel(title: "Bot agent settings", glyph: .slidersHorizontal)
                 }
                 .disabled(model.selectedBot == nil)
+                if let session = model.selectedSession {
+                    Button("Reassign Bot", glyph: .aiScan) {
+                        model.chat.sessionToReassign = session
+                    }
+                    .disabled(!model.canReassignSession(session))
+                }
                 ForEach(model.chat.chatMenuWidgets) { widget in
                     Button {
                         activate(widget)
@@ -389,5 +395,53 @@ struct ChatInfoView: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+}
+
+struct ReassignChatSheet: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    let session: SessionRecord
+    @State private var submittedBotID: String?
+
+    var body: some View {
+        NavigationStack {
+            List(model.bots) { bot in
+                Button {
+                    if model.reassignSession(session, to: bot.id) != nil {
+                        submittedBotID = bot.id
+                    }
+                } label: {
+                    HStack {
+                        SettingsRowLabel(
+                            title: .verbatim(bot.name), detail: .verbatim("@\(bot.handle)")
+                        ) {
+                            MobiusIcon(
+                                .aiScan, size: MobiusStyle.glyphLead, foreground: bot.tint.color)
+                        }
+                        if bot.id == currentBotID {
+                            MobiusIcon(.check)
+                                .accessibilityLabel("Current Bot")
+                        }
+                    }
+                }
+                .disabled(bot.id == currentBotID || !model.canReassignSession(session))
+            }
+            .navigationTitle("Reassign Bot")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+        .onChange(of: currentBotID) { _, newValue in
+            if newValue == submittedBotID { dismiss() }
+        }
+    }
+
+    private var currentBotID: String {
+        model.chat.sessions.first { $0.sessionId == session.sessionId }?.sessionContext.botId
+            ?? session.sessionContext.botId
     }
 }

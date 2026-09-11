@@ -19,6 +19,7 @@ enum GatewayRequest: Encodable, Sendable {
         sessionID: String,
         beforeSequence: UInt64?
     )
+    case reassignSession(requestID: String, sessionID: String, botID: String)
     case renameSession(requestID: String, sessionID: String, title: String)
     case setSessionPinned(requestID: String, sessionID: String, pinned: Bool)
     case deleteSessions(requestID: String, sessionIDs: [String])
@@ -236,6 +237,11 @@ enum GatewayRequest: Encodable, Sendable {
             try container.encode(requestID, forKey: "requestId")
             try container.encode(sessionID, forKey: "sessionId")
             try container.encode(beforeSequence, forKey: "beforeSequence")
+        case .reassignSession(let requestID, let sessionID, let botID):
+            try container.encode("reassign_session", forKey: "type")
+            try container.encode(requestID, forKey: "requestId")
+            try container.encode(sessionID, forKey: "sessionId")
+            try container.encode(botID, forKey: "botId")
         case .renameSession(let requestID, let sessionID, let title):
             try container.encode("rename_session", forKey: "type")
             try container.encode(requestID, forKey: "requestId")

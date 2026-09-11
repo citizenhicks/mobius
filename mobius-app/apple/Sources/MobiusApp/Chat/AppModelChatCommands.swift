@@ -149,6 +149,33 @@ extension AppModel {
         refreshBotSessions(botID)
     }
 
+    func canReassignSession(_ session: SessionRecord) -> Bool {
+        guard let current = chat.sessions.first(where: { $0.sessionId == session.sessionId })
+        else { return false }
+        return canRenameSession && current.activity.state == .idle
+            && (current.sessionId != chat.selectedSessionID
+                || (canModifySelectedSession && chat.realtimeVoiceCall == nil))
+    }
+
+    @discardableResult
+    func reassignSession(_ session: SessionRecord, to botID: String) -> String? {
+        guard let current = chat.sessions.first(where: { $0.sessionId == session.sessionId }),
+            canReassignSession(current), bots.contains(where: { $0.id == botID }),
+            botID != current.sessionContext.botId
+        else { return nil }
+        let id = requestID("session-reassign")
+        chat.sessionMutationRequestID = id
+        gateway.transmit(
+            .reassignSession(requestID: id, sessionID: session.sessionId, botID: botID)
+        ) {
+            [weak self] _ in
+            if self?.chat.sessionMutationRequestID == id {
+                self?.chat.sessionMutationRequestID = nil
+            }
+        }
+        return id
+    }
+
     // Renaming, pinning and deleting address a session by id, so they work on any chat in the
     // catalogue rather than only the open one.
     @discardableResult

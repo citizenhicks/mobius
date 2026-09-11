@@ -188,23 +188,29 @@ extension AppModel {
         }
     }
 
+    private func applyProviderCredentialSaved(requestID: String, instance: String, provider: String)
+    {
+        guard let pending = pendingProviderCredential,
+            requestID == pending.requestID,
+            instance == pending.instance,
+            provider == pending.provider
+        else { return }
+        // An API key belongs to the one setup that received it.
+        if let index = providerInstances.firstIndex(where: { $0.instance == instance }) {
+            providerInstances[index].configured = true
+            providerInstances[index].credentialHint = pending.credentialHint
+        }
+        pendingProviderCredential = nil
+        if providerDraft?.instance == instance { providerAPIKey = "" }
+        providerActionState = .credentialSaved(instance)
+        showToast("\(providerLabel(for: instance)) credential saved.", tone: .success)
+    }
+
     private func handleCredentialEnvelope(_ envelope: GatewayEnvelope) {
         switch envelope {
         case .providerCredentialSaved(let requestID, let instance, let provider):
-            guard let pending = pendingProviderCredential,
-                requestID == pending.requestID,
-                instance == pending.instance,
-                provider == pending.provider
-            else { break }
-            // An API key belongs to the one setup that received it.
-            if let index = providerInstances.firstIndex(where: { $0.instance == instance }) {
-                providerInstances[index].configured = true
-                providerInstances[index].credentialHint = pending.credentialHint
-            }
-            pendingProviderCredential = nil
-            providerAPIKey = ""
-            providerActionState = .credentialSaved(instance)
-            showToast("\(providerLabel(for: instance)) credential saved.", tone: .success)
+            applyProviderCredentialSaved(
+                requestID: requestID, instance: instance, provider: provider)
         case .pairingCode(let requestID, let code, let expiresAt):
             guard requestID == pairingCodeRequestID else { break }
             pairingCodeRequestID = nil

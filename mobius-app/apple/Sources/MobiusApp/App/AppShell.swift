@@ -63,6 +63,10 @@ struct AppShell: View {
                     .environment(\.locale, model.language.locale)
             }
         }
+        .sheet(item: $chat.sessionToReassign) { session in
+            ReassignChatSheet(session: session)
+                .mobiusSheet(detents: [.medium, .large])
+        }
         .sheet(item: $model.presentedRoutineRun, onDismiss: model.closeRoutineRunPreview) { _ in
             RoutineRunTranscriptSheet()
         }

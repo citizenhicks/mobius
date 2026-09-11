@@ -134,6 +134,18 @@ pub(super) async fn handle_message(
             )
             .await;
         }
+        ClientMessage::ReassignSession {
+            request_id,
+            session_id,
+            bot_id,
+        } => {
+            return write_result(
+                writer,
+                request_id,
+                gateway.reassign_session(&session_id, &bot_id).await,
+            )
+            .await;
+        }
         ClientMessage::RenameSession {
             request_id,
             session_id,
@@ -462,19 +474,7 @@ pub(super) async fn handle_message(
             request_id,
             instance,
         } => {
-            return match gateway.clear_credential(instance.clone()).await {
-                Ok(()) => {
-                    write_frame(
-                        writer,
-                        &ServerFrame::new(ServerMessage::ProviderCredentialCleared {
-                            request_id,
-                            instance,
-                        }),
-                    )
-                    .await
-                }
-                Err(rejection) => write_rejection(writer, request_id, rejection).await,
-            };
+            return clear_provider_credential(writer, request_id, instance, gateway).await;
         }
         ClientMessage::SetProviderCredential {
             request_id,
@@ -1634,6 +1634,27 @@ async fn list_directories_response(
                 &ServerFrame::new(ServerMessage::Directories {
                     request_id,
                     listing,
+                }),
+            )
+            .await
+        }
+        Err(rejection) => write_rejection(writer, request_id, rejection).await,
+    }
+}
+
+async fn clear_provider_credential(
+    writer: &mut (impl AsyncWrite + Unpin),
+    request_id: String,
+    instance: String,
+    gateway: &GatewayHost,
+) -> Result<()> {
+    match gateway.clear_credential(instance.clone()).await {
+        Ok(()) => {
+            write_frame(
+                writer,
+                &ServerFrame::new(ServerMessage::ProviderCredentialCleared {
+                    request_id,
+                    instance,
                 }),
             )
             .await

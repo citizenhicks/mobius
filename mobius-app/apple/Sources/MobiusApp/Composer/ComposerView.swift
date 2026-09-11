@@ -104,8 +104,12 @@ private struct NewChatBotPicker: View {
                 )
             ) {
                 ForEach(model.bots) { bot in
-                    MobiusLabel(verbatim: bot.name, glyph: .aiScan, iconColor: bot.tint.color)
-                        .tag(Optional(bot.id))
+                    Label {
+                        Text(verbatim: bot.name)
+                    } icon: {
+                        MobiusGlyph.aiScan.menuImage(bot.tint.color)
+                    }
+                    .tag(Optional(bot.id))
                 }
             }
             .pickerStyle(.inline)
