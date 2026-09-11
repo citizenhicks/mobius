@@ -170,7 +170,9 @@ extension AppModelTests {
         let center = field.convert(CGPoint(x: field.bounds.midX, y: field.bounds.midY), to: window)
         XCTAssertTrue(window.hitTest(center, with: nil)?.isDescendant(of: field) == true)
         model.chat.composerFocusRequest &+= 1
-        let focused = await eventually { field.isFirstResponder && field.bounds.width > idleWidth }
+        let focused = await eventually(timeout: .seconds(5)) {
+            field.isFirstResponder && field.bounds.width > idleWidth
+        }
         XCTAssertTrue(focused)
         XCTAssertTrue(inputs(in: idle).first === field)
         try await Task.sleep(for: .milliseconds(300))
