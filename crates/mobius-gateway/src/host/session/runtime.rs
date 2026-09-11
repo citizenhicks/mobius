@@ -569,19 +569,58 @@ impl HostState {
     }
 
     async fn bind_bot(&mut self) -> std::result::Result<(), Rejection> {
-        if !self.is_idle()
-            || (self
-                .running
-                .prepared
-                .matches_runtime(&self.bots.bot(&self.spec.bot_id).map_err(internal)?)
-                && self.running.prepared.epoch == self.provider_epoch.load(Ordering::Acquire))
-        {
+        let next = self.swarm_workspace_spec().await?;
+        let workspaces_changed = next != self.spec;
+        if workspaces_changed {
+            self.require_idle_runtime().await?;
+        }
+        if !self.is_idle() {
             return Ok(());
         }
-        if self.runtime_is_idle().await? {
-            self.replace_running(self.spec.clone(), None).await?;
+        let configuration_changed = !self
+            .running
+            .prepared
+            .matches_runtime(&self.bots.bot(&self.spec.bot_id).map_err(internal)?)
+            || self.running.prepared.epoch != self.provider_epoch.load(Ordering::Acquire);
+        if !workspaces_changed && !configuration_changed {
+            return Ok(());
+        }
+        if workspaces_changed || self.runtime_is_idle().await? {
+            let prepared = (!configuration_changed).then(|| Arc::clone(&self.running.prepared));
+            self.replace_running(next, prepared).await?;
         }
         Ok(())
+    }
+
+    async fn swarm_workspace_spec(&self) -> std::result::Result<ChatSpec, Rejection> {
+        let mut next = self.spec.clone();
+        if self.spec.catalog_visible {
+            return Ok(next);
+        }
+        let Some(workspaces) = self
+            .swarm
+            .participant_workspaces(&self.spec.bot_id, &self.running.session_id)
+            .await
+            .map_err(internal)?
+        else {
+            return Ok(next);
+        };
+        let tls = self
+            .gateway
+            .lock()
+            .map_err(|_| internal("gateway configuration lock is poisoned"))?
+            .tls
+            .clone();
+        next.attached_folders.clear();
+        for workspace in workspaces.into_iter().filter(|path| path.is_dir()) {
+            if let Some(attached) = next
+                .with_attached_folder(&workspace, self.store.state_dir(), tls.as_ref())
+                .map_err(invalid_workspace)?
+            {
+                next = attached;
+            }
+        }
+        Ok(next)
     }
 
     async fn runtime_is_idle(&self) -> std::result::Result<bool, Rejection> {

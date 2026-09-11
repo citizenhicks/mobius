@@ -2,11 +2,11 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::future::Future;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use mobius::backend::checkpoint::CheckpointStore;
+use mobius::backend::checkpoint::{CheckpointStore, SessionPageRequest};
 use mobius::middleware::bots::BotsBackend;
 use mobius::protocol::MAX_MESSAGE_BYTES;
 use serde::{Deserialize, Serialize};
@@ -618,6 +618,51 @@ impl SwarmStore {
             .expect("swarm catalog loaded")
             .swarms
             .contains_key(swarm_id))
+    }
+
+    /// Resolves member conversation workspaces only for a current Swarm participant.
+    pub(crate) async fn participant_workspaces(
+        &self,
+        bot_id: &str,
+        session_id: &str,
+    ) -> Result<Option<BTreeSet<PathBuf>>> {
+        let Some(snapshot) = self.snapshot_for_bot(bot_id).await? else {
+            return Ok(None);
+        };
+        if participant_session_id(&snapshot.swarm.id, bot_id) != session_id {
+            return Ok(None);
+        }
+        let members = snapshot
+            .swarm
+            .members
+            .into_iter()
+            .map(|member| member.bot_id)
+            .collect::<BTreeSet<_>>();
+        let mut workspaces = BTreeSet::new();
+        let mut cursor = None;
+        // ponytail: scan catalog metadata per delivery; index member workspaces if this grows costly.
+        loop {
+            let page = self
+                .checkpoints
+                .list_sessions_page(SessionPageRequest {
+                    bot_id: None,
+                    cursor,
+                    limit: 100,
+                })
+                .await?;
+            workspaces.extend(
+                page.sessions
+                    .into_iter()
+                    .filter(|session| members.contains(&session.session_context.bot_id))
+                    .filter_map(|session| {
+                        session.session_context.workspace_label.map(PathBuf::from)
+                    }),
+            );
+            let Some(next) = page.next_cursor else {
+                return Ok(Some(workspaces));
+            };
+            cursor = Some(next);
+        }
     }
 
     async fn create_routine_inner(

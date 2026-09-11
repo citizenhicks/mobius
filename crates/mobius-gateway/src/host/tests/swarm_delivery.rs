@@ -256,8 +256,29 @@ async fn shutdown_stops_swarm_delivery_before_later_notifications() {
 #[tokio::test]
 async fn mention_delivery_uses_the_bots_private_swarm_conversation() {
     let root = tempfile::tempdir().expect("root");
-    let (gateway, _, source, source_bot, target, target_bot, swarm_id) =
+    let (gateway, workspace, source, source_bot, target, target_bot, swarm_id) =
         gateway_with_swarm(&root).await;
+    let source_workspace = root.path().join("source-project");
+    let target_workspace = root.path().join("target-project");
+    let unrelated_workspace = root.path().join("unrelated-project");
+    for path in [&source_workspace, &target_workspace, &unrelated_workspace] {
+        std::fs::create_dir(path).expect("project directory");
+    }
+    gateway
+        .create_session(&source_workspace, &source_bot.id)
+        .await
+        .expect("another source conversation");
+    gateway
+        .create_session(&target_workspace, &target_bot.id)
+        .await
+        .expect("another target conversation");
+    create_distinct_test_session(&gateway, &unrelated_workspace, "unrelated")
+        .await
+        .expect("non-member conversation");
+    let mut expected_folders = [&workspace, &source_workspace, &target_workspace]
+        .map(|path| std::fs::canonicalize(path).expect("canonical workspace"))
+        .to_vec();
+    expected_folders.sort();
     let mut gateway_events = gateway.subscribe();
     let source_session_id = source.session_id().to_owned();
     let original_target_session_id = target.session_id().to_owned();
@@ -336,6 +357,19 @@ async fn mention_delivery_uses_the_bots_private_swarm_conversation() {
         checkpoint.session_context.workspace_label.as_deref(),
         Some(background_workspace.to_string_lossy().as_ref())
     );
+    assert_eq!(
+        checkpoint.metadata[crate::config::CHAT_SPEC_METADATA_KEY]["attached_folders"],
+        serde_json::json!(expected_folders)
+    );
+    assert!(
+        source
+            .snapshot(None)
+            .await
+            .expect("source snapshot")
+            .ready
+            .attached_folders
+            .is_empty()
+    );
     let page = gateway
         .state
         .lock()
@@ -367,6 +401,14 @@ async fn mention_delivery_uses_the_bots_private_swarm_conversation() {
         )
     }));
 
+    let later_workspace = root.path().join("later-project");
+    std::fs::create_dir(&later_workspace).expect("later project");
+    gateway
+        .create_session(&later_workspace, &source_bot.id)
+        .await
+        .expect("later source conversation");
+    expected_folders.push(std::fs::canonicalize(&later_workspace).expect("canonical workspace"));
+    expected_folders.sort();
     let second = swarm
         .post(
             &source_bot.id,
@@ -386,7 +428,11 @@ async fn mention_delivery_uses_the_bots_private_swarm_conversation() {
                 .into_iter()
                 .find(|entry| entry.id == second.entry.id)
                 .expect("follow-up entry");
-            if let Some(session_id) = entry.assigned_recipient_session_ids.get(&target_bot.id) {
+            if let Some(session_id) = entry.assigned_recipient_session_ids.get(&target_bot.id)
+                && let Some(checkpoint) = checkpoints.load(session_id).await.expect("checkpoint")
+                && checkpoint.metadata[crate::config::CHAT_SPEC_METADATA_KEY]["attached_folders"]
+                    == serde_json::json!(expected_folders)
+            {
                 break session_id.clone();
             }
             tokio::time::sleep(Duration::from_millis(10)).await;

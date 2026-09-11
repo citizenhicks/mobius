@@ -15,7 +15,7 @@ Every conversation belongs to exactly one Bot. The gateway creates the default
 | --- | --- | --- | --- |
 | User chat | One transcript owned by one Bot | User-selected | Chats catalog |
 | Swarm Chat | One shared, ordered recent-message board for the Swarm | No Agent session; deliveries use the gateway background workspace | Swarm dashboard |
-| Swarm participant | One private transcript per `(Swarm, Bot)` | Gateway background workspace | Bot background work |
+| Swarm participant | One private transcript per `(Swarm, Bot)` | Gateway background workspace, with member conversation workspaces attached | Bot background work |
 | Routine run | One fresh transcript per invocation | Routine's pinned workspace | Routine history |
 | Subagent | One child transcript rooted in its parent chat | Parent workspace | Parent's task tree |
 
@@ -69,7 +69,7 @@ the board. For each delivery, the gateway:
 
 1. resolves the deterministic participant session for `(Swarm ID, Bot ID)`;
 2. opens that hidden session, creating it only when the pair has no checkpoint;
-3. submits the addressed message and adds recent Swarm Chat to that model request;
+3. refreshes member workspace attachments, submits the addressed message, and adds recent Swarm Chat to that model request;
 4. appends the terminal response to Swarm Chat; and
 5. wakes the enabled leader after a worker response, subject to the bounded reply chain.
 
@@ -78,6 +78,15 @@ reuse one participant session. A board message ID identifies work to deliver; it
 must never be used as the participant session ID. The source session is retained
 only as message provenance. Moving a Bot to a different Swarm changes the pair
 and gives it a different participant context.
+
+Every existing primary workspace used by a current member's conversations is
+automatically attached to each participant. Duplicate paths are shared once;
+non-members' workspaces are excluded. Before new work, the gateway refreshes this
+list from the session catalog, including for reused participants, so workspace and
+membership changes take effect without re-creating the Swarm. The background
+directory remains the working directory; attached writable paths are listed in the
+model prompt for use as absolute paths. Existing folder validation, the eight-folder
+attachment limit, and each Bot's tool configuration and approval policy still apply.
 
 User-authored Swarm entries are authenticated user input. Bot-authored entries are
 peer advice: they cannot approve an action or expand another Bot's authority.

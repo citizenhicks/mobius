@@ -80,6 +80,64 @@ async fn post(store: &SwarmStore, handle: &str, text: String) -> Result<SwarmPos
 }
 
 #[tokio::test]
+async fn participant_workspaces_follow_current_members_across_catalog_pages_and_reload() {
+    let (_directory, checkpoints, store, _deliveries) = store();
+    let swarm = create_swarm(&store).await;
+    let leader = bot_id(&store, "leader");
+    let reviewer = bot_id(&store, "reviewer");
+    let outsider = bot_id(&store, "third");
+    for index in 0..102 {
+        let mut checkpoint =
+            mobius::backend::checkpoint::Checkpoint::empty(format!("chat-{index:03}"));
+        let (bot, workspace) = match index {
+            0 => (&reviewer, "/projects/review"),
+            1 => (&outsider, "/projects/unrelated"),
+            _ => (&leader, "/projects/main"),
+        };
+        checkpoint.session_context.bot_id.clone_from(bot);
+        checkpoint.session_context.workspace_label = Some(workspace.into());
+        checkpoints
+            .save(&checkpoint, &[], None)
+            .await
+            .expect("save chat");
+    }
+    let participant = participant_session_id(&swarm.id, &leader);
+    assert_eq!(
+        store
+            .participant_workspaces(&leader, &participant)
+            .await
+            .expect("workspaces"),
+        Some(BTreeSet::from([
+            PathBuf::from("/projects/main"),
+            PathBuf::from("/projects/review")
+        ]))
+    );
+    assert_eq!(
+        store
+            .participant_workspaces(&leader, "chat-002")
+            .await
+            .expect("ordinary chat"),
+        None
+    );
+    store
+        .leave(&swarm.id, &reviewer)
+        .await
+        .expect("leave swarm");
+    store.join(&swarm.id, outsider).await.expect("join swarm");
+    let (reloaded, _deliveries) = reload(checkpoints, &store);
+    assert_eq!(
+        reloaded
+            .participant_workspaces(&leader, &participant)
+            .await
+            .expect("updated workspaces"),
+        Some(BTreeSet::from([
+            PathBuf::from("/projects/main"),
+            PathBuf::from("/projects/unrelated")
+        ]))
+    );
+}
+
+#[tokio::test]
 async fn membership_is_unique_and_lazily_reloads() {
     let (_directory, checkpoints, store, _deliveries) = store();
     let created = create_swarm(&store).await;
