@@ -84,6 +84,15 @@ jobs:
           git diff --exit-code -- "$resolved"
       - name: Run signed simulator tests
         run: |
+          device="$(xcrun simctl list devices available --json | jq -er '
+            .devices["com.apple.CoreSimulator.SimRuntime.iOS-26-5"][] |
+            select(.name == "iPhone 17 Pro") | .udid
+          ')"
+          xcrun simctl boot "$device"
+          xcrun simctl bootstatus "$device" -b
+          # Hosted SwiftUI tests activate controls through the accessibility tree.
+          xcrun simctl spawn "$device" defaults write com.apple.Accessibility AccessibilityEnabled -bool true
+          xcrun simctl spawn "$device" defaults write com.apple.Accessibility ApplicationAccessibilityEnabled -bool true
           xcodebuild -project MobiusApp.xcodeproj -scheme MobiusApp \
             -configuration Debug \
             -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5' \

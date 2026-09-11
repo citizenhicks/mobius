@@ -35,7 +35,7 @@ extension AppModelTests {
                 }
         }
         func activate(_ label: String) async throws {
-            let activated = await eventually(timeout: .seconds(5)) {
+            let activated = await eventually {
                 elements(host.view).contains {
                     $0.accessibilityLabel == label && $0.accessibilityActivate()
                 }
