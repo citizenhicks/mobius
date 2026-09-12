@@ -89,7 +89,7 @@ struct ChatView: View {
             ToolbarItem(placement: .principal) {
                 VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
                     MobiusTitleText(verbatim: chatTitle)
-                        .font(MobiusStyle.titleFont)
+                        .font(.subheadline.weight(.semibold))
                         .lineLimit(1)
                     HStack(spacing: MobiusSpace.xs) {
                         if !chatSubtitle.isEmpty {
