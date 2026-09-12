@@ -792,8 +792,8 @@ final class AppModel {
         let ids =
             chat.selectedSessionID == nil
             ? chat.pendingNewChatBotIDs
-            : Set(chat.selectedMemberBotIDs ?? selectedSession?.botIds ?? [])
-        return bots.filter { ids.contains($0.id) }
+            : chat.selectedMemberBotIDs ?? selectedSession?.botIds ?? []
+        return ids.compactMap { id in bots.first { $0.id == id } }
     }
 
     var selectedBot: BotRecord? {

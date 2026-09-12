@@ -6,6 +6,133 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testNewChatBotPickerAndCircularAddButton() async throws {
+        let app = try model { _ in }
+        app.gateway.connectionState = .ready
+        app.bots = [
+            bot(name: "Research Assistant"),
+            bot(id: "bot-2", handle: "reviewer", name: "Reviewer", tint: .orange),
+        ]
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let previous = scene.keyWindow
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 402, height: 874)
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previous?.makeKeyAndVisible()
+        }
+        let host = UIHostingController(
+            rootView: AnyView(
+                NavigationStack { BotsView() }.modifier(MobiusTheme()).environment(app)))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+
+        func capture(_ name: String) {
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+                window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+            }
+            let attachment = XCTAttachment(image: image)
+            attachment.name = name
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+        let addAppeared = await eventually {
+            testAccessibilityElements(host.view).contains { $0.accessibilityLabel == "New Bot" }
+        }
+        XCTAssertTrue(addAppeared)
+        let addButton = try XCTUnwrap(
+            testAccessibilityElements(host.view).first { $0.accessibilityLabel == "New Bot" })
+        XCTAssertEqual(
+            addButton.accessibilityFrame.width, addButton.accessibilityFrame.height, accuracy: 1)
+        capture("bots-circular-add-button")
+
+        app.chooseWorkspace("/srv/project")
+        host.rootView = AnyView(
+            NavigationStack { ChatView() }.modifier(MobiusTheme()).environment(app))
+        let pickerAppeared = await eventually {
+            testAccessibilityElements(host.view).contains {
+                $0.accessibilityLabel == "Bots" && $0.accessibilityActivate()
+            }
+        }
+        XCTAssertTrue(pickerAppeared)
+        for name in ["Reviewer · @reviewer", "Research Assistant · @helper"] {
+            let selected = await eventually {
+                testAccessibilityElements(window).contains {
+                    $0.accessibilityLabel == name && $0.accessibilityActivate()
+                }
+            }
+            XCTAssertTrue(selected, "Missing Bot choice: \(name)")
+        }
+        XCTAssertEqual(app.chat.pendingNewChatBotIDs, ["bot-2", "bot-1"])
+        let choicesSelected = await eventually {
+            let choices = testAccessibilityElements(window).filter {
+                ["Reviewer · @reviewer", "Research Assistant · @helper"].contains(
+                    $0.accessibilityLabel)
+            }
+            return choices.count == 2
+                && choices.allSatisfy { $0.accessibilityTraits.contains(.selected) }
+        }
+        XCTAssertTrue(choicesSelected)
+        try await Task.sleep(for: .milliseconds(350))
+        capture("new-chat-bot-picker")
+        host.rootView = AnyView(
+            NavigationStack { ChatView() }.id(UUID()).modifier(MobiusTheme()).environment(app))
+        let pickerClosed = await eventually {
+            !testAccessibilityElements(window).contains {
+                $0.accessibilityLabel == "Reviewer · @reviewer"
+            }
+        }
+        XCTAssertTrue(pickerClosed)
+        try await Task.sleep(for: .milliseconds(350))
+        capture("new-chat-first-bot-and-count")
+        XCTAssertTrue(
+            testAccessibilityElements(host.view).contains {
+                $0.accessibilityLabel == "Bots"
+                    && $0.accessibilityValue == "Reviewer, Research Assistant"
+            })
+
+        app.bots += (3...24).map {
+            bot(id: "bot-\($0)", handle: "helper\($0)", name: "Helper \($0)")
+        }
+        let largeTextPresented = expectation(description: "Large-text picker appeared")
+        host.rootView = AnyView(
+            NavigationStack { ChatView() }.id(UUID()).modifier(MobiusTheme()).environment(app)
+                .environment(\.dynamicTypeSize, .accessibility3)
+                .onAppear { largeTextPresented.fulfill() })
+        await fulfillment(of: [largeTextPresented], timeout: 1)
+        let reopened = await eventually {
+            testAccessibilityElements(host.view).contains {
+                $0.accessibilityLabel == "Bots" && $0.accessibilityActivate()
+            }
+        }
+        XCTAssertTrue(reopened)
+        func botScrollView() -> UIScrollView? {
+            testAccessibilityElements(window).compactMap { $0 as? UIScrollView }.first {
+                $0.contentSize.height > $0.bounds.height && $0.bounds.height > 0
+                    && testAccessibilityElements($0).contains {
+                        $0.accessibilityLabel == "Helper 24 · @helper24"
+                    }
+            }
+        }
+        let scrollAppeared = await eventually { botScrollView() != nil }
+        XCTAssertTrue(scrollAppeared)
+        let scroll = try XCTUnwrap(botScrollView())
+        scroll.setContentOffset(
+            CGPoint(x: 0, y: scroll.contentSize.height - scroll.bounds.height), animated: false)
+        let lastSelected = await eventually {
+            testAccessibilityElements(window).contains {
+                $0.accessibilityLabel == "Helper 24 · @helper24"
+                    && window.convert($0.accessibilityFrame, from: nil).intersects(
+                        scroll.convert(scroll.bounds, to: window))
+                    && $0.accessibilityActivate()
+            }
+        }
+        XCTAssertTrue(lastSelected)
+        XCTAssertEqual(app.chat.pendingNewChatBotIDs, ["bot-2", "bot-1", "bot-24"])
+        capture("new-chat-bot-picker-accessibility-scroll")
+    }
+
     func testCreationFormsReopenWithEmptyDrafts() async throws {
         let recorder = GatewayRequestRecorder()
         let app = try model { await recorder.record($0) }

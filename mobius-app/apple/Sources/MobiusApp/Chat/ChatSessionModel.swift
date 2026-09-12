@@ -114,7 +114,7 @@ final class ChatSessionModel {
     var currentUsage = TokenUsage()
     var lastUsage = TokenUsage()
     var pendingNewChatWorkspace: String?
-    var pendingNewChatBotIDs: Set<String> = []
+    var pendingNewChatBotIDs: [String] = []
     var pendingWidgetEdit: PendingWidgetEdit?
     var stashedComposerDraft: String?
     var isLoadingComposerEditRecovery = false

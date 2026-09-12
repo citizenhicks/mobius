@@ -88,45 +88,60 @@ private struct NewChatFolderPicker: View {
 private struct NewChatBotPicker: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
+    @State private var showsBots = false
 
     var body: some View {
-        Menu {
-            ForEach(model.bots) { bot in
-                Toggle(
-                    isOn: Binding(
-                        get: { model.chat.pendingNewChatBotIDs.contains(bot.id) },
-                        set: { model.selectBotForNewChat(bot, selected: $0) }
-                    )
-                ) {
-                    Label {
-                        Text(verbatim: "\(bot.name) · @\(bot.handle)")
-                    } icon: {
-                        MobiusGlyph.aiScan.menuImage(bot.tint.color)
-                    }
-                }
-                .menuActionDismissBehavior(.disabled)
-            }
-
+        let selectedBots = model.selectedChatBots
+        Button {
+            showsBots = true
         } label: {
-            Group {
-                if model.selectedChatIsGroup {
-                    MobiusBadge(text: .verbatim(""), glyph: .userGroup02, interactive: true)
-                } else {
-                    MobiusMenuLabel(
-                        text: model.selectedChatBots.isEmpty
-                            ? .localized("Choose Bots")
-                            : .verbatim(model.selectedChatBots.map(\.name).joined(separator: ", ")),
-                        glyph: .aiScan,
-                        glyphColor: model.selectedBot?.tint.color ?? palette.muted
-                    )
-                }
-            }
+            MobiusMenuLabel(
+                text: selectedBots.first.map { .verbatim($0.name) } ?? .localized("Choose Bots"),
+                glyph: .aiScan,
+                detail: selectedBots.count > 1 ? .verbatim("+ \(selectedBots.count - 1)") : nil,
+                glyphColor: selectedBots.first?.tint.color ?? palette.muted
+            )
             .frame(minWidth: MobiusStyle.iconButtonSize, minHeight: MobiusStyle.iconButtonSize)
         }
         .accessibilityLabel("Bots")
-        .accessibilityValue(model.selectedChatBots.map(\.name).joined(separator: ", "))
+        .accessibilityValue(selectedBots.map(\.name).joined(separator: ", "))
         .accessibilityHint("Choose one Bot for a chat, or several for a group chat")
         .sensoryFeedback(.selection, trigger: model.chat.pendingNewChatBotIDs)
+        .popover(isPresented: $showsBots, arrowEdge: .bottom) {
+            ViewThatFits(in: .vertical) {
+                botChoices.fixedSize(horizontal: false, vertical: true)
+                ScrollView { botChoices }
+            }
+            .frame(width: 340)
+            .frame(maxHeight: 440)
+            .presentationCompactAdaptation(.popover)
+        }
+    }
+
+    private var botChoices: some View {
+        VStack(spacing: 0) {
+            ForEach(model.bots) { bot in
+                let isSelected = model.chat.pendingNewChatBotIDs.contains(bot.id)
+                Button {
+                    model.selectBotForNewChat(bot, selected: !isSelected)
+                } label: {
+                    HStack(spacing: MobiusSpace.s) {
+                        MobiusIcon(.aiScan, foreground: bot.tint.color)
+                        Text(verbatim: "\(bot.name) · @\(bot.handle)")
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        if isSelected { MobiusIcon(.check) }
+                    }
+                    .frame(minHeight: MobiusStyle.rowTouch)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.mobiusPlain)
+                .foregroundStyle(.primary)
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
+            }
+        }
+        .padding(.horizontal, MobiusSpace.l)
+        .padding(.vertical, MobiusSpace.s)
     }
 }
 

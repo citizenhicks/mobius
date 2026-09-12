@@ -9,9 +9,11 @@ extension AppModel {
             case .chat(.new)? = navigationPath.last
         else { return }
         if selected {
-            chat.pendingNewChatBotIDs.insert(bot.id)
+            if !chat.pendingNewChatBotIDs.contains(bot.id) {
+                chat.pendingNewChatBotIDs.append(bot.id)
+            }
         } else {
-            chat.pendingNewChatBotIDs.remove(bot.id)
+            chat.pendingNewChatBotIDs.removeAll { $0 == bot.id }
         }
         workspaceError = nil
         createPendingVoiceChat()
@@ -32,7 +34,7 @@ extension AppModel {
         gateway.connectionState = .loading
         gateway.transmit(
             .createSession(
-                requestID: id, workspace: path, botIDs: chat.pendingNewChatBotIDs.sorted())
+                requestID: id, workspace: path, botIDs: chat.pendingNewChatBotIDs)
         ) {
             [weak self] message in
             guard let self, self.chat.sessionRequestID == id else { return }
@@ -70,7 +72,7 @@ extension AppModel {
         guard let path = workspace?.path, let selectedSession else { return }
         let ids = selectedSession.botIds
         chooseWorkspace(path)
-        chat.pendingNewChatBotIDs = Set(ids)
+        chat.pendingNewChatBotIDs = ids
     }
 
     func openChat(_ sessionID: String) {

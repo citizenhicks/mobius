@@ -161,7 +161,11 @@ extension AppModelTests {
 
         model.selectBotForNewChat(helper)
         model.selectBotForNewChat(reviewer)
-        XCTAssertEqual(model.chat.pendingNewChatBotIDs, [helper.id, reviewer.id])
+        model.selectBotForNewChat(helper, selected: false)
+        model.selectBotForNewChat(helper)
+        model.selectBotForNewChat(reviewer)
+        XCTAssertEqual(model.chat.pendingNewChatBotIDs, [reviewer.id, helper.id])
+        XCTAssertEqual(model.selectedChatBots.map(\.name), ["Reviewer", "Helper"])
         let selectedRequests = await recorder.requests()
         XCTAssertFalse(
             selectedRequests.contains { request in
@@ -174,11 +178,11 @@ extension AppModelTests {
         model.chooseWorkspace("/srv/final-project")
         XCTAssertFalse(model.showsWorkspaceBrowser)
         XCTAssertEqual(model.chat.composer, "Start here")
-        XCTAssertEqual(model.chat.pendingNewChatBotIDs, [helper.id, reviewer.id])
+        XCTAssertEqual(model.chat.pendingNewChatBotIDs, [reviewer.id, helper.id])
         XCTAssertTrue(model.sendMessage())
         let request = await recorder.firstRequest(after: 0) { request in
             guard case .createSession(_, "/srv/final-project", let botIDs) = request,
-                botIDs == ["bot-1", "bot-2"]
+                botIDs == ["bot-2", "bot-1"]
             else {
                 return false
             }
