@@ -41,7 +41,7 @@ final class AppModel {
     var textFilePreview: TextFilePreview?
     var sessionFileShareItem: SessionFileShareItem?
     var isLoadingFilePresentation = false
-    var isSavingWorkspaceFile = false
+    var isSavingWorkspaceFile: Bool { workspaceFileWriteRequestID != nil }
     var returnsToFilesAfterFilePresentation = false
     var toast: AppToast?
     var showsAppUpdateAlert = false
@@ -66,7 +66,7 @@ final class AppModel {
         didSet { workspaceFilesRevision &+= 1 }
     }
     var workspaceFilesTruncated = false
-    var isLoadingWorkspaceFiles = false
+    var isLoadingWorkspaceFiles: Bool { workspaceFilesRequestID != nil }
     var profile: ProfileSnapshot?
     var profileRequestID: String?
     var routines: [Routine] = []
@@ -89,7 +89,7 @@ final class AppModel {
     }
     var directoryListing: DirectoryListing?
     var directoryError: String?
-    var isLoadingDirectories = false
+    var isLoadingDirectories: Bool { directoryRequestID != nil }
 
     var agentSnapshot: VersionedAgentConfig?
     var botDefaultsSnapshot: VersionedAgentConfig?
@@ -140,18 +140,6 @@ final class AppModel {
     @ObservationIgnored let settingsDefaults: UserDefaults
     @ObservationIgnored let appLockAuthenticator: AppLockAuthenticator
     @ObservationIgnored var appLockAuthenticationGeneration = UUID()
-    @ObservationIgnored var deltaFlushTask: Task<Void, Never>?
-    @ObservationIgnored var awaitingInitialMessageTurnID: String?
-    @ObservationIgnored var bufferedDeltas:
-        [(
-            id: String,
-            delta: String,
-            kind: TranscriptEntry.Kind,
-            modelStepID: String,
-            turnID: String?,
-            sourceSequence: UInt64,
-            recordedAtMs: Int64
-        )] = []
     @ObservationIgnored var startupTask: Task<Void, Never>?
     @ObservationIgnored var startupTaskID: UUID?
     @ObservationIgnored var startedAccountID: UUID?
@@ -163,12 +151,12 @@ final class AppModel {
     var botMutationSuccessMessage: String?
     @ObservationIgnored var botDefaultsRequestID: String?
     @ObservationIgnored var submittedBotDefaultsDraft: AgentComposition?
-    @ObservationIgnored var directoryRequestID: String?
+    var directoryRequestID: String?
     @ObservationIgnored var gitCredentialRequestID: String?
     @ObservationIgnored var isApprovingGitCredential = false
     @ObservationIgnored var sshIdentityRequestID: String?
-    @ObservationIgnored var workspaceFilesRequestID: String?
-    @ObservationIgnored var workspaceFileWriteRequestID: String?
+    var workspaceFilesRequestID: String?
+    var workspaceFileWriteRequestID: String?
     @ObservationIgnored var workspaceFilePreviewDownload: WorkspaceFilePreviewDownload?
     @ObservationIgnored var filePresentationGeneration = UUID()
     @ObservationIgnored var previewTemporaryDirectory: URL?
@@ -596,7 +584,6 @@ final class AppModel {
             || pendingProviderRemoval != nil
             || botApplyState == .applying
             || botDefaultsApplyState == .applying
-            || botDefaultsApplyState == .restarting
     }
 
     var contextFillFraction: Double {
@@ -708,7 +695,7 @@ final class AppModel {
             chat.visibleChatWindowTokens.remove(windowToken)
         }
         if visible, let selectedSessionID = chat.selectedSessionID {
-            markSessionRead(selectedSessionID)
+            chat.markSessionRead(selectedSessionID)
         }
     }
 
@@ -725,38 +712,6 @@ final class AppModel {
         }
         chat.sessionReadCursors = store.loadSessionReadCursors(accountID: accountID)
         chat.unreadSessionIDs.removeAll()
-    }
-
-    func markSessionRead(_ sessionID: String) {
-        chat.unreadSessionIDs.remove(sessionID)
-        saveSessionReadCursor(sessionID, unread: false)
-    }
-
-    func markSessionUnread(_ sessionID: String) {
-        chat.unreadSessionIDs.insert(sessionID)
-        saveSessionReadCursor(sessionID, unread: true)
-    }
-
-    private func saveSessionReadCursor(_ sessionID: String, unread: Bool) {
-        guard let accountID = gateway.selectedAccountID,
-            let session = chat.sessions.first(where: { $0.sessionId == sessionID })
-        else { return }
-        let cursor =
-            unread
-            ? SessionReadCursor(sequence: nil, wasActive: session.activity.state != .idle)
-            : sessionReadCursor(for: session)
-        guard chat.sessionReadCursors?[sessionID] != cursor else { return }
-        var cursors = chat.sessionReadCursors ?? [:]
-        cursors[sessionID] = cursor
-        chat.sessionReadCursors = cursors
-        store.saveSessionReadCursors(cursors, accountID: accountID)
-    }
-
-    func sessionReadCursor(for session: SessionRecord) -> SessionReadCursor {
-        SessionReadCursor(
-            sequence: session.sequence,
-            wasActive: session.activity.state != .idle
-        )
     }
 
     var capabilityReferences: [MountedReference] {

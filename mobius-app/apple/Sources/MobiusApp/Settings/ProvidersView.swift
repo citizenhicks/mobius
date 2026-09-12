@@ -215,8 +215,7 @@ private struct AddProviderSheet: View {
                             SettingsInfoButton(
                                 title: "Provider setups",
                                 detail:
-                                    "Pick a service, then name this setup. Adding a second setup of the same service keeps both, each with its own credential.",
-                                compact: true
+                                    "Pick a service, then name this setup. Adding a second setup of the same service keeps both, each with its own credential."
                             )
                         }
                     }

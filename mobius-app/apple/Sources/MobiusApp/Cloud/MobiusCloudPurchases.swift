@@ -48,34 +48,15 @@ enum MobiusCloudPurchaseError: LocalizedError {
 
 @MainActor
 struct MobiusCloudPurchases {
-    private let loadDisplayPrices: @MainActor () async throws -> [MobiusCloudTier: String]
-    private let loadUnfinishedPurchases: @MainActor () async throws -> MobiusCloudPurchaseScan
-    private let loadCurrentEntitlements: @MainActor (Bool) async throws -> MobiusCloudPurchaseScan
-    private let requestPurchase:
-        @MainActor (UUID, MobiusCloudTier) async throws -> MobiusCloudPurchase
-    private let loadUpdates: @MainActor () -> AsyncStream<MobiusCloudPurchase>
-    private let showSubscriptionManagement: @MainActor () async throws -> Void
-    private let loadAppStoreURL: @MainActor () async -> URL?
-
-    init(
-        displayPrices: @escaping @MainActor () async throws -> [MobiusCloudTier: String],
-        unfinishedPurchases: @escaping @MainActor () async throws -> MobiusCloudPurchaseScan,
-        currentEntitlements: @escaping @MainActor (Bool) async throws -> MobiusCloudPurchaseScan,
-        purchase: @escaping @MainActor (UUID, MobiusCloudTier) async throws -> MobiusCloudPurchase,
-        updates: @escaping @MainActor () -> AsyncStream<MobiusCloudPurchase> = {
-            AsyncStream { $0.finish() }
-        },
-        manage: @escaping @MainActor () async throws -> Void = {},
-        appStoreURL: @escaping @MainActor () async -> URL? = { nil }
-    ) {
-        loadDisplayPrices = displayPrices
-        loadUnfinishedPurchases = unfinishedPurchases
-        loadCurrentEntitlements = currentEntitlements
-        requestPurchase = purchase
-        loadUpdates = updates
-        showSubscriptionManagement = manage
-        loadAppStoreURL = appStoreURL
+    let displayPrices: @MainActor () async throws -> [MobiusCloudTier: String]
+    let unfinishedPurchases: @MainActor () async throws -> MobiusCloudPurchaseScan
+    let currentEntitlements: @MainActor (Bool) async throws -> MobiusCloudPurchaseScan
+    let purchase: @MainActor (UUID, MobiusCloudTier) async throws -> MobiusCloudPurchase
+    var updates: @MainActor () -> AsyncStream<MobiusCloudPurchase> = {
+        AsyncStream { $0.finish() }
     }
+    var manage: @MainActor () async throws -> Void = {}
+    var appStoreURL: @MainActor () async -> URL? = { nil }
 
     static func live() -> Self {
         let bridge = StoreKitCloudBridge()
@@ -88,34 +69,6 @@ struct MobiusCloudPurchases {
             manage: bridge.showSubscriptionManagement,
             appStoreURL: bridge.appStoreURL
         )
-    }
-
-    func displayPrices() async throws -> [MobiusCloudTier: String] {
-        try await loadDisplayPrices()
-    }
-
-    func unfinishedPurchases() async throws -> MobiusCloudPurchaseScan {
-        try await loadUnfinishedPurchases()
-    }
-
-    func currentEntitlements(synchronize: Bool = false) async throws -> MobiusCloudPurchaseScan {
-        try await loadCurrentEntitlements(synchronize)
-    }
-
-    func purchase(userID: UUID, tier: MobiusCloudTier) async throws -> MobiusCloudPurchase {
-        try await requestPurchase(userID, tier)
-    }
-
-    func updates() -> AsyncStream<MobiusCloudPurchase> {
-        loadUpdates()
-    }
-
-    func manage() async throws {
-        try await showSubscriptionManagement()
-    }
-
-    func appStoreURL() async -> URL? {
-        await loadAppStoreURL()
     }
 }
 

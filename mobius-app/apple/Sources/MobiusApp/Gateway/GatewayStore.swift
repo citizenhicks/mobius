@@ -378,7 +378,7 @@ private actor GatewayDiskStore {
             withIntermediateDirectories: true
         )
         guard (try? data.write(to: url, options: protectedWriteOptions)) != nil else { return }
-        trimTranscriptCache(in: directory)
+        trimCache(in: directory, fileExtension: "json", keeping: maximumCachedTranscriptsPerAccount)
     }
 
     func removeTranscript(accountID: UUID, sessionID: String) {
@@ -414,7 +414,7 @@ private actor GatewayDiskStore {
             withIntermediateDirectories: true
         )
         guard (try? data.write(to: url, options: protectedWriteOptions)) != nil else { return }
-        trimThumbnailCache(in: directory)
+        trimCache(in: directory, fileExtension: "png", keeping: maximumCachedThumbnailsPerAccount)
     }
 
     func removeThumbnail(accountID: UUID, sessionID: String, fileID: String) {
@@ -603,14 +603,14 @@ private actor GatewayDiskStore {
             .replacingOccurrences(of: "+", with: "-")
     }
 
-    private func trimTranscriptCache(in directory: URL) {
+    private func trimCache(in directory: URL, fileExtension: String, keeping limit: Int) {
         let cached =
             ((try? FileManager.default.contentsOfDirectory(
                 at: directory,
                 includingPropertiesForKeys: [.contentModificationDateKey],
                 options: [.skipsHiddenFiles]
             )) ?? [])
-            .filter { $0.pathExtension == "json" }
+            .filter { $0.pathExtension == fileExtension }
             .map { candidate in
                 let date =
                     (try? candidate.resourceValues(
@@ -619,28 +619,7 @@ private actor GatewayDiskStore {
                 return (url: candidate, date: date)
             }
             .sorted { $0.date > $1.date }
-        for stale in cached.dropFirst(maximumCachedTranscriptsPerAccount) {
-            try? FileManager.default.removeItem(at: stale.url)
-        }
-    }
-
-    private func trimThumbnailCache(in directory: URL) {
-        let cached =
-            ((try? FileManager.default.contentsOfDirectory(
-                at: directory,
-                includingPropertiesForKeys: [.contentModificationDateKey],
-                options: [.skipsHiddenFiles]
-            )) ?? [])
-            .filter { $0.pathExtension == "png" }
-            .map { candidate in
-                let date =
-                    (try? candidate.resourceValues(
-                        forKeys: [.contentModificationDateKey]
-                    ).contentModificationDate) ?? .distantPast
-                return (url: candidate, date: date)
-            }
-            .sorted { $0.date > $1.date }
-        for stale in cached.dropFirst(maximumCachedThumbnailsPerAccount) {
+        for stale in cached.dropFirst(limit) {
             try? FileManager.default.removeItem(at: stale.url)
         }
     }

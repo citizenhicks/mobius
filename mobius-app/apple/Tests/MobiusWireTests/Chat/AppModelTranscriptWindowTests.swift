@@ -334,7 +334,6 @@ extension AppModelTests {
                         "message": .string("Duplicate"),
                     ])),
                 blocks: [],
-                history: nil,
                 preview: nil
             ))
         XCTAssertEqual(model.chat.transcript.map(\.text), ["Already rendered"])
@@ -545,7 +544,6 @@ extension AppModelTests {
                         "delta": .string(" updated"),
                     ])),
                 blocks: [],
-                history: nil,
                 preview: nil
             ))
         XCTAssertEqual(model.chat.displayedTranscript.map(\.text), ["Cached"])
@@ -562,7 +560,6 @@ extension AppModelTests {
                     )
                 ),
                 blocks: [],
-                history: nil,
                 preview: nil
             ))
         XCTAssertEqual(model.chat.displayedTranscript.map(\.text), ["Cached"])
@@ -637,7 +634,6 @@ extension AppModelTests {
                         "delta": .string(" updated"),
                     ])),
                 blocks: [],
-                history: nil,
                 preview: nil
             ))
 
@@ -670,7 +666,6 @@ extension AppModelTests {
                         "delta": .string(" again"),
                     ])),
                 blocks: [],
-                history: nil,
                 preview: nil
             ))
         model.gateway.handle(

@@ -26,7 +26,7 @@ extension ChatSessionModel {
         let message = type == "message" ? try? MessageEventPayload(json: event.msg) : nil
         let turnID = event.msg["turnId"]?.stringValue ?? activeTurnID
         prepareTranscriptEvent(event, type: type, message: message)
-        let wasRendered = applyPresentation(from: record, turnID: turnID)
+        applyPresentation(from: record, turnID: turnID)
 
         if handleNarrativeEvent(
             type,
@@ -38,11 +38,11 @@ extension ChatSessionModel {
             return
         }
         if handleTurnEvent(
-            type, event: event, record: record, turnID: turnID, wasRendered: wasRendered)
+            type, event: event, record: record, turnID: turnID)
         {
             return
         }
-        _ = handleTranscriptStateEvent(type, event: event)
+        handleTranscriptStateEvent(type, event: event)
     }
 
     private func prepareTranscriptEvent(
@@ -93,7 +93,7 @@ extension ChatSessionModel {
         }
     }
 
-    private func applyPresentation(from record: RecordedEvent, turnID: String?) -> Bool {
+    private func applyPresentation(from record: RecordedEvent, turnID: String?) {
         let event = record.event
         let modelStepID = event.msg["modelStepId"]?.stringValue
         for (index, rendered) in record.blocks.enumerated() {
@@ -121,7 +121,6 @@ extension ChatSessionModel {
             )
             if completesPageLoad { isLoadingPreviewPage = false }
         }
-        return !record.blocks.isEmpty
     }
 
     private func handleNarrativeEvent(
@@ -185,8 +184,7 @@ extension ChatSessionModel {
         _ type: String,
         event: AgentEventRecord,
         record: RecordedEvent,
-        turnID: String?,
-        wasRendered: Bool
+        turnID: String?
     ) -> Bool {
         switch type {
         case "model_step_started":
@@ -216,9 +214,9 @@ extension ChatSessionModel {
                 modelContextWindow = Int64(window)
             }
         case "turn_complete":
-            finishTranscriptTurn(record, turnID: turnID, aborted: false, wasRendered: wasRendered)
+            finishTranscriptTurn(record, turnID: turnID, aborted: false)
         case "turn_aborted":
-            finishTranscriptTurn(record, turnID: turnID, aborted: true, wasRendered: wasRendered)
+            finishTranscriptTurn(record, turnID: turnID, aborted: true)
         case "web_search_begin", "web_search_end", "warning", "error", "submission_rejected":
             break
         case "tool_call_begin":
@@ -236,8 +234,7 @@ extension ChatSessionModel {
     private func finishTranscriptTurn(
         _ record: RecordedEvent,
         turnID: String?,
-        aborted: Bool,
-        wasRendered: Bool
+        aborted: Bool
     ) {
         finishPendingTranscriptEntries()
         if let turnID {
@@ -255,13 +252,12 @@ extension ChatSessionModel {
         onSessionFilesRefresh?()
         pendingApproval = nil
         approvalRequestID = nil
-        if aborted, !wasRendered { finishPendingTranscriptEntries() }
     }
 
     private func handleTranscriptStateEvent(
         _ type: String,
         event: AgentEventRecord
-    ) -> Bool {
+    ) {
         switch type {
         case "model_changed":
             selectedModelRoute = event.msg["route"]?.stringValue ?? selectedModelRoute
@@ -291,9 +287,8 @@ extension ChatSessionModel {
         case "frontend":
             applyFrontendEvent(event.msg, submissionID: event.submissionId)
         default:
-            return false
+            break
         }
-        return true
     }
 
     private func applyFrontendEvent(_ event: JSONValue, submissionID: String?) {

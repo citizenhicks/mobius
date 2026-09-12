@@ -84,24 +84,10 @@ final class RealtimeVoiceMeterTests: XCTestCase {
 @MainActor
 extension AppModelTests {
     func testVoiceSurfaceHidesComposerDuringStartupAndPreservesDraft() async throws {
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))
-        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
-        let model = Mobius.AppModel(
-            store: Mobius.GatewayStore(
-                defaults: defaults, transcriptDirectory: directory, draftDirectory: directory),
-            settingsDefaults: defaults,
-            appLockAuthenticator: Mobius.AppLockAuthenticator(
-                method: { .unavailable }, authenticate: { _ in false }),
-            requestSender: { _ in }
-        )
+        let model = try model(requestSender: { _ in })
         var config = composition()
         config.middleware.enabled.insert("attachments")
-        model.bots = [
-            try JSONDecoder().decode(
-                Mobius.BotRecord.self,
-                from: JSONEncoder().encode(
-                    bot(tint: .orange, config: VersionedAgentConfig(revision: 1, config: config))))
-        ]
+        model.bots = [bot(tint: .orange, config: VersionedAgentConfig(revision: 1, config: config))]
         model.chat.pendingNewChatBotID = "bot-1"
         model.gateway.connectionState = .ready
         model.chat.composer = "Preserve this draft"

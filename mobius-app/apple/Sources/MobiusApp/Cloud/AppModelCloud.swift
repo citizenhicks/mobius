@@ -325,7 +325,7 @@ extension MobiusCloudModel {
         }
 
         let purchase = try await cloudPurchases.purchase(
-            userID: recoveredAccount.userID, tier: tier)
+            recoveredAccount.userID, tier)
         try await acknowledge(purchase)
         let verifiedAccount = try await authoritativeCloudAccount(generation: generation)
         guard operationGeneration == generation else { throw CancellationError() }
@@ -346,7 +346,7 @@ extension MobiusCloudModel {
         let current =
             account.subscribed && !synchronize
             ? MobiusCloudPurchaseScan()
-            : try await cloudPurchases.currentEntitlements(synchronize: synchronize)
+            : try await cloudPurchases.currentEntitlements(synchronize)
         guard cloudSession == requestedSession,
             operationGeneration == generation
         else { throw CancellationError() }

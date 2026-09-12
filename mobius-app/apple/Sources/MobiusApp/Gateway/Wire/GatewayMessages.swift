@@ -3,8 +3,6 @@ import Foundation
 enum GatewayRequest: Encodable, Sendable {
     case pair(code: String, clientLabel: String, clientKind: GatewayClientKind)
     case authenticate(token: String, clientKind: GatewayClientKind)
-    case listClients(requestID: String)
-    case unpairClient(requestID: String, clientID: String)
     case listSessions(requestID: String)
     case listBotSessions(requestID: String, botID: String)
     case createSession(requestID: String, workspace: String, botID: String)
@@ -203,13 +201,6 @@ enum GatewayRequest: Encodable, Sendable {
             try container.encode("authenticate", forKey: "type")
             try container.encode(token, forKey: "token")
             try container.encode(clientKind, forKey: "clientKind")
-        case .listClients(let requestID):
-            try container.encode("list_clients", forKey: "type")
-            try container.encode(requestID, forKey: "requestId")
-        case .unpairClient(let requestID, let clientID):
-            try container.encode("unpair_client", forKey: "type")
-            try container.encode(requestID, forKey: "requestId")
-            try container.encode(clientID, forKey: "clientId")
         case .listSessions(let requestID):
             try container.encode("list_sessions", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
@@ -596,7 +587,6 @@ enum GatewayEnvelope: Decodable, Sendable {
     case botSessions(requestID: String, botID: String, sessions: [SessionRecord])
     case bots(requestID: String?, bots: [BotRecord])
     case swarms(requestID: String?, swarms: [SwarmRecord])
-    case clients(requestID: String, currentClientID: String, clients: [ClientStatus])
     case providerCredentialSaved(requestID: String, instance: String, provider: String)
     case pairingCode(requestID: String, code: String, expiresAt: Int64)
     case providerLoginStarted(
@@ -782,12 +772,6 @@ enum GatewayEnvelope: Decodable, Sendable {
             self = .swarms(
                 requestID: try container.decodeIfPresent(String.self, forKey: "requestId"),
                 swarms: try container.decode([SwarmRecord].self, forKey: "swarms")
-            )
-        case "clients":
-            self = .clients(
-                requestID: try container.decode(String.self, forKey: "requestId"),
-                currentClientID: try container.decode(String.self, forKey: "currentClientId"),
-                clients: try container.decode([ClientStatus].self, forKey: "clients")
             )
         case "provider_credential_saved":
             self = .providerCredentialSaved(
@@ -1244,11 +1228,6 @@ enum SessionOutcome: String, Codable, Hashable, Sendable {
 }
 
 struct ModelChoice: Identifiable, Codable, Hashable, Sendable {
-    private enum CodingKeys: String, CodingKey {
-        case route, group, model, reasoningEffort, contextWindow, supportsImageInput
-        case toolDiscovery, supportsRealtimeVoice
-    }
-
     var id: String { route }
 
     let route: String
@@ -1278,22 +1257,5 @@ struct ModelChoice: Identifiable, Codable, Hashable, Sendable {
         self.supportsImageInput = supportsImageInput
         self.supportsRealtimeVoice = supportsRealtimeVoice
         self.toolDiscovery = toolDiscovery
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.init(
-            route: try container.decode(String.self, forKey: .route),
-            group: try container.decode(String.self, forKey: .group),
-            model: try container.decode(String.self, forKey: .model),
-            reasoningEffort: try container.decodeIfPresent(String.self, forKey: .reasoningEffort),
-            contextWindow: try container.decodeIfPresent(Int64.self, forKey: .contextWindow),
-            supportsImageInput: try container.decode(
-                Bool.self,
-                forKey: .supportsImageInput
-            ),
-            supportsRealtimeVoice: try container.decode(Bool.self, forKey: .supportsRealtimeVoice),
-            toolDiscovery: try container.decode(ToolDiscoveryMode.self, forKey: .toolDiscovery)
-        )
     }
 }

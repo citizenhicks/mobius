@@ -563,15 +563,6 @@ private struct EventLine: View {
     }
 
     private var eventAccessibilityLabel: Text {
-        switch (middlewareLabel, headline) {
-        case (.localized(let middleware), .localized(let headline)):
-            Text("\(middleware), \(headline)")
-        case (.localized(let middleware), .verbatim(let headline)):
-            Text("\(middleware), \(headline)")
-        case (.verbatim(let middleware), .localized(let headline)):
-            Text("\(middleware), \(headline)")
-        case (.verbatim(let middleware), .verbatim(let headline)):
-            Text("\(middleware), \(headline)")
-        }
+        Text("\(middlewareLabel.text), \(headline.text)")
     }
 }

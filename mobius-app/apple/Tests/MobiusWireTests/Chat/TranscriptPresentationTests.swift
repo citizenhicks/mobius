@@ -371,53 +371,17 @@ final class TranscriptRunArrivalTests: XCTestCase {
 
     /// Replays a sequence of transcript states the way `TranscriptView` consumes them and
     /// reports every state the scroll view would react to.
-    private func trace(
-        _ steps: [(label: String, entries: [TranscriptEntry], waiting: Bool)]
-    ) -> [(label: String, revision: UInt64, rows: [String], waiting: TranscriptWaitingSlot)] {
-        var previous: TranscriptProjection?
-        var out: [(String, UInt64, [String], TranscriptWaitingSlot)] = []
-        for step in steps {
-            let projection = TranscriptProjection(
-                entries: step.entries,
-                waitingPhrase: step.waiting ? phrase : nil,
-                previous: previous
-            )
-            previous = projection
-            out.append(
-                (
-                    step.label,
-                    projection.structuralRevision,
-                    projection.rows.map(\.id),
-                    projection.waiting
+    private func trace(_ steps: [[TranscriptEntry]]) -> [TranscriptProjection] {
+        var projections: [TranscriptProjection] = []
+        for entries in steps {
+            projections.append(
+                TranscriptProjection(
+                    entries: entries,
+                    waitingPhrase: phrase,
+                    previous: projections.last
                 ))
         }
-        return out
-    }
-
-    private func report(
-        _ trace: [(label: String, revision: UInt64, rows: [String], waiting: TranscriptWaitingSlot)]
-    ) {
-        var lines = ["--- rev | rows | waiting ---"]
-        for step in trace {
-            let waiting: String
-            switch step.waiting {
-            case .absent: waiting = "absent"
-            case .standaloneLine: waiting = "STANDALONE LINE (own row)"
-            case .row(let id, _): waiting = "in row \(id)"
-            }
-            lines.append(
-                "  \(step.revision)  \(step.label.padding(toLength: 26, withPad: " ", startingAt: 0)) rows=\(step.rows) \(waiting)"
-            )
-        }
-        let url = URL(fileURLWithPath: "/tmp/mobius-trace.txt")
-        let text = lines.joined(separator: "\n") + "\n\n"
-        if let handle = try? FileHandle(forWritingTo: url) {
-            handle.seekToEndOfFile()
-            handle.write(Data(text.utf8))
-            try? handle.close()
-        } else {
-            try? text.write(to: url, atomically: true, encoding: .utf8)
-        }
+        return projections
     }
 
     /// Three tool calls landing together, each one already carrying its title.
@@ -427,14 +391,13 @@ final class TranscriptRunArrivalTests: XCTestCase {
         let b = activity("event:b", title: "Grep")
         let c = activity("event:c", title: "Bash")
         let steps = [
-            ("answer, waiting", [answer], true),
-            ("+ a", [answer, a], true),
-            ("+ b", [answer, a, b], true),
-            ("+ c", [answer, a, b, c], true),
+            [answer],
+            [answer, a],
+            [answer, a, b],
+            [answer, a, b, c],
         ]
         let trace = self.trace(steps)
-        report(trace)
-        XCTAssertEqual(trace.map(\.revision).reduce(into: Set()) { $0.insert($1) }.count, 2)
+        XCTAssertEqual(Set(trace.map(\.structuralRevision)).count, 2)
     }
 
     /// The same batch, but the first event has not named itself when its row is created.
@@ -444,15 +407,14 @@ final class TranscriptRunArrivalTests: XCTestCase {
         let named = activity("event:a", title: "Read")
         let b = activity("event:b", title: "Grep")
         let steps = [
-            ("answer, waiting", [answer], true),
-            ("+ a (unnamed)", [answer, a], true),
-            ("a named", [answer, named], true),
-            ("+ b", [answer, named, b], true),
+            [answer],
+            [answer, a],
+            [answer, named],
+            [answer, named, b],
         ]
         let trace = self.trace(steps)
-        report(trace)
         XCTAssertEqual(
-            Set(trace.map(\.revision)).count, 2,
+            Set(trace.map(\.structuralRevision)).count, 2,
             "one arrival must move the transcript once, not twice"
         )
         XCTAssertEqual(trace[1].waiting, .row("event:a", phrase))
@@ -465,17 +427,16 @@ final class TranscriptRunArrivalTests: XCTestCase {
         let a = activity("event:a", title: "Read")
         let b = activity("event:b", title: "Grep")
         let steps = [
-            ("answer, waiting", [answer], true),
-            ("+ b arrives first", [answer, b], true),
-            ("a sorts ahead of b", [answer, a, b], true),
+            [answer],
+            [answer, b],
+            [answer, a, b],
         ]
         let trace = self.trace(steps)
-        report(trace)
         XCTAssertEqual(
-            trace[1].rows.last, trace[2].rows.last,
+            trace[1].rows.last?.id, trace[2].rows.last?.id,
             "the run changed identity when an earlier record sorted ahead of it"
         )
-        XCTAssertEqual(trace[1].revision, trace[2].revision)
+        XCTAssertEqual(trace[1].structuralRevision, trace[2].structuralRevision)
     }
 
     func testBatchKeepsItsIdentityAcrossWindowShiftAndHistoryPrepend() {

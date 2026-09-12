@@ -360,13 +360,6 @@ enum GatewayClientKind: String, Codable, Sendable {
     }
 }
 
-struct ClientStatus: Codable, Equatable, Sendable {
-    let clientId: String
-    let label: String
-    let kinds: [GatewayClientKind]
-    let connections: Int
-}
-
 enum ProviderAuthKind: String, Codable, Sendable {
     case apiKey = "api_key"
     case deviceCode = "device_code"

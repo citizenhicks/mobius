@@ -590,6 +590,11 @@ final class ChatSessionModel {
         saveSessionReadCursor(sessionID, unread: false)
     }
 
+    func markSessionUnread(_ sessionID: String) {
+        unreadSessionIDs.insert(sessionID)
+        saveSessionReadCursor(sessionID, unread: true)
+    }
+
     private func saveSessionReadCursor(_ sessionID: String, unread: Bool) {
         guard let accountID = gateway.selectedAccountID,
             let session = sessions.first(where: { $0.sessionId == sessionID })
@@ -597,12 +602,18 @@ final class ChatSessionModel {
         let cursor =
             unread
             ? SessionReadCursor(sequence: nil, wasActive: session.activity.state != .idle)
-            : SessionReadCursor(
-                sequence: session.sequence, wasActive: session.activity.state != .idle)
+            : sessionReadCursor(for: session)
         guard sessionReadCursors?[sessionID] != cursor else { return }
         var cursors = sessionReadCursors ?? [:]
         cursors[sessionID] = cursor
         sessionReadCursors = cursors
         store.saveSessionReadCursors(cursors, accountID: accountID)
+    }
+
+    func sessionReadCursor(for session: SessionRecord) -> SessionReadCursor {
+        SessionReadCursor(
+            sequence: session.sequence,
+            wasActive: session.activity.state != .idle
+        )
     }
 }

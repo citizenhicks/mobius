@@ -342,7 +342,6 @@ struct ReadOnlyTranscriptSheet<Header: View>: View {
     @State private var retainedEntryID: String?
     @State private var selectedDetent: PresentationDetent = .large
     @State private var waiting = TranscriptWaitingHold()
-    let header: Header
     let entries: [TranscriptEntry]
     let fileSessionID: String?
     let hasEarlier: Bool
@@ -351,24 +350,7 @@ struct ReadOnlyTranscriptSheet<Header: View>: View {
     /// than the end of the transcript. Drives the same waiting line the chat shows.
     let isRunning: Bool
     let loadEarlier: () async -> Void
-
-    init(
-        entries: [TranscriptEntry],
-        fileSessionID: String?,
-        hasEarlier: Bool,
-        isLoading: Bool,
-        isRunning: Bool,
-        loadEarlier: @escaping () async -> Void,
-        @ViewBuilder header: () -> Header
-    ) {
-        self.header = header()
-        self.entries = entries
-        self.fileSessionID = fileSessionID
-        self.hasEarlier = hasEarlier
-        self.isLoading = isLoading
-        self.isRunning = isRunning
-        self.loadEarlier = loadEarlier
-    }
+    @ViewBuilder let header: Header
 
     var body: some View {
         VStack(spacing: 0) {

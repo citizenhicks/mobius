@@ -43,23 +43,17 @@ struct SettingsInfoButton: View {
     let detail: MobiusText
     var glyph: MobiusGlyph = .info
     var accessibilityHint: MobiusText = .localized("Shows setting guidance")
-    /// Beside a section header or a stacked label, where a full 44pt target would push the
-    /// rows under it down and leave that section sitting lower than every other one.
-    var compact = false
-
     init(
         title: LocalizedStringResource,
         detail: LocalizedStringResource,
         glyph: MobiusGlyph = .info,
-        accessibilityHint: LocalizedStringResource = "Shows setting guidance",
-        compact: Bool = false
+        accessibilityHint: LocalizedStringResource = "Shows setting guidance"
     ) {
         self.init(
             title: .localized(title),
             detail: .localized(detail),
             glyph: glyph,
-            accessibilityHint: .localized(accessibilityHint),
-            compact: compact
+            accessibilityHint: .localized(accessibilityHint)
         )
     }
 
@@ -67,14 +61,12 @@ struct SettingsInfoButton: View {
         title: MobiusText,
         detail: MobiusText,
         glyph: MobiusGlyph = .info,
-        accessibilityHint: MobiusText = .localized("Shows setting guidance"),
-        compact: Bool = false
+        accessibilityHint: MobiusText = .localized("Shows setting guidance")
     ) {
         self.title = title
         self.detail = detail
         self.glyph = glyph
         self.accessibilityHint = accessibilityHint
-        self.compact = compact
     }
 
     var body: some View {
@@ -108,12 +100,7 @@ struct SettingsInfoButton: View {
         }
     }
 
-    private var aboutTitle: Text {
-        switch title {
-        case .localized(let resource): Text("About \(resource)")
-        case .verbatim(let value): Text("About \(value)")
-        }
-    }
+    private var aboutTitle: Text { Text("About \(title.text)") }
 }
 
 struct SettingsStatusAccessory: View {
@@ -129,32 +116,6 @@ struct SettingsStatusAccessory: View {
     var secondaryActionLabel: MobiusText?
     var secondaryAction: (() -> Void)?
     let save: () -> Void
-
-    init(
-        subject: MobiusText,
-        hasChanges: Bool,
-        isSaving: Bool,
-        saveDisabled: Bool,
-        statusLabel: MobiusText,
-        statusDetail: MobiusText,
-        statusColor: Color,
-        saveLabel: MobiusText,
-        secondaryActionLabel: MobiusText? = nil,
-        secondaryAction: (() -> Void)? = nil,
-        save: @escaping () -> Void
-    ) {
-        self.subject = subject
-        self.hasChanges = hasChanges
-        self.isSaving = isSaving
-        self.saveDisabled = saveDisabled
-        self.statusLabel = statusLabel
-        self.statusDetail = statusDetail
-        self.statusColor = statusColor
-        self.saveLabel = saveLabel
-        self.secondaryActionLabel = secondaryActionLabel
-        self.secondaryAction = secondaryAction
-        self.save = save
-    }
 
     var body: some View {
         HeaderActionGroup {
@@ -219,27 +180,9 @@ struct SettingsStatusButton: View {
     let statusLabel: MobiusText
     let statusDetail: MobiusText
     let statusColor: Color
-    let isLoading: Bool
+    var isLoading = false
     var secondaryActionLabel: MobiusText?
     var secondaryAction: (() -> Void)?
-
-    init(
-        subject: MobiusText,
-        statusLabel: MobiusText,
-        statusDetail: MobiusText,
-        statusColor: Color,
-        isLoading: Bool = false,
-        secondaryActionLabel: MobiusText? = nil,
-        secondaryAction: (() -> Void)? = nil
-    ) {
-        self.subject = subject
-        self.statusLabel = statusLabel
-        self.statusDetail = statusDetail
-        self.statusColor = statusColor
-        self.isLoading = isLoading
-        self.secondaryActionLabel = secondaryActionLabel
-        self.secondaryAction = secondaryAction
-    }
 
     var body: some View {
         Button {
@@ -275,25 +218,9 @@ struct SettingsStatusButton: View {
         }
     }
 
-    private var statusAccessibilityLabel: Text {
-        switch subject {
-        case .localized(let resource): Text("\(resource) status")
-        case .verbatim(let value): Text("\(value) status")
-        }
-    }
+    private var statusAccessibilityLabel: Text { Text("\(subject.text) status") }
 
-    private var statusHelp: Text {
-        switch (subject, statusLabel) {
-        case (.localized(let subject), .localized(let status)):
-            Text("\(subject): \(status)")
-        case (.localized(let subject), .verbatim(let status)):
-            Text("\(subject): \(status)")
-        case (.verbatim(let subject), .localized(let status)):
-            Text("\(subject): \(status)")
-        case (.verbatim(let subject), .verbatim(let status)):
-            Text("\(subject): \(status)")
-        }
-    }
+    private var statusHelp: Text { Text("\(subject.text): \(statusLabel.text)") }
 }
 
 struct PageScaffold<HeaderAccessory: View, Content: View>: View {
@@ -369,12 +296,8 @@ struct PageScaffold<HeaderAccessory: View, Content: View>: View {
         .navigationTitle(title.text)
         .toolbarTitleDisplayMode(.inline)
         .toolbar {
-            if sharesHeaderBackground {
-                ToolbarItem(placement: .primaryAction) { headerAccessory }
-            } else {
-                ToolbarItem(placement: .primaryAction) { headerAccessory }
-                    .sharedBackgroundVisibility(.hidden)
-            }
+            ToolbarItem(placement: .primaryAction) { headerAccessory }
+                .sharedBackgroundVisibility(sharesHeaderBackground ? .automatic : .hidden)
         }
         .background {
             if showsBackdrop { MobiusBackdrop() }
@@ -574,7 +497,7 @@ struct SettingsStackedField<Content: View>: View {
             HStack(spacing: MobiusSpace.xs) {
                 title.text
                 if let info {
-                    SettingsInfoButton(title: title, detail: info, compact: true)
+                    SettingsInfoButton(title: title, detail: info)
                 }
             }
             // Muted however short the value is, and always on its own line: under a label

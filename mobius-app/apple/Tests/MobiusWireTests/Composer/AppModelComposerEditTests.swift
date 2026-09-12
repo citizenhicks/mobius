@@ -325,7 +325,6 @@ extension AppModelTests {
                     )
                 ),
                 blocks: [],
-                history: nil,
                 preview: nil
             ))
         model.gateway.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))

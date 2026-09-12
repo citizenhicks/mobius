@@ -22,31 +22,4 @@ extension GatewayWireTests {
         XCTAssertNil(authenticate["last_sequence"])
     }
 
-    func testProtocolV28ClientInventoryRoundTrip() throws {
-        let request = try requestObject(.listClients(requestID: "clients-1"))
-        XCTAssertEqual(request["type"] as? String, "list_clients")
-        XCTAssertEqual(request["request_id"] as? String, "clients-1")
-        let unpair = try requestObject(
-            .unpairClient(
-                requestID: "unpair-1",
-                clientID: "phone-7"
-            ))
-        XCTAssertEqual(unpair["type"] as? String, "unpair_client")
-        XCTAssertEqual(unpair["client_id"] as? String, "phone-7")
-
-        let fixture =
-            #"{"version":28,"type":"clients","request_id":"clients-1","current_client_id":"mac-2","clients":[{"client_id":"phone-7","label":"Phone","kinds":["ios"],"connections":1},{"client_id":"mac-2","label":"Mac","kinds":[],"connections":0}]}"#
-        guard
-            case .clients(let requestID, let currentClientID, let clients) = try decodeEnvelope(
-                fixture)
-        else {
-            return XCTFail("Expected client inventory envelope")
-        }
-        XCTAssertEqual(requestID, "clients-1")
-        XCTAssertEqual(currentClientID, "mac-2")
-        XCTAssertEqual(clients.first?.clientId, "phone-7")
-        XCTAssertEqual(clients.first?.kinds, [.ios])
-        XCTAssertEqual(clients.last?.connections, 0)
-    }
-
 }

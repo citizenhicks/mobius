@@ -21,8 +21,6 @@ extension AppModel {
         routineRunPreviewRequestID = nil
         routineRunPreviewRequestBeforeSequence = nil
         isLoadingRoutineRunPreview = false
-        isLoadingWorkspaceFiles = false
-        isSavingWorkspaceFile = false
         chat.discardPendingComposerAttachments()
         discardFilePresentation(preservingWorkspaceTextDraft: true)
         chat.cancelSessionFileThumbnailDownloads()
@@ -92,11 +90,9 @@ extension AppModel {
         workspaceError = nil
         isChangingWorkspace = false
         directoryRequestID = nil
-        isLoadingDirectories = false
         if preservingSession {
             for scope in GitDiffScope.allCases { gitDiffs[scope]?.requestID = nil }
             workspaceFilesRequestID = nil
-            isLoadingWorkspaceFiles = false
             chat.sessionFilesRequestID = nil
             chat.isLoadingSessionFiles = false
             chat.sessionFileUploadRequests.removeAll()
@@ -192,7 +188,6 @@ extension AppModel {
         pairingCodeRequestID = nil
         gitBranchRequestID = nil
         workspaceFileWriteRequestID = nil
-        isSavingWorkspaceFile = false
         routineRequestIDs.removeAll()
         routineRunPreviewRequestID = nil
         routineRunPreviewRequestBeforeSequence = nil
@@ -226,8 +221,6 @@ extension AppModel {
         workspaceFilesTruncated = false
         workspaceFilesRequestID = nil
         workspaceFileWriteRequestID = nil
-        isLoadingWorkspaceFiles = false
-        isSavingWorkspaceFile = false
         filesInspectorTab = .modified
         modifiedFilesScope = .unstaged
         gitBranchRequestID = nil

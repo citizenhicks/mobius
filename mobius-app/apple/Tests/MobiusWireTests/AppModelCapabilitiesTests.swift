@@ -623,7 +623,6 @@ extension AppModelTests {
                 )
             ),
             blocks: [],
-            history: nil,
             preview: nil
         )
         let target = try XCTUnwrap(model.chat.transcript.first?.messageTarget)
@@ -1030,7 +1029,7 @@ extension AppModelTests {
                 sequence: 1
             )
         ])
-        model.markSessionRead("chat-1")
+        model.chat.markSessionRead("chat-1")
 
         model.applySessions([
             session(
@@ -1069,7 +1068,7 @@ extension AppModelTests {
             model.chat.selectedSessionID = chat.sessionId
             model.setChatVisible(true, windowToken: chatWindowToken)
 
-            model.markSessionUnread(chat.sessionId)
+            model.chat.markSessionUnread(chat.sessionId)
             model.applySessions([chat])
             XCTAssertTrue(model.chat.unreadSessionIDs.contains(chat.sessionId))
             XCTAssertNil(try XCTUnwrap(model.chat.sessionReadCursors?[chat.sessionId]).sequence)
@@ -1079,13 +1078,13 @@ extension AppModelTests {
             model.applySessions([chat])
             XCTAssertTrue(model.chat.unreadSessionIDs.contains(chat.sessionId))
 
-            model.markSessionRead(chat.sessionId)
+            model.chat.markSessionRead(chat.sessionId)
             model.restoreSessionReadState(for: model.gateway.selectedAccountID)
             model.applySessions([chat])
             XCTAssertFalse(model.chat.unreadSessionIDs.contains(chat.sessionId))
             XCTAssertEqual(model.chat.sessionReadCursors?[chat.sessionId]?.sequence, sequence)
 
-            model.markSessionUnread(chat.sessionId)
+            model.chat.markSessionUnread(chat.sessionId)
             model.openChat(chat.sessionId)
             XCTAssertFalse(model.chat.unreadSessionIDs.contains(chat.sessionId))
         }

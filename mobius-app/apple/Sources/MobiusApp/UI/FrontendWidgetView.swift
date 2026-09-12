@@ -87,24 +87,10 @@ private struct WidgetContentPopover: View {
 struct FrontendWidgetContentView: View {
     @Environment(\.mobiusPalette) private var palette
     let content: FrontendWidgetContent
-    let actionsEnabled: Bool
-    let usesSwipeActions: Bool
-    let submitOperation: ((AgentOperation) -> Void)?
+    var actionsEnabled = true
+    var usesSwipeActions = false
+    var submitOperation: ((AgentOperation) -> Void)?
     let select: (FrontendPickerOption) -> Void
-
-    init(
-        content: FrontendWidgetContent,
-        actionsEnabled: Bool = true,
-        usesSwipeActions: Bool = false,
-        submitOperation: ((AgentOperation) -> Void)? = nil,
-        select: @escaping (FrontendPickerOption) -> Void
-    ) {
-        self.content = content
-        self.actionsEnabled = actionsEnabled
-        self.usesSwipeActions = usesSwipeActions
-        self.submitOperation = submitOperation
-        self.select = select
-    }
 
     var body: some View {
         switch content {

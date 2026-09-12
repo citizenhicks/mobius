@@ -494,15 +494,7 @@ extension AppModelTests {
             toolDiscovery: .native
         )
         model.modelChoices = [capableChoice]
-        let attachmentContribution = FrontendContribution(
-            capability: "files",
-            acceptsFileAttachments: true,
-            count: nil,
-            commands: [],
-            widgets: [],
-            references: []
-        )
-        model.chat.contributions = [attachmentContribution]
+        model.chat.contributions = [fileAttachmentContribution()]
 
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -616,7 +608,7 @@ extension AppModelTests {
         XCTAssertFalse(model.canSendComposer)
         XCTAssertFalse(model.sendMessage())
         XCTAssertEqual(model.toast?.message, "File attachments are not enabled for this chat.")
-        model.chat.contributions = [attachmentContribution]
+        model.chat.contributions = [fileAttachmentContribution()]
 
         model.modelChoices = [
             ModelChoice(
@@ -879,14 +871,7 @@ extension AppModelTests {
             )
         ]
         model.chat.contributions = [
-            FrontendContribution(
-                capability: "files",
-                acceptsFileAttachments: true,
-                count: nil,
-                commands: [],
-                widgets: [],
-                references: []
-            )
+            fileAttachmentContribution()
         ]
         let fileSize = maximumClientComposerAttachmentBytes / 4
         model.chat.composerAttachments = (0..<4).map { index in

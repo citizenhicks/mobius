@@ -43,7 +43,6 @@ struct MobiusBadge: View {
     var glyphColor: Color?
     var progress: Double?
     var interactive = false
-    var selected = false
 
     init(
         text: MobiusText,
@@ -51,8 +50,7 @@ struct MobiusBadge: View {
         glyph: MobiusGlyph? = nil,
         glyphColor: Color? = nil,
         progress: Double? = nil,
-        interactive: Bool = false,
-        selected: Bool = false
+        interactive: Bool = false
     ) {
         self.text = text
         self.tone = tone
@@ -60,7 +58,6 @@ struct MobiusBadge: View {
         self.glyphColor = glyphColor
         self.progress = progress
         self.interactive = interactive
-        self.selected = selected
     }
 
     var body: some View {
@@ -95,10 +92,10 @@ struct MobiusBadge: View {
                 : MobiusSpace.m
         )
         .frame(height: MobiusStyle.badgeHeight)
-        .mobiusGlass(in: Capsule(), interactive: interactive, prominent: selected)
+        .mobiusGlass(in: Capsule(), interactive: interactive)
     }
 
-    private var foreground: Color { selected ? palette.onAccent : palette.tone(tone) }
+    private var foreground: Color { palette.tone(tone) }
 }
 
 /// A menu's current value: the provider's mark, the value itself, and a muted qualifier.
@@ -351,11 +348,6 @@ struct HeaderOptionsMenu<Content: View>: View {
     let label: LocalizedStringResource
     @ViewBuilder let content: Content
 
-    init(label: LocalizedStringResource, @ViewBuilder content: () -> Content) {
-        self.label = label
-        self.content = content()
-    }
-
     var body: some View {
         // No target padded out here: the system's glass hugs the label, and a 44pt square
         // draws as a wide pill rather than the circle a lone action should be. Inside a
@@ -606,27 +598,7 @@ private struct MobiusGlassModifier<S: Shape>: ViewModifier {
     func body(content: Content) -> some View {
         let glass =
             prominent ? Glass.regular.tint(palette.accentFill) : clear ? Glass.clear : Glass.regular
-        if interactive {
-            content.glassEffect(glass.interactive(), in: shape)
-        } else {
-            content.glassEffect(glass, in: shape)
-        }
-    }
-}
-
-struct SectionHeading: View {
-    @Environment(\.mobiusPalette) private var palette
-    let title: LocalizedStringResource
-    let detail: LocalizedStringResource
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: MobiusSpace.s) {
-            Text(title)
-                .font(MobiusStyle.titleFont)
-            Text(detail)
-                .font(MobiusStyle.bodyFont)
-                .foregroundStyle(palette.muted)
-        }
+        content.glassEffect(glass.interactive(interactive), in: shape)
     }
 }
 

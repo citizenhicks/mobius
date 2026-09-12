@@ -155,7 +155,6 @@ enum ConnectionState: Equatable {
 enum ApplyState: Equatable {
     case idle
     case applying
-    case restarting
     case applied
     case busy(String)
     case conflict(String)

@@ -341,14 +341,10 @@ extension AppModelTests {
         XCTAssertEqual(opens.count, 2)
         XCTAssertEqual(opens.last?.0, "chat-1")
         XCTAssertNil(opens.last?.1)
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .seconds(1))
-        var cached = await store.loadTranscript(accountID: account.id, sessionID: "chat-1")
-        while cached != nil, clock.now < deadline {
-            try await Task.sleep(for: .milliseconds(5))
-            cached = await store.loadTranscript(accountID: account.id, sessionID: "chat-1")
+        let removed = await eventually {
+            await store.loadTranscript(accountID: account.id, sessionID: "chat-1") == nil
         }
-        XCTAssertNil(cached)
+        XCTAssertTrue(removed)
     }
 
 }

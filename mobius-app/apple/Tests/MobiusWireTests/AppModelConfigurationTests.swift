@@ -245,7 +245,6 @@ extension AppModelTests {
         model.saveProviderCredential()
         model.gitBranchRequestID = "branch"
         model.workspaceFileWriteRequestID = "write"
-        model.isSavingWorkspaceFile = true
         model.routineRunPreviewRequestID = "preview"
         model.isLoadingRoutineRunPreview = true
 

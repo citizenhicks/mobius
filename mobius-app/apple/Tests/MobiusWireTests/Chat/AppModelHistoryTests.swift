@@ -42,7 +42,6 @@ extension AppModelTests {
                         "delta": .string("Hel"),
                     ])),
                 blocks: [],
-                history: nil,
                 preview: nil
             ))
         XCTAssertTrue(model.chat.displayedTranscript.isEmpty)
@@ -60,7 +59,6 @@ extension AppModelTests {
                     )
                 ),
                 blocks: [],
-                history: nil,
                 preview: nil
             ))
         XCTAssertEqual(model.chat.transcript.map(\.text), ["Hello"])
@@ -116,7 +114,6 @@ extension AppModelTests {
                     )
                 ),
                 blocks: [],
-                history: nil,
                 preview: nil
             ))
         model.gateway.handle(.sessionReplayComplete(requestID: openID, sessionID: "chat-1"))

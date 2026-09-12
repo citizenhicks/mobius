@@ -166,10 +166,8 @@ extension ChatSessionModel {
     func reduce(
         event: AgentEventRecord,
         blocks: [FrontendBlock],
-        history: [RenderedEventRecord]? = nil,
         preview: RenderedPreview?
     ) {
-        _ = history
         let renderedBlocks: [RenderedBlock]
         if blocks.isEmpty,
             event.msg["frontendType"]?.stringValue == "render",
@@ -199,10 +197,8 @@ extension GatewayEnvelope {
         sequence: UInt64,
         event: AgentEventRecord,
         blocks: [FrontendBlock],
-        history: [RenderedEventRecord]? = nil,
         preview: RenderedPreview?
     ) -> Self {
-        _ = history
         return .agentEvent(
             sessionID: sessionID,
             record: RecordedEvent(
@@ -581,17 +577,8 @@ final class AppModelTests: XCTestCase {
                 payload: sessionReady(latestSequence: 0, sessionID: sessionID)
             ))
         model.gateway.handle(.sessionReplayComplete(requestID: requestID, sessionID: sessionID))
-        guard !model.canCreateSession else { return }
-        let ready = expectation(description: "New session finished loading")
-        withObservationTracking {
-            _ = model.canCreateSession
-        } onChange: {
-            ready.fulfill()
-        }
-        if !model.canCreateSession {
-            await fulfillment(of: [ready], timeout: 1)
-        }
-        XCTAssertTrue(model.canCreateSession)
+        let ready = await eventually { model.canCreateSession }
+        XCTAssertTrue(ready)
     }
 
     @discardableResult

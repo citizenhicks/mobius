@@ -397,31 +397,14 @@ private struct SessionFileCardLabel: View {
 
 /// The shared file tile: raster thumbnails run edge to edge; other files retain their
 /// glyph, name, and one line of detail.
-struct FileCard<Trailing: View>: View {
+struct FileCard: View {
     @Environment(\.mobiusPalette) private var palette
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let name: String
     let detail: Text
     let detailColor: Color
-    let thumbnail: CGImage?
-    let size: CGSize
-    let trailing: Trailing
-
-    init(
-        name: String,
-        detail: Text,
-        detailColor: Color,
-        thumbnail: CGImage? = nil,
-        size: CGSize = CGSize(width: 136, height: 112),
-        @ViewBuilder trailing: () -> Trailing
-    ) {
-        self.name = name
-        self.detail = detail
-        self.detailColor = detailColor
-        self.thumbnail = thumbnail
-        self.size = size
-        self.trailing = trailing()
-    }
+    var thumbnail: CGImage?
+    var size = CGSize(width: 136, height: 112)
 
     var body: some View {
         content
@@ -429,16 +412,6 @@ struct FileCard<Trailing: View>: View {
             .background(palette.raised)
             .compositingGroup()
             .clipShape(MobiusStyle.tileShape)
-            .overlay(alignment: .topTrailing) {
-                trailing
-                    .foregroundStyle(thumbnail == nil ? Color.primary : palette.onMedia)
-                    .shadow(
-                        color: thumbnail == nil ? .clear : palette.shadow.opacity(0.85),
-                        radius: 1,
-                        y: 1
-                    )
-                    .padding(MobiusSpace.xs)
-            }
             .contentShape(MobiusStyle.tileShape)
             .animation(
                 reduceMotion ? nil : .spring(duration: 0.4, bounce: 0.18), value: thumbnail != nil)
@@ -487,24 +460,6 @@ private func fileKind(name: String, mediaType: String) -> MobiusText {
         return .verbatim(kind.uppercased())
     }
     return .localized("File")
-}
-
-extension FileCard where Trailing == EmptyView {
-    init(
-        name: String,
-        detail: Text,
-        detailColor: Color,
-        thumbnail: CGImage? = nil,
-        size: CGSize = CGSize(width: 136, height: 112)
-    ) {
-        self.init(
-            name: name,
-            detail: detail,
-            detailColor: detailColor,
-            thumbnail: thumbnail,
-            size: size
-        ) { EmptyView() }
-    }
 }
 
 struct ReplyQuoteView: View {

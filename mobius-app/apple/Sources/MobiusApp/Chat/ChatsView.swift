@@ -498,19 +498,6 @@ struct WorkspaceSessionCatalog: View {
         }
     }
 
-    private func expansionBinding(for id: String) -> Binding<Bool> {
-        Binding(
-            get: { !collapsedWorkspaces.contains(id) },
-            set: { expanded in
-                if expanded {
-                    collapsedWorkspaces.remove(id)
-                } else {
-                    collapsedWorkspaces.insert(id)
-                }
-            }
-        )
-    }
-
     private func workspaceGroup(_ group: WorkspaceSessions) -> some View {
         let visibleCount = min(
             visibleSessionCounts[group.id, default: pageSize],
@@ -521,7 +508,7 @@ struct WorkspaceSessionCatalog: View {
             HStack(spacing: 0) {
                 Button {
                     withAnimation(reduceMotion ? nil : .snappy(duration: 0.22)) {
-                        expansionBinding(for: group.id).wrappedValue.toggle()
+                        collapsedWorkspaces.formSymmetricDifference([group.id])
                     }
                 } label: {
                     HStack(spacing: MobiusSpace.s) {
@@ -711,11 +698,11 @@ struct SessionCatalogRow: View {
     private var controls: some View {
         if model.chat.unreadSessionIDs.contains(session.sessionId) {
             Button("Mark as read", glyph: .checkCircle) {
-                model.markSessionRead(session.sessionId)
+                model.chat.markSessionRead(session.sessionId)
             }
         } else {
             Button("Mark as unread", glyph: .circle) {
-                model.markSessionUnread(session.sessionId)
+                model.chat.markSessionUnread(session.sessionId)
             }
         }
         Button(

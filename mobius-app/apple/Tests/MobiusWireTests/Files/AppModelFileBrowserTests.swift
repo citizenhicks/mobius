@@ -5,6 +5,40 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testFileRequestLoadingStatesNotifyObserversOnStartAndReset() async throws {
+        let model = try model { _ in }
+        model.gateway.connectionState = .ready
+        model.chat.selectedSessionID = "chat-1"
+        let requests: [(KeyPath<AppModel, Bool>, () -> Void)] = [
+            (\.isLoadingDirectories, { model.loadDirectory(".") }),
+            (\.isLoadingWorkspaceFiles, { model.refreshWorkspaceFiles() }),
+            (
+                \.isSavingWorkspaceFile,
+                {
+                    model.saveWorkspaceFile(sessionID: "chat-1", path: "note.txt", content: "Hello")
+                }
+            ),
+        ]
+        for (loading, start) in requests {
+            let changed = expectation(description: "Loading state changed")
+            changed.expectedFulfillmentCount = 2
+            withObservationTracking {
+                XCTAssertFalse(model[keyPath: loading])
+            } onChange: {
+                changed.fulfill()
+            }
+            start()
+            withObservationTracking {
+                XCTAssertTrue(model[keyPath: loading])
+            } onChange: {
+                changed.fulfill()
+            }
+            model.resetGatewayDependentState(preservingDrafts: true, preservingSession: true)
+            XCTAssertFalse(model[keyPath: loading])
+            await fulfillment(of: [changed], timeout: 1)
+        }
+    }
+
     func testGitDiffScopesRejectStaleResponsesAndKeepRevisionsAcrossReset() throws {
         let model = try model { _ in }
         model.gateway.connectionState = .ready

@@ -182,7 +182,6 @@ struct AgentSettingsView: View {
         case .idle, .applied:
             hasChanges ? "Unsaved changes" : "Up to date"
         case .applying: "Applying configuration"
-        case .restarting: "Restarting"
         case .busy: "Busy"
         case .conflict: "Changed elsewhere"
         case .invalid: "Configuration rejected"
@@ -197,7 +196,7 @@ struct AgentSettingsView: View {
             hasChanges ? palette.warning : palette.signal
         case .applying:
             palette.accent
-        case .restarting, .busy, .conflict:
+        case .busy, .conflict:
             palette.warning
         case .invalid, .failed:
             palette.danger
@@ -211,8 +210,6 @@ struct AgentSettingsView: View {
             .localized(hasChanges ? unsavedStatusDetail : savedStatusDetail)
         case .applying:
             .localized("The gateway is validating this revision.")
-        case .restarting:
-            .localized("The gateway accepted the configuration and is reopening the session.")
         case .busy(let message), .conflict(let message), .invalid(let message),
             .failed(let message):
             .verbatim(message)

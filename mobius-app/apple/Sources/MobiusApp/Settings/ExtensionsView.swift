@@ -75,8 +75,7 @@ struct ExtensionsView: View {
                         SettingsInfoButton(
                             title: "Discovered",
                             detail:
-                                "Skills found in the gateway and workspace skill directories. They are always available and are not managed here.",
-                            compact: true
+                                "Skills found in the gateway and workspace skill directories. They are always available and are not managed here."
                         )
                     }
                 }

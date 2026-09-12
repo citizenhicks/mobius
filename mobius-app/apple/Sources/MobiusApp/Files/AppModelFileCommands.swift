@@ -13,12 +13,10 @@ extension AppModel {
         let id = requestID("directories")
         directoryRequestID = id
         directoryError = nil
-        isLoadingDirectories = true
         gateway.transmit(.listDirectories(requestID: id, path: path, includeFiles: false)) {
             [weak self] message in
             guard self?.directoryRequestID == id else { return }
             self?.directoryRequestID = nil
-            self?.isLoadingDirectories = false
             self?.directoryError = message
         }
     }
@@ -37,12 +35,10 @@ extension AppModel {
         let id = requestID("create-directory")
         directoryRequestID = id
         directoryError = nil
-        isLoadingDirectories = true
         gateway.transmit(.createWorkspaceDirectory(requestID: id, parent: parent, name: name)) {
             [weak self] message in
             guard self?.directoryRequestID == id else { return }
             self?.directoryRequestID = nil
-            self?.isLoadingDirectories = false
             self?.directoryError = message
         }
     }
@@ -89,7 +85,6 @@ extension AppModel {
         let id = requestID("workspace-files")
         workspaceFilesRequestID = id
         workspaceFilesTruncated = false
-        isLoadingWorkspaceFiles = true
         gateway.transmit(
             .listWorkspaceFiles(
                 requestID: id,
@@ -99,7 +94,6 @@ extension AppModel {
         ) { [weak self] _ in
             guard self?.workspaceFilesRequestID == id else { return }
             self?.workspaceFilesRequestID = nil
-            self?.isLoadingWorkspaceFiles = false
         }
     }
 
@@ -244,7 +238,6 @@ extension AppModel {
         else { return }
         let id = requestID("workspace-file-write")
         workspaceFileWriteRequestID = id
-        isSavingWorkspaceFile = true
         gateway.transmit(
             .writeWorkspaceFile(
                 requestID: id,
@@ -255,7 +248,6 @@ extension AppModel {
         ) { [weak self] message in
             guard self?.workspaceFileWriteRequestID == id else { return }
             self?.workspaceFileWriteRequestID = nil
-            self?.isSavingWorkspaceFile = false
             self?.showToast(verbatim: message, tone: .error)
         }
     }

@@ -21,7 +21,7 @@ extension AppModel {
             handleSessionEnvelope(envelope)
         case .gatewayConfigured, .contributionsChanged, .accepted, .rejected,
             .agentEvent, .sessions, .backgroundApprovals, .swarmAttentions, .botSessions,
-            .bots, .swarms, .clients:
+            .bots, .swarms:
             handleGatewayUpdateEnvelope(envelope)
         case .providerCredentialSaved, .pairingCode, .providerLoginStarted,
             .providerLoginFinished, .gitCredentialStatus, .sshIdentities,
@@ -106,8 +106,6 @@ extension AppModel {
             applyBotsResponse(requestID: requestID, bots: bots)
         case .swarms(let requestID, let swarms):
             applySwarmsResponse(requestID: requestID, swarms: swarms)
-        case .clients:
-            break
         default:
             break
         }
@@ -288,7 +286,6 @@ extension AppModel {
                 sessionID == chat.selectedSessionID
             else { break }
             workspaceFilesRequestID = nil
-            isLoadingWorkspaceFiles = false
             workspaceFiles = files
             workspaceFilesTruncated = truncated
         case .workspaceFileChunk(
@@ -358,7 +355,6 @@ extension AppModel {
                 chat.pendingNewChatWorkspace = listing.path
             }
             directoryError = nil
-            isLoadingDirectories = false
         default:
             break
         }
@@ -634,7 +630,7 @@ extension AppModel {
         if isChatVisible,
             chat.sessionReadCursors?[payload.session.sessionId]?.isMarkedUnread != true
         {
-            markSessionRead(payload.session.sessionId)
+            chat.markSessionRead(payload.session.sessionId)
         }
         chat.selectedModelRoute = payload.session.model.route
         chat.modelContextWindow = payload.session.model.modelContextWindow
@@ -722,7 +718,7 @@ extension AppModel {
         guard var cursors = chat.sessionReadCursors else {
             let cursors = Dictionary(
                 uniqueKeysWithValues: chat.sessions.map { session in
-                    (session.sessionId, sessionReadCursor(for: session))
+                    (session.sessionId, chat.sessionReadCursor(for: session))
                 })
             chat.sessionReadCursors = cursors
             store.saveSessionReadCursors(cursors, accountID: accountID)
@@ -742,7 +738,7 @@ extension AppModel {
         cursors: inout [String: SessionReadCursor]
     ) -> Bool {
         let sessionID = session.sessionId
-        let cursor = sessionReadCursor(for: session)
+        let cursor = chat.sessionReadCursor(for: session)
         if cursors[sessionID]?.isMarkedUnread == true {
             chat.unreadSessionIDs.insert(sessionID)
             return false
@@ -1060,7 +1056,6 @@ extension AppModel {
         }
         if requestID == workspaceFileWriteRequestID {
             workspaceFileWriteRequestID = nil
-            isSavingWorkspaceFile = false
             textFilePreview = nil
             showToast("File saved.", tone: .success)
             refreshWorkspaceFiles()
@@ -1185,7 +1180,6 @@ extension AppModel {
         }
         if rejection.requestId == workspaceFileWriteRequestID {
             workspaceFileWriteRequestID = nil
-            isSavingWorkspaceFile = false
         }
         if chat.pendingDrafts[rejection.requestId] != nil {
             chat.restoreDraft(id: rejection.requestId)
@@ -1226,14 +1220,12 @@ extension AppModel {
         if rejection.requestId == directoryRequestID {
             directoryError = rejection.message
             directoryRequestID = nil
-            isLoadingDirectories = false
         }
         for scope in GitDiffScope.allCases where gitDiffs[scope]?.requestID == rejection.requestId {
             gitDiffs[scope]?.requestID = nil
         }
         if rejection.requestId == workspaceFilesRequestID {
             workspaceFilesRequestID = nil
-            isLoadingWorkspaceFiles = false
         }
         if rejection.requestId == gitBranchRequestID {
             gitBranchRequestID = nil

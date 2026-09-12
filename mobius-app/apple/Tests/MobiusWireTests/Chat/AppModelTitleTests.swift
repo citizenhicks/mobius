@@ -263,14 +263,9 @@ extension AppModelTests {
         try await submitMessage("Review the gateway", in: model, recorder: recorder)
         await fulfillment(of: [titleStarted], timeout: 1)
 
-        let titleGenerated = expectation(description: "Generated title applied")
-        withObservationTracking {
-            _ = model.currentSessionTitle
-        } onChange: {
-            titleGenerated.fulfill()
-        }
         await titleGate.open()
-        await fulfillment(of: [titleGenerated], timeout: 1)
+        let titleGenerated = await eventually { model.currentSessionTitle == "Generated title" }
+        XCTAssertTrue(titleGenerated)
         XCTAssertEqual(model.currentSessionTitle, "Generated title")
 
         let requestCount = await recorder.requestCount()
@@ -299,7 +294,6 @@ extension AppModelTests {
                     )
                 ),
                 blocks: [],
-                history: nil,
                 preview: nil
             ))
         let replayRequestCount = await recorder.requestCount()
@@ -643,14 +637,9 @@ extension AppModelTests {
         )
         await fulfillment(of: [secondTitleStarted], timeout: 1)
 
-        let secondTitleGenerated = expectation(description: "Second title applied")
-        withObservationTracking {
-            _ = model.currentSessionTitle
-        } onChange: {
-            secondTitleGenerated.fulfill()
-        }
         await secondTitleGate.open()
-        await fulfillment(of: [secondTitleGenerated], timeout: 1)
+        let secondTitleGenerated = await eventually { model.currentSessionTitle == "Second title" }
+        XCTAssertTrue(secondTitleGenerated)
         XCTAssertEqual(model.currentSessionTitle, "Second title")
 
         let requestCount = await recorder.requestCount()

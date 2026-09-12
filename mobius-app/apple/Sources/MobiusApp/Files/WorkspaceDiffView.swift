@@ -100,7 +100,7 @@ struct InlineUnifiedDiffView: View {
                             DiffFileHeader(
                                 file: file,
                                 isExpanded: expandedFileIDs.contains(file.id),
-                                toggle: { toggle(file.id) }
+                                toggle: { expandedFileIDs.formSymmetricDifference([file.id]) }
                             )
                             if expandedFileIDs.contains(file.id) {
                                 ForEach(file.rows) { row in
@@ -131,14 +131,6 @@ struct InlineUnifiedDiffView: View {
             .background(palette.panel, in: MobiusStyle.tileShape)
         }
     }
-
-    private func toggle(_ id: Int) {
-        if expandedFileIDs.contains(id) {
-            expandedFileIDs.remove(id)
-        } else {
-            expandedFileIDs.insert(id)
-        }
-    }
 }
 
 private struct UnifiedDiffView: View {
@@ -152,7 +144,7 @@ private struct UnifiedDiffView: View {
                 DiffFileHeader(
                     file: file,
                     isExpanded: expandedFileIDs.contains(file.id),
-                    toggle: { toggle(file.id) }
+                    toggle: { expandedFileIDs.formSymmetricDifference([file.id]) }
                 )
                 .diffListRow(topPadding: 10)
 
@@ -189,14 +181,6 @@ private struct UnifiedDiffView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(diffAccessibilityLabel(document))
-    }
-
-    private func toggle(_ id: Int) {
-        if expandedFileIDs.contains(id) {
-            expandedFileIDs.remove(id)
-        } else {
-            expandedFileIDs.insert(id)
-        }
     }
 }
 
