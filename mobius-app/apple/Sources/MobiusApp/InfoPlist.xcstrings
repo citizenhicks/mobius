@@ -122,42 +122,19 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Use the microphone for voice chats or to dictate messages into the möbius composer."
+            "value" : "Use the microphone for voice chats in möbius."
           }
         },
         "fr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Utilisez le microphone pour les conversations vocales ou pour dicter des messages dans le champ de rédaction de möbius."
+            "value" : "Utilisez le microphone pour les conversations vocales dans möbius."
           }
         },
         "de" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Verwenden Sie das Mikrofon für Sprachchats oder um Nachrichten in das möbius-Eingabefeld zu diktieren."
-          }
-        }
-      }
-    },
-    "NSSpeechRecognitionUsageDescription" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Use speech recognition to transcribe dictated messages in möbius."
-          }
-        },
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Utilisez la reconnaissance vocale pour transcrire les messages dictés dans möbius."
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Verwenden Sie die Spracherkennung, um diktierte Nachrichten in möbius zu transkribieren."
+            "value" : "Verwenden Sie das Mikrofon für Sprachchats in möbius."
           }
         }
       }

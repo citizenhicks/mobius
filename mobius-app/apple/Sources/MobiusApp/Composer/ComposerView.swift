@@ -1,6 +1,5 @@
 import Foundation
 import SwiftUI
-@preconcurrency import AVFoundation
 
 struct ComposerView: View {
     @Environment(AppModel.self) private var model
@@ -185,17 +184,16 @@ private struct RealtimeVoiceComposer: View {
 
 private struct SessionComposerSurface: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.scenePhase) private var scenePhase
-    private var dictation: ComposerDictation { model.dictation }
 
     var body: some View {
         @Bindable var chat = model.chat
         ComposerSurface(
             text: $chat.composer,
-            isDisabled: dictation.isActive,
             hasContext: chat.hasComposerContext,
             compactLeadingInset: model.attachmentsEnabled
                 ? MobiusStyle.iconRowPadding + MobiusStyle.iconButtonSize : MobiusSpace.l,
+            compactTrailingInset: MobiusStyle.iconRowPadding
+                + (model.selectedRouteSupportsRealtimeVoice ? 2 : 1) * MobiusStyle.iconButtonSize,
             focusRequest: chat.composerFocusRequest,
             blurRequest: chat.composerBlurRequest,
             referenceRevision: chat.contributionsRevision + model.workspaceFilesRevision,
@@ -219,41 +217,15 @@ private struct SessionComposerSurface: View {
                         .padding(.top, MobiusSpace.m)
                 }
             },
-            controls: { selection, compact, didSend in
+            controls: { compact, didSend in
                 ComposerOptionsView(
-                    dictation: dictation, selection: selection,
                     send: { delivery in
-                        if !dictation.isActive, model.sendMessage(delivery: delivery) { didSend() }
+                        if model.sendMessage(delivery: delivery) { didSend() }
                     },
                     isCompact: compact
                 )
             }
         )
-        .onChange(of: scenePhase) { _, phase in
-            guard phase == .background else { return }
-            Task { await dictation.cancel() }
-        }
-        .onChange(of: model.chat.selectedSessionID) { _, _ in
-            Task { await dictation.cancel() }
-        }
-        .onChange(of: model.gateway.connectionState.isReady) { _, isReady in
-            guard !isReady else { return }
-            Task { await dictation.cancel() }
-        }
-        .onReceive(
-            NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)
-        ) { notification in
-            guard
-                let rawValue = notification.userInfo?[AVAudioSessionInterruptionTypeKey]
-                    as? UInt,
-                AVAudioSession.InterruptionType(rawValue: rawValue) == .began
-            else { return }
-            model.chat.stopRealtimeVoice()
-            Task { await dictation.cancel() }
-        }
-        .onDisappear {
-            Task { await dictation.cancel() }
-        }
     }
 
     private func referenceSuggestions(text: String, cursorOffset: Int) async

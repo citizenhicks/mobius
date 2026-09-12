@@ -8,7 +8,6 @@ final class ChatSessionModel {
     @ObservationIgnored let gateway: GatewayConnectionModel
     @ObservationIgnored let store: GatewayStore
     @ObservationIgnored let titleWriter: ChatTitleWriter
-    @ObservationIgnored let dictation: ComposerDictation
     @ObservationIgnored let messageSpeaker: MessageSpeaker
     var locale: Locale
     var onToast: (@MainActor (String, ToastTone) -> Void)?
@@ -419,14 +418,12 @@ final class ChatSessionModel {
         gateway: GatewayConnectionModel,
         store: GatewayStore,
         titleWriter: ChatTitleWriter,
-        dictation: ComposerDictation,
         messageSpeaker: MessageSpeaker,
         locale: Locale = .current
     ) {
         self.gateway = gateway
         self.store = store
         self.titleWriter = titleWriter
-        self.dictation = dictation
         self.messageSpeaker = messageSpeaker
         self.locale = locale
     }

@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import XCTest
 @preconcurrency import AVFoundation
 @preconcurrency import WebRTC
@@ -50,6 +51,60 @@ extension AppModelTests {
         model.chat.selectedModelRoute = "voice-route"
         model.modelProviders["voice-route"] = "other-instance"
         XCTAssertFalse(model.selectedRouteSupportsRealtimeVoice)
+    }
+
+    func testComposerOnlyShowsAudioControlsForRealtimeModels() async throws {
+        let model = try voiceModel()
+        model.chat.selectedSessionID = "chat-1"
+        model.modelChoices.append(
+            ModelChoice(
+                route: "text-route", group: "Work", model: "text-model",
+                reasoningEffort: nil, contextWindow: nil,
+                supportsImageInput: true, toolDiscovery: .native
+            ))
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let previous = scene.keyWindow
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 402, height: 874)
+        let host = UIHostingController(
+            rootView: ComposerView(showBotSettings: {}).environment(model))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previous?.makeKeyAndVisible()
+        }
+        func elements(_ object: NSObject, depth: Int = 0) -> [NSObject] {
+            guard depth < 20 else { return [] }
+            let count = object.accessibilityElementCount()
+            let children =
+                count > 0 && count < 100
+                ? (0..<count).compactMap { object.accessibilityElement(at: $0) as? NSObject } : []
+            return [object]
+                + (children + ((object as? UIView)?.subviews ?? [])).flatMap {
+                    elements($0, depth: depth + 1)
+                }
+        }
+        for route in ["voice-route", "text-route"] {
+            model.chat.selectedModelRoute = route
+            let hasVoice = route == "voice-route"
+            let updated = await eventually {
+                let labels = elements(host.view).compactMap(\.accessibilityLabel)
+                return labels.contains("Send") && labels.contains("Start voice chat") == hasVoice
+            }
+            XCTAssertTrue(
+                updated, "\(route): \(elements(host.view).compactMap(\.accessibilityLabel))")
+            XCTAssertFalse(
+                elements(host.view).contains { $0.accessibilityLabel == "Start dictation" })
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+                window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+            }
+            let attachment = XCTAttachment(image: image)
+            attachment.name = route
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
     }
 
     func testComposerVoicePickerValidatesAndSavesThroughBotConfiguration() async throws {
@@ -352,26 +407,15 @@ extension AppModelTests {
         XCTAssertTrue(currentInterruptionHandled)
     }
 
-    func testReadAloudStopCancelsDeferredAudioPreparation() async {
+    func testReadAloudStopCancelsPendingSpeech() async {
         let synthesizer = RecordingSpeechSynthesizer()
         let speaker = MessageSpeaker(synthesizer: synthesizer)
-        let preparing = expectation(description: "Old speech is waiting for dictation")
-        let resumed = expectation(description: "Old preparation finished")
         let spoken = expectation(description: "Current speech delivered")
-        var resumePreparation: CheckedContinuation<Void, Never>?
-        speaker.speak("Old speech") {
-            await withCheckedContinuation { continuation in
-                resumePreparation = continuation
-                preparing.fulfill()
-            }
-            resumed.fulfill()
-        }
-        await fulfillment(of: [preparing], timeout: 1)
+        speaker.speak("Old speech")
         speaker.stop()
         synthesizer.onSpeak = { spoken.fulfill() }
-        speaker.speak("Current speech") {}
-        resumePreparation?.resume()
-        await fulfillment(of: [resumed, spoken], timeout: 1)
+        speaker.speak("**Current speech**")
+        await fulfillment(of: [spoken], timeout: 1)
         XCTAssertEqual(synthesizer.spoken, ["Current speech"])
         speaker.stop()
     }

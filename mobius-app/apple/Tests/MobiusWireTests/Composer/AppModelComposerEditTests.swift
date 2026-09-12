@@ -8,15 +8,14 @@ import XCTest
 extension AppModelTests {
     func testComposerCollapsesOnlyWhenEmptyAndNotInUse() throws {
         let chat = try model().chat
-        func isCompact(focused: Bool = false, dictating: Bool = false) -> Bool {
+        func isCompact(focused: Bool = false) -> Bool {
             ComposerSurface<EmptyView, EmptyView>.isCompact(
-                text: chat.composer, isFocused: focused, isDisabled: dictating,
+                text: chat.composer, isFocused: focused,
                 hasContext: chat.hasComposerContext
             )
         }
         XCTAssertTrue(isCompact())
         XCTAssertFalse(isCompact(focused: true))
-        XCTAssertFalse(isCompact(dictating: true))
         chat.activeTurnID = "running"
         XCTAssertTrue(isCompact())
         chat.composer = "Unsent draft"

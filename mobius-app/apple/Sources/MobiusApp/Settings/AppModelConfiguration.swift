@@ -222,7 +222,6 @@ extension AppModel {
         eventCentreRefreshTask = nil
         cloud.cancelAuthenticationRefresh()
         messageSpeaker.stop()
-        Task { await dictation.cancel() }
         cancelVoiceChatIntent()
         let voiceCall = chat.realtimeVoiceCall
         chat.stopRealtimeVoice(notifyGateway: false)

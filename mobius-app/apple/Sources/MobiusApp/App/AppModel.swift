@@ -35,7 +35,6 @@ final class AppModel {
     var gatewayContributions: [FrontendContribution] = []
     var swarmContributions: [String: [FrontendContribution]] = [:]
     var extensionInstallSource = ""
-    let dictation = ComposerDictation()
     @ObservationIgnored let messageSpeaker = MessageSpeaker()
     var newVoiceChatIntent: NewVoiceChatIntent?
     var previewURL: URL?
@@ -245,7 +244,6 @@ final class AppModel {
             gateway: gateway,
             store: store,
             titleWriter: titleWriter,
-            dictation: dictation,
             messageSpeaker: messageSpeaker,
             locale: language.locale
         )
@@ -657,8 +655,6 @@ final class AppModel {
     func localizedErrorDescription(_ error: Error) -> String {
         switch error {
         case let error as AttachmentImportError:
-            localizedString(error.localizedDescriptionResource)
-        case let error as ComposerDictationError:
             localizedString(error.localizedDescriptionResource)
         case let error as GatewayWireError:
             localizedString(error.localizedDescriptionResource)

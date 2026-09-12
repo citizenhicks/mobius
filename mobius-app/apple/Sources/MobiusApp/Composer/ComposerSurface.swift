@@ -3,16 +3,16 @@ import UIKit
 
 struct ComposerSurface<Context: View, Controls: View>: View {
     @Binding var text: String
-    var isDisabled = false
     var hasContext = false
     var compactLeadingInset = MobiusSpace.l
+    var compactTrailingInset = MobiusStyle.iconRowPadding + MobiusStyle.iconButtonSize
     var focusRequest = 0
     var blurRequest = 0
     var referenceRevision = 0
     var suggestions: (String, Int) async -> ReferenceSuggestions? = { _, _ in nil }
     let send: () -> Bool
     @ViewBuilder let context: (@escaping () -> Void) -> Context
-    @ViewBuilder let controls: (Binding<TextSelection?>, Bool, @escaping () -> Void) -> Controls
+    @ViewBuilder let controls: (Bool, @escaping () -> Void) -> Controls
     @Environment(\.mobiusPalette) private var palette
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var selection: TextSelection?
@@ -38,7 +38,6 @@ struct ComposerSurface<Context: View, Controls: View>: View {
                 .scrollDismissesKeyboard(.interactively)
                 .font(MobiusStyle.bodyFont)
                 .accessibilityLabel("Message")
-                .disabled(isDisabled)
                 .onSubmit { _ = submit() }
                 .onKeyPress(.return, phases: .down, action: handleReturn)
                 .onGeometryChange(for: CGFloat.self) { geometry in
@@ -51,7 +50,7 @@ struct ComposerSurface<Context: View, Controls: View>: View {
                 .padding(
                     .trailing,
                     isCompact
-                        ? MobiusStyle.iconRowPadding + 2 * MobiusStyle.iconButtonSize
+                        ? compactTrailingInset
                         : MobiusSpace.l
                 )
                 .padding(.top, isCompact ? MobiusStyle.iconRowPadding : MobiusSpace.m)
@@ -73,7 +72,7 @@ struct ComposerSurface<Context: View, Controls: View>: View {
         }
         .overlay(alignment: isCompact ? .center : .bottom) {
             if !showsExpandedComposer {
-                controls($selection, isCompact, didSend)
+                controls(isCompact, didSend)
                     .onGeometryChange(for: CGFloat.self) { geometry in
                         geometry.size.height
                     } action: { height in
@@ -107,7 +106,6 @@ struct ComposerSurface<Context: View, Controls: View>: View {
         .task(id: referenceSuggestionRequest) {
             let request = referenceSuggestionRequest
             referenceSuggestions = nil
-            guard !request.isDisabled else { return }
             try? await Task.sleep(for: .milliseconds(80))
             guard !Task.isCancelled else { return }
             let result = await suggestions(request.text, request.cursorOffset)
@@ -131,7 +129,6 @@ struct ComposerSurface<Context: View, Controls: View>: View {
                 .focused($isComposerFocused)
                 .font(MobiusStyle.bodyFont)
                 .accessibilityLabel("Message")
-                .disabled(isDisabled)
                 .onKeyPress(.return, phases: .down, action: handleReturn)
                 .padding(.horizontal, MobiusSpace.l)
                 .padding(.top, MobiusSpace.m)
@@ -146,7 +143,7 @@ struct ComposerSurface<Context: View, Controls: View>: View {
                 }
                 .padding(.horizontal, MobiusSpace.s)
             }
-            controls($selection, false, didSend)
+            controls(false, didSend)
                 .padding(.horizontal, MobiusStyle.iconRowPadding)
                 .padding(.bottom, MobiusStyle.iconRowPadding)
         }
@@ -161,14 +158,13 @@ struct ComposerSurface<Context: View, Controls: View>: View {
     private var isCompact: Bool {
         !showsExpandedComposer
             && Self.isCompact(
-                text: text, isFocused: isComposerFocused, isDisabled: isDisabled,
+                text: text, isFocused: isComposerFocused,
                 hasContext: hasContext
             )
     }
 
-    static func isCompact(text: String, isFocused: Bool, isDisabled: Bool, hasContext: Bool) -> Bool
-    {
-        !isFocused && !isDisabled && text.isEmpty && !hasContext
+    static func isCompact(text: String, isFocused: Bool, hasContext: Bool) -> Bool {
+        !isFocused && text.isEmpty && !hasContext
     }
 
     private var showsExpansionControl: Bool {
@@ -185,7 +181,7 @@ struct ComposerSurface<Context: View, Controls: View>: View {
     }
 
     private func submit() -> Bool {
-        guard !isDisabled, send() else { return false }
+        guard send() else { return false }
         didSend()
         return true
     }
@@ -209,8 +205,7 @@ struct ComposerSurface<Context: View, Controls: View>: View {
         return ReferenceSuggestionRequest(
             text: text,
             cursorOffset: text.distance(from: text.startIndex, to: cursor),
-            revision: referenceRevision,
-            isDisabled: isDisabled
+            revision: referenceRevision
         )
     }
 
@@ -267,7 +262,6 @@ private struct ReferenceSuggestionRequest: Equatable, Sendable {
     let text: String
     let cursorOffset: Int
     let revision: Int
-    let isDisabled: Bool
 }
 
 private struct ReferenceSuggestionsPopup: View {

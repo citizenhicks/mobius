@@ -12,12 +12,10 @@ final class MessageSpeaker {
         synthesizer.usesApplicationAudioSession = false
     }
 
-    func speak(_ markdown: String, after prepareAudio: @escaping @MainActor () async -> Void) {
+    func speak(_ markdown: String) {
         speechTask?.cancel()
         _ = synthesizer.stopSpeaking(at: .immediate)
         speechTask = Task { [weak self] in
-            guard !Task.isCancelled else { return }
-            await prepareAudio()
             guard !Task.isCancelled else { return }
             let text = await markdown.markdownToPlainText()
             guard let self,

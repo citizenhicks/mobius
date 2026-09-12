@@ -110,10 +110,8 @@
 		A20000000000000000000018 /* TranscriptPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000018 /* TranscriptPresentationTests.swift */; };
 		A20000000000000000000019 /* TranscriptProjectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000019 /* TranscriptProjectionTests.swift */; };
 		B20000000000000000000005 /* MobiusCloudTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000003 /* MobiusCloudTests.swift */; };
-		200000000000000000000019 /* ComposerDictation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000013 /* ComposerDictation.swift */; };
 		20000000000000000000001A /* ComposerOptionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000014 /* ComposerOptionsView.swift */; };
 		20000000000000000000001B /* ComposingOrb.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000015 /* ComposingOrb.swift */; };
-		F20000000000000000000002 /* ComposerDictationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000001 /* ComposerDictationTests.swift */; };
 		20000000000000000000001C /* ProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000016 /* ProfileView.swift */; };
 		20000000000000000000001E /* ComposingOrbTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000017 /* ComposingOrbTests.swift */; };
 		20000000000000000000001F /* UnifiedDiff.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000018 /* UnifiedDiff.swift */; };
@@ -269,12 +267,10 @@
 		A10000000000000000000019 /* TranscriptProjectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptProjectionTests.swift; sourceTree = "<group>"; };
 		B10000000000000000000003 /* MobiusCloudTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobiusCloudTests.swift; sourceTree = "<group>"; };
 		100000000000000000000012 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		100000000000000000000013 /* ComposerDictation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerDictation.swift; sourceTree = "<group>"; };
 		100000000000000000000014 /* ComposerOptionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerOptionsView.swift; sourceTree = "<group>"; };
 		100000000000000000000015 /* ComposingOrb.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposingOrb.swift; sourceTree = "<group>"; };
 		100000000000000000000016 /* ProfileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileView.swift; sourceTree = "<group>"; };
 		100000000000000000000017 /* ComposingOrbTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposingOrbTests.swift; sourceTree = "<group>"; };
-		F10000000000000000000001 /* ComposerDictationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerDictationTests.swift; sourceTree = "<group>"; };
 		100000000000000000000018 /* UnifiedDiff.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnifiedDiff.swift; sourceTree = "<group>"; };
 		100000000000000000000019 /* WorkspaceDiffView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceDiffView.swift; sourceTree = "<group>"; };
 		10000000000000000000001A /* UnifiedDiffTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnifiedDiffTests.swift; sourceTree = "<group>"; };
@@ -484,7 +480,6 @@
 				F5BC0C702B6A44AF8D5D8E31 /* ComposerSurface.swift */,
 				10000000000000000000002E /* ComposerView.swift */,
 				100000000000000000000014 /* ComposerOptionsView.swift */,
-				100000000000000000000013 /* ComposerDictation.swift */,
 				100000000000000000000015 /* ComposingOrb.swift */,
 				F10000000000000000000101 /* AppModelRealtimeVoice.swift */,
 				F10000000000000000000102 /* RealtimeVoiceSession.swift */,
@@ -632,7 +627,6 @@
 				A10000000000000000000001 /* AppModelAttachmentTests.swift */,
 				A10000000000000000000003 /* AppModelComposerEditTests.swift */,
 				A10000000000000000000005 /* AppModelDraftTests.swift */,
-				F10000000000000000000001 /* ComposerDictationTests.swift */,
 				100000000000000000000017 /* ComposingOrbTests.swift */,
 				F10000000000000000000104 /* AppModelRealtimeVoiceTests.swift */,
 				F10000000000000000000105 /* RealtimeVoiceMeterTests.swift */,
@@ -876,7 +870,6 @@
 				200000000000000000000042 /* ComposerView.swift in Sources */,
 				200000000000000000000043 /* FrontendWidgetView.swift in Sources */,
 				20000000000000000000002B /* ChatTitleWriter.swift in Sources */,
-				200000000000000000000019 /* ComposerDictation.swift in Sources */,
 				20000000000000000000001A /* ComposerOptionsView.swift in Sources */,
 				20000000000000000000001B /* ComposingOrb.swift in Sources */,
 				200000000000000000000005 /* GatewayClient.swift in Sources */,
@@ -953,7 +946,6 @@
 				A20000000000000000000019 /* TranscriptProjectionTests.swift in Sources */,
 				B20000000000000000000005 /* MobiusCloudTests.swift in Sources */,
 				20000000000000000000001E /* ComposingOrbTests.swift in Sources */,
-				F20000000000000000000002 /* ComposerDictationTests.swift in Sources */,
 				200000000000000000000022 /* UnifiedDiffTests.swift in Sources */,
 				A20000000000000000000020 /* GatewayAgentEventWireTests.swift in Sources */,
 				A20000000000000000000021 /* GatewayClientWireTests.swift in Sources */,

@@ -89,10 +89,8 @@ extension ChatSessionModel {
         realtimeVoice = voice
         messageSpeaker.stop()
         dismissComposerFocus()
-        let dictation = dictation
         realtimeVoiceTask = Task { [weak self] in
             do {
-                await dictation.cancel()
                 guard self?.realtimeVoiceCall?.requestID == requestID else { return }
                 let offer = try await voice.offer()
                 guard self?.realtimeVoiceCall?.requestID == requestID else { return }
@@ -175,8 +173,6 @@ extension ChatSessionModel {
 
     func speakMessage(_ markdown: String) {
         stopRealtimeVoice()
-        messageSpeaker.speak(markdown) { [dictation] in
-            await dictation.cancel()
-        }
+        messageSpeaker.speak(markdown)
     }
 }

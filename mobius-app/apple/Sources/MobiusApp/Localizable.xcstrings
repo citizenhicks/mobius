@@ -3023,22 +3023,6 @@
         }
       }
     },
-    "Cancel dictation" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Annuler la dictée"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Diktat abbrechen"
-          }
-        }
-      }
-    },
     "Capabilities" : {
       "localizations" : {
         "fr" : {
@@ -5068,70 +5052,6 @@
         }
       }
     },
-    "Detected language" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Langue détectée"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Erkannte Sprache"
-          }
-        }
-      }
-    },
-    "Detecting" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Détection en cours"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Erkennen"
-          }
-        }
-      }
-    },
-    "Dictation is not available for the current language." : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "La dictée n’est pas disponible pour la langue actuelle."
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Diktieren ist für die aktuelle Sprache nicht verfügbar."
-          }
-        }
-      }
-    },
-    "Dictation stopped unexpectedly. Please try again." : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "La dictée s’est arrêtée de manière inattendue. Réessayez."
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Diktieren wurde unerwartet beendet. Bitte versuchen Sie es erneut."
-          }
-        }
-      }
-    },
     "Diff truncated at the safe transfer limit" : {
       "localizations" : {
         "fr" : {
@@ -6324,38 +6244,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Fertig, ungelesen"
-          }
-        }
-      }
-    },
-    "Finishing dictation" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Finalisation de la dictée"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Diktat beenden"
-          }
-        }
-      }
-    },
-    "Finishing transcription" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Finalisation de la transcription"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Transkription beenden"
           }
         }
       }
@@ -7573,22 +7461,6 @@
         }
       }
     },
-    "Listening" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "À l’écoute"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zuhören"
-          }
-        }
-      }
-    },
     "Load earlier messages" : {
       "localizations" : {
         "fr" : {
@@ -8213,22 +8085,6 @@
         }
       }
     },
-    "Microphone access is required to dictate a message." : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "L’accès au microphone est requis pour dicter un message."
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zugriff auf das Mikrofon ist erforderlich, um eine Nachricht zu diktieren."
-          }
-        }
-      }
-    },
     "Minutes" : {
       "localizations" : {
         "fr" : {
@@ -8449,22 +8305,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "möbius Cloud lieferte zu viele Daten zurück."
-          }
-        }
-      }
-    },
-    "möbius could not process the microphone audio." : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "möbius n’a pas pu traiter le son capté par le microphone."
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "möbius konnte den Mikrofonton nicht verarbeiten."
           }
         }
       }
@@ -9255,22 +9095,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nicht konfiguriert"
-          }
-        }
-      }
-    },
-    "Not listening" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pas à l’écoute"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nicht aktiv"
           }
         }
       }
@@ -10345,38 +10169,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Code-Änderung vorbereiten"
-          }
-        }
-      }
-    },
-    "Preparing dictation" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Préparation de la dictée"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Diktat vorbereiten"
-          }
-        }
-      }
-    },
-    "Preparing speech recognition" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Préparation de la reconnaissance vocale"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Vorbereitung der Spracherkennung"
           }
         }
       }
@@ -13022,22 +12814,6 @@
         }
       }
     },
-    "Start dictation" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Démarrer la dictée"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Diktat starten"
-          }
-        }
-      }
-    },
     "Starting %@ sign-in" : {
       "localizations" : {
         "fr" : {
@@ -13098,22 +12874,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Anhalten"
-          }
-        }
-      }
-    },
-    "Stop dictation" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Arrêter la dictée"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Diktat beenden"
           }
         }
       }
@@ -13674,22 +13434,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Das Gateway deinstalliert die Erweiterung, ohne gespeicherte Chat-Auswahlen zu ändern. Chats, die darauf verweisen, werden mit deaktivierter Erweiterung fortgesetzt. Die .mobius/extensions-Daten jedes Arbeitsbereichs bleiben erhalten."
-          }
-        }
-      }
-    },
-    "The microphone is not available for dictation." : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Le microphone n’est pas disponible pour la dictée."
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Das Mikrofon steht nicht zum Diktieren zur Verfügung."
           }
         }
       }

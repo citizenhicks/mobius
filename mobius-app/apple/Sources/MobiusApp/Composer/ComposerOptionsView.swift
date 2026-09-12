@@ -154,8 +154,6 @@ private struct ComposerSettingMenu: View {
 struct ComposerOptionsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
-    let dictation: ComposerDictation
-    @Binding var selection: TextSelection?
     let send: (ActiveMessageDelivery?) -> Void
     var isCompact = false
     @State private var showsModelSettings = false
@@ -166,27 +164,17 @@ struct ComposerOptionsView: View {
     @State private var photoSelection: [PhotosPickerItem] = []
 
     var body: some View {
-        Group {
-            if dictation.isActive {
-                ComposerDictationControls(
-                    dictation: dictation,
-                    cancel: discardDictation,
-                    stop: toggleDictation
-                )
-            } else {
-                // ponytail: overlap 44pt targets by 4pt; split groups if boundary taps misfire.
-                HStack(spacing: -MobiusSpace.xs) {
-                    if model.attachmentsEnabled { addAttachmentControl }
-                    if !isCompact {
-                        ForEach(composerSettings) { item in
-                            ComposerSettingMenu(item: item)
-                        }
-                    }
-                    Spacer(minLength: MobiusSpace.s)
-                    if !isCompact { modelMenu }
-                    actionButtons
+        // ponytail: overlap 44pt targets by 4pt; split groups if boundary taps misfire.
+        HStack(spacing: -MobiusSpace.xs) {
+            if model.attachmentsEnabled { addAttachmentControl }
+            if !isCompact {
+                ForEach(composerSettings) { item in
+                    ComposerSettingMenu(item: item)
                 }
             }
+            Spacer(minLength: MobiusSpace.s)
+            if !isCompact { modelMenu }
+            actionButtons
         }
         .sheet(isPresented: $showsModelSelection) {
             ModelSelectionSheet(
@@ -347,25 +335,7 @@ struct ComposerOptionsView: View {
             .labelStyle(.iconOnly)
             .disabled(!model.canStartRealtimeVoice)
             .help("Start voice chat")
-        } else {
-            Button(action: toggleDictation) {
-                if dictation.isTransitioning {
-                    ProgressView()
-                        .controlSize(.small)
-                } else {
-                    MobiusLabel(
-                        title: dictationLabel,
-                        glyph: .mic01,
-                        iconSize: MobiusStyle.glyphLead
-                    )
-                }
-            }
-            .labelStyle(.iconOnly)
-            .buttonStyle(MobiusIconButtonStyle(prominent: dictation.isRecording, bare: true))
-            .disabled(!canToggleDictation)
-            .help(Text(dictationLabel))
-            .accessibilityLabel(Text(dictationLabel))
-            .accessibilityValue(Text(dictationValue))
+            .accessibilityLabel("Start voice chat")
         }
 
         Group {
@@ -506,45 +476,14 @@ struct ComposerOptionsView: View {
     }
 
     private var canSend: Bool {
-        guard model.gateway.connectionState.isReady,
-            model.canSendComposer,
-            model.chat.activeTurnID == nil || model.chat.composerAttachments.isEmpty
-        else { return false }
-        return !dictation.isActive
+        model.gateway.connectionState.isReady && model.canSendComposer
+            && (model.chat.activeTurnID == nil || model.chat.composerAttachments.isEmpty)
     }
 
     private var isWaitingForGateway: Bool {
         switch model.gateway.connectionState {
         case .connecting, .authenticating, .loading: true
         case .disconnected, .ready, .failed: false
-        }
-    }
-
-    private var canToggleDictation: Bool {
-        guard !model.selectedRouteSupportsRealtimeVoice, model.chat.realtimeVoiceCall == nil else {
-            return false
-        }
-        return dictation.isRecording
-            || dictation.canToggle
-                && model.gateway.connectionState.isReady
-                && model.chat.selectedSessionID != nil
-    }
-
-    private var dictationLabel: LocalizedStringResource {
-        switch dictation.state {
-        case .idle: "Start dictation"
-        case .preparing: "Preparing dictation"
-        case .recording: "Stop dictation"
-        case .stopping: "Finishing dictation"
-        }
-    }
-
-    private var dictationValue: LocalizedStringResource {
-        switch dictation.state {
-        case .idle: "Not listening"
-        case .preparing: "Preparing speech recognition"
-        case .recording: "Listening"
-        case .stopping: "Finishing transcription"
         }
     }
 
@@ -575,124 +514,5 @@ struct ComposerOptionsView: View {
 
     private var alternateSendGlyph: MobiusGlyph {
         alternateDelivery == .steer ? .arrowUpRight01 : .queue01
-    }
-
-    private func toggleDictation() {
-        guard canToggleDictation else { return }
-        model.messageSpeaker.stop()
-        Task {
-            do {
-                if dictation.isRecording {
-                    try await dictation.stop()
-                } else {
-                    let sessionID = model.chat.selectedSessionID
-                    try await dictation.start(
-                        existingText: model.chat.composer,
-                        updateText: { text in
-                            guard model.chat.selectedSessionID == sessionID else { return }
-                            selection = nil
-                            model.chat.composer = text
-                        },
-                        reportError: {
-                            model.showToast($0.localizedDescriptionResource, tone: .error)
-                        }
-                    )
-                }
-            } catch is CancellationError {
-                return
-            } catch {
-                model.showToast(
-                    verbatim: model.localizedErrorDescription(error),
-                    tone: .error
-                )
-            }
-        }
-    }
-
-    private func discardDictation() {
-        Task { await dictation.discard() }
-    }
-}
-
-private struct ComposerDictationControls: View {
-    @Environment(\.mobiusPalette) private var palette
-    let dictation: ComposerDictation
-    let cancel: () -> Void
-    let stop: () -> Void
-
-    var body: some View {
-        HStack(spacing: MobiusSpace.s) {
-            Button("Cancel dictation", glyph: .x, action: cancel)
-                .mobiusIconButton()
-                .disabled(dictation.state == .stopping)
-
-            Group {
-                if let languageCode = dictation.detectedLanguageCode {
-                    Text(verbatim: languageCode)
-                } else {
-                    Text(verbatim: "—")
-                }
-            }
-            .font(MobiusStyle.badgeFont)
-            .foregroundStyle(palette.muted)
-            .frame(width: MobiusStyle.iconButtonSize, height: MobiusStyle.iconButtonSize)
-            .accessibilityLabel("Detected language")
-            .accessibilityValue(
-                dictation.detectedLanguageCode.map { Text(verbatim: $0) } ?? Text("Detecting")
-            )
-
-            ComposerDictationWaveform(samples: dictation.audioLevels)
-                .frame(maxWidth: .infinity)
-                .frame(height: MobiusStyle.rowCompact)
-
-            Button(action: stop) {
-                if dictation.isTransitioning {
-                    ProgressView()
-                        .controlSize(.small)
-                } else {
-                    MobiusLabel(title: "Stop dictation", glyph: .stopFill)
-                }
-            }
-            .labelStyle(.iconOnly)
-            .buttonStyle(MobiusIconButtonStyle(prominent: true))
-            .disabled(!dictation.isRecording)
-            .help("Stop dictation")
-            .accessibilityLabel("Stop dictation")
-        }
-        .frame(minHeight: MobiusStyle.iconButtonSize)
-    }
-}
-
-private struct ComposerDictationWaveform: View {
-    @Environment(\.mobiusPalette) private var palette
-    let samples: [Double]
-
-    var body: some View {
-        Canvas { context, size in
-            let count = max(16, min(44, Int(size.width / 7)))
-            let levels = Array(samples.suffix(count))
-            let leadingEmpty = count - levels.count
-            let step = size.width / Double(count)
-            let barWidth = min(4, max(2, step * 0.48))
-            let minimumHeight = 3.0
-
-            for index in 0..<count {
-                let level = index < leadingEmpty ? 0 : levels[index - leadingEmpty]
-                let height =
-                    minimumHeight
-                    + pow(min(1, max(0, level)), 0.7) * max(0, size.height - minimumHeight)
-                let rect = CGRect(
-                    x: (Double(index) + 0.5) * step - barWidth / 2,
-                    y: (size.height - height) / 2,
-                    width: barWidth,
-                    height: height
-                )
-                context.fill(
-                    Path(roundedRect: rect, cornerRadius: barWidth / 2),
-                    with: .color(palette.muted.opacity(0.45 + level * 0.55))
-                )
-            }
-        }
-        .accessibilityHidden(true)
     }
 }

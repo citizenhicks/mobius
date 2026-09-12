@@ -499,7 +499,7 @@ struct SwarmChatView: View {
         ComposerSurface(
             text: $draft, suggestions: mentionSuggestions, send: send, context: { _ in }
         ) {
-            _, _, didSend in
+            _, didSend in
             HStack(spacing: MobiusSpace.xs) {
                 Spacer(minLength: 0)
                 Button {
