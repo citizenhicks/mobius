@@ -193,7 +193,9 @@ private struct SessionComposerSurface: View {
             compactLeadingInset: model.attachmentsEnabled
                 ? MobiusStyle.iconRowPadding + MobiusStyle.iconButtonSize : MobiusSpace.l,
             compactTrailingInset: MobiusStyle.iconRowPadding
-                + (model.selectedRouteSupportsRealtimeVoice ? 2 : 1) * MobiusStyle.iconButtonSize,
+                + (model.selectedRouteSupportsRealtimeVoice && !model.composerUsesPrimaryVoice
+                    ? 2 : 1)
+                    * MobiusStyle.iconButtonSize,
             focusRequest: chat.composerFocusRequest,
             blurRequest: chat.composerBlurRequest,
             referenceRevision: chat.contributionsRevision + model.workspaceFilesRevision,

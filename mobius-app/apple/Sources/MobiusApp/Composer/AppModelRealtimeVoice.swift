@@ -32,6 +32,11 @@ extension AppModel {
             && (chat.selectedSessionID != nil || chat.pendingNewChatBotID != nil)
     }
 
+    var composerUsesPrimaryVoice: Bool {
+        selectedRouteSupportsRealtimeVoice && chat.selectedSessionID == nil
+            && chat.composer.isEmpty && !chat.hasComposerContext
+    }
+
     func openNewVoiceChat() {
         guard canCreateSession, selectedRouteSupportsRealtimeVoice else { return }
         openNewSession()

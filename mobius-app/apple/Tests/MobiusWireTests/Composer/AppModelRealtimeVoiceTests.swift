@@ -54,7 +54,8 @@ extension AppModelTests {
     }
 
     func testComposerOnlyShowsAudioControlsForRealtimeModels() async throws {
-        let model = try voiceModel()
+        let recorder = GatewayRequestRecorder()
+        let model = try voiceModel(recorder: recorder)
         model.chat.selectedSessionID = "chat-1"
         model.modelChoices.append(
             ModelChoice(
@@ -67,7 +68,10 @@ extension AppModelTests {
         let window = UIWindow(windowScene: scene)
         window.frame = CGRect(x: 0, y: 0, width: 402, height: 874)
         let host = UIHostingController(
-            rootView: ComposerView(showBotSettings: {}).environment(model))
+            rootView: ComposerView(showBotSettings: {})
+                .background { MobiusBackdrop() }
+                .modifier(MobiusTheme())
+                .environment(model))
         window.rootViewController = host
         window.makeKeyAndVisible()
         defer {
@@ -86,25 +90,52 @@ extension AppModelTests {
                     elements($0, depth: depth + 1)
                 }
         }
-        for route in ["voice-route", "text-route"] {
-            model.chat.selectedModelRoute = route
-            let hasVoice = route == "voice-route"
+        func checkActions(voice: Bool, send: Bool, name: String) async throws {
             let updated = await eventually {
                 let labels = elements(host.view).compactMap(\.accessibilityLabel)
-                return labels.contains("Send") && labels.contains("Start voice chat") == hasVoice
+                return labels.contains("Send") == send
+                    && labels.contains("Start voice chat") == voice
             }
             XCTAssertTrue(
-                updated, "\(route): \(elements(host.view).compactMap(\.accessibilityLabel))")
+                updated, "\(name): \(elements(host.view).compactMap(\.accessibilityLabel))")
             XCTAssertFalse(
                 elements(host.view).contains { $0.accessibilityLabel == "Start dictation" })
+            try await Task.sleep(for: .milliseconds(350))
             let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
                 window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
             }
             let attachment = XCTAttachment(image: image)
-            attachment.name = route
+            attachment.name = name
             attachment.lifetime = .keepAlways
             add(attachment)
         }
+        for route in ["voice-route", "text-route"] {
+            model.chat.selectedModelRoute = route
+            try await checkActions(voice: route == "voice-route", send: true, name: route)
+        }
+        model.chooseWorkspace("/srv/project")
+        XCTAssertTrue(model.canStartRealtimeVoice)
+        for draft in ["", "Hello", ""] {
+            model.chat.composer = draft
+            try await checkActions(voice: true, send: !draft.isEmpty, name: "New chat: \(draft)")
+        }
+        model.chat.composerReply = MessageReply(
+            target: MessageTarget(checkpointSequence: 1, batchItemCount: 1), text: "Reply"
+        )
+        try await checkActions(voice: true, send: true, name: "Reply context")
+        model.chat.composerReply = nil
+        try await checkActions(voice: true, send: false, name: "New voice chat")
+        let voice = try XCTUnwrap(
+            elements(host.view).first { $0.accessibilityLabel == "Start voice chat" })
+        XCTAssertTrue(voice.accessibilityActivate())
+        let request = await recorder.firstRequest(after: 0) {
+            if case .createSession = $0 { true } else { false }
+        }
+        guard case .createSession(let requestID, "/srv/project", "bot-1") = request else {
+            return XCTFail("Primary voice action should create a voice chat")
+        }
+        XCTAssertEqual(model.newVoiceChatIntent, .openingSession(requestID))
+        XCTAssertNil(model.chat.realtimeVoiceCall)
     }
 
     func testComposerVoicePickerValidatesAndSavesThroughBotConfiguration() async throws {

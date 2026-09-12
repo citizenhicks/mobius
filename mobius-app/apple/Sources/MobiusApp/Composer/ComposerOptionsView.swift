@@ -154,6 +154,8 @@ private struct ComposerSettingMenu: View {
 struct ComposerOptionsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var actionTransition
     let send: (ActiveMessageDelivery?) -> Void
     var isCompact = false
     @State private var showsModelSettings = false
@@ -320,62 +322,79 @@ struct ComposerOptionsView: View {
         )
     }
 
-    @ViewBuilder
     private var actionButtons: some View {
-        if model.selectedRouteSupportsRealtimeVoice {
+        GlassEffectContainer(spacing: MobiusSpace.s) {
+            HStack(spacing: -MobiusSpace.xs) {
+                if model.selectedRouteSupportsRealtimeVoice && !model.composerUsesPrimaryVoice {
+                    voiceButton
+                        .buttonStyle(MobiusIconButtonStyle(surfaceSize: 32))
+                        .glassEffectID("voice", in: actionTransition)
+                        .glassEffectTransition(reduceMotion ? .identity : .matchedGeometry)
+                }
+                primaryAction
+                    .mobiusProminentIconButton(surfaceSize: 32)
+                    .glassEffectID("primary", in: actionTransition)
+                    .glassEffectTransition(reduceMotion ? .identity : .matchedGeometry)
+            }
+        }
+        .animation(
+            reduceMotion ? nil : .smooth(duration: 0.3), value: model.composerUsesPrimaryVoice)
+    }
+
+    private var voiceButton: some View {
+        Button {
+            model.startRealtimeVoice()
+        } label: {
+            MobiusLabel(
+                title: "Start voice chat", glyph: .audioWave01,
+                iconSize: MobiusStyle.glyphLead
+            )
+        }
+        .labelStyle(.iconOnly)
+        .disabled(!model.canStartRealtimeVoice)
+        .help("Start voice chat")
+        .accessibilityLabel("Start voice chat")
+    }
+
+    @ViewBuilder
+    private var primaryAction: some View {
+        if model.composerUsesPrimaryVoice {
+            voiceButton
+        } else if model.chat.activeTurnID != nil && !canSend {
             Button {
-                model.startRealtimeVoice()
+                model.interrupt()
             } label: {
                 MobiusLabel(
-                    title: "Start voice chat", glyph: .audioWave01,
-                    iconSize: MobiusStyle.glyphLead
-                )
+                    title: "Stop", glyph: .stopFill, iconSize: MobiusStyle.glyphLead)
             }
-            .buttonStyle(MobiusIconButtonStyle(bare: true))
-            .labelStyle(.iconOnly)
-            .disabled(!model.canStartRealtimeVoice)
-            .help("Start voice chat")
-            .accessibilityLabel("Start voice chat")
-        }
-
-        Group {
-            if model.chat.activeTurnID != nil && !canSend {
-                Button {
-                    model.interrupt()
-                } label: {
-                    MobiusLabel(
-                        title: "Stop", glyph: .stopFill, iconSize: MobiusStyle.glyphLead)
-                }
-                .help("Stop")
-            } else {
-                Button(action: { send(nil) }) {
-                    Label {
-                        Text(sendLabel)
-                    } icon: {
-                        if isWaitingForGateway {
-                            MobiusSpinner(
-                                size: MobiusStyle.glyphLead,
-                                foreground: palette.onAccent
-                            )
-                        } else {
-                            MobiusIcon(sendGlyph, size: MobiusStyle.glyphLead)
-                        }
+            .help("Stop")
+        } else {
+            Button(action: { send(nil) }) {
+                Label {
+                    Text(sendLabel)
+                } icon: {
+                    if isWaitingForGateway {
+                        MobiusSpinner(
+                            size: MobiusStyle.glyphLead,
+                            foreground: palette.onAccent
+                        )
+                    } else {
+                        MobiusIcon(sendGlyph, size: MobiusStyle.glyphLead)
                     }
                 }
-                .disabled(!canSend)
-                .help(Text(sendLabel))
-                .accessibilityLabel(Text(sendLabel))
-                .accessibilityHint(Text(sendHint))
-                .contextMenu {
-                    if model.chat.activeTurnID != nil {
-                        Button(alternateSendLabel, glyph: alternateSendGlyph) {
-                            send(alternateDelivery)
-                        }
+            }
+            .disabled(!canSend)
+            .help(Text(sendLabel))
+            .accessibilityLabel(Text(sendLabel))
+            .accessibilityHint(Text(sendHint))
+            .contextMenu {
+                if model.chat.activeTurnID != nil {
+                    Button(alternateSendLabel, glyph: alternateSendGlyph) {
+                        send(alternateDelivery)
                     }
                 }
             }
         }
-        .mobiusProminentIconButton(surfaceSize: 32)
     }
 
     private func importFiles(_ result: Result<[URL], Error>) {
